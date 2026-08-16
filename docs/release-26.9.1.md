@@ -1911,6 +1911,181 @@ Two things the same method carried:
 
 [#6202](https://github.com/ArcadeData/arcadedb/issues/6202)
 
+## `TRUNCATE TYPE` / `TRUNCATE BUCKET` inside a transaction no longer commit it, so `ROLLBACK` puts the records back (#6220)
+
+`BEGIN; TRUNCATE TYPE Staging UNSAFE; INSERT ...; ROLLBACK;` did not put the old rows back. The statement
+committed the caller's transaction from the inside, three ways: `schema.dropIndex()` for every index on the type
+- a schema change, applied immediately - before a single record was touched; `commit(); begin()` inside the scan
+callback every `arcadedb.truncateBatchSize` (default 1000) records; and one more `commit(); begin()` before the
+dropped indexes were rebuilt over what were by then empty buckets. An explicit `ROLLBACK` therefore recovered
+only whatever the last, uncommitted batch happened to hold: nothing at all on a type with **any** index, since
+the drop and the pre-rebuild commit landed either side of every delete. Nothing reported it - the statement
+returned `operation: truncate type` and the rollback returned normally - and the single most natural use of
+`TRUNCATE`, reloading a staging table in one unit of work, was exactly the shape that lost data. It is the same
+defect that made a failed materialized-view refresh destroy the view in #6203, met there by taking `TRUNCATE` out
+of the refresh path; this fixes the statement for everybody else.
+
+Who owns the transaction now decides which of two paths runs:
+
+- **A transaction is already active.** The truncate is one operation inside somebody else's unit of work, so it
+  commits nothing and changes no schema: every record is deleted in the caller's transaction with the indexes
+  maintained per record, exactly as `DELETE FROM` does, and the caller's `COMMIT` or `ROLLBACK` decides the
+  outcome of the whole thing. `arcadedb.truncateBatchSize` is ignored here.
+- **No transaction is active.** The statement owns one, and keeps today's fast path in full: drop the indexes,
+  delete in small committed batches, rebuild the (empty) indexes. The batching is a throughput and HA concern
+  (one small Raft log entry per batch, #4817) and never was an atomicity one, so nothing is lost by giving it up
+  in the first case - the caller's own commit is one entry either way.
+
+The result set now carries a `transactional` flag saying which path ran, so a caller can tell whether its
+`ROLLBACK` will undo the truncate rather than finding out afterwards.
+
+The second half of the fix is that the fast path is now *reachable*. Deleting a record requires an active
+transaction, so with none active every delete used to fail with `Transaction not begun` - the batching and the
+index drop/rebuild could only ever run on a caller's transaction, which is precisely where they must not. The
+statement opens its own transaction now, commits it on success, rolls it back on failure (leaving the buckets and
+the rebuilt indexes agreeing, where before a failure left the index populated with records the caller's commit
+was about to delete), and always hands the thread back without a transaction on it.
+
+**Choosing the fast path deliberately.** Embedded, it is `database.command("sql", "TRUNCATE TYPE ...")` with no
+`begin()` around it. Over HTTP the request's auto-commit transaction is what makes the statement transactional,
+so `"autoCommit": false` in the request payload selects the fast path for a bulk clear that does not need to be
+undoable. Anything wrapped in a transaction - `database.transaction(...)`, an HTTP session transaction, a
+`sqlscript` between `BEGIN` and `COMMIT` - now gets correctness instead, at the cost of one index maintenance
+per record and of holding the deleted pages until commit.
+
+[#6220](https://github.com/ArcadeData/arcadedb/issues/6220)
+## `CHECK DATABASE` now reports an orphan edge record, and can reclaim one on request (#6090)
+
+An **orphan edge record** is an edge record that exists physically in an edge-type bucket, whose `@out`/`@in`
+name valid vertices, but which no vertex's edge list points back at: `countType()` counts it, no traversal
+reaches it. `GraphDatabaseChecker.checkEdges` already scanned every edge record and already probed both
+endpoints for a back-reference - the scan and the direction were both right - and then discarded the answer.
+Both call sites did nothing but `missingReferenceBack.incrementAndGet()`. No warning named the record, nothing
+entered `corruptedRecords`, and so `CHECK DATABASE FIX` never reclaimed one.
+
+The published counter could not stand in for the finding either, because it is not edge-type aware. A
+perfectly healthy **unidirectional** edge is legitimately absent from its target's IN list and bumps it by 1; a
+genuinely orphaned bidirectional edge bumps it by 2. One aggregate, no breakdown, no RIDs - on a database that
+uses unidirectional edge types at all, the signal is buried. The honest way to answer "does my database hold
+any?" was to run a full traversal yourself and compare it against `countType`.
+
+The probe is now **direction-aware**, and what it establishes is reported:
+
+- an edge absent from its OUT vertex's OUT list is a defect for every edge type - no outgoing traversal reaches
+  it - and is counted under `edgesMissingOutReference`;
+- an edge absent from its IN vertex's IN list is a defect only when the type is BIDIRECTIONAL, counted under
+  `edgesMissingInReference`;
+- an edge **neither** list names is an orphan record: warned with its RID and both endpoints, counted under
+  `unreachableEdgeRecords` and named in `unreachableEdgeRecordsFound`.
+
+`missingReferenceBack` is deliberately untouched - both probes still run and it is still bumped once per side
+that holds no reference - so anything parsing today's result keeps reading the same number.
+
+The three new counters are **not disjoint**, which matters if you render them as a summary: one orphaned
+bidirectional edge increments all three. Each answers "how many edges have this defect" independently, so
+summing them double-counts. `unreachableEdgeRecords` is the orphan total; the other two are the per-direction
+detail behind it, plus the half-linked edges that are still reachable from one side.
+
+Reclaiming them is a new, explicit clause: **`CHECK DATABASE FIX DELETE ORPHANS`**. It is not folded into plain
+`FIX`, and the reason is a data-loss path rather than a taste for options. The detection cannot distinguish
+"this record is garbage a failed bulk load left behind" from "this vertex lost its head-chunk pointer, so its
+perfectly good edges look unreferenced" - a null head chunk reads exactly like a vertex with no edges. In the
+second case the edge records are the only surviving description of that adjacency and the thing `RESTORE
+VERTEX` rebuilds it from, so a repair that deleted them by default would turn a recoverable database into an
+unrecoverable one. Reporting is therefore always on; removing is always asked for, and `DELETE ORPHANS` without
+`FIX` is refused rather than silently implying it.
+
+The classification is conservative by construction: an edge is called unreachable only when **both** probes
+positively established the absence. A far endpoint that could not be loaded is already reported as a dangling
+link, and one whose list could not be walked is left to `checkVertices`, which runs after this pass and
+rebuilds the chain from the surviving edge records - neither may be answered by deleting the record that repair
+reads from.
+
+#6089 stopped `GraphBatch` from creating orphans on a failed flush; this is what finds the ones an older build
+already left behind.
+
+[#6090](https://github.com/ArcadeData/arcadedb/issues/6090)
+
+## The restore is now the fast half of a recovery too: parallel per entry, and no longer reading the archive 512 bytes at a time (#6086)
+
+Making the backup 27x faster (#6072) moved the bottleneck rather than removing it. On the same 1.25 GB database
+the backup took 0.68 s and the restore that undoes it 2.9 s, so the number that actually matters when someone is
+recovering - the RTO - had barely moved.
+
+### What the measurement said, and what it contradicted
+
+The issue proposed two candidate diagnoses and asked for the numbers before any code. `RestoreParallelBenchmark`
+times the two halves of a restore separately, and they are not close: on that 1.25 GB database, inflating every
+entry and throwing the bytes away takes **2.96 s** while writing the same bytes with no inflation takes **0.93 s**.
+The restore is inflate-bound, and the "the 8 KB copy buffer is suspiciously small" hypothesis is the wrong one -
+raising that buffer to 256 KB is worth 1%.
+
+The read side, however, was worth a great deal, and for a reason no one had looked at: `ZipInputStream` fills its
+inflater **512 bytes at a time**, a size its constructor hardcodes with no overload to change it, and the restore
+handed it an unbuffered `FileInputStream`. That is one read syscall per 512 compressed bytes for the whole
+archive. A 256 KB `BufferedInputStream` underneath it takes the same restore from 5.16 s to 3.96 s, and it is the
+only speedup available to the two input sources that cannot be parallel at all.
+
+### Parallel per entry
+
+ZIP entries are independent and each becomes its own file, so they are inflated and written concurrently, largest
+first (the duration of a set of very uneven independent tasks is decided by when the biggest one starts). This
+needs random access to the archive - `ZipFile` rather than `ZipInputStream` - which turns out to be the larger
+half of the win even at one thread, because `ZipFile`'s reader does not have the 512-byte fill.
+
+`arcadedb.restore.threads` sizes the pool: `-1` (the default) is the available processors capped at 8, `0` selects
+the sequential walk, `N` a pool of N. It is also settable per restore, on the command line (`-restoreThreads`) and
+through the `Restore` API. Unlike a backup, which halves the cores because it runs alongside the workload it is
+already throttling, a restore has no such neighbour - the database it is producing is not open yet - so the
+automatic sizing takes whole cores.
+
+**The archive format did not change**, and no part of this reads anything the backup did not already write. Old
+archives, including single-threaded level-9 ones written before #6072, restore through the parallel path unchanged.
+
+### The numbers
+
+1.25 GB database, 8 threads, macOS/NVMe. Two shapes, because the shape is what decides what per-entry parallelism
+can possibly buy:
+
+| configuration | one dominant entry (1 type) | several comparable entries (8 types) |
+|---|---|---|
+| before #6086 | 5.16 s (248 MB/s) | 4.51 s (258 MB/s) |
+| + buffered read, sequential | 3.96 s (1.30x) | 4.17 s (1.08x) |
+| parallel, 1 thread | 2.60 s (1.99x) | 2.63 s (1.71x) |
+| parallel, 8 threads | **2.51 s (2.05x)** | **0.49 s (9.15x)** |
+
+A database made of one dominant file cannot be split - a ZIP entry is a single deflate stream and has to be
+inflated serially - so there the whole win is the reader change and the threads add 4%. This is stated rather
+than averaged away because it is the honest shape of the result: intra-entry parallelism, the mirror of what the
+backup does, is not available without recording the backup's chunk boundaries in the archive, which would be the
+format change this deliberately avoids. On a database spread over several types the restore goes to 0.49 s -
+faster than the 0.68 s backup it undoes, which is where the issue wanted it.
+
+Peak heap is bounded by construction and does not move: 11.0 MB in every configuration above, sequential and
+parallel alike. One 256 KB copy buffer per pool thread, taken from a pool of exactly that many, plus the JDK
+inflater's own buffer per entry in flight - under 3 MB of buffers at 8 threads.
+
+### What stays sequential, and why it is not optional
+
+Per-entry parallelism needs to open the archive at random, which two of the three input sources cannot support: an
+archive read over `http(s)` is a one-shot stream, and an encrypted one is a single `CipherInputStream` that only
+decrypts front to back. Both fall back to the sequential walk automatically, whatever the thread setting says - a
+restore must never fail because of a performance setting - and both are covered by tests that assert the fallback
+was taken, not merely that the restore worked.
+
+One thing the parallel path does strictly better: it reads the central directory before it starts, so it validates
+every entry name up front and refuses a hostile archive before writing a single file. The sequential walk only
+learns a name when it reaches it, so it stops at the bad entry with the good ones already on disk - the
+pre-existing behaviour, now pinned by a test so the difference is a recorded decision rather than an accident.
+
+A failure *during* extraction carries one guarantee that a naive pool would not give: when the extractor throws,
+no worker is still writing. Interrupting a thread does not come back out of a `FileOutputStream.write()`, so
+shutting the pool down is not enough on its own - and the caller's very next move is usually to delete the
+destination, which would then race the workers still filling it. The extractor therefore waits for its workers
+before propagating the failure.
+
+[#6086](https://github.com/ArcadeData/arcadedb/issues/6086)
+
 ## A graph-algorithm knob is bounded by the resource it actually spends (#6216)
 
 Follow-up to #6065, which bounded the *allocation*-shaped numeric knobs of the OpenCypher `algo.*` package.

@@ -78,7 +78,7 @@ public class PageManager extends LockContext {
   private final    ConcurrentMap<PageId, Boolean>    pendingFlushPages                     = new ConcurrentHashMap<>();
   private volatile long                               maxRAM;
   final            AtomicLong                        totalReadCacheRAM                     = new AtomicLong();
-  // #5636: the counters below, down to totalMergesDeclinedByCoverage, are exported as Prometheus COUNTERS (see
+  // #5636: the counters below, down to totalChunkChainReadRetries, are exported as Prometheus COUNTERS (see
   // EngineMetricsBinder), which requires them never to decrease for the lifetime of the JVM. They are deliberately
   // reset nowhere - note close() resets only totalReadCacheRAM above, which is an instantaneous gauge. Adding a
   // "reset stats" affordance that touched them would make each reset read as a counter reset and fabricate a rate()
@@ -93,6 +93,8 @@ public class PageManager extends LockContext {
   private final    AtomicLong                        totalEdgeAppendMerges                 = new AtomicLong();
   private final    AtomicLong                        totalTxPageSlotMerges                 = new AtomicLong();
   private final    AtomicLong                        totalMergesDeclinedByCoverage         = new AtomicLong();
+  private final    AtomicLong                        totalChunkChainReadRevalidations      = new AtomicLong();
+  private final    AtomicLong                        totalChunkChainReadRetries            = new AtomicLong();
   private final    AtomicLong                        evictionRuns                          = new AtomicLong();
   private final    AtomicLong                        pagesEvicted                          = new AtomicLong();
   // #6116: the snapshot totals below are exported as Prometheus counters together with the ones above, and
@@ -192,6 +194,10 @@ public class PageManager extends LockContext {
     public long txPageSlotMerges;
     /** See {@link PageManager#incrementMergesDeclinedByCoverage()}: commit ATTEMPTS failed on a coverage decline, not pages. */
     public long mergesDeclinedByCoverage;
+    /** See {@link PageManager#incrementChunkChainReadRevalidations()}: the read-path twin of {@code txPageSlotMerges}. */
+    public long chunkChainReadRevalidations;
+    /** See {@link PageManager#incrementChunkChainReadRetries()}: chunked reads restarted because the record itself moved. */
+    public long chunkChainReadRetries;
     public long evictionRuns;
     public long pagesEvicted;
     public int  readCachePages;
@@ -901,7 +907,8 @@ public class PageManager extends LockContext {
   /**
    * Bytes of dirty pages currently held in memory because flushing is suspended on some database (a full backup, an HA
    * snapshot ship, an HA verify). Once this crosses {@link com.arcadedb.GlobalConfiguration#FLUSH_SUSPEND_MAX_DEFERRED_RAM}
-   * the flush thread stops draining its queue and committing threads are throttled instead, so this is the direct
+   * the committing threads OF THE SUSPENDED DATABASES are throttled (issue #6200 - before it, the flush thread stopped
+   * draining its queue altogether, which throttled the committers of every open database), so this is the direct
    * measure of how much a long suspension is costing writers.
    *
    * @return 0 when no suspension is in progress, or when the page manager is closed.
@@ -909,6 +916,34 @@ public class PageManager extends LockContext {
   public long getDeferredRAMBytes() {
     final PageManagerFlushThread thread = flushThread;
     return thread != null ? thread.deferredRAMBytes.get() : 0L;
+  }
+
+  /**
+   * The same backlog as {@link #getDeferredRAMBytes}, for a single database (issue #6200): the number that says WHICH
+   * suspension is costing the heap, which the JVM-wide total cannot.
+   *
+   * @return 0 when that database has nothing deferred, or when the page manager is closed.
+   */
+  public long getDeferredRAMBytesOf(final BasicDatabase database) {
+    final PageManagerFlushThread thread = flushThread;
+    return thread != null ? thread.getDeferredRAMBytesOf(database) : 0L;
+  }
+
+  /**
+   * Holds the caller while the deferred backlog of ITS database is over the cap (issue #4728). A no-op unless that
+   * database is currently suspended - see {@link PageManagerFlushThread#awaitDeferredBacklogUnderCap}, and note that
+   * this must never be called with the page-manager lock held (issue #6200).
+   * <p>
+   * ASSUMPTION, shared with {@code PagesToFlush} and therefore with the whole flush pipeline: a batch carries the
+   * pages of ONE database, so the first page names it. Every caller satisfies it - a publication is one
+   * transaction's pages, and the direct {@code writePages} callers (LSM compaction, bloom filter, sparse segment
+   * builder) write one component of one database - and a mixed batch would already mis-key the deferral, the
+   * per-database pending count and the suspension check long before it reached here. Do not introduce one.
+   */
+  private void awaitDeferredBacklogUnderCap(final List<MutablePage> pages) throws InterruptedException {
+    if (flushThread == null || pages == null || pages.isEmpty())
+      return;
+    flushThread.awaitDeferredBacklogUnderCap(pages.getFirst().getPageId().getDatabase());
   }
 
   /**
@@ -1000,6 +1035,34 @@ public class PageManager extends LockContext {
    */
   public void incrementMergesDeclinedByCoverage() {
     totalMergesDeclinedByCoverage.incrementAndGet();
+  }
+
+  /**
+   * Counts a chunk-chain read that met a moved page and completed anyway (#6217): a page the read walked was at a
+   * newer version by the time the read validated it, and none of the bytes this record owns on that page had
+   * changed, so the assembled record is the committed one and the read returns it. Before #6217 that read failed and
+   * was retried, and after {@code arcadedb.txRetries} attempts it raised a {@link ConcurrentModificationException}
+   * on a record no writer had touched - continuation chunks of unrelated records share pages by design.
+   * <p>
+   * This is the read-path twin of {@link #incrementTxPageSlotMerges()}: both count a false conflict that did NOT
+   * happen, so a rise here is contention being absorbed rather than a problem. Watch it next to
+   * {@link PPageManagerStats#chunkChainReadRetries}, which counts the reads that had to restart because the record
+   * really had moved.
+   * <p>
+   * COUNTING SEMANTICS: one per read ATTEMPT that completed after comparing, however many of its pages had moved.
+   */
+  public void incrementChunkChainReadRevalidations() {
+    totalChunkChainReadRevalidations.incrementAndGet();
+  }
+
+  /**
+   * Counts a chunk-chain read ATTEMPT thrown away because the record itself changed under it, or because the chain
+   * could not be walked (see {@link #incrementChunkChainReadRevalidations()} for the case that no longer counts as
+   * one). The last attempt of a read that gives up contributes here too, right before it raises
+   * {@link ConcurrentModificationException}, so this is "restarts", not "failed reads".
+   */
+  public void incrementChunkChainReadRetries() {
+    totalChunkChainReadRetries.incrementAndGet();
   }
 
   public void checkPageVersion(final MutablePage page, final boolean isNew) throws IOException {
@@ -1101,13 +1164,20 @@ public class PageManager extends LockContext {
    */
   public void publishPages(final List<MutablePage> pagesToWrite, final Map<PageId, MutablePage> newPages,
       final boolean asyncFlush) throws IOException, InterruptedException {
+    // OUTSIDE THE LOCK, AND THAT IS THE ENTIRE POINT (issue #6200): while a database is suspended its dirty pages
+    // pile up in RAM, and the cap that bounds that backlog is served by holding ITS committers here. Held one line
+    // lower - inside lock() - the wait would be served while holding a JVM-WIDE lock, so throttling the committers
+    // of the one suspended database would stall the committers of every other database with them.
+    if (asyncFlush)
+      awaitDeferredBacklogUnderCap(pagesToWrite);
+
     lock();
     try {
       // Write pages (and put in readCache) BEFORE updating pageCount, otherwise concurrent
       // transactions can observe pageCount > readCache state and treat the new page as a
       // pre-existing empty page (sparse-file semantics), allowing two records' chunk chains
       // to land on the same physical slot.
-      writePages(pagesToWrite, asyncFlush);
+      writePagesNoBackpressure(pagesToWrite, asyncFlush);
 
       if (newPages != null)
         for (final MutablePage p : newPages.values()) {
@@ -1250,6 +1320,8 @@ public class PageManager extends LockContext {
     stats.edgeAppendMerges = totalEdgeAppendMerges.get();
     stats.txPageSlotMerges = totalTxPageSlotMerges.get();
     stats.mergesDeclinedByCoverage = totalMergesDeclinedByCoverage.get();
+    stats.chunkChainReadRevalidations = totalChunkChainReadRevalidations.get();
+    stats.chunkChainReadRetries = totalChunkChainReadRetries.get();
     stats.evictionRuns = evictionRuns.get();
     stats.pagesEvicted = pagesEvicted.get();
     stats.snapshotWindowsOpened = totalSnapshotWindowsOpened.get();
@@ -1321,6 +1393,19 @@ public class PageManager extends LockContext {
   }
 
   public void writePages(final List<MutablePage> updatedPages, final boolean asyncFlush) throws IOException, InterruptedException {
+    // Entry point of the asynchronous writers that do NOT go through publishPages (LSM index compaction): they hold
+    // no page-manager lock, so the deferred-backlog cap of #4728 can be served right here (issue #6200).
+    if (asyncFlush)
+      awaitDeferredBacklogUnderCap(updatedPages);
+    writePagesNoBackpressure(updatedPages, asyncFlush);
+  }
+
+  /**
+   * {@link #writePages} without the deferred-backlog wait, for the one caller that has already served it before
+   * taking the page-manager lock: {@link #publishPages} (issue #6200).
+   */
+  private void writePagesNoBackpressure(final List<MutablePage> updatedPages, final boolean asyncFlush)
+      throws IOException, InterruptedException {
     if (asyncFlush) {
       for (final MutablePage page : updatedPages)
         putPageInReadCache(new CachedPage(page, true));

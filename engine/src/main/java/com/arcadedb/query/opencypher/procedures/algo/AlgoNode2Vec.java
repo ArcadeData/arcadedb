@@ -40,7 +40,7 @@ import java.util.stream.Stream;
  *
  * <p>Config map parameters (all optional):
  * <ul>
- *   <li>{@code embeddingDimension} (int, default 128) – embedding size</li>
+ *   <li>{@code embeddingDimension} (int, default 128, max {@value AbstractAlgoProcedure#MAX_EMBEDDING_DIMENSION}) – embedding size</li>
  *   <li>{@code walkLength} (int, default 80, minimum 1) – steps per random walk</li>
  *   <li>{@code walksPerNode} (int, default 10, minimum 1) – walks generated per node</li>
  *   <li>{@code iterations} (int, default 1, minimum 1) – training epochs over all walks</li>
@@ -106,7 +106,8 @@ public class AlgoNode2Vec extends AbstractAlgoProcedure {
     validateArgs(args);
 
     final Map<String, Object> config = args.length > 0 ? extractMap(args[0], "config") : null;
-    final int dim = config != null && config.get("embeddingDimension") instanceof Number n ? extractInt(n, "embeddingDimension") : 128;
+    final int dim =
+        config != null && config.get("embeddingDimension") instanceof Number n ? extractEmbeddingDimension(n, "embeddingDimension") : 128;
     final int walkLen = config != null && config.get("walkLength") instanceof Number n ? extractInt(n, "walkLength", 1) : 80;
     final int walksPerNode =
         config != null && config.get("walksPerNode") instanceof Number n ? extractInt(n, "walksPerNode", 1) : 10;

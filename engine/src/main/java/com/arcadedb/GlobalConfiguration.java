@@ -436,7 +436,9 @@ public enum GlobalConfiguration {
       transaction, which in HA becomes one Raft log entry: keeping the batch small keeps that entry small so the \
       leader's per-follower append pipeline returns to sending heartbeats between batches instead of stalling on a \
       single multi-MB entry (issue #4817, which caused leader churn, an interrupted commit and a partial truncate). \
-      Larger values reduce commit overhead on single-node setups at the cost of bigger transactions.""",
+      Larger values reduce commit overhead on single-node setups at the cost of bigger transactions. Ignored when \
+      TRUNCATE runs inside a transaction the caller opened: there the deletes belong to that transaction and are \
+      committed by it, so a ROLLBACK puts every record back (issue #6220).""",
       Integer.class, 1000),
 
   CHECK_DATABASE_REPAIR_BATCH_PAGES("arcadedb.checkDatabaseRepairBatchPages", SCOPE.DATABASE,
@@ -472,10 +474,12 @@ public enum GlobalConfiguration {
       """
       Maximum amount of RAM (in MB) of dirty pages the page-flush thread may defer in memory while flushing \
       is suspended (during an HA snapshot ship or a full backup, when the on-disk files must stay stable). \
-      Once the deferred backlog crosses this cap the flush thread stops draining its bounded queue, so \
-      committing threads are throttled instead of the deferred backlog growing without limit and exhausting \
-      the heap (issue #4728: a busy leader shipping a multi-GB snapshot OOM'd). Set to 0 to disable the cap \
-      (unbounded, pre-4728 behavior).""",
+      Once the deferred backlog crosses this cap the committing threads of the SUSPENDED databases are \
+      throttled, instead of the deferred backlog growing without limit and exhausting the heap (issue #4728: \
+      a busy leader shipping a multi-GB snapshot OOM'd). The cap is JVM-wide because the heap it bounds is, \
+      but the throttling is not: a database that is not suspended is never held by it, since its pages go \
+      straight to disk and relieve the backlog rather than add to it (issue #6200). Set to 0 to disable the \
+      cap (unbounded, pre-4728 behavior).""",
       Long.class, 512),
 
   PAGE_SNAPSHOT_ENABLED("arcadedb.pageSnapshotEnabled", SCOPE.DATABASE,
@@ -612,6 +616,23 @@ public enum GlobalConfiguration {
       the range is open-ended upwards, and any non-positive value simply disables the throttle rather than being \
       invalid.""",
       Integer.class, 0),
+
+  RESTORE_THREADS("arcadedb.restore.threads", SCOPE.JVM,
+      """
+      Number of threads used to restore a full backup. ZIP entries are independent files, so they are inflated and \
+      written concurrently, one entry per thread. -1 (the default) sizes the pool automatically at the available \
+      processors capped at 8; 0 selects the legacy single-threaded stream walk, kept as an escape hatch. Unlike a \
+      backup, a restore does not run alongside the database it is working on - that database does not exist yet - \
+      which is why the automatic sizing claims whole cores rather than half of them. The parallel path needs random \
+      access to the archive and is therefore used only for a plain local file: an archive read over http(s) is a \
+      one-shot stream and an encrypted one is a single cipher stream, and both fall back to the sequential walk \
+      automatically, whatever this setting says. Peak heap is bounded by construction at one copy buffer per thread \
+      (256 KB) plus the JDK inflater's own buffer, so under 3 MB at 8 threads. Parallelism is per entry: a database \
+      made of one dominant file cannot be split, because a ZIP entry is a single deflate stream that has to be \
+      inflated serially.""",
+      // SAME BOUND AS RestoreSettings.MAX_RESTORE_THREADS, WHICH THE CLI AND THE Restore API VALIDATE AGAINST. THE
+      // ENGINE CANNOT DEPEND ON THE INTEGRATION MODULE, SO THE LITERAL IS REPEATED: CHANGE ONE AND CHANGE THE OTHER
+      Integer.class, -1, integerRangeAsStrings(-1, 256)),
 
   // SQL
   SQL_STATEMENT_CACHE("arcadedb.sqlStatementCache", SCOPE.DATABASE, "Maximum number of parsed statements to keep in cache",

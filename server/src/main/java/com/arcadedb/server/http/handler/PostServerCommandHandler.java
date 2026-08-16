@@ -703,10 +703,19 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       exchange.startBlocking();
   }
 
+  /**
+   * An SSE event is two writes plus a flush, and the stream it goes to is the exchange's own - shared, and not safe
+   * for concurrent use. More than one thread reaches here: the import path polls {@code ImporterContext} for progress
+   * on a thread of its own while the importer logs on another, and since #6086 a parallel restore logs one line per
+   * archive entry from its worker pool. Without the lock two events interleave into a single corrupt {@code data:}
+   * frame - which the client cannot parse - rather than merely arriving in an unexpected order.
+   */
   private static void sendSSE(final OutputStream out, final JSONObject data) {
     try {
-      out.write(("data: " + data + "\n\n").getBytes(StandardCharsets.UTF_8));
-      out.flush();
+      synchronized (out) {
+        out.write(("data: " + data + "\n\n").getBytes(StandardCharsets.UTF_8));
+        out.flush();
+      }
     } catch (final IOException ignored) {
       // Client disconnected
     }

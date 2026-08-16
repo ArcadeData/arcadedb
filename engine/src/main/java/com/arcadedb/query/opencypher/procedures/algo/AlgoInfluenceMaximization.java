@@ -23,7 +23,6 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
-import com.arcadedb.utility.NumberUtils;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -89,10 +88,9 @@ public class AlgoInfluenceMaximization extends AbstractAlgoProcedure {
 
     // k saturates on purpose ("more seeds than nodes" reads as "as many as exist" and is clamped to n below),
     // but a NEGATIVE k has no such reading: unclamped it reaches `new int[seedCount]` as a bare
-    // NegativeArraySizeException that never names the parameter.
-    final int k = args[0] instanceof Number n ? NumberUtils.saturateToInt(n) : 1;
-    if (k < 0)
-      throw new IllegalArgumentException(getName() + "(): k must not be negative, got " + k);
+    // NegativeArraySizeException that never names the parameter. extractCount() is exactly those two halves,
+    // added for algo.knn / algo.kShortestPaths by #6065.
+    final int k = args[0] instanceof Number n ? extractCount(n, "k") : 1;
     final String[] relTypes = args.length > 1 ? extractRelTypes(args[1]) : null;
     final int simulations = args.length > 2 && args[2] instanceof Number n ? extractInt(n, "simulations", 1) : 100;
     final double propagationProbability = args.length > 3 && args[3] instanceof Number n ? n.doubleValue() : 0.1;

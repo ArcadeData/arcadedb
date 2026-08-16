@@ -1407,15 +1407,70 @@ public class GraphDatabaseChecker {
     return checkEdges(typeName, null, fix, verboseLevel, maxWarnings, maxCorrupted);
   }
 
+  public Map<String, Object> checkEdges(final String typeName, final Collection<RID> scopedRecords,
+      final boolean fix, final int verboseLevel, final int maxWarnings, final int maxCorrupted) {
+    return checkEdges(typeName, scopedRecords, fix, false, verboseLevel, maxWarnings, maxCorrupted);
+  }
+
   /**
    * #5680: same check restricted to {@code scopedRecords} when it is non-null - the {@code CHECK DATABASE RECORD}
    * scope. Per-edge work is identical; only the enumeration changes, from two passes over every bucket of the
    * type to a lookup per listed RID.
+   * <p>
+   * #6090 - THE BACK-REFERENCE PROBE IS DIRECTION-AWARE, and what it finds is now reported rather than folded into
+   * one opaque number. The scan already visited every edge record and already asked both endpoints whether their
+   * adjacency list names it; both answers were thrown away into {@code missingReferenceBack}, a counter that
+   * cannot be read because a healthy UNIDIRECTIONAL edge is legitimately absent from its target's IN list and
+   * bumps it by 1, while a genuinely orphaned bidirectional edge bumps it by 2.
+   * <p>
+   * Which side is allowed to hold no reference is a property of the EDGE TYPE:
+   * <ul>
+   *   <li>the OUT vertex's OUT list must name the edge, for every edge type there is - an edge absent from it is
+   *   unreachable by an outgoing traversal, which is a defect in all cases;</li>
+   *   <li>the IN vertex's IN list must name it only when the type is BIDIRECTIONAL. For a unidirectional type the
+   *   absence is the design.</li>
+   * </ul>
+   * An edge neither side names is an ORPHAN EDGE RECORD: {@code countType()} counts it, no traversal reaches it.
+   * That is the finding {@code unreachableEdgeRecords} counts and {@code unreachableEdgeRecordsFound} names.
+   * <p>
+   * {@code missingReferenceBack} is deliberately UNCHANGED - still one bump per side that holds no reference,
+   * still both probes run - so anything parsing today's result keeps reading the same number. The new keys are
+   * additive.
+   * <p>
+   * CONSERVATIVE BY CONSTRUCTION, because {@code deleteOrphans} turns the finding into a deletion: an edge is
+   * called unreachable only when BOTH probes positively established the absence. A far endpoint that could not be
+   * loaded, or whose list could not be walked, leaves the edge unclassified - the first is already reported as a
+   * dangling link, and the second is left to {@code checkVertices}, which runs after this pass and rebuilds the
+   * chain from the surviving edge records. Neither may be answered by deleting the record that repair reads from.
+   *
+   * @param deleteOrphans when true (and {@code fix} is on), an edge record no adjacency list references is flagged
+   *                      corrupted and removed by the repair loop below, which also puts its bucket into the
+   *                      caller's {@code affectedBuckets} so the indexes on it are rebuilt. NEVER implied by
+   *                      {@code fix}: see {@code CheckDatabaseStatement} for why it is its own clause
    */
   public Map<String, Object> checkEdges(final String typeName, final Collection<RID> scopedRecords,
-      final boolean fix, final int verboseLevel, final int maxWarnings, final int maxCorrupted) {
+      final boolean fix, final boolean deleteOrphans, final int verboseLevel, final int maxWarnings,
+      final int maxCorrupted) {
     final AtomicLong autoFix = new AtomicLong();
     final AtomicLong missingReferenceBack = new AtomicLong();
+    // The three #6090 counters below, and the two above, are AtomicLong for CAPTURE, not for concurrency. This
+    // scan is strictly single-threaded - CheckReport says so on its own plain-long fields, and the sets beside
+    // these are not thread-safe either - but they are incremented from inside the checkEndpoints lambda, and a
+    // local a lambda mutates has to be a mutable box. CheckReport could drop its atomics precisely because they
+    // became FIELDS of an object; these are locals of the method, so a box is what there is. Do not read them as
+    // a claim that anything here runs in parallel.
+    /** #6090: edge records reachable from NO adjacency list - the orphan count. Exact, never capped. */
+    final AtomicLong unreachableEdgeRecords = new AtomicLong();
+    /** #6090: edges absent from their OUT vertex's OUT list. A defect for every edge type. */
+    final AtomicLong edgesMissingOutReference = new AtomicLong();
+    /** #6090: BIDIRECTIONAL edges absent from their IN vertex's IN list. Not a defect for a unidirectional type. */
+    final AtomicLong edgesMissingInReference = new AtomicLong();
+    /**
+     * #6090: the RIDs behind {@code unreachableEdgeRecords}, so an operator can answer "which ones?" without
+     * re-deriving them from a full traversal. Bounded by the same cap as the corrupted set - the count beside it
+     * stays exact.
+     */
+    final Set<RID> unreachableEdgeRecordsFound = new LinkedHashSet<>();
     // CheckReport keeps corruptedRecords as a Set (matching checkVertices) so the same RID flagged on both sides of
     // an edge is recorded once, and totalCorrupted - which counts only genuinely new entries, see
     // CollectionUtils.addBounded - stays aligned with its size.
@@ -1456,6 +1511,14 @@ public class GraphDatabaseChecker {
             ++report.invalidLinks;
 
           } else {
+            // #6090: the two probes below record WHAT THEY ESTABLISHED, not just that something was missing.
+            // "Probed" means the far vertex loaded and its list was walked to a conclusion; only then may the
+            // absence be believed. See the class-level note on why that distinction is load-bearing here.
+            boolean outProbed = false;
+            boolean outUnreferenced = false;
+            boolean inProbed = false;
+            boolean inUnreferenced = false;
+
             Vertex inVertex = null;
             try {
               inVertex = edge.getInVertex().asVertex(true);
@@ -1477,9 +1540,15 @@ public class GraphDatabaseChecker {
             if (inVertex != null)
               try {
                 final EdgeLinkedList inEdges = graphEngine.getEdgeHeadChunk((VertexInternal) inVertex, Vertex.DIRECTION.IN);
-                if (inEdges == null || !inEdges.containsEdge(edgeRID))
-                  // UNI DIRECTIONAL EDGE
+                inProbed = true;
+                if (inEdges == null || !inEdges.containsEdge(edgeRID)) {
+                  // LEGITIMATE FOR A UNIDIRECTIONAL EDGE TYPE, a defect for a bidirectional one - which is why the
+                  // raw counter below cannot be read as a defect count and #6090 added ones that can. Bumped here
+                  // unconditionally, exactly as before, so its published meaning does not shift under existing
+                  // readers; the classification happens once both sides have answered.
                   missingReferenceBack.incrementAndGet();
+                  inUnreferenced = true;
+                }
               } catch (final Exception e) {
                 // The vertex record is FINE but its edge LIST is unreadable: neither the edge nor the vertex is
                 // at fault, so NOTHING is flagged corrupted here (before this guard the vertex was deleted by
@@ -1510,15 +1579,63 @@ public class GraphDatabaseChecker {
             if (outVertex != null)
               try {
                 final EdgeLinkedList outEdges = graphEngine.getEdgeHeadChunk((VertexInternal) outVertex, Vertex.DIRECTION.OUT);
-                if (outEdges == null || !outEdges.containsEdge(edgeRID))
-                  // UNI DIRECTIONAL EDGE
+                outProbed = true;
+                if (outEdges == null || !outEdges.containsEdge(edgeRID)) {
+                  // ALWAYS A DEFECT, for every edge type: no outgoing traversal can reach the record. Same
+                  // unconditional bump of the legacy counter as the incoming side, for the same reason.
                   missingReferenceBack.incrementAndGet();
+                  outUnreferenced = true;
+                }
               } catch (final Exception e) {
                 // Same as the incoming side: an unreadable LIST is not a corrupted edge or vertex.
                 if (unreadableListVertices.add(outVertex.getIdentity()))
                   report.warn("vertex " + outVertex.getIdentity() + " outgoing edge list is unreadable (error: " + describe(e)
                           + "), left to the vertex check to rebuild");
               }
+
+            // #6090: classify what the two probes established, and report it.
+            if (outProbed && outUnreferenced) {
+              edgesMissingOutReference.incrementAndGet();
+
+              // UNREACHABLE means BOTH lists were walked and neither names the record - required even for a
+              // unidirectional type, whose IN list is not expected to name the edge at all. NOT because the flag
+              // can be flipped under us: LocalEdgeType.bidirectional is final, unlike lightweight/unique, so
+              // ALTER TYPE cannot change it. It is because "no list references this record" is the claim the
+              // deletion rests on, and only a walk can establish it - a type dropped and recreated over the same
+              // data, or an entry an older build left in an IN list, both make the record reachable while the
+              // schema says it should not be. Costs one probe that already ran for missingReferenceBack anyway.
+              if (inProbed && inUnreferenced) {
+                unreachableEdgeRecords.incrementAndGet();
+                CollectionUtils.addBounded(unreachableEdgeRecordsFound, maxCorrupted, edgeRID);
+                report.warn("edge " + edgeRID + " is an ORPHAN RECORD: the outgoing vertex " + edge.getOut()
+                    + " does not reference it from its OUT list" + (isBidirectional(edge) ?
+                    " and neither does the incoming vertex " + edge.getIn() + " from its IN list" :
+                    ", and the type is unidirectional so the incoming vertex " + edge.getIn() + " holds no reference "
+                        + "either") + ", so no traversal reaches it"
+                    + (fix && deleteOrphans ? ", removing it" : " (run CHECK DATABASE FIX DELETE ORPHANS to reclaim it)"));
+                if (fix && deleteOrphans)
+                  // Flagged corrupted ONLY under the explicit opt-in: that is what hands the RID to the repair
+                  // loop below AND puts its bucket into the caller's affectedBuckets, so the raw bucket delete
+                  // used there does not leave the edge type's indexes pointing at a record that is gone.
+                  report.corrupt(edgeRID);
+              } else
+                // DELIBERATELY NOT SUPPRESSED for an edge the endpoint checks above already flagged corrupted (a
+                // dangling link whose OUT list happens not to name it either): the two findings are different -
+                // "its target is gone" and "its source does not list it" - and the second is what tells an
+                // operator the adjacency is damaged too, rather than only the far end. Reachable only when both
+                // hold, so it is not a warning per dangling edge.
+                report.warn("edge " + edgeRID + " is not referenced back by its outgoing vertex " + edge.getOut()
+                    + ": it is missing from that vertex's OUT list");
+            }
+
+            // A bidirectional edge absent from its target's IN list is a defect even when the OUT side is intact -
+            // an incoming traversal misses it. Reported apart from the orphan case, which already named both sides.
+            if (inProbed && inUnreferenced && isBidirectional(edge)) {
+              edgesMissingInReference.incrementAndGet();
+              if (!(outProbed && outUnreferenced))
+                report.warn("edge " + edgeRID + " is not referenced back by its incoming vertex " + edge.getIn()
+                    + ": it is missing from that vertex's IN list");
+            }
           }
 
         } catch (final Throwable e) {
@@ -1608,6 +1725,11 @@ public class GraphDatabaseChecker {
       stats.put("corruptedRecords", report.corruptedRecords);
       stats.put("invalidLinks", report.invalidLinks);
       stats.put("missingReferenceBack", missingReferenceBack.get());
+      // #6090: the readable form of the counter above - see the method Javadoc for what each one means.
+      stats.put("unreachableEdgeRecords", unreachableEdgeRecords.get());
+      stats.put("edgesMissingOutReference", edgesMissingOutReference.get());
+      stats.put("edgesMissingInReference", edgesMissingInReference.get());
+      stats.put("unreachableEdgeRecordsFound", unreachableEdgeRecordsFound);
       stats.put("warnings", report.warnings);
       stats.put("totalWarnings", report.totalWarnings);
       stats.put("totalCorruptedRecords", report.totalCorrupted);
@@ -1636,6 +1758,21 @@ public class GraphDatabaseChecker {
     stats.put("removedRecords", removedRecords);
     stats.put("prunedDanglingEntries", prunedDanglingEntries);
     stats.put("reconnectedEdges", reconnectedEdges);
+  }
+
+  /**
+   * Whether the edge's own type stores a back-reference in the target vertex's IN list (issue #6090).
+   * <p>
+   * Read from the RECORD's type rather than from the {@code typeName} the scan was given: the {@code RECORD} scope
+   * hands this method edges of several types in one call, and a per-record answer is free anyway - {@code getType()}
+   * is a field read on the materialised document, not a schema lookup.
+   * <p>
+   * Defaults to TRUE for anything that is not an {@link EdgeType}, which is the conservative direction: a
+   * bidirectional type is the one whose IN list is expected to name the edge, so an unexpected type shape produces
+   * a reported defect rather than a silently accepted absence.
+   */
+  private static boolean isBidirectional(final Edge edge) {
+    return !(edge.getType() instanceof EdgeType edgeType) || edgeType.isBidirectional();
   }
 
   /**

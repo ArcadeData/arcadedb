@@ -51,6 +51,22 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
   public final Set<Rid>              records  = new LinkedHashSet<>();
   public       boolean               fix      = false;
   public       boolean               compress = false;
+  /**
+   * #6090: {@code DELETE ORPHANS}. Reclaims ORPHAN EDGE RECORDS - edge records whose {@code @out}/{@code @in} name
+   * valid vertices but which no vertex's edge list references, so {@code countType()} counts them and no traversal
+   * reaches them.
+   * <p>
+   * A CLAUSE OF ITS OWN rather than part of {@code FIX}, because the detection cannot tell garbage from a vertex
+   * that merely lost its head-chunk pointer; the full argument is on
+   * {@link DatabaseChecker#setDeleteOrphanEdgeRecords(boolean)}. Reporting the finding needs no clause at all - it
+   * is on for every run.
+   */
+  public       boolean               deleteOrphans = false;
+
+  /** Shared with the grammar's own diagnostics: {@code DELETE ORPHANS} is a repair and has nothing to do without FIX. */
+  public static final String DELETE_ORPHANS_WITHOUT_FIX_ERROR =
+      "CHECK DATABASE DELETE ORPHANS removes records, so it requires FIX: write CHECK DATABASE FIX DELETE ORPHANS. "
+          + "Without it the orphan edge records are still reported, under the unreachableEdgeRecords key";
 
   public CheckDatabaseStatement() {
   }
@@ -69,6 +85,11 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
       // whose actual problem is the clause combination. Diagnose the outer mistake first.
       throw new IllegalArgumentException(DatabaseChecker.RECORD_SCOPE_CONFLICT_ERROR);
 
+    if (deleteOrphans && !fix)
+      // Refused rather than silently implying FIX: a statement that removes records must say so, and a caller who
+      // only wanted the finding already has it without any clause at all.
+      throw new IllegalArgumentException(DELETE_ORPHANS_WITHOUT_FIX_ERROR);
+
     final DatabaseChecker checker = createChecker(context);
     checker.setVerboseLevel(0);
     checker.setBuckets(buckets.stream().map(x -> x.getValue()).collect(Collectors.toSet()));
@@ -81,6 +102,7 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
     checker.setRecords(records.stream().map(x -> x.toRecordId((Result) null, context))
         .collect(Collectors.toCollection(LinkedHashSet::new)));
     checker.setFix(fix);
+    checker.setDeleteOrphanEdgeRecords(deleteOrphans);
     checker.setCompress(compress);
 
     // PUBLISH LIVE PROGRESS (issue #5372): pollable while the check runs via the progress HTTP endpoint,
@@ -147,6 +169,9 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
 
     if (fix)
       builder.append(" FIX");
+
+    if (deleteOrphans)
+      builder.append(" DELETE ORPHANS");
 
     if (compress)
       builder.append(" COMPRESS");
