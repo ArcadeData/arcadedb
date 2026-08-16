@@ -32,7 +32,10 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for issue #6200.
@@ -499,6 +502,40 @@ class Issue6200PerDatabaseDeferredBacklogTest extends TestHelper {
           round).isZero();
       assertThat(flush.deferredRAMDriftRepairs.get()).as(
           "round %d: and it must get there by accounting, not by the drift repair", round).isZero();
+    }
+  }
+
+  /**
+   * The invariant the whole per-database accounting rests on, made loud instead of silent.
+   * <p>
+   * Everything downstream reads the owning database off a batch's FIRST page: the suspension check that decides
+   * whether to defer, the key of the deferred map, the per-database RAM charge, and the committer-side cap. A mixed
+   * batch would throw nowhere; it would charge one database for another's pages and hold the wrong committers - the
+   * quiet accounting drift #6200 spent its review rounds removing. This test exists so the assert that guards it is
+   * known to FIRE rather than assumed to: an assertion nobody has seen trip is worth what a test nobody has seen
+   * fail is worth.
+   */
+  @Test
+  void aBatchMixingTwoDatabasesIsRejectedLoudly() {
+    boolean assertionsEnabled = false;
+    // A deliberate side effect inside an assert: the only portable way to ask whether -ea is on.
+    assert assertionsEnabled = true;
+    assumeTrue(assertionsEnabled, "assertions are disabled (-da), so the guard under test is not active");
+
+    final DatabaseInternal db1 = (DatabaseInternal) database;
+    final Database db2 = TestHelper.createDatabase("target/databases/" + getClass().getSimpleName() + "-mixed");
+    try {
+      final MutablePage ownPage = new MutablePage(new PageId(db1, FILE_ID, 0), PAGE_SIZE, new byte[PAGE_SIZE], 0, 0);
+      final List<MutablePage> mixed = List.of(ownPage,
+          new MutablePage(new PageId((DatabaseInternal) db2, FILE_ID, 0), PAGE_SIZE, new byte[PAGE_SIZE], 0, 0));
+
+      assertThatThrownBy(() -> new PagesToFlush(mixed)).isInstanceOf(AssertionError.class)
+          .hasMessageContaining("ONE database");
+
+      // ...and the single-database batch it is contrasted with is built without complaint.
+      assertThat(new PagesToFlush(List.of(ownPage)).database).isEqualTo(db1);
+    } finally {
+      db2.drop();
     }
   }
 

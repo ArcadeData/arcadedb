@@ -184,6 +184,25 @@ public class PageManagerFlushThread extends Thread {
       // the common path.
       this.pages = pages == null || pages instanceof ArrayList ? pages : new ArrayList<>(pages);
       this.database = pages == null || pages.isEmpty() ? null : pages.getFirst().pageId.getDatabase();
+      // A BATCH CARRIES THE PAGES OF ONE DATABASE, and from here on the whole pipeline reads that off the FIRST
+      // page: the suspension check that decides whether to defer, the deferred map's key, the per-database RAM
+      // charge and the committer-side cap all key on `database` above (review of #6223). A mixed batch would not
+      // throw anywhere - it would silently charge one database for another's pages and throttle the wrong
+      // committers, which is the exact class of quiet accounting drift this class spent #6200 removing. Asserted
+      // rather than checked: every caller satisfies it today (one transaction's pages, or one component's), and an
+      // unconditional scan would put an O(batch) walk on the publication path to defend against a bug that has to
+      // be introduced here first. Assertions are on in the test lanes, which is where such a bug would be written.
+      assert isSingleDatabase(this.pages) : "a flush batch must carry the pages of ONE database, got " + this.pages;
+    }
+
+    private static boolean isSingleDatabase(final List<MutablePage> pages) {
+      if (pages == null || pages.isEmpty())
+        return true;
+      final BasicDatabase first = pages.getFirst().pageId.getDatabase();
+      for (int i = 1; i < pages.size(); i++)
+        if (!first.equals(pages.get(i).pageId.getDatabase()))
+          return false;
+      return true;
     }
   }
 
