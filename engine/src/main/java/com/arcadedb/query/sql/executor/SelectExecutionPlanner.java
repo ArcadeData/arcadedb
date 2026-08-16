@@ -3507,7 +3507,7 @@ public class SelectExecutionPlanner {
       if (orderAsc != null && info.orderBy != null && fullySorted(info.orderBy, (AndBlock) desc.keyCondition, desc.getIndex()))
         info.orderApplied = true;
 
-        if (desc.getRemainingCondition() != null && !desc.getRemainingCondition().isEmpty()) {
+        if (needsFilterStep(desc.getRemainingCondition(), context)) {
         if (info.perRecordLetClause != null
             && refersToLet(Collections.singletonList(desc.getRemainingCondition()))) {
           SelectExecutionPlan stubPlan = new SelectExecutionPlan(context,
@@ -3633,12 +3633,22 @@ public class SelectExecutionPlanner {
       if (desc.requiresMultipleIndexLookups()) {
         subPlan.chain(new DistinctExecutionStep(context));
       }
-      if (desc.remainingCondition != null && !desc.remainingCondition.isEmpty()) {
+      if (needsFilterStep(desc.remainingCondition, context)) {
         subPlan.chain(new FilterStep(createWhereFrom(desc.remainingCondition), context));
       }
       subPlans.add(subPlan);
     }
     return new ParallelExecStep(subPlans, context);
+  }
+
+  /**
+   * Whether what an index search left behind still has to be evaluated per record. A residual that is empty, or true
+   * for every record, is no filter at all: {@code WHERE 1=1 AND indexedProperty = 'x'} hands the second term to the
+   * index and leaves the first behind, and evaluating it would cost the index plan the very step the whole where
+   * clause is spared in {@link #init(CommandContext)}.
+   */
+  private static boolean needsFilterStep(final BooleanExpression remainingCondition, final CommandContext context) {
+    return remainingCondition != null && !remainingCondition.isEmpty() && !remainingCondition.isAlwaysTrue(context);
   }
 
   private WhereClause createWhereFrom(final BooleanExpression remainingCondition) {

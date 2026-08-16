@@ -2280,6 +2280,13 @@ test therefore compares the folded plan against the plan of the same statement w
 class by step class, so the fetch step and the bucket steps under it both have to agree - and then compares the
 records returned, their order, and the `readRecord` count.
 
+One place the filter survives the whole-clause fold is behind an index. `WHERE 1=1 AND indexedProperty = 'x'` is not
+true for every record, so the clause stays - and then the index search takes the second term as its key and hands the
+`1=1` back as a *residual condition*, which was chained as a `FILTER ITEMS WHERE` step and evaluated once per index
+entry. A residual that is true for every record is now recognised as no filter at all, on both the single-index and
+the parallel-index paths, so the plan is the one the same statement without the constant term would have got. The
+index itself was never at risk: it was selected before and after, the residual only rode along behind it.
+
 One `OrBlock` detail changed with it: an empty disjunction used to answer `isAlwaysTrue()` with `true`. `OR` is
 false when it has no alternatives, and the answer is now load-bearing, so it answers `false` - the conservative
 verdict, which at worst costs an optimisation.

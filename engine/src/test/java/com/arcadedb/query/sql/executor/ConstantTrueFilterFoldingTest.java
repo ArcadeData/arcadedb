@@ -20,6 +20,10 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.query.sql.parser.AndBlock;
+import com.arcadedb.query.sql.parser.OrBlock;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
 
 import org.junit.jupiter.api.Test;
 
@@ -134,6 +138,36 @@ class ConstantTrueFilterFoldingTest extends TestHelper {
 
     assertThat(names("SELECT FROM Character WHERE 1=1 AND name = 'Arya'")).containsExactly("Arya");
     assertThat(names("SELECT FROM Character WHERE age > 20")).containsExactlyInAnyOrder("Jon", "Tyrion");
+  }
+
+  @Test
+  void anAlwaysTrueTermLeftBehindByAnIndexSearchCostsNoFilterStep() {
+    // the whole-clause fold declines here - the AND is not true for every record - so the interaction to pin is what
+    // the index search leaves behind: it takes `name = 'Arya'` as its key and hands the `1=1` back as a residual
+    // condition, which used to be chained as a FILTER ITEMS WHERE step and evaluated once per index entry
+    database.getSchema().getType("Character").createProperty("name", Type.STRING);
+    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Character", "name");
+
+    assertThat(fetchSteps(planOf("SELECT FROM Character WHERE 1=1 AND name = 'Arya'")))
+        .as("the satisfiable term still drives the index search")
+        .anyMatch(name -> name.startsWith("FetchFromIndex"));
+
+    assertThat(stepNames(planOf("SELECT FROM Character WHERE 1=1 AND name = 'Arya'")))
+        .isEqualTo(stepNames(planOf("SELECT FROM Character WHERE name = 'Arya'")));
+
+    assertThat(names("SELECT FROM Character WHERE 1=1 AND name = 'Arya'")).containsExactly("Arya");
+    // ...and a residual that can still discard a record is of course kept
+    assertFilter(planOf("SELECT FROM Character WHERE age > 20 AND name = 'Jon'"));
+    assertThat(names("SELECT FROM Character WHERE age > 20 AND name = 'Jon'")).containsExactly("Jon");
+  }
+
+  @Test
+  void anEmptyDisjunctionIsNotTrueForEveryRecord() {
+    // OR is false when it has no alternatives. The parser does not produce an empty OrBlock today, but the verdict
+    // is load-bearing now that the planner drops a filter on it, so it is pinned directly rather than by reachability
+    assertThat(new OrBlock().isAlwaysTrue(null)).isFalse();
+    // ...and an empty AND block is the other neutral element, which its own verdict has always said
+    assertThat(new AndBlock().isAlwaysTrue(null)).isTrue();
   }
 
   @Test
