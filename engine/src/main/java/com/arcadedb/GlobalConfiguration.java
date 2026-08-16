@@ -436,7 +436,9 @@ public enum GlobalConfiguration {
       transaction, which in HA becomes one Raft log entry: keeping the batch small keeps that entry small so the \
       leader's per-follower append pipeline returns to sending heartbeats between batches instead of stalling on a \
       single multi-MB entry (issue #4817, which caused leader churn, an interrupted commit and a partial truncate). \
-      Larger values reduce commit overhead on single-node setups at the cost of bigger transactions.""",
+      Larger values reduce commit overhead on single-node setups at the cost of bigger transactions. Ignored when \
+      TRUNCATE runs inside a transaction the caller opened: there the deletes belong to that transaction and are \
+      committed by it, so a ROLLBACK puts every record back (issue #6220).""",
       Integer.class, 1000),
 
   CHECK_DATABASE_REPAIR_BATCH_PAGES("arcadedb.checkDatabaseRepairBatchPages", SCOPE.DATABASE,

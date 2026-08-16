@@ -1911,6 +1911,49 @@ Two things the same method carried:
 
 [#6202](https://github.com/ArcadeData/arcadedb/issues/6202)
 
+## `TRUNCATE TYPE` / `TRUNCATE BUCKET` inside a transaction no longer commit it, so `ROLLBACK` puts the records back (#6220)
+
+`BEGIN; TRUNCATE TYPE Staging UNSAFE; INSERT ...; ROLLBACK;` did not put the old rows back. The statement
+committed the caller's transaction from the inside, three ways: `schema.dropIndex()` for every index on the type
+- a schema change, applied immediately - before a single record was touched; `commit(); begin()` inside the scan
+callback every `arcadedb.truncateBatchSize` (default 1000) records; and one more `commit(); begin()` before the
+dropped indexes were rebuilt over what were by then empty buckets. An explicit `ROLLBACK` therefore recovered
+only whatever the last, uncommitted batch happened to hold: nothing at all on a type with **any** index, since
+the drop and the pre-rebuild commit landed either side of every delete. Nothing reported it - the statement
+returned `operation: truncate type` and the rollback returned normally - and the single most natural use of
+`TRUNCATE`, reloading a staging table in one unit of work, was exactly the shape that lost data. It is the same
+defect that made a failed materialized-view refresh destroy the view in #6203, met there by taking `TRUNCATE` out
+of the refresh path; this fixes the statement for everybody else.
+
+Who owns the transaction now decides which of two paths runs:
+
+- **A transaction is already active.** The truncate is one operation inside somebody else's unit of work, so it
+  commits nothing and changes no schema: every record is deleted in the caller's transaction with the indexes
+  maintained per record, exactly as `DELETE FROM` does, and the caller's `COMMIT` or `ROLLBACK` decides the
+  outcome of the whole thing. `arcadedb.truncateBatchSize` is ignored here.
+- **No transaction is active.** The statement owns one, and keeps today's fast path in full: drop the indexes,
+  delete in small committed batches, rebuild the (empty) indexes. The batching is a throughput and HA concern
+  (one small Raft log entry per batch, #4817) and never was an atomicity one, so nothing is lost by giving it up
+  in the first case - the caller's own commit is one entry either way.
+
+The result set now carries a `transactional` flag saying which path ran, so a caller can tell whether its
+`ROLLBACK` will undo the truncate rather than finding out afterwards.
+
+The second half of the fix is that the fast path is now *reachable*. Deleting a record requires an active
+transaction, so with none active every delete used to fail with `Transaction not begun` - the batching and the
+index drop/rebuild could only ever run on a caller's transaction, which is precisely where they must not. The
+statement opens its own transaction now, commits it on success, rolls it back on failure (leaving the buckets and
+the rebuilt indexes agreeing, where before a failure left the index populated with records the caller's commit
+was about to delete), and always hands the thread back without a transaction on it.
+
+**Choosing the fast path deliberately.** Embedded, it is `database.command("sql", "TRUNCATE TYPE ...")` with no
+`begin()` around it. Over HTTP the request's auto-commit transaction is what makes the statement transactional,
+so `"autoCommit": false` in the request payload selects the fast path for a bulk clear that does not need to be
+undoable. Anything wrapped in a transaction - `database.transaction(...)`, an HTTP session transaction, a
+`sqlscript` between `BEGIN` and `COMMIT` - now gets correctness instead, at the cost of one index maintenance
+per record and of holding the deleted pages until commit.
+
+[#6220](https://github.com/ArcadeData/arcadedb/issues/6220)
 ## `CHECK DATABASE` now reports an orphan edge record, and can reclaim one on request (#6090)
 
 An **orphan edge record** is an edge record that exists physically in an edge-type bucket, whose `@out`/`@in`

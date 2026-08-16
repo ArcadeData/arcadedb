@@ -47,6 +47,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code SQLScriptQueryEngine} has always resolved {@code getWrappedDatabaseInstance()}, which is why the identical
  * statement replicates correctly under {@code sqlscript} and not under {@code sql}. That asymmetry was the defect.
  * <p>
+ * Since issue #6220 the batching only runs when {@code TRUNCATE} owns its transaction - i.e. when none is active when
+ * it starts - so both tests below issue the statement with no enclosing transaction. Wrapping it in one, as they used
+ * to, would leave nothing here that commits mid-execution and quietly turn this into a test of nothing.
+ * <p>
  * The batch size is lowered here because the default of 1000 is also why this never reproduced in-process: earlier
  * harnesses truncated 180 to 450 records, so {@code count % 1000 == 0} never held and no mid-statement commit ever
  * ran. The materialized view of the original report refreshes a 3000-row view, which crosses it on every refresh.
@@ -93,10 +97,11 @@ class Issue5492TruncateBatchNotReplicatedIT extends BaseRaftHATest {
 
     ArcadeStateMachine.TEST_WAL_GAP_COUNTER = new AtomicInteger(0);
 
-    // Run it exactly as MaterializedViewRefresher does: a dedicated transaction on the wrapper, with the
-    // statement issued through the 'sql' engine. The batch commits happen inside, before this one returns.
+    // Issued through the 'sql' engine with NO transaction active, which is what makes the statement own one and
+    // batch (issue #6220): inside a caller's transaction TRUNCATE no longer commits at all, so wrapping this would
+    // silently retire the very mid-statement commit #5492 is about.
     final DatabaseInternal wrapped = ((DatabaseInternal) leaderDb).getWrappedDatabaseInstance();
-    wrapped.transaction(() -> wrapped.command("sql", "TRUNCATE TYPE `" + TYPE_COMMAND + "`").close(), false);
+    wrapped.command("sql", "TRUNCATE TYPE `" + TYPE_COMMAND + "`").close();
 
     assertThat(countOn(leaderIndex, TYPE_COMMAND)).as("leader truncated the type").isZero();
 
@@ -151,17 +156,16 @@ class Issue5492TruncateBatchNotReplicatedIT extends BaseRaftHATest {
 
     ArcadeStateMachine.TEST_WAL_GAP_COUNTER = new AtomicInteger(0);
 
-    // Exactly the MCP tool's shape: resolve the engine off the database, analyze, then execute.
+    // Exactly the MCP tool's shape: resolve the engine off the database, analyze, then execute - and, as above,
+    // with no transaction active so the statement owns one and batches.
     final DatabaseInternal wrapped = ((DatabaseInternal) leaderDb).getWrappedDatabaseInstance();
-    wrapped.transaction(() -> {
-      final QueryEngine.AnalyzedQuery analyzed = wrapped.getQueryEngine("sql")
-          .analyze("TRUNCATE TYPE `" + TYPE_ANALYZED + "`");
-      final ResultSet rs = analyzed.execute(Collections.emptyMap());
-      // Cast to Object: ResultSet extends both Iterator and Spliterator, so the AssertJ overloads are ambiguous.
-      assertThat((Object) rs).as("SQL analyze().execute() returns a result set rather than deferring to command()")
-          .isNotNull();
-      rs.close();
-    }, false);
+    final QueryEngine.AnalyzedQuery analyzed = wrapped.getQueryEngine("sql")
+        .analyze("TRUNCATE TYPE `" + TYPE_ANALYZED + "`");
+    final ResultSet rs = analyzed.execute(Collections.emptyMap());
+    // Cast to Object: ResultSet extends both Iterator and Spliterator, so the AssertJ overloads are ambiguous.
+    assertThat((Object) rs).as("SQL analyze().execute() returns a result set rather than deferring to command()")
+        .isNotNull();
+    rs.close();
 
     assertThat(countOn(leaderIndex, TYPE_ANALYZED)).as("leader truncated the type").isZero();
 

@@ -374,12 +374,17 @@ class Issue5713HashIndexPageSizeTest extends TestHelper {
    * {@code TRUNCATE TYPE} drops every index of the type and recreates it from a captured definition, so it has the same
    * drop-then-recreate shape as a rebuild: an unaddressable page size carried into the definition would leave the type
    * without the index it had.
+   * <p>
+   * The drop-then-recreate only runs when {@code TRUNCATE} owns its transaction, i.e. when none is active - dropping
+   * an index is a committed schema change, so doing it inside a caller's transaction would commit through it (issue
+   * #6220). Inside a transaction the statement deletes record by record instead, which on this deliberately damaged
+   * index fails rather than repairing it; {@code CHECK DATABASE FIX} is the repair path for that shape, and it is
+   * covered by {@link #checkDatabaseFixRepairsAnIndexWithAnIllegalPageSize()}.
    */
   @Test
   void truncateTypeRecreatesAnIndexWithAnIllegalPageSize() throws Exception {
     withLegacyIllegalPageSizeDatabase("Issue5713TruncateDB", 50, (db, entries) -> {
-      // TRUNCATE TYPE scans the type, so it needs an active transaction
-      db.transaction(() -> db.command("sql", "TRUNCATE TYPE " + TYPE_NAME));
+      db.command("sql", "TRUNCATE TYPE " + TYPE_NAME);
 
       final IndexInternal recreated = hashIndexOf(db);
       assertThat(recreated.getPageSize()).as("TRUNCATE TYPE must recreate the index with a legal page size")
