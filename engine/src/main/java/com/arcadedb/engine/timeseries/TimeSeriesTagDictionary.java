@@ -220,12 +220,13 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
     // caller is a test-only TimeSeriesShard constructor.
     schema.registerFile(dictionary);
 
-    if (dictionary.readStoredHeader() != null)
+    final StoredHeader header = dictionary.readStoredHeader();
+    if (header != null)
       // The component was absent from the schema but its file already carries an initialised header.
       // Adopt what is there: writing a fresh header would silently reset the id space and orphan every
       // id already stored in a data page. The test is on the header itself and not on getTotalPages(),
       // which under-reports for as long as the pages sit in the flush queue (issue #6198).
-      dictionary.load();
+      dictionary.load(header);
     else {
       dictionary.initHeaderPage();
       dictionary.loaded = true;
@@ -283,19 +284,29 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
   }
 
   public synchronized void load() throws IOException {
-    // Header first (see readStoredHeader()), pages after, in two steps rather than one. What makes that
-    // safe is that the format is strictly append-only: the counts are a lower bound that an append
-    // landing in between can only raise, and the bytes of the entries they cover never change. So the
-    // walk below rebuilds a valid prefix, and the entries it missed are picked up by the next reload.
-    final int[] header = readStoredHeader();
+    load(readStoredHeader());
+  }
+
+  /**
+   * Rebuilds from a header already read, so a caller that had to read it to decide whether to reload -
+   * {@link #resolveMiss} - does not pay for a second lookup. Passing the checked header also ties the
+   * rebuild to it: the walk is guaranteed to cover the id that header was measured against.
+   *
+   * @param header the header page contents, or {@code null} when the file carries none
+   */
+  private synchronized void load(final StoredHeader header) throws IOException {
     if (header == null) {
       // No initialised header, so nothing has ever been stored in this file
       loaded = true;
       return;
     }
 
-    final int storedEntries = header[0];
-    final int pages = header[1];
+    // Header first (see readStoredHeader()), pages after, in two steps rather than one. What makes that
+    // safe is that the format is strictly append-only: the counts are a lower bound that an append
+    // landing in between can only raise, and the bytes of the entries they cover never change. So the
+    // walk below rebuilds a valid prefix, and the entries it missed are picked up by the next reload.
+    final int storedEntries = header.entryCount();
+    final int pages = header.dataPageCount();
 
     // A read transaction of our own, so this can be called from inside a scan. It must be the only one
     // rolled back at the end: load() is reachable from resolveMiss() mid-query, and discarding the
@@ -398,11 +409,11 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
       // The test is against the count stored in the header - one already-cached page read - and not
       // against the last reload, because a leader interns for as long as it ingests: keying on the
       // reload would self-heal for the first wave of ids and then never again.
-      final int[] header = readStoredHeader();
-      if (header == null || id > header[0])
+      final StoredHeader header = readStoredHeader();
+      if (header == null || id > header.entryCount())
         return null;
 
-      load();
+      load(header);
     } catch (final IOException e) {
       // A read path declines the value rather than failing the scan around it.
       LogManager.instance().log(this, Level.WARNING,
@@ -439,12 +450,19 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
    * publishing an empty mapping over the real one. {@link #resolveMiss} is the caller that does cope, and
    * it catches.
    */
-  private int[] readStoredHeader() throws IOException {
+  private StoredHeader readStoredHeader() throws IOException {
     final BasePage headerPage = database.getPageManager()
         .getImmutablePage(new PageId(database, fileId, 0), pageSize, true, false);
     if (headerPage == null || headerPage.readInt(HEADER_MAGIC_OFFSET) != MAGIC_VALUE)
       return null;
-    return new int[] { headerPage.readInt(HEADER_ENTRY_COUNT_OFFSET), headerPage.readInt(HEADER_DATA_PAGE_COUNT) };
+    return new StoredHeader(headerPage.readInt(HEADER_ENTRY_COUNT_OFFSET), headerPage.readInt(HEADER_DATA_PAGE_COUNT));
+  }
+
+  /**
+   * What the header page says the file holds: the two counters every decision in this class is made
+   * against, named rather than carried as a pair of positional ints.
+   */
+  private record StoredHeader(int entryCount, int dataPageCount) {
   }
 
   /**
