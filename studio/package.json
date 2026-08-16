@@ -43,7 +43,7 @@
     "marked": "^18.0.9",
     "jszip": "^3.10.1",
     "pdfmake": "^0.3.11",
-    "swagger-ui-dist": "^5.32.12",
+    "swagger-ui-dist": "^5.32.13",
     "sweetalert2": "^11.26.25"
   },
   "devDependencies": {
