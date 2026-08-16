@@ -38,7 +38,17 @@ import java.util.concurrent.locks.LockSupport;
  * the sampler is discounted.
  * <p>
  * The counter is started lazily, on the first {@link StallAwareStopwatch}, so suites that take no timing
- * measurement pay nothing for it.
+ * measurement pay nothing for it. The sampler then runs for the rest of the JVM's life: it is a daemon with no
+ * stop path on purpose, because a test JVM's life is the whole window anyone can measure. Anything longer-lived
+ * that wants to reuse this needs a shutdown story first.
+ * <p>
+ * The sensitivity this trades away, so that nobody rediscovers it as a surprise: the monitor cannot tell a stall
+ * from the measured thread's own work being slow on an oversubscribed box, because both look like the sampler
+ * losing the CPU. On a heavily loaded runner a genuine complexity regression can therefore be discounted along
+ * with the noise and slip under its bound. That is the deliberate trade - a bound that is silent on a loaded
+ * machine beats one that is red on a healthy one for reasons that have nothing to do with the code - but it is
+ * why {@link StallAwareStopwatch#assertStayedUnder} bounds still want an order of magnitude of headroom over the
+ * honest measured time rather than being tuned down to whatever currently passes.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  * @see StallAwareStopwatch
@@ -50,6 +60,12 @@ final class JvmStallMonitor {
   /**
    * Slack allowed on top of the tick before a gap counts as a stall. {@code parkNanos()} routinely overshoots by
    * a few milliseconds on a healthy machine; charging that as a stall would slowly eat away at every bound.
+   * <p>
+   * The floor this puts under the whole mechanism: nothing below tick + tolerance is ever discounted, so a bound
+   * tighter than about 20 ms is measuring raw scheduling jitter and gets no help here. Only one assertion in the
+   * suite is anywhere near that ({@code PaginatedSparseVectorEngineBackpressureTest}, at 50 ms); if that one ever
+   * flakes, this constant is the first place to look, and lowering it costs every other measurement a slow drip
+   * of bogus discount in exchange.
    */
   static final long TOLERANCE_NANOS = TimeUnit.MILLISECONDS.toNanos(10);
 

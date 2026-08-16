@@ -119,6 +119,9 @@ public final class StallAwareStopwatch {
   }
 
   private StallAwareStopwatch check(final long boundMs, final String what, final String subject, final String advice) {
+    // The two reads are separate snapshots, and the order matters: sampling the stall AFTER the elapsed time means
+    // the stall window can only be wider than the elapsed one, never narrower, so the discount can only come out
+    // too generous. Read the other way round it could come out too small and fail a run that was fine.
     final long elapsedMs = elapsedMs();
     final long stallMs = stallMs();
     assertThat(Math.max(0L, elapsedMs - stallMs))
