@@ -50,7 +50,9 @@ import java.util.stream.Stream;
  * </p>
  * <p>
  * {@code steps} sizes the walk buffer directly and has no graph-derived ceiling, so its footprint is checked
- * against {@link com.arcadedb.GlobalConfiguration#CYPHER_ALGO_MAX_WALK_MEMORY} before anything is allocated.
+ * against {@link com.arcadedb.GlobalConfiguration#CYPHER_ALGO_MAX_WALK_MEMORY} before anything is allocated,
+ * and the walk itself honours thread interruption and {@code arcadedb.command.timeout} so that raising that
+ * budget does not also raise an unabortable worst case.
  * </p>
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -125,8 +127,13 @@ public class AlgoRandomWalk extends AbstractAlgoProcedure {
     int walkLen = 1;
 
     final Random rnd = new Random(seed);
+    final WorkGuard guard = newWorkGuard(context);
     int cur = srcIdx;
     for (int step = 0; step < steps; step++) {
+      // The walk-memory budget bounds `steps` only as long as nobody raises it - and the setting explicitly
+      // accepts "negative = no limit". A memory bound is not a time bound, so the walk carries its own
+      // checkpoint rather than a caveat saying it does not.
+      guard.checkPeriodically(step);
       final int[] neighbors = adj[cur];
       if (neighbors.length == 0)
         break;

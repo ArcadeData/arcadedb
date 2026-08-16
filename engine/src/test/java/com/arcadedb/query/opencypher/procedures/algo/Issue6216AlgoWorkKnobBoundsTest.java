@@ -39,6 +39,7 @@ import java.util.TreeMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.within;
 
 /**
  * Regression tests for issue #6216 - the CPU-shaped config knobs of the OpenCypher {@code algo.*} procedures.
@@ -261,6 +262,31 @@ class Issue6216AlgoWorkKnobBoundsTest {
         .hasStackTraceContaining("k must not be negative, got -2");
   }
 
+  @Test
+  void node2VecStillCompletesAndTrainsWithLargeButLegitimateKnobs() {
+    // The whole PR adds rejections and checkpoints to a hot path, so the risk it carries is refusing or
+    // aborting a run that is merely big. Every other test here asserts that something is refused; this one
+    // asserts the opposite at a scale the small-graph guards do not reach - 200 walks x 50 steps x 20 epochs,
+    // two orders of magnitude past the defaults used elsewhere in this class - and checks the OUTPUT rather
+    // than the absence of an exception: one embedding per node, of the requested width, finite, and L2
+    // normalised, which is only true if the training loops actually ran to completion.
+    final List<Result> results = drain("CALL algo.node2vec({embeddingDimension: 16, walkLength: 50, walksPerNode: 50, "
+        + "iterations: 20, windowSize: 5, negSamples: 3, seed: 21}) YIELD node, embedding RETURN node, embedding");
+
+    assertThat(results).hasSize(4);
+    for (final Result r : results) {
+      @SuppressWarnings("unchecked")
+      final List<Double> embedding = (List<Double>) r.getProperty("embedding");
+      assertThat(embedding).hasSize(16);
+      double squaredNorm = 0.0;
+      for (final Double v : embedding) {
+        assertThat(Double.isFinite(v)).as("every component must be finite").isTrue();
+        squaredNorm += v * v;
+      }
+      assertThat(Math.sqrt(squaredNorm)).as("embeddings are returned L2 normalised").isCloseTo(1.0, within(1e-9));
+    }
+  }
+
   // ── The context window clamp ─────────────────────────────────────────────
 
   @Test
@@ -350,6 +376,23 @@ class Issue6216AlgoWorkKnobBoundsTest {
     } finally {
       single.drop();
     }
+  }
+
+  @Test
+  void randomWalkHonoursTheCommandTimeoutEvenWithTheWalkMemoryBudgetDisabled() {
+    // The budget is the only thing bounding `steps`, and it accepts "negative = no limit". With it disabled a
+    // huge steps value is neither memory- nor - without a checkpoint in the step loop - time-bounded. The walk
+    // is a directed cycle, so it never dead-ends and would otherwise run all 500 million steps.
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WALK_MEMORY, -1L);
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_TIMEOUT, 1L);
+
+    assertThatThrownBy(() -> drain("""
+        MATCH (a:Node {name: 'A'}) \
+        CALL algo.randomWalk(a, 500000000) \
+        YIELD path, steps \
+        RETURN path, steps"""))
+        .as("a memory bound is not a time bound: the walk must still give up at the command deadline")
+        .hasStackTraceContaining(GlobalConfiguration.COMMAND_TIMEOUT.getKey());
   }
 
   @Test
