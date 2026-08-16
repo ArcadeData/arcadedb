@@ -202,7 +202,14 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
       return dictionary;
     }
 
-    final TimeSeriesTagDictionary dictionary =
+    // A file already registered under this component name is what this dictionary must be BUILT ON, id and
+    // all. The id-allocating constructor would take a fresh file id from the manager and then be handed
+    // this very file anyway - getOrCreateFile() is keyed by the component name - leaving the component
+    // addressing pages of an id that is not the file it holds, which is unusable in either direction.
+    final ComponentFile existingFile = database.getFileManager().getFileByComponentName(name);
+
+    final TimeSeriesTagDictionary dictionary = existingFile != null ?
+        new TimeSeriesTagDictionary(database, name, existingFile.getFilePath(), existingFile.getFileId()) :
         new TimeSeriesTagDictionary(database, name, database.getDatabasePath() + "/" + name);
     schema.registerFile(dictionary);
 
@@ -269,10 +276,13 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
   }
 
   public synchronized void load() throws IOException {
+    // Header first (see readStoredHeader()), pages after, in two steps rather than one. What makes that
+    // safe is that the format is strictly append-only: the counts are a lower bound that an append
+    // landing in between can only raise, and the bytes of the entries they cover never change. So the
+    // walk below rebuilds a valid prefix, and the entries it missed are picked up by the next reload.
     final int[] header = readStoredHeader();
     if (header == null) {
-      // No initialised header, so nothing has ever been stored in this file. Note this is decided by
-      // reading page 0 and not by getTotalPages(): see readStoredHeader().
+      // No initialised header, so nothing has ever been stored in this file
       loaded = true;
       return;
     }
@@ -299,9 +309,8 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
         final BasePage page = tx.getPage(new PageId(database, fileId, pageNum), pageSize);
         final int pageEntries = page.readInt(DATA_ENTRY_COUNT_OFFSET);
         int offset = DATA_ENTRIES_OFFSET;
-        // Bounded by the entry count the header declared, not by the page's own counter alone: the header
-        // is read before the pages, so an append that commits in between would otherwise hand this walk
-        // more entries than the array it is filling has room for.
+        // Bounded by the declared entry count and not by the page's own counter alone: that is what keeps
+        // an append committing between the two steps from overrunning the array sized for the first one.
         for (int i = 0; i < pageEntries && id <= storedEntries; i++) {
           final int len = page.readShort(offset) & 0xFFFF;
           final byte[] bytes = new byte[len];
@@ -328,10 +337,10 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
         database.rollback();
     }
 
-    // The file demonstrably holds these pages, whatever this instance's counter was seeded with. Keeping
-    // it in step matters beyond reporting: appendEntries() allocates a data page as new when the counter
-    // says the page number is past the end, which over an under-reported counter would overwrite a page
-    // that already holds entries.
+    // The file demonstrably holds these pages, whatever this instance's counter was seeded with. This
+    // matters beyond reporting: appendEntries() allocates a data page as new when the counter says the
+    // page number is past the end, which over an under-reported counter would overwrite a populated page.
+    // updatePageCount() only ever raises the counter, so this cannot pull back an instance already ahead.
     updatePageCount(pages + 1);
   }
 
