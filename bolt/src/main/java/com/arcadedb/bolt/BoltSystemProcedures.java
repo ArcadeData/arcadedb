@@ -225,6 +225,12 @@ final class BoltSystemProcedures {
    * The Bolt interception matches procedure names by substring and cannot evaluate arguments, so a call that
    * carries any is handed to the Cypher engine rather than answered here.
    * </p>
+   * <p>
+   * This is not a Cypher tokenizer and must not be mistaken for one: it walks to the first {@code )} after the
+   * name, so a nested paren or a stray {@code )} later in the query reads as an argument list. Every error it
+   * can make is in the same direction - it declines a call it could have served, and the engine answers it -
+   * which is why the crude scan is enough for the fixed procedure names this interception covers.
+   * </p>
    *
    * @param normalized    a query normalized by {@link #normalize(String)}
    * @param procedureName the lower-case procedure name to look for
