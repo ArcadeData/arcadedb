@@ -20,6 +20,7 @@ package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.TypeIndex;
 import org.junit.jupiter.api.Test;
@@ -289,6 +290,137 @@ class TypeRenameComponentNamingTest extends TestHelper {
       assertThat(database.query("sql", "select from Multi where p1 = 'a3'").stream().count()).isEqualTo(1L);
       assertThat(database.query("sql", "select from Multi where p2 = 'b4'").stream().count()).isEqualTo(1L);
     });
+  }
+
+  /**
+   * The forward bucket loop re-keys {@code LocalSchema.bucketMap} as each bucket is renamed. The rollback used to
+   * restore only the file and the component's own name, so after a mid-loop failure the map still held the earlier
+   * buckets under the name the rename was going to give them, pointing at components whose {@code getName()} had
+   * gone back to the old one. Everything that resolves a bucket by name then disagrees with the schema:
+   * {@code SELECT FROM BUCKET:x}, {@code existsBucket()}, the duplicate-name guard in {@code createBucket()} and the
+   * keys of the statistics file.
+   * <p>
+   * The failure is injected the same way as {@link #aFailedIndexRenameRollsBackTheIndexesAlreadyRenamed}: a
+   * directory parked on the path the last bucket's file is about to move to, which {@code Files.move} cannot
+   * replace.
+   */
+  @Test
+  void aFailedBucketRenameRestoresTheBucketMapKeys() {
+    database.transaction(() -> database.getSchema().createDocumentType("Multi", 2).createProperty("p1", Type.STRING));
+    database.transaction(() -> {
+      for (int i = 0; i < 10; i++)
+        database.newDocument("Multi").set("p1", "a" + i).save();
+    });
+
+    final List<Bucket> buckets = new ArrayList<>(database.getSchema().getType("Multi").getBuckets(false));
+    assertThat(buckets).as("two buckets are needed for a mid-loop failure").hasSize(2);
+
+    final File databaseDirectory = new File(database.getDatabasePath());
+    final File parked = parkDirectoryOnRenameTarget(databaseDirectory, buckets.getLast().getName(), "Multi",
+        "renamed.Multi");
+
+    try {
+      assertThatThrownBy(() -> database.getSchema().getType("Multi").rename("renamed.Multi"))
+          .isInstanceOf(SchemaException.class);
+    } finally {
+      parked.delete();
+    }
+
+    assertBucketMapKeysMatchBucketNames();
+    assertThat(database.getSchema().existsBucket("renamed.Multi_0")).as("no leftover key under the new name").isFalse();
+    assertThat(database.getSchema().existsBucket("renamed.Multi_1")).as("no leftover key under the new name").isFalse();
+
+    // The two lookups a stale key would have broken: the bucket answers to its own name again, and that name is
+    // still taken, so nothing can be created over the file it already owns.
+    database.transaction(() -> assertThat(database.query("sql", "select from BUCKET:Multi_0").stream().count())
+        .as("the rolled-back bucket is still addressable by name").isPositive());
+    assertThatThrownBy(() -> database.getSchema().createBucket("Multi_0"))
+        .as("the rolled-back bucket name is still taken").isInstanceOf(SchemaException.class);
+
+    assertThat(database.countType("Multi", true)).isEqualTo(10L);
+
+    assertComponentFileNamesAreWellFormed();
+    reopen();
+
+    assertThat(database.countType("Multi", true)).isEqualTo(10L);
+    assertBucketMapKeysMatchBucketNames();
+  }
+
+  /**
+   * Same defect on the vertex-specific half of the rename: {@link LocalVertexType} renames the out/in edge buckets
+   * in a second loop, with the same per-bucket re-keying and the same rollback that used to skip it.
+   */
+  @Test
+  void aFailedEdgeBucketRenameRestoresTheBucketMapKeys() {
+    database.getSchema().createVertexType("V", 1);
+    database.getSchema().createVertexType("W", 1);
+    database.getSchema().createEdgeType("E", 1);
+    database.transaction(() -> {
+      for (int i = 0; i < 10; i++) {
+        final var from = database.newVertex("V").set("k", i).save();
+        final var to = database.newVertex("W").set("k", i).save();
+        from.newEdge("E", to, true, new Object[0]);
+      }
+    });
+
+    final List<Bucket> edgeBuckets = database.getSchema().getType("V").getInvolvedBuckets().stream()
+        .filter(b -> b.getName().endsWith("_out_edges") || b.getName().endsWith("_in_edges")).toList();
+    assertThat(edgeBuckets).as("out and in edge buckets are needed for a mid-loop failure").hasSize(2);
+
+    final File databaseDirectory = new File(database.getDatabasePath());
+    final File parked = parkDirectoryOnRenameTarget(databaseDirectory, edgeBuckets.getLast().getName(), "V", "re.named");
+
+    try {
+      assertThatThrownBy(() -> database.getSchema().getType("V").rename("re.named"))
+          .isInstanceOf(SchemaException.class);
+    } finally {
+      parked.delete();
+    }
+
+    assertBucketMapKeysMatchBucketNames();
+    assertThat(database.getSchema().existsBucket("re.named_0_out_edges")).as("no leftover key under the new name")
+        .isFalse();
+    assertThat(database.getSchema().existsBucket("re.named_0")).as("no leftover key under the new name").isFalse();
+    assertThat(database.getSchema().existsBucket("V_0_out_edges")).isTrue();
+    assertThat(database.getSchema().existsBucket("V_0")).isTrue();
+
+    assertThat(database.countType("V", true)).isEqualTo(10L);
+    database.transaction(() -> assertThat(database.query("sql", "select expand(out('E')) from V").stream().count())
+        .isEqualTo(10L));
+
+    assertComponentFileNamesAreWellFormed();
+    reopen();
+
+    assertThat(database.countType("V", true)).isEqualTo(10L);
+    assertBucketMapKeysMatchBucketNames();
+    database.transaction(() -> assertThat(database.query("sql", "select expand(out('E')) from V").stream().count())
+        .isEqualTo(10L));
+  }
+
+  /**
+   * Fault injection: park a directory on the file path the rename of {@code componentName} is about to move to, so
+   * {@code Files.move} raises an {@code IOException}. A derived component name is {@code <typeName><suffix>} and the
+   * file name is that plus a {@code .fileId.pageSize.vVersion.ext} tail, both of which the rename carries over
+   * untouched, so the target file name is the same with the type-name prefix swapped.
+   */
+  private File parkDirectoryOnRenameTarget(final File directory, final String componentName, final String oldTypeName,
+      final String newTypeName) {
+    assertThat(componentName).startsWith(oldTypeName + "_");
+    final File blockedFile = fileStartingWith(directory, componentName + ".");
+    final File parked = new File(directory, newTypeName + blockedFile.getName().substring(oldTypeName.length()));
+    assertThat(parked.mkdir()).as("fault injection: park a directory on %s", parked.getName()).isTrue();
+    return parked;
+  }
+
+  /**
+   * Every bucket must be registered under the name it reports. A key that no longer matches is not merely untidy:
+   * the bucket becomes unreachable by name while the stale key resolves to a component that answers to something
+   * else.
+   */
+  private void assertBucketMapKeysMatchBucketNames() {
+    for (final Bucket bucket : database.getSchema().getBuckets())
+      assertThat(database.getSchema().getBucketByNameIfExists(bucket.getName()))
+          .as("bucket '%s' must be registered under the name it reports", bucket.getName()).isSameAs(bucket);
   }
 
   private static File fileStartingWith(final File directory, final String prefix) {

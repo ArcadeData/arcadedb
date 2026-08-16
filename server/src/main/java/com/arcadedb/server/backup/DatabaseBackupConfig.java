@@ -28,11 +28,40 @@ import java.time.LocalTime;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class DatabaseBackupConfig {
+  /**
+   * Bounds for the per-database compression overrides. They repeat the ones enforced by
+   * {@code com.arcadedb.integration.backup.BackupSettings} and by the matching {@code GlobalConfiguration} entries,
+   * because the server module deliberately does not depend on the integration module at compile time - the backup is
+   * reached reflectively so that a distribution without it still starts. {@code compressionOverrideBoundsMatchTheBackupApi}
+   * in {@code DatabaseBackupConfigTest} fails if the two ever drift.
+   */
+  public static final int MIN_COMPRESSION_LEVEL   = 0;
+  public static final int MAX_COMPRESSION_LEVEL   = 9;
+  public static final int MIN_COMPRESSION_THREADS = -1;
+  public static final int MAX_COMPRESSION_THREADS = 256;
+  public static final int MIN_MAX_MB_PER_SECOND   = 0;
+
   private final String          databaseName;
   private       boolean         enabled     = true;
   private       String          runOnServer = "$leader";
   private       ScheduleConfig  schedule;
   private       RetentionConfig retention;
+  /**
+   * Deflate level, 0 (store) to 9 (smallest). {@code null} means "defer to
+   * {@code GlobalConfiguration.BACKUP_COMPRESSION_LEVEL}", the same convention {@code BackupSettings} uses, which is
+   * what keeps a {@code backup.json} written before this setting existed behaving exactly as it did.
+   */
+  private       Integer         compressionLevel;
+  /**
+   * Compression threads: -1 automatic, 0 the legacy single-threaded writer, N a pool of N. {@code null} defers to
+   * {@code GlobalConfiguration.BACKUP_COMPRESSION_THREADS}.
+   */
+  private       Integer         compressionThreads;
+  /**
+   * Read-side rate cap in MB/s, 0 for unlimited. {@code null} defers to
+   * {@code GlobalConfiguration.BACKUP_MAX_MB_PER_SECOND}.
+   */
+  private       Integer         maxMBPerSecond;
 
   public DatabaseBackupConfig(final String databaseName) {
     this.databaseName = databaseName;
@@ -53,6 +82,16 @@ public class DatabaseBackupConfig {
     if (json.has("retention"))
       config.retention = RetentionConfig.fromJSON(json.getJSONObject("retention"));
 
+    // ABSENT MEANS "DEFER TO THE GLOBAL CONFIGURATION", SO AN EXISTING backup.json KEEPS ITS EXACT BEHAVIOUR
+    if (json.has("compressionLevel"))
+      config.compressionLevel = json.getInt("compressionLevel");
+
+    if (json.has("compressionThreads"))
+      config.compressionThreads = json.getInt("compressionThreads");
+
+    if (json.has("maxMBPerSecond"))
+      config.maxMBPerSecond = json.getInt("maxMBPerSecond");
+
     // Validate the configuration
     config.validate();
 
@@ -68,6 +107,23 @@ public class DatabaseBackupConfig {
 
     if (retention != null)
       retention.validate();
+
+    // REFUSED HERE, AT LOAD TIME, RATHER THAN INSIDE THE Backup SETTER AT 3AM: AN OUT-OF-RANGE VALUE IN backup.json IS
+    // A CONFIGURATION MISTAKE AND THE OPERATOR SHOULD HEAR ABOUT IT WHEN THE SERVER READS THE FILE
+    checkRange("compressionLevel", compressionLevel, MIN_COMPRESSION_LEVEL, MAX_COMPRESSION_LEVEL);
+    checkRange("compressionThreads", compressionThreads, MIN_COMPRESSION_THREADS, MAX_COMPRESSION_THREADS);
+    checkRange("maxMBPerSecond", maxMBPerSecond, MIN_MAX_MB_PER_SECOND, Integer.MAX_VALUE);
+  }
+
+  /**
+   * The message is word-for-word the one {@code BackupSettings.checkIntSetting} raises for the same setting, so the
+   * two places that can refuse a compression value - this one when {@code backup.json} is read, that one when the
+   * value reaches the {@code Backup} - read identically in the log.
+   */
+  private static void checkRange(final String name, final Integer value, final int min, final int max) {
+    if (value != null && (value < min || value > max))
+      throw new IllegalArgumentException(
+          "Backup setting '%s' must be between %d and %d, found %d".formatted(name, min, max, value));
   }
 
   public void mergeWithDefaults(final DatabaseBackupConfig defaults) {
@@ -83,6 +139,15 @@ public class DatabaseBackupConfig {
       this.retention = defaults.retention;
     else if (defaults.retention != null)
       this.retention.mergeWithDefaults(defaults.retention);
+
+    // A DATABASE THAT SET NOTHING INHERITS THE SERVER DEFAULT; ONE THAT SET A VALUE KEEPS IT. STILL null AFTERWARDS
+    // MEANS NEITHER LEVEL EXPRESSED AN OPINION AND THE GlobalConfiguration DEFAULT APPLIES
+    if (this.compressionLevel == null)
+      this.compressionLevel = defaults.compressionLevel;
+    if (this.compressionThreads == null)
+      this.compressionThreads = defaults.compressionThreads;
+    if (this.maxMBPerSecond == null)
+      this.maxMBPerSecond = defaults.maxMBPerSecond;
   }
 
   public String getDatabaseName() {
@@ -121,6 +186,30 @@ public class DatabaseBackupConfig {
     this.retention = retention;
   }
 
+  public Integer getCompressionLevel() {
+    return compressionLevel;
+  }
+
+  public void setCompressionLevel(final Integer compressionLevel) {
+    this.compressionLevel = compressionLevel;
+  }
+
+  public Integer getCompressionThreads() {
+    return compressionThreads;
+  }
+
+  public void setCompressionThreads(final Integer compressionThreads) {
+    this.compressionThreads = compressionThreads;
+  }
+
+  public Integer getMaxMBPerSecond() {
+    return maxMBPerSecond;
+  }
+
+  public void setMaxMBPerSecond(final Integer maxMBPerSecond) {
+    this.maxMBPerSecond = maxMBPerSecond;
+  }
+
   /**
    * Converts this configuration to a JSON object.
    */
@@ -134,6 +223,17 @@ public class DatabaseBackupConfig {
 
     if (retention != null)
       json.put("retention", retention.toJSON());
+
+    // ONLY WHAT WAS ACTUALLY SET IS WRITTEN BACK: EMITTING A RESOLVED DEFAULT WOULD FREEZE TODAY'S GLOBAL VALUE INTO
+    // THE FILE AND THE DATABASE WOULD STOP FOLLOWING THE SERVER SETTING
+    if (compressionLevel != null)
+      json.put("compressionLevel", compressionLevel);
+
+    if (compressionThreads != null)
+      json.put("compressionThreads", compressionThreads);
+
+    if (maxMBPerSecond != null)
+      json.put("maxMBPerSecond", maxMBPerSecond);
 
     return json;
   }

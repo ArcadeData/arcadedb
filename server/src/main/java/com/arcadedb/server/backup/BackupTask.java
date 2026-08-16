@@ -49,6 +49,9 @@ public class BackupTask implements Runnable {
   private static volatile Constructor<?>               backupConstructor;
   private static volatile Method                       setDirectoryMethod;
   private static volatile Method                       setVerboseLevelMethod;
+  private static volatile Method                       setCompressionLevelMethod;
+  private static volatile Method                       setCompressionThreadsMethod;
+  private static volatile Method                       setMaxMBPerSecondMethod;
   private static volatile Method                       backupDatabaseMethod;
   private static volatile boolean                      reflectionInitialized;
   private static final    Object                       REFLECTION_LOCK = new Object();
@@ -191,6 +194,7 @@ public class BackupTask implements Runnable {
       final Object backup = backupConstructor.newInstance(database, backupFileName);
       setDirectoryMethod.invoke(backup, dbBackupDir);
       setVerboseLevelMethod.invoke(backup, 1);
+      applyCompressionOverrides(backup);
 
       return (String) backupDatabaseMethod.invoke(backup);
 
@@ -201,6 +205,29 @@ public class BackupTask implements Runnable {
     } catch (final InvocationTargetException e) {
       throw new BackupException("Error performing backup for database '" + databaseName + "'", e.getTargetException());
     }
+  }
+
+  /**
+   * Pushes this database's compression overrides onto the {@code Backup} instance, skipping any the configuration left
+   * unset so the corresponding {@code GlobalConfiguration} default still applies. A mixed fleet can then give a large,
+   * rarely-restored database a slow, small-archive setting overnight and a small, frequently-restored one a setting
+   * that stays out of the live workload's way (issue #6087).
+   * <p>
+   * Package-private, and called through the reflective boundary that keeps the server buildable without the
+   * integration module, so that a test can assert what actually reached the {@code Backup} instance rather than
+   * inferring it from the archive.
+   */
+  void applyCompressionOverrides(final Object backup) throws BackupException, IllegalAccessException, InvocationTargetException {
+    initializeReflection();
+
+    if (config.getCompressionLevel() != null)
+      setCompressionLevelMethod.invoke(backup, config.getCompressionLevel().intValue());
+
+    if (config.getCompressionThreads() != null)
+      setCompressionThreadsMethod.invoke(backup, config.getCompressionThreads().intValue());
+
+    if (config.getMaxMBPerSecond() != null)
+      setMaxMBPerSecondMethod.invoke(backup, config.getMaxMBPerSecond().intValue());
   }
 
   /**
@@ -216,6 +243,9 @@ public class BackupTask implements Runnable {
             backupConstructor = backupClass.getConstructor(Database.class, String.class);
             setDirectoryMethod = backupClass.getMethod("setDirectory", String.class);
             setVerboseLevelMethod = backupClass.getMethod("setVerboseLevel", Integer.TYPE);
+            setCompressionLevelMethod = backupClass.getMethod("setCompressionLevel", Integer.TYPE);
+            setCompressionThreadsMethod = backupClass.getMethod("setCompressionThreads", Integer.TYPE);
+            setMaxMBPerSecondMethod = backupClass.getMethod("setMaxMBPerSecond", Integer.TYPE);
             backupDatabaseMethod = backupClass.getMethod("backupDatabase");
             reflectionInitialized = true;
           } catch (final ClassNotFoundException | NoSuchMethodException e) {

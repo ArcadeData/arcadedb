@@ -20,6 +20,12 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.HashMap;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.entry;
+
 class ExportDatabaseStatementTestParserTest extends AbstractParserTest {
 
   @Test
@@ -38,5 +44,58 @@ class ExportDatabaseStatementTestParserTest extends AbstractParserTest {
     checkWrongSyntax("export database file:///foo/bar/ foo bar");
     checkWrongSyntax("export database http://www.foo.bar asdf ");
     checkWrongSyntax("EXPORT DATABASE https://www.foo.bar asd ");
+  }
+
+  /**
+   * Regression test for issue #6087: {@code copy()} only carried the URL over, so every {@code WITH ...} setting was
+   * silently dropped by the copy. Same defect {@code BackupDatabaseStatement} had (#6080).
+   * <p>
+   * Parsed with {@link #checkSyntax(String, boolean)} rather than {@link #checkRightSyntax(String)} on purpose:
+   * the latter re-parses the node's own {@code toString()}, and {@code ExportDatabaseStatement.toString()} does not
+   * render the {@code WITH} clause, so the round-trip would hand back a statement with an empty settings map and the
+   * test would assert nothing.
+   */
+  @Test
+  void copyKeepsTheWithSettings() {
+    final SimpleNode parsed = checkSyntax("EXPORT DATABASE file://Movies.graphson.tgz WITH format = 'graphson', overwrite = true",
+        true);
+    assertThat(parsed).isInstanceOf(ExportDatabaseStatement.class);
+
+    final ExportDatabaseStatement original = (ExportDatabaseStatement) parsed;
+    assertThat(renderSettings(original)).containsOnly(entry("format", "'graphson'"), entry("overwrite", "true"));
+
+    final ExportDatabaseStatement copy = (ExportDatabaseStatement) original.copy();
+
+    assertThat(renderSettings(copy)).isEqualTo(renderSettings(original));
+    assertThat(copy.url).isEqualTo(original.url);
+  }
+
+  @Test
+  void copyOfAStatementWithoutSettingsKeepsAnEmptyMap() {
+    final SimpleNode parsed = checkSyntax("EXPORT DATABASE file://Movies.jsonl.tgz", true);
+    final ExportDatabaseStatement original = (ExportDatabaseStatement) parsed;
+    assertThat(original.settings).isEmpty();
+
+    final ExportDatabaseStatement copy = (ExportDatabaseStatement) original.copy();
+
+    assertThat(copy.settings).isEmpty();
+    assertThat(copy.url).isEqualTo(original.url);
+  }
+
+  /**
+   * Renders the settings the way {@code executeSimple} consumes them: the raw setting name held in
+   * {@code Expression.value} against the rendered value.
+   * <p>
+   * Comparing the two {@code Map<Expression, Expression>} instances directly would not work: {@code SimpleNode}
+   * derives {@code hashCode()} from a freshly allocated {@code Object[]}, so an {@code Expression} hashes to a
+   * different bucket on every call and {@code HashMap.equals} can never find a key. That is a separate, pre-existing
+   * defect - the settings map is only ever iterated in production, never looked up - and this test deliberately does
+   * not depend on it either way.
+   */
+  private static Map<String, String> renderSettings(final ExportDatabaseStatement statement) {
+    final Map<String, String> rendered = new HashMap<>();
+    for (final Map.Entry<Expression, Expression> entry : statement.settings.entrySet())
+      rendered.put(entry.getKey().value.toString(), entry.getValue().toString());
+    return rendered;
   }
 }

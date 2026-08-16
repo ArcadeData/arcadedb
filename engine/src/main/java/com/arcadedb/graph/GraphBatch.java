@@ -872,14 +872,14 @@ public class GraphBatch implements AutoCloseable {
    * {@code commitEvery > 0}. So a connect pass that dies part-way leaves records that are durable and reachable
    * from nothing: {@code countType()} counts them and no traversal finds them.
    * <p>
-   * CHECK DATABASE does not rescue them. Its {@code checkEdges} pass does scan every edge record and probe both
-   * endpoints for a back-reference, but a miss only increments the aggregate {@code missingReferenceBack}
-   * counter - no warning naming the record, no entry in {@code corruptedRecords}, and therefore nothing for the
-   * {@code FIX} variant to delete. That same counter is raised by a perfectly healthy UNIDIRECTIONAL edge, which
-   * is legitimately absent from its target's IN list, so it cannot be read as an orphan count either. ({@code FIX}
-   * does reclaim orphaned edge SEGMENTS, but those are the internal linked-list chunks, not the edge records at
-   * issue here.) Nothing else will ever clean these up, so the flush cleans up after itself, before the failure
-   * propagates.
+   * CHECK DATABASE does not rescue them on its own. Since #6090 its {@code checkEdges} pass does REPORT them - it
+   * names each one and counts them under {@code unreachableEdgeRecords} - but removing them is an explicit opt-in
+   * ({@code CHECK DATABASE FIX DELETE ORPHANS}), never part of a plain {@code FIX}, because the same shape is what
+   * a vertex that merely lost its head-chunk pointer looks like. Before that the finding was discarded entirely
+   * into the aggregate {@code missingReferenceBack} counter, which a perfectly healthy UNIDIRECTIONAL edge also
+   * raises. ({@code FIX} does reclaim orphaned edge SEGMENTS, but those are the internal linked-list chunks, not
+   * the edge records at issue here.) So nothing cleans these up unattended, and the flush cleans up after itself,
+   * before the failure propagates.
    * <p>
    * Deletion goes through {@code database.deleteRecord} rather than a direct bucket delete: an edge record may
    * carry index entries (issue #4113) and EXTERNAL property values, and this flush creates them by two different
