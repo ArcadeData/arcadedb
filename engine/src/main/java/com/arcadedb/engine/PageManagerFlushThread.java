@@ -982,6 +982,11 @@ public class PageManagerFlushThread extends Thread {
    * the database was dropped) or when this database stops being suspended. It is bounded per round so a suspension
    * released without freeing any RAM still lets its committers out, and it stops waiting during shutdown so a
    * database left suspended cannot keep a committer parked past {@code closeAndJoin}.
+   * <p>
+   * <b>Only the ASYNCHRONOUS writers reach this</b>, and nothing is missing by it: what the cap bounds is
+   * {@link #deferredByDatabase}, and {@link #flushPagesFromQueueToDisk} is the single place anything is ever put
+   * there. A synchronous {@code writePages} goes straight to {@code flushPage} without passing through this thread
+   * at all, so it cannot add a byte to the backlog and has nothing to be held for.
    */
   public void awaitDeferredBacklogUnderCap(final BasicDatabase database) throws InterruptedException {
     // The instanceof is a cast, not a filter: every page in the flush pipeline comes from a local Database (that is
