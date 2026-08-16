@@ -3296,6 +3296,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       }
 
       if (!chainInconsistent) {
+        // OUTSIDE the catch above, deliberately and as the page-version loop this replaced already was: everything
+        // the validation reads OUT OF A PAGE is answered by isChunkStillTheOneRead, which never throws and reads a
+        // chunk it cannot make sense of as a chunk that changed. What is left to come out of here is the failure to
+        // LOAD a page at all, which is an I/O error and not a conflict - absorbing it would spend the retry budget
+        // on a broken disk and then report it as "the record was modified during read".
         final int verdict = validateChainRead(chainTrace, chunks, record);
         if (verdict == CHAIN_READ_REVALIDATED)
           database.getPageManager().incrementChunkChainReadRevalidations();
