@@ -70,6 +70,13 @@ import java.util.Map;
  * what this class materialises through - and which the checker's own walk of a vertex's list goes through as well,
  * where the missing guard meant a check that never returned.
  * <p>
+ * SCOPED TO ONE PASS OVER ONE TYPE, not to the whole run. {@code checkVertices}/{@code checkEdges} each build their
+ * own, and {@code DatabaseChecker} calls them once per vertex/edge type, so a hub referenced from two source types
+ * has its list materialised once per type pass rather than once per {@code CHECK DATABASE}. Deliberate: the images
+ * are only valid while nothing writes to the lists, and each pass commits its own repairs, so a cache outliving a
+ * pass would have to survive exactly the writes it cannot survive. The cost is a constant factor in the number of
+ * types, not a return to the quadratic shape - each pass is still one walk per list.
+ * <p>
  * STALENESS IS THE CALLER'S JOB, and there is exactly one caller. A cached image is only valid while the list it was
  * built from does not change. The edge pass writes nothing while it scans; the vertex pass prunes dangling entries,
  * and calls {@link #clear()} at that site rather than naming the lists it touched - see that method. Both drop the
@@ -324,6 +331,12 @@ final class AdjacencyProbeCache {
   /**
    * The polymorphic bucket file-ids of an edge type, memoised. {@code isVertexConnectedTo} rebuilt this through a
    * stream per call, so a hub probed once per incident edge paid an array allocation per edge on top of the walk.
+   * <p>
+   * Held for the life of the cache, which is one pass over one type. A bucket added to an edge type WHILE that pass
+   * runs is therefore missed until the next pass, where the unmemoised form would have picked it up on the next
+   * probe. Left as is: a bucket added mid-scan holds no edges the scan has already read past either, so the filter
+   * is not the thing that would make such a run coherent - a schema change concurrent with a check is outside what
+   * either form promises.
    */
   private int[] bucketFilterOf(final VertexInternal vertex, final String edgeType) {
     return bucketFilters.computeIfAbsent(edgeType,
