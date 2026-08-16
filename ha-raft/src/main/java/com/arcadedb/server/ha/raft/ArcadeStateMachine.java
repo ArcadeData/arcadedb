@@ -1963,7 +1963,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
             + source.refusal());
 
       final String leaderHttpAddr = source.httpAddress();
-      final String leaderHttpsAddr = raftHAServer.getLeaderHttpsAddress();
+      // The guard's own HTTPS endpoint rather than the raw resolver's: it is declared and derived independently
+      // of the HTTP one, so the HTTP verdict does not cover it (issue #6221). Null falls back to plain HTTP.
+      final String leaderHttpsAddr = source.httpsAddress();
       final String clusterToken = raftHAServer.getClusterToken();
       try {
         // install() keeps the database open during the download and rolls back on failure, so a
@@ -2739,12 +2741,18 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * Silent by design, which is what keeps the pair to one log line per attempt: a refusal makes this return null,
    * and the caller then consults the HTTP arm, which logs. When it does NOT refuse there is nothing to log, and
    * the HTTP arm is not consulted at all.
+   * <p>
+   * The HTTPS endpoint is the guard's own, not the raw resolver's: it is read from a different field of
+   * {@code HA_SERVER_LIST} than the HTTP one and derives onto a different local port, so a cluster that declares
+   * distinct {@code http} ports and omits the {@code https} ones passes the HTTP check while every peer's HTTPS
+   * endpoint still resolves to this node (issue #6221). Withheld, it returns null here and the download falls back
+   * to the guarded HTTP endpoint, which is the route an unresolvable HTTPS endpoint has always taken.
    */
   private String guardedLeaderHttpsAddress() {
     final RaftHAServer raftHA = this.raftHAServer;
-    if (raftHA == null || resolveSnapshotSource(raftHA.getLeaderId()).refused())
+    if (raftHA == null)
       return null;
-    return raftHA.getLeaderHttpsAddress();
+    return resolveSnapshotSource(raftHA.getLeaderId()).httpsAddress();
   }
 
   // @VisibleForTesting
@@ -2778,8 +2786,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
           LogManager.instance().log(this, Level.WARNING, "Refusing a snapshot resync: %s", source.refusal());
           return;
         }
-        final String leaderHttpAddr = source.httpAddress();
-        downloadAllDatabasesFrom(leaderHttpAddr);
+        downloadAllDatabasesFrom(source);
       } finally {
         snapshotDownloadLock.unlock();
       }
@@ -2799,12 +2806,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
-   * Reinstalls every present database from {@code leaderHttpAddr} and resolves the state a full resync clears.
-   * The caller has already established that the address may be pulled from ({@link #resolveSnapshotSource}) and
-   * holds {@link #snapshotDownloadLock}.
+   * Reinstalls every present database from {@code source} and resolves the state a full resync clears. Takes the
+   * whole verdict rather than one address so the encrypted endpoint reaching the installer is the guarded one
+   * too (issue #6221). The caller has already established that it may be pulled from
+   * ({@link #resolveSnapshotSource}) and holds {@link #snapshotDownloadLock}.
    */
-  private void downloadAllDatabasesFrom(final String leaderHttpAddr) throws IOException {
-    final String leaderHttpsAddr = raftHAServer.getLeaderHttpsAddress();
+  private void downloadAllDatabasesFrom(final PeerDialAddress source) throws IOException {
+    final String leaderHttpAddr = source.httpAddress();
+    final String leaderHttpsAddr = source.httpsAddress();
     final String clusterToken = raftHAServer.getClusterToken();
     int resynced = 0;
     for (final String dbName : server.getDatabaseNames()) {
@@ -2974,7 +2983,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
               return;
             }
             final String leaderHttpAddr = source.httpAddress();
-            final String leaderHttpsAddr = raftHAServer.getLeaderHttpsAddress();
+            final String leaderHttpsAddr = source.httpsAddress();
             final String clusterToken = raftHAServer.getClusterToken();
             // install() keeps the database open during the download and rolls back on failure, so a
             // targeted resync never leaves it closed.

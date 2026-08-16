@@ -1946,6 +1946,16 @@ that names the wrong *peer* rather than this node.
 | a compared peer's checksums differ | `INCONSISTENCY_DETECTED` | `INCONSISTENCY_DETECTED` |
 | a peer could not be verified (unreachable, timed out, or no address identifies it) | `INCONSISTENCY_DETECTED` | `VERIFICATION_INCOMPLETE` |
 
+The guard covers the encrypted endpoint too, which is not the formality it looks like: a peer's HTTPS address is
+read from the 5th field of `arcadedb.ha.serverList` where its HTTP address is read from the 3rd, each with its own
+derive fallback onto **this** node's port for that protocol. A cluster that declares distinct `http` ports and
+omits the `https` ones therefore passes the HTTP check with every peer's HTTPS endpoint still collapsed onto this
+node's own. `getUnambiguousPeerHttpsAddress` and `getLocalHttpsAddress` ask the HTTPS endpoint the same two
+questions; withheld, it reads to the caller exactly like an absent one, so the dial falls back to the guarded
+plain-HTTP endpoint rather than being refused. The snapshot-download paths of #6202 take the guarded HTTPS address
+now as well, and so does the leader's automatic resync of a stalled replica (#4728), whose payload - "drop your
+copy of every database and download it again" - is the most destructive of the family.
+
 `ALL_CONSISTENT` is no longer reachable while any peer is unverified - an unverified peer is not a consistent one
 - and a node being down is no longer reported as a divergence somebody has to go and find. Alerting that keys on
 `overallStatus != "ALL_CONSISTENT"` is unaffected; alerting that keys on `INCONSISTENCY_DETECTED` specifically

@@ -314,18 +314,16 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
       // separate port. Forcing an https scheme onto the plain HTTP port fails with "Unsupported or
       // unrecognized SSL message" (issue #4470). When SSL is enabled, prefer the peer's resolved HTTPS
       // endpoint (explicit 5th field of HA_SERVER_LIST, or derived from the local HTTPS port);
-      // otherwise fall back to plain HTTP on the always-present HTTP listener. The guard above stands for both:
-      // the two endpoints are declared and derived the same way from the same list, so an HTTP address that does
-      // not identify this peer says its HTTPS one does not either. That is the substitution the snapshot download
-      // path makes as well - guardedLeaderHttpsAddress() withholds the HTTPS endpoint on the HTTP verdict.
+      // otherwise fall back to plain HTTP on the always-present HTTP listener. Both endpoints come from the
+      // guard: the HTTPS one is read from a different field of the server list, with its own derive fallback
+      // onto THIS node's HTTPS port, so a cluster that declares distinct http ports and omits the https ones
+      // passes the HTTP check with every peer's HTTPS endpoint still collapsed onto our own. A withheld HTTPS
+      // address arrives here as null and takes the same route an absent one always has (issue #6221).
       String endpoint = dial.httpAddress();
       boolean https = false;
-      if (useSsl) {
-        final String peerHttpsAddr = raftHAServer.getPeerHttpsAddress(peer.getId());
-        if (peerHttpsAddr != null) {
-          endpoint = peerHttpsAddr;
-          https = true;
-        }
+      if (useSsl && dial.httpsAddress() != null) {
+        endpoint = dial.httpsAddress();
+        https = true;
       }
 
       final String url = (https ? "https" : "http") + "://" + endpoint

@@ -25,9 +25,9 @@ import org.apache.ratis.protocol.RaftPeerId;
 import java.util.logging.Level;
 
 /**
- * The HTTP endpoint one cluster node may dial another on, or the reason there is none. Exactly one of the two
- * components is set: {@link #httpAddress()} on an address that may be dialled, {@link #refusal()} on one that
- * may not.
+ * The endpoint one cluster node may dial another on, or the reason there is none. Either {@link #httpAddress()}
+ * is set - with {@link #httpsAddress()} alongside it when an encrypted one is available and passes the same
+ * checks - or {@link #refusal()} is, never both.
  * <p>
  * A resolved peer address is only as good as the configuration behind it. With no {@code http} port declared in
  * {@link GlobalConfiguration#HA_SERVER_LIST}, a peer's HTTP endpoint is <em>derived</em> as its Raft host plus
@@ -44,11 +44,11 @@ import java.util.logging.Level;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public record PeerDialAddress(String httpAddress, String refusal) {
+public record PeerDialAddress(String httpAddress, String httpsAddress, String refusal) {
 
   /** A refusal carrying {@code reason}, phrased to be appended to a caller's "refusing to ..." log line. */
   public static PeerDialAddress refuse(final String reason) {
-    return new PeerDialAddress(null, reason);
+    return new PeerDialAddress(null, null, reason);
   }
 
   /** True when there is no address this node may dial, and {@link #refusal()} says why. */
@@ -57,9 +57,9 @@ public record PeerDialAddress(String httpAddress, String refusal) {
   }
 
   /**
-   * The HTTP address {@code peerId} may be dialled on, or the reason it may not be dialled at all.
+   * The address {@code peerId} may be dialled on, or the reason it may not be dialled at all.
    * <p>
-   * Three refusals, in the order that keeps the message the most specific:
+   * Four refusals, in the order that keeps the message the most specific:
    * <ul>
    * <li><b>There is no peer.</b> A {@code null} id - an unknown leader, an empty group - has no address, and
    * "unresolvable" would read as a configuration fault rather than as "nobody has been elected yet".</li>
@@ -74,6 +74,15 @@ public record PeerDialAddress(String httpAddress, String refusal) {
    * </ul>
    * The address is compared through {@link RaftHAServer#isSameHttpEndpoint}, the same comparison the
    * write-forwarding path makes, so the two cannot drift apart.
+   * <p>
+   * A caller that prefers an encrypted endpoint gets one in {@link #httpsAddress()} - {@code null} when SSL is
+   * off, when no HTTPS endpoint resolves, or when the one that does fails these same checks. It is asked
+   * separately rather than inferred from the HTTP verdict, because the two are read from independent fields of
+   * {@link GlobalConfiguration#HA_SERVER_LIST} (the 3rd and the 5th) with independent derive fallbacks: a cluster
+   * that declares distinct {@code http} ports and omits the {@code https} one passes the HTTP check with every
+   * peer's HTTPS endpoint still collapsed onto this node's own. Withheld, it reads to the caller exactly like an
+   * absent one, so the dial falls back to the guarded plain-HTTP endpoint - the listener that is always there -
+   * rather than being refused outright (issue #6221).
    *
    * @param role how the peer is named in the refusal - {@code "leader"} where the peer is being dialled as one,
    *             {@code "peer"} otherwise. Operator-facing text only; it changes no decision.
@@ -105,6 +114,22 @@ public record PeerDialAddress(String httpAddress, String refusal) {
           + "come straight back here. Declare each node's 'http' port explicitly in "
           + GlobalConfiguration.HA_SERVER_LIST.getKey() + " (issue #6191)");
 
-    return new PeerDialAddress(httpAddress, null);
+    return new PeerDialAddress(httpAddress, encryptedEndpointOf(raft, peerId), null);
+  }
+
+  /**
+   * The peer's HTTPS endpoint when it passes the same two checks the HTTP one just did, {@code null} otherwise.
+   * <p>
+   * Silent where the HTTP arm logs: this one degrading to {@code null} is not a refusal - the caller falls back to
+   * the plain-HTTP endpoint it was already handed - and a line per attempt for an SSL cluster that simply has not
+   * declared its {@code https} ports would say the same thing the resolver's own one-time INFO already says.
+   */
+  private static String encryptedEndpointOf(final RaftHAServer raft, final RaftPeerId peerId) {
+    final String httpsAddress = raft.getUnambiguousPeerHttpsAddress(peerId);
+    if (httpsAddress == null)
+      return null;
+    final String localHttpsAddress = raft.getLocalHttpsAddress();
+    return localHttpsAddress != null && RaftHAServer.isSameHttpEndpoint(localHttpsAddress, httpsAddress)
+        ? null : httpsAddress;
   }
 }

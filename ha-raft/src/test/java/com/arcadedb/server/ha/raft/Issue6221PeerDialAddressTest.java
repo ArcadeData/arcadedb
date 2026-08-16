@@ -130,14 +130,63 @@ class Issue6221PeerDialAddressTest {
     assertThat(dial.refusal()).contains("identifies peer nobody_9999");
   }
 
-  /** A hand-built refusal carries no address, so a caller cannot dial one by mistake. */
+  /** A hand-built refusal carries no address of either kind, so a caller cannot dial one by mistake. */
   @Test
   void aHandBuiltRefusalCarriesNoAddress() {
     final PeerDialAddress refusal = PeerDialAddress.refuse("this node is the leader");
 
     assertThat(refusal.refused()).isTrue();
     assertThat(refusal.httpAddress()).isNull();
+    assertThat(refusal.httpsAddress()).isNull();
     assertThat(refusal.refusal()).isEqualTo("this node is the leader");
+  }
+
+  /**
+   * The HTTPS endpoint is asked the same two questions, and it has to be asked <em>separately</em>: it is read
+   * from the 5th field of the server list where the HTTP one is read from the 3rd, each with its own derive
+   * fallback onto this node's port for that protocol. A cluster that declares distinct {@code http} ports and
+   * shares an {@code https} one therefore passes the HTTP check with an HTTPS endpoint that identifies nobody -
+   * the exact combination an HTTP-only guard would wave through.
+   */
+  @Test
+  void anAmbiguousHttpsEndpointIsWithheldEvenWhenTheHttpOneIsAccepted() {
+    // host:raftPort:httpPort:priority:httpsPort - distinct HTTP ports, one shared HTTPS port.
+    final RaftHAServer raft = newDetachedServer(
+        "localhost:2434:2480:0:2490,localhost:2435:2481:0:2491,localhost:2436:2482:0:2491");
+
+    final PeerDialAddress dial = PeerDialAddress.resolve(raft, RaftPeerId.valueOf("localhost_2435"), "peer");
+
+    assertThat(dial.refused()).as("the HTTP endpoint identifies the peer, so the dial is allowed").isFalse();
+    assertThat(dial.httpAddress()).isEqualTo("localhost:2481");
+    assertThat(dial.httpsAddress())
+        .as("but two peers answer to localhost:2491, so it identifies neither and must not be dialled")
+        .isNull();
+  }
+
+  /** A declared HTTPS endpoint of its own is handed over, so the guard does not cost an SSL cluster its TLS. */
+  @Test
+  void aPeerWithAnHttpsEndpointOfItsOwnKeepsIt() {
+    final RaftHAServer raft = newDetachedServer(
+        "localhost:2434:2480:0:2490,localhost:2435:2481:0:2491,localhost:2436:2482:0:2492");
+
+    final PeerDialAddress dial = PeerDialAddress.resolve(raft, RaftPeerId.valueOf("localhost_2435"), "peer");
+
+    assertThat(dial.httpAddress()).isEqualTo("localhost:2481");
+    assertThat(dial.httpsAddress()).isEqualTo("localhost:2491");
+  }
+
+  /** And the HTTPS endpoint that resolves to this node's own listener is withheld for the same reason. */
+  @Test
+  void anHttpsEndpointThatIsThisNodesOwnIsWithheld() {
+    final RaftHAServer raft = newDetachedServer(
+        "127.0.0.1:2434:2480:0:2490,localhost:2435:2481:0:2490,localhost:2436:2482:0:2492");
+
+    final PeerDialAddress dial = PeerDialAddress.resolve(raft, RaftPeerId.valueOf("localhost_2435"), "peer");
+
+    assertThat(dial.refused()).isFalse();
+    assertThat(dial.httpsAddress())
+        .as("localhost:2490 and 127.0.0.1:2490 are one socket, and it is ours")
+        .isNull();
   }
 
   /**
