@@ -348,6 +348,13 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
      * loop's length, which is exactly what these knobs make unbounded - node2vec's context window may span a
      * whole walk, so one walk alone is O(walkLength&sup2;). Testing every 1024 iterations instead bounds the
      * latency by a fixed amount of work at the cost of one AND and one branch per iteration.
+     * <p>
+     * "Every 1024" describes a counter that keeps climbing. The counter belongs to the caller, so a loop whose
+     * counter <em>restarts</em> - the negative-sampling loop runs {@code ns} from 0 again for every
+     * (position, context) pair - also tests on its first iteration every time round. That is deliberate rather
+     * than a redundancy to remove: it costs one flag test per restart, and it is what keeps a small
+     * {@code negSamples} responsive, since the enclosing context checkpoint fires only about once every 1024
+     * positions when the window is narrow.
      *
      * @param iterationCounter the caller's loop counter; its absolute value does not matter, only that it
      *                         advances by one per iteration

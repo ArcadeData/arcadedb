@@ -252,6 +252,10 @@ public class AlgoNode2Vec extends AbstractAlgoProcedure {
               // maximum: one (position, context) pair costs negSamples x dim. The enclosing checkpoint runs
               // before the sampling starts, so without one here a single pair is unabortable however long it
               // takes - the same "checkpoint outside the unbounded loop" shape closed above for windowSize.
+              // Note ns restarts at 0 per pair, so this also tests once per pair and not only every 1024
+              // samples. Deliberate: one flag test per pair is what keeps the default negSamples of 5
+              // responsive, since the ctx checkpoint above fires only about once every 1024 positions when
+              // the window is narrow.
               guard.checkPeriodically(ns);
               int neg = rng.nextInt(n);
               if (neg == center || neg == ctxNode)
