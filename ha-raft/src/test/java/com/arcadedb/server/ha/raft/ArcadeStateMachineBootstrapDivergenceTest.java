@@ -299,6 +299,24 @@ class ArcadeStateMachineBootstrapDivergenceTest {
         .containsExactly(DB_OTHER);
   }
 
+  /**
+   * A mark is only ever loaded for an entry that also carries a baseline. That is what makes "every
+   * marked database has a baseline" an invariant of the in-memory state rather than a property of the
+   * current call graph, and therefore what lets the writer iterate the baselines alone without dropping
+   * a mark on the floor.
+   */
+  @Test
+  void aMarkWithoutABaselineIsNotLoaded() throws Exception {
+    final Path raftDir = serverDir.resolve(".raft");
+    Files.createDirectories(raftDir);
+    Files.writeString(raftDir.resolve("bootstrap-baselines"), "{\"" + DB_OTHER + "\":{\"unreconciled\":true}}");
+
+    final ArcadeStateMachine sm = newStateMachine();
+
+    assertThat(sm.getBootstrapUnreconciledDatabases()).isEmpty();
+    assertThat(sm.getBootstrapBaseline(DB_OTHER)).isNull();
+  }
+
   /** With nothing diverged the verification is a no-op that cannot invent an alert. */
   @Test
   void reconcilingWithNoDivergenceDoesNothing() {

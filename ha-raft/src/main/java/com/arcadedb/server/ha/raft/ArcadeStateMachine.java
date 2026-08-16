@@ -2417,9 +2417,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
         final Map<String, BootstrapBaseline> leaderStates = BootstrapElection.fetchBootstrapState(
             leaderHttpAddr, clusterToken, pending, BOOTSTRAP_DIVERGENCE_PROBE_TIMEOUT_MS);
         if (leaderStates == null) {
+          // The throttle slot is spent whether or not the probe answered, exactly as the stale-snapshot
+          // backstop spends its own on a failed attempt: the next try is the next check window, not the
+          // next health tick. Said plainly here so the wait is not read as seconds. The mark stays raised
+          // in the meantime, so a failed probe never retires an alert.
           LogManager.instance().log(this, Level.INFO,
-              "Could not verify bootstrap divergence of %s against leader %s; retrying on a later health tick",
-              pending, leaderHttpAddr);
+              "Could not verify bootstrap divergence of %s against leader %s; the divergence stays reported "
+                  + "and the check is retried in the next window (>= %d ms)",
+              pending, leaderHttpAddr, BOOTSTRAP_DIVERGENCE_CHECK_INTERVAL_MS);
           return;
         }
         reconcileBootstrapDivergence(leaderStates);
@@ -2822,12 +2827,18 @@ public class ArcadeStateMachine extends BaseStateMachine {
               // putIfAbsent is defensive: recordBootstrapBaseline already loads before it puts, so a
               // session-applied baseline is written after this load runs and would win anyway; this
               // just guarantees the on-disk copy never overwrites a value already present in memory.
-              if (fingerprint != null)
-                bootstrapBaselines.putIfAbsent(name, new BootstrapBaseline(fingerprint, entry.getLong("lastTxId", -1)));
+              if (fingerprint == null)
+                continue;
+              bootstrapBaselines.putIfAbsent(name, new BootstrapBaseline(fingerprint, entry.getLong("lastTxId", -1)));
               // The overwrite-guard mark (issue #6124). Unlike the baseline it is not re-derivable from
               // the Raft log after a restart - the per-database replay-skip stops the refusal branch from
               // running again - so the persisted flag is the only thing that carries it forward. Absent
               // in files written before #6124: getBoolean's default reads those as "not diverged".
+              //
+              // Read only for an entry that also carries a baseline, which is what makes "every marked
+              // database has a baseline" an invariant of the in-memory state rather than a property of
+              // the current call graph - and therefore what lets the writer below iterate the baselines
+              // alone without dropping a mark on the floor.
               if (entry.getBoolean("unreconciled", false))
                 bootstrapUnreconciledDatabases.add(name);
             }
@@ -2943,12 +2954,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
           entry.put("unreconciled", true);
         json.put(e.getKey(), entry);
       }
-      // A mark is always set right after its baseline was recorded, so this loop normally adds nothing.
-      // It is here so the mark - which, unlike the baseline, cannot be re-derived from the Raft log after
-      // a restart - can never be dropped on the floor by a future caller that marks without a baseline.
-      for (final String dbName : bootstrapUnreconciledDatabases)
-        if (!json.has(dbName))
-          json.put(dbName, new JSONObject().put("unreconciled", true));
+      // Iterating the baselines alone is sufficient for the marks too: a mark is only ever added right
+      // after its baseline was recorded, and the loader refuses one on an entry that carries no
+      // fingerprint, so a marked database without a baseline cannot exist in memory to be missed here.
       FileUtils.atomicWriteFile(file.toFile(), json.toString());
     } catch (final Exception e) {
       // WARNING, not FINE: unlike the applied-index file (whose loss merely re-runs an idempotent
