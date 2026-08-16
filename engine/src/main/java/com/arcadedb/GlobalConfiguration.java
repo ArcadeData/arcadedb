@@ -1210,6 +1210,19 @@ public enum GlobalConfiguration {
       (WARNING: removes the protection against materializing an unbounded result set in memory). Default is 20000""",
       Integer.class, 20_000),
 
+  SERVER_HTTP_QUERY_MAX_RESULT_ROWS("arcadedb.server.httpQueryMaxResultRows", SCOPE.SERVER,
+      """
+      Hard ceiling on the number of rows the HTTP query/command endpoints materialize into a single response. \
+      Where 'arcadedb.server.httpQueryDefaultLimit' caps only the callers that state no limit of their own, this \
+      ceiling also bounds the ones that do: a request `limit` at or below it - and a LIMIT the query itself \
+      carries - is honored as written, while a larger value, or an explicitly unlimited `limit` of -1/0, cannot \
+      push a single response past it. A result that would exceed the ceiling fails the request with HTTP 413 \
+      naming this setting, exactly as the gRPC unary ExecuteQuery path answers RESOURCE_EXHAUSTED, rather than \
+      silently truncating: a truncated response indistinguishable from a complete one is the defect issue #5711 \
+      fixed. Set to -1 or 0 for unlimited (WARNING: removes the protection against materializing an unbounded \
+      result set in memory). Default is 1000000""",
+      Integer.class, 1_000_000),
+
   SERVER_HTTP_STREAMING_READ_TIMEOUT("arcadedb.server.httpStreamingReadTimeout", SCOPE.SERVER,
       """
       Budget in milliseconds granted to endpoints that consume the request body while working (today only \

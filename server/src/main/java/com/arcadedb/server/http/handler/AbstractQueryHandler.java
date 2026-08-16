@@ -217,6 +217,33 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
   }
 
   /**
+   * Serializes a result set under the cap the caller is entitled to, and refuses the response outright when the
+   * hard ceiling {@code arcadedb.server.httpQueryMaxResultRows} is what stopped it (issue #5719).
+   * <p>
+   * Two caps, two different answers, and the difference is who asked for it. {@code statedLimit} is what the
+   * request, the query's own LIMIT or the configured default asked for: reaching it is an ordinary truncation,
+   * reported with {@code truncated} and left to the client. The ceiling is what the operator asked for, on
+   * behalf of every other tenant of the server: reaching it means the response the caller wanted cannot be
+   * produced at all, and answering a truncated one instead would re-introduce the silent short answer issue
+   * #5711 removed - for the callers that state a limit of their own, who are exactly the ones the default cap
+   * no longer protects against.
+   * <p>
+   * The ceiling therefore never shows up in a successful response: a 200 either carries everything within
+   * {@code statedLimit} or was cut by {@code statedLimit} itself, which is why the caller reports
+   * {@code statedLimit} back as the effective {@code limit} of the response.
+   */
+  protected SerializationOutcome serializeResultSetBounded(final Database database, final String serializer,
+      final int statedLimit, final int maxResultRows, final JSONObject response, final ResultSet qResult,
+      final boolean includeTypeHints) {
+    final int limit = applyMaxResultRows(statedLimit, maxResultRows);
+    final SerializationOutcome outcome = serializeResultSet(database, serializer, limit, response, qResult,
+        includeTypeHints);
+    if (limit != statedLimit && outcome.truncated())
+      throw resultSetTooLarge(maxResultRows);
+    return outcome;
+  }
+
+  /**
    * @param includeTypeHints whether to emit the per-column {@code @props} type hint on non-element result rows
    *                         (issue #5812). Off by default on the HTTP surface: only a caller that must rebuild
    *                         the exact Java type of a projection/aggregate column - today the RemoteDatabase Java
