@@ -63,6 +63,7 @@ import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
@@ -211,6 +212,43 @@ public class ArcadeStateMachine extends BaseStateMachine {
       new ConcurrentHashMap<>();
   private volatile boolean bootstrapBaselinesLoaded   = false;
   private final    Object  bootstrapBaselinesFileLock = new Object();
+
+  /**
+   * Databases that took the "local is fresher, refuse to overwrite" branch of
+   * {@link #applyBootstrapFingerprintEntry} and were therefore NOT reinstalled from the cluster's
+   * chosen bootstrap source (issue #6124).
+   * <p>
+   * The refusal itself is correct - it protects a genuinely fresher operator copy from being
+   * silently discarded - but it leaves this node's file-id space assigned by an independent history,
+   * out of step with every other peer. Nothing reconciled that afterwards: issue #6118 made the one
+   * fatal consequence (a later replicated schema change reusing a file id already in use here) throw
+   * and resync, but that fires only if such an entry ever happens to arrive. A node that never
+   * receives a colliding schema change stayed diverged indefinitely and the condition was invisible
+   * outside a single SEVERE line emitted once at bootstrap.
+   * <p>
+   * The set is the durable record of that state: it is persisted alongside the baselines (the
+   * {@code unreconciled} flag of each entry in {@code .raft/bootstrap-baselines}), because the
+   * per-database replay-skip means the refusal branch never re-runs after a restart and the mark
+   * would otherwise be lost. It is re-verified periodically against the leader by
+   * {@link #verifyBootstrapDivergence()}, surfaced to operators by {@code ClusterAlerts}, and cleared
+   * exactly where this node's copy is actually replaced by the leader's.
+   */
+  private final Set<String> bootstrapUnreconciledDatabases = ConcurrentHashMap.newKeySet();
+
+  // Wall-clock of the last bootstrap-divergence verification submitted by verifyBootstrapDivergence();
+  // 0 = none yet. Throttles the HealthMonitor-driven check, which ticks far more often than a probe of
+  // the leader (which computes a SHA-256 over each database directory there) is worth paying for.
+  private final AtomicLong lastBootstrapDivergenceCheckMs = new AtomicLong();
+
+  // How often a still-unreconciled bootstrap divergence is re-verified against the leader. Deliberately
+  // far slower than the snapshot backstops: the condition is permanent until an operator chooses which
+  // copy the cluster keeps, so re-probing it at the health-tick rate would only re-hash every database
+  // on the leader to reach the same conclusion. Five minutes still clears the mark promptly once the
+  // copies do converge, and it bounds the repeated SEVERE to a rate an operator can live with.
+  private static final long BOOTSTRAP_DIVERGENCE_CHECK_INTERVAL_MS = 300_000L;
+  // Per-probe HTTP ceiling, matching BootstrapElection's own per-attempt cap: an unreachable or slow
+  // leader must cost one bounded attempt, not park the lifecycle executor until the next check window.
+  private static final long BOOTSTRAP_DIVERGENCE_PROBE_TIMEOUT_MS  = 5_000L;
 
   /** Per-database bootstrap baseline as it appears in the committed Raft log entry. */
   public record BootstrapBaseline(String fingerprint, long lastTxId) {
@@ -1340,6 +1378,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
       LogManager.instance().log(this, Level.INFO,
           "HA resync finished (mode=snapshot, result=ok): snapshotIndex=%d", snapshotIndex);
       clearDivergedState();
+      // A leader-driven install reinstalls every database present on this node, so a copy the bootstrap
+      // overwrite guard had kept is gone and its divergence mark with it (issue #6124).
+      clearAllBootstrapUnreconciled();
       return installedTermIndex;
 
     } catch (final SnapshotRefusedException e) {
@@ -1979,6 +2020,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         throw new RuntimeException("Failed to install snapshot for restored database '" + databaseName + "'", e);
       }
       LogManager.instance().log(this, Level.INFO, "Database '%s' reinstalled via forceSnapshot from leader", databaseName);
+      clearBootstrapUnreconciled(databaseName);
       return;
     }
 
@@ -2067,21 +2109,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
     }
 
     // Compute local state.
-    final String localFingerprint;
-    final long localLastTxId;
-    final String localPath;
+    final BootstrapBaseline local;
     try {
-      final ServerDatabase serverDb = server.getDatabase(dbName);
-      final DatabaseInternal embedded = serverDb.getWrappedDatabaseInstance().getEmbedded();
-      if (!(embedded instanceof LocalDatabase localDb)) {
-        LogManager.instance().log(this, Level.WARNING,
-            "BOOTSTRAP_FINGERPRINT_ENTRY for '%s': embedded database is not a LocalDatabase, skipping",
-            dbName);
-        return;
-      }
-      localPath = localDb.getDatabasePath();
-      localFingerprint = BootstrapFingerprint.compute(new File(localPath));
-      localLastTxId = localDb.getLastTransactionId();
+      local = readLocalBootstrapState(dbName);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING,
           "Could not read local bootstrap state for '%s': %s; falling back to leader-shipped full snapshot",
@@ -2089,6 +2119,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
       installFromLeaderForBootstrap(dbName);
       return;
     }
+    if (local == null) {
+      LogManager.instance().log(this, Level.WARNING,
+          "BOOTSTRAP_FINGERPRINT_ENTRY for '%s': embedded database is not a LocalDatabase, skipping",
+          dbName);
+      return;
+    }
+    final String localFingerprint = local.fingerprint();
+    final long localLastTxId = local.lastTxId();
 
     // Match: bootstrap locally, no bytes move.
     if (localLastTxId == chosenLastTxId && chosenFingerprint.equals(localFingerprint)) {
@@ -2104,14 +2142,22 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // others, and restart. Without this guard, a misconfigured rolling deploy could erase newer
     // transactions on a single pod by re-bootstrapping from older peers.
     if (localLastTxId > chosenLastTxId) {
+      // The refusal keeps this node's file-id space assigned by an independent history, and nothing
+      // used to reconcile it afterwards (issue #6124). Record it durably so the condition survives the
+      // restart that the per-database replay-skip stops this branch from re-evaluating, gets re-verified
+      // against the leader by verifyBootstrapDivergence(), and is visible in the cluster status instead
+      // of only in this one log line.
+      markBootstrapUnreconciled(dbName);
       LogManager.instance().log(this, Level.SEVERE,
           """
           Database '%s': local lastTxId=%d is GREATER than cluster bootstrap lastTxId=%d. \
           This peer's data is fresher than the cluster's chosen baseline (committed \
           BOOTSTRAP_FINGERPRINT_ENTRY). Refusing to overwrite local data. To preserve it, \
           stop the cluster, copy this peer's database directory to every other peer, then \
-          restart all peers.""",
-          dbName, localLastTxId, chosenLastTxId);
+          restart all peers. Until this node's copy is reconciled its file ids are out of step \
+          with the rest of the cluster: to discard it and adopt the leader's copy instead, run \
+          POST /api/v1/cluster/resync/%s on this node.""",
+          dbName, localLastTxId, chosenLastTxId, dbName);
       return;
     }
 
@@ -2201,6 +2247,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
           this::guardedLeaderHttpAddress, this::guardedLeaderHttpsAddress, clusterToken, server);
       LogManager.instance().log(this, Level.INFO,
           "Database '%s' reinstalled after bootstrap mismatch", dbName);
+      clearBootstrapUnreconciled(dbName);
     } catch (final IOException e) {
       throw new RuntimeException("Failed to install snapshot for bootstrap-mismatched database '" + dbName + "'", e);
     }
@@ -2257,6 +2304,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
       SnapshotInstaller.install(dbName, SnapshotInstaller.resolveDatabasePath(server, dbName),
           this::guardedLeaderHttpAddress, this::guardedLeaderHttpsAddress, clusterToken, server);
       LogManager.instance().log(this, Level.INFO, "Database '%s' resynced from leader on operator request", dbName);
+      // This is the action the bootstrap-divergence alert asks the operator for: the local copy the
+      // overwrite guard kept has just been replaced, so the mark goes with it (issue #6124).
+      clearBootstrapUnreconciled(dbName);
     } catch (final IOException e) {
       throw new ReplicationException("Failed to resync database '" + dbName + "' from leader", e);
     }
@@ -2270,6 +2320,170 @@ public class ArcadeStateMachine extends BaseStateMachine {
   public BootstrapBaseline getBootstrapBaseline(final String dbName) {
     ensureBootstrapBaselinesLoaded();
     return bootstrapBaselines.get(dbName);
+  }
+
+  /**
+   * Reads this node's own {@code (fingerprint, lastTxId)} for {@code dbName} - the same pair the
+   * bootstrap protocol compares peers on - or {@code null} when the database is not backed by a
+   * {@link LocalDatabase} (nothing to fingerprint). Shared by the bootstrap verification in
+   * {@link #applyBootstrapFingerprintEntry} and the periodic re-verification in
+   * {@link #reconcileBootstrapDivergence}, so the two can never drift on what "local state" means.
+   *
+   * @throws Exception when the database cannot be opened or its directory cannot be read; callers
+   *                   decide what an unreadable local copy means for them.
+   */
+  private BootstrapBaseline readLocalBootstrapState(final String dbName) throws Exception {
+    final ServerDatabase serverDb = server.getDatabase(dbName);
+    final DatabaseInternal embedded = serverDb.getWrappedDatabaseInstance().getEmbedded();
+    if (!(embedded instanceof LocalDatabase localDb))
+      return null;
+    return new BootstrapBaseline(BootstrapFingerprint.compute(new File(localDb.getDatabasePath())),
+        localDb.getLastTransactionId());
+  }
+
+  /**
+   * Databases that took the bootstrap "local is fresher, refuse to overwrite" branch and have not been
+   * reconciled with the cluster since (issue #6124), sorted for deterministic output. Read by
+   * {@code ClusterAlerts} so the condition is visible in {@code GET /api/v1/cluster} rather than only in
+   * a SEVERE line emitted once, at bootstrap, possibly several restarts ago.
+   */
+  public List<String> getBootstrapUnreconciledDatabases() {
+    ensureBootstrapBaselinesLoaded();
+    // The overwhelmingly common answer, and this is read on every Studio status poll: allocate nothing
+    // for it.
+    if (bootstrapUnreconciledDatabases.isEmpty())
+      return Collections.emptyList();
+    final List<String> names = new ArrayList<>(bootstrapUnreconciledDatabases);
+    Collections.sort(names);
+    return names;
+  }
+
+  /**
+   * Periodic re-verification of every database left diverged by the bootstrap overwrite guard
+   * (issue #6124), driven by the {@link HealthMonitor} tick.
+   * <p>
+   * The guard is deliberately passive - it protects an operator's fresher copy by leaving it alone -
+   * but it used to leave nothing behind that would ever look at that copy again. This asks the leader
+   * for its current {@code (fingerprint, lastTxId)} for exactly those databases and either
+   * <ul>
+   *   <li><b>confirms convergence</b> (the leader's fingerprint now equals this node's, i.e. the two
+   *       copies are byte-identical over the persisted content) and drops the mark, or</li>
+   *   <li><b>escalates</b>: re-raises the divergence as an operator-visible SEVERE naming both states
+   *       and the resync endpoint, and keeps the mark (and therefore the cluster alert) raised.</li>
+   * </ul>
+   * It deliberately does NOT resync by itself. Reinstalling from the leader is exactly what the guard
+   * refused to do, and doing it later behind the operator's back would discard the fresher data the
+   * guard exists to protect (the philosophy issue #6118 kept). The reconciliation is one explicit
+   * {@code POST /api/v1/cluster/resync/{database}} away, and this makes sure someone knows to run it.
+   * <p>
+   * Zero cost in the normal case: the marked set is empty and the method returns after one volatile
+   * read. When it is non-empty, the probe is throttled to one attempt per
+   * {@link #BOOTSTRAP_DIVERGENCE_CHECK_INTERVAL_MS} - it makes the leader hash every database directory
+   * it holds - and skipped on the leader, which has nothing to compare itself against.
+   */
+  public void verifyBootstrapDivergence() {
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (raftHA == null || server == null || raftHA.isLeader())
+      return;
+    ensureBootstrapBaselinesLoaded();
+    if (bootstrapUnreconciledDatabases.isEmpty())
+      return;
+
+    // Same two questions the other HealthMonitor-driven backstop asks before burning a throttle slot
+    // (issue #6202): the address must identify a single peer and must not be our own.
+    final String leaderHttpAddr = raftHA.getUnambiguousPeerHttpAddress(raftHA.getLeaderId());
+    if (leaderHttpAddr == null || raftHA.isOwnHttpAddress(leaderHttpAddr))
+      return; // no leader to compare against yet
+
+    final long now = System.currentTimeMillis();
+    // Floored at the snapshot cadence so a WAN cluster that has widened its watchdog does not get probed
+    // more often than it resyncs.
+    final long checkIntervalMs = Math.max(BOOTSTRAP_DIVERGENCE_CHECK_INTERVAL_MS, computeSnapshotWatchdogTimeoutMs());
+    final long previous = lastBootstrapDivergenceCheckMs.get();
+    if (previous != 0 && now - previous < checkIntervalMs)
+      return;
+    if (!lastBootstrapDivergenceCheckMs.compareAndSet(previous, now))
+      return; // another tick won the throttle slot
+
+    final Set<String> pending = new HashSet<>(bootstrapUnreconciledDatabases);
+    final String clusterToken = raftHA.getClusterToken();
+    try {
+      // Off the HealthMonitor thread: the probe is a blocking HTTP call to the leader and the monitor
+      // tick drives the Ratis lifecycle checks behind it.
+      lifecycleExecutor.submit(() -> {
+        final Map<String, BootstrapBaseline> leaderStates = BootstrapElection.fetchBootstrapState(
+            leaderHttpAddr, clusterToken, pending, BOOTSTRAP_DIVERGENCE_PROBE_TIMEOUT_MS);
+        if (leaderStates == null) {
+          LogManager.instance().log(this, Level.INFO,
+              "Could not verify bootstrap divergence of %s against leader %s; retrying on a later health tick",
+              pending, leaderHttpAddr);
+          return;
+        }
+        reconcileBootstrapDivergence(leaderStates);
+      });
+    } catch (final RejectedExecutionException ree) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Cannot schedule the bootstrap-divergence verification: executor is shut down", ree);
+    }
+  }
+
+  /**
+   * Compares this node's copy of every still-unreconciled database against the leader's reported state
+   * and either clears the mark or re-raises the alert. Package-private and free of network I/O so the
+   * verdict is unit-testable without a live cluster; {@link #verifyBootstrapDivergence()} supplies the
+   * leader's states over the existing {@code /api/v1/cluster/bootstrap-state} RPC.
+   * <p>
+   * A database the leader does not report (dropped there, or not open) is left marked: absence is not
+   * evidence of convergence.
+   */
+  // @VisibleForTesting
+  void reconcileBootstrapDivergence(final Map<String, BootstrapBaseline> leaderStates) {
+    for (final String dbName : getBootstrapUnreconciledDatabases()) {
+      final BootstrapBaseline leaderState = leaderStates.get(dbName);
+      if (leaderState == null) {
+        LogManager.instance().log(this, Level.INFO,
+            "Bootstrap divergence of '%s' could not be verified: the leader reported no state for it", dbName);
+        continue;
+      }
+      if (server == null || !server.existsDatabase(dbName)) {
+        // Not currently loaded on this node. Deliberately neither cleared nor opened: existsDatabase
+        // answers "is it in the registry", not "is it on disk", so retiring the alert here would drop a
+        // real divergence for a database that is merely closed - and opening one just to fingerprint it
+        // would undo an operator's decision to leave it closed. A database actually dropped loses its
+        // mark with its baseline, on the DROP entry.
+        continue;
+      }
+      final BootstrapBaseline local;
+      try {
+        local = readLocalBootstrapState(dbName);
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Could not read local state of '%s' to verify bootstrap divergence: %s", dbName, e.getMessage());
+        continue;
+      }
+      if (local == null)
+        continue; // not a LocalDatabase: nothing to fingerprint, leave the mark alone
+
+      if (leaderState.fingerprint() != null && leaderState.fingerprint().equals(local.fingerprint())) {
+        clearBootstrapUnreconciled(dbName);
+        LogManager.instance().log(this, Level.INFO,
+            "Database '%s' is no longer diverged from the cluster: its content now matches the leader "
+                + "(fingerprint=%s, lastTxId=%d). Clearing the bootstrap-divergence alert.",
+            dbName, BootstrapElection.abbreviate(local.fingerprint()), local.lastTxId());
+        continue;
+      }
+
+      LogManager.instance().log(this, Level.SEVERE,
+          """
+          Database '%s' is STILL diverged from the cluster after the bootstrap overwrite guard kept the \
+          local copy: local (lastTxId=%d, fingerprint=%s) vs leader (lastTxId=%d, fingerprint=%s). This \
+          node's file ids were assigned by an independent history, so a later replicated schema change \
+          can collide with them. Either preserve this copy (stop the cluster and copy this node's \
+          database directory to every peer) or discard it and adopt the leader's copy by running \
+          POST /api/v1/cluster/resync/%s on this node.""",
+          dbName, local.lastTxId(), BootstrapElection.abbreviate(local.fingerprint()),
+          leaderState.lastTxId(), BootstrapElection.abbreviate(leaderState.fingerprint()), dbName);
+    }
   }
 
   /**
@@ -2593,6 +2807,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
               // just guarantees the on-disk copy never overwrites a value already present in memory.
               if (fingerprint != null)
                 bootstrapBaselines.putIfAbsent(name, new BootstrapBaseline(fingerprint, entry.getLong("lastTxId", -1)));
+              // The overwrite-guard mark (issue #6124). Unlike the baseline it is not re-derivable from
+              // the Raft log after a restart - the per-database replay-skip stops the refusal branch from
+              // running again - so the persisted flag is the only thing that carries it forward. Absent
+              // in files written before #6124: getBoolean's default reads those as "not diverged".
+              if (entry.getBoolean("unreconciled", false))
+                bootstrapUnreconciledDatabases.add(name);
             }
           }
         }
@@ -2629,8 +2849,57 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private void evictBootstrapBaseline(final String dbName) {
     synchronized (bootstrapBaselinesFileLock) {
       ensureBootstrapBaselinesLoaded();
-      if (bootstrapBaselines.remove(dbName) != null)
+      // The overwrite-guard mark lives in the same file entry, so a dropped database must lose both or
+      // the alert would outlive the database it names (issue #6124).
+      final boolean wasUnreconciled = bootstrapUnreconciledDatabases.remove(dbName);
+      if (bootstrapBaselines.remove(dbName) != null || wasUnreconciled)
         persistBootstrapBaselinesFile();
+    }
+  }
+
+  /**
+   * Durably records that {@code dbName} took the bootstrap "local is fresher, refuse to overwrite"
+   * branch and is therefore diverged from the rest of the cluster (issue #6124). Written under the same
+   * lock as the baselines because it is persisted in the same file entry; the caller has already
+   * recorded the baseline, so the entry exists.
+   */
+  private void markBootstrapUnreconciled(final String dbName) {
+    synchronized (bootstrapBaselinesFileLock) {
+      ensureBootstrapBaselinesLoaded();
+      if (bootstrapUnreconciledDatabases.add(dbName))
+        persistBootstrapBaselinesFile();
+    }
+  }
+
+  /**
+   * Clears the bootstrap-divergence mark of {@code dbName} (issue #6124). Called from every path that
+   * actually replaces this node's copy with the leader's - the bootstrap install, the targeted and
+   * operator-triggered resyncs, the forced reinstall - and from
+   * {@link #reconcileBootstrapDivergence} when the two copies are confirmed identical. Idempotent, and
+   * it does not rewrite the file when nothing was marked.
+   */
+  // @VisibleForTesting
+  void clearBootstrapUnreconciled(final String dbName) {
+    synchronized (bootstrapBaselinesFileLock) {
+      ensureBootstrapBaselinesLoaded();
+      if (bootstrapUnreconciledDatabases.remove(dbName))
+        persistBootstrapBaselinesFile();
+    }
+  }
+
+  /**
+   * Clears every bootstrap-divergence mark (issue #6124). Used by the two full-resync paths, which
+   * reinstall EVERY database present on this node from the leader - the same reasoning
+   * {@link #clearDivergedState()} makes for the diverged set.
+   */
+  // @VisibleForTesting
+  void clearAllBootstrapUnreconciled() {
+    synchronized (bootstrapBaselinesFileLock) {
+      ensureBootstrapBaselinesLoaded();
+      if (!bootstrapUnreconciledDatabases.isEmpty()) {
+        bootstrapUnreconciledDatabases.clear();
+        persistBootstrapBaselinesFile();
+      }
     }
   }
 
@@ -2651,8 +2920,18 @@ public class ArcadeStateMachine extends BaseStateMachine {
         final JSONObject entry = new JSONObject();
         entry.put("fingerprint", e.getValue().fingerprint());
         entry.put("lastTxId", e.getValue().lastTxId());
+        // Written only when set, so a healthy cluster's file keeps exactly the shape it had before
+        // issue #6124 and an older build reading it simply ignores the extra key.
+        if (bootstrapUnreconciledDatabases.contains(e.getKey()))
+          entry.put("unreconciled", true);
         json.put(e.getKey(), entry);
       }
+      // A mark is always set right after its baseline was recorded, so this loop normally adds nothing.
+      // It is here so the mark - which, unlike the baseline, cannot be re-derived from the Raft log after
+      // a restart - can never be dropped on the floor by a future caller that marks without a baseline.
+      for (final String dbName : bootstrapUnreconciledDatabases)
+        if (!json.has(dbName))
+          json.put(dbName, new JSONObject().put("unreconciled", true));
       FileUtils.atomicWriteFile(file.toFile(), json.toString());
     } catch (final Exception e) {
       // WARNING, not FINE: unlike the applied-index file (whose loss merely re-runs an idempotent
@@ -2831,6 +3110,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
     LogManager.instance().log(this, Level.INFO,
         "Snapshot resync completed: reinstalled %d database(s) from the leader; diverged state cleared", resynced);
     clearDivergedState();
+    // Every present database now carries the leader's copy, including any the bootstrap overwrite guard
+    // had kept (issue #6124).
+    clearAllBootstrapUnreconciled();
     // The databases now carry the leader's state, so a read floor published by a stale marker in
     // reinitialize() is satisfied. Record the marker index as the persisted applied position too:
     // without it the very same gap is re-detected on the next restart and the node re-downloads
@@ -2996,6 +3278,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
               LogManager.instance().log(this, Level.INFO,
                   "Targeted snapshot resync of quarantined database '%s' completed", dbName);
               clearDivergedDatabase(dbName);
+              clearBootstrapUnreconciled(dbName);
             }
           } finally {
             snapshotDownloadLock.unlock();
