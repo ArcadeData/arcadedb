@@ -1844,15 +1844,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   static HAServerPlugin.RoutingTable selectUnambiguousRouting(final HAServerPlugin.ROUTING_PROTOCOL protocol,
       final String[] addresses, final boolean[] fromConfig, final int count) {
-    // address -> {peers claiming it, of which declared}. Sized for the group: this runs per ROUTE request and
-    // per refusal, never on a data path.
-    final Map<String, int[]> claims = new HashMap<>(count * 2);
-    for (int i = 0; i < count; i++) {
-      final int[] claim = claims.computeIfAbsent(addresses[i], a -> new int[2]);
-      ++claim[0];
-      if (fromConfig[i])
-        ++claim[1];
-    }
+    final Map<String, int[]> claims = claimsByAddress(addresses, fromConfig, count);
 
     if (!identifiesOnePeer(claims.get(addresses[0]), fromConfig[0]))
       return null;
@@ -1865,9 +1857,74 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return new HAServerPlugin.RoutingTable(protocol, addresses[0], List.copyOf(readers));
   }
 
+  /**
+   * address -&gt; {peers claiming it, of which declared}. Sized for the group: every caller runs per ROUTE request,
+   * per refusal or per snapshot install, never on a data path.
+   */
+  private static Map<String, int[]> claimsByAddress(final String[] addresses, final boolean[] fromConfig,
+      final int count) {
+    final Map<String, int[]> claims = new HashMap<>(count * 2);
+    for (int i = 0; i < count; i++) {
+      final int[] claim = claims.computeIfAbsent(addresses[i], a -> new int[2]);
+      ++claim[0];
+      if (fromConfig[i])
+        ++claim[1];
+    }
+    return claims;
+  }
+
   /** True when the address this claim describes belongs to exactly one peer, or to the only one that declared it. */
   private static boolean identifiesOnePeer(final int[] claim, final boolean declared) {
     return claim[0] == 1 || (declared && claim[1] == 1);
+  }
+
+  /**
+   * The HTTP address of {@code peerId}, but only when it identifies that peer and no other; {@code null}
+   * otherwise. The same question {@link #selectUnambiguousRouting} asks of a client routing table, asked of the
+   * peer-to-peer HTTP endpoint (issue #6202).
+   * <p>
+   * With no {@code http} port declared in {@link GlobalConfiguration#HA_SERVER_LIST}, a peer's HTTP address is
+   * derived as its Raft host plus <em>this</em> node's port (see {@link #resolveHttpAddress(RaftPeerId)}), so on a
+   * cluster whose nodes differ by port rather than by host every peer collapses onto one address. Two peers can
+   * never legitimately answer on one {@code host:port} - they would be fighting over the socket - so an address
+   * two of them resolve to identifies at most one, and the resolver has no way to say which. A declared address
+   * outranks a derived one when they collide: the operator stated it, and the collision only proves the guess
+   * wrong.
+   * <p>
+   * The plain {@link #getPeerHttpAddress(RaftPeerId)} deliberately keeps returning the best-effort address for
+   * cluster reporting and for a caller that merely displays it. This variant is for the callers that act on the
+   * address unattended, where a wrong-but-plausible peer is worse than no peer at all: a follower that reconciles
+   * its databases from a node that is not the leader reports success and returns to the ready set carrying
+   * whatever it copied.
+   */
+  public String getUnambiguousPeerHttpAddress(final RaftPeerId peerId) {
+    final String address = resolveHttpAddress(peerId);
+    if (address == null)
+      return null;
+
+    final Collection<RaftPeer> peers = raftGroup.getPeers();
+    // Index 0 is always the peer asked about. The +1 is not slack: raftGroup holds the peers HA_SERVER_LIST was
+    // parsed into, so a peer that joined at runtime (addPeer, the Kubernetes auto-join) is not in getPeers() and
+    // occupies a slot beyond it - the same sizing getRoutingTable uses, for the same reason.
+    final String[] addresses = new String[peers.size() + 1];
+    final boolean[] fromConfig = new boolean[addresses.length];
+    addresses[0] = address;
+    fromConfig[0] = httpAddresses.containsKey(peerId);
+    int resolved = 1;
+
+    for (final RaftPeer peer : peers) {
+      if (peer.getId().equals(peerId))
+        continue;
+      final String other = resolveHttpAddress(peer);
+      if (other == null)
+        continue;
+      addresses[resolved] = other;
+      fromConfig[resolved] = httpAddresses.containsKey(peer.getId());
+      ++resolved;
+    }
+
+    final Map<String, int[]> claims = claimsByAddress(addresses, fromConfig, resolved);
+    return identifiesOnePeer(claims.get(address), fromConfig[0]) ? address : null;
   }
 
   /** Tells the operator, once per protocol, that peers shared an address and what to write to fix it. */

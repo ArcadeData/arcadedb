@@ -448,266 +448,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         idempotencyReservation = null;
       }
 
-    } catch (final ServerSecurityException e) {
-      // PASS SecurityException TO THE CLIENT
-      LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on command execution (%s): %s",
-              SecurityException.class.getSimpleName(), e.getMessage());
-      sendErrorResponse(exchange, 403, "Security error", e, null);
-    } catch (final SecurityException e) {
-      LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on command execution (%s): %s",
-              SecurityException.class.getSimpleName(), e.getMessage());
-      sendErrorResponse(exchange, 403, "Security error", e, null);
-    } catch (final ServerIsNotTheLeaderException e) {
-      LogManager.instance()
-              .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-                      e.getMessage());
-      sendErrorResponse(exchange, 400, "Cannot execute command", e, e.getLeaderAddress());
-    } catch (final NeedRetryException e) {
-      LogManager.instance()
-              .log(this, Level.FINE, "Error on command execution (%s): %s", getClass().getSimpleName(), e.getMessage());
-      sendErrorResponse(exchange, 503, "Cannot execute command", e, null);
-    } catch (final TransactionCommittedRemotelyException e) {
-      LogManager.instance()
-              .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-                      e.getMessage());
-      // 409 Conflict, NOT 5xx (#5064/#5075 review): the transaction IS durably committed cluster-wide -
-      // only the local apply failed. A 5xx would invite HTTP clients and load balancers to RETRY, which
-      // would apply the changes a second time (duplicate inserts) - the exact hazard the distinct
-      // exception type exists to prevent. Same rationale as the DuplicatedKeyException 409 below (#4350).
-      sendErrorResponse(exchange, 409, "Transaction committed cluster-wide but the local apply failed - do not retry", e, null);
-    } catch (final DuplicatedKeyException e) {
-      LogManager.instance()
-              .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-                      e.getMessage());
-      // 409 Conflict (RFC 9110 §15.5.10): a unique-constraint violation is a client data conflict,
-      // not a transient server-availability problem. 503 told clients/load balancers the request was
-      // retry-worthy, amplifying the bad write. See issue #4350.
-      sendErrorResponse(exchange, 409, "Found duplicate key in index", e,
-              e.getIndexName() + "|" + e.getKeys() + "|" + e.getCurrentIndexedRID());
-    } catch (final RecordNotFoundException e) {
-      LogManager.instance()
-              .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-                      e.getMessage());
-      sendErrorResponse(exchange, 404, "Record not found", e, null);
-    } catch (final QueryNotIdempotentException e) {
-      LogManager.instance()
-              .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-                      e.getMessage());
-      sendErrorResponse(exchange, 400, "Query is not idempotent", e, null);
-    } catch (final IllegalArgumentException e) {
-      LogManager.instance()
-              .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-                      e.getMessage());
-      sendErrorResponse(exchange, 400, "Cannot execute command", e, null);
-    } catch (final JSONException e) {
-      // The request payload is missing a property, carries a null where a value is required, or holds the wrong type
-      // for it: a malformed request, not a server fault. Without this arm it degraded to 500 (issue #5935).
-      LogManager.instance()
-              .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-                      e.getMessage());
-      sendErrorResponse(exchange, 400, "Invalid JSON payload", e, null);
-    } catch (final CommandExecutionException | CommandParsingException e) {
-      Throwable realException = e;
-      if (e.getCause() != null)
-        realException = e.getCause();
-      // Resolved once: the arm below needs both the answer and the exception itself, and the chain walk is not worth
-      // repeating.
-      final ArithmeticErrorException arithmetic = arithmeticError(e);
-
-      if (realException instanceof QueryNotIdempotentException) {
-        LogManager.instance()
-                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-                        realException.getMessage());
-        sendErrorResponse(exchange, 400, "Query is not idempotent", realException, null);
-      } else if (realException instanceof SecurityException) {
-        LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on command execution (%s): %s",
-                SecurityException.class.getSimpleName(), realException.getMessage());
-        sendErrorResponse(exchange, 403, "Security error", realException, null);
-      } else if (realException instanceof TransactionCommittedRemotelyException committedRemotely) {
-        // Symmetric with the un-wrapped arm (#5064/#5075): a wrapped committed-remotely outcome must keep
-        // its non-retryable 409 - degrading to 500 invites the client retry that inserts duplicates of
-        // records the cluster already committed. Same defense-in-depth as the DuplicatedKeyException
-        // branch below.
-        LogManager.instance()
-                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-                        realException.getMessage());
-        sendErrorResponse(exchange, 409, "Transaction committed cluster-wide but the local apply failed - do not retry",
-                committedRemotely, null);
-      } else if (realException instanceof DuplicatedKeyException dup) {
-        // Symmetric with the un-wrapped DuplicatedKeyException catch arm. Some code paths
-        // (e.g. script execution, command planners) wrap DuplicatedKeyException in
-        // CommandExecutionException; without this branch the response would degrade to 500.
-        // See issue #4350.
-        LogManager.instance()
-                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-                        realException.getMessage());
-        sendErrorResponse(exchange, 409, "Found duplicate key in index", dup,
-                dup.getIndexName() + "|" + dup.getKeys() + "|" + dup.getCurrentIndexedRID());
-      } else if (arithmetic != null) {
-        // An integer overflow or a division by zero is decided by the values the caller supplied, not by anything
-        // wrong with the server, and Neo4j classifies the whole category as a client error
-        // (Neo.ClientError.Statement.ArithmeticError). Reported as 400 with the arithmetic message rather than the
-        // 500 it used to degrade to. See issue #5602.
-        LogManager.instance()
-                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-                        arithmetic.getMessage());
-        sendErrorResponse(exchange, 400, "Cannot execute command", arithmetic, null);
-      } else if (e instanceof CommandParsingException || realException instanceof CommandParsingException) {
-        // A parsing/semantic validation error (malformed query, unknown variable, invalid MERGE
-        // rebind, unsupported Gremlin syntax such as Groovy closures, ...) is a client error - the query
-        // text is invalid, not an internal server fault. Surface as HTTP 400 with the real validation
-        // message so API consumers can fix the query, instead of a misleading 500. The check covers a
-        // CommandParsingException wrapped as the cause of a CommandExecutionException as well as a
-        // directly-thrown CommandParsingException, even when it carries its own cause (e.g. a Gremlin
-        // ScriptException, in which case realException is that cause). See issues #5191 and #5201.
-        final Throwable reported = e instanceof CommandParsingException ? e : realException;
-        LogManager.instance()
-                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-                        reported.getMessage());
-        sendErrorResponse(exchange, 400, "Cannot execute command", reported, null);
-      } else if (realException instanceof JSONException) {
-        // Symmetric with the un-wrapped JSONException arm above: a command planner that wraps the payload read in a
-        // CommandExecutionException must not turn the client's malformed JSON into a 500 (issue #5935).
-        LogManager.instance()
-                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-                        realException.getMessage());
-        sendErrorResponse(exchange, 400, "Invalid JSON payload", realException, null);
-      } else {
-        // UNEXPECTED INTERNAL ERROR (not a client/validation error handled above): log the FULL stack trace so
-        // an internal fault - e.g. a BufferUnderflowException from a truncated/corrupted record read - is
-        // diagnosable. Passing the throwable is what makes the logger emit the trace; without it no stack trace
-        // is ever printed, at any log level. Use realException (the actual cause) for a useful trace.
-        LogManager.instance()
-                .log(this, getInternalErrorLogLevel(), "Error on command execution (%s)", realException,
-                        getClass().getSimpleName());
-        sendErrorResponse(exchange, 500, "Cannot execute command", realException, null);
-      }
-    } catch (final HttpSessionException e) {
-      // A referenced HTTP transaction session id is no longer resolvable (committed/rolled back, expired,
-      // owned by another principal, or invalidated). Surface as an explicit 404 client error - never a 500,
-      // and never a silent implicit-transaction commit. Must precede the TransactionException arm below since
-      // HttpSessionException extends it.
-      LogManager.instance()
-              .log(this, Level.FINE, "Transaction session error on command execution (%s): %s", getClass().getSimpleName(),
-                      e.getMessage());
-      sendErrorResponse(exchange, 404, "Remote transaction session not found or expired", e, null);
-    } catch (final TransactionException e) {
-      Throwable realException = e;
-      if (e.getCause() != null)
-        realException = e.getCause();
-      final ArithmeticErrorException arithmetic = arithmeticError(e);
-
-      if (realException instanceof ServerIsNotTheLeaderException notTheLeader) {
-        // Symmetric with the un-wrapped ServerIsNotTheLeaderException arm above, reached whenever the refusal
-        // is raised inside the auto-commit transaction wrapper in DatabaseAbstractHandler - which is where the
-        // HA write path raises it: a write issued on a follower is refused before it is forwarded when the
-        // resolved leader address names nobody (issue #6191). Without this branch the answer degraded to a 500
-        // "Error on transaction commit", which names neither the leader nor the reason, and which the
-        // forwarding peer cannot rebuild into the retryable typed exception the caller is entitled to.
-        LogManager.instance()
-                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s",
-                        getClass().getSimpleName(), realException.getMessage());
-        sendErrorResponse(exchange, 400, "Cannot execute command", notTheLeader, notTheLeader.getLeaderAddress());
-      } else if (realException instanceof SecurityException) {
-        LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on transaction execution (%s): %s",
-                SecurityException.class.getSimpleName(), realException.getMessage());
-        sendErrorResponse(exchange, 403, "Security error", realException, null);
-      } else if (realException instanceof QueryNotIdempotentException) {
-        LogManager.instance()
-                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-                        realException.getMessage());
-        sendErrorResponse(exchange, 400, "Query is not idempotent", realException, null);
-      } else if (realException instanceof IllegalArgumentException) {
-        // Bad client input (malformed parameter, unparseable marker, etc.) wrapped by the
-        // surrounding transaction wrapper. Surface as HTTP 400 just like the un-wrapped
-        // IllegalArgumentException catch arm above so the contract is symmetric regardless of
-        // whether the request happened to run inside a transaction.
-        LogManager.instance()
-                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-                        realException.getMessage());
-        sendErrorResponse(exchange, 400, "Cannot execute command", realException, null);
-      } else if (realException instanceof JSONException) {
-        // Symmetric with the un-wrapped JSONException arm above: a malformed request payload read inside the
-        // auto-commit transaction wrapper must still answer 400, not the generic 500 (issue #5935).
-        LogManager.instance()
-                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-                        realException.getMessage());
-        sendErrorResponse(exchange, 400, "Invalid JSON payload", realException, null);
-      } else if (realException instanceof TransactionCommittedRemotelyException committedRemotely) {
-        // Same as the un-wrapped committed-remotely arm above (#5064/#5075), reached when the auto-commit
-        // wrapper re-wrapped it: the non-retryable 409 must survive the wrapping.
-        LogManager.instance()
-                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-                        realException.getMessage());
-        sendErrorResponse(exchange, 409, "Transaction committed cluster-wide but the local apply failed - do not retry",
-                committedRemotely, null);
-      } else if (realException instanceof DuplicatedKeyException dup) {
-        // Same as the un-wrapped DuplicatedKeyException arm above, but reached when the
-        // exception was thrown inside the auto-commit transaction wrapper in
-        // DatabaseAbstractHandler (which wraps any Exception thrown by execute() in a
-        // TransactionException). Without this branch the response degrades to 500. See issue #4350.
-        LogManager.instance()
-                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-                        realException.getMessage());
-        sendErrorResponse(exchange, 409, "Found duplicate key in index", dup,
-                dup.getIndexName() + "|" + dup.getKeys() + "|" + dup.getCurrentIndexedRID());
-      } else if (arithmetic != null) {
-        // Symmetric with the un-wrapped arithmetic arm above (#5602): the auto-commit wrapper in
-        // DatabaseAbstractHandler re-wraps the failure as a TransactionException, and without this branch the
-        // client error would degrade back to 500.
-        LogManager.instance()
-                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-                        arithmetic.getMessage());
-        sendErrorResponse(exchange, 400, "Cannot execute command", arithmetic, null);
-      } else if (realException instanceof CommandParsingException) {
-        // Symmetric with the un-wrapped CommandParsingException arm above. A Cypher/SQL validation
-        // error thrown during execution is wrapped by the auto-commit transaction wrapper in
-        // DatabaseAbstractHandler (TransactionException -> CommandParsingException cause). Without this
-        // branch the response degraded to 500 "Error on transaction commit", hiding the real
-        // client-side validation message. Surface as HTTP 400 instead. See issue #5191.
-        LogManager.instance()
-                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-                        realException.getMessage());
-        sendErrorResponse(exchange, 400, "Cannot execute command", realException, null);
-      } else if (realException instanceof CommandExecutionException) {
-        // Symmetric with the un-wrapped CommandExecutionException arm above. A runtime execution error
-        // (valid query, but the command failed while running - e.g. a Gremlin `.next()` on an empty
-        // traversal raising NoSuchElementException) is wrapped by the auto-commit transaction wrapper in
-        // DatabaseAbstractHandler (TransactionException -> CommandExecutionException cause). The failure
-        // happened during execute(), not at commit, so the honest label is "Cannot execute command", not
-        // the misleading "Error on transaction commit". Keep the HTTP 500 (runtime server-side error,
-        // matching Apache TinkerPop's SERVER_ERROR_SCRIPT_EVALUATION mapping). See issue #5219.
-        LogManager.instance()
-                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-                        realException.getMessage());
-        sendErrorResponse(exchange, 500, "Cannot execute command", realException, null);
-      } else {
-        // UNEXPECTED INTERNAL ERROR wrapped by the auto-commit transaction wrapper (the client sees the generic
-        // "Error on transaction commit"). Log the FULL stack trace of the real cause: without passing the
-        // throwable the logger never prints a trace, at any level, which is why a BufferUnderflowException on a
-        // read-only command surfaced with no diagnosable trace even at DEBUG.
-        LogManager.instance()
-                .log(this, getInternalErrorLogLevel(), "Error on transaction execution (%s)", realException,
-                        getClass().getSimpleName());
-        sendErrorResponse(exchange, 500, "Error on transaction commit", realException, null);
-      }
     } catch (final Throwable e) {
-      // Check if a SecurityException is wrapped at any depth
-      Throwable cause = e;
-      while (cause != null) {
-        if (cause instanceof SecurityException) {
-          LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on command execution (%s): %s",
-                  SecurityException.class.getSimpleName(), cause.getMessage());
-          sendErrorResponse(exchange, 403, "Security error", cause, null);
-          return;
-        }
-        cause = cause.getCause();
-      }
-      // UNEXPECTED RAW THROWABLE (typical for non-database handlers): same treatment as the other
-      // unexpected-internal-error arms - full stack trace, visible in production mode (issue #5374).
-      LogManager.instance()
-              .log(this, getInternalErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
-      sendErrorResponse(exchange, 500, "Internal error", e, null);
+      sendMappedErrorResponse(exchange, e);
     } finally {
       // Drop any principal this request bound onto the thread's DatabaseContext in
       // checkAuthorizationOnDatabase (GHSA-c23x-pqcj-7hfm). This runs on a pooled worker thread, so a
@@ -769,6 +511,263 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
           Integer.toString(exchange.getStatusCode()), databaseTag(exchange))
           .record(System.nanoTime() - httpStartNanos, TimeUnit.NANOSECONDS);
     }
+  }
+
+  /**
+   * Turns any exception raised while serving a request into an HTTP status, a client-facing message and the
+   * structured {@code exceptionArgs} of the wire contract. The <b>single</b> place that decision is taken.
+   * <p>
+   * It used to be three: a chain of typed {@code catch} arms for an exception that reached the boundary as
+   * itself, plus one hand-written {@code instanceof} mirror of it inside the {@code CommandExecutionException}
+   * arm and another inside the {@code TransactionException} arm, for the same exception wrapped. The mirrors
+   * were maintained by hand and were never complete, and every gap needed its own issue to be noticed - #4350
+   * (duplicated key), #5064/#5075 (committed remotely), #5935 (malformed JSON), #5191 (parsing), #5602
+   * (arithmetic), #6191 (not the leader) each added one arm to one or two of the three. #6201 closed the
+   * remaining pair the same way it closed the wrapping that produced them: {@code NeedRetryException} (503) and
+   * {@code RecordNotFoundException} (404) existed only un-wrapped, so a retryable conflict raised inside the
+   * auto-commit wrapper was answered 500 "Error on transaction commit" - opaque to a client whose retry policy
+   * keys on 503, and the exact opposite of the contract {@code PostBatchHandler} documents.
+   * <p>
+   * The classification below is therefore written once and applied to both shapes. Order is significant only
+   * where one type extends another, which is called out at each such arm.
+   *
+   * @param e the exception that reached the request boundary
+   */
+  private void sendMappedErrorResponse(final HttpServerExchange exchange, final Throwable e) {
+    // Exactly one level of unwrapping, and only for the generic wrappers - which is what the three former
+    // chains did, since only their wrapper arms ever consulted getCause(). Unwrapping unconditionally would
+    // change what a mapping keyed on the OUTER type answers: an IllegalArgumentException that happens to carry
+    // a DuplicatedKeyException cause is a 400, not a 409.
+    //
+    // One level is sufficient because at most one is produced: DatabaseAbstractHandler.executeInTransaction
+    // rethrows a RuntimeException unchanged rather than re-wrapping it (#6201), so a failure arrives here either
+    // as itself or under a single planner/commit wrapper. That is a coupling, not a coincidence - a change that
+    // reintroduces double-wrapping has to deepen the walk here too, or the mapping it buries silently degrades to
+    // the generic 500 this method exists to stop producing.
+    final Throwable cause = e.getCause() != null && isGenericWrapper(e) ? e.getCause() : e;
+
+    final Throwable security = isSecurityFailure(e) ? e : isSecurityFailure(cause) ? cause : null;
+    if (security != null) {
+      // PASS SecurityException TO THE CLIENT
+      LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on command execution (%s): %s",
+              SecurityException.class.getSimpleName(), security.getMessage());
+      sendErrorResponse(exchange, 403, "Security error", security, null);
+      return;
+    }
+
+    // Before the NeedRetryException arm below, which it extends: the refusal names the leader the caller has to
+    // dial instead of merely saying "try again", and the forwarding peer rebuilds the typed exception from it
+    // (issue #6191).
+    final ServerIsNotTheLeaderException notTheLeader = firstOf(e, cause, ServerIsNotTheLeaderException.class);
+    if (notTheLeader != null) {
+      logUserError(notTheLeader);
+      sendErrorResponse(exchange, 400, "Cannot execute command", notTheLeader, notTheLeader.getLeaderAddress());
+      return;
+    }
+
+    // Before the TransactionException arm below, which it extends. A referenced HTTP transaction session id is
+    // no longer resolvable (committed/rolled back, expired, owned by another principal, or invalidated):
+    // an explicit 404 client error - never a 500, and never a silent implicit-transaction commit.
+    final HttpSessionException sessionGone = firstOf(e, cause, HttpSessionException.class);
+    if (sessionGone != null) {
+      LogManager.instance()
+              .log(this, Level.FINE, "Transaction session error on command execution (%s): %s",
+                      getClass().getSimpleName(), sessionGone.getMessage());
+      sendErrorResponse(exchange, 404, "Remote transaction session not found or expired", sessionGone, null);
+      return;
+    }
+
+    // Before the TransactionException arm below, which it extends. 409 Conflict, NOT 5xx (#5064/#5075): the
+    // transaction IS durably committed cluster-wide - only the local apply failed. A 5xx would invite HTTP
+    // clients and load balancers to RETRY, applying the changes a second time (duplicate inserts) - the exact
+    // hazard the distinct exception type exists to prevent. Same rationale as the DuplicatedKeyException 409.
+    final TransactionCommittedRemotelyException committedRemotely = firstOf(e, cause,
+            TransactionCommittedRemotelyException.class);
+    if (committedRemotely != null) {
+      logUserError(committedRemotely);
+      sendErrorResponse(exchange, 409, "Transaction committed cluster-wide but the local apply failed - do not retry",
+              committedRemotely, null);
+      return;
+    }
+
+    // 409 Conflict (RFC 9110 15.5.10): a unique-constraint violation is a client data conflict, not a transient
+    // server-availability problem. 503 told clients/load balancers the request was retry-worthy, amplifying the
+    // bad write. See issue #4350.
+    final DuplicatedKeyException dup = firstOf(e, cause, DuplicatedKeyException.class);
+    if (dup != null) {
+      logUserError(dup);
+      sendErrorResponse(exchange, 409, "Found duplicate key in index", dup,
+              dup.getIndexName() + "|" + dup.getKeys() + "|" + dup.getCurrentIndexedRID());
+      return;
+    }
+
+    // 503: the conflict is transient and the same request can succeed as issued. Reached from inside the
+    // auto-commit wrapper as well since #6201, which is where the engine raises most of them.
+    final NeedRetryException retryable = firstOf(e, cause, NeedRetryException.class);
+    if (retryable != null) {
+      LogManager.instance()
+              .log(this, Level.FINE, "Error on command execution (%s): %s", getClass().getSimpleName(),
+                      retryable.getMessage());
+      sendErrorResponse(exchange, 503, "Cannot execute command", retryable, null);
+      return;
+    }
+
+    final RecordNotFoundException notFound = firstOf(e, cause, RecordNotFoundException.class);
+    if (notFound != null) {
+      logUserError(notFound);
+      sendErrorResponse(exchange, 404, "Record not found", notFound, null);
+      return;
+    }
+
+    final QueryNotIdempotentException notIdempotent = firstOf(e, cause, QueryNotIdempotentException.class);
+    if (notIdempotent != null) {
+      logUserError(notIdempotent);
+      sendErrorResponse(exchange, 400, "Query is not idempotent", notIdempotent, null);
+      return;
+    }
+
+    // The whole chain is searched here rather than only the two throwables above, because the arithmetic error
+    // is wrapped differently depending on how the request arrived: directly, inside the auto-commit wrapper, or
+    // with the JDK ArithmeticException it came from as its own cause. An integer overflow or a division by zero
+    // is decided by the values the caller supplied, not by anything wrong with the server, and Neo4j classifies
+    // the whole category as a client error (Neo.ClientError.Statement.ArithmeticError). See issue #5602.
+    final ArithmeticErrorException arithmetic = arithmeticError(e);
+    if (arithmetic != null) {
+      logUserError(arithmetic);
+      sendErrorResponse(exchange, 400, "Cannot execute command", arithmetic, null);
+      return;
+    }
+
+    // Ahead of the JSON arm below, which is the precedence the old CommandExecutionException|CommandParsingException
+    // chain had: a statement whose text failed to parse is reported as the parsing failure it is, even when the
+    // parser's own cause happens to be a JSONException. Both answer 400, so the order decides the message and the
+    // wire contract's exception field, not the status - and "the query text is invalid" is the actionable half,
+    // while how the parser tripped over it is an implementation detail.
+    //
+    // A parsing/semantic validation error (malformed query, unknown variable, invalid MERGE rebind, unsupported
+    // Gremlin syntax such as Groovy closures, ...) is a client error - the query text is invalid, not an
+    // internal server fault. Surfaced with the real validation message so API consumers can fix the query,
+    // instead of a misleading 500. See issues #5191 and #5201.
+    final CommandParsingException parsing = firstOf(e, cause, CommandParsingException.class);
+    if (parsing != null) {
+      logUserError(parsing);
+      sendErrorResponse(exchange, 400, "Cannot execute command", parsing, null);
+      return;
+    }
+
+    // The request payload is missing a property, carries a null where a value is required, or holds the wrong
+    // type for it: a malformed request, not a server fault. Without this it degraded to 500 (issue #5935).
+    final JSONException invalidJson = firstOf(e, cause, JSONException.class);
+    if (invalidJson != null) {
+      logUserError(invalidJson);
+      sendErrorResponse(exchange, 400, "Invalid JSON payload", invalidJson, null);
+      return;
+    }
+
+    // Bad client input (malformed parameter, unparseable marker, ...).
+    final IllegalArgumentException badArgument = firstOf(e, cause, IllegalArgumentException.class);
+    if (badArgument != null) {
+      logUserError(badArgument);
+      sendErrorResponse(exchange, 400, "Cannot execute command", badArgument, null);
+      return;
+    }
+
+    // From here on nothing identified the failure as a client error, so the two generic wrappers answer for
+    // whatever they carry. UNEXPECTED INTERNAL ERROR: log the FULL stack trace - passing the throwable is what
+    // makes the logger emit one, and without it a BufferUnderflowException from a truncated record read was not
+    // diagnosable at any log level.
+    final CommandExecutionException commandFailure = firstOf(e, cause, CommandExecutionException.class);
+    if (commandFailure != null) {
+      // The failure happened during execute(), not at commit, so the honest label is "Cannot execute command".
+      // The 500 stands: a runtime server-side error, matching Apache TinkerPop's SERVER_ERROR_SCRIPT_EVALUATION
+      // mapping (issue #5219).
+      //
+      // Reported as itself and not as its cause, unlike the TransactionException arm below: this type is raised
+      // BY the engine to say what failed, so its message is the diagnosis - "Backup failed for database 'x' to
+      // directory 'y'" over a bare reflection failure - and dropping it would leave the client with the plumbing
+      // and none of the context. Nothing is lost either way, since the error body's detail field renders the
+      // whole cause chain and the logger prints it as "Caused by".
+      LogManager.instance()
+              .log(this, getInternalErrorLogLevel(), "Error on command execution (%s)", commandFailure,
+                      getClass().getSimpleName());
+      sendErrorResponse(exchange, 500, "Cannot execute command", commandFailure, null);
+      return;
+    }
+
+    if (firstOf(e, cause, TransactionException.class) != null) {
+      // Reported as its CAUSE, unlike the arm above: this wrapper is put on by the plumbing rather than raised by
+      // it, so its message ("Error on executing command") says nothing the label does not, while the cause is the
+      // real fault - and the wire contract's exception field is what a customer report is diagnosed from.
+      LogManager.instance()
+              .log(this, getInternalErrorLogLevel(), "Error on transaction execution (%s)", cause,
+                      getClass().getSimpleName());
+      sendErrorResponse(exchange, 500, "Error on transaction commit", cause, null);
+      return;
+    }
+
+    // Last resort, and the only place the cause chain is walked to any depth for a security failure: one buried
+    // under an unrecognised wrapper must still be answered as one. Deliberately below every arm above, so a
+    // recognised mapping keeps deciding - which is where this walk already sat, in the catch-Throwable arm. It
+    // asks isSecurityFailure like the shallow probe does: the walk used to test only SecurityException, so a
+    // ServerSecurityException buried two levels deep came out as a generic 500 while the same exception one
+    // level up came out as 403.
+    for (Throwable deep = e; deep != null; deep = deep.getCause())
+      if (isSecurityFailure(deep)) {
+        LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on command execution (%s): %s",
+                SecurityException.class.getSimpleName(), deep.getMessage());
+        sendErrorResponse(exchange, 403, "Security error", deep, null);
+        return;
+      }
+
+    // UNEXPECTED RAW THROWABLE (typical for non-database handlers): same treatment as the other
+    // unexpected-internal-error arms - full stack trace, visible in production mode (issue #5374).
+    LogManager.instance()
+            .log(this, getInternalErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
+    sendErrorResponse(exchange, 500, "Internal error", e, null);
+  }
+
+  /**
+   * Whether {@code e} is a security refusal the client must be told about as a 403. Two unrelated types express
+   * one thing: {@link ServerSecurityException} extends {@code ServerException}, NOT {@link SecurityException}, so
+   * neither {@code instanceof} implies the other and asking for one of them is always a half-answer. Written once
+   * so the shallow probe and the last-resort cause walk cannot disagree about what counts.
+   */
+  private static boolean isSecurityFailure(final Throwable e) {
+    return e instanceof SecurityException || e instanceof ServerSecurityException;
+  }
+
+  /**
+   * The exceptions {@link #sendMappedErrorResponse} looks through rather than at: they carry no classification
+   * of their own beyond "something failed while executing/committing", and the failure that matters is their
+   * cause. Every other type is answered as itself, cause or no cause.
+   */
+  private static boolean isGenericWrapper(final Throwable e) {
+    return e instanceof TransactionException || e instanceof CommandExecutionException
+            || e instanceof CommandParsingException;
+  }
+
+  /**
+   * The first of {@code e} and its unwrapped {@code cause} that is an instance of {@code type}, or {@code null}
+   * when neither is. {@code e} is tested first so a mapping reports the outermost throwable of its own type,
+   * which is the one carrying the message and the structured arguments the client is given.
+   */
+  private static <T> T firstOf(final Throwable e, final Throwable cause, final Class<T> type) {
+    if (type.isInstance(e))
+      return type.cast(e);
+    if (type.isInstance(cause))
+      return type.cast(cause);
+    return null;
+  }
+
+  /**
+   * Logs a failure the caller caused. Demoted under flood protection in production mode
+   * ({@link #getUserSevereErrorLogLevel()}) and without a stack trace: the message is the diagnosis, and the
+   * client is being told what went wrong anyway.
+   */
+  private void logUserError(final Throwable e) {
+    LogManager.instance()
+            .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+                    e.getMessage());
   }
 
   /**

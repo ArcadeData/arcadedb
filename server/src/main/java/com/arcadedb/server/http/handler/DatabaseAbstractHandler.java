@@ -152,28 +152,16 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
       if (activeSession != null) {
         // EXECUTE THE CODE LOCKING THE CURRENT SESSION. THIS AVOIDS USING THE SAME SESSION FROM MULTIPLE THREADS AT THE SAME TIME
         activeSession.execute(user, () -> {
-          if (finalAtomicTransaction) {
-            database.transaction(() -> {
-              try {
-                response.set(execute(exchange, user, database, payload));
-              } catch (Exception e) {
-                throw new TransactionException("Error on executing command", e);
-              }
-            }, false, retries);
-          } else
+          if (finalAtomicTransaction)
+            executeInTransaction(exchange, user, database, payload, response, retries);
+          else
             response.set(execute(exchange, user, database, payload));
           return null;
         });
       } else {
-        if (finalAtomicTransaction) {
-          database.transaction(() -> {
-            try {
-              response.set(execute(exchange, user, database, payload));
-            } catch (Exception e) {
-              throw new TransactionException("Error on executing command", e);
-            }
-          }, false, retries);
-        } else
+        if (finalAtomicTransaction)
+          executeInTransaction(exchange, user, database, payload, response, retries);
+        else
           response.set(execute(exchange, user, database, payload));
       }
 
@@ -205,6 +193,41 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
     }
 
     return response.get();
+  }
+
+  /**
+   * Runs {@link #execute(HttpServerExchange, ServerSecurityUser, Database, JSONObject)} inside the auto-commit
+   * transaction, retrying it up to {@code retries} times.
+   * <p>
+   * A {@link RuntimeException} is rethrown <b>unchanged</b>. Wrapping it - which this block used to do for every
+   * exception alike - broke the two contracts the wrapper itself depends on (issue #6201):
+   * <ul>
+   * <li>{@code LocalDatabase.transaction(...)} decides what to retry by type
+   * ({@code catch (NeedRetryException | DuplicatedKeyException)}). A conflict raised while {@code execute()} runs -
+   * a {@code save()} losing an MVCC race, an index update hitting a concurrent key - arrived there already wrapped,
+   * matched neither arm and propagated on the first attempt, so {@code retries} had no effect on anything but a
+   * conflict detected by the wrapper's own {@code commit()}.</li>
+   * <li>The HTTP error mapping in {@link AbstractServerHttpHandler} keys on the exception type, so a retryable
+   * conflict was answered as an opaque 500 "Error on transaction commit" rather than the documented 503, and a
+   * client whose retry policy keys on 503 gave up on a write that would have succeeded on retry.</li>
+   * </ul>
+   * Only a CHECKED exception still needs the wrapper, because {@code TransactionScope.execute()} declares none;
+   * every ArcadeDB exception is unchecked and therefore reaches both dispatchers as itself.
+   * <p>
+   * Package-private for direct unit testing.
+   */
+  void executeInTransaction(final HttpServerExchange exchange, final ServerSecurityUser user,
+      final DatabaseInternal database, final JSONObject payload, final AtomicReference<ExecutionResponse> response,
+      final int retries) {
+    database.transaction(() -> {
+      try {
+        response.set(execute(exchange, user, database, payload));
+      } catch (final RuntimeException e) {
+        throw e;
+      } catch (final Exception e) {
+        throw new TransactionException("Error on executing command", e);
+      }
+    }, false, retries);
   }
 
   /**
