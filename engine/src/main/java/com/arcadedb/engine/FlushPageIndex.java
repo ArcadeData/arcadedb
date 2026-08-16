@@ -182,6 +182,13 @@ class FlushPageIndex {
     // longer has an entry at all: pendingOf() answers 0 for it from here on, so wake it to observe that (#6199).
     if (counter != null)
       synchronized (counter) {
+        // ZEROED, not merely notified, and inside the monitor. A waiter that resolved this counter BEFORE the
+        // remove above can enter the monitor AFTER the notifyAll has already fired, and what it re-reads there is
+        // the counter object itself - the drained map entry it would otherwise consult is already gone. So the
+        // object has to carry the drained state, or that waiter parks through a signal it can never be sent again.
+        // Bounded rather than fatal (its fallback interval still expires, and its next call resolves no counter at
+        // all), but it is precisely the wake-up this notification exists to deliver.
+        counter.set(0);
         counter.notifyAll();
       }
   }

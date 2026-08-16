@@ -176,6 +176,62 @@ class Issue6199DrainWakeupTest extends TestHelper {
   }
 
   /**
+   * The same purge, racing the park instead of following it.
+   * <p>
+   * The purge drops the map entry and then signals ONCE, so a waiter that resolved the counter just before the
+   * removal and enters the monitor just after the signal has to find the drained state on the counter OBJECT: the
+   * map entry it would otherwise consult is already gone. If the purge only notified without zeroing it, that
+   * waiter would re-read a stale positive count and park through a signal it can never be sent again.
+   * <p>
+   * The window is a handful of instructions, so it is reached by alignment and repetition rather than forced: the
+   * waiters and the purge are released from one gate, and measured against a purge that notifies WITHOUT zeroing
+   * the counter this fails about one run in three. A single UNALIGNED waiter per round caught nothing at all in
+   * three runs, which is why the gate is here; and the round is deliberately small (12 waiters, not the 24 that
+   * reproduced at the same rate), because this runs in the shared engine-suite JVM where thread churn is a cost
+   * every other test pays.
+   */
+  @Test
+  void aPurgeRacingTheParkIsNeverMissed() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final int waitersPerRound = 12;
+
+    for (int round = 0; round < 80; round++) {
+      final FlushPageIndex index = new FlushPageIndex();
+      index.put(page(db, 8, round));
+
+      // One gate for the waiters AND the purge, so they are released within microseconds of each other: the window
+      // is a handful of instructions wide, and nothing but alignment plus repetition can land inside it.
+      final CountDownLatch gate = new CountDownLatch(1);
+      final CountDownLatch returned = new CountDownLatch(waitersPerRound);
+      final AtomicReference<Throwable> failure = new AtomicReference<>();
+      final Thread[] waiters = new Thread[waitersPerRound];
+      for (int w = 0; w < waitersPerRound; w++) {
+        waiters[w] = new Thread(() -> {
+          try {
+            gate.await();
+            while (index.hasPendingOf(db))
+              index.awaitDrain(db, LONG_FALLBACK_MILLIS);
+            returned.countDown();
+          } catch (final Throwable e) {
+            failure.compareAndSet(null, e);
+          }
+        }, "issue6199-purge-racer-" + round + "-" + w);
+        waiters[w].start();
+      }
+
+      gate.countDown();
+      index.removeAllOfDatabase(db);
+
+      assertThat(returned.await(ASSERTION_TIMEOUT_SEC, TimeUnit.SECONDS)).as(
+          "round %d: a purge racing the park must not leave a waiter asleep on a signal that already fired", round)
+          .isTrue();
+      for (final Thread waiter : waiters)
+        waiter.join(TimeUnit.SECONDS.toMillis(ASSERTION_TIMEOUT_SEC));
+      assertThat(failure.get()).isNull();
+    }
+  }
+
+  /**
    * The bulk drain - the one every close, rename, index compaction and backup suspension goes through - is released
    * by the page landing and not by its own interval, which is stretched to a minute here to make the two
    * distinguishable.
@@ -229,8 +285,13 @@ class Issue6199DrainWakeupTest extends TestHelper {
     final long begin = System.currentTimeMillis();
     assertThat(flush.waitPendingPagesOfDatabaseUntil(db, begin + 200)).as("a page that never lands expires the deadline")
         .isFalse();
-    assertThat(System.currentTimeMillis() - begin).as("the deadline must bound the wait, not the fallback interval")
-        .isLessThan(TimeUnit.SECONDS.toMillis(ASSERTION_TIMEOUT_SEC));
+    // A TRIPWIRE, NOT A LATENCY ASSERTION, and its bound says so. What it can catch is a wait that came back only
+    // because something else eventually ended it; what it must NOT do is measure how promptly a 200 ms deadline
+    // expires, because this runs in the shared engine-suite JVM after ~12000 other tests, where a stop-the-world
+    // pause of tens of seconds is not exotic - a 15 s bound here failed on exactly that, at 24 s, with the code
+    // behaving correctly. The deadline being honoured is asserted above, by the return value.
+    assertThat(System.currentTimeMillis() - begin).as("the wait must be bounded by the deadline rather than unbounded")
+        .isLessThan(TimeUnit.MINUTES.toMillis(1));
 
     assertThat(flush.waitPendingPagesOfDatabaseUntil(db, System.currentTimeMillis())).as(
         "an expired deadline must return at once instead of parking").isFalse();
