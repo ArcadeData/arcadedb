@@ -37,7 +37,7 @@
         <disruptor.version>1.2.21</disruptor.version>
         <gson.version>2.14.0</gson.version>
         <lz4-java.version>1.11.2</lz4-java.version>
-        <lucene.version>10.5.0</lucene.version>
+        <lucene.version>10.5.1</lucene.version>
         <!--
             If this version changes, native/pom.xml's native.graalvm.version AND the
             native-image.yml setup-graalvm java-version must move in lockstep: the native-image
