@@ -49,6 +49,13 @@ package com.arcadedb.server;
  * <p>
  * {@code LeaderProxy} enforces the same one-hop rule for the requests it relays, reading the exchange
  * directly since it still has one.
+ * <p>
+ * The rule generalizes past the follower-to-leader direction, and so does the marker: the cluster-verify
+ * endpoint's leader-to-peer fan-out sets it too (issue #6221), because a peer address that names the wrong node
+ * sends a fan-out back to a leader that fans it out again - the same cycle, multiplying by (N-1) per level
+ * instead of by one, with a full CRC of the database at every hop. What the marker states is what every one of
+ * these paths needs to know: a cluster peer already relayed this request, so this node answers it or refuses it,
+ * and never relays it on.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

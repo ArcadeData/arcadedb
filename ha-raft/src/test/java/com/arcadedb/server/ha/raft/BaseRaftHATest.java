@@ -58,7 +58,14 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
   // CI run shows it can come down, and the other half of the fix - isolating heavy ITs into their own
   // fork - is still a follow-up. The bump costs nothing when nothing stalls: withResyncRetry(),
   // awaitValue() and awaitCountOn() all return as soon as the condition is met.
+  //
+  // #6221 asked whether it can come down now that the download has its own executor, and the honest answer is
+  // that nobody knows: a budget nothing consumes leaves no trace of how much of it was needed, and this lane is
+  // chronically red (#5668, #5702) so a single green run proves nothing either way. So the waits now report what
+  // they actually cost (see reportSlowWait): a handful of CI runs turn "lower it and see" into a measurement.
   private static final long RESYNC_RETRY_TIMEOUT_MS = 120_000;
+  /** Above this, a wait is worth a line in the log: it is evidence about the budget above, not noise. */
+  private static final long SLOW_WAIT_REPORT_MS     = 10_000;
 
   /**
    * Returns the peer ID for a given server index in the test cluster.
@@ -351,14 +358,19 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
    * and the use that follows it, so retrying on the actual failure is the only shape that is not itself racy.
    */
   protected <T> T withResyncRetry(final int serverIndex, final Function<Database, T> operation) {
-    final long deadline = System.currentTimeMillis() + RESYNC_RETRY_TIMEOUT_MS;
+    final long start = System.currentTimeMillis();
+    final long deadline = start + RESYNC_RETRY_TIMEOUT_MS;
     while (true) {
       final Database db = getServerDatabase(serverIndex, getDatabaseName());
       try {
-        return operation.apply(db);
+        final T result = operation.apply(db);
+        reportSlowWait("withResyncRetry on server " + serverIndex, start, true);
+        return result;
       } catch (final DatabaseIsClosedException e) {
-        if (System.currentTimeMillis() >= deadline)
+        if (System.currentTimeMillis() >= deadline) {
+          reportSlowWait("withResyncRetry on server " + serverIndex, start, false);
           throw e;
+        }
         LogManager.instance().log(this, Level.INFO,
             "TEST: database '%s' on server %d closed mid-operation (snapshot-reinstall resync); retrying with a fresh handle",
             getDatabaseName(), serverIndex);
@@ -395,13 +407,16 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
    * never became queryable at all.
    */
   protected long awaitValue(final long expected, final LongSupplier supplier) throws InterruptedException {
-    final long deadline = System.currentTimeMillis() + RESYNC_RETRY_TIMEOUT_MS;
+    final long start = System.currentTimeMillis();
+    final long deadline = start + RESYNC_RETRY_TIMEOUT_MS;
     long lastRead = -1;
     while (System.currentTimeMillis() < deadline) {
       try {
         lastRead = supplier.getAsLong();
-        if (lastRead == expected)
+        if (lastRead == expected) {
+          reportSlowWait("awaitValue(" + expected + ")", start, true);
           return lastRead;
+        }
       } catch (final RuntimeException e) {
         // Mid-resync the database is closed and being reinstalled; keep polling until the deadline. The
         // previous good reading is kept: it describes the follower better than the fact that one poll hit a
@@ -409,10 +424,29 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
       }
       Thread.sleep(250);
     }
+    reportSlowWait("awaitValue(" + expected + ")", start, false);
     return lastRead;
   }
 
   protected long awaitCountOn(final int serverIndex, final String typeName, final long expected) throws InterruptedException {
     return awaitValue(expected, () -> countOn(serverIndex, typeName));
+  }
+
+  /**
+   * Records how much of {@link #RESYNC_RETRY_TIMEOUT_MS} a wait actually consumed, when it consumed enough to be
+   * worth knowing. A budget that is never exhausted leaves no evidence of how much of it was needed, which is
+   * exactly why the 120 s above has stood on a suspicion rather than on a measurement (issue #6221): a wait that
+   * satisfies in 300 ms and one that satisfies at 95 s are indistinguishable in a green run.
+   * <p>
+   * Logged, not asserted: a slow wait is not a failure, and a test that failed the moment a CI runner was busy
+   * would be a worse trade than the timeout it was meant to justify.
+   */
+  private void reportSlowWait(final String what, final long startMs, final boolean satisfied) {
+    final long elapsed = System.currentTimeMillis() - startMs;
+    if (elapsed < SLOW_WAIT_REPORT_MS)
+      return;
+    LogManager.instance().log(this, Level.WARNING,
+        "TEST: %s %s after %d ms of the %d ms budget (issue #6221: evidence for whether that budget can come down)",
+        what, satisfied ? "satisfied" : "GAVE UP", elapsed, RESYNC_RETRY_TIMEOUT_MS);
   }
 }
