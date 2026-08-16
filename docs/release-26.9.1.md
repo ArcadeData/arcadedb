@@ -2284,6 +2284,12 @@ One `OrBlock` detail changed with it: an empty disjunction used to answer `isAlw
 false when it has no alternatives, and the answer is now load-bearing, so it answers `false` - the conservative
 verdict, which at worst costs an optimisation.
 
+**API note for code that extends the SQL parser**: `BooleanExpression.isAlwaysTrue()` is replaced by
+`isAlwaysTrue(CommandContext)` rather than kept alongside it, so an out-of-tree subclass that overrode the no-argument
+form no longer overrides anything. This is a compile error against the new signature and a silently inert override
+only if the subclass keeps the old method as an unrelated one; nothing inside ArcadeDB called the no-argument form
+outside the four AST classes that recursed into it.
+
 The value here is smaller than #6174's: nothing sends `WHERE 1=1` as a probe the way Spark sends `WHERE 1=0`, so
 this is symmetry and a small constant per record rather than a full scan avoided.
 
