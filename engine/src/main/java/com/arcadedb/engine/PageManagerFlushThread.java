@@ -81,7 +81,7 @@ public class PageManagerFlushThread extends Thread {
   /** Default of {@link #queueSlotWaitPollMillis}. */
   private final static long                                                     DEFAULT_QUEUE_SLOT_WAIT_POLL_MILLIS = 100;
   /** How long a committer may be held waiting for a flush-queue slot before saying so, once, at WARNING. */
-  private final static long                                                     QUEUE_SLOT_WARN_MILLIS            = 10_000;
+  private final static long                                                     QUEUE_SLOT_WARN_MILLIS              = 10_000;
   /**
    * Fallback wake-up interval of {@link #waitAllPagesOfDatabaseAreFlushed(Database)}, per instance so the
    * regression test of issue #6199 can stretch it far enough to prove the wait is released by the drain

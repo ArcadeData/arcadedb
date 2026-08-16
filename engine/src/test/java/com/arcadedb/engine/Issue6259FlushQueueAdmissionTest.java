@@ -28,6 +28,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -276,10 +277,119 @@ class Issue6259FlushQueueAdmissionTest extends TestHelper {
     pageManager.publishPages(List.of(page(db, 7)), null, true);
     assertThat(pageManager.getFlushThread().queueReservations.get()).isZero();
 
-    // And a batch dropped because the thread is shutting down.
+    // And a batch dropped because the thread is shutting down. closeAndJoin returns at once here: this flush thread
+    // was constructed but never start()ed, and Thread.join() on a thread in NEW state returns immediately. What is
+    // under test is the shutdown flag, not the join.
     flush.closeAndJoin();
     flush.scheduleFlushOfPages(new ArrayList<>(List.of(page(db, 8))));
     assertThat(flush.queueReservations.get()).as("a batch dropped at shutdown must not strand its slot").isZero();
+  }
+
+  /**
+   * The admission bound under real contention, which the deterministic tests above cannot reach: many threads racing
+   * the CAS loop of {@code tryReserveQueueSlot} against a queue of 4.
+   * <p>
+   * The bound is what the enqueue inside the page-manager lock rests on - a reservation is only worth holding if it
+   * guarantees a free slot - and a time-of-check/time-of-use regression in that loop would break it while leaving
+   * every single-threaded test green. Phase 1 races reservations alone, so the assertion is exact: the number held at
+   * once can never exceed the capacity. Phase 2 then runs the whole path (reserve, enqueue, drain) concurrently to
+   * prove the accounting comes back to zero rather than drifting a slot per round.
+   */
+  @Test
+  void theAdmissionBoundHoldsUnderContention() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final int capacity = 4;
+    final int threads = 12;
+    final PageManagerFlushThread flush = smallQueueFlushThread(capacity);
+
+    final AtomicInteger held = new AtomicInteger();
+    final AtomicInteger maxHeld = new AtomicInteger();
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+    final CountDownLatch start = new CountDownLatch(1);
+
+    // PHASE 1: reservations only. Nothing is ever enqueued, so the queue stays empty and the bound is exactly the
+    // number of reservations handed out at once - anything above the capacity is an over-admission.
+    final List<Thread> racers = new ArrayList<>();
+    for (int t = 0; t < threads; t++) {
+      final Thread racer = new Thread(() -> {
+        try {
+          start.await();
+          for (int i = 0; i < 2_000; i++) {
+            if (!flush.reserveQueueSlot())
+              return;
+            maxHeld.accumulateAndGet(held.incrementAndGet(), Math::max);
+            held.decrementAndGet();
+            flush.releaseQueueReservation(false);
+          }
+        } catch (final Throwable e) {
+          failure.compareAndSet(null, e);
+        }
+      }, "issue6259-racer-" + t);
+      racer.setDaemon(true);
+      racers.add(racer);
+      racer.start();
+    }
+    start.countDown();
+    for (final Thread racer : racers)
+      racer.join(TimeUnit.SECONDS.toMillis(ASSERTION_TIMEOUT_SEC));
+
+    assertThat(failure.get()).isNull();
+    assertThat(maxHeld.get()).as(
+        "the CAS loop must never hand out more reservations than the queue has slots: each one is a promise that the enqueue inside the page-manager lock will not block")
+        .isLessThanOrEqualTo(capacity);
+    assertThat(maxHeld.get()).as("and the race must actually have contended, or this test proves nothing").isGreaterThan(1);
+    assertThat(flush.queueReservations.get()).isZero();
+
+    // PHASE 2: the whole path at once - producers reserving and enqueueing, a drainer polling - so the two halves of
+    // the sum (queue size and reservations) move against each other under contention rather than one at a time.
+    final int batchesPerProducer = 200;
+    final int producerCount = 6;
+    final CountDownLatch producersDone = new CountDownLatch(producerCount);
+    final List<Thread> producers = new ArrayList<>();
+    for (int t = 0; t < producerCount; t++) {
+      final int id = t;
+      final Thread producer = new Thread(() -> {
+        try {
+          for (int i = 0; i < batchesPerProducer; i++) {
+            final boolean reserved = flush.reserveQueueSlot();
+            assertThat(reserved).isTrue();
+            flush.scheduleFlushOfPages(new ArrayList<>(List.of(page(db, id * batchesPerProducer + i))), true);
+          }
+        } catch (final Throwable e) {
+          failure.compareAndSet(null, e);
+        } finally {
+          producersDone.countDown();
+        }
+      }, "issue6259-producer-" + t);
+      producer.setDaemon(true);
+      producers.add(producer);
+      producer.start();
+    }
+
+    final Thread drainer = new Thread(() -> {
+      try {
+        while (producersDone.getCount() > 0 || !flush.queue.isEmpty())
+          flush.flushPagesFromQueueToDisk(null, 5L);
+      } catch (final Throwable e) {
+        failure.compareAndSet(null, e);
+      }
+    }, "issue6259-drainer");
+    drainer.setDaemon(true);
+    drainer.start();
+
+    assertThat(producersDone.await(ASSERTION_TIMEOUT_SEC, TimeUnit.SECONDS)).as(
+        "every producer must get through: a reservation that is never granted, or an enqueue that blocks behind one, hangs here")
+        .isTrue();
+    drainer.join(TimeUnit.SECONDS.toMillis(ASSERTION_TIMEOUT_SEC));
+    for (final Thread producer : producers)
+      producer.join(TimeUnit.SECONDS.toMillis(ASSERTION_TIMEOUT_SEC));
+
+    assertThat(failure.get()).isNull();
+    assertThat(flush.queue).isEmpty();
+    assertThat(flush.queueReservations.get()).as(
+        "the accounting must come back to zero: a slot leaked per round shrinks the pipeline until it stops admitting anything")
+        .isZero();
+    assertThat(flush.pageIndex.pendingOf(db)).as("and every page must have left the pipeline").isZero();
   }
 
   /** True once the flush thread has polled this batch and is inside the write loop that takes its monitor. */

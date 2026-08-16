@@ -1218,9 +1218,11 @@ public class PageManager extends LockContext {
     } finally {
       unlock();
       if (flushSlotReserved && !handedOver)
-        // Nothing between the reservation and the call below can throw today (lock() is a plain ReentrantLock), so
-        // this is insurance rather than a live path - but a reservation dropped on the floor would shrink the flush
-        // pipeline by one slot for the life of the process, which is not a failure mode worth leaving to inspection.
+        // Not a live path TODAY - nothing between the reservation and the hand-off below can throw, lock() being a
+        // plain ReentrantLock - but it is not a comment about today: this covers ANY future statement inserted
+        // between them that throws, which is exactly the refactor that would otherwise strand a reservation. And a
+        // stranded one is silent and permanent: the flush pipeline is one slot smaller for the life of the process,
+        // with nothing in a running system ever pointing at it (review of #6269).
         releaseFlushQueueSlot();
     }
   }
@@ -1464,8 +1466,9 @@ public class PageManager extends LockContext {
       }
     } finally {
       if (flushSlotReserved && !handedOver)
-        // The read-cache loop above threw: the enqueue was never reached, so the slot goes back rather than being
-        // held by a publication that is not going to happen.
+        // The read-cache loop above threw, or anything a later refactor puts before the hand-off does: the enqueue
+        // was never reached, so the slot goes back rather than being held by a publication that is not going to
+        // happen. Unlike its twin in publishPages this one IS reachable today - putPageInReadCache does I/O.
         releaseFlushQueueSlot();
     }
   }
