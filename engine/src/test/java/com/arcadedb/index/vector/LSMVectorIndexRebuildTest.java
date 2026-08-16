@@ -446,7 +446,7 @@ class LSMVectorIndexRebuildTest extends TestHelper {
     assertThat(results).isNotEmpty();
 
     // Search should have returned very fast (not blocked by rebuild)
-    stopwatch.assertGaveUpWithin(5000, "a bounded search from one that waits out the background rebuild");
+    stopwatch.assertStayedUnder(5000, "a search served from the graph it already has, not one that waits for the rebuild");
 
     // Wait for the async rebuild to complete. Polled rather than slept: the rebuild runs on a background thread, so
     // any fixed wait is a bet on how loaded the machine is (issue #5765).
