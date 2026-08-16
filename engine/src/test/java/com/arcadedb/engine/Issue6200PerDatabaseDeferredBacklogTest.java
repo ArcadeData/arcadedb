@@ -210,6 +210,87 @@ class Issue6200PerDatabaseDeferredBacklogTest extends TestHelper {
   }
 
   /**
+   * One database's backlog ending must not touch another's. The reset this replaced zeroed the total AND the whole
+   * per-database split whenever it observed {@code deferredByDatabase} empty - a check made on the resuming thread
+   * while the flush thread could be deferring the FIRST batch of an unrelated database, whose fresh charge was then
+   * wiped, defeating the cap for it until its next mutation (review of #6200).
+   */
+  @Test
+  void oneDatabaseResumingDoesNotWipeAnotherDatabaseBacklog() throws Exception {
+    final DatabaseInternal resumingDb = (DatabaseInternal) database;
+    final Database otherDb = TestHelper.createDatabase("target/databases/" + getClass().getSimpleName() + "-survivor");
+    try {
+      final PageManagerFlushThread flush = cappedFlushThread();
+      flush.setSuspended(resumingDb, true);
+      flush.setSuspended(otherDb, true);
+      try {
+        // Both databases defer a batch, then only the first one resumes.
+        enqueue(flush, resumingDb, 0);
+        enqueue(flush, (DatabaseInternal) otherDb, 0);
+        flush.flushPagesFromQueueToDisk(null, 20L);
+        flush.flushPagesFromQueueToDisk(null, 20L);
+        assertThat(flush.deferredRAMBytes.get()).isEqualTo(2L * PAGE_SIZE);
+
+        flush.setSuspended(resumingDb, false);
+
+        assertThat(flush.getDeferredRAMBytesOf(resumingDb)).as("the resumed database wrote its backlog out").isZero();
+        assertThat(flush.getDeferredRAMBytesOf(otherDb)).as(
+            "a sibling's resume must not wipe the backlog of a database that is still suspended").isEqualTo(PAGE_SIZE);
+        assertThat(flush.deferredRAMBytes.get()).as("and the total must still hold the sibling's share")
+            .isEqualTo((long) PAGE_SIZE);
+      } finally {
+        flush.setSuspended(otherDb, false);
+      }
+      assertThat(flush.deferredRAMBytes.get()).isZero();
+    } finally {
+      otherDb.drop();
+    }
+  }
+
+  /**
+   * Shutdown releases a committer that is still parked on the cap. Its database may well be left suspended - the
+   * backlog is only relieved by a resume that {@code closeAndJoin} is not going to wait for - so without the signal
+   * there the committer would sit out its fallback interval against a condition that can never become true.
+   */
+  @Test
+  void shutdownReleasesACommitterParkedOnAStillSuspendedDatabase() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final PageManagerFlushThread flush = cappedFlushThread();
+    flush.setSuspended(db, true);
+    try {
+      for (int i = 0; i < 4; i++)
+        enqueue(flush, db, i);
+      for (int i = 0; i < 4; i++)
+        flush.flushPagesFromQueueToDisk(null, 20L);
+      assertThat(flush.deferredRAMBytes.get()).isGreaterThanOrEqualTo(CAP_BYTES);
+
+      final CountDownLatch released = new CountDownLatch(1);
+      final AtomicReference<Throwable> failure = new AtomicReference<>();
+      final Thread committer = new Thread(() -> {
+        try {
+          flush.awaitDeferredBacklogUnderCap(db);
+          released.countDown();
+        } catch (final Throwable e) {
+          failure.compareAndSet(null, e);
+        }
+      }, "issue6200-shutdown-committer");
+      committer.start();
+
+      assertThat(released.await(300, TimeUnit.MILLISECONDS)).as("held while the backlog is at the cap").isFalse();
+
+      // The thread was never started, so closeAndJoin's join() returns at once: what is under test is the signal.
+      flush.closeAndJoin();
+
+      assertThat(released.await(ASSERTION_TIMEOUT_SEC, TimeUnit.SECONDS)).as(
+          "shutdown must release a committer parked on a database that is still suspended").isTrue();
+      committer.join(TimeUnit.SECONDS.toMillis(ASSERTION_TIMEOUT_SEC));
+      assertThat(failure.get()).isNull();
+    } finally {
+      flush.setSuspended(db, false);
+    }
+  }
+
+  /**
    * Constructing the flush thread directly does NOT start the background thread, so the pipeline only moves when the
    * test moves it.
    */

@@ -609,14 +609,17 @@ public class PageManagerFlushThread extends Thread {
       final ConcurrentLinkedQueue<PagesToFlush> deferred = deferredByDatabase.remove(database);
       if (deferred != null) {
         for (final PagesToFlush batch : deferred) {
-          if (!batch.database.isOpen())
-            continue;
           synchronized (batch.pages) {
             for (final MutablePage page : batch.pages) {
-              if (!batch.database.isOpen())
-                break;
               try {
-                pageManager.flushPage(page);
+                // A page whose database closed mid-unsuspend is NOT written - there is nothing left to write it
+                // to - but it still leaves the backlog through the finally below. Skipping it (which is what the
+                // `continue`/`break` here used to do) stranded its bytes in the deferred accounting for the life
+                // of the process, and every LATER suspension would then be throttled by that much: the drift the
+                // blanket "reset the counter when nothing is deferred anywhere" net existed to absorb. Releasing
+                // it at the source is exact, and per database, so no reset can ever wipe a sibling's live count.
+                if (batch.database.isOpen())
+                  pageManager.flushPage(page);
               } catch (final DatabaseMetadataException e) {
                 // FILE DELETED, CONTINUE WITH THE NEXT PAGES
                 LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e, page);
@@ -686,9 +689,14 @@ public class PageManagerFlushThread extends Thread {
       }
     }
 
-    // Safety net: once nothing is deferred for any database the backlog is provably empty, so reset the counters
-    // to absorb any drift from edge cases above (a batch skipped because its database closed mid-unsuspend).
-    resetDeferredRAMIfDrained();
+    // Phase 4: this database's backlog has provably ended, so release whatever is still charged to it - and ONLY
+    // to it. The suspension was cleared under suspendLock in Phase 2 and resumingDatabases keeps a new suspender
+    // out until the caller's finally, so nothing can defer another of its batches behind us (the same argument
+    // Phase 2 rests on). With Phase 1 now releasing every page it skips, this should always find zero; it stays as
+    // the per-database safety net that the old blanket "if nothing is deferred anywhere, zero the counters" reset
+    // was - that one read `deferredByDatabase.isEmpty()` on this thread while the flush thread could be deferring
+    // the FIRST batch of an unrelated database, and would then wipe that database's fresh charge (review of #6200).
+    releaseResidualDeferredRAM(database);
 
     if (restoreCallerInterrupt)
       // Consumed once during Phase 1: restore it so the caller still observes its own cancellation.
@@ -739,19 +747,22 @@ public class PageManagerFlushThread extends Thread {
     if (delta == 0)
       return;
 
-    if (database != null) {
-      if (delta > 0)
-        deferredRAMByDatabase.computeIfAbsent(database, k -> new AtomicLong()).addAndGet(delta);
-      else {
-        // A release NEVER creates an entry: the only way to reach one here without a matching deferral is a database
-        // whose bookkeeping was already purged by its close, and re-creating it with a negative value would both
-        // report a nonsensical gauge and re-pin the closed instance as a map key.
-        final AtomicLong bytes = deferredRAMByDatabase.get(database);
-        if (bytes != null)
-          bytes.addAndGet(delta);
-      }
+    if (delta > 0)
+      deferredRAMByDatabase.computeIfAbsent(database, k -> new AtomicLong()).addAndGet(delta);
+    else {
+      // A release NEVER creates an entry: the only way to reach one here without a matching deferral is a database
+      // whose bookkeeping was already purged by its close, and re-creating it with a negative value would both
+      // report a nonsensical gauge and re-pin the closed instance as a map key.
+      final AtomicLong bytes = deferredRAMByDatabase.get(database);
+      if (bytes != null)
+        bytes.addAndGet(delta);
     }
 
+    addDeferredRAMTotal(delta);
+  }
+
+  /** Moves the JVM-wide total alone, for the residual release that has already zeroed the per-database part. */
+  private void addDeferredRAMTotal(final long delta) {
     final long previous = deferredRAMBytes.getAndAdd(delta);
     // Signal only on the DOWNWARD crossing of the cap, so a resume that writes thousands of deferred pages takes the
     // monitor once instead of once per page, and a backlog that is growing never touches it at all.
@@ -760,16 +771,28 @@ public class PageManagerFlushThread extends Thread {
   }
 
   /**
-   * Safety net for the deferred accounting: once nothing is deferred for ANY database the backlog is provably empty,
-   * so both the total and the per-database split are zeroed to absorb any drift from the edge cases that skip a
-   * batch (a database closed mid-unsuspend). Guarded by {@code deferredByDatabase.isEmpty()}, so it can never zero
-   * another database's live accounting.
+   * Releases whatever a database is STILL charged for once its backlog has provably ended - its last suspender
+   * resumed, or it was closed or dropped - and forgets its entry.
+   * <p>
+   * Strictly per database, which is the point: the blanket reset this replaces zeroed the total and the whole split
+   * whenever {@code deferredByDatabase} was observed empty, a check made on the resuming thread while the flush
+   * thread could be deferring the FIRST batch of an unrelated database, and that database's fresh charge was then
+   * wiped - its cap defeated until its next mutation (review of #6200). Nothing here can touch another database.
+   * <p>
+   * With the accounting now exact at the source (every path that takes a page out of the backlog releases its bytes,
+   * including the pages skipped because their database closed mid-unsuspend) this should always find zero. It stays
+   * because the alternative to healing a hypothetical drift is a total stuck above the cap, which would throttle the
+   * committers of every later suspension in the process.
    */
-  private void resetDeferredRAMIfDrained() {
-    if (deferredByDatabase.isEmpty()) {
-      deferredRAMBytes.set(0);
-      deferredRAMByDatabase.clear();
-      signalDeferredRAM();
+  private void releaseResidualDeferredRAM(final BasicDatabase database) {
+    final AtomicLong bytes = deferredRAMByDatabase.remove(database);
+    if (bytes == null)
+      return;
+    final long residual = bytes.getAndSet(0);
+    if (residual != 0) {
+      LogManager.instance().log(this, Level.FINE,
+          "Released %d residual deferred bytes of database '%s' whose backlog ended", null, residual, database.getName());
+      addDeferredRAMTotal(-residual);
     }
   }
 
@@ -874,13 +897,15 @@ public class PageManagerFlushThread extends Thread {
     resumingDatabases.remove(database);
     flushedPagesPerDatabase.remove(database);
     final ConcurrentLinkedQueue<PagesToFlush> droppedDeferred = deferredByDatabase.remove(database);
-    if (droppedDeferred != null) {
+    if (droppedDeferred != null)
       for (final PagesToFlush batch : droppedDeferred)
         addDeferredRAM(database, -batchRAM(batch));
-      resetDeferredRAMIfDrained();
-    }
-    // The database is gone: drop its per-database backlog entry with the rest of its bookkeeping (#6200).
-    deferredRAMByDatabase.remove(database);
+
+    // The database is gone: drop its per-database backlog entry with the rest of its bookkeeping, taking whatever
+    // it was still charged for out of the JVM-wide total with it - dropping the entry alone would leave the total
+    // inflated by that much forever, throttling every later suspension (#6200).
+    releaseResidualDeferredRAM(database);
+
     // Its committers cannot be throttled by a database that no longer exists, and neither can anyone else be by ITS
     // backlog: wake every waiter so they re-read a total that just lost this database's share.
     signalDeferredRAM();

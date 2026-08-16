@@ -927,6 +927,12 @@ public class PageManager extends LockContext {
    * Holds the caller while the deferred backlog of ITS database is over the cap (issue #4728). A no-op unless that
    * database is currently suspended - see {@link PageManagerFlushThread#awaitDeferredBacklogUnderCap}, and note that
    * this must never be called with the page-manager lock held (issue #6200).
+   * <p>
+   * ASSUMPTION, shared with {@code PagesToFlush} and therefore with the whole flush pipeline: a batch carries the
+   * pages of ONE database, so the first page names it. Every caller satisfies it - a publication is one
+   * transaction's pages, and the direct {@code writePages} callers (LSM compaction, bloom filter, sparse segment
+   * builder) write one component of one database - and a mixed batch would already mis-key the deferral, the
+   * per-database pending count and the suspension check long before it reached here. Do not introduce one.
    */
   private void awaitDeferredBacklogUnderCap(final List<MutablePage> pages) throws InterruptedException {
     if (flushThread == null || pages == null || pages.isEmpty())
