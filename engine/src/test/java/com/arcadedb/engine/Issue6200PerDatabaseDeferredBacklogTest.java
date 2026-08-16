@@ -428,6 +428,76 @@ class Issue6200PerDatabaseDeferredBacklogTest extends TestHelper {
   }
 
   /**
+   * An UNEXPECTED exception out of the resume's page-writing phase must not strand the rest of it.
+   * <p>
+   * Phase 1 contains every failure it expects - a dropped file, an interrupt, an I/O error - per page. Anything else
+   * escaping it used to abort Phases 2 to 4 outright: the batches deferred during Phase 1 stayed undetached, their
+   * pages pinned in the flush index forever (so the next close of that database waits for a drain that can never
+   * happen), and its charge stayed on the cap that throttles every suspended database. The caller's own finally
+   * heals the suspension COUNT, which is what makes the rest easy to miss.
+   * <p>
+   * A {@code null} slipped into a deferred batch stands in for "something the per-page handlers do not catch"; what
+   * the assertions are about is the state the resume leaves behind, not the exception itself.
+   * <p>
+   * The batch that has to survive is one deferred WHILE Phase 1 runs - Phase 1 detaches the pre-existing backlog on
+   * entry, so only a batch that arrives afterwards depends on Phase 2 - which is why this runs the resume on its own
+   * thread and feeds the flush thread's defer path underneath it. The first attempt at this test did it all on one
+   * thread and passed against the unfixed code, proving nothing.
+   */
+  @Test
+  void anUnexpectedFailureWhileWritingTheBacklogStillFinishesTheResume() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+
+    for (int round = 0; round < 20; round++) {
+      final PageManagerFlushThread flush = cappedFlushThread();
+      flush.setSuspended(db, true);
+
+      // Long enough that the defer below lands inside Phase 1's write loop, with the trap at the very end so the
+      // exception comes after that window rather than before it.
+      final int pageSize = 1024;
+      final List<MutablePage> pages = new ArrayList<>();
+      for (int i = 0; i < 600; i++)
+        pages.add(new MutablePage(new PageId(db, FILE_ID, i), pageSize, new byte[pageSize], 0, 0));
+      final PagesToFlush trapped = new PagesToFlush(pages);
+      flush.pageIndex.putAll(pages);
+      flush.queue.offer(trapped);
+      flush.flushPagesFromQueueToDisk(null, 20L);
+      assertThat(flush.getDeferredRAMBytesOf(db)).isEqualTo((long) 600 * pageSize);
+
+      // Booby-trapped AFTER the deferral accounted for it, so the failure lands in Phase 1's write loop rather than
+      // in the defer that charged it.
+      trapped.pages.add(null);
+
+      final AtomicReference<Throwable> resumeFailure = new AtomicReference<>();
+      final Thread resumer = new Thread(() -> {
+        try {
+          flush.setSuspended(db, false);
+        } catch (final Throwable e) {
+          resumeFailure.set(e);
+        }
+      }, "issue6200-failing-resume-" + round);
+      resumer.start();
+
+      // A batch deferred while Phase 1 is still grinding: this is the one only Phase 2 can detach.
+      enqueue(flush, db, 5_000 + round);
+      flush.flushPagesFromQueueToDisk(null, 20L);
+
+      resumer.join(TimeUnit.SECONDS.toMillis(ASSERTION_TIMEOUT_SEC));
+      assertThat(resumeFailure.get()).as("round %d: the failure must still reach the caller", round).isNotNull();
+
+      assertThat(flush.isSuspended(db)).as("round %d: the suspension must not survive a failed resume", round).isFalse();
+      assertThat(flush.hasDeferredBatches(db)).as(
+          "round %d: Phase 2 must still detach what was deferred during Phase 1, or those pages stay pinned in the flush index and the next close waits for a drain that can never happen",
+          round).isFalse();
+      assertThat(flush.getDeferredRAMBytesOf(db)).as(
+          "round %d: Phase 4 must still release the charge, or it throttles every later suspension in the process",
+          round).isZero();
+      assertThat(flush.deferredRAMDriftRepairs.get()).as(
+          "round %d: and it must get there by accounting, not by the drift repair", round).isZero();
+    }
+  }
+
+  /**
    * Constructing the flush thread directly does NOT start the background thread, so the pipeline only moves when the
    * test moves it.
    */

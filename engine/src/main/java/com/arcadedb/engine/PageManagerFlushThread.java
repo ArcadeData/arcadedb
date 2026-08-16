@@ -618,105 +618,116 @@ public class PageManagerFlushThread extends Thread {
     // end of the method, so the caller still observes its own cancellation and the re-enqueue phase below runs
     // interrupt-free.
     boolean restoreCallerInterrupt = false;
-    // Serialized against detachPendingPages: the detach must either see these batches (and take its page out of
-    // them) or run after they have all reached the disk. Otherwise a superseded copy written here could land after
-    // a replicated write and roll the page version backwards.
-    synchronized (replayDrainLock(database)) {
-      final ConcurrentLinkedQueue<PagesToFlush> deferred = deferredByDatabase.remove(database);
-      if (deferred != null) {
-        for (final PagesToFlush batch : deferred) {
-          synchronized (batch.pages) {
-            for (final MutablePage page : batch.pages) {
-              try {
-                // A page whose database closed mid-unsuspend is NOT written - there is nothing left to write it
-                // to - but it still leaves the backlog through the finally below. Skipping it (which is what the
-                // `continue`/`break` here used to do) stranded its bytes in the deferred accounting for the life
-                // of the process, and every LATER suspension would then be throttled by that much: the drift the
-                // blanket "reset the counter when nothing is deferred anywhere" net existed to absorb. Releasing
-                // it at the source is exact, and per database, so no reset can ever wipe a sibling's live count.
-                if (batch.database.isOpen())
-                  pageManager.flushPage(page);
-              } catch (final DatabaseMetadataException e) {
-                // FILE DELETED, CONTINUE WITH THE NEXT PAGES
-                LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e, page);
-              } catch (final InterruptedIOException e) {
-                // Don't drop the deferred dirty page, its WAL entry was already acked: consume the flag and
-                // retry the write once.
-                restoreCallerInterrupt = true;
-                Thread.interrupted();
+    try {
+      // Serialized against detachPendingPages: the detach must either see these batches (and take its page out of
+      // them) or run after they have all reached the disk. Otherwise a superseded copy written here could land after
+      // a replicated write and roll the page version backwards.
+      synchronized (replayDrainLock(database)) {
+        final ConcurrentLinkedQueue<PagesToFlush> deferred = deferredByDatabase.remove(database);
+        if (deferred != null) {
+          for (final PagesToFlush batch : deferred) {
+            synchronized (batch.pages) {
+              for (final MutablePage page : batch.pages) {
                 try {
-                  pageManager.flushPage(page);
-                } catch (final DatabaseMetadataException | IOException e2) {
-                  // Contain every retry failure (file dropped, re-interrupt, real I/O error): letting it escape
-                  // would skip the unsuspend phases below, leaving the database suspended with batches stranded
-                  // in the deferred map. An unflushed page is recovered from the WAL (its entry was never acked).
-                  // A fresh re-interrupt set the flag again: clear it so the remaining pages flush cleanly.
-                  LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e2, page);
+                  // A page whose database closed mid-unsuspend is NOT written - there is nothing left to write it
+                  // to - but it still leaves the backlog through the finally below. Skipping it (which is what the
+                  // `continue`/`break` here used to do) stranded its bytes in the deferred accounting for the life
+                  // of the process, and every LATER suspension would then be throttled by that much: the drift the
+                  // blanket "reset the counter when nothing is deferred anywhere" net existed to absorb. Releasing
+                  // it at the source is exact, and per database, so no reset can ever wipe a sibling's live count.
+                  if (batch.database.isOpen())
+                    pageManager.flushPage(page);
+                } catch (final DatabaseMetadataException e) {
+                  // FILE DELETED, CONTINUE WITH THE NEXT PAGES
+                  LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e, page);
+                } catch (final InterruptedIOException e) {
+                  // Don't drop the deferred dirty page, its WAL entry was already acked: consume the flag and
+                  // retry the write once.
+                  restoreCallerInterrupt = true;
                   Thread.interrupted();
+                  try {
+                    pageManager.flushPage(page);
+                  } catch (final DatabaseMetadataException | IOException e2) {
+                    // Contain every retry failure (file dropped, re-interrupt, real I/O error): letting it escape
+                    // would skip the unsuspend phases below, leaving the database suspended with batches stranded
+                    // in the deferred map. An unflushed page is recovered from the WAL (its entry was never acked).
+                    // A fresh re-interrupt set the flag again: clear it so the remaining pages flush cleanly.
+                    LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e2, page);
+                    Thread.interrupted();
+                  }
+                } catch (final IOException e) {
+                  LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e, page);
+                } finally {
+                  // The page leaves the deferred backlog (flushed to disk), so release its reserved RAM (issue #4728).
+                  addDeferredRAM(database, -page.getPhysicalSize());
+                  removeFromFlushIndex(page);
+                  bumpFlushProgress(page);
                 }
-              } catch (final IOException e) {
-                LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e, page);
-              } finally {
-                // The page leaves the deferred backlog (flushed to disk), so release its reserved RAM (issue #4728).
-                addDeferredRAM(database, -page.getPhysicalSize());
-                removeFromFlushIndex(page);
-                bumpFlushProgress(page);
               }
             }
           }
         }
       }
-    }
 
-    // Phase 2 + Phase 3a: under the per-database lock, clear the suspension refcount AND atomically detach
-    // any batches deferred during Phase 1. Holding the lock makes this transition mutually exclusive with
-    // the suspended-check + defer in flushPagesFromQueueToDisk: once the flag is cleared no further batch
-    // can be added to deferredByDatabase for this database, and every batch deferred up to that point is
-    // detached exactly once. A single detach therefore suffices - nothing can repopulate the map behind us.
-    // New suspenders are still gated out by resumingDatabases (removed by the caller AFTER Phase 3b), so
-    // the count going 1 to 0 here cannot interleave with a concurrent acquire.
-    final ConcurrentLinkedQueue<PagesToFlush> newDeferred;
-    synchronized (suspendLock(database)) {
-      suspended.remove(database);
-      newDeferred = deferredByDatabase.remove(database);
-    }
+      } finally {
+      // PHASES 2 TO 4 RUN EVEN IF PHASE 1 THREW. Its per-page loop contains every failure it expects (a dropped
+      // file, an interrupt, an I/O error), but an UNEXPECTED exception escaping it used to abort the rest of the
+      // resume outright: the batches deferred during Phase 1 stayed undetached - their pages pinned in pageIndex
+      // forever, so the next close of that database would wait for a drain that can never happen - and its RAM
+      // charge stayed on the cap. The caller's own finally heals the suspension COUNT, but nothing healed those.
+      // Pre-existing shape, flagged in review of #6223 and closed here rather than left open, because the phases
+      // below are pure bookkeeping: they cannot fail, and the exception still propagates after them.
 
-    // Phase 3b: re-enqueue the detached batches into the main queue so the background thread picks them up.
-    // They are appended to the tail of the queue, so if any post-unsuspend commits have already been
-    // enqueued they will be flushed first. WAL-based recovery guarantees correctness even if the flush order
-    // differs from commit order. This blocking re-enqueue is deliberately done OUTSIDE the lock: queue.offer
-    // can block when the queue is full, and the only consumer that drains the queue (the flush thread) needs
-    // the same per-database lock to make progress, so holding it across the offer would deadlock.
-    if (newDeferred != null) {
-      for (final PagesToFlush batch : newDeferred) {
-        // The batch moves back to the main queue and leaves the deferred backlog accounting (issue #4728).
-        addDeferredRAM(database, -batchRAM(batch));
-        while (running) {
-          try {
-            if (queue.offer(batch, 1, TimeUnit.SECONDS))
+      // Phase 2 + Phase 3a: under the per-database lock, clear the suspension refcount AND atomically detach
+      // any batches deferred during Phase 1. Holding the lock makes this transition mutually exclusive with
+      // the suspended-check + defer in flushPagesFromQueueToDisk: once the flag is cleared no further batch
+      // can be added to deferredByDatabase for this database, and every batch deferred up to that point is
+      // detached exactly once. A single detach therefore suffices - nothing can repopulate the map behind us.
+      // New suspenders are still gated out by resumingDatabases (removed by the caller AFTER Phase 3b), so
+      // the count going 1 to 0 here cannot interleave with a concurrent acquire.
+      final ConcurrentLinkedQueue<PagesToFlush> newDeferred;
+      synchronized (suspendLock(database)) {
+        suspended.remove(database);
+        newDeferred = deferredByDatabase.remove(database);
+      }
+
+      // Phase 3b: re-enqueue the detached batches into the main queue so the background thread picks them up.
+      // They are appended to the tail of the queue, so if any post-unsuspend commits have already been
+      // enqueued they will be flushed first. WAL-based recovery guarantees correctness even if the flush order
+      // differs from commit order. This blocking re-enqueue is deliberately done OUTSIDE the lock: queue.offer
+      // can block when the queue is full, and the only consumer that drains the queue (the flush thread) needs
+      // the same per-database lock to make progress, so holding it across the offer would deadlock.
+      if (newDeferred != null) {
+        for (final PagesToFlush batch : newDeferred) {
+          // The batch moves back to the main queue and leaves the deferred backlog accounting (issue #4728).
+          addDeferredRAM(database, -batchRAM(batch));
+          while (running) {
+            try {
+              if (queue.offer(batch, 1, TimeUnit.SECONDS))
+                break;
+              LogManager.instance().log(this, Level.WARNING,
+                  "Page flush queue is full while re-enqueueing deferred batch for database '%s'; retrying", database.getName());
+            } catch (final InterruptedException e) {
+              Thread.currentThread().interrupt();
               break;
-            LogManager.instance().log(this, Level.WARNING,
-                "Page flush queue is full while re-enqueueing deferred batch for database '%s'; retrying", database.getName());
-          } catch (final InterruptedException e) {
-            Thread.currentThread().interrupt();
-            break;
+            }
           }
         }
       }
+
+      // Phase 4: this database's backlog has provably ended, so release whatever is still charged to it - and ONLY
+      // to it. The suspension was cleared under suspendLock in Phase 2 and resumingDatabases keeps a new suspender
+      // out until the caller's finally, so nothing can defer another of its batches behind us (the same argument
+      // Phase 2 rests on). With Phase 1 now releasing every page it skips, this should always find zero; it stays as
+      // the per-database safety net that the old blanket "if nothing is deferred anywhere, zero the counters" reset
+      // was - that one read `deferredByDatabase.isEmpty()` on this thread while the flush thread could be deferring
+      // the FIRST batch of an unrelated database, and would then wipe that database's fresh charge (review of #6200).
+      releaseResidualDeferredRAM(database);
+
+      if (restoreCallerInterrupt)
+        // Consumed once during Phase 1: restore it so the caller still observes its own cancellation.
+        Thread.currentThread().interrupt();
     }
-
-    // Phase 4: this database's backlog has provably ended, so release whatever is still charged to it - and ONLY
-    // to it. The suspension was cleared under suspendLock in Phase 2 and resumingDatabases keeps a new suspender
-    // out until the caller's finally, so nothing can defer another of its batches behind us (the same argument
-    // Phase 2 rests on). With Phase 1 now releasing every page it skips, this should always find zero; it stays as
-    // the per-database safety net that the old blanket "if nothing is deferred anywhere, zero the counters" reset
-    // was - that one read `deferredByDatabase.isEmpty()` on this thread while the flush thread could be deferring
-    // the FIRST batch of an unrelated database, and would then wipe that database's fresh charge (review of #6200).
-    releaseResidualDeferredRAM(database);
-
-    if (restoreCallerInterrupt)
-      // Consumed once during Phase 1: restore it so the caller still observes its own cancellation.
-      Thread.currentThread().interrupt();
   }
 
   public boolean isSuspended(final Database database) {
@@ -932,12 +943,14 @@ public class PageManagerFlushThread extends Thread {
       // a long suspension throttles many of them, and the point is to name the database whose backlog is doing it.
       if (!reported && System.currentTimeMillis() - beginTime > DEFERRED_BACKLOG_WARN_MILLIS) {
         reported = true;
-        // Both numbers, and the JVM-wide one named as such: the cap is on the total across every suspended
+        // Both backlogs, and the JVM-wide one named as such: the cap is on the total across every suspended
         // database, so the backlog holding this database's committers is very often NOT its own - which is the
-        // whole subject of #6200, and precisely what an operator reading a single figure would misread.
+        // whole subject of #6200, and precisely what an operator reading a single figure would misread. The
+        // elapsed hold is reported rather than the threshold that triggered the report: the threshold is a
+        // constant, while how long this committer has actually been held is the number the operator came for.
         LogManager.instance().log(this, Level.WARNING,
-            "Commits on database '%s' have been throttled for over %d ms: page flushing is suspended (backup or HA snapshot) and the JVM-wide deferred backlog is %s, of which %s is this database's own, at or above the '%s' cap",
-            null, db.getName(), DEFERRED_BACKLOG_WARN_MILLIS, FileUtils.getSizeAsString(deferredRAMBytes.get()),
+            "Commits on database '%s' have been throttled for %d ms: page flushing is suspended (backup or HA snapshot) and the JVM-wide deferred backlog is %s, of which %s is this database's own, at or above the '%s' cap",
+            null, db.getName(), System.currentTimeMillis() - beginTime, FileUtils.getSizeAsString(deferredRAMBytes.get()),
             FileUtils.getSizeAsString(getDeferredRAMBytesOf(db)), GlobalConfiguration.FLUSH_SUSPEND_MAX_DEFERRED_RAM.getKey());
       }
     }
