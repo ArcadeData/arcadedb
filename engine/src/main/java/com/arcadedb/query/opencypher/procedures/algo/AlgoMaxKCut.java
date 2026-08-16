@@ -48,8 +48,8 @@ import java.util.stream.Stream;
  *   <li>{@code k} (int, required) – number of partitions (k ≥ 2)</li>
  *   <li>{@code config} (map, optional):
  *     <ul>
- *       <li>{@code maxIterations} (int, default 100) – local-search passes per restart</li>
- *       <li>{@code restarts} (int, default 3) – number of random restarts</li>
+ *       <li>{@code maxIterations} (int, default 100, minimum 1) – local-search passes per restart</li>
+ *       <li>{@code restarts} (int, default 3, minimum 1) – number of random restarts</li>
  *       <li>{@code weightProperty} (String, default null) – edge weight property name</li>
  *       <li>{@code relTypes} (String, default all)</li>
  *       <li>{@code direction} (String, default BOTH)</li>
@@ -67,6 +67,10 @@ import java.util.stream.Stream;
  * ORDER BY community
  * </pre>
  * </p>
+ *
+ * <p>{@code restarts} and {@code maxIterations} multiply CPU work with no graph-derived ceiling, so rather
+ * than capping them at a guessed maximum the local search honours thread interruption and the
+ * {@code arcadedb.command.timeout} deadline, and a long run stays abortable.</p>
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -106,8 +110,8 @@ public class AlgoMaxKCut extends AbstractAlgoProcedure {
       throw new IllegalArgumentException(getName() + "(): k must be ≥ 2, got " + k);
 
     final Map<String, Object> config = args.length > 1 ? extractMap(args[1], "config") : null;
-    final int maxIter = config != null && config.get("maxIterations") instanceof Number n ? extractInt(n, "maxIterations") : 100;
-    final int restarts = config != null && config.get("restarts") instanceof Number n ? extractInt(n, "restarts") : 3;
+    final int maxIter = config != null && config.get("maxIterations") instanceof Number n ? extractInt(n, "maxIterations", 1) : 100;
+    final int restarts = config != null && config.get("restarts") instanceof Number n ? extractInt(n, "restarts", 1) : 3;
     final String weightProperty = config != null ? (String) config.get("weightProperty") : null;
     final long seed = config != null && config.get("seed") instanceof Number n ? n.longValue() : -1L;
     final String[] relTypes = config != null ? extractRelTypes(config.get("relTypes")) : null;
@@ -125,6 +129,7 @@ public class AlgoMaxKCut extends AbstractAlgoProcedure {
     final double[][] adjW = buildWeightedAdj(graph, adj, dir, relTypes, weightProperty);
 
     final Random rng = seed >= 0 ? new Random(seed) : new Random();
+    final WorkGuard guard = newWorkGuard(context);
     int[] bestAssign = new int[n];
     double bestCut = -1.0;
 
@@ -136,6 +141,7 @@ public class AlgoMaxKCut extends AbstractAlgoProcedure {
 
       // Local search: for each node try all k partitions
       for (int pass = 0; pass < maxIter; pass++) {
+        guard.check();
         boolean improved = false;
         for (int i = 0; i < n; i++) {
           final int curPart = assign[i];

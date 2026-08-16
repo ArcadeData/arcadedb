@@ -41,11 +41,12 @@ import java.util.stream.Stream;
  * <p>Config map parameters (all optional):
  * <ul>
  *   <li>{@code embeddingDimension} (int, default 128) – embedding size</li>
- *   <li>{@code walkLength} (int, default 80) – steps per random walk</li>
- *   <li>{@code walksPerNode} (int, default 10) – walks generated per node</li>
- *   <li>{@code iterations} (int, default 1) – training epochs over all walks</li>
- *   <li>{@code windowSize} (int, default 10) – Skip-gram context window radius</li>
- *   <li>{@code negSamples} (int, default 5) – negative samples per positive pair</li>
+ *   <li>{@code walkLength} (int, default 80, minimum 1) – steps per random walk</li>
+ *   <li>{@code walksPerNode} (int, default 10, minimum 1) – walks generated per node</li>
+ *   <li>{@code iterations} (int, default 1, minimum 1) – training epochs over all walks</li>
+ *   <li>{@code windowSize} (int, default 10, minimum 1) – Skip-gram context window radius, clamped to
+ *       {@code walkLength} since a wider window already spans the whole walk</li>
+ *   <li>{@code negSamples} (int, default 5, minimum 0) – negative samples per positive pair</li>
  *   <li>{@code learningRate} (double, default 0.025) – initial SGD learning rate</li>
  *   <li>{@code p} (double, default 1.0) – return parameter: high p → less return</li>
  *   <li>{@code q} (double, default 1.0) – in-out parameter: low q → DFS-like,
@@ -63,6 +64,12 @@ import java.util.stream.Stream;
  * RETURN node.name, embedding
  * </pre>
  * </p>
+ *
+ * <p>The walk matrix is {@code walksPerNode x nodeCount} walks of {@code walkLength} steps. Its footprint is
+ * estimated in {@code long} arithmetic and checked against
+ * {@link com.arcadedb.GlobalConfiguration#CYPHER_ALGO_MAX_WALK_MEMORY} before anything is allocated, so a
+ * large but in-range knob is rejected by name rather than wrapping the product or exhausting the heap. The
+ * training loops honour thread interruption and {@code arcadedb.command.timeout}.</p>
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -100,11 +107,12 @@ public class AlgoNode2Vec extends AbstractAlgoProcedure {
 
     final Map<String, Object> config = args.length > 0 ? extractMap(args[0], "config") : null;
     final int dim = config != null && config.get("embeddingDimension") instanceof Number n ? extractInt(n, "embeddingDimension") : 128;
-    final int walkLen = config != null && config.get("walkLength") instanceof Number n ? extractInt(n, "walkLength") : 80;
-    final int walksPerNode = config != null && config.get("walksPerNode") instanceof Number n ? extractInt(n, "walksPerNode") : 10;
-    final int epochs = config != null && config.get("iterations") instanceof Number n ? extractInt(n, "iterations") : 1;
-    final int window = config != null && config.get("windowSize") instanceof Number n ? extractInt(n, "windowSize") : 10;
-    final int negSamples = config != null && config.get("negSamples") instanceof Number n ? extractInt(n, "negSamples") : 5;
+    final int walkLen = config != null && config.get("walkLength") instanceof Number n ? extractInt(n, "walkLength", 1) : 80;
+    final int walksPerNode =
+        config != null && config.get("walksPerNode") instanceof Number n ? extractInt(n, "walksPerNode", 1) : 10;
+    final int epochs = config != null && config.get("iterations") instanceof Number n ? extractInt(n, "iterations", 1) : 1;
+    final int rawWindow = config != null && config.get("windowSize") instanceof Number n ? extractInt(n, "windowSize", 1) : 10;
+    final int negSamples = config != null && config.get("negSamples") instanceof Number n ? extractInt(n, "negSamples", 0) : 5;
     final double lr0 = config != null && config.get("learningRate") instanceof Number n ? n.doubleValue() : 0.025;
     final double p = config != null && config.get("p") instanceof Number n ? n.doubleValue() : 1.0;
     final double q = config != null && config.get("q") instanceof Number n ? n.doubleValue() : 1.0;
@@ -121,13 +129,31 @@ public class AlgoNode2Vec extends AbstractAlgoProcedure {
     final int[][] adj = graph.adjacency(dir, relTypes);
 
     final Random rng = seed >= 0 ? new Random(seed) : new Random();
+    final WorkGuard guard = newWorkGuard(context);
+
+    // A context window wider than the walk already spans the whole walk, so clamping it changes no result.
+    // Without the clamp `pos + window` wraps int for a large windowSize, leaving winEnd below winStart: the
+    // Skip-gram inner loop then never runs and the procedure quietly returns untrained embeddings.
+    final int window = Math.min(rawWindow, walkLen);
 
     // ── Phase 1: Generate biased random walks ──────────────────────────────
-    final int totalWalks = n * walksPerNode;
+    // Sized in long arithmetic: `n * walksPerNode` wraps int for a large walksPerNode, which used to size the
+    // walk matrix with a negative or (for an exact multiple of 2^32) far too small a value.
+    final long totalWalksAsLong = saturatingProduct(n, walksPerNode);
+    // Per walk: one matrix row of walkLength ints, plus one entry of the walkOrder shuffle array.
+    final long bytesPerWalk = WALK_ROW_OVERHEAD_BYTES + WALK_ENTRY_BYTES + WALK_ENTRY_BYTES * walkLen;
+    checkWalkBudget(db, saturatingProduct(totalWalksAsLong, bytesPerWalk),
+        "walksPerNode=" + walksPerNode + " x walkLength=" + walkLen + " over " + n + " nodes");
+    if (totalWalksAsLong > Integer.MAX_VALUE)
+      throw new IllegalArgumentException(getName() + "(): walksPerNode=" + walksPerNode + " over " + n + " nodes needs "
+          + totalWalksAsLong + " walks, more than the " + Integer.MAX_VALUE + " entries a Java array can hold");
+
+    final int totalWalks = (int) totalWalksAsLong;
     final int[][] walks = new int[totalWalks][walkLen];
     int wi = 0;
     for (int v = 0; v < n; v++) {
       for (int w = 0; w < walksPerNode; w++) {
+        guard.check();
         final int[] walk = walks[wi++];
         walk[0] = v;
         if (walkLen == 1 || adj[v].length == 0) {
@@ -177,6 +203,7 @@ public class AlgoNode2Vec extends AbstractAlgoProcedure {
       final double lr = lr0 * (1.0 - (double) epoch / epochs);
 
       for (final int walkIdx : walkOrder) {
+        guard.check();
         final int[] walk = walks[walkIdx];
         for (int pos = 0; pos < walkLen; pos++) {
           final int center = walk[pos];

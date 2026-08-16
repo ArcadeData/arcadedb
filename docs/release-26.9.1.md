@@ -1910,3 +1910,72 @@ Two things the same method carried:
   parking the single-threaded lifecycle executor.
 
 [#6202](https://github.com/ArcadeData/arcadedb/issues/6202)
+
+## A graph-algorithm knob is bounded by the resource it actually spends (#6216)
+
+Follow-up to #6065, which bounded the *allocation*-shaped numeric knobs of the OpenCypher `algo.*` package.
+Review of that work flagged a second family it deliberately left alone: knobs that are unbounded `int`s and
+multiply **CPU work** rather than one allocation - `algo.node2vec`'s `walksPerNode`, `walkLength`,
+`windowSize` and `negSamples`, `algo.maxKCut`'s `restarts` and `maxIterations`, and
+`algo.influenceMaximization`'s `simulations`. Each is read through `extractInt()`, so a value outside `int`
+range is already rejected (#5924), but any value up to `Integer.MAX_VALUE` was accepted and drove the loop
+count directly.
+
+The reason the issue left this open is that a single hard cap per knob is a guess: "what is a sane maximum
+iteration count?" depends on the graph, the hardware and how long the caller is willing to wait, and a
+legitimate large-graph run may genuinely want a high value. So instead of one policy for all seven knobs,
+each is bounded by the resource it actually spends.
+
+**The parameter's own domain.** Below its minimum, a walk count, restart count or simulation count is not
+"a smaller run", it is an answer the algorithm cannot produce - and every one of those values was absorbed
+in silence or died in the allocator. `restarts: 0` never entered the restart loop and returned every node in
+community 0 with a cut weight of `-1.0`, a wrong answer reported as a successful one. `maxIterations: 0`
+skipped the local search entirely, so the "maximum" cut was whatever the random initialisation produced.
+`iterations: 0` returned the untrained Xavier initialisation as if it were an embedding. `simulations: 0`
+divided the accumulated spread by zero, so every candidate scored `NaN`, no comparison ever won, and the
+procedure returned an empty result set as if the graph had no influential node. `walksPerNode: -1` reached
+`new int[-4][...]` as a bare `NegativeArraySizeException` that named nothing. A new
+`extractInt(value, name, minimum)` overload rejects all of them at the site the extraction already happens,
+naming the parameter, its minimum and the value received. `negSamples` keeps a minimum of 0, because plain
+Skip-gram without negative sampling is a legitimate configuration; the rest take 1.
+
+**Heap.** `algo.node2vec` computed `final int totalWalks = n * walksPerNode` and then allocated
+`new int[totalWalks][walkLen]`. That product wraps: 4 nodes at `walksPerNode: 1073741824` is exactly 2^32, so
+`totalWalks` came out as **0**, the matrix was allocated with no rows at all, and the generator died on
+`walks[wi++]` with an `ArrayIndexOutOfBoundsException`. Other magnitudes wrapped negative instead. Even
+without the wrap the matrix is `walksPerNode x nodeCount` rows of `walkLength` ints, sized entirely by two
+knobs with no graph-derived ceiling - the same allocation-DoS shape #6065 closed for the embedding
+dimensions. `algo.randomWalk` had the one-dimensional version: `new int[steps + 1]` wraps to
+`Integer.MIN_VALUE` at `steps = 2147483647`.
+
+Both are now estimated in saturating `long` arithmetic and checked **before** anything is allocated, against
+a new `arcadedb.cypher.algoMaxWalkMemory` budget that auto-scales with the JVM max heap (one eighth of it,
+never below 64MB) and can be raised or switched off (negative = no limit). This follows the house pattern
+of `arcadedb.queryMaxHeapElementsAllowedPerOp` and `arcadedb.queryMaxRangeSize` rather than inventing a
+per-knob constant: the error names the knobs that produced the estimate and the setting to raise, and
+because it is a client's parameter that is out of range it is an `IllegalArgumentException`, so over HTTP it
+is a 400 rather than a 500. A second guard, independent of the budget, refuses a walk count past
+`Integer.MAX_VALUE` outright - no heap setting makes 2^32 array entries legal.
+
+**Time.** For the remaining knobs there is no honest ceiling, so a large value is not forbidden, it is made
+abortable. The hot loops of all three procedures now call a shared `WorkGuard`, which aborts on thread
+interruption - matching what `ShortestPathStep` and `SQLFunctionShortestPath` already do on the query path -
+and on the `arcadedb.command.timeout` deadline, which until now only the SQL `SELECT` planner honoured. The
+guard reads the clock only when a timeout is actually configured, so the default (timeout disabled) costs one
+flag test per iteration and no syscall. The interrupt flag is consumed rather than restored: the exception
+aborts the whole call, and leaving the flag set would poison the next task to run on a pooled query thread.
+
+One correctness bug fell out of the same review. `algo.node2vec` computed its Skip-gram context window as
+`Math.min(walkLen - 1, pos + window)`. For a large `windowSize` that addition wraps `int` and comes back
+negative, leaving `winEnd` below `winStart`: the training loop then ran at position 0 and nowhere else, and
+the procedure quietly returned embeddings that had barely been trained. A window wider than the walk already
+spans the whole walk, so `windowSize` is now clamped to `walkLength` - a clamp with a genuinely correct
+fallback, unlike an embedding dimension - and a huge window now produces exactly the same embeddings as a
+window equal to the walk length.
+
+Also fixed, in the same file as `simulations`: `algo.influenceMaximization`'s `k` saturates upwards on
+purpose ("more seeds than nodes" reads as "as many as exist" and is clamped to the node count), but a
+*negative* `k` passed the `Math.min(k, n)` clamp untouched and reached `new int[seedCount]` as another
+nameless `NegativeArraySizeException`.
+
+[#6216](https://github.com/ArcadeData/arcadedb/issues/6216)

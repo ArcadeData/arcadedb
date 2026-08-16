@@ -48,6 +48,10 @@ import java.util.stream.Stream;
  * RETURN path
  * </pre>
  * </p>
+ * <p>
+ * {@code steps} sizes the walk buffer directly and has no graph-derived ceiling, so its footprint is checked
+ * against {@link com.arcadedb.GlobalConfiguration#CYPHER_ALGO_MAX_WALK_MEMORY} before anything is allocated.
+ * </p>
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -106,8 +110,17 @@ public class AlgoRandomWalk extends AbstractAlgoProcedure {
     if (srcIdx < 0)
       return Stream.empty();
 
-    // Walk — use int[] array (all primitives, zero boxing)
-    final int[] walk = new int[steps + 1];
+    // Walk — use int[] array (all primitives, zero boxing). The buffer is sized straight off `steps`, which has
+    // no graph-derived ceiling, so its footprint is checked against the walk-memory budget before allocating and
+    // `steps + 1` is computed in long: at Integer.MAX_VALUE the int form wraps to Integer.MIN_VALUE and the
+    // allocation died with a bare NegativeArraySizeException.
+    final long walkCapacity = steps + 1L;
+    checkWalkBudget(db, walkCapacity * WALK_ENTRY_BYTES, "steps=" + steps);
+    if (walkCapacity > Integer.MAX_VALUE)
+      throw new IllegalArgumentException(getName() + "(): steps=" + steps + " needs " + walkCapacity
+          + " walk entries, more than the " + Integer.MAX_VALUE + " a Java array can hold");
+
+    final int[] walk = new int[(int) walkCapacity];
     walk[0] = srcIdx;
     int walkLen = 1;
 
