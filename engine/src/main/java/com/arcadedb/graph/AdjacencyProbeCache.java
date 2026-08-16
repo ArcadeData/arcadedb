@@ -56,8 +56,11 @@ import java.util.Map;
  * decides whether a record is deleted. Every structure below is an exact set, and anything that cannot be
  * represented exactly falls back to the original walk rather than being guessed at.
  * <p>
- * BOUNDED. The cache holds at most {@code maxEntries} adjacency entries across all cached lists, evicting the
- * least-recently-probed list when the budget is exceeded, and never caches a single list bigger than the budget -
+ * BOUNDED, on two axes because neither implies the other: at most {@code maxEntries} adjacency entries across all
+ * cached lists, AND at most {@link #MAX_CACHED_LISTS} lists - a list the cache could not represent is remembered as
+ * such, and such an entry carries no adjacency entries for the first bound to see. Eviction is
+ * least-recently-probed on both, so a hub - the list that pays for itself - is the one that stays, and a single list
+ * bigger than the budget is never cached at all -
  * such a list is answered by the original {@code EdgeLinkedList} probe, which is where the cycle-guarded chain walk
  * lives. {@code maxEntries <= 0} disables the cache entirely and every probe takes that original path, which is the
  * pre-#6062 behaviour and the escape hatch if the memory is ever unwelcome.
@@ -70,6 +73,16 @@ import java.util.Map;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class AdjacencyProbeCache {
+  /**
+   * Ceiling on how many LISTS the map holds, alongside the adjacency-entry budget - because the two bounds do not
+   * imply each other. An entry that remembers "this list cannot be represented" carries no adjacency entries at all,
+   * so the entry budget never evicts one, and on the database shape this class exists for - a damaged
+   * multi-hundred-GB graph - there is one per damaged or oversized list. Left as a constant rather than a second
+   * knob: at 65,536 lists the map costs single-digit MB whatever the entry budget is set to, which is small beside
+   * the budget's own footprint and large enough that a run never thrashes on it.
+   */
+  private static final int MAX_CACHED_LISTS = 1 << 16;
+
   private final GraphEngine                 graphEngine;
   private final int                         maxEntries;
   /** Access-ordered, so the eldest entry is the least recently PROBED list - a hub therefore never evicts itself. */
@@ -169,7 +182,13 @@ final class AdjacencyProbeCache {
     return probes;
   }
 
-  /** Questions that had to touch an adjacency list to be answered - one per DISTINCT list, once the cache works. */
+  /**
+   * WALKS of an adjacency list performed to answer those questions - not probes that needed one, which is the same
+   * number everywhere except in one case worth stating because it is the case an operator stares at this counter
+   * for. The FIRST probe of a list the cache turns out not to be able to represent counts TWO: the materialisation
+   * attempt walks it up to the budget before abandoning, and the fallback then walks it for the answer. Both
+   * happened, so both are counted; the verdict is remembered, so every later probe of that list counts one.
+   */
   long getListWalks() {
     return listWalks;
   }
@@ -225,10 +244,11 @@ final class AdjacencyProbeCache {
     if (cached != null)
       cachedEntries -= cached.entryCount;
     images.put(key, built != null ? built : ListImage.uncacheable(neighbourImage));
-    if (built != null) {
+    if (built != null)
       cachedEntries += built.entryCount;
-      evictUntilWithinBudget(key);
-    }
+    // ALSO after storing a remembered failure: it holds no adjacency entries, so only the list-count bound can
+    // ever evict one, and that bound is only tested here.
+    evictUntilWithinBudget(key);
     return built;
   }
 
@@ -280,9 +300,14 @@ final class AdjacencyProbeCache {
     return new ListImage(neighbourImage, count, edges, neighbours);
   }
 
-  /** Evicts least-recently-probed lists until the budget holds, never the one just built. */
+  /**
+   * Evicts least-recently-probed lists until BOTH bounds hold - the adjacency-entry budget and
+   * {@link #MAX_CACHED_LISTS} - never the one just built. The second bound is what keeps the remembered failures in
+   * check: they carry no adjacency entries, so the first bound alone would let them accumulate one per damaged list
+   * for the whole pass.
+   */
   private void evictUntilWithinBudget(final Key keep) {
-    while (cachedEntries > maxEntries && images.size() > 1) {
+    while ((cachedEntries > maxEntries || images.size() > MAX_CACHED_LISTS) && images.size() > 1) {
       final Iterator<Map.Entry<Key, ListImage>> eldest = images.entrySet().iterator();
       final Map.Entry<Key, ListImage> candidate = eldest.next();
       if (candidate.getKey().equals(keep))

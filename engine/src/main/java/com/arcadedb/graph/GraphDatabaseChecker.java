@@ -88,9 +88,11 @@ public class GraphDatabaseChecker {
    * still slow on this database" is in the result rather than in a profiler.
    * <p>
    * {@code adjacencyProbes} is how many back-reference questions the pass asked - two per edge, structurally.
-   * {@code adjacencyProbeListWalks} is how many of them had to walk an adjacency list to be answered: it used to
-   * equal the probe count, and now grows with the number of DISTINCT lists instead. {@code adjacencyEntriesScanned}
-   * is the entries those walks visited, which is the number that was quadratic in a hub's degree.
+   * {@code adjacencyProbeListWalks} is how many walks of an adjacency list answering them took: it used to equal the
+   * probe count, and now grows with the number of DISTINCT lists instead. It can exceed the probe count on a list
+   * the cache cannot represent, which walks twice on its first probe and once thereafter - see
+   * {@link AdjacencyProbeCache#getListWalks()}. {@code adjacencyEntriesScanned} is the entries those walks visited,
+   * which is the number that was quadratic in a hub's degree.
    */
   private static void putProbeCounters(final Map<String, Object> stats, final AdjacencyProbeCache probeCache) {
     stats.put("adjacencyProbes", probeCache.getProbes());

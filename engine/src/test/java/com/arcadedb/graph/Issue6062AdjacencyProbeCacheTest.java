@@ -208,6 +208,39 @@ class Issue6062AdjacencyProbeCacheTest extends TestHelper {
         .isLessThan((Long) direct.get("adjacencyProbeListWalks"));
   }
 
+  /**
+   * The FALLBACK path: a budget smaller than the hub's degree. That list cannot be represented at all, so it is
+   * walked to the budget, abandoned, and answered by the original {@code EdgeLinkedList} probe - and the verdict is
+   * remembered, so the abandoned walk happens once rather than once per probe. What must not change is a single
+   * finding, which is what this asserts against both the fully cached and the fully disabled run.
+   */
+  @Test
+  void aListLargerThanTheWholeBudgetFallsBackWithoutChangingAFinding() {
+    createHubWithDistinctSpokes();
+
+    final Map<String, Object> cached = new DatabaseChecker(database).setVerboseLevel(0).check();
+
+    // Below the hub's degree, above a spoke's: the hub falls back, the spokes still cache.
+    GlobalConfiguration.CHECK_DATABASE_ADJACENCY_CACHE_ENTRIES.setValue(10);
+    final Map<String, Object> partial = new DatabaseChecker(database).setVerboseLevel(0).check();
+
+    GlobalConfiguration.CHECK_DATABASE_ADJACENCY_CACHE_ENTRIES.setValue(0);
+    final Map<String, Object> direct = new DatabaseChecker(database).setVerboseLevel(0).check();
+
+    assertThat(warnings(partial)).isEmpty();
+    assertThat(partial.get("edgesMissingInReference")).isEqualTo(cached.get("edgesMissingInReference"));
+    assertThat(partial.get("edgesMissingOutReference")).isEqualTo(cached.get("edgesMissingOutReference"));
+    assertThat(partial.get("missingReferenceBack")).isEqualTo(direct.get("missingReferenceBack"));
+    assertThat(partial.get("unreachableEdgeRecords")).isEqualTo(direct.get("unreachableEdgeRecords"));
+    assertThat(partial.get("totalCorruptedRecords")).isEqualTo(direct.get("totalCorruptedRecords"));
+
+    // The verdict on the hub is REMEMBERED: its list is abandoned once, not once per incident edge, so the run
+    // stays far below the "walk the hub per probe" volume the fully disabled run pays.
+    assertThat((Long) partial.get("adjacencyEntriesScanned"))
+        .as("the over-budget list must be walked to the budget once, not once per probe")
+        .isLessThanOrEqualTo(5L * DEGREE);
+  }
+
   /** A healthy graph stays healthy: the cache must not invent a finding either. */
   @Test
   void aHealthyGraphReportsNothing() {
