@@ -70,6 +70,17 @@ public class Restore {
     return this;
   }
 
+  /**
+   * Restore threads: -1 automatic, 0 the legacy single-threaded stream walk, N a pool of N. Overrides
+   * {@link com.arcadedb.GlobalConfiguration#RESTORE_THREADS}. Ignored, with a fallback to the sequential walk, when
+   * the archive cannot be opened for random access: an http(s) URL or an encrypted archive.
+   */
+  public Restore setRestoreThreads(final int restoreThreads) {
+    settings.restoreThreads = RestoreSettings.checkIntSetting("restoreThreads", restoreThreads, -1,
+        RestoreSettings.MAX_RESTORE_THREADS);
+    return this;
+  }
+
   public Restore setLogger(final ConsoleLogger logger) {
     this.logger = logger;
     return this;
