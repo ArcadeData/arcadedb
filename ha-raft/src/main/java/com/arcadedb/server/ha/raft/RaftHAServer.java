@@ -144,7 +144,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private final    Map<RaftPeerId, String> httpAddresses      = new ConcurrentHashMap<>();
   // Explicit HTTPS endpoints (optional 5th field in HA_SERVER_LIST). Used for encrypted
   // peer-to-peer transfers (snapshot download) when SSL is enabled.
-  private final    Map<RaftPeerId, String> httpsAddresses     = new HashMap<>();
+  // ConcurrentHashMap like its HTTP sibling, not because anything mutates it today - it is filled once in the
+  // constructor - but because it is READ from other threads (the verify endpoint's peer-query pool since issue
+  // #6221, the resync executors before it), and the day an addPeer overload starts declaring an https port the
+  // map type must not be the thing that has to be remembered.
+  private final    Map<RaftPeerId, String> httpsAddresses     = new ConcurrentHashMap<>();
   // Logged at most once: warns operators that HTTP addresses are derived (not explicitly configured).
   private final    AtomicBoolean           httpFallbackWarned = new AtomicBoolean(false);
   // Logged at most once: notes that peer HTTPS endpoints are derived from this node's local HTTPS port.
@@ -1575,20 +1579,6 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   public String getLeaderHttpAddress() {
     return resolveHttpAddress(getLeaderId());
-  }
-
-  /**
-   * Returns the HTTPS address (host:httpsPort) of the current Raft leader, or {@code null} when no
-   * HTTPS endpoint can be resolved (SSL disabled, no local HTTPS listener, or leader unknown).
-   * See {@link #getPeerHttpsAddress(RaftPeerId)}.
-   * <p>
-   * Best-effort, like every raw resolver here: it can name this node or the wrong peer on a cluster that does
-   * not declare its {@code https} ports. A caller that <em>dials</em> the result unattended must go through
-   * {@link PeerDialAddress#resolve} and read {@link PeerDialAddress#httpsAddress()}, which asks the same two
-   * questions of the HTTPS endpoint that the HTTP one is already asked (issue #6221).
-   */
-  public String getLeaderHttpsAddress() {
-    return resolveHttpsAddress(getLeaderId());
   }
 
   public RaftClient getClient() {

@@ -201,6 +201,94 @@ class Issue6202SnapshotInstallGuardTest {
   }
 
   // -----------------------------------------------------------------------------------------------
+  // Both endpoints the install hands the reconciler come from the guard (issue #6221)
+  // -----------------------------------------------------------------------------------------------
+
+  /**
+   * The encrypted endpoint has to be guarded on its own account, not on the HTTP one's: it is read from the 5th
+   * field of {@code HA_SERVER_LIST} where the HTTP address is read from the 3rd, each with its own derive
+   * fallback onto THIS node's port for that protocol. A cluster that declares distinct {@code http} ports and
+   * omits the {@code https} ones passes the HTTP check with every peer's HTTPS endpoint still collapsed onto this
+   * node's own - and the reconciler prefers the encrypted endpoint whenever it is non-null, threading it into
+   * every branch it has.
+   * <p>
+   * Driven with the raw resolver answering an address and the guard withholding it, so a regression to
+   * {@code getPeerHttpsAddress} shows up as the wrong address reaching the reconciler rather than as nothing at
+   * all.
+   */
+  @Test
+  void aWithheldHttpsEndpointDoesNotReachTheReconciler(@TempDir final Path tempDir) throws Exception {
+    final RaftHAServer raft = mock(RaftHAServer.class);
+    when(raft.isLeader()).thenReturn(false);
+    when(raft.getUnambiguousPeerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID))).thenReturn("peer-b:2480");
+    when(raft.getLocalHttpAddress()).thenReturn(LOCAL_HTTP);
+    // The best-effort resolver still hands one out - it is what an unguarded caller would dial...
+    when(raft.getPeerHttpsAddress(RaftPeerId.valueOf(LEADER_PEER_ID))).thenReturn("localhost:2443");
+    // ...and the guard withholds it, because it identifies no single peer (or is this node's own).
+    when(raft.getUnambiguousPeerHttpsAddress(RaftPeerId.valueOf(LEADER_PEER_ID))).thenReturn(null);
+
+    final CapturingReconciler reconciler = new CapturingReconciler();
+    final ArcadeStateMachine sm = newInitializedStateMachine(tempDir);
+    replaceReconciler(sm, reconciler);
+    sm.setRaftHAServer(raft);
+    try {
+      sm.notifyInstallSnapshotFromLeader(leaderRoleInfo(), TermIndex.valueOf(9L, FIRST_LOG_INDEX)).get();
+
+      assertThat(reconciler.httpAddr).isEqualTo("peer-b:2480");
+      assertThat(reconciler.httpsAddr)
+          .as("a withheld encrypted endpoint must reach the reconciler as absent, so it falls back to the "
+              + "guarded plain-HTTP one rather than dialling an address that identifies nobody")
+          .isNull();
+    } finally {
+      sm.close();
+    }
+  }
+
+  /** Control: an encrypted endpoint that passes the guard is still used, so the guard costs SSL nothing. */
+  @Test
+  void aGuardedHttpsEndpointIsStillHandedToTheReconciler(@TempDir final Path tempDir) throws Exception {
+    final RaftHAServer raft = mock(RaftHAServer.class);
+    when(raft.isLeader()).thenReturn(false);
+    when(raft.getUnambiguousPeerHttpAddress(RaftPeerId.valueOf(LEADER_PEER_ID))).thenReturn("peer-b:2480");
+    when(raft.getLocalHttpAddress()).thenReturn(LOCAL_HTTP);
+    when(raft.getUnambiguousPeerHttpsAddress(RaftPeerId.valueOf(LEADER_PEER_ID))).thenReturn("peer-b:2443");
+    when(raft.getLocalHttpsAddress()).thenReturn("localhost:2443");
+
+    final CapturingReconciler reconciler = new CapturingReconciler();
+    final ArcadeStateMachine sm = newInitializedStateMachine(tempDir);
+    replaceReconciler(sm, reconciler);
+    sm.setRaftHAServer(raft);
+    try {
+      sm.notifyInstallSnapshotFromLeader(leaderRoleInfo(), TermIndex.valueOf(9L, FIRST_LOG_INDEX)).get();
+
+      assertThat(reconciler.httpAddr).isEqualTo("peer-b:2480");
+      assertThat(reconciler.httpsAddr).isEqualTo("peer-b:2443");
+    } finally {
+      sm.close();
+    }
+  }
+
+  /** Records the endpoints the install hands it, and does nothing else: no network, no databases. */
+  private static class CapturingReconciler extends DatabaseReconciler {
+    private volatile String httpAddr;
+    private volatile String httpsAddr;
+
+    @Override
+    void reconcileDatabasesFromLeader(final String leaderHttpAddr, final String leaderHttpsAddr,
+        final String clusterToken) {
+      this.httpAddr = leaderHttpAddr;
+      this.httpsAddr = leaderHttpsAddr;
+    }
+  }
+
+  private static void replaceReconciler(final ArcadeStateMachine sm, final DatabaseReconciler reconciler)
+      throws Exception {
+    final Field f = ArcadeStateMachine.class.getDeclaredField("reconciler");
+    f.setAccessible(true);
+    f.set(sm, reconciler);
+  }
+
+  // -----------------------------------------------------------------------------------------------
   // A path that re-resolves the address on every retry must re-guard it on every retry
   // -----------------------------------------------------------------------------------------------
 

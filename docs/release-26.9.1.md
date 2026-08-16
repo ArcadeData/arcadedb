@@ -1970,4 +1970,12 @@ first. It now follows `arcadedb.txRetries`, the attempt count the embedded `Data
 `RemoteDatabase` already take, and which an operator can turn per database. The engine still retries only the two
 conflict families, caps a duplicated key at one retry, and rolls the transaction back before every attempt.
 
+**Observable change for HTTP clients.** An auto-committed request that hits an MVCC conflict is now re-executed
+up to `arcadedb.txRetries` times (default 3) instead of failing on the first attempt, so a write that used to be
+answered 503 under contention now usually succeeds. Nothing the failed attempt wrote survives - the engine rolls
+back before every retry - but the *command itself* runs again, so a SQL/JavaScript function with a side effect
+outside the database (an HTTP call, a file write, a counter in an external system) can now perform that side
+effect more than once per request. Set `retries` to 1 in the request payload, or lower `arcadedb.txRetries`, for
+commands where that matters.
+
 [#6221](https://github.com/ArcadeData/arcadedb/issues/6221)

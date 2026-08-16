@@ -1285,7 +1285,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
         throw new SnapshotRefusedException(source.refusal());
 
       final String leaderHttpAddr = source.httpAddress();
-      final String leaderHttpsAddr = raftHAServer.getPeerHttpsAddress(leaderId);
+      // Both endpoints from the verdict: the reconciler prefers the encrypted one whenever it is non-null and
+      // threads it into every branch, so a raw HTTPS address here would walk this path - the automatic one, the
+      // one that had no checks at all before #6202 - straight back into the bug (issue #6221).
+      final String leaderHttpsAddr = source.httpsAddress();
       final String clusterToken = raftHAServer.getClusterToken();
 
       reconciler.reconcileDatabasesFromLeader(leaderHttpAddr, leaderHttpsAddr, clusterToken);

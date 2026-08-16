@@ -66,6 +66,12 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
   private static final long RESYNC_RETRY_TIMEOUT_MS = 120_000;
   /** Above this, a wait is worth a line in the log: it is evidence about the budget above, not noise. */
   private static final long SLOW_WAIT_REPORT_MS     = 10_000;
+  /**
+   * How long {@link #findLeaderIndex()} waits for an election before answering "no leader". An election in these
+   * in-process clusters settles in a second or two; the budget is for the loaded CI runner where the question
+   * arrives while one is still in flight.
+   */
+  private static final long LEADER_ELECTION_TIMEOUT_MS = 30_000;
 
   /**
    * Returns the peer ID for a given server index in the test cluster.
@@ -299,15 +305,38 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
   }
 
   /**
-   * Returns the index of the current Raft leader, or -1 if no leader is elected.
+   * Returns the index of the current Raft leader, waiting up to {@link #LEADER_ELECTION_TIMEOUT_MS} for one, or
+   * -1 if none is elected within it.
+   * <p>
+   * It used to sample once and return -1 the instant it was called during a leaderless window - between the
+   * cluster starting and the first election, or across a term change. Nearly every caller then asserts
+   * {@code isGreaterThanOrEqualTo(0)} with "a Raft leader must be elected", which on a loaded machine fails in a
+   * different test method on every run: not a leaderless cluster, a question asked half a second early. Seven
+   * call sites had already wrapped it in an {@code await().until(() -> findLeaderIndex() >= 0)} of their own,
+   * one test at a time; waiting here is that workaround made general.
+   * <p>
+   * No caller asserts a negative result - none of the ~100 tests that use it expects a leaderless cluster - so
+   * waiting changes no test's meaning, only how long the answer takes when the answer is "not yet". A cluster
+   * that genuinely has no leader still costs the full budget once, at the end of which the caller fails exactly
+   * as it did before.
    */
   protected int findLeaderIndex() {
-    for (int i = 0; i < getServerCount(); i++) {
-      final RaftHAPlugin plugin = getRaftPlugin(i);
-      if (plugin != null && plugin.isLeader())
-        return i;
+    final long deadline = System.currentTimeMillis() + LEADER_ELECTION_TIMEOUT_MS;
+    while (true) {
+      for (int i = 0; i < getServerCount(); i++) {
+        final RaftHAPlugin plugin = getRaftPlugin(i);
+        if (plugin != null && plugin.isLeader())
+          return i;
+      }
+      if (System.currentTimeMillis() >= deadline)
+        return -1;
+      try {
+        Thread.sleep(100);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return -1;
+      }
     }
-    return -1;
   }
 
   /**
