@@ -44,7 +44,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class AsyncWedgedWorkerStallTest extends TestHelper {
 
   @Test
-  @Timeout(30)
+  // #6260: the body below already bounds the backstop with a stall-discounted 10s assertion, so this outer
+  // bound is only a hang detector and must be sized as one. JUnit's timeout is plain wall clock with no way to
+  // discount a stop-the-world pause, and pauses of 24s and 27s are what #6260 was filed on - against ~1-2s of
+  // honest work, 30s here was close enough to fail a run where nothing was wrong.
+  @Timeout(120)
   void producerBlockedOnWedgedWorkerEventuallyThrows() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
     db.getConfiguration().setValue(GlobalConfiguration.ASYNC_OPERATIONS_QUEUE_SIZE, 2);
