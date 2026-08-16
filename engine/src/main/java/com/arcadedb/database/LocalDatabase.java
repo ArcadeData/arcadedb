@@ -1463,7 +1463,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           // delete that was already forced.
           if (!tolerateBrokenChain || forceBrokenChainDelete)
             throw e;
-          logBrokenChainForceDelete(record.getIdentity(), e);
+          logBrokenChainForcePhysicalDelete(record.getIdentity(), e);
           graphEngine.deleteVertex((VertexInternal) record, true);
         } catch (final ConcurrentModificationException e) {
           // The physical removal can raise the #4932 retry signal even when index cleanup did not (e.g. the type has no
@@ -1471,7 +1471,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           // confirmed structurally broken; a genuine transient conflict (or an already-forced delete) rethrows to retry.
           if (!tolerateBrokenChain || forceBrokenChainDelete || !bucket.isChunkChainBroken(record.getIdentity()))
             throw e;
-          logBrokenChainForceDelete(record.getIdentity(), e);
+          logBrokenChainForcePhysicalDelete(record.getIdentity(), e);
           graphEngine.deleteVertex((VertexInternal) record, true);
         }
       } else {
@@ -1481,12 +1481,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           // See the identical arm on the vertex branch above (#6258).
           if (!tolerateBrokenChain || forceBrokenChainDelete)
             throw e;
-          logBrokenChainForceDelete(record.getIdentity(), e);
+          logBrokenChainForcePhysicalDelete(record.getIdentity(), e);
           bucket.deleteRecord(record.getIdentity(), true);
         } catch (final ConcurrentModificationException e) {
           if (!tolerateBrokenChain || forceBrokenChainDelete || !bucket.isChunkChainBroken(record.getIdentity()))
             throw e;
-          logBrokenChainForceDelete(record.getIdentity(), e);
+          logBrokenChainForcePhysicalDelete(record.getIdentity(), e);
           bucket.deleteRecord(record.getIdentity(), true);
         }
       }
@@ -1516,10 +1516,24 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     }
   }
 
+  /** The INDEX/EXTERNAL cleanup could not read the record, so the delete proceeds without it. */
   private void logBrokenChainForceDelete(final RID rid, final Exception e) {
     LogManager.instance().log(this, Level.WARNING,
         "Cannot read record %s for index/external cleanup on delete (broken multi-page chunk chain): %s. Deleting the "
             + "record anyway; run a database check to repair any dangling index entries.", rid, e.getMessage());
+  }
+
+  /**
+   * The PHYSICAL removal could not read the record - a vertex's edge lists, or the chunks to free. A different stage
+   * from the index cleanup above, leaving different things behind, so it says so instead of reusing that message:
+   * an operator running with {@code DELETE_TOLERATE_BROKEN_CHAIN} on was told to look for dangling index entries
+   * when what survived was edges and orphaned chunks (code review on #6258).
+   */
+  private void logBrokenChainForcePhysicalDelete(final RID rid, final Exception e) {
+    LogManager.instance().log(this, Level.WARNING,
+        "Cannot read record %s to remove it physically (broken multi-page chunk chain): %s. Deleting it anyway; the "
+            + "chunks it can no longer reach, and any edge left pointing at it, are repaired by a database check.",
+        rid, e.getMessage());
   }
 
   /**
