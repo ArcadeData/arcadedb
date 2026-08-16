@@ -1962,3 +1962,83 @@ reads from.
 already left behind.
 
 [#6090](https://github.com/ArcadeData/arcadedb/issues/6090)
+
+## The restore is now the fast half of a recovery too: parallel per entry, and no longer reading the archive 512 bytes at a time (#6086)
+
+Making the backup 27x faster (#6072) moved the bottleneck rather than removing it. On the same 1.25 GB database
+the backup took 0.68 s and the restore that undoes it 2.9 s, so the number that actually matters when someone is
+recovering - the RTO - had barely moved.
+
+### What the measurement said, and what it contradicted
+
+The issue proposed two candidate diagnoses and asked for the numbers before any code. `RestoreParallelBenchmark`
+times the two halves of a restore separately, and they are not close: on that 1.25 GB database, inflating every
+entry and throwing the bytes away takes **2.96 s** while writing the same bytes with no inflation takes **0.93 s**.
+The restore is inflate-bound, and the "the 8 KB copy buffer is suspiciously small" hypothesis is the wrong one -
+raising that buffer to 256 KB is worth 1%.
+
+The read side, however, was worth a great deal, and for a reason no one had looked at: `ZipInputStream` fills its
+inflater **512 bytes at a time**, a size its constructor hardcodes with no overload to change it, and the restore
+handed it an unbuffered `FileInputStream`. That is one read syscall per 512 compressed bytes for the whole
+archive. A 256 KB `BufferedInputStream` underneath it takes the same restore from 5.16 s to 3.96 s, and it is the
+only speedup available to the two input sources that cannot be parallel at all.
+
+### Parallel per entry
+
+ZIP entries are independent and each becomes its own file, so they are inflated and written concurrently, largest
+first (the duration of a set of very uneven independent tasks is decided by when the biggest one starts). This
+needs random access to the archive - `ZipFile` rather than `ZipInputStream` - which turns out to be the larger
+half of the win even at one thread, because `ZipFile`'s reader does not have the 512-byte fill.
+
+`arcadedb.restore.threads` sizes the pool: `-1` (the default) is the available processors capped at 8, `0` selects
+the sequential walk, `N` a pool of N. It is also settable per restore, on the command line (`-restoreThreads`) and
+through the `Restore` API. Unlike a backup, which halves the cores because it runs alongside the workload it is
+already throttling, a restore has no such neighbour - the database it is producing is not open yet - so the
+automatic sizing takes whole cores.
+
+**The archive format did not change**, and no part of this reads anything the backup did not already write. Old
+archives, including single-threaded level-9 ones written before #6072, restore through the parallel path unchanged.
+
+### The numbers
+
+1.25 GB database, 8 threads, macOS/NVMe. Two shapes, because the shape is what decides what per-entry parallelism
+can possibly buy:
+
+| configuration | one dominant entry (1 type) | several comparable entries (8 types) |
+|---|---|---|
+| before #6086 | 5.16 s (248 MB/s) | 4.51 s (258 MB/s) |
+| + buffered read, sequential | 3.96 s (1.30x) | 4.17 s (1.08x) |
+| parallel, 1 thread | 2.60 s (1.99x) | 2.63 s (1.71x) |
+| parallel, 8 threads | **2.51 s (2.05x)** | **0.49 s (9.15x)** |
+
+A database made of one dominant file cannot be split - a ZIP entry is a single deflate stream and has to be
+inflated serially - so there the whole win is the reader change and the threads add 4%. This is stated rather
+than averaged away because it is the honest shape of the result: intra-entry parallelism, the mirror of what the
+backup does, is not available without recording the backup's chunk boundaries in the archive, which would be the
+format change this deliberately avoids. On a database spread over several types the restore goes to 0.49 s -
+faster than the 0.68 s backup it undoes, which is where the issue wanted it.
+
+Peak heap is bounded by construction and does not move: 11.0 MB in every configuration above, sequential and
+parallel alike. One 256 KB copy buffer per pool thread, taken from a pool of exactly that many, plus the JDK
+inflater's own buffer per entry in flight - under 3 MB of buffers at 8 threads.
+
+### What stays sequential, and why it is not optional
+
+Per-entry parallelism needs to open the archive at random, which two of the three input sources cannot support: an
+archive read over `http(s)` is a one-shot stream, and an encrypted one is a single `CipherInputStream` that only
+decrypts front to back. Both fall back to the sequential walk automatically, whatever the thread setting says - a
+restore must never fail because of a performance setting - and both are covered by tests that assert the fallback
+was taken, not merely that the restore worked.
+
+One thing the parallel path does strictly better: it reads the central directory before it starts, so it validates
+every entry name up front and refuses a hostile archive before writing a single file. The sequential walk only
+learns a name when it reaches it, so it stops at the bad entry with the good ones already on disk - the
+pre-existing behaviour, now pinned by a test so the difference is a recorded decision rather than an accident.
+
+A failure *during* extraction carries one guarantee that a naive pool would not give: when the extractor throws,
+no worker is still writing. Interrupting a thread does not come back out of a `FileOutputStream.write()`, so
+shutting the pool down is not enough on its own - and the caller's very next move is usually to delete the
+destination, which would then race the workers still filling it. The extractor therefore waits for its workers
+before propagating the failure.
+
+[#6086](https://github.com/ArcadeData/arcadedb/issues/6086)
