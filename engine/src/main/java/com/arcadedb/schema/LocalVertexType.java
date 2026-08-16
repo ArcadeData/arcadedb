@@ -66,8 +66,7 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
 
         removedBuckets.add(bucket);
 
-        schema.bucketMap.remove(oldBucketName);
-        schema.bucketMap.put(bucket.getName(), (LocalBucket) bucket);
+        rekeyBucket(bucket, oldBucketName);
       }
 
       // SchemaException too: it is a RuntimeException, and letting it past this catch would leave the edge buckets
@@ -77,9 +76,9 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
 
       boolean corrupted = false;
       for (Bucket bucket : removedBuckets) {
+        final String renamedBucketName = bucket.getName();
         try {
-          final String newBucketName = bucket.getName();
-          final String restoredName = LocalSchema.rebaseComponentName(newBucketName, newName, oldName,
+          final String restoredName = LocalSchema.rebaseComponentName(renamedBucketName, newName, oldName,
               schema.getEncoding());
           if (restoredName == null)
             corrupted = true;
@@ -87,6 +86,8 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
             ((LocalBucket) bucket).rename(restoredName);
         } catch (IOException ex) {
           corrupted = true;
+        } finally {
+          rekeyBucket(bucket, renamedBucketName);
         }
       }
 
