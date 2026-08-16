@@ -32,7 +32,7 @@ dependencies = [
     "psycopg-binary>=3.3.4",
     "asyncpg>=0.31.0",
     "requests>=2.34.2",
-    "sqlalchemy>=2.0.51",
+    "sqlalchemy>=2.0.52",
     "neo4j>=6.2.0"
 ]
 
