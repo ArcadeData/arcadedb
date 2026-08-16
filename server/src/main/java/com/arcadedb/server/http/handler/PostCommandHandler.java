@@ -223,8 +223,9 @@ public class PostCommandHandler extends AbstractQueryHandler {
     // unlimited 'limit' used to push nothing down at all, so the whole result reached the handler - and with
     // 'profileExecution: detailed' it was materialized in full by materializeResultSet before any cap could
     // look at it. With the ceiling in the pushed-down LIMIT the engine stops one row past it (issue #5719).
+    // Only the caller's own value needs clamping here: getDefaultRowLimit() is already bounded by the ceiling.
     final int maxResultRows = getMaxResultRows();
-    final int autoLimit = applyMaxResultRows(requestLimit != null ? requestLimit : getDefaultRowLimit(), maxResultRows);
+    final int autoLimit = requestLimit != null ? applyMaxResultRows(requestLimit, maxResultRows) : getDefaultRowLimit();
     final boolean autoLimited = requiresAutomaticLimit(command, language, autoLimit);
     // Kept for the log: a warning must show the operator the query the caller sent, not the rewritten one.
     final String originalCommand = command;

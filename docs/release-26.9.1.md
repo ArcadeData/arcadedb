@@ -2283,8 +2283,16 @@ Two paths that used to escape any bound are bounded at the fetch rather than at 
 POST endpoints push down into a command that states none is now capped by the ceiling (an unlimited `limit`
 used to push nothing down at all), and `profileExecution: detailed`, which drains the whole result set into
 memory before serializing it, drains at most one row past the cap the response will honor. The TimeSeries
-query endpoint enforces the ceiling too, but only over the response it builds: `TimeSeriesEngine.query()`
-materializes the whole requested range before any limit is known, so bounding that fetch needs an engine-level
-change and is left as follow-up work.
+query endpoint enforces the ceiling on both of its shapes - the raw rows, and the buckets of an `aggregation`
+request, which reads no `limit` at all and so had the ceiling as its only possible bound - but only over the
+response it builds: `TimeSeriesEngine.query()` materializes the whole requested range before any limit is
+known, so bounding that fetch needs an engine-level change and is left as follow-up work.
+
+On the status code: 413 is conventionally about an oversized *request* body, and no standard code says "the
+response you asked for is too large to send". 413 is the closest fit and keeps the refusal in the 4xx range,
+where it belongs - the request is answerable, just not as written - but a client that maps status codes
+mechanically should note that the fix is to narrow or page the query, not to shrink the request body. The
+error body distinguishes the two: this refusal names `arcadedb.server.httpQueryMaxResultRows` in its `error`
+field and carries the ceiling in `exceptionArgs`, in every server mode.
 
 [#5719](https://github.com/ArcadeData/arcadedb/issues/5719)

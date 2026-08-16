@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.BeforeEach;
@@ -248,6 +249,45 @@ class HttpQueryMaxResultRowsIT extends BaseGraphServerTest {
         .put("limit", -1));
     assertThat(served.statusCode()).isEqualTo(200);
     assertThat(new JSONObject(served.body()).getInt("count")).isEqualTo(CEILING - 5);
+  }
+
+  @Test
+  void theTimeSeriesAggregationBranchIsBoundedToo() throws Exception {
+    // The aggregated shape of the same endpoint reads no 'limit' at all, so the ceiling is the only bound it
+    // can ever have: a small 'bucketInterval' over a wide range produces one response row per bucket, which is
+    // the very shape the raw branch is refused for.
+    assertThat(send("command", new JSONObject()
+        .put("language", "sql")
+        .put("command", "CREATE TIMESERIES TYPE aggceilingts TIMESTAMP ts TAGS (location STRING) FIELDS (value DOUBLE)"))
+        .statusCode()).isEqualTo(200);
+
+    final StringBuilder lines = new StringBuilder();
+    for (int i = 1; i <= TOTAL_ROWS; i++)
+      lines.append("aggceilingts,location=us value=").append(i).append(".0 ").append(i * 1000L).append('\n');
+    assertThat(postLineProtocol(lines.toString())).isEqualTo(204);
+
+    // One bucket per sample: TOTAL_ROWS buckets, above the ceiling.
+    final HttpResponse<String> refused = postTsQuery(aggregationRequest("aggceilingts", 1_000L));
+    assertThat(refused.statusCode()).isEqualTo(413);
+    assertThat(refused.body()).contains(SETTING);
+
+    // A bucket interval wide enough to fit under the ceiling is served as before.
+    final HttpResponse<String> served = postTsQuery(aggregationRequest("aggceilingts", TOTAL_ROWS * 1_000L));
+    assertThat(served.statusCode()).isEqualTo(200);
+    assertThat(new JSONObject(served.body()).getJSONArray("buckets").length()).isLessThanOrEqualTo(CEILING);
+  }
+
+  private static JSONObject aggregationRequest(final String type, final long bucketInterval) {
+    return new JSONObject()
+        .put("type", type)
+        .put("from", 0L)
+        .put("to", (TOTAL_ROWS + 1) * 1_000L)
+        .put("aggregation", new JSONObject()
+            .put("bucketInterval", bucketInterval)
+            .put("requests", new JSONArray().put(new JSONObject()
+                .put("field", "value")
+                .put("type", "AVG")
+                .put("alias", "avg_value"))));
   }
 
   @Test

@@ -203,6 +203,15 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
         tagFilter);
 
     final List<Long> timestamps = aggResult.getBucketTimestamps();
+
+    // The same ceiling the raw branch enforces (issue #5719). This branch reads no 'limit' at all, so the
+    // ceiling is the only bound there is: a small 'bucketInterval' over a wide range produces one response row
+    // per bucket, which is the same unbounded response the raw branch was refused for. The engine's own
+    // MAX_FLAT_BUCKETS only chooses between a flat array and a map, it is not a response-size bound.
+    final int maxResultRows = getMaxResultRows();
+    if (maxResultRows > 0 && timestamps.size() > maxResultRows)
+      throw resultSetTooLarge(maxResultRows);
+
     final JSONArray buckets = new JSONArray();
 
     for (final long ts : timestamps) {
