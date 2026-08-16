@@ -20,8 +20,10 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Record;
+import com.arcadedb.log.LogManager;
 
 import java.util.function.Predicate;
+import java.util.logging.Level;
 
 /**
  * The record-deletion loop shared by {@code TRUNCATE TYPE} and {@code TRUNCATE BUCKET}, together with the rule that
@@ -50,6 +52,19 @@ final class TruncateRecordDeleter {
   @FunctionalInterface
   interface RecordScan {
     void run(Predicate<Record> callback);
+  }
+
+  /**
+   * Work a statement needs to do inside its own transaction after the last record is deleted and before that
+   * transaction is closed - for {@code TRUNCATE TYPE}, rebuilding the indexes it dropped.
+   * <p>
+   * It is handed the failure so far ({@code null} when the deletion succeeded) and returns the failure to carry on
+   * with, so a hook can both react to one and report one of its own. Throwing works too and is treated identically;
+   * returning is only the tidier option for a hook that has a partial result worth keeping.
+   */
+  @FunctionalInterface
+  interface AfterDeletion {
+    RuntimeException run(RuntimeException deletionFailure);
   }
 
   private TruncateRecordDeleter() {
@@ -86,5 +101,76 @@ final class TruncateRecordDeleter {
       }
     });
     return failure[0];
+  }
+
+  /**
+   * Runs the deletion in a transaction this statement opens and closes itself, which is the only place batching and
+   * schema changes are allowed (see the class javadoc). Written once because both statements need exactly this
+   * bookkeeping and only one of them has an {@code afterDeletion} hook: duplicating it left the two copies free to
+   * drift, and a metric or a new failure mode added to one would silently miss the other.
+   *
+   * @param afterDeletion work to run inside the transaction before it is closed, or {@code null} for none.
+   * @param what          how to name this statement in the last-resort rollback warning.
+   *
+   * @return the failure to report, or {@code null} when everything succeeded.
+   */
+  static RuntimeException deleteAllInOwnTransaction(final Database db, final int batchSize, final RecordScan scan,
+      final AfterDeletion afterDeletion, final String what) {
+    // Without this every delete below would fail with "Transaction not begun" unless the database happens to run
+    // with autoTransaction on, which is what made this whole path unreachable before issue #6220 - the batching and
+    // the index drop/rebuild only ever ran on a caller's transaction, which is precisely where they must not.
+    db.begin();
+
+    RuntimeException failure = null;
+    try {
+      try {
+        failure = deleteAll(db, batchSize, scan);
+      } catch (final RuntimeException e) {
+        // Not a duplicate of deleteAll's own handling: that one catches what the per-record callback raises and
+        // hands it back as a value, this one catches what the SCAN raises around the callback - resolving buckets,
+        // reading a page - which never reaches the callback at all. Both have to end at the same place, because the
+        // afterDeletion hook runs either way.
+        failure = e;
+      }
+
+      try {
+        if (afterDeletion != null)
+          failure = afterDeletion.run(failure);
+      } catch (final RuntimeException e) {
+        // A hook that throws goes through the same bookkeeping as everything else rather than skipping the
+        // close-out below and landing in the finally: its transaction gets a decision, not just a safety net.
+        if (failure == null)
+          failure = e;
+        else
+          failure.addSuppressed(e);
+      }
+
+      if (db.isTransactionActive()) {
+        try {
+          if (failure == null)
+            db.commit();
+          else
+            db.rollback();
+        } catch (final RuntimeException e) {
+          // A commit that fails IS the failure to report. A rollback that fails while a failure is already on its
+          // way out must not replace it - the original is the one that says what went wrong.
+          if (failure == null)
+            failure = e;
+          else
+            failure.addSuppressed(e);
+        }
+      }
+    } finally {
+      // Whatever escaped the block above, this statement's own transaction must not be left on the caller's thread
+      // for somebody else's next command to inherit. Reported rather than thrown, for the same reason as above.
+      if (db.isTransactionActive())
+        try {
+          db.rollback();
+        } catch (final RuntimeException e) {
+          LogManager.instance().log(TruncateRecordDeleter.class, Level.WARNING,
+              "Error on rolling back the transaction opened by TRUNCATE %s", e, what);
+        }
+    }
+    return failure;
   }
 }

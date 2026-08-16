@@ -25,7 +25,6 @@ import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
-import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -38,7 +37,6 @@ import com.arcadedb.schema.TypeIndexBuilder;
 import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 
 import java.util.*;
-import java.util.logging.Level;
 
 /**
  * {@code TRUNCATE TYPE <type> [POLYMORPHIC] [UNSAFE]}.
@@ -156,91 +154,67 @@ public class TruncateTypeStatement extends DDLStatement {
 
     final int batchSize = Math.max(1, db.getConfiguration().getValueAsInteger(GlobalConfiguration.TRUNCATE_BATCH_SIZE));
 
-    // The statement's own transaction. Without it every delete below would fail with "Transaction not begun" unless
-    // the database happens to run with autoTransaction on, which is what made this whole path unreachable before
-    // issue #6220 - the batching and the index drop/rebuild only ever ran on a caller's transaction, which is
-    // precisely where they must not.
-    db.begin();
-
-    RuntimeException deletionFailure = null;
-    try {
-      try {
-        deletionFailure = TruncateRecordDeleter.deleteAll(db, batchSize,
-            callback -> db.scanType(typeName.getStringValue(), polymorphic, callback::test));
-      } catch (final RuntimeException e) {
-        // Not a duplicate of deleteAll's own handling: that one catches what the per-record callback raises and
-        // hands it back as a value, and this one catches what the SCAN raises around the callback - resolving the
-        // type's buckets, reading a page - which never reaches the callback at all. Both have to end at the same
-        // place, because the index rebuild below runs either way.
-        deletionFailure = e;
-      }
-
-      // Index builds run in their own transactions (TypeIndexBuilder.create wraps each bucket's build
-      // in a database.transaction(..., joinCurrent=false, ...)), so they observe disk state rather than
-      // the in-flight deletes pending in our current transaction. Commit + begin so the empty buckets
-      // are visible to the upcoming index build; otherwise the recreated index would be populated with
-      // the records we just logically deleted but not yet flushed.
-      if (deletionFailure == null && !indexDefs.isEmpty() && db.isTransactionActive()) {
-        try {
-          db.commit();
-          db.begin();
-        } catch (final RuntimeException e) {
-          deletionFailure = e;
-        }
-      }
-
-      // Recreate the indexes from the saved definitions in every case: on success they start empty since
-      // all records are gone; on failure they are rebuilt over whatever records remain, so the schema is
-      // never left without the indexes it had (the dropIndex above is already committed). A subsequent
-      // retry/run re-drops and re-empties them.
-      //
-      // This survives the rollback below, and has to: TypeIndexBuilder.create() goes through
-      // LocalSchema.recordFileChanges, which persists the schema itself and wraps each per-bucket build in its own
-      // joinCurrent=false transaction - none of which this transaction can take back. The begin() is only here
-      // because the build path expects a transaction context to nest from.
-      if (!indexDefs.isEmpty()) {
-        if (!db.isTransactionActive())
-          db.begin();
-        for (final IndexDefinition def : indexDefs)
-          recreateIndex(schema, def);
-      }
-
-      // Close the transaction this statement opened, so the caller gets its thread back without one on it. On
-      // failure the last, uncommitted batch is rolled back rather than committed: the rebuild above ran in its own
-      // transactions and therefore indexed those records as still present, so keeping them is what leaves the index
-      // and the buckets agreeing.
-      if (db.isTransactionActive()) {
-        try {
-          if (deletionFailure == null)
-            db.commit();
-          else
-            db.rollback();
-        } catch (final RuntimeException e) {
-          // A commit that fails IS the failure to report. A rollback that fails while a failure is already on its
-          // way out must not replace it - the deletion failure is the one that says what went wrong.
-          if (deletionFailure == null)
-            deletionFailure = e;
-          else
-            deletionFailure.addSuppressed(e);
-        }
-      }
-    } finally {
-      // Whatever escaped the block above - an index rebuild that failed - this statement's own transaction must not
-      // be left on the caller's thread for somebody else's next command to inherit. Reported rather than thrown, for
-      // the same reason as above: the exception on its way out is the informative one.
-      if (db.isTransactionActive())
-        try {
-          db.rollback();
-        } catch (final RuntimeException e) {
-          LogManager.instance()
-              .log(this, Level.WARNING, "Error on rolling back the transaction opened by TRUNCATE TYPE '%s'", e,
-                  typeName.getStringValue());
-        }
-    }
+    final RuntimeException failure = TruncateRecordDeleter.deleteAllInOwnTransaction(db, batchSize,
+        callback -> db.scanType(typeName.getStringValue(), polymorphic, callback::test),
+        deletionFailure -> rebuildIndexes(db, schema, indexDefs, deletionFailure),
+        "TYPE '" + typeName.getStringValue() + "'");
 
     // Report the failure rather than a partial truncate masquerading as success (issue #4817).
-    if (deletionFailure != null)
-      throw deletionFailure;
+    if (failure != null)
+      throw failure;
+  }
+
+  /**
+   * Recreates the indexes dropped at the start of {@link #truncateInOwnTransaction}, inside that method's
+   * transaction and before it is closed.
+   * <p>
+   * They are rebuilt in <b>every</b> case: on success they start empty since all records are gone; on failure they
+   * are rebuilt over whatever records remain, so the schema is never left without the indexes it had - the
+   * {@code dropIndex} is a committed schema change and nothing later can undo it. A subsequent retry/run re-drops
+   * and re-empties them.
+   * <p>
+   * The rebuild survives the rollback that a failure triggers, and has to: {@code TypeIndexBuilder.create()} goes
+   * through {@code LocalSchema.recordFileChanges}, which persists the schema itself and wraps each per-bucket build
+   * in its own {@code joinCurrent=false} transaction - neither of which the surrounding transaction can take back.
+   * The {@code begin()} below is only there because the build path expects a transaction context to nest from.
+   *
+   * @return the failure to carry on with: the one passed in, or the first rebuild failure when there was none.
+   */
+  private RuntimeException rebuildIndexes(final Database db, final Schema schema, final List<IndexDefinition> indexDefs,
+      RuntimeException deletionFailure) {
+    if (indexDefs.isEmpty())
+      return deletionFailure;
+
+    // Index builds observe disk state rather than the in-flight deletes pending in the current transaction, so
+    // commit + begin makes the empty buckets visible to the upcoming build; otherwise the recreated index would be
+    // populated with the records just logically deleted but not yet flushed.
+    if (deletionFailure == null && db.isTransactionActive()) {
+      try {
+        db.commit();
+        db.begin();
+      } catch (final RuntimeException e) {
+        deletionFailure = e;
+      }
+    }
+
+    if (!db.isTransactionActive())
+      db.begin();
+
+    // Every definition is attempted, and one that cannot be recreated does not take the others with it. Each
+    // create() commits on its own, so abandoning the loop at the first failure would leave the type missing indexes
+    // that had nothing wrong with them - the opposite of what rebuilding on failure at all is for.
+    for (final IndexDefinition def : indexDefs) {
+      try {
+        recreateIndex(schema, def);
+      } catch (final RuntimeException e) {
+        if (deletionFailure == null)
+          deletionFailure = e;
+        else
+          deletionFailure.addSuppressed(e);
+      }
+    }
+
+    return deletionFailure;
   }
 
   private void recreateIndex(final Schema schema, final IndexDefinition def) {

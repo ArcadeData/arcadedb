@@ -24,7 +24,6 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -36,7 +35,6 @@ import com.arcadedb.schema.VertexType;
 
 import java.util.Map;
 import java.util.Objects;
-import java.util.logging.Level;
 
 public class TruncateBucketStatement extends DDLStatement {
 
@@ -110,50 +108,9 @@ public class TruncateBucketStatement extends DDLStatement {
     } else {
       final int batchSize = Math.max(1, db.getConfiguration().getValueAsInteger(GlobalConfiguration.TRUNCATE_BATCH_SIZE));
 
-      // The statement's own transaction: without it every delete below would fail with "Transaction not begun"
-      // unless the database happens to run with autoTransaction on.
-      db.begin();
-      RuntimeException failure = null;
-      try {
-        try {
-          failure = TruncateRecordDeleter.deleteAll(db, batchSize,
-              callback -> db.scanBucket(resolvedBucketName, callback::test));
-        } catch (final RuntimeException e) {
-          // Not a duplicate of deleteAll's own handling: that one catches what the per-record callback raises and
-          // hands it back as a value, this one catches what the SCAN raises around the callback.
-          failure = e;
-        }
-
-        // Close the transaction this statement opened, so the caller gets its thread back without one on it.
-        if (db.isTransactionActive()) {
-          try {
-            if (failure == null)
-              db.commit();
-            else
-              db.rollback();
-          } catch (final RuntimeException e) {
-            // A commit that fails IS the failure to report. A rollback that fails while a failure is already on its
-            // way out must not replace it.
-            if (failure == null)
-              failure = e;
-            else
-              failure.addSuppressed(e);
-          }
-        }
-      } finally {
-        // Whatever escaped the block above, this statement's own transaction must not be left on the caller's
-        // thread for somebody else's next command to inherit. Reported rather than thrown, so it cannot replace
-        // the informative exception on its way out.
-        if (db.isTransactionActive())
-          try {
-            db.rollback();
-          } catch (final RuntimeException e) {
-            LogManager.instance()
-                .log(this, Level.WARNING, "Error on rolling back the transaction opened by TRUNCATE BUCKET '%s'", e,
-                    resolvedBucketName);
-          }
-      }
-      deletionFailure = failure;
+      // A bucket owns no indexes, so there is nothing to do between the last delete and the close-out: no hook.
+      deletionFailure = TruncateRecordDeleter.deleteAllInOwnTransaction(db, batchSize,
+          callback -> db.scanBucket(resolvedBucketName, callback::test), null, "BUCKET '" + resolvedBucketName + "'");
     }
 
     if (deletionFailure != null)

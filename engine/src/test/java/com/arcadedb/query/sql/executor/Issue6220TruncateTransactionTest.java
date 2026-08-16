@@ -279,6 +279,47 @@ class Issue6220TruncateTransactionTest extends TestHelper {
     assertThat(database.countType("Derived", false)).isEqualTo(1L);
   }
 
+  /**
+   * The bucket statement's own-transaction path has the same close-out to get right as the type one, and a bucket
+   * owns no indexes to soften a mistake: a failure mid-scan must keep the committed batches, put the uncommitted one
+   * back, report the failure and leave no transaction on the caller's thread.
+   */
+  @Test
+  void aFailedTruncateBucketOnTheFastPathKeepsTheCommittedBatchesAndReportsTheFailure() {
+    database.getConfiguration().setValue(GlobalConfiguration.TRUNCATE_BATCH_SIZE, 10);
+
+    database.command("sql", "CREATE DOCUMENT TYPE BoomBucket BUCKETS 1");
+    database.transaction(() -> {
+      for (int i = 0; i < 35; i++)
+        database.command("sql", "INSERT INTO BoomBucket SET n = ?", i);
+    });
+
+    final String bucketName = database.getSchema().getType("BoomBucket").getBuckets(false).getFirst().getName();
+
+    final AtomicInteger deletes = new AtomicInteger();
+    final BeforeRecordDeleteListener boom = (final Record record) -> {
+      if (deletes.incrementAndGet() == 25)
+        throw new RuntimeException("simulated mid-truncate-bucket failure");
+      return true;
+    };
+    database.getSchema().getType("BoomBucket").getEvents().registerListener(boom);
+    try {
+      assertThatThrownBy(() -> database.command("sql", "TRUNCATE BUCKET `" + bucketName + "` UNSAFE"))
+          .hasMessageContaining("simulated mid-truncate-bucket failure");
+    } finally {
+      database.getSchema().getType("BoomBucket").getEvents().unregisterListener(boom);
+    }
+
+    assertThat(database.isTransactionActive()).as("a failed truncate leaves no transaction behind").isFalse();
+    assertThat(database.countBucket(bucketName))
+        .as("the committed batches deleted, the last uncommitted one was rolled back")
+        .isGreaterThan(0L).isLessThan(35L);
+
+    // and a retry now clears it
+    database.command("sql", "TRUNCATE BUCKET `" + bucketName + "` UNSAFE").close();
+    assertThat(database.countBucket(bucketName)).isZero();
+  }
+
   @Test
   void truncateBucketRollbackPutsBackTheRecords() {
     database.getConfiguration().setValue(GlobalConfiguration.TRUNCATE_BATCH_SIZE, 10);
