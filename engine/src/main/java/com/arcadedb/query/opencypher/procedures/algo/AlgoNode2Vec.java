@@ -163,6 +163,9 @@ public class AlgoNode2Vec extends AbstractAlgoProcedure {
         // First step: uniform random neighbour
         walk[1] = adj[v][rng.nextInt(adj[v].length)];
         for (int step = 2; step < walkLen; step++) {
+          // One walk is walkLength steps and walkLength has no ceiling of its own, so the checkpoint belongs
+          // inside the walk too, not only between walks.
+          guard.checkPeriodically(step);
           final int prev = walk[step - 2];
           final int curr = walk[step - 1];
           if (adj[curr].length == 0) {
@@ -210,8 +213,14 @@ public class AlgoNode2Vec extends AbstractAlgoProcedure {
           Arrays.fill(grad, 0.0);
 
           final int winStart = Math.max(0, pos - window);
-          final int winEnd = Math.min(walkLen - 1, pos + window);
+          // In long arithmetic: `window` is clamped to `walkLen`, but `walkLen` itself is bounded only by the
+          // walk-memory budget, so an operator who raises that far enough could still make `pos + window` wrap.
+          final int winEnd = (int) Math.min(walkLen - 1L, pos + (long) window);
           for (int ctx = winStart; ctx <= winEnd; ctx++) {
+            // The context loop, not the walk loop, is what bounds abort latency here: a window as wide as the
+            // walk makes a single walk O(walkLength x walkLength), so a checkpoint between walks could be
+            // hours apart.
+            guard.checkPeriodically(ctx);
             if (ctx == pos)
               continue;
             final int ctxNode = walk[ctx];

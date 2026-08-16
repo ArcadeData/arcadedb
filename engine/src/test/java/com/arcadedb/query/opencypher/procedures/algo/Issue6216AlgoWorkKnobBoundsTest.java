@@ -310,6 +310,35 @@ class Issue6216AlgoWorkKnobBoundsTest {
   }
 
   @Test
+  void node2VecHonoursTheCommandTimeoutInsideOneLongWalk() {
+    // The case a checkpoint between walks cannot cover. One node and one walk per node means the training
+    // loop reaches its per-walk checkpoint exactly once, before any work has happened; a window as wide as
+    // the walk then makes that single walk O(walkLength x walkLength). Only a checkpoint inside the context
+    // loop bounds the abort latency, so this run must give up in milliseconds rather than after the seconds
+    // the whole walk takes. It needs its own single-node database: algo.node2vec loads the whole graph.
+    final DatabaseFactory factory = new DatabaseFactory("./target/databases/test-issue-6216-single-node");
+    if (factory.exists())
+      factory.open().drop();
+    final Database single = factory.create();
+    try {
+      single.getSchema().createVertexType("Node");
+      single.transaction(() -> single.newVertex("Node").set("name", "A").save());
+      single.getConfiguration().setValue(GlobalConfiguration.COMMAND_TIMEOUT, 1L);
+
+      assertThatThrownBy(() -> {
+        final ResultSet rs = single.query("opencypher",
+            "CALL algo.node2vec({embeddingDimension: 8, walkLength: 8000, walksPerNode: 1, windowSize: 8000, "
+                + "negSamples: 1, iterations: 1, seed: 13}) YIELD node RETURN node");
+        while (rs.hasNext())
+          rs.next();
+      }).as("one walk whose training is quadratic in walkLength must still hit the command deadline")
+          .hasStackTraceContaining(GlobalConfiguration.COMMAND_TIMEOUT.getKey());
+    } finally {
+      single.drop();
+    }
+  }
+
+  @Test
   void maxKCutHonoursTheCommandTimeout() {
     database.getConfiguration().setValue(GlobalConfiguration.COMMAND_TIMEOUT, 1L);
 

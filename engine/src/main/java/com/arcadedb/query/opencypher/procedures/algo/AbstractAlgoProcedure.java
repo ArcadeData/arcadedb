@@ -254,6 +254,13 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
    * configured, so the default (timeout disabled) costs one flag test per iteration and no syscall.
    */
   protected final class WorkGuard {
+    /**
+     * Iterations between two checks in {@link #checkPeriodically(int)}. One less than a power of two so the
+     * throttle is a single AND, and small enough that the work between two checks stays well under a
+     * millisecond for any realistic inner-loop body.
+     */
+    private static final int CHECK_INTERVAL_MASK = 1023;
+
     private final long timeoutMillis;
     private final long deadline;
 
@@ -262,13 +269,31 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
       this.deadline = timeoutMillis > 0 ? System.currentTimeMillis() + timeoutMillis : Long.MAX_VALUE;
     }
 
-    /** Aborts the call if the query thread was interrupted or the command deadline has passed. */
+    /**
+     * Aborts the call if the query thread was interrupted or the command deadline has passed. Call from a
+     * loop whose single iteration already costs enough to swallow a flag test.
+     */
     public void check() {
       if (Thread.interrupted())
         throw new CommandExecutionException(getName() + "() has been interrupted");
       if (deadline < Long.MAX_VALUE && System.currentTimeMillis() > deadline)
         throw new TimeoutException(getName() + "() exceeded the " + GlobalConfiguration.COMMAND_TIMEOUT.getKey()
             + " of " + timeoutMillis + "ms");
+    }
+
+    /**
+     * {@link #check()} throttled for a hot inner loop whose single iteration is too small to justify a flag
+     * test of its own. Checking only at the enclosing loop leaves abort latency proportional to the inner
+     * loop's length, which is exactly what these knobs make unbounded - node2vec's context window may span a
+     * whole walk, so one walk alone is O(walkLength&sup2;). Testing every 1024 iterations instead bounds the
+     * latency by a fixed amount of work at the cost of one AND and one branch per iteration.
+     *
+     * @param iterationCounter the caller's loop counter; its absolute value does not matter, only that it
+     *                         advances by one per iteration
+     */
+    public void checkPeriodically(final int iterationCounter) {
+      if ((iterationCounter & CHECK_INTERVAL_MASK) == 0)
+        check();
     }
   }
 

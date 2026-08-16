@@ -144,6 +144,8 @@ public class AlgoMaxKCut extends AbstractAlgoProcedure {
         guard.check();
         boolean improved = false;
         for (int i = 0; i < n; i++) {
+          // A single pass walks the whole graph, so on a large one the checkpoint belongs inside the pass too.
+          guard.checkPeriodically(i);
           final int curPart = assign[i];
           // Compute contribution of each partition choice for node i
           final double[] gain = new double[k];

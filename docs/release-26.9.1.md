@@ -1965,13 +1965,25 @@ guard reads the clock only when a timeout is actually configured, so the default
 flag test per iteration and no syscall. The interrupt flag is consumed rather than restored: the exception
 aborts the whole call, and leaving the flag set would poison the next task to run on a pooled query thread.
 
+Where the checkpoint sits matters as much as that it exists. A checkpoint between walks bounds nothing when a
+single walk is the unbounded thing: with `windowSize` clamped to `walkLength`, every position scans the whole
+walk as context, so one walk is O(`walkLength`²), and `walkLength` is bounded only by the memory budget - a
+memory budget, not a work budget. `CALL algo.node2vec({walksPerNode: 1, walkLength: 5000000, windowSize:
+5000000})` on a small graph fits comfortably in the default budget and then runs for hours between two
+checkpoints, so neither the timeout nor an interrupt would fire in any useful time frame. Every loop whose
+length a knob controls therefore checks *inside* itself, throttled to once every 1024 iterations so the
+per-iteration cost stays one AND and one branch: the Skip-gram context loop, the walk-generation step loop,
+and `algo.maxKCut`'s per-node scan within a local-search pass.
+
 One correctness bug fell out of the same review. `algo.node2vec` computed its Skip-gram context window as
 `Math.min(walkLen - 1, pos + window)`. For a large `windowSize` that addition wraps `int` and comes back
 negative, leaving `winEnd` below `winStart`: the training loop then ran at position 0 and nowhere else, and
 the procedure quietly returned embeddings that had barely been trained. A window wider than the walk already
 spans the whole walk, so `windowSize` is now clamped to `walkLength` - a clamp with a genuinely correct
 fallback, unlike an embedding dimension - and a huge window now produces exactly the same embeddings as a
-window equal to the walk length.
+window equal to the walk length. The addition itself is computed in `long` as well, so the wrap is closed as a
+class and not just in the instance the clamp happens to cover: `walkLength` is bounded by a heap budget an
+operator can raise, and past roughly 1.1 billion the clamped window would reach the same overflow.
 
 Also fixed, in the same file as `simulations`: `algo.influenceMaximization`'s `k` saturates upwards on
 purpose ("more seeds than nodes" reads as "as many as exist" and is clamped to the node count), but a
