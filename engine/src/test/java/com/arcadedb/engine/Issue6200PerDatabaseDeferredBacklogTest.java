@@ -54,7 +54,12 @@ class Issue6200PerDatabaseDeferredBacklogTest extends TestHelper {
   private static final int  CAP_MB                = 1;            // 1 MB deferred cap -> 4 pages fit exactly
   private static final long CAP_BYTES             = (long) CAP_MB * 1024 * 1024;
   private static final int  FILE_ID               = 9;
-  private static final long ASSERTION_TIMEOUT_SEC = 15;
+  /**
+   * Bounds only the waits expected to SUCCEED - the short windows asserting "not released yet" are written
+   * inline - so a generous value cannot turn a passing run red, while a tight one can under the stop-the-world
+   * pauses the shared 12000-test JVM produces late in a run.
+   */
+  private static final long ASSERTION_TIMEOUT_SEC = 60;
 
   /**
    * The heart of the issue: while one suspended database sits over the cap, the batches of the OTHER databases must

@@ -42,7 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * is what makes a "this database just drained" signal possible at all, and the waits now park on it.
  * <p>
  * <b>How these tests can tell a notification from a poll</b>, given that both end the wait: the fallback interval is
- * stretched to a minute. A wait that returns in well under that was released by the signal; one released by the
+ * stretched to ten minutes. A wait that returns in well under that was released by the signal; one released by the
  * interval would blow the assertion's own timeout. The fallback is deliberately kept (a bounded {@code wait}, not an
  * unbounded park) so the callers' timeout machinery still gets re-evaluated and a hypothetical lost notification
  * degrades to the polling this used to be - which is why it has to be stretched here to be excluded.
@@ -52,8 +52,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 class Issue6199DrainWakeupTest extends TestHelper {
   private static final int  PAGE_SIZE             = 1024;
   /** Far longer than any assertion below waits: a wait that ends inside the timeouts was NOT ended by this. */
-  private static final long LONG_FALLBACK_MILLIS  = TimeUnit.MINUTES.toMillis(1);
-  private static final long ASSERTION_TIMEOUT_SEC = 15;
+  private static final long LONG_FALLBACK_MILLIS  = TimeUnit.MINUTES.toMillis(10);
+  /**
+   * Generous on purpose, and it costs nothing: it bounds only the waits that are expected to SUCCEED, so a longer
+   * bound cannot turn a passing run red - while a short one can, as this class already learned when a 15 s bound
+   * met a 24 s stop-the-world pause in the shared 12000-test JVM. What the tests actually rest on is the gap
+   * between this and the fallback above, which stays an order of magnitude wide.
+   */
+  private static final long ASSERTION_TIMEOUT_SEC = 60;
 
   /**
    * The last page leaving the pipeline releases a waiter immediately, instead of at the next poll boundary.
@@ -183,12 +189,17 @@ class Issue6199DrainWakeupTest extends TestHelper {
    * map entry it would otherwise consult is already gone. If the purge only notified without zeroing it, that
    * waiter would re-read a stale positive count and park through a signal it can never be sent again.
    * <p>
-   * The window is a handful of instructions, so it is reached by alignment and repetition rather than forced: the
-   * waiters and the purge are released from one gate, and measured against a purge that notifies WITHOUT zeroing
-   * the counter this fails about one run in three. A single UNALIGNED waiter per round caught nothing at all in
-   * three runs, which is why the gate is here; and the round is deliberately small (12 waiters, not the 24 that
-   * reproduced at the same rate), because this runs in the shared engine-suite JVM where thread churn is a cost
-   * every other test pays.
+   * <b>A probabilistic guard, and worth being exact about how probabilistic.</b> The window is a handful of
+   * instructions, so it is reached by alignment and repetition rather than forced: the waiters and the purge are
+   * released from one gate. Measured against a purge that notifies WITHOUT zeroing the counter, it reproduced the
+   * miss in 1 run out of 12 on a loaded machine and 2 out of 6 on an idle one - samples that small do not
+   * distinguish the two, so rely on the lower figure. A single UNALIGNED waiter per round reproduced NOTHING in
+   * three runs, which is why the gate is here at all.
+   * <p>
+   * The round is deliberately no larger (12 waiters, 80 rounds) although a larger one reproduces more often: this
+   * runs in the shared engine-suite JVM where thread churn is a cost every other test pays, and the guarantee rests
+   * on the argument written into {@code FlushPageIndex.removeAllOfDatabase} rather than on this test catching a
+   * regression of it every time.
    */
   @Test
   void aPurgeRacingTheParkIsNeverMissed() throws Exception {

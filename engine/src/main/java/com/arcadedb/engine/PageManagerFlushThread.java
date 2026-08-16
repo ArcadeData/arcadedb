@@ -949,6 +949,14 @@ public class PageManagerFlushThread extends Thread {
    * JVM-wide lock across both the page write and the flush enqueue, so a committer parked while holding it stalls
    * every committer of every database - the very coupling this method removes.
    * <p>
+   * <b>And it must hold nothing the resume needs</b>, since the resume is what releases the backlog it waits for.
+   * Checked for both entry points (review of #6223): a committer arrives through {@code publishPages}, before its
+   * {@code lock()}, and index compaction arrives through {@code writePages}, after {@code updatePageVersion} has
+   * taken and released that same lock - neither holds it here. Nothing outside this class can hold
+   * {@link #suspendLock} or {@link #replayDrainLock} at all, the resume takes no database lock, and a waiter parked
+   * below has released {@link #deferredRAMLock} by definition. So the only thing a parked caller holds is its own
+   * transaction's file locks, which the resume never asks for.
+   * <p>
    * The wait ends when the backlog drops under the cap (the suspension resumed and wrote its deferred batches, or
    * the database was dropped) or when this database stops being suspended. It is bounded per round so a suspension
    * released without freeing any RAM still lets its committers out, and it stops waiting during shutdown so a
