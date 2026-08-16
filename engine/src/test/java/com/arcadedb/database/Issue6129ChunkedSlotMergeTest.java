@@ -62,6 +62,9 @@ class Issue6129ChunkedSlotMergeTest extends BucketPageLayoutTestSupport {
 
     assertThat(outcome.commitConflicts())
         .as("updating chunked records owned by different threads must not conflict: %s", outcome).isZero();
+    assertThat(outcome.readSideConflicts())
+        .as("no record here is read by anybody but its owner, so no read may fail either (#6217): %s", outcome)
+        .isZero();
 
     verifyContent(owned, this::fixedSizePayload);
     checkDatabase();
@@ -74,11 +77,13 @@ class Issue6129ChunkedSlotMergeTest extends BucketPageLayoutTestSupport {
    * carries the whole write when the chain grows underneath it, and that a record's continuation chunks landing next
    * to another thread's do not bring the conflict back.
    * <p>
-   * "Conflict" here means one the COMMIT raised. A read of a chunked record can also fail, on a mechanism of its own:
-   * {@code readMultiPageRecord} re-validates the page VERSION of everything its chain touched, and the continuation
-   * chunks of all 40 records of this fixture live on one page, so an unrelated rewrite invalidates a reader that
-   * touched nothing of that record. That is issue #6217, it is counted separately by {@link ConcurrentUpdateOutcome},
-   * and until this class distinguished the two it was what made this test fail on a loaded machine.
+   * "Conflict" here means one the COMMIT raised, and a read of a chunked record used to be able to fail on a
+   * mechanism of its own: {@code loadMultiPageRecord} re-validated the page VERSION of everything its chain touched,
+   * and the continuation chunks of all 40 records of this fixture live on one page, so an unrelated rewrite
+   * invalidated a reader that had touched nothing of that record. That was issue #6217 - what made this test fail on
+   * a loaded machine, and why {@link ConcurrentUpdateOutcome} counts the two separately. Since #6217 the read
+   * validates the record instead of the pages under it, so both counters must now be zero, and the split is kept
+   * because it is what a future failure needs in order to name its own mechanism.
    */
   @Test
   void growingUpdatesOfChunkedRecordsSharingAPageNeverConflict() throws Exception {
@@ -88,6 +93,9 @@ class Issue6129ChunkedSlotMergeTest extends BucketPageLayoutTestSupport {
 
     assertThat(outcome.commitConflicts())
         .as("extending the chunk chain of one's own record must not conflict: %s", outcome).isZero();
+    assertThat(outcome.readSideConflicts())
+        .as("no record here is read by anybody but its owner, so no read may fail either (#6217): %s", outcome)
+        .isZero();
 
     verifyContent(owned, this::growingPayload);
     checkDatabase();
@@ -617,12 +625,14 @@ class Issue6129ChunkedSlotMergeTest extends BucketPageLayoutTestSupport {
   }
 
   /**
-   * A conflict raised while READING the record, not while committing it: {@code readMultiPageRecord} re-validates
-   * the version of every page its chain touched and gives up after {@code TX_RETRIES} attempts. It is a different
-   * mechanism from the one these tests are about - the reader's own chunks are unchanged, what moved is another
-   * record's chunk sharing the page - and it is tracked as its own defect (#6217). Counting it as a merge failure is
-   * what made this class fail on a loaded machine with a bare "expected 0 but was 2": measured by shrinking the read
-   * budget to zero, where these very runs produce exactly this message and nothing else.
+   * A conflict raised while READING the record, not while committing it: {@code loadMultiPageRecord} gives up after
+   * {@code TX_RETRIES} attempts at assembling a chain that keeps changing under it. It is a different mechanism from
+   * the one these tests are about, which is why it is counted apart - counting it as a merge failure is what made
+   * this class fail on a loaded machine with a bare "expected 0 but was 2", measured by shrinking the read budget to
+   * zero, where those runs produced exactly this message and nothing else. Until #6217 the read validated the page
+   * VERSIONS its chain had touched, so another record's chunk sharing a page was enough to raise it; it now
+   * validates the record's own chunks, so in these fixtures - where every record has exactly one writer, its own
+   * thread - it must not be raised at all.
    */
   private static boolean isReadSideConflict(final String message) {
     return message != null && message.contains("was modified during read");
@@ -648,10 +658,14 @@ class Issue6129ChunkedSlotMergeTest extends BucketPageLayoutTestSupport {
       return (int) conflicts.stream().filter(c -> !isReadSideConflict(c)).count();
     }
 
+    /** The other half: conflicts raised by a READ of a chunked record, which since #6217 must not happen here. */
+    int readSideConflicts() {
+      return (int) conflicts.stream().filter(Issue6129ChunkedSlotMergeTest::isReadSideConflict).count();
+    }
+
     @Override
     public String toString() {
-      final long readSide = conflicts.stream().filter(Issue6129ChunkedSlotMergeTest::isReadSideConflict).count();
-      final String counters = commitConflicts() + " commit conflict(s) and " + readSide
+      final String counters = commitConflicts() + " commit conflict(s) and " + readSideConflicts()
           + " read-side chain revalidation(s) out of " + versionClashes + " page-version clashes, " + merged
           + " absorbed by the slot merge, " + declinedByCoverage + " merges declined for missing coverage";
       if (commitConflicts() == 0)

@@ -215,8 +215,7 @@ public class LocalDocumentType implements DocumentType {
 
         removedBuckets.add(bucket);
 
-        schema.bucketMap.remove(oldBucketName);
-        schema.bucketMap.put(bucket.getName(), (LocalBucket) bucket);
+        rekeyBucket(bucket, oldBucketName);
       }
 
       name = newName;
@@ -253,9 +252,9 @@ public class LocalDocumentType implements DocumentType {
       }
 
       for (Bucket bucket : removedBuckets) {
+        final String renamedBucketName = bucket.getName();
         try {
-          final String newBucketName = bucket.getName();
-          final String restoredName = LocalSchema.rebaseComponentName(newBucketName, newName, oldName,
+          final String restoredName = LocalSchema.rebaseComponentName(renamedBucketName, newName, oldName,
               schema.getEncoding());
           if (restoredName == null)
             corrupted = true;
@@ -263,6 +262,8 @@ public class LocalDocumentType implements DocumentType {
             ((LocalBucket) bucket).rename(restoredName);
         } catch (IOException ex) {
           corrupted = true;
+        } finally {
+          rekeyBucket(bucket, renamedBucketName);
         }
       }
 
@@ -272,6 +273,35 @@ public class LocalDocumentType implements DocumentType {
 
       throw new SchemaException("Error on renaming type '" + oldName + "' in '" + newName + "'", e);
     }
+  }
+
+  /**
+   * Moves the schema's bucket-map entry from {@code previousKey} to the name the bucket now reports.
+   * <p>
+   * The map is keyed by name and the key is not derived from the component on lookup, so renaming a bucket without
+   * re-keying leaves the bucket unreachable under its own name while the stale key resolves to a component that
+   * answers to a different one. Everything name-based then disagrees with the schema: {@code existsBucket()},
+   * {@code getBucketByName()} (hence {@code SELECT FROM BUCKET:x}), the duplicate-name guard in
+   * {@code LocalSchema.createBucket()}, and the keys of the statistics file.
+   * <p>
+   * Called from both the forward rename loop and its rollback: a rollback that restores the file but not the key is
+   * the same inconsistency in the opposite direction. In the rollback it runs even when the restore failed, so the
+   * map always agrees with whatever name the component ended up with; that case is reported separately through the
+   * {@code corrupted} flag.
+   * <p>
+   * The guarantee is only that the key agrees with the component, not that the component agrees with the disk:
+   * {@link com.arcadedb.engine.PaginatedComponent#rename} moves the file and updates the {@code FileManager} before
+   * it assigns {@code componentName}, so a failure between those steps leaves the file under the new name while the
+   * component - and therefore this map - keeps the old one. That window predates this method and is not closed by
+   * it.
+   */
+  protected void rekeyBucket(final Bucket bucket, final String previousKey) {
+    final String currentName = bucket.getName();
+    if (previousKey.equals(currentName))
+      return;
+
+    schema.bucketMap.remove(previousKey, bucket);
+    schema.bucketMap.put(currentName, (LocalBucket) bucket);
   }
 
   /**
