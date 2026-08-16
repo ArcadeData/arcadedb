@@ -211,6 +211,13 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
     final TimeSeriesTagDictionary dictionary = existingFile != null ?
         new TimeSeriesTagDictionary(database, name, existingFile.getFilePath(), existingFile.getFileId()) :
         new TimeSeriesTagDictionary(database, name, database.getDatabasePath() + "/" + name);
+
+    // Registered BEFORE it is initialised, and it has to be: initHeaderPage() commits, and a commit
+    // resolves the component to bump its page count through schema.getFileById(), which throws on an id
+    // the schema does not know. The half-built component is not exposed by that: openOrCreate() runs from
+    // the TimeSeriesEngine constructor, under the schema DDL that creates or opens the type, before a
+    // single shard of it exists - so nothing can hold this type's dictionary id yet, and the only other
+    // caller is a test-only TimeSeriesShard constructor.
     schema.registerFile(dictionary);
 
     if (dictionary.readStoredHeader() != null)
