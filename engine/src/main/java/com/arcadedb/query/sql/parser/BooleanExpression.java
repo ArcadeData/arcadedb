@@ -50,6 +50,11 @@ public abstract class BooleanExpression extends SimpleNode {
     }
 
     @Override
+    public boolean isAlwaysTrue(final CommandContext context) {
+      return true;
+    }
+
+    @Override
     public List<String> getMatchPatternInvolvedAliases() {
       return null;
     }
@@ -273,13 +278,20 @@ public abstract class BooleanExpression extends SimpleNode {
   }
 
   /**
-   * returns true only if the expression does not need any further evaluation (eg. "true") and
-   * always evaluates to true. It is supposed to be used as and optimization, and is allowed to
-   * return false negatives
+   * Whether the expression is true for every record, decidable from the statement alone ({@code WHERE 1=1},
+   * {@code WHERE true}). A filter that keeps everything says nothing the statement did not already say, so the planner
+   * drops it and builds the plan the same statement without a WHERE would have got - a plain fetch instead of a
+   * fetch-with-filter, and no predicate evaluated per record.
+   * <p>
+   * Decided exactly like {@link #isAlwaysFalse(CommandContext)}, its mirror: only comparisons between
+   * {@link Expression#isLiteral() literal} operands are folded, so nothing here reads a record, binds a parameter or
+   * calls a function, and a plan built on this answer stays correct for every execution that reuses it. This is an
+   * optimization, so it is allowed to return false negatives - a subclass that cannot decide cheaply, or at all,
+   * inherits {@code false}.
    *
-   * @return
+   * @param context the context used to fold the literal comparison, never used to read data
    */
-  public boolean isAlwaysTrue() {
+  public boolean isAlwaysTrue(final CommandContext context) {
     return false;
   }
 
@@ -290,8 +302,8 @@ public abstract class BooleanExpression extends SimpleNode {
    * <p>
    * Only comparisons between {@link Expression#isLiteral() literal} operands are folded, so nothing here reads a
    * record, binds a parameter or calls a function: a plan built on this answer stays correct for every execution that
-   * reuses it. Like {@link #isAlwaysTrue()} this is an optimization, so it is allowed to return false negatives - a
-   * subclass that cannot decide cheaply, or at all, inherits {@code false}.
+   * reuses it. Like {@link #isAlwaysTrue(CommandContext)} this is an optimization, so it is allowed to return false
+   * negatives - a subclass that cannot decide cheaply, or at all, inherits {@code false}.
    *
    * @param context the context used to fold the literal comparison, never used to read data
    */
