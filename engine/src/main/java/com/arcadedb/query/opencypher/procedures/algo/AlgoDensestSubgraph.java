@@ -23,6 +23,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.Arrays;
 import java.util.List;
@@ -83,6 +84,7 @@ public class AlgoDensestSubgraph extends AbstractAlgoProcedure {
     final String[] relTypes = args.length > 0 ? extractRelTypes(args[0]) : null;
 
     final Database db = context.getDatabase();
+    final WorkGuard guard = newWorkGuard(context);
 
     final GraphData graph = loadGraph(db, null, relTypes, context);
 
@@ -109,6 +111,9 @@ public class AlgoDensestSubgraph extends AbstractAlgoProcedure {
     int remaining = n;
 
     while (remaining > 1) {
+      // One vertex peeled per round, chosen by a linear scan and snapshotted by another: O(V²) before the edge
+      // work, with the graph alone sizing it (issue #6302).
+      guard.check();
       final double density = (double) totalEdges / remaining;
       if (density > bestDensity) {
         bestDensity = density;

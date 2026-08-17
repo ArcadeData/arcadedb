@@ -24,6 +24,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
@@ -337,6 +338,25 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     }
 
     /**
+     * How many items of {@code bytesPerItem} this call may still reserve, or {@link Long#MAX_VALUE} when the
+     * budget is disabled.
+     * <p>
+     * For a working set whose size is only known by walking the graph - {@code algo.mst}'s edge arrays are sized
+     * by a count that takes a full traversal to obtain - this hands the walk its own stopping rule. The
+     * alternative is to reserve once the count is known, which refuses exactly the same calls but only after
+     * paying in full for a traversal it then throws away. The refusal itself still goes through
+     * {@link #reserve}, so there is one place that decides and one shape of message, whichever end of the walk
+     * it fires at.
+     *
+     * @param bytesPerItem estimated footprint of one item; a non-positive value means "no per-item cost"
+     */
+    public long capacityFor(final long bytesPerItem) {
+      if (limit < 0 || bytesPerItem <= 0)
+        return Long.MAX_VALUE;
+      return (limit - reserved) / bytesPerItem;
+    }
+
+    /**
      * A saturated estimate is reported as "over Long.MAX_VALUE" rather than as the ceiling itself: the figure
      * is no longer representable, and quoting it as if it were exact would misstate by an unknown amount.
      */
@@ -555,7 +575,8 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
    * Provides uniform access to adjacency, vertex lookup, and RID resolution regardless of backing.
    */
   protected static class GraphData {
-    private static final int[] EMPTY_NEIGHBORS = new int[0];
+    private static final int[]    EMPTY_NEIGHBORS = new int[0];
+    private static final double[] EMPTY_WEIGHTS   = new double[0];
 
     public final int                     nodeCount;
     private final GraphTraversalProvider provider;
@@ -649,57 +670,153 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     }
 
     /**
-     * Builds weighted adjacency from CSR edge properties when available. Returns edge weights
-     * aligned with the adjacency array returned by {@link #adjacency(Vertex.DIRECTION, String...)}.
+     * A neighbour list and the weight of each of its edges, produced together.
      * <p>
-     * Returns {@code null} if edge properties are not available in CSR (caller should extract
-     * weights from OLTP edges in that case).
-     * <p>
-     * For each node {@code i}, {@code result[i][j]} is the weight of the edge to {@code adj[i][j]}.
+     * {@code weights[i][j]} is the weight of the edge to {@code neighbors[i][j]} <em>by construction</em>: both
+     * arrays are filled from one walk of the same edges, so there is no later reconciliation step that can get
+     * the pairing wrong. That is the whole point of returning the two together rather than offering weights
+     * "aligned with" an adjacency the caller obtained separately - issue #6301 is what the second shape costs.
      *
-     * @param dir            traversal direction
-     * @param weightProperty edge property name for weights
-     * @param relTypes       edge types to filter
-     * @return double[][] of weights aligned with adjacency, or null if not available
+     * @param neighbors dense neighbour ids per node
+     * @param weights   weight of the edge to the neighbour at the same index
      */
-    public double[][] edgeWeights(final Vertex.DIRECTION dir, final String weightProperty,
-        final String... relTypes) {
-      if (provider == null || !provider.hasEdgeProperties())
-        return null;
-
-      final double[][] weights = new double[nodeCount][];
-      for (int i = 0; i < nodeCount; i++) {
-        final String[] types = relTypes != null && relTypes.length > 0 ? relTypes : null;
-        if (types != null && types.length == 1) {
-          // Single edge type: direct per-neighbor weight extraction
-          final int[] neighbors = provider.getNeighborIds(i, dir, types[0]);
-          weights[i] = new double[neighbors.length];
-          for (int j = 0; j < neighbors.length; j++) {
-            final Object w = provider.getEdgeProperty(i, j, dir, types[0], weightProperty);
-            weights[i][j] = w instanceof Number num ? num.doubleValue() : 1.0;
-          }
-        } else {
-          // Multiple edge types: concatenate per-type weights to match adjacency order
-          final List<Double> wts = new ArrayList<>();
-          final String[] allTypes = types != null ? types : getProviderEdgeTypes();
-          for (final String edgeType : allTypes) {
-            final int[] neighbors = provider.getNeighborIds(i, dir, edgeType);
-            for (int j = 0; j < neighbors.length; j++) {
-              final Object w = provider.getEdgeProperty(i, j, dir, edgeType, weightProperty);
-              wts.add(w instanceof Number num ? num.doubleValue() : 1.0);
-            }
-          }
-          weights[i] = new double[wts.size()];
-          for (int j = 0; j < wts.size(); j++)
-            weights[i][j] = wts.get(j);
-        }
-      }
-      return weights;
+    public record WeightedAdjacency(int[][] neighbors, double[][] weights) {
     }
 
-    private String[] getProviderEdgeTypes() {
-      // Fallback: return empty array to indicate all types
-      return new String[0];
+    /**
+     * Builds the neighbour lists and their edge weights in a single pass, from columnar edge properties when the
+     * view has them and from the edge records otherwise.
+     * <p>
+     * The two sources produce the same multiset of {@code (neighbour, weight)} pairs per node - the same edges,
+     * differing only in the order they are listed - which is the property that matters: a Graph Analytical View
+     * is an accelerator, and an algorithm reading weights through it must reach the answer it would have reached
+     * without it.
+     * <p>
+     * A {@code null} {@code weightProperty} means unit weights, and then this is {@link #adjacency} with a
+     * {@code 1.0} beside every entry.
+     *
+     * @param dir            traversal direction; {@code BOTH} lists a node's outgoing and incoming edges alike
+     * @param weightProperty edge property holding the weight, or {@code null} for unit weights
+     * @param relTypes       edge types to filter by, empty/null for all of them
+     */
+    public WeightedAdjacency weightedAdjacency(final Vertex.DIRECTION dir, final String weightProperty,
+        final String... relTypes) {
+      if (weightProperty == null) {
+        final int[][] neighbors = adjacency(dir, relTypes);
+        final double[][] weights = new double[nodeCount][];
+        for (int i = 0; i < nodeCount; i++) {
+          weights[i] = new double[neighbors[i].length];
+          Arrays.fill(weights[i], 1.0);
+        }
+        return new WeightedAdjacency(neighbors, weights);
+      }
+
+      // getEdgeProperty() addresses an edge by (type, direction, position), so "all types" has to be resolved
+      // to the actual list before the columnar path can be used at all. A provider that cannot enumerate its
+      // types, or has not materialised the property columns, sends us to the edge records - which are exact.
+      final String[] types = relTypes != null && relTypes.length > 0 ? relTypes
+          : provider != null ? provider.getMaterializedEdgeTypes() : null;
+      if (provider != null && provider.hasEdgeProperties() && types != null && types.length > 0)
+        return weightedAdjacencyFromColumns(dir, weightProperty, types);
+
+      return weightedAdjacencyFromRecords(dir, weightProperty, relTypes);
+    }
+
+    /**
+     * Columnar build: one slice per (edge type, direction), each already positional against
+     * {@link GraphTraversalProvider#getEdgeProperty}. Concatenating the slices keeps that alignment, where
+     * merging them into the sorted list {@link #adjacency} returns would lose it.
+     */
+    private WeightedAdjacency weightedAdjacencyFromColumns(final Vertex.DIRECTION dir, final String weightProperty,
+        final String[] types) {
+      final Vertex.DIRECTION[] directions = dir == Vertex.DIRECTION.BOTH ?
+          new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN } :
+          new Vertex.DIRECTION[] { dir };
+
+      final int[][] neighbors = new int[nodeCount][];
+      final double[][] weights = new double[nodeCount][];
+      final int[][] slices = new int[types.length * directions.length][];
+      for (int i = 0; i < nodeCount; i++) {
+        int degree = 0;
+        int s = 0;
+        for (final String type : types)
+          for (final Vertex.DIRECTION d : directions) {
+            final int[] slice = provider.getNeighborIds(i, d, type);
+            slices[s++] = slice;
+            degree += slice.length;
+          }
+
+        final int[] nodeNeighbors = new int[degree];
+        final double[] nodeWeights = new double[degree];
+        int pos = 0;
+        s = 0;
+        for (final String type : types)
+          for (final Vertex.DIRECTION d : directions) {
+            final int[] slice = slices[s++];
+            for (int j = 0; j < slice.length; j++) {
+              nodeNeighbors[pos] = slice[j];
+              final Object weight = provider.getEdgeProperty(i, j, d, type, weightProperty);
+              nodeWeights[pos] = weight instanceof Number num ? num.doubleValue() : 1.0;
+              pos++;
+            }
+          }
+        neighbors[i] = nodeNeighbors;
+        weights[i] = nodeWeights;
+      }
+      return new WeightedAdjacency(neighbors, weights);
+    }
+
+    /**
+     * Record build: the neighbour and the weight come off the same {@link Edge}, so they cannot be mismatched.
+     * Works for a CSR-backed graph too - {@link #getVertex} and {@link #indexOf} bridge back to the records -
+     * which is what makes it the fallback whenever the columnar path cannot answer exactly.
+     */
+    private WeightedAdjacency weightedAdjacencyFromRecords(final Vertex.DIRECTION dir, final String weightProperty,
+        final String[] relTypes) {
+      final int[][] neighbors = new int[nodeCount][];
+      final double[][] weights = new double[nodeCount][];
+      // One growable pair of scratch buffers for the whole graph rather than a list per node: the degree is
+      // unknown before the walk, and a per-node ArrayList<Double> would box every weight.
+      int[] scratchNeighbors = new int[16];
+      double[] scratchWeights = new double[16];
+
+      for (int i = 0; i < nodeCount; i++) {
+        final Vertex vertex = getVertex(i);
+        if (vertex == null) {
+          // Deleted since the CSR was built: no edges to read, and every other caller in this package skips it.
+          neighbors[i] = EMPTY_NEIGHBORS;
+          weights[i] = EMPTY_WEIGHTS;
+          continue;
+        }
+
+        final RID vertexRid = vertex.getIdentity();
+        final Iterable<Edge> edges = relTypes != null && relTypes.length > 0 ?
+            vertex.getEdges(dir, relTypes) :
+            vertex.getEdges(dir);
+        int degree = 0;
+        for (final Edge edge : edges) {
+          try {
+            final RID neighborRid = GraphEngine.neighborRid(edge, vertexRid, dir);
+            final int neighbor = neighborRid != null ? indexOf(neighborRid) : -1;
+            if (neighbor < 0)
+              continue;
+            if (degree == scratchNeighbors.length) {
+              scratchNeighbors = Arrays.copyOf(scratchNeighbors, degree * 2);
+              scratchWeights = Arrays.copyOf(scratchWeights, degree * 2);
+            }
+            final Object weight = edge.get(weightProperty);
+            scratchNeighbors[degree] = neighbor;
+            scratchWeights[degree] = weight instanceof Number num ? num.doubleValue() : 1.0;
+            degree++;
+          } catch (final RecordNotFoundException rnf) {  // 'rnf' not 'e': 'edge' is the loop variable in this scope
+            // Ghost edge: a dangling pointer to a record that is gone. Skipped, as everywhere else in the package.
+            GhostEdgeReporter.reportSkipped(rnf);
+          }
+        }
+        neighbors[i] = Arrays.copyOf(scratchNeighbors, degree);
+        weights[i] = Arrays.copyOf(scratchWeights, degree);
+      }
+      return new WeightedAdjacency(neighbors, weights);
     }
   }
 

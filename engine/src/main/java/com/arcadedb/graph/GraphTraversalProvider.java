@@ -157,8 +157,28 @@ public interface GraphTraversalProvider {
   }
 
   /**
-   * Returns true if this provider has edge property columns materialized.
-   * When true, {@link #getEdgeProperty} can be used to retrieve edge properties from CSR storage.
+   * Returns the edge types this provider actually holds, or {@code null} when it cannot enumerate them.
+   * <p>
+   * {@link #getEdgeProperty} is addressed per edge type, so a caller that was given no type filter but needs
+   * edge properties has to ask which types exist rather than pass "all types" down. A provider that answers
+   * {@code null} simply cannot serve such a caller, which then falls back to reading the edge records.
+   */
+  default String[] getMaterializedEdgeTypes() {
+    return null;
+  }
+
+  /**
+   * Returns true if this provider has edge property columns materialized <em>and</em> the positional mapping
+   * {@link #getEdgeProperty} relies on is exact.
+   * <p>
+   * The second half is what makes the answer usable. {@code getEdgeProperty} addresses an edge by its position
+   * in the node's neighbour list for a direction, so it means something only while that position identifies the
+   * same edge {@link #getNeighborIds} reports there. A provider whose neighbour lists no longer line up with its
+   * property columns - because pending changes are served from a side structure, say - must answer {@code false}
+   * rather than hand back a weight belonging to another edge. The caller holds the edge records and can always
+   * read the property itself; a plausible wrong number is the one outcome it cannot recover from. Same
+   * "say unknown rather than guess" convention as {@link #countEdgesBetween} and
+   * {@link #getMeanEdgesPerConnectedPair}.
    */
   default boolean hasEdgeProperties() {
     return false;

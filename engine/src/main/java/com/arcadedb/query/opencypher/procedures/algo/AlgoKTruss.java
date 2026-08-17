@@ -23,6 +23,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
 import java.util.BitSet;
@@ -85,6 +86,7 @@ public class AlgoKTruss extends AbstractAlgoProcedure {
     final int kParam = args.length > 1 && args[1] instanceof Number n ? extractInt(n, "k") : 3;
 
     final Database db = context.getDatabase();
+    final WorkGuard guard = newWorkGuard(context);
 
     final GraphData graph = loadGraph(db, null, relTypes, context);
 
@@ -142,8 +144,13 @@ public class AlgoKTruss extends AbstractAlgoProcedure {
     int currentK = 2;
     boolean anyRemoved = true;
     while (anyRemoved) {
+      // A full sweep of every edge per round, repeated until a round removes nothing, and each removal walks the
+      // common neighbourhood of the edge's endpoints. Sized by the graph and by k, with nothing to stop it from
+      // inside before issue #6302.
+      guard.check();
       anyRemoved = false;
       for (int e = 0; e < edgeCount; e++) {
+        guard.checkPeriodically(e);
         if (!removed[e] && support[e] < currentK - 2) {
           removed[e] = true;
           anyRemoved = true;
@@ -180,7 +187,7 @@ public class AlgoKTruss extends AbstractAlgoProcedure {
     // Assign truss numbers: nodes in remaining edges get at least kParam truss number
     // For full decomposition, track max k where each node is still connected
     // Re-run the full decomposition
-    final int[] nodeTruss = computeFullTrussDecomposition(n, adj, neighborSets, edgeMap, edges, edgeCount);
+    final int[] nodeTruss = computeFullTrussDecomposition(guard, n, adj, neighborSets, edgeMap, edges, edgeCount);
 
     final List<Result> results = new ArrayList<>(n);
     for (int i = 0; i < n; i++) {
@@ -198,7 +205,7 @@ public class AlgoKTruss extends AbstractAlgoProcedure {
     return idx == null ? -1 : idx;
   }
 
-  private int[] computeFullTrussDecomposition(final int n, final int[][] adj,
+  private int[] computeFullTrussDecomposition(final WorkGuard guard, final int n, final int[][] adj,
       final BitSet[] neighborSetsOrig, final Map<Long, Integer> edgeMap,
       final List<int[]> edges, final int edgeCount) {
 
@@ -229,8 +236,10 @@ public class AlgoKTruss extends AbstractAlgoProcedure {
     while (removedCount < edgeCount) {
       boolean anyRemoved = true;
       while (anyRemoved) {
+        guard.check();
         anyRemoved = false;
         for (int e = 0; e < edgeCount; e++) {
+          guard.checkPeriodically(e);
           if (!removed[e] && support[e] < k - 2) {
             removed[e] = true;
             edgeTruss[e] = k - 1;

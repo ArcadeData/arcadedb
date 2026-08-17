@@ -27,6 +27,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -94,6 +95,7 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
     final String weightProperty   = args.length > 4 ? extractString(args[4], "weightProperty") : null;
 
     final Database db = context.getDatabase();
+    final WorkGuard guard = newWorkGuard(context);
     final List<Vertex> vertices = new ArrayList<>();
     final Iterator<Vertex> iter = getAllVertices(db, null);
     while (iter.hasNext())
@@ -125,6 +127,8 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
       Arrays.fill(row, Double.MAX_VALUE);
 
     for (int i = 0; i < n; i++) {
+      // One row of the matrix is O(n) and one vertex's edges are O(degree); either is more than a flag test.
+      guard.check();
       weightMatrix[i][i] = 0.0;
       final Iterable<Edge> edges = relTypes != null && relTypes.length > 0 ?
           vertices.get(i).getEdges(Vertex.DIRECTION.OUT, relTypes) :
@@ -157,7 +161,7 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
     final List<Double> kWeights  = new ArrayList<>(Math.min(k, n));
 
     // Find first shortest path with Dijkstra
-    final int[] firstPath = dijkstra(weightMatrix, n, startIdx, endIdx, null);
+    final int[] firstPath = dijkstra(weightMatrix, n, startIdx, endIdx, null, guard);
     if (firstPath == null)
       return Stream.empty();
 
@@ -186,9 +190,17 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
     final boolean[] removedNodes = new boolean[n];
 
     for (int ki = 1; ki < k; ki++) {
+      // Yen's is O(k x pathLength x V²) over a dense matrix, and `k` is deliberately left unbounded above
+      // because the loop stops as soon as no candidate remains. "Unbounded but self-terminating" still needs a
+      // way out: nothing here could observe a thread interrupt or arcadedb.command.timeout before issue #6302,
+      // so a k that ran for minutes ran for minutes. The two checkpoints below cost one flag test per spur node
+      // and per matrix row respectively, both already O(V) bodies.
+      guard.check();
       final int[] prevPath = kPaths.get(ki - 1);
 
       for (int i = 0; i < prevPath.length - 1; i++) {
+        // One spur node is a whole Dijkstra over the dense matrix, i.e. O(V²).
+        guard.check();
         final int spurNode = prevPath[i];
         final int[] rootPath = Arrays.copyOf(prevPath, i + 1);
 
@@ -201,7 +213,7 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
 
         // Find spur path from spurNode to endIdx
         final int[] spurPath = dijkstra(weightMatrix, n, spurNode, endIdx,
-            (u, v) -> (u == spurNode && removedSpurTargets[v]) || removedNodes[u] || removedNodes[v]);
+            (u, v) -> (u == spurNode && removedSpurTargets[v]) || removedNodes[u] || removedNodes[v], guard);
 
         // Both masks are shared across spur nodes, so they are handed back empty for the next one.
         markRemovedSpurTargets(kPaths, prevPath, i, removedSpurTargets, false);
@@ -306,7 +318,7 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
   }
 
   private static int[] dijkstra(final double[][] w, final int n, final int src, final int dst,
-      final EdgeFilter removed) {
+      final EdgeFilter removed, final WorkGuard guard) {
     final double[] dist = new double[n];
     final int[] prev    = new int[n];
     Arrays.fill(dist, Double.MAX_VALUE);
@@ -318,6 +330,9 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
     pq.offer(new double[] { 0.0, src });
 
     while (!pq.isEmpty()) {
+      // Relaxing one settled node scans the whole matrix row, so a single Dijkstra here is O(V²) and has to be
+      // abortable from inside rather than only between spur nodes.
+      guard.check();
       final double[] top  = pq.poll();
       final double cost   = top[0];
       final int u         = (int) top[1];
