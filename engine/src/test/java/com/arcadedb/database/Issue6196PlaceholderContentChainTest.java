@@ -22,6 +22,7 @@ import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponentFile;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
@@ -32,6 +33,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #6196: a placeholder whose CONTENT record had to spill into chunks was returned TWICE by a scan.
@@ -164,6 +166,40 @@ class Issue6196PlaceholderContentChainTest extends BucketPageLayoutTestSupport {
     assertThat(countRecordsHolding(HUGE)).as("the duplicate is gone").isEqualTo(1L);
     database.transaction(() -> assertThat(placeholder.asDocument(true).getString("v")).isEqualTo(HUGE));
 
+    checkDatabase();
+  }
+
+  /**
+   * A content record is not a record, on the WRITE paths as much as on the read ones: reached at its own RID, an
+   * update and a delete both refuse it, exactly as they already do for a content record small enough to have kept the
+   * negated size marker. Anything else would let a caller rewrite or free content a placeholder pointer still
+   * references, leaving that pointer aimed at somebody else's bytes or at nothing.
+   * <p>
+   * Driven through {@code LocalBucket} rather than through a document, deliberately: {@code content.asDocument()} is
+   * refused one layer earlier, by the read that will not hand out a content record, so it would never reach the two
+   * guards this is about.
+   */
+  @Test
+  void aChunkedContentRecordIsNotUpdatableOrDeletableAtItsOwnRid() {
+    final RID content = contentRidOf(placeholderWithChainedContent());
+
+    database.transaction(() -> {
+      final LocalBucket bucket = bucketOf(TYPE);
+
+      final MutableDocument surrogate = database.newDocument(TYPE).set("v", "whatever the caller meant");
+      ((RecordInternal) surrogate).setIdentity(content);
+      assertThatThrownBy(() -> bucket.updateRecord(surrogate, false))
+          .as("a content record cannot be rewritten behind its placeholder's back")
+          .isInstanceOf(RecordNotFoundException.class);
+
+      assertThatThrownBy(() -> bucket.deleteRecord(content))
+          .as("nor freed, which would leave the pointer aimed at nothing")
+          .isInstanceOf(RecordNotFoundException.class);
+    });
+
+    // Both refusals left the record exactly as it was: still one copy, still reachable through the pointer.
+    assertThat(countRecordsHolding(HUGE)).isEqualTo(1L);
+    assertThat(markerByteAt(content)).isEqualTo(CONTENT_CHUNK_MARKER);
     checkDatabase();
   }
 
