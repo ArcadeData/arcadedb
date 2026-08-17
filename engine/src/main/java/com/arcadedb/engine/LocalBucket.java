@@ -3494,8 +3494,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           return "unexpected marker at chunk " + chunkId;
       }
     } catch (final Exception e) {
-      // A break PROVED by the bytes: the chunks walked so far are real, and the ones past this point were never
-      // reachable - so the walk is complete for the purpose of the reachability the caller derives from it.
+      // Reported as a break, which is what this has always answered and what {@code check(fix)} deletes the record on.
+      // But NOT as a walk that reached a conclusion: unlike the marker and range checks above, which prove a break
+      // from the bytes, an exception here is only as trustworthy as its cause - a corrupt offset says the chain is
+      // broken, anything else says the walk failed. The caller that reasons about REACHABILITY must not be made to
+      // choose, so it is told the walk is incomplete and fails closed; the chunks past this point are not proof of
+      // an orphan, and freeing them on this evidence would be unrecoverable (PR review).
+      walk.incomplete = true;
       return "error walking chain: " + e.getMessage();
     }
   }

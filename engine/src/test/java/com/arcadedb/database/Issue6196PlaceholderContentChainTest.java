@@ -24,6 +24,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Collection;
 import java.util.Map;
 
@@ -193,6 +194,13 @@ class Issue6196PlaceholderContentChainTest extends BucketPageLayoutTestSupport {
     assertThat(countRecordsHolding(HUGE)).as("the shape #6196 reported: the content is scanned twice").isEqualTo(2L);
 
     // Still far too big for the region the content record's slot owns: it stays a chain, and stays ambiguous.
+    //
+    // That this rewrite also keeps its head-chunk tracking - the poison belongs to the collapse, and firing it up
+    // front cost an ordinary rewrite the replay it has always had (PR review) - is deliberately NOT asserted here.
+    // An update is deferred to commit, so the flag does not exist while the transaction is open, and by the time it
+    // does the transaction is gone; an assertion placed either side passes whether or not the poison fires, which is
+    // worth less than no assertion at all. What it costs is a merge opportunity and never correctness, and only on
+    // data written before #6196.
     final String stillHuge = "s".repeat(200 * 1024);
     database.transaction(() -> placeholder.asDocument(true).modify().set("v", stillHuge).save());
     assertThat(markerByteAt(content)).as("a rewrite that stays a chain leaves the legacy marker alone")
@@ -389,6 +397,50 @@ class Issue6196PlaceholderContentChainTest extends BucketPageLayoutTestSupport {
   }
 
   /**
+   * The same guard for the COLLAPSE (#6286), which is where the two kinds earn their keep: both start from a head
+   * chunk and both end with the slot holding plain content, and the ONLY thing that separates them is the marker the
+   * replay must still find and the SIGN of the one it writes. A replay that took the wrong one would give a
+   * placeholder's content a positive size - a document of its own, which is #6196 - or hide a record behind a
+   * negative one.
+   * <p>
+   * Driven through {@code rebaseRecordOnPage} for the reason the sibling test above states: the transition it refuses
+   * is one no write path produces today, so only a direct drive proves the guard rather than the absence of a caller.
+   * Both directions, and both positive controls, for the same reason as there.
+   */
+  @Test
+  void aCollapseIsOnlyReplayedOntoTheMarkerItsWriteStartedFrom() {
+    final RID content = contentRidOf(placeholderWithChainedContent());
+
+    // Small enough for the region either slot owns, so a refusal can only come from the marker check.
+    final byte[] collapsed = "collapsed".getBytes(StandardCharsets.UTF_8);
+
+    database.begin();
+    try {
+      final LocalBucket bucket = bucketOf(TYPE);
+
+      final byte[] contentImage = chunkImageOf(content);
+      assertThat(rebase(bucket, content, collapsed, contentImage, TransactionContext.SLOT_KIND_CHUNK_COLLAPSED_TO_RECORD))
+          .as("a content head must not collapse under the kind that writes a record's positive size").isFalse();
+      assertThat(rebase(bucket, content, collapsed, contentImage,
+          TransactionContext.SLOT_KIND_CHUNK_COLLAPSED_TO_PLACEHOLDER_CONTENT))
+          .as("and must collapse under the one that writes the negated size its shape is known by").isTrue();
+
+      final byte[] recordImage = chunkImageOf(sealingRecord);
+      assertThat(rebase(bucket, sealingRecord, collapsed, recordImage,
+          TransactionContext.SLOT_KIND_CHUNK_COLLAPSED_TO_PLACEHOLDER_CONTENT))
+          .as("a record's own head must not collapse under the kind of a content head").isFalse();
+      assertThat(rebase(bucket, sealingRecord, collapsed, recordImage,
+          TransactionContext.SLOT_KIND_CHUNK_COLLAPSED_TO_RECORD))
+          .as("and must collapse under its own").isTrue();
+    } finally {
+      database.rollback();
+    }
+
+    database.transaction(() -> assertThat(placeholderRecordCount()).isEqualTo(1L));
+    checkDatabase();
+  }
+
+  /**
    * The image the disjoint-slot merge keeps for a head chunk: everything after the marker, i.e.
    * {@code [int chunkSize][long nextChunk][chunkSize bytes of content]}. Replaying it unchanged is a no-op write, so
    * the positive controls above assert the guard and not the content.
@@ -408,10 +460,19 @@ class Issue6196PlaceholderContentChainTest extends BucketPageLayoutTestSupport {
 
   /** Replays {@code image} onto the slot of {@code rid} under {@code kind}, as a commit-time slot rebase would. */
   private boolean rebase(final LocalBucket bucket, final RID rid, final byte[] image, final byte kind) {
+    return rebase(bucket, rid, image, image, kind);
+  }
+
+  /**
+   * The general form, for the two kinds whose images DIFFER: a collapse starts from the head chunk ({@code baseBody})
+   * and ends with the slot holding plain content ({@code body}).
+   */
+  private boolean rebase(final LocalBucket bucket, final RID rid, final byte[] body, final byte[] baseBody,
+      final byte kind) {
     final boolean[] rebased = new boolean[1];
     onSlot(rid, page -> {
-      rebased[0] = bucket.rebaseRecordOnPage(page, (int) (rid.getPosition() % bucket.getMaxRecordsInPage()), image,
-          image, kind);
+      rebased[0] = bucket.rebaseRecordOnPage(page, (int) (rid.getPosition() % bucket.getMaxRecordsInPage()), body,
+          baseBody, kind);
       return 0L;
     });
     return rebased[0];
