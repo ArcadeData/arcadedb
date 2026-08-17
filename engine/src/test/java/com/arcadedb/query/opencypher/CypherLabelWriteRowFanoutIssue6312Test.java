@@ -174,6 +174,26 @@ class CypherLabelWriteRowFanoutIssue6312Test {
     assertThat(rows("MATCH (n {name:'a'}) RETURN labels(n) AS v")).containsExactly("[Stay]");
   }
 
+  @Test
+  void addLabelIsIdempotentAcrossRowsAndCountsOnce() {
+    // The mirror of the REMOVE case: SET runs the same replacement machinery, so a node relabelled on the
+    // first row must be recognised as already carrying the label on the next two rather than replaced again.
+    cypher("CREATE (a:Stay {name:'a'})");
+
+    final int[] labelsAdded = new int[1];
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("opencypher",
+          "MATCH (a {name:'a'}) UNWIND [1,2,3] AS i SET a:Extra RETURN count(*) AS row_count")) {
+        assertThat(rs.hasNext()).isTrue();
+        assertThat(((Number) rs.next().getProperty("row_count")).longValue()).isEqualTo(3);
+        labelsAdded[0] = rs.getStatistics().map(s -> s.getLabelsAdded()).orElse(-1);
+      }
+    });
+
+    assertThat(labelsAdded[0]).isEqualTo(1);
+    assertThat(rows("MATCH (n {name:'a'}) RETURN labels(n) AS v")).containsExactly("[Extra, Stay]");
+  }
+
   private long count(final String query) {
     final long[] value = new long[1];
     database.transaction(() -> {

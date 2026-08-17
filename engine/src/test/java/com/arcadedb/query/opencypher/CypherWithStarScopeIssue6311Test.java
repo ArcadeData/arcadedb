@@ -84,6 +84,18 @@ class CypherWithStarScopeIssue6311Test {
   }
 
   @Test
+  void withStarKeepsTheJoinOnAVariableLengthPattern() {
+    // A variable-length hop resolves its already-bound target from the incoming row rather than from a
+    // plan-time variable set, so it never had the live-set exposure the fixed-length hop did. Pinned here
+    // because it is the branch a reader would expect to share the defect.
+    final String pattern = "MATCH (n0 {k2:true})<-[:rt0]-()<-[]-(n1), (n2)<-[:rt8*1..2]-()-[]->(n1)\n";
+    final String projection = "RETURN n0.tag AS n0, n1.tag AS n1, n2.tag AS n2";
+
+    assertThat(rows(pattern + projection)).containsExactlyInAnyOrder("n0a|A|n2a", "n0b|B|n2b");
+    assertThat(rows(pattern + "WITH *\n" + projection)).containsExactlyInAnyOrder("n0a|A|n2a", "n0b|B|n2b");
+  }
+
+  @Test
   void explicitProjectionOfTheSharedVariableBehavesTheSame() {
     final String pattern = "MATCH (n0 {k2:true})<-[:rt0]-()<-[]-(n1), (n2)<-[:rt8]-()-[]->(n1)\n";
     assertThat(rows(pattern + "WITH n0, n1, n2\nRETURN n0.tag AS n0, n1.tag AS n1, n2.tag AS n2"))

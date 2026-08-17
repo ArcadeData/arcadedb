@@ -89,6 +89,12 @@ public final class LabelReplacements {
    * them too, and one left pointing at the deleted original answers with the state the node had before the write -
    * the labels it no longer has - or fails outright the moment something re-reads it. Those are rebuilt around the
    * live records, and only when something inside them actually moved.
+   * <p>
+   * The descent into collections is charged to every row of the step once any row has triggered a replacement, not
+   * only to the rows that carry the replaced node - the map is the only thing that knows a node moved, and it is
+   * step-wide. That is a deliberate trade: a clause with no label write at all pays a single
+   * {@link Map#isEmpty()} check per row and never walks anything, and correctness after a write is not something a
+   * large {@code collect()} list should be able to opt out of.
    */
   public void redirect(final Result row) {
     if (row == null || vertices.isEmpty())

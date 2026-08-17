@@ -251,8 +251,9 @@ public class RemoveStep extends AbstractExecutionStep {
       return;
 
     // If a prior row already relabelled this node, work on the replacement so the idempotency check below reads
-    // the current type. The per-row redirect() has normally done this already; resolving the write target itself
-    // does not depend on the row listing that variable as a column, which is the one case redirect() cannot reach.
+    // the current type. The per-row redirect() reaches this alias too, so today this only re-confirms it; it stays
+    // because it makes the method correct on its own terms - the write target is resolved here, not assumed to
+    // have been resolved by the caller - and it costs one map lookup that is skipped until a label write happens.
     vertex = replacements.resolve(vertex);
 
     final List<String> currentLabels = Labels.getLabels(vertex);
