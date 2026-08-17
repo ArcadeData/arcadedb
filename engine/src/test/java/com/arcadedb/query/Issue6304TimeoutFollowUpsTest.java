@@ -234,10 +234,13 @@ class Issue6304TimeoutFollowUpsTest {
     // Every line of a script is planned against the same CommandContext, so the instant a TIMEOUT clause pins
     // lands exactly where the following lines read it - and those have no TimeoutStep of their own to catch
     // anything. The second line below carries no clause and must not inherit the first line's.
+    //
+    // The first line is LIMIT 1 so that it cannot reach its own clause: what is under test is the pin it leaves
+    // behind, not whether it hits it.
     TICKS.set(0);
 
     assertThatCode(() -> drainScript(
-        "SELECT FROM Node WHERE v = 1 TIMEOUT 50;\nSELECT FROM Node WHERE tick6304(true) = true;\n"))
+        "SELECT FROM Node LIMIT 1 TIMEOUT 50;\nSELECT FROM Node WHERE tick6304(true) = true;\n"))
         .as("a bound belonging to a statement that has already finished must not abort the next one")
         .doesNotThrowAnyException();
 
@@ -252,7 +255,7 @@ class Issue6304TimeoutFollowUpsTest {
     database.getConfiguration().setValue(GlobalConfiguration.COMMAND_TIMEOUT, 50L);
 
     assertThatThrownBy(() -> drainScript(
-        "SELECT FROM Node WHERE v = 1 TIMEOUT 40;\nSELECT FROM Node WHERE tick6304(true) = true;\n"))
+        "SELECT FROM Node LIMIT 1 TIMEOUT 40;\nSELECT FROM Node WHERE tick6304(true) = true;\n"))
         .as("the operator's ceiling survives the line that narrowed it for itself")
         .hasStackTraceContaining(GlobalConfiguration.COMMAND_TIMEOUT.getKey());
   }
@@ -267,7 +270,7 @@ class Issue6304TimeoutFollowUpsTest {
     TICKS.set(0);
 
     assertThatCode(() -> drainScript("BEGIN;\n"
-        + "SELECT FROM Node WHERE v = 1 TIMEOUT 50 RETURN;\n"
+        + "SELECT FROM Node LIMIT 1 TIMEOUT 50 RETURN;\n"
         + "SELECT FROM Node WHERE tick6304(true) = true;\n"
         + "COMMIT RETRY 10;\n"))
         .doesNotThrowAnyException();
@@ -298,9 +301,24 @@ class Issue6304TimeoutFollowUpsTest {
   }
 
   @Test
-  void bothStatementKindsRenderTheSameStep() {
+  void everyStatementKindRendersTheSameStep() {
     assertThat(explainOf("SELECT FROM Node WHERE v > 0 TIMEOUT 1234")).contains("+ TIMEOUT (1234ms)");
     assertThat(explainOf("UPDATE Node SET touched = true WHERE v < 0 TIMEOUT 1234")).contains("+ TIMEOUT (1234ms)");
+  }
+
+  @Test
+  void theGlobalSettingIsNotRenderedAsAClauseNobodyWrote() {
+    // SELECT used to synthesize a Timeout out of arcadedb.command.timeout when the statement carried none - the
+    // only way the setting reached SELECT before #6266. It made SELECT the odd one out twice over: EXPLAIN
+    // showed a step for it and not for the other statement kinds under the same setting, and when the bound
+    // fired the message called it a "TIMEOUT clause" on a statement whose author wrote no clause.
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_TIMEOUT, 50L);
+
+    assertThat(explainOf("SELECT FROM Node WHERE v > 0")).doesNotContain("+ TIMEOUT");
+
+    assertThatThrownBy(() -> drainSql("SELECT FROM Node WHERE tick6304(true) = true"))
+        .as("the setting still bounds the statement, and now says so in its own name")
+        .hasStackTraceContaining(GlobalConfiguration.COMMAND_TIMEOUT.getKey());
   }
 
   @Test
@@ -354,6 +372,24 @@ class Issue6304TimeoutFollowUpsTest {
         .contains("TIMEOUT 1234");
     assertThat(reparse("TRAVERSE out('LINK') FROM Node WHILE $depth < 2 TIMEOUT 1234 RETURN"))
         .contains("TIMEOUT 1234 RETURN");
+  }
+
+  @Test
+  void aMatchThatYieldsTruncatesInsteadOfRaising() {
+    // The one shape that reaches the deadline from inside next() rather than hasNext(): MatchStep.next() pulls
+    // the following candidate before returning the current one, and that pull is guarded. A RETURN clause has to
+    // end the result set there too - not raise, and not report NoSuchElementException to a caller that
+    // hasNext() has just promised a row to.
+    final String pattern = "MATCH {type: Node, as: a}-LINK->{as: b}-LINK->{as: c}-LINK->{as: d} RETURN a, d";
+
+    final List<Result> truncated = new ArrayList<>();
+    assertThatCode(() -> truncated.addAll(drainSql(pattern + " TIMEOUT 50 RETURN")))
+        .as("a MATCH that runs past its own RETURN clause yields what it has")
+        .doesNotThrowAnyException();
+
+    assertThatThrownBy(() -> drainSql(pattern + " TIMEOUT 50"))
+        .as("and the same MATCH under the default strategy still raises, so the clause was really reached")
+        .hasStackTraceContaining("TIMEOUT clause of 50ms");
   }
 
   // ── Item 5: one regex budget per command ─────────────────────────────────

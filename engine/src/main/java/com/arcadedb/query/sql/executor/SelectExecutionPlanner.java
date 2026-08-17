@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
@@ -76,7 +75,6 @@ import com.arcadedb.query.sql.parser.SuffixIdentifier;
 import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.query.sql.parser.TraverseStatement;
 import com.arcadedb.query.sql.parser.SubQueryCollector;
-import com.arcadedb.query.sql.parser.Timeout;
 import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.engine.timeseries.AggregationType;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
@@ -147,11 +145,13 @@ public class SelectExecutionPlanner {
     info.unwind = this.statement.getUnwind() == null ? null : this.statement.getUnwind().copy();
     info.skip = this.statement.getSkip();
     info.limit = this.statement.getLimit();
+    // Only the statement's own clause. SELECT used to synthesize a Timeout out of arcadedb.command.timeout when
+    // the statement carried none, which was how the setting reached SELECT at all before #6266 - and it made
+    // SELECT the odd one out in three ways: MATCH, TRAVERSE and UPDATE synthesize nothing, so EXPLAIN showed a
+    // "+ TIMEOUT" step for one statement kind and not the others under the same setting; and when the bound
+    // fired, the message named it a "TIMEOUT clause" on a statement whose author wrote no clause. The setting is
+    // now carried by the command deadline, which every guard reads and no statement kind can miss (issue #6304).
     info.timeout = this.statement.getTimeout() == null ? null : this.statement.getTimeout().copy();
-    if (info.timeout == null && context.getDatabase().getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT) > 0) {
-      info.timeout = new Timeout();
-      info.timeout.setValue(context.getDatabase().getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT));
-    }
 
     info.projectedProperties = computeProjectedProperties(info);
   }

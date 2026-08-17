@@ -87,6 +87,19 @@ public class TimeoutStep extends AbstractExecutionStep {
 
     return new ResultSet() {
       /**
+       * The row {@link #hasNext()} produced, held until {@link #next()} hands it over.
+       * <p>
+       * Both the test and the fetch happen in {@code hasNext()} so that <b>every</b> way this batch can reach
+       * the deadline is one a {@code RETURN} clause can answer by ending the result set. Leaving the fetch in
+       * {@code next()} does not work: a guard can fire there too - {@code MatchStep.next()} pulls the following
+       * candidate before returning the current one, and that pull is guarded - and {@code next()} has no clean
+       * way to say "actually, no more rows". Reporting {@code NoSuchElementException} after {@code hasNext()}
+       * answered true breaks the iterator contract on a caller that is mid-iteration; raising is what the clause
+       * promised not to do; and the row cannot be handed back, because the step that lost it already discarded
+       * it. Fetching under the same test removes the case (issue #6304).
+       */
+      private Result   buffered;
+      /**
        * Memoized because the answer must not change between two consecutive calls: {@code LocalResultSet.next()}
        * re-asks {@code hasNext()} after its caller already asked, and a deadline crossing in between would turn
        * a promised row into an {@code IllegalStateException} rather than into the clean end of the result set.
@@ -101,7 +114,9 @@ public class TimeoutStep extends AbstractExecutionStep {
           else
             try {
               available = internal.hasNext();
+              buffered = available ? internal.next() : null;
             } catch (final PartialResultTimeoutException e) {
+              buffered = null;
               available = stop();
             }
         }
@@ -113,12 +128,9 @@ public class TimeoutStep extends AbstractExecutionStep {
         if (!hasNext())
           throw new NoSuchElementException();
         available = null;
-        try {
-          return internal.next();
-        } catch (final PartialResultTimeoutException e) {
-          stop();
-          throw new NoSuchElementException();
-        }
+        final Result next = buffered;
+        buffered = null;
+        return next;
       }
 
       @Override
