@@ -223,11 +223,12 @@ public final class LabelReplacements {
 
   private void track(final Edge original, final Edge replacement) {
     final RID rid = original.getIdentity();
-    // A lightweight edge has no record and therefore no address, but it does have an identity: its
-    // {@link com.arcadedb.graph.LightEdgeRID} carries the (type, out vertex, in vertex) triple and hashes on it, so
-    // it keys this map exactly like the address of a heavy edge does - and the re-attached copy, hanging off the
-    // replacement vertex, is a different key rather than the same one.
-    if (rid != null && rid.getBucketId() > -1)
+    // Every edge reached through a vertex is keyed here, lightweight ones included: a lightweight edge has no
+    // record and therefore no address, but it does have an identity - its LightEdgeRID carries the
+    // (type, out vertex, in vertex) triple and hashes on it, so it keys this map exactly like the address of a
+    // heavy edge does, and the re-attached copy hanging off the replacement vertex is a different key rather than
+    // the same one. Only the null is guarded: an edge that came out of getEdges() always has a bucket.
+    if (rid != null)
       edges.put(rid, replacement);
   }
 
