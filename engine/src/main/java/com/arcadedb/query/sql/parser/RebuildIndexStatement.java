@@ -104,6 +104,19 @@ public class RebuildIndexStatement extends DDLStatement {
 
     final Database database = context.getDatabase();
 
+    // The refusal of issue #2097 comes FIRST, ahead of the barrier below. buildIndex() has raised it for years when
+    // this runs on one of the async executor's own worker threads (an HTTP command with awaitResponse=false), for the
+    // very reason the barrier cannot run there either - and buildIndex() is reached only much further down, and never
+    // at all on the statsOnly branch. Leaving it where it was would have let the barrier answer first, with a message
+    // about waiting rather than about rebuilding, and would have left #2097's own regression test asserting a
+    // refusal that no longer came from the place it was written for.
+    final DatabaseContext.DatabaseContextTL asyncContext = DatabaseContext.INSTANCE.getContextIfExists(
+        database.getDatabasePath());
+    if (asyncContext != null && asyncContext.asyncMode)
+      throw new NeedRetryException(
+          "Cannot rebuild index while running in asynchronous context. "
+              + "Use synchronous execution (awaitResponse=true) or run the command directly.");
+
     // Both branches below SCAN the live data, and a worker of the async executor keeps ONE transaction open across up
     // to ASYNC_TX_BATCH_SIZE tasks - so records it has already written can still be uncommitted, and invisible to any
     // scan, even with every queue drained (issue #6281). Wait for that batch first.

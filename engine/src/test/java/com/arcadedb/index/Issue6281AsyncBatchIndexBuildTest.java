@@ -21,13 +21,16 @@ package com.arcadedb.index;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -105,6 +108,48 @@ class Issue6281AsyncBatchIndexBuildTest extends TestHelper {
     database.async().waitCompletion();
 
     assertIndexCoversEveryRecord();
+  }
+
+  /**
+   * The barrier cannot be satisfied from inside the thing it waits for, so it must REFUSE rather than park there.
+   * <p>
+   * {@code waitCompletion()} enqueues a marker on every worker - the caller's own included - and blocks until each has
+   * run, and the only consumer of a worker's queue is that worker. A worker that reaches the barrier would park on a
+   * marker nobody can dequeue and be lost for the life of the process, which is a worse failure than the one the
+   * barrier fixes. {@code RebuildIndexStatement.buildIndex} has refused this since issue #2097; the refusal now lives
+   * on the barrier itself, so no call site can reach the hang by forgetting to reimplement it.
+   * <p>
+   * Both bounds here are HANG DETECTORS, not latency bounds - the assertion is the exception, which arrives in
+   * milliseconds. Measured with the guard removed: the surefire fork does not merely fail, it never finishes at all
+   * (killed after 400 s), because the lost worker takes the database's close with it. That is what the guard turns
+   * into a one-line refusal.
+   */
+  @Test
+  @Timeout(60)
+  void theBarrierRefusesToBeCalledFromOneOfTheExecutorsOwnWorkers() throws Exception {
+    database.transaction(() -> database.getSchema().createDocumentType("V", 1).createProperty("id", Type.INTEGER));
+
+    database.async().setParallelLevel(2);
+
+    final CountDownLatch done = new CountDownLatch(1);
+    final AtomicReference<Throwable> raised = new AtomicReference<>();
+    database.async().transaction(() -> {
+      try {
+        // Exactly what an async CREATE INDEX does, minus the SQL layer: this runs ON a worker thread.
+        database.getSchema().getType("V").createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "id");
+      } catch (final Throwable e) {
+        raised.compareAndSet(null, e);
+      } finally {
+        done.countDown();
+      }
+    });
+
+    assertThat(done.await(30, TimeUnit.SECONDS)).as("the worker must come back rather than park on its own marker")
+        .isTrue();
+    assertThat(raised.get()).as("the barrier must refuse, not hang").isInstanceOf(NeedRetryException.class);
+    assertThat(raised.get()).hasMessageContaining("worker threads");
+
+    database.async().waitCompletion();
   }
 
   private void assertIndexCoversEveryRecord() {

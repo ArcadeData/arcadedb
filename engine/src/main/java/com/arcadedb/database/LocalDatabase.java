@@ -455,6 +455,21 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     if (executor == null)
       return;
 
+    // REFUSED, not attempted, when the caller is one of the executor's own workers. waitCompletion() enqueues a
+    // marker on every worker - this thread's own included - and blocks until each has run, and the only consumer of
+    // a worker's queue is that worker: it would park on a marker nobody can dequeue and be lost for the life of the
+    // process. There is no honest alternative to refusing, either. Silently skipping the wait would put back exactly
+    // the bug this barrier exists to close, over the caller's OWN uncommitted batch; committing that batch here would
+    // commit the enclosing task's writes mid-task, which is the per-task atomicity AsyncThread.executeTask guards.
+    //
+    // NeedRetryException, and worded like it, because that is what RebuildIndexStatement.buildIndex already threw for
+    // this exact situation (issue #2097) - the guard now lives once, on the operation that cannot be satisfied,
+    // instead of once per call site that happens to remember it.
+    if (executor.isCurrentThreadOneOfMyWorkers())
+      throw new NeedRetryException(
+          "Cannot wait for the asynchronous executor of database '" + name + "' from one of its own worker threads: "
+              + "the wait would never end. Run this command synchronously (awaitResponse=true) instead");
+
     // Unconditional, and that is the whole point (issue #6281). isProcessing() is not a precondition that can be
     // tested first: a worker keeps ONE transaction open across up to ASYNC_TX_BATCH_SIZE tasks, so an executor whose
     // queues are drained and whose workers are parked can still be holding thousands of uncommitted records.
@@ -463,6 +478,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     // The loop then covers what a single pass cannot: tasks submitted by OTHER threads while this one was waiting.
     do {
       executor.waitCompletion();
+      // waitCompletion() answers an interrupt by restoring the flag and returning, so without this the loop would
+      // spin: every further pass would be interrupted at its first queue offer and come straight back. The caller's
+      // cancellation is left on the thread for it to observe.
+      if (Thread.currentThread().isInterrupted())
+        return;
     } while (isAsyncProcessing());
   }
 
