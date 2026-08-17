@@ -202,15 +202,31 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
       return dictionary;
     }
 
-    final TimeSeriesTagDictionary dictionary =
+    // A file already registered under this component name is what this dictionary must be BUILT ON, id and
+    // all. The id-allocating constructor would take a fresh file id from the manager and then be handed
+    // this very file anyway - getOrCreateFile() is keyed by the component name - leaving the component
+    // addressing pages of an id that is not the file it holds, which is unusable in either direction.
+    final ComponentFile existingFile = database.getFileManager().getFileByComponentName(name);
+
+    final TimeSeriesTagDictionary dictionary = existingFile != null ?
+        new TimeSeriesTagDictionary(database, name, existingFile.getFilePath(), existingFile.getFileId()) :
         new TimeSeriesTagDictionary(database, name, database.getDatabasePath() + "/" + name);
+
+    // Registered BEFORE it is initialised, and it has to be: initHeaderPage() commits, and a commit
+    // resolves the component to bump its page count through schema.getFileById(), which throws on an id
+    // the schema does not know. The half-built component is not exposed by that: openOrCreate() runs from
+    // the TimeSeriesEngine constructor, under the schema DDL that creates or opens the type, before a
+    // single shard of it exists - so nothing can hold this type's dictionary id yet, and the only other
+    // caller is a test-only TimeSeriesShard constructor.
     schema.registerFile(dictionary);
 
-    if (dictionary.getTotalPages() > 0)
-      // The component was absent from the schema but its file is on disk. Adopt what is there:
-      // writing a fresh header would silently reset the id space and orphan every id already stored
-      // in a data page.
-      dictionary.load();
+    final StoredHeader header = dictionary.readStoredHeader();
+    if (header != null)
+      // The component was absent from the schema but its file already carries an initialised header.
+      // Adopt what is there: writing a fresh header would silently reset the id space and orphan every
+      // id already stored in a data page. The test is on the header itself and not on getTotalPages(),
+      // which under-reports for as long as the pages sit in the flush queue (issue #6198).
+      dictionary.load(header);
     else {
       dictionary.initHeaderPage();
       dictionary.loaded = true;
@@ -268,10 +284,29 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
   }
 
   public synchronized void load() throws IOException {
-    if (getTotalPages() == 0) {
+    load(readStoredHeader());
+  }
+
+  /**
+   * Rebuilds from a header already read, so a caller that had to read it to decide whether to reload -
+   * {@link #resolveMiss} - does not pay for a second lookup. Passing the checked header also ties the
+   * rebuild to it: the walk is guaranteed to cover the id that header was measured against.
+   *
+   * @param header the header page contents, or {@code null} when the file carries none
+   */
+  private synchronized void load(final StoredHeader header) throws IOException {
+    if (header == null) {
+      // No initialised header, so nothing has ever been stored in this file
       loaded = true;
       return;
     }
+
+    // Header first (see readStoredHeader()), pages after, in two steps rather than one. What makes that
+    // safe is that the format is strictly append-only: the counts are a lower bound that an append
+    // landing in between can only raise, and the bytes of the entries they cover never change. So the
+    // walk below rebuilds a valid prefix, and the entries it missed are picked up by the next reload.
+    final int storedEntries = header.entryCount();
+    final int pages = header.dataPageCount();
 
     // A read transaction of our own, so this can be called from inside a scan. It must be the only one
     // rolled back at the end: load() is reachable from resolveMiss() mid-query, and discarding the
@@ -279,9 +314,6 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
     database.begin();
     try {
       final TransactionContext tx = database.getTransaction();
-      final BasePage headerPage = tx.getPage(new PageId(database, fileId, 0), pageSize);
-      final int storedEntries = headerPage.readInt(HEADER_ENTRY_COUNT_OFFSET);
-      final int pages = headerPage.readInt(HEADER_DATA_PAGE_COUNT);
 
       final String[] values = new String[storedEntries + 1];
       values[EMPTY_ID] = "";
@@ -291,11 +323,13 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
       // absent - which on the ingest path means interning a second id for a value that already has one.
       final ConcurrentHashMap<String, Integer> rebuilt = new ConcurrentHashMap<>();
       int id = 1;
-      for (int pageNum = 1; pageNum <= pages; pageNum++) {
+      for (int pageNum = 1; pageNum <= pages && id <= storedEntries; pageNum++) {
         final BasePage page = tx.getPage(new PageId(database, fileId, pageNum), pageSize);
         final int pageEntries = page.readInt(DATA_ENTRY_COUNT_OFFSET);
         int offset = DATA_ENTRIES_OFFSET;
-        for (int i = 0; i < pageEntries; i++) {
+        // Bounded by the declared entry count and not by the page's own counter alone: that is what keeps
+        // an append committing between the two steps from overrunning the array sized for the first one.
+        for (int i = 0; i < pageEntries && id <= storedEntries; i++) {
           final int len = page.readShort(offset) & 0xFFFF;
           final byte[] bytes = new byte[len];
           if (len > 0)
@@ -320,6 +354,12 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
       if (database.isTransactionActive())
         database.rollback();
     }
+
+    // The file demonstrably holds these pages, whatever this instance's counter was seeded with. This
+    // matters beyond reporting: appendEntries() allocates a data page as new when the counter says the
+    // page number is past the end, which over an under-reported counter would overwrite a populated page.
+    // updatePageCount() only ever raises the counter, so this cannot pull back an instance already ahead.
+    updatePageCount(pages + 1);
   }
 
   /**
@@ -363,17 +403,19 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
     if (id < 0 || id <= entryCount)
       return null;
 
-    // Reload only when the pages really do hold the id, which is what tells a stale map apart from a
-    // corrupt id: without this a scan carrying a corrupt id would re-read every page on every row.
-    // The test is against the count stored in the header - one already-cached page read - and not
-    // against the last reload, because a leader interns for as long as it ingests: keying on the
-    // reload would self-heal for the first wave of ids and then never again.
-    if (id > peekStoredEntryCount())
-      return null;
-
     try {
-      load();
+      // Reload only when the pages really do hold the id, which is what tells a stale map apart from a
+      // corrupt id: without this a scan carrying a corrupt id would re-read every page on every row.
+      // The test is against the count stored in the header - one already-cached page read - and not
+      // against the last reload, because a leader interns for as long as it ingests: keying on the
+      // reload would self-heal for the first wave of ids and then never again.
+      final StoredHeader header = readStoredHeader();
+      if (header == null || id > header.entryCount())
+        return null;
+
+      load(header);
     } catch (final IOException e) {
+      // A read path declines the value rather than failing the scan around it.
       LogManager.instance().log(this, Level.WARNING,
           "Error reloading TimeSeries tag dictionary '%s' while resolving id %d: %s", e, getName(), id, e.getMessage());
       return null;
@@ -384,27 +426,43 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
   }
 
   /**
-   * Entry count as stored in the header page, which is what an id arriving from outside this instance
-   * has to be measured against. Read in a transaction of its own, like {@link #load()}, since this is
-   * reachable from inside a scan. A header that cannot be read degrades to the in-RAM count, so the
-   * caller declines to reload rather than reloading once per row.
+   * Reads the header page and returns {@code { stored entry count, data page count }}, or {@code null}
+   * when this file carries no initialised header - which is the only thing that means "nothing has ever
+   * been stored here".
+   * <p>
+   * <b>The header page is the authority, not {@link #getTotalPages()}</b> (issue #6198). That counter is
+   * per-instance: it is seeded from the physical file size at construction and afterwards only the
+   * component <em>registered with the schema</em> gets it bumped at commit. So an instance built over a
+   * file whose committed pages are still in the flush queue reads zero pages for a file that holds
+   * several, and gating on it conflated "this instance has loaded nothing" with "the file holds
+   * nothing" - disabling the self-heal in {@link #resolveMiss} exactly in the state it exists for, and
+   * letting {@link #openOrCreate} write a fresh header over a populated file. Reading page 0 has neither
+   * blind spot: the read cache and the flush queue sit in front of the disk, so a committed page is
+   * visible whether or not it has reached the file, and the magic tells an initialised header from a
+   * page that is not there at all.
+   * <p>
+   * Read straight through the page manager rather than in a transaction of its own: this is reachable
+   * from inside a scan, where opening one is both a cost and a hazard, and the page is never fabricated
+   * ({@code createIfNotExists} false), so probing a file that has no page 0 leaves no phantom behind.
+   * <p>
+   * A failure to read a header that is there is not "there is no header": it is thrown, so a caller that
+   * cannot cope with an empty dictionary ({@link #load()}, {@link #openOrCreate}) fails loudly instead of
+   * publishing an empty mapping over the real one. {@link #resolveMiss} is the caller that does cope, and
+   * it catches.
    */
-  private int peekStoredEntryCount() {
-    if (getTotalPages() == 0)
-      return entryCount;
+  private StoredHeader readStoredHeader() throws IOException {
+    final BasePage headerPage = database.getPageManager()
+        .getImmutablePage(new PageId(database, fileId, 0), pageSize, true, false);
+    if (headerPage == null || headerPage.readInt(HEADER_MAGIC_OFFSET) != MAGIC_VALUE)
+      return null;
+    return new StoredHeader(headerPage.readInt(HEADER_ENTRY_COUNT_OFFSET), headerPage.readInt(HEADER_DATA_PAGE_COUNT));
+  }
 
-    database.begin();
-    try {
-      return database.getTransaction().getPage(new PageId(database, fileId, 0), pageSize)
-          .readInt(HEADER_ENTRY_COUNT_OFFSET);
-    } catch (final IOException e) {
-      LogManager.instance().log(this, Level.WARNING,
-          "Error reading the header of TimeSeries tag dictionary '%s': %s", e, getName(), e.getMessage());
-      return entryCount;
-    } finally {
-      if (database.isTransactionActive())
-        database.rollback();
-    }
+  /**
+   * What the header page says the file holds: the two counters every decision in this class is made
+   * against, named rather than carried as a pair of positional ints.
+   */
+  private record StoredHeader(int entryCount, int dataPageCount) {
   }
 
   /**
