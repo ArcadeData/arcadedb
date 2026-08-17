@@ -67,6 +67,14 @@ public class LogicalPlan {
   private final Map<String, LogicalNode> patternNodes;
   private final List<LogicalRelationship> relationships;
   private final List<WhereClause> whereFilters;
+  /**
+   * The inline property map of every node occurrence, paired with the plan variable it constrains,
+   * in the order the patterns wrote them. Kept alongside the merged {@link #patternNodes} because a
+   * variable written twice carries two maps and both are predicates on the same vertex.
+   */
+  private final List<Map.Entry<String, Map<String, Object>>> inlinePropertyOccurrences = new ArrayList<>();
+  /** Variables whose merged label set combines a disjunction with a further label - see {@link #hasRepresentableLabelSets()}. */
+  private final Set<String> mixedLabelDisjunctions = new HashSet<>();
   private final ReturnClause returnClause;
   private int anonNodeCounter = 0;
 
@@ -149,6 +157,10 @@ public class LogicalPlan {
    * back via an empty nodes map, which is relied on by count push-down).
    * The synthetic prefix "  __anon" (two leading spaces) mirrors the convention
    * in CypherExecutionPlan and cannot collide with user-defined variable names.
+   * <p>
+   * A variable written more than once - across comma-separated patterns or across MATCH clauses -
+   * names one vertex that has to satisfy <em>every</em> occurrence, so the occurrences are merged
+   * rather than the first one kept (issue #6322).
    */
   private void extractPathPattern(final PathPattern pathPattern, final int clauseIndex) {
     final List<NodePattern> nodePatterns = pathPattern.getNodes();
@@ -161,17 +173,18 @@ public class LogicalPlan {
     for (int i = 0; i < nodePatterns.size(); i++) {
       final NodePattern np = nodePatterns.get(i);
       final String variable = np.getVariable();
-      if (variable != null) {
-        nodeVars[i] = variable;
-        if (!nodes.containsKey(variable)) {
-          nodes.put(variable, new LogicalNode(variable, np.getLabels(), np.getProperties(), np.isLabelDisjunction()));
-        }
-      } else {
-        nodeVars[i] = "  __anon" + anonNodeCounter++;
-      }
-      patternNodes.putIfAbsent(nodeVars[i],
-          nodes.getOrDefault(nodeVars[i],
-              new LogicalNode(nodeVars[i], np.getLabels(), np.getProperties(), np.isLabelDisjunction())));
+      nodeVars[i] = variable != null ? variable : "  __anon" + anonNodeCounter++;
+
+      final LogicalNode merged = mergeOccurrence(patternNodes.get(nodeVars[i]), nodeVars[i], np);
+      patternNodes.put(nodeVars[i], merged);
+      if (variable != null)
+        nodes.put(variable, merged);
+
+      // Every occurrence's own property map is lowered, not just the merged one: two occurrences
+      // pinning the same property to different values are a contradiction the merged map cannot
+      // hold, and dropping either half would turn an empty result into rows.
+      if (np.getProperties() != null && !np.getProperties().isEmpty())
+        inlinePropertyOccurrences.add(Map.entry(nodeVars[i], np.getProperties()));
     }
 
     // Extract relationships using the resolved (never-null) variable names.
@@ -191,6 +204,111 @@ public class LogicalPlan {
       );
       relationships.add(logicalRel);
     }
+  }
+
+  /**
+   * Folds one more occurrence of a variable into the node the plan already holds for it. Cypher
+   * repeats a variable to mean the same vertex, so the constraints accumulate: the labels are ANDed
+   * and the inline property maps are unioned.
+   * <p>
+   * The union of two disjunctions, or of a disjunction with a plain label, is not a shape a single
+   * {@link LogicalNode} can express - it carries one flag for the whole list - so the variable is
+   * recorded as one {@link #hasRepresentableLabelSets()} rejects, which sends the query to the
+   * ordinary pipeline. The merge never drops a constraint, so no caller can under-filter on the
+   * strength of it.
+   */
+  private LogicalNode mergeOccurrence(final LogicalNode existing, final String variable,
+      final NodePattern occurrence) {
+    if (existing == null)
+      return new LogicalNode(variable, occurrence.getLabels(), occurrence.getProperties(),
+          occurrence.isLabelDisjunction());
+
+    final List<String> labels;
+    final boolean disjunction;
+    if (occurrence.getLabels() == null || occurrence.getLabels().isEmpty()) {
+      labels = existing.getLabels();
+      disjunction = existing.isLabelDisjunction();
+    } else if (existing.getLabels().isEmpty()) {
+      labels = occurrence.getLabels();
+      disjunction = occurrence.isLabelDisjunction();
+    } else if (existing.isLabelDisjunction() == occurrence.isLabelDisjunction()
+        && sameLabelSet(existing.getLabels(), occurrence.getLabels())) {
+      // The same constraint written twice - `(a:A|B)-[:R]->(b), (a:A|B)-[:S]->(c)` - intersects with itself,
+      // so there is nothing to fold in and nothing about it a single node cannot express. Taking the union
+      // below would reach the same list, but would also record the variable as a mixed disjunction and
+      // decline a query the operators can perfectly well run.
+      labels = existing.getLabels();
+      disjunction = existing.isLabelDisjunction();
+    } else {
+      final List<String> union = new ArrayList<>(existing.getLabels());
+      for (final String label : occurrence.getLabels())
+        if (!union.contains(label))
+          union.add(label);
+      labels = union;
+      disjunction = existing.isLabelDisjunction() || occurrence.isLabelDisjunction();
+      if (disjunction)
+        mixedLabelDisjunctions.add(variable);
+    }
+
+    final Map<String, Object> properties;
+    if (occurrence.getProperties() == null || occurrence.getProperties().isEmpty()) {
+      properties = existing.getProperties();
+    } else if (existing.getProperties().isEmpty()) {
+      properties = occurrence.getProperties();
+    } else {
+      // The merged map only steers an index seek and partition pruning; every occurrence's map is
+      // lowered into predicates separately, so a key pinned twice keeps both comparisons.
+      final Map<String, Object> union = new LinkedHashMap<>(existing.getProperties());
+      occurrence.getProperties().forEach(union::putIfAbsent);
+      properties = union;
+    }
+
+    // The common repeat adds nothing - `(a)-[:R]->(b), (a)-[:S]->(c)` writes `a` twice and the second
+    // occurrence is bare - so the node the plan already holds is returned rather than an identical
+    // copy of it. Reference comparison, because every branch above either reuses one of the two lists
+    // as-is or builds a new one.
+    if (labels == existing.getLabels() && properties == existing.getProperties()
+        && disjunction == existing.isLabelDisjunction())
+      return existing;
+
+    return new LogicalNode(variable, labels, properties, disjunction);
+  }
+
+  /**
+   * Whether two label lists name the same set. Order is not a constraint a pattern expresses -
+   * {@code (a:A|B)} and {@code (a:B|A)} are one disjunction, {@code (a:A:B)} and {@code (a:B:A)} one
+   * conjunction - so mutual containment rather than {@link List#equals}, which would miss the no-op and
+   * decline a query for the order its two occurrences happened to be written in.
+   * <p>
+   * Mutual containment rather than a size check plus one direction, because a label repeated inside one
+   * list ({@code (a:A:A)}) would let {@code [A, B]} and {@code [A, A]} pass as the same set and drop
+   * {@code B}. Both lists are a handful of entries, so the quadratic scan is cheaper than the sets that
+   * would replace it.
+   */
+  private static boolean sameLabelSet(final List<String> first, final List<String> second) {
+    return first.containsAll(second) && second.containsAll(first);
+  }
+
+  /**
+   * Returns true when every node in the pattern carries a label set the physical operators can
+   * represent: exactly one label, or a disjunction the anchor scan can enumerate.
+   * <p>
+   * {@code (a:A:B)} - written that way, or arrived at by merging {@code (a:A)} with a later
+   * {@code (a:B)} - names the composite type {@code A~B}, which a vertex labelled {@code A:B:C} does
+   * not extend, so a scan of it would miss rows. A disjunction merged with any further label is not
+   * expressible at all. Both send the query to the ordinary pipeline, which evaluates the labels one
+   * by one (issue #6322).
+   */
+  public boolean hasRepresentableLabelSets() {
+    if (!mixedLabelDisjunctions.isEmpty())
+      return false;
+    for (final LogicalNode node : patternNodes.values()) {
+      if (node.getLabels().isEmpty())
+        return false;
+      if (node.getLabels().size() > 1 && !node.isLabelDisjunction())
+        return false;
+    }
+    return true;
   }
 
   /**
@@ -229,10 +347,10 @@ public class LogicalPlan {
   private void lowerInlinePropertiesToFilters() {
     final List<BooleanExpression> predicates = new ArrayList<>();
 
-    for (final Map.Entry<String, LogicalNode> entry : patternNodes.entrySet()) {
+    for (final Map.Entry<String, Map<String, Object>> entry : inlinePropertyOccurrences) {
       final String variable = entry.getKey();
-      final Map<String, Object> properties = entry.getValue().getProperties();
-      if (properties == null || properties.isEmpty() || !isBoundByPlan(variable))
+      final Map<String, Object> properties = entry.getValue();
+      if (!isBoundByPlan(variable))
         continue;
 
       // Sorted so the same query always yields the same predicate order, and so the same plan

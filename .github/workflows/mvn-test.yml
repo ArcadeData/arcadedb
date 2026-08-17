@@ -213,6 +213,23 @@ jobs:
         if: success() || failure()
         run: ./.github/scripts/check-test-results.py surefire-reports
 
+      # A red lane has to name the failing test without a re-run. The reporter check run above is
+      # best-effort by design - an API outage makes it a no-op - the per-job log endpoint serves only
+      # runner setup and cleanup while any job of the run is still in flight, and nothing else this lane
+      # uploads carries a per-test verdict. The report XML is exactly the answer to "which test failed",
+      # so it is kept whenever the lane goes red (issue #6322).
+      - name: Upload unit test reports
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: unit-test-reports
+          path: |
+            **/surefire-reports/TEST*.xml
+          # A step that failed before Maven wrote any report has nothing to keep, and the red already
+          # belongs to that step: an empty match here must not add a second, misleading failure.
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Upload unit test coverage reports
         if: success() || failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -293,6 +310,23 @@ jobs:
         if: success() || failure()
         run: ./.github/scripts/check-test-results.py surefire-reports
 
+      # A red lane has to name the failing test without a re-run. The reporter check run above is
+      # best-effort by design - an API outage makes it a no-op - the per-job log endpoint serves only
+      # runner setup and cleanup while any job of the run is still in flight, and nothing else this lane
+      # uploads carries a per-test verdict. The report XML is exactly the answer to "which test failed",
+      # so it is kept whenever the lane goes red (issue #6322).
+      - name: Upload slow unit test reports
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: slow-unit-test-reports
+          path: |
+            **/surefire-reports/TEST*.xml
+          # A step that failed before Maven wrote any report has nothing to keep, and the red already
+          # belongs to that step: an empty match here must not add a second, misleading failure.
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Upload unit test coverage reports
         if: success() || failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -368,6 +402,23 @@ jobs:
       - name: Check test results
         if: success() || failure()
         run: ./.github/scripts/check-test-results.py surefire-reports
+
+      # A red lane has to name the failing test without a re-run. The reporter check run above is
+      # best-effort by design - an API outage makes it a no-op - the per-job log endpoint serves only
+      # runner setup and cleanup while any job of the run is still in flight, and nothing else this lane
+      # uploads carries a per-test verdict. The report XML is exactly the answer to "which test failed",
+      # so it is kept whenever the lane goes red (issue #6322).
+      - name: Upload vector unit test reports
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vector-unit-test-reports
+          path: |
+            **/surefire-reports/TEST*.xml
+          # A step that failed before Maven wrote any report has nothing to keep, and the red already
+          # belongs to that step: an empty match here must not add a second, misleading failure.
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Upload vector unit test coverage reports
         if: success() || failure()
@@ -485,6 +536,23 @@ jobs:
           path: engine/target/tck-report.html
           retention-days: 7
 
+      # A red lane has to name the failing test without a re-run. The reporter check run above is
+      # best-effort by design - an API outage makes it a no-op - the per-job log endpoint serves only
+      # runner setup and cleanup while any job of the run is still in flight, and nothing else this lane
+      # uploads carries a per-test verdict. The report XML is exactly the answer to "which test failed",
+      # so it is kept whenever the lane goes red (issue #6322).
+      - name: Upload openCypher TCK test reports
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: opencypher-tck-test-reports
+          path: |
+            **/surefire-reports/TEST*.xml
+          # A step that failed before Maven wrote any report has nothing to keep, and the red already
+          # belongs to that step: an empty match here must not add a second, misleading failure.
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Upload openCypher TCK coverage reports
         if: success() || failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -547,6 +615,24 @@ jobs:
       - name: Check test results
         if: success() || failure()
         run: ./.github/scripts/check-test-results.py failsafe-reports
+
+      # A red lane has to name the failing test without a re-run. The reporter check run above is
+      # best-effort by design - an API outage makes it a no-op - the per-job log endpoint serves only
+      # runner setup and cleanup while any job of the run is still in flight, and nothing else this lane
+      # uploads carries a per-test verdict. The report XML is exactly the answer to "which test failed",
+      # so it is kept whenever the lane goes red (issue #6322).
+      - name: Upload integration test reports
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: integration-test-reports
+          path: |
+            **/surefire-reports/TEST*.xml
+            **/failsafe-reports/TEST*.xml
+          # A step that failed before Maven wrote any report has nothing to keep, and the red already
+          # belongs to that step: an empty match here must not add a second, misleading failure.
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Upload integration test coverage reports
         if: success() || failure()
@@ -611,6 +697,24 @@ jobs:
       - name: Check test results
         if: success() || failure()
         run: ./.github/scripts/check-test-results.py failsafe-reports
+
+      # A red lane has to name the failing test without a re-run. The reporter check run above is
+      # best-effort by design - an API outage makes it a no-op - the per-job log endpoint serves only
+      # runner setup and cleanup while any job of the run is still in flight, and nothing else this lane
+      # uploads carries a per-test verdict. The report XML is exactly the answer to "which test failed",
+      # so it is kept whenever the lane goes red (issue #6322).
+      - name: Upload HA integration test reports
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ha-integration-test-reports
+          path: |
+            **/surefire-reports/TEST*.xml
+            **/failsafe-reports/TEST*.xml
+          # A step that failed before Maven wrote any report has nothing to keep, and the red already
+          # belongs to that step: an empty match here must not add a second, misleading failure.
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Upload HA integration test coverage reports
         if: success() || failure()
@@ -711,6 +815,23 @@ jobs:
           list-suites: "failed"
           list-tests: "failed"
           reporter: java-junit
+
+      # A red lane has to name the failing test without a re-run. The reporter check run above is
+      # best-effort by design - an API outage makes it a no-op - the per-job log endpoint serves only
+      # runner setup and cleanup while any job of the run is still in flight, and nothing else this lane
+      # uploads carries a per-test verdict. The report XML is exactly the answer to "which test failed",
+      # so it is kept whenever the lane goes red (issue #6322).
+      - name: Upload Java E2E test reports
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: java-e2e-test-reports
+          path: |
+            e2e/target/failsafe-reports/TEST*.xml
+          # A step that failed before Maven wrote any report has nothing to keep, and the red already
+          # belongs to that step: an empty match here must not add a second, misleading failure.
+          if-no-files-found: ignore
+          retention-days: 7
 
   js-e2e-tests:
     runs-on: ubuntu-latest
