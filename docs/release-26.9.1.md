@@ -2584,8 +2584,15 @@ column store. Callers (`algo.apsp`, `algo.bellmanford`, `algo.steinerTree`, `SQL
 slower and exact, instead of a weight belonging to another edge. This is the same "say unknown rather than
 guess" convention `countEdgesBetween` and `getMeanEdgesPerConnectedPair` already use.
 
-The second is `servesEdgeProperty(propertyName, edgeTypes...)`, which is the question a weighted algorithm
-actually has to ask. `hasEdgeProperties()` answers only "are there edge property columns at all", so a view built
+The second is `edgeWeightsOf(nodeId, direction, propertyName, defaultWeight, edgeTypes...)`, which returns one
+node's neighbours and their weights together and is now **the only supported way to read an edge property
+positionally**. Pairing `getNeighborIds` with `getEdgeProperty` by hand is wrong in two ways that produce a wrong
+answer rather than an error: a multi-type neighbour list is merged and sorted across types while the property
+columns are per type, and `DIRECTION.BOTH` has no column at all - a provider resolves `OUT` and `IN` only, so a
+`BOTH` lookup returns `null` for every edge. `bellmanFord()`'s direction argument *defaults* to `BOTH`, so the
+plain three-argument `bellmanFord(src, dst, 'weight')` had been unit-weighting the entire graph the moment a
+view existed; `astar()` with `direction: 'BOTH'` priced every edge at 0.0, making all paths tie. Its companion
+`servesEdgeProperty(propertyName, edgeTypes...)` answers the gating question. `hasEdgeProperties()` answers only "are there edge property columns at all", so a view built
 with `.withEdgeProperties("distance")` answered yes to a call asking for `cost` - and since a missing column and
 an edge with no value both come back as `null`, the caller could not tell them apart and treated the entire graph
 as unweighted. That is the same wrong answer as a misaligned weight, reached from the other direction, and it

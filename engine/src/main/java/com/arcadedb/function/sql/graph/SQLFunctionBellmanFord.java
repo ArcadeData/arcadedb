@@ -28,6 +28,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.NodeEdgeWeights;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.schema.DocumentType;
@@ -109,24 +110,24 @@ public class SQLFunctionBellmanFord extends SQLFunctionMathAbstract {
     final Vertex.DIRECTION dir = parseDirection(direction);
 
     final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(db);
-    // getEdgeProperty() is addressed per edge type and this function takes no type filter, so the columnar path
-    // can only resolve a graph whose provider holds exactly one type - and only when that type carries the
-    // property actually asked for. Anything else read a null property value for every edge and treated the whole
-    // graph as unit-weighted, silently ignoring weightProperty (issue #6301); those cases now take the edge
-    // records below, which are exact.
-    final String[] materializedTypes = provider != null ? provider.getMaterializedEdgeTypes() : null;
-    final String csrEdgeType = materializedTypes != null && materializedTypes.length == 1 ? materializedTypes[0] : null;
-    final boolean unweighted = weightProperty == null || weightProperty.isEmpty();
-    final boolean useCSR = provider != null && provider.hasEdgeProperties()
-        && (unweighted || (csrEdgeType != null && provider.servesEdgeProperty(weightProperty, csrEdgeType)));
+    // The columnar path is taken per node and only when edgeWeightsOf() can answer - i.e. when the provider can
+    // serve THIS property for every type it holds. Pairing getNeighborIds with getEdgeProperty by hand was wrong
+    // in two ways (issue #6301): the neighbour list is merged and sorted across types while the columns are per
+    // type, and `direction` defaults to BOTH here, which has no column at all - so the plain three-argument call
+    // read a null property value for every edge and silently unit-weighted the whole graph. Anything the
+    // provider cannot answer exactly falls to the edge records below, which are.
+    final String weightColumn = weightProperty != null && !weightProperty.isEmpty() ? weightProperty : null;
 
     for (int i = 0; i < n; i++) {
       final Vertex v = vertices.get(i);
 
-      if (useCSR) {
+      if (provider != null && weightColumn != null) {
         final int nodeId = provider.getNodeId(v.getIdentity());
-        if (nodeId >= 0) {
-          final int[] neighborIds = provider.getNeighborIds(nodeId, dir);
+        final NodeEdgeWeights edges = nodeId >= 0 ?
+            provider.edgeWeightsOf(nodeId, dir, weightColumn, 1.0) : null;
+        if (edges != null) {
+          final int[] neighborIds = edges.neighbors();
+          final double[] weights = edges.weights();
           for (int ni = 0; ni < neighborIds.length; ni++) {
             final var neighborRid = provider.getRID(neighborIds[ni]);
             if (neighborRid == null)
@@ -141,14 +142,8 @@ public class SQLFunctionBellmanFord extends SQLFunctionMathAbstract {
             final Integer j = vertexIndex.get(neighborVertex);
             if (j == null)
               continue;
-            double w = 1.0;
-            if (weightProperty != null && !weightProperty.isEmpty()) {
-              final Object wObj = provider.getEdgeProperty(nodeId, ni, dir, csrEdgeType, weightProperty);
-              if (wObj instanceof Number num)
-                w = num.doubleValue();
-            }
             edgeList.add(new int[] { i, j });
-            edgeWeights.add(w);
+            edgeWeights.add(weights[ni]);
           }
           continue;
         }

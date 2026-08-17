@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -372,8 +373,8 @@ class Issue6301AlgoSteinerTreeWeightAlignmentTest {
     try {
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(database);
-      final RID fromRid = ((com.arcadedb.graph.Vertex) vertexNamed(from)).getIdentity();
-      final RID toRid = ((com.arcadedb.graph.Vertex) vertexNamed(to)).getIdentity();
+      final RID fromRid = ((Vertex) vertexNamed(from)).getIdentity();
+      final RID toRid = ((Vertex) vertexNamed(to)).getIdentity();
       final List<Result> rows = collect(new AlgoAPSP().execute(new Object[] { "w" }, null, context));
       csrAccelerated = Boolean.TRUE.equals(context.getVariable(CommandContext.CSR_ACCELERATED_VAR));
       for (final Result row : rows)
@@ -403,8 +404,8 @@ class Issue6301AlgoSteinerTreeWeightAlignmentTest {
     }
   }
 
-  private com.arcadedb.graph.Vertex vertexOf(final String name) {
-    return (com.arcadedb.graph.Vertex) vertexNamed(name);
+  private Vertex vertexOf(final String name) {
+    return (Vertex) vertexNamed(name);
   }
 
   private Object vertexNamed(final String name) {

@@ -29,6 +29,7 @@ import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.NeighborView;
+import com.arcadedb.graph.NodeEdgeWeights;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -731,53 +732,20 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     }
 
     /**
-     * Columnar build: one slice per (edge type, direction), each already positional against
-     * {@link GraphTraversalProvider#getEdgeProperty}. Concatenating the slices keeps that alignment, where
-     * merging them into the sorted list {@link #adjacency} returns would lose it.
+     * Columnar build: one call per node into {@link GraphTraversalProvider#edgeWeightsOf}, which is where the
+     * per-type, per-direction slicing that keeps a weight with its own edge lives. Nothing about that pairing is
+     * re-derived here, so the CSR path of an {@code algo.*} procedure, of {@code astar} and of
+     * {@code bellmanFord} cannot drift apart from one another.
      */
     private WeightedAdjacency weightedAdjacencyFromColumns(final WorkGuard guard, final Vertex.DIRECTION dir,
         final String weightProperty, final String[] types) {
-      final Vertex.DIRECTION[] directions = dir == Vertex.DIRECTION.BOTH ?
-          new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN } :
-          new Vertex.DIRECTION[] { dir };
-
-      // The (type, direction) pairs are the same for every node, so they are flattened once here rather than
-      // re-derived by a second nested walk inside the loop.
-      final int sliceCount = types.length * directions.length;
-      final String[] sliceType = new String[sliceCount];
-      final Vertex.DIRECTION[] sliceDirection = new Vertex.DIRECTION[sliceCount];
-      for (int s = 0, t = 0; t < types.length; t++)
-        for (final Vertex.DIRECTION d : directions) {
-          sliceType[s] = types[t];
-          sliceDirection[s] = d;
-          s++;
-        }
-
       final int[][] neighbors = new int[nodeCount][];
       final double[][] weights = new double[nodeCount][];
-      final int[][] slices = new int[sliceCount][];
       for (int i = 0; i < nodeCount; i++) {
         guard.checkPeriodically(i);
-        int degree = 0;
-        for (int s = 0; s < sliceCount; s++) {
-          slices[s] = provider.getNeighborIds(i, sliceDirection[s], sliceType[s]);
-          degree += slices[s].length;
-        }
-
-        final int[] nodeNeighbors = new int[degree];
-        final double[] nodeWeights = new double[degree];
-        int pos = 0;
-        for (int s = 0; s < sliceCount; s++) {
-          final int[] slice = slices[s];
-          for (int j = 0; j < slice.length; j++) {
-            nodeNeighbors[pos] = slice[j];
-            final Object weight = provider.getEdgeProperty(i, j, sliceDirection[s], sliceType[s], weightProperty);
-            nodeWeights[pos] = weight instanceof Number num ? num.doubleValue() : 1.0;
-            pos++;
-          }
-        }
-        neighbors[i] = nodeNeighbors;
-        weights[i] = nodeWeights;
+        final NodeEdgeWeights edges = provider.edgeWeightsOf(i, dir, weightProperty, 1.0, types);
+        neighbors[i] = edges.neighbors();
+        weights[i] = edges.weights();
       }
       return new WeightedAdjacency(neighbors, weights);
     }

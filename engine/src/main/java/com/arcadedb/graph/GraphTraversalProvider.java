@@ -246,6 +246,66 @@ public interface GraphTraversalProvider {
   }
 
   /**
+   * Returns one node's neighbours together with the edge-property value of each edge reaching them, or
+   * {@code null} when this provider cannot serve {@code propertyName} for every type in play.
+   * <p>
+   * <b>This is the only correct way to read an edge property positionally, and the reason it lives here rather
+   * than in each caller.</b> {@link #getEdgeProperty} is addressed by (type, direction, position), and two things
+   * break a caller that pairs it with {@link #getNeighborIds} by hand:
+   * <ul>
+   *   <li>a multi-type neighbour list is <em>merged and sorted</em> across types, so position {@code j} in it is
+   *       not position {@code j} in any one type's column - the weight lands on another edge, or on none;</li>
+   *   <li>{@link Vertex.DIRECTION#BOTH} has no column of its own at all. A provider resolves {@code OUT} and
+   *       {@code IN}, so a {@code BOTH} lookup answers {@code null} for every edge and the caller silently reads
+   *       the whole neighbourhood at its default weight.</li>
+   * </ul>
+   * Both are handled here once: the walk takes one slice per (type, direction) pair, each of which <em>is</em>
+   * positional, and concatenates them.
+   *
+   * @param nodeId        the node whose edges to read
+   * @param direction     traversal direction; {@code BOTH} walks the outgoing and incoming slices in turn
+   * @param propertyName  the edge property to read
+   * @param defaultWeight value for an edge carrying no numeric value for that property
+   * @param edgeTypes     the types in play, empty or null for every materialised one
+   */
+  default NodeEdgeWeights edgeWeightsOf(final int nodeId, final Vertex.DIRECTION direction,
+      final String propertyName, final double defaultWeight, final String... edgeTypes) {
+    if (!servesEdgeProperty(propertyName, edgeTypes))
+      return null;
+
+    final String[] types = edgeTypes != null && edgeTypes.length > 0 ? edgeTypes : getMaterializedEdgeTypes();
+    final Vertex.DIRECTION[] directions = direction == Vertex.DIRECTION.BOTH ?
+        new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN } :
+        new Vertex.DIRECTION[] { direction };
+
+    final int[][] slices = new int[types.length * directions.length][];
+    int degree = 0;
+    int s = 0;
+    for (final String type : types)
+      for (final Vertex.DIRECTION d : directions) {
+        final int[] slice = getNeighborIds(nodeId, d, type);
+        slices[s++] = slice;
+        degree += slice.length;
+      }
+
+    final int[] neighbors = new int[degree];
+    final double[] weights = new double[degree];
+    int pos = 0;
+    s = 0;
+    for (final String type : types)
+      for (final Vertex.DIRECTION d : directions) {
+        final int[] slice = slices[s++];
+        for (int j = 0; j < slice.length; j++) {
+          neighbors[pos] = slice[j];
+          final Object value = getEdgeProperty(nodeId, j, d, type, propertyName);
+          weights[pos] = value instanceof Number num ? num.doubleValue() : defaultWeight;
+          pos++;
+        }
+      }
+    return new NodeEdgeWeights(neighbors, weights);
+  }
+
+  /**
    * Returns true if this provider's data is stale (not reflecting latest committed changes).
    * A provider may still be ready ({@link #isReady()}) while stale, if configured to serve stale data.
    */
