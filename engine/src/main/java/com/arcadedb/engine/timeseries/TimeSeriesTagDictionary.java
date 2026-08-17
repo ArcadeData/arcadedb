@@ -28,6 +28,7 @@ import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponent;
+import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.Type;
@@ -151,7 +152,9 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
     @Override
     public PaginatedComponent createOnLoad(final DatabaseInternal database, final String name, final String filePath,
         final int id, final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
-      return new TimeSeriesTagDictionary(database, name, filePath, id);
+      // #6314: the page size and version the file NAME carries, passed through rather than re-derived from the live
+      // configuration - see the same note on TimeSeriesBucket's handler.
+      return new TimeSeriesTagDictionary(database, name, filePath, id, pageSize, version);
     }
   }
 
@@ -168,12 +171,13 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
   }
 
   /**
-   * Opens an existing tag dictionary.
+   * Opens an existing tag dictionary at the page size and version its FILE was written with (#6314), which the caller
+   * reads off the file rather than off the configuration - see {@link TimeSeriesBucket}'s counterpart for why the two
+   * are not interchangeable.
    */
-  public TimeSeriesTagDictionary(final DatabaseInternal database, final String name, final String filePath, final int id)
-      throws IOException {
-    super(database, name, filePath, id, ComponentFile.MODE.READ_WRITE,
-        database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE), CURRENT_VERSION);
+  public TimeSeriesTagDictionary(final DatabaseInternal database, final String name, final String filePath, final int id,
+      final int pageSize, final int version) throws IOException {
+    super(database, name, filePath, id, ComponentFile.MODE.READ_WRITE, pageSize, version);
     this.maxSize = database.getConfiguration().getValueAsInteger(GlobalConfiguration.TIMESERIES_TAG_DICTIONARY_MAX_SIZE);
   }
 
@@ -208,8 +212,12 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
     // addressing pages of an id that is not the file it holds, which is unusable in either direction.
     final ComponentFile existingFile = database.getFileManager().getFileByComponentName(name);
 
+    // #6314: built on the file's OWN page size and version, for the same reason it is built on its own id - what the
+    // component believes about the file it holds has to be what the file says, and the configuration is not a
+    // second opinion on that.
     final TimeSeriesTagDictionary dictionary = existingFile != null ?
-        new TimeSeriesTagDictionary(database, name, existingFile.getFilePath(), existingFile.getFileId()) :
+        new TimeSeriesTagDictionary(database, name, existingFile.getFilePath(), existingFile.getFileId(),
+            ((PaginatedComponentFile) existingFile).getPageSize(), existingFile.getVersion()) :
         new TimeSeriesTagDictionary(database, name, database.getDatabasePath() + "/" + name);
 
     // Registered BEFORE it is initialised, and it has to be: initHeaderPage() commits, and a commit

@@ -54,6 +54,10 @@ class LSMVectorIndexSearcherPoolTest {
   private static final int    DIMENSIONS  = 32;
   private static final int    NUM_VECTORS = 2_000;
   private static final int    K           = 10;
+  /** {@code arcadedb.vectorIndexSearcherPoolSize} for {@link #concurrentSearchesNeverShareASearcher}. */
+  private static final int    POOL_SIZE   = 4;
+  /** Threads that test runs, deliberately more than the pool holds. */
+  private static final int    CONCURRENCY = 8;
 
   @BeforeEach
   @AfterEach
@@ -125,13 +129,13 @@ class LSMVectorIndexSearcherPoolTest {
     final float[][] vectors = randomVectors(NUM_VECTORS, 7);
     createDatabase(vectors);
 
-    GlobalConfiguration.VECTOR_INDEX_SEARCHER_POOL_SIZE.setValue(4);
+    GlobalConfiguration.VECTOR_INDEX_SEARCHER_POOL_SIZE.setValue(POOL_SIZE);
     try (final Database db = new DatabaseFactory(DB_PATH).open()) {
       final LSMVectorIndex index = index(db);
       final float[] query = randomVectors(1, 42)[0];
       final List<RID> expected = searchRids(index, query);
 
-      final ExecutorService pool = Executors.newFixedThreadPool(8);
+      final ExecutorService pool = Executors.newFixedThreadPool(CONCURRENCY);
       try {
         final List<Callable<List<RID>>> tasks = new ArrayList<>();
         for (int i = 0; i < 200; i++)
@@ -144,7 +148,18 @@ class LSMVectorIndexSearcherPoolTest {
         assertThat(pool.awaitTermination(30, TimeUnit.SECONDS)).isTrue();
       }
 
-      assertThat(stat(index, "pooledGraphSearchers")).isLessThanOrEqualTo(4);
+      // The pool does not promise its idle count never exceeds maxIdle, and this must assert what it DOES promise
+      // (#6314): GraphSearcherPool.release() reads idleCount and increments it without a lock - "racy by design: a
+      // transient overshoot of one or two searchers is cheaper than a lock on the search path" - so every releaser
+      // that reads the count below the cap before any of them increments is kept. With CONCURRENCY threads that is
+      // CONCURRENCY - 1 above the cap in the worst case, and asserting the cap itself made this test fail under the
+      // CPU contention of a full-suite run (observed: "expected 5L to be less than or equal to 4L") while passing
+      // standalone. What is worth pinning here is that the pool stays BOUNDED - the searchers each hold a graph view,
+      // so an unbounded idle set is a leak - and "never share a searcher" is already established by the per-task
+      // result comparison above.
+      assertThat(stat(index, "pooledGraphSearchers"))
+          .as("the pool must stay bounded by its size plus the overshoot its lock-free release documents")
+          .isLessThanOrEqualTo(POOL_SIZE + CONCURRENCY - 1L);
     }
   }
 

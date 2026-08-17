@@ -132,12 +132,18 @@ public class TimeSeriesBucket extends PaginatedComponent {
   /**
    * Factory handler for loading existing .tstb files during schema load.
    * Columns are set later via {@link #setColumns(List)} when the TimeSeries type is initialized.
+   * <p>
+   * #6314: the page size and the version are the two facts baked into the file's own NAME, which is why the factory
+   * recovers them and hands them over - and they are passed straight through here, as every other component's handler
+   * does. Re-deriving the page size from the live configuration instead (which is what this did) reopened a file at
+   * whatever stride {@code arcadedb.bucketDefaultPageSize} happens to say TODAY: no bug was needed to break it, only a
+   * configuration change between two runs, and the failure was a misaligned read of real bytes rather than an error.
    */
   public static class PaginatedComponentFactoryHandler implements ComponentFactory.PaginatedComponentFactoryHandler {
     @Override
     public PaginatedComponent createOnLoad(final DatabaseInternal database, final String name, final String filePath,
         final int id, final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
-      return new TimeSeriesBucket(database, name, filePath, id, new ArrayList<>(), null);
+      return new TimeSeriesBucket(database, name, filePath, id, pageSize, version, new ArrayList<>(), null);
     }
   }
 
@@ -167,12 +173,19 @@ public class TimeSeriesBucket extends PaginatedComponent {
   }
 
   /**
-   * Opens an existing TimeSeries bucket.
+   * Opens an existing TimeSeries bucket at the page size and version its FILE was written with (#6314), which the
+   * caller reads off the file rather than off the configuration: the two disagree the moment
+   * {@code arcadedb.bucketDefaultPageSize} is changed between two runs, and a component addressing its file at the
+   * wrong stride reads real bytes at the wrong offsets instead of failing.
+   * <p>
+   * The version is the file NAME's version and not the row format's, which {@code TimeSeriesBucket} stores in its
+   * header page and derives the stride from: passing it through is about the component not claiming
+   * {@link #CURRENT_VERSION} for a file whose name says otherwise.
    */
   public TimeSeriesBucket(final DatabaseInternal database, final String name, final String filePath, final int id,
-      final List<ColumnDefinition> columns, final TimeSeriesTagDictionary tagDictionary) throws IOException {
-    super(database, name, filePath, id, ComponentFile.MODE.READ_WRITE,
-        database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE), CURRENT_VERSION);
+      final int pageSize, final int version, final List<ColumnDefinition> columns,
+      final TimeSeriesTagDictionary tagDictionary) throws IOException {
+    super(database, name, filePath, id, ComponentFile.MODE.READ_WRITE, pageSize, version);
     this.tagDictionary = tagDictionary;
     resolveLayout(columns);
   }

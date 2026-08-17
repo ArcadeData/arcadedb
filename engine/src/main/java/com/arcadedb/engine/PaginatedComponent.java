@@ -94,6 +94,18 @@ public abstract class PaginatedComponent extends Component {
           "Component '" + name + "' was built on file id " + fileId + " but the file registered under that name has id "
               + file.getFileId() + " ('" + file.getFilePath() + "')");
 
+    // The same invariant as the id one, on the other field the component uses to ADDRESS that file (issue #6314): a
+    // component and its file must agree on the stride, or every page number the component computes lands somewhere
+    // else in the file. The page size is baked into the file's name, so the file is the authority and the component
+    // is what can be wrong - which it was for the two TimeSeries components, whose factory handlers dropped the
+    // parsed page size and re-derived it from the live arcadedb.bucketDefaultPageSize. Nothing downstream could
+    // catch that: PageManager resolves pages with the CALLER's page size, so the mismatch is a misaligned read of
+    // real bytes rather than an exception, and pageCount is computed from the wrong divisor on top of it.
+    if (file.getPageSize() != pageSize)
+      throw new IllegalStateException(
+          "Component '" + name + "' was built with page size " + pageSize + " but its file '" + file.getFilePath()
+              + "' has page size " + file.getPageSize());
+
     final long fileSize = file.getSize();
     if (fileSize == 0)
       // NEW FILE, CREATE HEADER PAGE
