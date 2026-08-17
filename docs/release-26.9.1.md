@@ -2235,7 +2235,6 @@ nameless `NegativeArraySizeException`.
 
 [#6216](https://github.com/ArcadeData/arcadedb/issues/6216)
 
-
 ## A peer address that identifies nobody says so, instead of waiting for an operation to refuse (#6267)
 
 Five follow-ups from #6221 / #6226. Four are visible to an operator; the rest are test hygiene.
@@ -2379,7 +2378,6 @@ the page as the walk found it. Both agree again once the FIX has run.
 
 [#6196](https://github.com/ArcadeData/arcadedb/issues/6196)
 
-
 ## The whole working set of a graph-algorithm call is budgeted, not just its walk buffers (#6263)
 
 Follow-up to #6216, which introduced a heap budget for the random-walk buffers of `algo.node2vec` and
@@ -2492,6 +2490,14 @@ type and then *overwrites* the counters with what the scan found, so run against
 documents" over counters the records had already bumped. A type holding 200 documents was left scoring every
 BM25 query against a corpus of zero, and unlike the index-entry case that did not heal itself.
 
+**One refusal is new.** `CREATE INDEX`, a manual index create and `REBUILD INDEX` now raise a
+`NeedRetryException` when they run on one of the async executor's own worker threads - a command dispatched
+over HTTP with `awaitResponse=false`, for instance. The barrier cannot be satisfied from inside the thing it
+waits for: it enqueues a marker on every worker including the caller's own, and the only consumer of a
+worker's queue is that worker, so it would park for ever. `REBUILD INDEX` has refused this since #2097 and
+keeps its own message; what is new is that `CREATE INDEX` and the manual index builder refuse it too, where
+before they hung. Run the command synchronously instead.
+
 `ACIDTransactionTest.indexCreationWhileAsyncMustFail`, which existed to cover exactly this, had been vacuous
 for years: it expected a `NeedRetryException` from a creation that has drained the executor rather than
 refusing since long before this release, so its `catch` never fired and its only assertion was the record
@@ -2518,6 +2524,14 @@ transaction's dirty pages - but a deployment that sized `pageFlushQueue` against
 The bound that *is* expressed in bytes remains `arcadedb.flushSuspendMaxDeferredRAM`. A `pageFlushQueue` of 0
 or less, which used to fail at startup on `ArrayBlockingQueue`'s constructor, is now raised to 1: with
 admission as the only bound, a budget of 0 would refuse every publication for ever.
+
+One consequence worth knowing about if you run many databases that saturate their budgets at the same time:
+the committers waiting for room all park on a single shared monitor, so every batch the flush thread polls
+wakes all of them and each re-checks its own database's count before parking again. That is a deliberate
+trade - a monitor per database would move a map lookup onto the poll path, which runs per batch, to save work
+on the wait path, which only runs for a database already at its bound - and it is the same shape as the
+existing deferred-RAM cap. It is a different failure mode from the old single-queue design, though, so it is
+named here rather than left to be discovered.
 
 **One published metric changed scale with it.** `pageFlushQueueLength` used to top out at `pageFlushQueue`,
 because the queue's capacity was that setting - so `pageFlushQueueLength >= pageFlushQueue` was a natural
