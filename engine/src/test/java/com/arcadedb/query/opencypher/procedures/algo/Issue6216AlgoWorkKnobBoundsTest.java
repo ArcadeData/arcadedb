@@ -28,6 +28,7 @@ import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -311,7 +312,7 @@ class Issue6216AlgoWorkKnobBoundsTest {
   @Test
   void theWorkGuardAbortsAnInterruptedCallAndClearsTheFlag() {
     final CommandContext context = new BasicCommandContext().setDatabase(database);
-    final AbstractAlgoProcedure.WorkGuard guard = new AlgoMaxKCut().newWorkGuard(context);
+    final WorkGuard guard = new AlgoMaxKCut().newWorkGuard(context);
 
     Thread.currentThread().interrupt();
     try {
@@ -331,7 +332,7 @@ class Issue6216AlgoWorkKnobBoundsTest {
   void theWorkGuardAbortsOnceTheCommandDeadlineHasPassed() {
     database.getConfiguration().setValue(GlobalConfiguration.COMMAND_TIMEOUT, 1L);
     final CommandContext context = new BasicCommandContext().setDatabase(database);
-    final AbstractAlgoProcedure.WorkGuard guard = new AlgoMaxKCut().newWorkGuard(context);
+    final WorkGuard guard = new AlgoMaxKCut().newWorkGuard(context);
 
     await(5);
 
