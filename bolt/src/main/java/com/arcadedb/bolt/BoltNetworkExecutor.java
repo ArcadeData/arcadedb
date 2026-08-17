@@ -57,7 +57,6 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
-import com.arcadedb.schema.VertexType;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.security.ServerSecurityException;
@@ -88,7 +87,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.TreeSet;
 import java.util.logging.Level;
 
 import static com.arcadedb.query.opencypher.executor.steps.FinalProjectionStep.PROJECTION_NAME_METADATA;
@@ -1174,7 +1172,7 @@ public class BoltNetworkExecutor extends Thread {
    * Returns true if the query was handled as a system query, false if it should be executed normally.
    */
   private boolean handleSystemQuery(final String query) throws IOException {
-    final String normalized = query.trim().toLowerCase().replaceAll("\\s+", " ");
+    final String normalized = BoltSystemProcedures.normalize(query);
 
     if (normalized.contains("dbms.components")) {
       // CALL dbms.components() - returns server version info
@@ -1249,70 +1247,17 @@ public class BoltNetworkExecutor extends Thread {
       syntheticResults = new ArrayList<>();
       return true;
 
-    } else if (normalized.contains("db.labels") && normalized.contains("db.relationshiptypes")
-        && normalized.contains("db.propertykeys")) {
-      // Combined UNION query from Neo4j Desktop: collects labels, relationship types, property keys as lists
-      currentFields = List.of("result");
-      syntheticResults = new ArrayList<>();
-      if (database != null) {
-        // Labels (vertex types, excluding composite ~ types)
-        final List<Object> labels = new ArrayList<>();
-        for (final DocumentType type : database.getSchema().getTypes())
-          if (type instanceof VertexType && !type.getName().contains("~"))
-            labels.add(type.getName());
-        syntheticResults.add(List.of((Object) labels));
-
-        // Relationship types (edge types)
-        final List<Object> relTypes = new ArrayList<>();
-        for (final DocumentType type : database.getSchema().getTypes())
-          if (type instanceof EdgeType)
-            relTypes.add(type.getName());
-        syntheticResults.add(List.of((Object) relTypes));
-
-        // Property keys (from all non-composite types)
-        final Set<String> allKeys = new TreeSet<>();
-        for (final DocumentType type : database.getSchema().getTypes())
-          if (!type.getName().contains("~"))
-            allKeys.addAll(type.getPropertyNames());
-        syntheticResults.add(List.of((Object) new ArrayList<>(allKeys)));
-      }
-      return true;
-
-    } else if (normalized.contains("db.labels")) {
-      // CALL db.labels() - return vertex type names (excluding composite types with ~)
-      currentFields = List.of("label");
-      syntheticResults = new ArrayList<>();
-      if (database != null) {
-        for (final DocumentType type : database.getSchema().getTypes())
-          if (type instanceof VertexType && !type.getName().contains("~"))
-            syntheticResults.add(List.of(type.getName()));
-      }
-      return true;
-
-    } else if (normalized.contains("db.relationshiptypes")) {
-      // CALL db.relationshipTypes() - return edge type names
-      currentFields = List.of("relationshipType");
-      syntheticResults = new ArrayList<>();
-      if (database != null) {
-        for (final DocumentType type : database.getSchema().getTypes())
-          if (type instanceof EdgeType)
-            syntheticResults.add(List.of(type.getName()));
-      }
-      return true;
-
-    } else if (normalized.contains("db.propertykeys")) {
-      // CALL db.propertyKeys() - return all property key names
-      currentFields = List.of("propertyKey");
-      syntheticResults = new ArrayList<>();
-      if (database != null) {
-        final Set<String> allKeys = new TreeSet<>();
-        for (final DocumentType type : database.getSchema().getTypes()) {
-          if (!type.getName().contains("~"))
-            allKeys.addAll(type.getPropertyNames());
-        }
-        for (final String key : allKeys)
-          syntheticResults.add(List.of(key));
-      }
+    } else if (BoltSystemProcedures.isSchemaProcedureQuery(normalized)) {
+      // CALL db.labels() / db.relationshipTypes() / db.propertyKeys(), plus the combined UNION form Neo4j
+      // Desktop sends. Answered from CypherProcedureRegistry, so the Bolt wire and the native Cypher CALL
+      // path run the very same procedure and cannot drift apart (issue #6151). A null answer means the call
+      // is not ours to serve - it carries arguments the registry entries do not accept - so it falls through
+      // to the engine, which reports the same arity error it reports for any other client.
+      final BoltSystemProcedures.Served served = BoltSystemProcedures.serveSchemaProcedure(database, normalized);
+      if (served == null)
+        return false;
+      currentFields = served.fields();
+      syntheticResults = served.rows();
       return true;
 
     } else if (normalized.startsWith("show index")
