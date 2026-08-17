@@ -131,13 +131,19 @@ public class TimeSeriesBucket extends PaginatedComponent {
 
   /**
    * Factory handler for loading existing .tstb files during schema load.
-   * Columns are set later via {@link #setColumns(List)} when the TimeSeries type is initialized.
+   * Columns are set later via {@link #setColumns(List, TimeSeriesTagDictionary)} when the TimeSeries type is
+   * initialized.
+   * <p>
+   * The page size, version and mode {@code ComponentFactory} recovered from the file name are passed straight
+   * through, exactly as {@code LocalBucket}'s handler does (issue #6314). Re-deriving the page size from the live
+   * {@code bucketDefaultPageSize} instead would address every page of an already-written file at a stride that is
+   * not the one it was written with, which is a misaligned read of real bytes and not an exception.
    */
   public static class PaginatedComponentFactoryHandler implements ComponentFactory.PaginatedComponentFactoryHandler {
     @Override
     public PaginatedComponent createOnLoad(final DatabaseInternal database, final String name, final String filePath,
         final int id, final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
-      return new TimeSeriesBucket(database, name, filePath, id, new ArrayList<>(), null);
+      return new TimeSeriesBucket(database, name, filePath, id, mode, pageSize, version, new ArrayList<>(), null);
     }
   }
 
@@ -167,12 +173,17 @@ public class TimeSeriesBucket extends PaginatedComponent {
   }
 
   /**
-   * Opens an existing TimeSeries bucket.
+   * Opens an existing TimeSeries bucket on the id, page size and version its own file name carries.
+   * <p>
+   * The {@code version} is what the file says, not {@link #CURRENT_VERSION}: which row layout this bucket reads is
+   * decided by whether a dictionary was handed to it, so claiming the current version for a file written by a
+   * build that stored tags inline would make {@link #getVersion()} disagree with both the file name and the
+   * layout in use.
    */
   public TimeSeriesBucket(final DatabaseInternal database, final String name, final String filePath, final int id,
-      final List<ColumnDefinition> columns, final TimeSeriesTagDictionary tagDictionary) throws IOException {
-    super(database, name, filePath, id, ComponentFile.MODE.READ_WRITE,
-        database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE), CURRENT_VERSION);
+      final ComponentFile.MODE mode, final int pageSize, final int version, final List<ColumnDefinition> columns,
+      final TimeSeriesTagDictionary tagDictionary) throws IOException {
+    super(database, name, filePath, id, mode, pageSize, version);
     this.tagDictionary = tagDictionary;
     resolveLayout(columns);
   }

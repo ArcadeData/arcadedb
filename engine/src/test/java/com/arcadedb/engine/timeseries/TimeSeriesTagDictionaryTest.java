@@ -170,8 +170,7 @@ class TimeSeriesTagDictionaryTest extends TestHelper {
     writer.internAll(List.of("host_a", "host_b", "host_c"));
 
     final DatabaseInternal db = (DatabaseInternal) database;
-    final TimeSeriesTagDictionary follower = new TimeSeriesTagDictionary(db, "tags_follower",
-        db.getDatabasePath() + "/tags_follower", writer.getFileId());
+    final TimeSeriesTagDictionary follower = new TimeSeriesTagDictionary(db, "tags_follower", writer.getComponentFile());
 
     // Nothing loaded yet: the map is empty but the pages are on disk
     assertThat(follower.size()).isZero();
@@ -194,7 +193,7 @@ class TimeSeriesTagDictionaryTest extends TestHelper {
 
     final DatabaseInternal db = (DatabaseInternal) database;
     final TimeSeriesTagDictionary follower = new TimeSeriesTagDictionary(db, "tags_follower_waves",
-        db.getDatabasePath() + "/tags_follower_waves", writer.getFileId());
+        writer.getComponentFile());
 
     // Wave 1: the reload that the single-wave test already covers
     assertThat(follower.getById(2)).isEqualTo("host_b");
@@ -235,8 +234,7 @@ class TimeSeriesTagDictionaryTest extends TestHelper {
       try {
         final TimeSeriesTagDictionary writer = createDictionary("tags_unflushed");
         writer.internAll(List.of("host_a", "host_b", "host_c"));
-        followerRef.set(new TimeSeriesTagDictionary(db, "tags_unflushed",
-            db.getDatabasePath() + "/tags_unflushed", writer.getFileId()));
+        followerRef.set(new TimeSeriesTagDictionary(db, "tags_unflushed", writer.getComponentFile()));
       } catch (final Throwable t) {
         failure.set(t);
       }
