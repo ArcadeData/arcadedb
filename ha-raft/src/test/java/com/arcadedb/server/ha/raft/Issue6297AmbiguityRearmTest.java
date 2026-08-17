@@ -154,9 +154,9 @@ class Issue6297AmbiguityRearmTest {
       final RaftHAServer raft = newDetachedServer(
           "localhost:{raft:2434,grpc:5434},localhost:{raft:2435,grpc:5435},localhost:{raft:2436,grpc:5436}");
 
-      raft.warnAmbiguousRouting(GRPC, COLLIDING, DERIVED, THREE_PEERS, 3);
+      warnRouting(raft, COLLIDING);
       assertThat(log.countFormattedContaining(AMBIGUOUS_ROUTING)).as("a collision is reported").isEqualTo(1);
-      raft.warnAmbiguousRouting(GRPC, COLLIDING, DERIVED, THREE_PEERS, 3);
+      warnRouting(raft, COLLIDING);
       assertThat(log.countFormattedContaining(AMBIGUOUS_ROUTING)).as("unchanged, so nothing new").isEqualTo(1);
 
       // The real caller, on a healthy cluster. Nothing is logged - and that is not what is under test: what is
@@ -164,7 +164,7 @@ class Issue6297AmbiguityRearmTest {
       assertThat(raft.routingTableFor(GRPC, RaftPeerId.valueOf("localhost_2434"))).isNotNull();
       assertThat(log.countFormattedContaining(AMBIGUOUS_ROUTING)).as("a clean pass says nothing").isEqualTo(1);
 
-      raft.warnAmbiguousRouting(GRPC, COLLIDING, DERIVED, THREE_PEERS, 3);
+      warnRouting(raft, COLLIDING);
       assertThat(log.countFormattedContaining(AMBIGUOUS_ROUTING))
           .as("the clean pass cleared the memory, so the collision coming back is news again")
           .isEqualTo(2);
@@ -203,6 +203,11 @@ class Issue6297AmbiguityRearmTest {
     } finally {
       log.uninstall();
     }
+  }
+
+  private static void warnRouting(final RaftHAServer raft, final String[] addresses) {
+    raft.warnAmbiguousRouting(GRPC, addresses, DERIVED, THREE_PEERS, 3,
+        RaftHAServer.claimsByAddress(addresses, DERIVED, 3));
   }
 
   private static void warnHttps(final RaftHAServer raft, final String[] addresses) {

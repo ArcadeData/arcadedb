@@ -1840,14 +1840,19 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       ++resolved;
     }
 
-    final HAServerPlugin.RoutingTable table = selectUnambiguousRouting(protocol, addresses, fromConfig, resolved);
+    // Counted once and handed to both, the way unambiguousPeerAddress already does it: the selection and the
+    // warning ask the same question of the same view, so building the map twice is pure waste on a path that now
+    // runs the warning on every call.
+    final Map<String, int[]> claims = claimsByAddress(addresses, fromConfig, resolved);
+
+    final HAServerPlugin.RoutingTable table = selectUnambiguousRouting(protocol, addresses, fromConfig, resolved,
+        claims);
     // Unconditional, and that is the whole point: the verdict memory is only cleared by a pass that reaches it
     // with nothing to say, so guarding this call on "is it ambiguous now?" left the memory holding the last
     // collision forever. The operator would then fix that collision, hit it again later, and be told nothing -
     // the exact case issue #6297 exists to fix. A clean view renders to the empty verdict, which is what clears
-    // the memory; it costs the two small maps describeAmbiguity builds before it can know that, on a path that
-    // runs per ROUTE request and per refusal, never per row.
-    warnAmbiguousRouting(protocol, addresses, fromConfig, owners, resolved);
+    // the memory.
+    warnAmbiguousRouting(protocol, addresses, fromConfig, owners, resolved, claims);
     return table;
   }
 
@@ -1879,8 +1884,18 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   static HAServerPlugin.RoutingTable selectUnambiguousRouting(final HAServerPlugin.ROUTING_PROTOCOL protocol,
       final String[] addresses, final boolean[] fromConfig, final int count) {
-    final Map<String, int[]> claims = claimsByAddress(addresses, fromConfig, count);
+    return selectUnambiguousRouting(protocol, addresses, fromConfig, count,
+        claimsByAddress(addresses, fromConfig, count));
+  }
 
+  /**
+   * The same, for a caller that has already counted the claims and would otherwise have this method count them a
+   * second time over the same view.
+   *
+   * @param claims the {@link #claimsByAddress} counts for exactly this view
+   */
+  static HAServerPlugin.RoutingTable selectUnambiguousRouting(final HAServerPlugin.ROUTING_PROTOCOL protocol,
+      final String[] addresses, final boolean[] fromConfig, final int count, final Map<String, int[]> claims) {
     if (!identifiesOnePeer(claims.get(addresses[0]), fromConfig[0]))
       return null;
 
@@ -2105,9 +2120,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * the memory. Package-private for testing.
    */
   void warnAmbiguousRouting(final HAServerPlugin.ROUTING_PROTOCOL protocol, final String[] addresses,
-      final boolean[] fromConfig, final RaftPeerId[] owners, final int count) {
-    final String collisions = describeAmbiguity(addresses, fromConfig, owners, count,
-        claimsByAddress(addresses, fromConfig, count));
+      final boolean[] fromConfig, final RaftPeerId[] owners, final int count, final Map<String, int[]> claims) {
+    final String collisions = describeAmbiguity(addresses, fromConfig, owners, count, claims);
     if (!isNewAmbiguityVerdict(routingAmbiguityReported.get(protocol), collisions))
       return;
 
