@@ -565,8 +565,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         response = executeCommandInternal(req, t0, db, false);
       }
       resp.onNext(response);
-      resp.onCompleted();
+      // Set before onCompleted(), not after: once onNext has handed a response to the observer, the RPC must
+      // never fall through to onError, regardless of what onCompleted() itself does. A concurrent client-side
+      // cancel landing between the two calls can make onCompleted() throw; setting the flag only after it
+      // returns would leave that narrow window where the catch below still calls onError on an already-
+      // -delivered call, hitting the exact double-close IllegalStateException the guard exists to prevent.
       responded = true;
+      resp.onCompleted();
 
     } catch (Exception e) {
       // Unwrap ExecutionException to get the root cause
@@ -803,6 +808,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // refusing it. What reaches this branch is the leadership change that lands between that decision and
       // the schema write - the second isLeader() check inside recordFileChanges - where the caller is holding
       // a failure it can only act on if it is told which node to repeat it against.
+      // Every engine exception (ArcadeDBException and its subtypes, including ServerIsNotTheLeaderException)
+      // is unchecked, so this branch is not expected to trigger in practice. It stays only because the method
+      // has no throws clause; if it ever did fire, the synthetic RuntimeException it wraps with would itself
+      // become the reported class name on the trailer instead of the real cause - the same class of type
+      // erasure this fix eliminates for everything else - since GrpcErrorMapper.unwrap only peels one level of
+      // ExecutionException, not an arbitrary wrapper.
       if (e instanceof RuntimeException re)
         throw re;
       throw new RuntimeException(e);
