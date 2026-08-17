@@ -77,8 +77,9 @@ public class DatabaseAsyncParkWorker implements DatabaseAsyncTask {
     try {
       // Bounded rounds rather than one untimed await: a worker must not be held here past its own executor's
       // shutdown, which is the one release that never arrives from the quiescing caller.
-      while (!release.await(PARK_POLL_MILLIS, TimeUnit.MILLISECONDS) && !async.isShutdown())
-        ;
+      boolean released = false;
+      while (!released && !async.isShutdown())
+        released = release.await(PARK_POLL_MILLIS, TimeUnit.MILLISECONDS);
     } catch (final InterruptedException e) {
       // SHUTDOWN IN PROGRESS
       Thread.currentThread().interrupt();

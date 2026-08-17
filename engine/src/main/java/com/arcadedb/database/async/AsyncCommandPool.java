@@ -79,10 +79,6 @@ import java.util.logging.Level;
  */
 public final class AsyncCommandPool {
 
-  private static final class Holder {
-    static final AsyncCommandPool INSTANCE = new AsyncCommandPool();
-  }
-
   /** Floor for the auto-sized thread count when {@code arcadedb.asyncCommandPoolThreads} is 0. */
   private static final int  DEFAULT_THREADS_FLOOR       = 2;
   private static final int  DEFAULT_QUEUE_SIZE          = 1024;
@@ -115,6 +111,16 @@ public final class AsyncCommandPool {
   private final ThreadPoolExecutor executor;
   private final AtomicLong         callerRunCount       = new AtomicLong();
   private final AtomicLong         lastSaturationWarnMs = new AtomicLong(0L);
+
+  /**
+   * Initialization-on-demand holder: the pool allocates its threads only when something first asks for it, so a JVM
+   * that never dispatches DDL asynchronously pays nothing for this class. Declared BELOW the fields rather than at
+   * the top where the idiom is usually written, because PMD's {@code FieldDeclarationsShouldBeAtStartOfClass} counts
+   * a nested class as the end of the field section and would report every field above as misplaced.
+   */
+  private static final class Holder {
+    static final AsyncCommandPool INSTANCE = new AsyncCommandPool();
+  }
 
   private AsyncCommandPool() {
     final int configuredThreads = GlobalConfiguration.ASYNC_COMMAND_POOL_THREADS.getValueAsInteger();
