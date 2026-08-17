@@ -18,6 +18,7 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.database.async.AsyncQuiesce;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.PageManager;
@@ -129,6 +130,34 @@ public interface DatabaseInternal extends Database {
    *     the thing it waits for, so it is refused rather than deadlocked on; run the command synchronously instead.
    */
   void waitForAsyncCompletion();
+
+  /**
+   * The barrier above <b>held open</b>: returns once every async worker has committed its batch <i>and parked</i>, and
+   * keeps them parked until the returned handle is closed (issue #6303, item 2).
+   * <p>
+   * {@link #waitForAsyncCompletion()} answers about the past and nothing else - the instant it returns a worker may
+   * take the next task and write a record. That is enough for a caller that only has to READ what the async side
+   * wrote; it is not enough for one that SCANS while it builds something out of the scan, because a record written
+   * during the scan is missed by it and, having been saved before the index existed, staged no entry for it either.
+   * Every scan-based index build therefore holds this instead.
+   * <p>
+   * <b>The cost, because it is not small and callers hold this for their whole build.</b> While the quiescence is
+   * held every worker of the database is parked, so a task queued behind the park - a plain
+   * {@code async().createRecord(...)} from an unrelated caller - waits for the build, and once that worker's bounded
+   * queue fills, the backpressure in {@code scheduleTask} reaches the SUBMITTING thread too. On a long build (a
+   * sorted build that spills to disk, say) that is the database's whole asynchronous ingestion path stalled for the
+   * duration. It is the right trade and not an oversight: the alternative is the silently incomplete index of
+   * #6281, and releasing the workers between the index's registration and the scan does not help - a record written
+   * in that window would then be indexed twice, once by its own staged operation and once by the scan. A build is
+   * also not something to run on a database at peak write load, which this makes true rather than merely advisable.
+   *
+   * @return a handle to close when the scan is done. Never null; a database that never used the async API gets one
+   *     that does nothing.
+   *
+   * @throws com.arcadedb.exception.NeedRetryException when called from one of the executor's own worker threads, or
+   *     when a worker does not park in time.
+   */
+  AsyncQuiesce quiesceAsync();
 
   long getResultSetLimit();
 

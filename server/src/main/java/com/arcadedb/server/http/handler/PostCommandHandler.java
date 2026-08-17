@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.utility.StringUtils;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.async.AsyncResultsetCallback;
 import com.arcadedb.log.LogManager;
@@ -73,7 +74,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
     if ((!isSelect && !isMatch) || command.endsWith(";"))
       return false;
 
-    if (!containsIgnoreCase(command, " limit ") && !containsIgnoreCase(command, "\nlimit "))
+    if (!StringUtils.containsIgnoreCase(command, " limit ") && !StringUtils.containsIgnoreCase(command, "\nlimit "))
       return true;
 
     // An explicit LIMIT may already be present somewhere: only the last line decides whether to append.
@@ -94,20 +95,6 @@ public class PostCommandHandler extends AbstractQueryHandler {
     return limit > 0 && limit < Integer.MAX_VALUE ? limit + 1 : limit;
   }
 
-  /**
-   * Allocation-free case-insensitive substring test, avoiding the full-command lowercase copy the previous
-   * {@code String.contains} check required.
-   */
-  private static boolean containsIgnoreCase(final String haystack, final String needle) {
-    final int needleLen = needle.length();
-    if (needleLen == 0)
-      return true;
-    final int max = haystack.length() - needleLen;
-    for (int i = 0; i <= max; i++)
-      if (haystack.regionMatches(true, i, needle, 0, needleLen))
-        return true;
-    return false;
-  }
 
   /**
    * Returns the value of a request field that must be a JSON string, or {@code null} when absent. A present

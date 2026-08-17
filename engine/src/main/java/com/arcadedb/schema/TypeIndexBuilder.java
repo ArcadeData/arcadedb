@@ -19,6 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.async.AsyncQuiesce;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.DatabaseMetadataException;
@@ -409,7 +410,17 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       existingTypeIndex.drop();
 
     final TypeIndex created;
-    try {
+    // The barrier of #6281, paid at the top of this method, covers what the async side wrote BEFORE the build. This
+    // covers what it would write DURING it (issue #6303, item 2), and only the first half was ever here:
+    // LocalDocumentType.addIndexInternal registers the index before the scan, so a record saved AFTER that point
+    // stages its own entry and is safe - but one saved in the window between the barrier and that registration, and
+    // still uncommitted when the scan reads, is in neither the scan nor the index. Nothing stopped an async worker
+    // from opening exactly that window, because unlike BucketIndexBuilder this path never parked the workers at all.
+    //
+    // Held across the whole build rather than only across the scan: the registration is what the window is measured
+    // from, and it happens inside recordFileChanges. Reentrant, so the nested quiescence of any builder reached from
+    // here simply rides on this one.
+    try (final AsyncQuiesce asyncPaused = database.quiesceAsync()) {
       final long recordFileChangesStarted = System.nanoTime();
       schema.recordFileChanges(() -> {
         if (sortedBuild) {

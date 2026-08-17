@@ -140,11 +140,19 @@ public class PageManagerFlushThread extends Thread {
   // flag-clear + deferred-detach in setSuspended(false). Without it a batch could be deferred AFTER the
   // unsuspend already drained the deferred map, leaving it stuck in deferredByDatabase / pageIndex forever.
   // Also the monitor new suspenders wait on while a resume is in flight (see resumingDatabases).
+  //
+  // KEYED BY PATH ON PURPOSE, and one of the two maps in this class for which that is the RIGHT answer rather than a
+  // hazard to defend against (issue #6303, item 1): the same path is the same set of files, so two instances at one
+  // path sharing a monitor is exactly what serializing writes to those files needs. It is the COUNTING maps - a count
+  // belongs to an instance, not to a path - that had to be made exact; this one and replayDrainLocks are deliberately
+  // left alone, so that a future sweep of "path-keyed maps" does not churn them into per-instance monitors that would
+  // serialize nothing.
   private final        ConcurrentHashMap<Database, Object>                      suspendLocks        = new ConcurrentHashMap<>();
   // Per-database mutex serializing detachPendingPages against resumeFlushing's Phase 1. Phase 1 detaches the deferred
   // batches and writes them from the resuming thread, outside both the queue and nextPagesToFlush, so without this
   // lock a replay could take the pipeline for empty and have its page written over by a deferred copy landing later.
   // Lock ordering is always this monitor BEFORE any batch.pages monitor; the flush thread takes batch.pages alone.
+  // Path-keyed on purpose, for the same reason as suspendLocks above (issue #6303, item 1).
   private final        ConcurrentHashMap<Database, Object>                      replayDrainLocks    = new ConcurrentHashMap<>();
 
   /**
@@ -229,9 +237,12 @@ public class PageManagerFlushThread extends Thread {
    * {@link #waitAllPagesOfDatabaseAreFlushed} (#4928). Deliberately per-database and package-private (for
    * the regression test): a JVM-global signal (e.g. PageManager.totalPagesWritten) would let a busy sibling
    * database sharing this flush thread mask a wedged one forever, defeating the very timeout it feeds.
-   * An entry is created on a database's FIRST bounded wait (close, rename, backup-suspend, compaction
-   * shipping) and lives until {@link #removeAllPagesOfDatabase} (close/drop) - one bounded entry per open
-   * database, not a leak.
+   * An entry is created on a database's first bounded wait (close, rename, backup-suspend, compaction
+   * shipping) or on its first enqueued batch, whichever comes first, and lives until
+   * {@link #removeAllPagesOfDatabase} (close/drop) - one bounded entry per open database, not a leak.
+   * <p>
+   * READ ONLY through the counter a batch carries (issue #6303, item 1), never looked up per page: the key compares
+   * by database PATH, and a batch can outlive its database. See {@link PagesToFlush#flushProgress}.
    */
   final ConcurrentHashMap<BasicDatabase, AtomicLong> flushedPagesPerDatabase = new ConcurrentHashMap<>();
 
@@ -297,6 +308,21 @@ public class PageManagerFlushThread extends Thread {
      * {@link BlockingQueue} establishes happens-before between the two.
      */
     private AtomicInteger slotCharged;
+    /**
+     * The {@link #flushedPagesPerDatabase} counter this batch's pages report their progress on, captured with
+     * {@link #slotCharged} and for the same reason (issue #6303, item 1).
+     * <p>
+     * The alternative is a map lookup per PAGE, keyed by the page's own database - and that key compares by PATH, so
+     * a batch outliving its database would credit its progress to whatever database is open at that path now,
+     * resetting the no-progress window of a close/rename/backup that has nothing to do with it. Holding the counter
+     * asks the question once, while the database is provably the one being charged, and the answer cannot go stale.
+     * <p>
+     * It is also strictly less work than what it replaces: one lookup per batch instead of one per page, on the
+     * flush thread's hot loop.
+     * <p>
+     * Plain field, no volatile, on the same happens-before as {@link #slotCharged}.
+     */
+    private AtomicLong flushProgress;
 
     public PagesToFlush(final List<MutablePage> pages) {
       // removeAllPagesOfDatabase()/removePagesOfFileFromBatch() mutate this list (clear()/it.remove()) when a
@@ -440,6 +466,10 @@ public class PageManagerFlushThread extends Thread {
       // publication of a database that is by definition still open, so this is the same counter the reservation
       // incremented; what is not safe is resolving it after the batch has sat in the queue across a close.
       batch.slotCharged = slotsInUse.computeIfAbsent(batch.database, k -> new AtomicInteger());
+      // Resolved here for the same reason and on the same argument - see PagesToFlush.flushProgress. Creating the
+      // entry eagerly rather than on the database's first bounded wait keeps it exactly as bounded as it was (one
+      // per open database, dropped by removeAllPagesOfDatabase) and lets the flush loop stop looking it up per page.
+      batch.flushProgress = flushedPagesPerDatabase.computeIfAbsent(batch.database, k -> new AtomicLong());
       if (!slotHeld)
         batch.slotCharged.incrementAndGet();
     }
@@ -630,11 +660,15 @@ public class PageManagerFlushThread extends Thread {
     }
   }
 
-  /** Records that a page of the database LEFT the flush pipeline: the per-database progress signal (#4928). */
-  private void bumpFlushProgress(final MutablePage page) {
-    final AtomicLong counter = flushedPagesPerDatabase.get(page.getPageId().getDatabase());
-    if (counter != null)
-      counter.incrementAndGet();
+  /**
+   * Records that a page of the batch LEFT the flush pipeline: the per-database progress signal (#4928).
+   * <p>
+   * Reported on the counter the batch CARRIES rather than on one looked up per page (issue #6303, item 1) - see
+   * {@link PagesToFlush#flushProgress}.
+   */
+  private static void bumpFlushProgress(final PagesToFlush batch) {
+    if (batch.flushProgress != null)
+      batch.flushProgress.incrementAndGet();
   }
 
   /**
@@ -733,6 +767,33 @@ public class PageManagerFlushThread extends Thread {
               // suspended" (flag already cleared) and fall through to flush it normally - never a defer that
               // outlives the detach.
               synchronized (suspendLock(db)) {
+                // AND THE LIVENESS CHECK BELONGS HERE, AHEAD OF THE SUSPENSION ONE (issue #6303, item 1). This is
+                // the ONLY place in this class that reaches a per-database map through a batch's `database` field
+                // rather than through a live instance the caller owns, and that field can be a database that closed
+                // after the batch was polled. Databases compare by PATH (LocalDatabase.equals), so asking
+                // `isSuspended` about a closed instance answers about whatever database is open at that path NOW: a
+                // straggler batch of a database that no longer exists would be deferred into the backlog of one
+                // REOPENED at the same path and charged to its deferred RAM - accounting drift in a database that
+                // never queued a page, surfacing first as the #6200 drift-repair counter the regression tests
+                // assert stays at zero.
+                //
+                // Dropping the batch instead loses nothing: it was not going to be written either way (the same
+                // check further down already refused it), its pageIndex entries were purged by
+                // removeAllPagesOfDatabase, and its content is recovered from the WAL - its ack was never given.
+                //
+                // Under the monitor, and therefore exact: LocalDatabase.close() sets open=false BEFORE the purge
+                // that forgets this bookkeeping, and that purge takes this same monitor. So `isOpen()` true here
+                // means the purge has not run yet and will collect whatever we defer; `isOpen()` false means the
+                // batch belongs to nobody and is dropped. There is no third case in which a defer can outlive its
+                // database.
+                //
+                // Returning from HERE, not breaking: this method handles exactly one polled batch per call, so the
+                // return drops this batch and nothing else - and it is inside the outer try whose finally clears
+                // nextPagesToFlush, which therefore still runs. Worth saying because the nesting is deep enough that
+                // a future refactor lifting this block into a helper would silently take that finally with it.
+                if (!db.isOpen())
+                  return;
+
                 if (isSuspended(db)) {
                   deferredByDatabase.computeIfAbsent(db, k -> new ConcurrentLinkedQueue<>()).offer(pagesToFlush);
                   addDeferredRAM(db, batchRAM(pagesToFlush));
@@ -807,7 +868,7 @@ public class PageManagerFlushThread extends Thread {
                   // Reference identity ensures a NEWER MutablePage for the same PageId (queued
                   // by a later TX while this batch was waiting) is NOT removed from the index.
                   removeFromFlushIndex(page);
-                  bumpFlushProgress(page);
+                  bumpFlushProgress(pagesToFlush);
                 }
               }
             }
@@ -1067,7 +1128,7 @@ public class PageManagerFlushThread extends Thread {
                   // The page leaves the deferred backlog (flushed to disk), so release its reserved RAM (issue #4728).
                   addDeferredRAM(database, -page.getPhysicalSize());
                   removeFromFlushIndex(page);
-                  bumpFlushProgress(page);
+                  bumpFlushProgress(batch);
                 }
               }
             }

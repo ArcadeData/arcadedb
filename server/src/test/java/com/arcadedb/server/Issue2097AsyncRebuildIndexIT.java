@@ -38,9 +38,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  * https://github.com/ArcadeData/arcadedb/issues/2097
  * <p>
  * When running `REBUILD INDEX *` asynchronously (via HTTP API with awaitResponse=false),
- * the indexes get deleted instead of rebuilt because the BucketIndexBuilder.create()
- * method tries to schedule blocking tasks on async threads while already running
- * in an async context, causing a "stalled queue" error.
+ * the indexes got deleted instead of rebuilt: BucketIndexBuilder.create() scheduled blocking
+ * tasks on the async threads while already running ON one of them, which surfaced as a
+ * "stalled queue" error partway through the rebuild.
+ * <p>
+ * Since issue #6303 the operation is SUPPORTED rather than refused - a dispatched command runs
+ * on AsyncCommandPool, which is not one of those workers, so the barrier it needs can be
+ * satisfied. What this class pins is what #2097 was about and is still worth pinning: the
+ * indexes survive. That the rebuild now actually rebuilds is pinned by
+ * {@code Issue6303AsyncDispatchedDDLIT}.
  */
 class Issue2097AsyncRebuildIndexIT extends BaseGraphServerTest {
 
@@ -63,11 +69,11 @@ class Issue2097AsyncRebuildIndexIT extends BaseGraphServerTest {
    * This tests the fix for issue #2097 where running REBUILD INDEX * asynchronously
    * would cause indexes to be deleted when the "Asynchronous queue is stalled" error occurred.
    * <p>
-   * The fix prevents REBUILD INDEX from running in async context by throwing a NeedRetryException
-   * with a clear error message before any index modification occurs. This ensures indexes are
-   * preserved even though the async command fails.
-   * <p>
-   * Users should use synchronous execution (awaitResponse=true) for REBUILD INDEX operations.
+   * The first fix prevented REBUILD INDEX from running in an async context at all, throwing a
+   * NeedRetryException before any index modification occurred, so the indexes were preserved even
+   * though the command failed. Since issue #6303 the command runs off the async workers and
+   * completes; either way the assertion below - the indexes are still there and still answer
+   * queries - is the one #2097 asked for.
    */
   @Test
   void rebuildIndexAsyncDoesNotDeleteIndexes() throws Exception {

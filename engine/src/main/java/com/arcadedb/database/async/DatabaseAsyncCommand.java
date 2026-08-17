@@ -78,12 +78,31 @@ public class DatabaseAsyncCommand implements DatabaseAsyncTask {
     this.requestUser = requestUser;
   }
 
+  /**
+   * Runs the command and notifies {@code onComplete}. What happens to a FAILURE depends on which of this task's two
+   * homes it is running in, and {@code async} is what says which (issue #6303).
+   * <p>
+   * <b>On a worker</b> ({@code async != null}) the failure is contained here: rolled back and reported to this
+   * command's own {@code onError}. It has to be, and this is not merely where it has always been - the worker's run
+   * loop catch reports to the EXECUTOR-wide callback and never to this command's, so letting the exception out would
+   * silently stop delivering {@code onError} to the submitter of every non-DDL command. The rollback is right there
+   * too: the active transaction is the worker's SHARED batch, and a failed write must not contaminate the tasks
+   * batched with it. An idempotent query dirties nothing and must not roll back a batch it merely read from.
+   * <p>
+   * <b>On {@link AsyncCommandPool}</b> ({@code async == null}) it PROPAGATES, because here this task does not know
+   * whose transaction is active. Under the pool's caller-runs fallback the command executes on the submitting
+   * thread, which for {@code POST /command} is an HTTP worker already inside its request's own transaction - and
+   * rolling that back would end the request's transaction from underneath the handler that owns it, after a 202 has
+   * very likely already gone out. {@code DatabaseAsyncExecutorImpl.runCommand} is the one place that knows whether
+   * the transaction is its own, so it is the one place that may discard it; it reports through the same
+   * {@link #notifyError} either way, so nothing changes for the submitter.
+   */
   @Override
   public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
-    // Bind the submitting principal onto this worker thread's DatabaseContext so the engine permission gates
+    // Bind the submitting principal onto this thread's DatabaseContext so the engine permission gates
     // (LocalDatabase.checkPermissionsOnDatabase/checkPermissionsOnFile, and the polyglot scripting gate) enforce
-    // exactly as on the synchronous transports. Restore the previous binding afterwards, since the worker thread and
-    // its DatabaseContext are reused across tasks submitted by different users (GHSA-5j4x-3jfw-8xv3).
+    // exactly as on the synchronous transports. Restore the previous binding afterwards, since the thread and its
+    // DatabaseContext are reused across tasks submitted by different users (GHSA-5j4x-3jfw-8xv3).
     final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
     final SecurityDatabaseUser previousUser = dbContext != null ? dbContext.getCurrentUser() : null;
     if (dbContext != null)
@@ -101,10 +120,10 @@ public class DatabaseAsyncCommand implements DatabaseAsyncTask {
         userCallback.onComplete(resultset);
 
     } catch (final Exception e) {
-      // A failed write command leaves dirty pages in the shared batch transaction that would be
-      // persisted at the next commit-every boundary. Roll back so the failure does not contaminate
-      // the batch. Read queries (idempotent) produce no dirty pages, so they must not roll back the
-      // pending writes of prior tasks in the same commit window.
+      if (async == null)
+        // ON THE POOL: the transaction may not be ours - see the method javadoc. Hand it to the runner, which knows.
+        throw e;
+
       if (!idempotent && database.isTransactionActive()) {
         try {
           database.rollback();
@@ -113,12 +132,32 @@ public class DatabaseAsyncCommand implements DatabaseAsyncTask {
         }
       }
 
-      if (userCallback != null)
-        userCallback.onError(e);
+      notifyError(e);
     } finally {
       if (dbContext != null)
         dbContext.setCurrentUser(previousUser);
     }
+  }
+
+  /**
+   * Reports a failure to the submitter's callback. Called by {@link #execute} for anything the command itself raised,
+   * and by the pool runner for the few failures raised around it (the transaction it opens and commits).
+   *
+   * @return whether anybody received it. {@code false} means the failure has nowhere to go but the log, which is what
+   *     decides whether the executor logs it - a command whose submitter asked to be told is its own reporter, and
+   *     duplicating that at SEVERE is how one failure becomes two entries in an operator's console.
+   */
+  boolean notifyError(final Throwable e) {
+    if (userCallback == null)
+      return false;
+    try {
+      userCallback.onError(e instanceof final Exception exception ? exception : new Exception(e));
+    } catch (final Throwable callbackError) {
+      // Never let the callback's own failure escape onto the pool thread: it would kill the worker and, worse, skip
+      // the bookkeeping that releases anything waiting on this command.
+      LogManager.instance().log(this, Level.WARNING, "Error on invoking the error callback of %s", callbackError, this);
+    }
+    return true;
   }
 
   @Override
