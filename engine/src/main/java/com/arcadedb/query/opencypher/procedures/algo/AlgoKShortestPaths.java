@@ -110,16 +110,14 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
     if (startIdx == null || endIdx == null)
       return Stream.empty();
 
-    // Yen's algorithm is dense here: a nodeCount x nodeCount weight matrix for the whole run, plus one
-    // nodeCount x nodeCount removed-edge mask per spur node. 800 MB and 100 MB respectively at 10 000 nodes,
-    // with no knob involved. Reserved before the first is allocated so that a graph too large for the dense
-    // formulation is a client error naming the node count and the budget, rather than an OutOfMemoryError.
-    // A fresh mask is allocated for every spur node but only one is ever live, so the PEAK is one mask: it is
-    // priced once, not per spur node. (That the mask is reallocated rather than cleared and reused is a
-    // separate question, about churn rather than about the peak, and not one a budget answers.)
-    newMemoryBudget(db).reserve(saturatingSum(matrixBytes(n, n, DOUBLE_BYTES), matrixBytes(n, n, BOOLEAN_BYTES)),
-        "the weight matrix and the removed-edge mask",
-        "a double matrix and a boolean matrix, each " + n + " x " + n + " nodes");
+    // Yen's algorithm is dense here: a nodeCount x nodeCount weight matrix for the whole run - 800 MB at
+    // 10 000 nodes, with no knob involved. Reserved before it is allocated so that a graph too large for the
+    // dense formulation is a client error naming the node count and the budget, rather than an
+    // OutOfMemoryError. The two spur masks beside it are nodeCount-sized and allocated once for the whole call
+    // (see below), so they are a rounding error next to the matrix and are priced with it rather than apart.
+    newMemoryBudget(db).reserve(saturatingSum(matrixBytes(n, n, DOUBLE_BYTES), matrixBytes(2, n, BOOLEAN_BYTES)),
+        "the weight matrix and the spur masks",
+        "a double matrix of " + n + " x " + n + " nodes and two boolean masks of " + n + " nodes");
 
     // Build weighted adjacency matrix (OUT direction)
     final double[][] weightMatrix = new double[n][n];
@@ -166,11 +164,26 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
     kPaths.add(firstPath);
     kWeights.add(pathWeight(firstPath, weightMatrix));
 
-    // Candidate paths: PriorityQueue of {weight, path}
-    final PriorityQueue<double[]> candidates = new PriorityQueue<>(Comparator.comparingDouble(a2 -> a2[0]));
-    // We'll encode paths as serialized int arrays stored separately
+    // Candidate paths, as parallel lists of the path and its cost.
     final List<int[]> candidatePaths = new ArrayList<>();
     final List<Double> candidateCosts = new ArrayList<>();
+
+    // The two masks Yen's spur loop needs, allocated once for the whole call and cleared entry by entry
+    // between spur nodes (issue #6289).
+    //
+    // `removedSpurTargets` used to be a nodeCount x nodeCount boolean matrix allocated fresh per spur node -
+    // ~1 MB per allocation at 1000 nodes, ~200 MB through the young generation for a single k=10 call over a
+    // 20-hop path. It never needed a row per source: every edge it removes leaves the SAME node. The removal
+    // loop below keeps an edge (p[i], p[i+1]) of a previously-found path only when that path shares the root
+    // p[0..i] with prevPath, and prevPath[i] IS the spur node - so p[i] == spurNode for every entry it ever
+    // set, and the other n-1 rows were allocated, zeroed and read only to prove they were empty. One row
+    // indexed by target says exactly as much, in O(nodeCount) rather than O(nodeCount²).
+    //
+    // Cleared rather than reallocated because the entries set are the few the two loops below can name: at
+    // most one per previously-found path, and one per root-path node. Clearing exactly those is O(paths + i),
+    // where an Arrays.fill would be O(nodeCount) and a fresh allocation O(nodeCount) plus the zeroing.
+    final boolean[] removedSpurTargets = new boolean[n];
+    final boolean[] removedNodes = new boolean[n];
 
     for (int ki = 1; ki < k; ki++) {
       final int[] prevPath = kPaths.get(ki - 1);
@@ -178,32 +191,22 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
       for (int i = 0; i < prevPath.length - 1; i++) {
         final int spurNode = prevPath[i];
         final int[] rootPath = Arrays.copyOf(prevPath, i + 1);
-        final double rootCost = pathWeight(rootPath, weightMatrix);
 
-        // Remove edges that are part of previous k-shortest paths sharing the same root
-        // We track removed edges as pairs via a HashSet-like structure (boolean matrix)
-        final boolean[][] removedEdges = new boolean[n][n];
-        for (final int[] p : kPaths) {
-          if (p.length > i + 1) {
-            boolean sameRoot = true;
-            for (int r = 0; r <= i; r++) {
-              if (p[r] != prevPath[r]) {
-                sameRoot = false;
-                break;
-              }
-            }
-            if (sameRoot)
-              removedEdges[p[i]][p[i + 1]] = true;
-          }
-        }
+        // Remove the edges leaving the spur node that are part of previously-found paths sharing this root
+        markRemovedSpurTargets(kPaths, prevPath, i, removedSpurTargets, true);
 
         // Remove root path nodes (except spurNode) from the graph
-        final boolean[] removedNodes = new boolean[n];
         for (int r = 0; r < i; r++)
           removedNodes[rootPath[r]] = true;
 
         // Find spur path from spurNode to endIdx
-        final int[] spurPath = dijkstra(weightMatrix, n, spurNode, endIdx, (u, v) -> removedEdges[u][v] || removedNodes[u] || removedNodes[v]);
+        final int[] spurPath = dijkstra(weightMatrix, n, spurNode, endIdx,
+            (u, v) -> (u == spurNode && removedSpurTargets[v]) || removedNodes[u] || removedNodes[v]);
+
+        // Both masks are shared across spur nodes, so they are handed back empty for the next one.
+        markRemovedSpurTargets(kPaths, prevPath, i, removedSpurTargets, false);
+        for (int r = 0; r < i; r++)
+          removedNodes[rootPath[r]] = false;
 
         if (spurPath != null) {
           // Build total path = rootPath + spurPath (skip duplicate spurNode)
@@ -211,10 +214,10 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
           System.arraycopy(rootPath, 0, totalPath, 0, rootPath.length - 1);
           System.arraycopy(spurPath, 0, totalPath, rootPath.length - 1, spurPath.length);
 
-          final double totalCost = rootCost - (i > 0 ? pathWeight(Arrays.copyOf(rootPath, i), weightMatrix) : 0)
-              + pathWeight(rootPath, weightMatrix) - (i > 0 ? pathWeight(Arrays.copyOf(rootPath, rootPath.length - 1), weightMatrix) : 0)
-              + pathWeight(spurPath, weightMatrix);
-          // Simpler: just compute full path weight
+          // The cost of the concatenated path, walked once. The incremental form this replaced - root cost
+          // plus spur cost, corrected for the prefixes counted twice - computed the same number four ways and
+          // then threw it away in favour of this line, at the price of two Arrays.copyOf and four pathWeight
+          // walks per spur node.
           final double fullCost = pathWeight(totalPath, weightMatrix);
 
           // Check if already in candidates or kPaths
@@ -274,6 +277,32 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
   @FunctionalInterface
   private interface EdgeFilter {
     boolean isRemoved(int u, int v);
+  }
+
+  /**
+   * Marks (or unmarks) the targets of the edges Yen's removes for the spur node {@code prevPath[spurIndex]}:
+   * the successor of that node in every already-found path whose first {@code spurIndex + 1} nodes match
+   * {@code prevPath}.
+   * <p>
+   * The same traversal both sets and clears, so the mask handed to the next spur node is empty without an
+   * {@code Arrays.fill} over the node count or a fresh allocation - it touches only the entries it can name.
+   */
+  private static void markRemovedSpurTargets(final List<int[]> kPaths, final int[] prevPath, final int spurIndex,
+      final boolean[] removedSpurTargets, final boolean marked) {
+    for (final int[] p : kPaths) {
+      if (p.length <= spurIndex + 1)
+        continue;
+      boolean sameRoot = true;
+      for (int r = 0; r <= spurIndex; r++) {
+        if (p[r] != prevPath[r]) {
+          sameRoot = false;
+          break;
+        }
+      }
+      if (sameRoot)
+        // p[spurIndex] == prevPath[spurIndex] == the spur node, which is why only the target needs indexing.
+        removedSpurTargets[p[spurIndex + 1]] = marked;
+    }
   }
 
   private static int[] dijkstra(final double[][] w, final int n, final int src, final int dst,

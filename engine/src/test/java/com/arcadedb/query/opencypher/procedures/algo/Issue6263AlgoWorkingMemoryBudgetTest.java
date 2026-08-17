@@ -242,7 +242,11 @@ class Issue6263AlgoWorkingMemoryBudgetTest {
         MATCH (a:Node {name: 'A'}), (c:Node {name: 'C'}) \
         CALL algo.kShortestPaths(a, c, 2) YIELD weight \
         RETURN weight"""))
-        .hasStackTraceContaining("the weight matrix and the removed-edge mask would need 400 bytes")
+        // 328 rather than the 400 this reservation quoted before #6289: the removed-edge mask used to be
+        // priced as a square matrix, because it was allocated as one - once per spur node. It is now two
+        // node-sized masks allocated once for the whole call.
+        .hasStackTraceContaining("the weight matrix and the spur masks would need 328 bytes "
+            + "(a double matrix of 4 x 4 nodes and two boolean masks of 4 nodes)")
         .hasStackTraceContaining(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getKey());
   }
 

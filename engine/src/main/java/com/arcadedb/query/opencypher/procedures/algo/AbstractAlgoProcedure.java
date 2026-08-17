@@ -276,17 +276,6 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   protected static final long DOUBLE_BYTES = 8L;
 
   /**
-   * Heap cost of one entry of an {@code Integer[]}: the 8-byte reference the array holds plus the 16-byte boxed
-   * object it points at. Three times the cost of the {@code int} it carries, which is why an index array sorted
-   * through a {@code Comparator} - the only reason these arrays are boxed at all - is priced separately rather
-   * than folded into a primitive figure that would understate it.
-   * <p>
-   * Like {@link #MATRIX_ROW_OVERHEAD_BYTES} this is a heuristic for a budget check: below 128 the JVM hands out
-   * cached {@code Integer} instances and the true cost is the reference alone.
-   */
-  protected static final long BOXED_INTEGER_BYTES = 24L;
-
-  /**
    * Estimated heap footprint of a {@code new T[rows][columns]} of an element type {@code elementBytes} wide,
    * row headers included, in saturating {@code long} arithmetic.
    */
@@ -333,13 +322,19 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
       if (limit < 0)
         // Negative means no limit: skip the bookkeeping too, so a disabled budget costs nothing.
         return;
-      final long alreadyReserved = reserved;
-      reserved = saturatingSum(reserved, estimatedBytes);
-      if (reserved <= limit)
+      // Committed only once granted. A refused reservation was never granted, so recording it would make
+      // `reserved` describe heap nobody is holding - and every later message quoting "the N bytes this call
+      // already reserved" would quote a figure that includes an allocation the call was refused. No current
+      // caller survives a refusal to observe that, since the exception aborts the call; this keeps the
+      // invariant true for the one that eventually does.
+      final long total = saturatingSum(reserved, estimatedBytes);
+      if (total <= limit) {
+        reserved = total;
         return;
+      }
       throw new IllegalArgumentException(getName() + "(): " + component + " would need " + describe(estimatedBytes)
           + " bytes (" + detail + ")"
-          + (alreadyReserved > 0 ? ", on top of the " + alreadyReserved + " bytes this call already reserved" : "")
+          + (reserved > 0 ? ", on top of the " + reserved + " bytes this call already reserved" : "")
           + ", more than the " + limit + " bytes allowed. Set "
           + GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getKey() + " to raise the limit");
     }
@@ -351,6 +346,62 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     private static String describe(final long estimatedBytes) {
       return estimatedBytes == Long.MAX_VALUE ? "over " + Long.MAX_VALUE : Long.toString(estimatedBytes);
     }
+  }
+
+  /**
+   * Returns {@code 0 .. count - 1} ordered by ascending {@code weights[i]}, without boxing an index.
+   * <p>
+   * Kruskal's is the reason this exists: both places that run it - {@code algo.mst} over the edge count and
+   * {@code algo.steinerTree} over the {@code t(t-1)/2} terminal pairs - need the edge indices in weight order,
+   * and the only ready-made way to sort an index array by an external key is
+   * {@code Arrays.sort(Integer[], Comparator)}. That costs 24 bytes per entry where the {@code int} it carries
+   * occupies 4, plus a comparator call and two unboxings per comparison, and {@code algo.steinerTree}'s entry
+   * count is quadratic in a terminal list the caller supplies: ~2M entries and ~48 MB of boxed
+   * {@code Integer} at 2000 terminals. Here it is 8 bytes per entry - the index array and the merge scratch -
+   * and a primitive comparison.
+   * </p>
+   * <p>
+   * A bottom-up merge sort rather than a quicksort, for two reasons that both matter on this path: the keys are
+   * user data, and a quicksort on an adversarially ordered key array degrades to O(n²) on inputs a caller
+   * chooses; and merging is stable, so equal weights keep index order exactly as the {@code TimSort} behind
+   * {@code Arrays.sort(Integer[], ...)} did. {@link Double#compare} is the comparison, so {@code NaN} and
+   * {@code -0.0} order exactly as they did through the comparator.
+   * </p>
+   *
+   * @param weights key per index; only the first {@code count} entries are read
+   * @param count   number of indices to order
+   */
+  protected static int[] sortedIndexesByWeight(final double[] weights, final int count) {
+    final int[] index = new int[count];
+    for (int i = 0; i < count; i++)
+      index[i] = i;
+    if (count < 2)
+      return index;
+
+    final int[] scratch = new int[count];
+    int[] from = index;
+    int[] to = scratch;
+    // Widths are stepped in long: at a count near Integer.MAX_VALUE the last doubling and the run bounds it
+    // produces overflow int, and a negative bound silently skips the merge instead of failing.
+    for (long width = 1; width < count; width <<= 1) {
+      for (long lo = 0; lo < count; lo += width << 1) {
+        final int left = (int) lo;
+        final int mid = (int) Math.min(lo + width, count);
+        final int end = (int) Math.min(lo + (width << 1), count);
+        int a = left, b = mid, out = left;
+        while (a < mid && b < end)
+          // Take the left run unless the right one is strictly smaller: that is what makes the sort stable.
+          to[out++] = Double.compare(weights[from[b]], weights[from[a]]) < 0 ? from[b++] : from[a++];
+        while (a < mid)
+          to[out++] = from[a++];
+        while (b < end)
+          to[out++] = from[b++];
+      }
+      final int[] swap = from;
+      from = to;
+      to = swap;
+    }
+    return from;
   }
 
   /**
