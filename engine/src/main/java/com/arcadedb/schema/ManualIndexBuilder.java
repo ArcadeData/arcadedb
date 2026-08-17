@@ -96,10 +96,10 @@ public class ManualIndexBuilder extends IndexBuilder<Index> {
           "Cannot create the manual index '" + indexName + "' as " + indexType + ": a manual index is not bound to a "
               + "type, and only " + SUPPORTED_INDEX_TYPES + " can be built without one");
 
-    // Wait for any running async tasks (e.g., compaction) to complete before creating new index
-    // This prevents NeedRetryException when creating multiple indexes sequentially on large datasets
-    while (database.isAsyncProcessing())
-      database.async().waitCompletion();
+    // Same barrier as TypeIndexBuilder.create(), and for the same reason (issue #6281): isAsyncProcessing() reports
+    // TASKS, and a worker keeps one transaction open across up to ASYNC_TX_BATCH_SIZE of them, so an executor with
+    // drained queues can still be holding thousands of uncommitted records. Only waitCompletion() closes that batch.
+    database.waitForAsyncCompletion();
 
     final LocalSchema schema = database.getSchema().getEmbedded();
 

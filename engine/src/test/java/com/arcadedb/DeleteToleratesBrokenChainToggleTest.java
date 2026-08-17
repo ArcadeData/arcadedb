@@ -25,7 +25,7 @@ import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponentFile;
-import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.BrokenChunkChainException;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Test;
@@ -35,8 +35,9 @@ import static org.assertj.core.api.Assertions.fail;
 
 /**
  * Regression test for {@link GlobalConfiguration#DELETE_TOLERATE_BROKEN_CHAIN}: deleting a record whose own
- * multi-page chunk chain is structurally broken fails loudly by default, with the original
- * {@link ConcurrentModificationException}, so an operator has to run {@code CHECK DATABASE FIX} deliberately to
+ * multi-page chunk chain is structurally broken fails loudly by default, with a
+ * {@link BrokenChunkChainException} naming the break (a {@code ConcurrentModificationException} until #6258 told
+ * corruption from contention), so an operator has to run {@code CHECK DATABASE FIX} deliberately to
  * repair or remove it - that command's own force-delete is unaffected by this setting either way, so the record
  * is never permanently stuck. Explicitly enabling the setting restores the older behaviour: the delete completes
  * anyway (see {@link BrokenMultiPageRecordDeleteTest}), best-effort disconnecting a vertex's edges even if some
@@ -67,8 +68,9 @@ class DeleteToleratesBrokenChainToggleTest extends TestHelper {
     try {
       database.command("sql", "DELETE FROM " + broken);
       fail("Expected the delete to fail loudly instead of silently forcing through the broken chain");
-    } catch (final ConcurrentModificationException expected) {
-      // EXPECTED: disabled by default, the structurally broken chain surfaces instead of being masked.
+    } catch (final BrokenChunkChainException expected) {
+      // EXPECTED: disabled by default, the structurally broken chain surfaces instead of being masked - and since
+      // #6258 it surfaces as corruption rather than as a retry signal, so nothing above re-runs the transaction.
     } finally {
       database.rollback();
     }

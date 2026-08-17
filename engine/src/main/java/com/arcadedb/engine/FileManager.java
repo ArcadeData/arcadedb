@@ -409,6 +409,20 @@ public class FileManager {
     return f;
   }
 
+  /**
+   * Looks up an already-registered file by the component name it is registered under, creating nothing.
+   * This is the read-only half of {@link #getOrCreateFile(String, String, ComponentFile.MODE)}, and the
+   * difference matters to a caller that has to decide which <em>file id</em> to build a component on:
+   * {@code getOrCreateFile} is keyed by component name, so a component that allocated a fresh id and only
+   * then asked for its file would be handed this one instead, and would go on addressing pages of an id
+   * that is not the file it holds.
+   *
+   * @return the registered file, or {@code null} when no file is registered under that component name
+   */
+  public ComponentFile getFileByComponentName(final String componentName) {
+    return fileNameMap.get(componentName);
+  }
+
   public ComponentFile getOrCreateFile(final String fileName, final String filePath, final ComponentFile.MODE mode)
       throws IOException {
     ComponentFile file = fileNameMap.get(fileName);

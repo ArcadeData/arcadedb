@@ -21,6 +21,7 @@ package com.arcadedb.database.async;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.utility.StallAwareStopwatch;
 import com.arcadedb.exception.DatabaseOperationException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -43,7 +44,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class AsyncWedgedWorkerStallTest extends TestHelper {
 
   @Test
-  @Timeout(30)
+  // #6260: the body below already bounds the backstop with a stall-discounted 10s assertion, so this outer
+  // bound is only a hang detector and must be sized as one. JUnit's timeout is plain wall clock with no way to
+  // discount a stop-the-world pause, and pauses of 24s and 27s are what #6260 was filed on - against ~1-2s of
+  // honest work, 30s here was close enough to fail a run where nothing was wrong.
+  @Timeout(120)
   void producerBlockedOnWedgedWorkerEventuallyThrows() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
     db.getConfiguration().setValue(GlobalConfiguration.ASYNC_OPERATIONS_QUEUE_SIZE, 2);
@@ -79,14 +84,13 @@ class AsyncWedgedWorkerStallTest extends TestHelper {
       for (int i = 0; i < 2; i++)
         assertThat(async.scheduleTask(0, noOpTask(), false, 0)).isTrue();
 
-      final long start = System.currentTimeMillis();
+      final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
       assertThatThrownBy(() -> async.scheduleTask(0, noOpTask(), true, 0))
           .as("a producer must not hang forever on a worker wedged in user code")
           .isInstanceOf(DatabaseOperationException.class)
           .hasMessageContaining("stalled");
-      assertThat(System.currentTimeMillis() - start)
-          .as("the backstop must fire after the configured no-progress bound, not the wedge duration")
-          .isLessThan(10_000);
+      stopwatch.assertGaveUpWithin(10_000,
+          "the backstop firing after the configured no-progress bound from a producer that waits out the wedge");
     } finally {
       release.countDown();
     }

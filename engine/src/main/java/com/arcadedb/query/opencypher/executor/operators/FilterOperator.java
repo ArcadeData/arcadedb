@@ -22,6 +22,7 @@ import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -51,6 +52,9 @@ public class FilterOperator extends AbstractPhysicalOperator {
 
   @Override
   public ResultSet execute(final CommandContext context, final int nRecords) {
+    // Bounds this operator's row loop by the command deadline - see WorkGuard for why between-batches is
+    // not enough (issue #6266).
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     final ResultSet inputResults = child.execute(context, nRecords);
 
     return new ResultSet() {
@@ -86,6 +90,7 @@ public class FilterOperator extends AbstractPhysicalOperator {
 
         // Filter input rows
         while (buffer.size() < n) {
+          guard.check();
           if (!inputResults.hasNext()) {
             finished = true;
             break;

@@ -163,6 +163,27 @@ public final class GraphAlgorithms {
    */
   public static double[] pageRank(final GraphAnalyticalView view, final double damping,
       final int iterations, final DIRECTION direction, final String... edgeTypes) {
+    return pageRank(view, damping, iterations, direction, WorkCheckpoint.NONE, edgeTypes);
+  }
+
+  /**
+   * {@link #pageRank(GraphAnalyticalView, double, int, DIRECTION, String...)} with a cooperative abort hook.
+   * <p>
+   * This kernel has no convergence test - it always runs the full {@code iterations} count - and that count comes
+   * straight from a caller-supplied knob, so without a checkpoint {@code algo.pageRank({maxIterations: 2000000000})}
+   * spins with nothing able to stop it. The hook is called once per power iteration, which bounds abort latency by
+   * one sweep of the graph and costs one virtual call per O(n + m) of work.
+   * <p>
+   * One sweep is deliberately coarser than the ~1024-node latency the inline OLTP loops of the {@code algo.*}
+   * procedures achieve, and it is as fine as this kernel can be: the per-node work here runs inside
+   * {@link #parallelForRange}, on worker threads that would not observe an interrupt aimed at the calling thread,
+   * and throwing out of a chunk closure would leave its siblings running. So the checkpoint stays on the calling
+   * thread, between the parallel phases.
+   *
+   * @param checkpoint called between iterations; throws to abort. {@link WorkCheckpoint#NONE} to run unbounded
+   */
+  public static double[] pageRank(final GraphAnalyticalView view, final double damping,
+      final int iterations, final DIRECTION direction, final WorkCheckpoint checkpoint, final String... edgeTypes) {
     final int n = view.getNodeMapping().size();
     if (n == 0)
       return new double[0];
@@ -224,6 +245,7 @@ public final class GraphAlgorithms {
         danglingNodes[dIdx++] = u;
 
     for (int iter = 0; iter < iterations; iter++) {
+      checkpoint.check();
       final double base = (1.0 - damping) / n;
       final double[] currentRank = rank;
       final double[] nextRank = next;
@@ -1117,6 +1139,22 @@ public final class GraphAlgorithms {
    */
   public static int[] labelPropagation(final GraphAnalyticalView view, final int maxIters,
       final String... edgeTypes) {
+    return labelPropagation(view, maxIters, WorkCheckpoint.NONE, edgeTypes);
+  }
+
+  /**
+   * {@link #labelPropagation(GraphAnalyticalView, int, String...)} with a cooperative abort hook.
+   * <p>
+   * The convergence test ({@code break} once no label moved) is not a bound on {@code maxIters}: a graph that
+   * oscillates between two labellings never converges, so the caller-supplied knob is what decides when the run
+   * ends. The hook is called once per iteration, which bounds abort latency by one sweep of the graph - coarser than
+   * the inline OLTP loops of the {@code algo.*} procedures, and as fine as this kernel can be, for the reason given
+   * on {@link #pageRank(GraphAnalyticalView, double, int, DIRECTION, WorkCheckpoint, String...)}.
+   *
+   * @param checkpoint called between iterations; throws to abort. {@link WorkCheckpoint#NONE} to run unbounded
+   */
+  public static int[] labelPropagation(final GraphAnalyticalView view, final int maxIters,
+      final WorkCheckpoint checkpoint, final String... edgeTypes) {
     final int n = view.getNodeMapping().size();
     if (n == 0)
       return new int[0];
@@ -1161,6 +1199,7 @@ public final class GraphAlgorithms {
     final int maxDeg = maxDegree;
 
     for (int iter = 0; iter < maxIters; iter++) {
+      checkpoint.check();
       System.arraycopy(labels, 0, newLabels, 0, n);
 
       final AtomicBoolean anyChanged = new AtomicBoolean(false);

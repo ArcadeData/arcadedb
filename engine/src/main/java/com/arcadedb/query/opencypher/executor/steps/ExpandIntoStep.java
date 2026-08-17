@@ -26,6 +26,7 @@ import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -84,6 +85,9 @@ public class ExpandIntoStep extends AbstractExecutionStep {
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     checkForPrevious("ExpandIntoStep requires a previous step with both source and target vertices bound");
+    // Bounds this operator's row loop by the command deadline - see WorkGuard for why between-batches is
+    // not enough (issue #6266).
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
 
     return new ResultSet() {
       private ResultSet operatorResults = null;
@@ -174,6 +178,7 @@ public class ExpandIntoStep extends AbstractExecutionStep {
 
         // Fetch results from operator
         while (buffer.size() < n && operatorResults.hasNext()) {
+          guard.check();
           final long begin = context.isProfiling() ? System.nanoTime() : 0;
           try {
             if (context.isProfiling())

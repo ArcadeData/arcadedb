@@ -81,10 +81,9 @@ class RetryBackoffTest {
 
   @Test
   void sleepReturnsImmediatelyWhenTheCapIsNotPositive() {
-    final long start = System.nanoTime();
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     RetryBackoff.sleep(3, 2, 0);
-    final long elapsedMs = (System.nanoTime() - start) / 1_000_000;
-    assertThat(elapsedMs).isLessThan(50);
+    stopwatch.assertStayedUnder(50, "a non-positive cap meaning no sleep at all");
   }
 
   @Test
@@ -93,13 +92,12 @@ class RetryBackoffTest {
     final long cap = 200;
     final int attempt = 2; // window = min(200, 2*2^2) = 8ms
 
-    final long start = System.nanoTime();
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     RetryBackoff.sleep(attempt, base, cap);
-    final long elapsedMs = (System.nanoTime() - start) / 1_000_000;
 
     // Generous upper bound: the window is 8ms, so anything close to the cap (200ms) would indicate the
     // implementation is not actually scaling the sleep down for an early attempt.
-    assertThat(elapsedMs).isLessThan(cap);
+    stopwatch.assertStayedUnder(cap, "this attempt's 8ms window, not the 200ms cap");
   }
 
   @Test

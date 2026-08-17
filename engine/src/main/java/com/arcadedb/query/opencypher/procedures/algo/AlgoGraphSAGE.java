@@ -23,6 +23,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.Arrays;
 import java.util.List;
@@ -58,6 +59,10 @@ import java.util.stream.Stream;
  * RETURN node.name, embedding
  * </pre>
  * </p>
+ *
+ * <p>Working set: the feature matrix a layer reads, the one it writes, and that layer's projection - a
+ * per-layer peak, since each layer drops the matrix it read - reserved through
+ * {@link AbstractAlgoProcedure.MemoryBudget} before the first is allocated.</p>
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -95,17 +100,37 @@ public class AlgoGraphSAGE extends AbstractAlgoProcedure {
 
     final Map<String, Object> config = args.length > 0 ? extractMap(args[0], "config") : null;
     final int outDim = config != null && config.get("embeddingDimension") instanceof Number n ? extractEmbeddingDimension(n, "embeddingDimension") : 64;
-    final int layers = config != null && config.get("layers") instanceof Number n ? extractInt(n, "layers") : 2;
+    final int layers = config != null && config.get("layers") instanceof Number n ? extractInt(n, "layers", 1) : 2;
     final long seed = config != null && config.get("seed") instanceof Number n ? n.longValue() : -1L;
     final String[] relTypes = config != null ? extractRelTypes(config.get("relTypes")) : null;
     final Vertex.DIRECTION dir = parseDirection(config != null ? (String) config.get("direction") : null);
 
     final Database db = context.getDatabase();
+    final WorkGuard guard = newWorkGuard(context);
     final GraphData graph = loadGraph(db, null, relTypes, context);
 
     final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
+
+    // Initial node features: [log-normalised degree, Gaussian noise x (inDim-1)]
+    final int initDim = Math.max(outDim, 16);
+
+    // Peak working set: the feature matrix a layer reads, the one it writes, and that layer's projection.
+    // Neither `layers` nor the matrices it walks through raise the peak - each layer drops the matrix it read -
+    // so the estimate is per-layer rather than per-run. initDim >= outDim, so the widest projection is the one
+    // of the first layer, whose concatenation is 2 x initDim wide. The node count and the knob are all the
+    // estimates need, so they are reserved before the adjacency lists are materialised: a call that cannot
+    // afford its matrices should not first pay the O(edges) build.
+    final MemoryBudget memory = newMemoryBudget(db);
+    memory.reserve(matrixBytes(n, initDim, DOUBLE_BYTES), "the node feature matrix",
+        n + " nodes x " + initDim + " initial features");
+    // Unconditional since #6264 gave `layers` a minimum of 1: there is no longer a zero-layer call whose layer
+    // matrices are never allocated, so guarding this would only be dead code.
+    memory.reserve(saturatingSum(matrixBytes(n, outDim, DOUBLE_BYTES), matrixBytes(outDim, 2L * initDim, DOUBLE_BYTES)),
+        "the layer matrices", n + " nodes x embeddingDimension=" + outDim + " plus a projection of "
+            + outDim + " x " + (2L * initDim));
+
     final int[][] adj = graph.adjacency(dir, relTypes);
 
     final int[] degree = new int[n];
@@ -117,8 +142,6 @@ public class AlgoGraphSAGE extends AbstractAlgoProcedure {
     }
     final double logMaxDeg = maxDeg > 0 ? Math.log1p(maxDeg) : 1.0;
 
-    // Initial node features: [log-normalised degree, Gaussian noise × (inDim-1)]
-    final int initDim = Math.max(outDim, 16);
     final Random rng = seed >= 0 ? new Random(seed) : new Random();
     double[][] embed = new double[n][initDim];
     for (int i = 0; i < n; i++) {
@@ -132,6 +155,11 @@ public class AlgoGraphSAGE extends AbstractAlgoProcedure {
 
     // Layer-wise aggregation
     for (int layer = 0; layer < layers; layer++) {
+      // layers is a caller-supplied knob and this kernel has no convergence test at all, so it always runs the full
+      // count: the guard is the only thing that can end a run the caller no longer wants. The Xavier initialisation
+      // below carries no checkpoint of its own because both its bounds are embedding dimensions, capped at
+      // MAX_EMBEDDING_DIMENSION - it is bounded work whatever the caller asks for, unlike the per-node loop.
+      guard.check();
       // Random projection: (2*curDim) → outDim with Xavier initialisation
       final int concatDim = curDim * 2;
       final double projScale = Math.sqrt(2.0 / (concatDim + outDim));
@@ -145,6 +173,8 @@ public class AlgoGraphSAGE extends AbstractAlgoProcedure {
       final double[] concat = new double[concatDim];
 
       for (int i = 0; i < n; i++) {
+        // A single layer walks the whole graph, so on a large one the checkpoint belongs inside the layer too.
+        guard.checkPeriodically(i);
         // Mean aggregation over neighbours
         final int deg = degree[i];
         Arrays.fill(agg, 0.0);

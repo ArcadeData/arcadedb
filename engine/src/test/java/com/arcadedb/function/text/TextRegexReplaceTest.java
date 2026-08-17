@@ -21,6 +21,7 @@ package com.arcadedb.function.text;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
@@ -56,15 +57,14 @@ class TextRegexReplaceTest extends TestHelper {
 
     final String pathological = "a".repeat(40) + "!";
 
-    final long begin = System.currentTimeMillis();
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     assertThatThrownBy(
         () -> database.query("sql", "SELECT text.regexReplace('" + pathological + "', '(.*a){20}$', 'x') AS r").next())
         .isInstanceOf(IllegalArgumentException.class);
-    final long elapsedMillis = System.currentTimeMillis() - begin;
 
     // Generous upper bound: proves the call was aborted near the configured deadline rather than merely being
     // slow (the unbounded replaceAll takes tens of seconds).
-    assertThat(elapsedMillis).isLessThan(5000);
+    stopwatch.assertGaveUpWithin(5000, "the configured 200ms deadline from an unbounded replaceAll");
   }
 
   @Test
@@ -83,17 +83,16 @@ class TextRegexReplaceTest extends TestHelper {
         database.command("sql", "INSERT INTO RegexReplaceMultiRow SET name = '" + pathological + "'");
     });
 
-    final long begin = System.currentTimeMillis();
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     assertThatThrownBy(() -> {
       final ResultSet rs = database.query("sql", "SELECT text.regexReplace(name, '(.*a){20}$', 'x') AS r FROM RegexReplaceMultiRow");
       while (rs.hasNext())
         rs.next();
     }).isInstanceOf(IllegalArgumentException.class);
-    final long elapsedMillis = System.currentTimeMillis() - begin;
 
     // 10 independent 200ms-per-row budgets would take >= 2000ms; a shared deadline keeps the whole query close
     // to the single configured 200ms bound instead.
-    assertThat(elapsedMillis).isLessThan(1000);
+    stopwatch.assertStayedUnder(1000, "one 200ms budget shared by the whole query, not one per row");
   }
 
   @Test
