@@ -239,6 +239,12 @@ class SQLMethodTransformTest {
       }
 
       @Override
+      public com.arcadedb.database.async.AsyncQuiesce quiesceAsync() {
+        return () -> {
+        };
+      }
+
+      @Override
       public long getResultSetLimit() {
         return 0;
       }

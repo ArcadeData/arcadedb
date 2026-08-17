@@ -78,12 +78,26 @@ public class DatabaseAsyncCommand implements DatabaseAsyncTask {
     this.requestUser = requestUser;
   }
 
+  /**
+   * Runs the command, notifies {@code onComplete}, and CONTAINS its own failure - reporting it through
+   * {@code onError} and rolling back what it dirtied.
+   * <p>
+   * Kept here rather than lifted into the caller when issue #6303 gave this task a second home: it now runs either
+   * on an async worker (everything that is not DDL) or on {@link AsyncCommandPool} (the DDL that cannot), and only
+   * this method is common to both. On the worker, the run loop's own catch reports to the EXECUTOR-wide error
+   * callback and never to this command's, so lifting the reporting out would have silently stopped delivering
+   * {@code onError} to the submitter of every non-DDL command.
+   * <p>
+   * The rollback is likewise right on both paths, for slightly different reasons: on a worker it keeps a failed
+   * write from contaminating the SHARED batch transaction it was executed in, and on the pool it discards the
+   * command's own. An idempotent query dirties nothing and must not roll back a batch it merely read from.
+   */
   @Override
   public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
-    // Bind the submitting principal onto this worker thread's DatabaseContext so the engine permission gates
+    // Bind the submitting principal onto this thread's DatabaseContext so the engine permission gates
     // (LocalDatabase.checkPermissionsOnDatabase/checkPermissionsOnFile, and the polyglot scripting gate) enforce
-    // exactly as on the synchronous transports. Restore the previous binding afterwards, since the worker thread and
-    // its DatabaseContext are reused across tasks submitted by different users (GHSA-5j4x-3jfw-8xv3).
+    // exactly as on the synchronous transports. Restore the previous binding afterwards, since the thread and its
+    // DatabaseContext are reused across tasks submitted by different users (GHSA-5j4x-3jfw-8xv3).
     final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
     final SecurityDatabaseUser previousUser = dbContext != null ? dbContext.getCurrentUser() : null;
     if (dbContext != null)
@@ -101,10 +115,6 @@ public class DatabaseAsyncCommand implements DatabaseAsyncTask {
         userCallback.onComplete(resultset);
 
     } catch (final Exception e) {
-      // A failed write command leaves dirty pages in the shared batch transaction that would be
-      // persisted at the next commit-every boundary. Roll back so the failure does not contaminate
-      // the batch. Read queries (idempotent) produce no dirty pages, so they must not roll back the
-      // pending writes of prior tasks in the same commit window.
       if (!idempotent && database.isTransactionActive()) {
         try {
           database.rollback();
@@ -113,12 +123,32 @@ public class DatabaseAsyncCommand implements DatabaseAsyncTask {
         }
       }
 
-      if (userCallback != null)
-        userCallback.onError(e);
+      notifyError(e);
     } finally {
       if (dbContext != null)
         dbContext.setCurrentUser(previousUser);
     }
+  }
+
+  /**
+   * Reports a failure to the submitter's callback. Called by {@link #execute} for anything the command itself raised,
+   * and by the pool runner for the few failures raised around it (the transaction it opens and commits).
+   *
+   * @return whether anybody received it. {@code false} means the failure has nowhere to go but the log, which is what
+   *     decides whether the executor logs it - a command whose submitter asked to be told is its own reporter, and
+   *     duplicating that at SEVERE is how one failure becomes two entries in an operator's console.
+   */
+  boolean notifyError(final Throwable e) {
+    if (userCallback == null)
+      return false;
+    try {
+      userCallback.onError(e instanceof final Exception exception ? exception : new Exception(e));
+    } catch (final Throwable callbackError) {
+      // Never let the callback's own failure escape onto the pool thread: it would kill the worker and, worse, skip
+      // the bookkeeping that releases anything waiting on this command.
+      LogManager.instance().log(this, Level.WARNING, "Error on invoking the error callback of %s", callbackError, this);
+    }
+    return true;
   }
 
   @Override

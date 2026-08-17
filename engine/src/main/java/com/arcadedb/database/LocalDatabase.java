@@ -21,6 +21,7 @@ package com.arcadedb.database;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.Profiler;
+import com.arcadedb.database.async.AsyncQuiesce;
 import com.arcadedb.database.async.DatabaseAsyncExecutor;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.database.async.ErrorCallback;
@@ -147,6 +148,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public static final int MAX_RECOMMENDED_EDGE_LIST_CHUNK_SIZE = 8192;
   /** Header ({@code MutableEdgeSegment.CONTENT_START_POSITION}) plus room for a couple of maximum-width entries. */
   public static final int MIN_EDGE_LIST_CHUNK_SIZE             = 32;
+
+  /** What {@link #quiesceAsync()} hands back on a database that never created an async executor: nothing to park. */
+  private static final AsyncQuiesce NO_ASYNC_TO_QUIESCE = () -> {
+  };
 
   private static final Set<String> SUPPORTED_FILE_EXT = Set.of(
       Dictionary.DICT_EXT,
@@ -484,6 +489,19 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       if (Thread.currentThread().isInterrupted())
         return;
     } while (isAsyncProcessing());
+  }
+
+  @Override
+  public AsyncQuiesce quiesceAsync() {
+    // The field, never async(), for the same reason waitForAsyncCompletion() reads it: quiescing an executor that
+    // does not exist must not CREATE one. This is the reason BucketIndexBuilder no longer calls async() itself - it
+    // did, unconditionally, so building an index on a database that had never touched the async API started a full
+    // set of worker threads to park them (issue #6303, item 2).
+    final DatabaseAsyncExecutorImpl executor = async;
+    if (executor == null)
+      return NO_ASYNC_TO_QUIESCE;
+
+    return executor.quiesceWorkers();
   }
 
   public DatabaseAsyncExecutor async() {

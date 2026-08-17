@@ -417,6 +417,22 @@ public enum GlobalConfiguration {
   ASYNC_TX_BATCH_SIZE("arcadedb.asyncTxBatchSize", SCOPE.DATABASE,
       "Maximum number of operations to commit in batch by async thread", Integer.class, 1024 * 10),
 
+  ASYNC_COMMAND_POOL_THREADS("arcadedb.asyncCommandPoolThreads", SCOPE.JVM,
+      """
+      Maximum number of threads in the JVM-wide pool that runs the DDL dispatched through the asynchronous API - \
+      notably a CREATE INDEX or REBUILD INDEX sent over HTTP POST /command with awaitResponse=false. Only DDL is \
+      routed here, because only DDL cannot run on a per-database async worker: it has to quiesce those very workers \
+      to scan the data, which cannot be done from one of them. Everything else keeps running on \
+      arcadedb.asyncWorkerThreads. 0 = available cores (min 2)""",
+      Integer.class, 0),
+
+  ASYNC_COMMAND_QUEUE_SIZE("arcadedb.asyncCommandQueueSize", SCOPE.JVM,
+      """
+      Size of the bounded queue in front of the asynchronous DDL pool. When it is full the statement runs on the \
+      submitting thread instead of being refused, so a client that asked not to wait may end up waiting; the \
+      pool=async_command caller-runs gauge is where that shows up. 0 = 1024""",
+      Integer.class, 1024),
+
   REBUILD_REPARTITION_MAX_BUFFERED_RIDS("arcadedb.rebuild.repartition.maxBufferedRids", SCOPE.DATABASE,
       """
       Maximum number of misplaced RIDs the REBUILD TYPE WITH repartition = true command may buffer in heap \

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.monitor;
 
+import com.arcadedb.database.async.AsyncCommandPool;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.index.sparsevector.SparseVectorScoringPool;
 import com.arcadedb.query.ParallelScanProducerPool;
@@ -91,6 +92,18 @@ public final class PoolMetrics implements MeterBinder {
         () -> pspp.getPoolStats().queueCapacityRemaining(),
         () -> pspp.getPoolStats().completedTasks(),
         () -> pspp.getPoolStats().callerRunFallbacks());
+
+    // The pool that runs commands dispatched with awaitResponse=false (issue #6303, item 3). Its caller-runs count is
+    // the one an operator most wants to see here: a fallback means the pool was saturated and the command ran on the
+    // HTTP worker that submitted it, so a client that explicitly asked NOT to wait for the answer waited for it.
+    final AsyncCommandPool acp = AsyncCommandPool.getInstance();
+    bindPool(registry, "async_command", "AsyncCommandPool asynchronously dispatched command/query pool",
+        () -> acp.getPoolStats().poolSize(),
+        () -> acp.getPoolStats().activeThreads(),
+        () -> acp.getPoolStats().queueDepth(),
+        () -> acp.getPoolStats().queueCapacityRemaining(),
+        () -> acp.getPoolStats().completedTasks(),
+        () -> acp.getPoolStats().callerRunFallbacks());
 
     // Not a pool, but a graph data-integrity signal surfaced the same way. A monotonic FunctionCounter
     // (not a gauge) so dashboards can compute a rate() and alert on a sudden spike of corruption,
