@@ -255,13 +255,14 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
 
     final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(
         ctx.getDatabase(), paramEdgeTypeNames);
-    if (provider != null && provider.hasEdgeProperties()) {
+    final String edgeType = paramEdgeTypeNames != null && paramEdgeTypeNames.length > 0 ? paramEdgeTypeNames[0] : null;
+    // The provider may only serve the weight when it holds a column for THIS property: asking the coarser
+    // hasEdgeProperties() lets a view built over another property through, and every getEdgeProperty then
+    // returns null so the whole neighbourhood comes back at the default weight (issue #6301).
+    if (provider != null && edgeType != null && provider.servesEdgeProperty(paramWeightFieldName, edgeType)) {
       final int nodeId = provider.getNodeId(node.getIdentity());
       if (nodeId >= 0) {
-        final int[] neighborIds = paramEdgeTypeNames != null && paramEdgeTypeNames.length > 0
-            ? provider.getNeighborIds(nodeId, paramDirection, paramEdgeTypeNames)
-            : provider.getNeighborIds(nodeId, paramDirection);
-        final String edgeType = paramEdgeTypeNames != null && paramEdgeTypeNames.length > 0 ? paramEdgeTypeNames[0] : null;
+        final int[] neighborIds = provider.getNeighborIds(nodeId, paramDirection, paramEdgeTypeNames);
         for (int i = 0; i < neighborIds.length; i++) {
           final RID neighborRid = provider.getRID(neighborIds[i]);
           if (neighborRid != null) {

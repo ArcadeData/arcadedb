@@ -170,6 +170,63 @@ class Issue6302AlgoGraphDrivenWorkGuardTest {
   }
 
   /**
+   * {@code algo.msa} is the only procedure here whose guard is threaded through a <em>recursion</em>: Chu-Liu/
+   * Edmonds contracts a cycle and re-runs itself on the smaller graph, so both the checkpoint's placement across
+   * levels and the new leading parameter on the recursive self-call have to hold. The cycle fixture in
+   * {@link #setup} never contracts anything - each non-root vertex's cheapest incoming edge already forms a path
+   * from the root - so it exercises level 1 only.
+   * <p>
+   * Here R reaches A and B at cost 10 while A and B reach each other at cost 1, so the cheapest-incoming
+   * selection is the 2-cycle A-B and the algorithm must contract it and recurse. The arborescence that comes back
+   * is one 10 edge into the cycle plus one 1 edge inside it.
+   */
+  @Test
+  @Timeout(120)
+  void msaStaysAbortableThroughItsCycleContractionRecursion() {
+    final DatabaseFactory factory = new DatabaseFactory("./target/databases/test-issue-6302-msa-contraction");
+    if (factory.exists())
+      factory.open().drop();
+    final Database contracted = factory.create();
+    try {
+      contracted.getSchema().createVertexType("Node");
+      contracted.getSchema().createEdgeType("LINK");
+      contracted.transaction(() -> {
+        final MutableVertex r = contracted.newVertex("Node").set("name", "R").save();
+        final MutableVertex a = contracted.newVertex("Node").set("name", "A").save();
+        final MutableVertex b = contracted.newVertex("Node").set("name", "B").save();
+        r.newEdge("LINK", a, true, new Object[] { "w", 10.0 }).save();
+        r.newEdge("LINK", b, true, new Object[] { "w", 10.0 }).save();
+        a.newEdge("LINK", b, true, new Object[] { "w", 1.0 }).save();
+        b.newEdge("LINK", a, true, new Object[] { "w", 1.0 }).save();
+      });
+
+      final String query = "MATCH (r:Node {name:'R'}) CALL algo.msa(r, 'LINK', 'w') "
+          + "YIELD source, target, weight RETURN source, target, weight";
+
+      double total = 0.0;
+      int rows = 0;
+      final ResultSet rs = contracted.query("opencypher", query);
+      while (rs.hasNext()) {
+        total += ((Number) rs.next().getProperty("weight")).doubleValue();
+        rows++;
+      }
+      assertThat(rows).as("an arborescence spans every non-root vertex").isEqualTo(2);
+      assertThat(total).as("one 10 edge into the contracted cycle plus one 1 edge inside it").isEqualTo(11.0);
+
+      Thread.currentThread().interrupt();
+      assertThatThrownBy(() -> {
+        final ResultSet aborted = contracted.query("opencypher", query);
+        while (aborted.hasNext())
+          aborted.next();
+      }).as("the checkpoint has to survive being threaded through the contraction recursion")
+          .hasStackTraceContaining("algo.msa() has been interrupted");
+    } finally {
+      Thread.interrupted();
+      contracted.drop();
+    }
+  }
+
+  /**
    * {@code algo.apsp} is the sharp case, and the one worth pinning against the clock rather than the interrupt
    * flag: Floyd-Warshall's triple loop is O(V³) on an input the memory budget explicitly admits, and the
    * deadline has to be observed <em>inside</em> it. 1500 nodes is 3.4e9 relaxations, several seconds of CPU, so

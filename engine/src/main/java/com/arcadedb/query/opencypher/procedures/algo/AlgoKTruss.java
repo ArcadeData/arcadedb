@@ -96,9 +96,11 @@ public class AlgoKTruss extends AbstractAlgoProcedure {
       return Stream.empty();
     final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH, relTypes);
 
-    // Build neighbor BitSets for O(1) membership test
+    // Build neighbor BitSets for O(1) membership test: a nodeCount x nodeCount bit matrix, built before the
+    // peeling loop that carries the checkpoint.
     final BitSet[] neighborSets = new BitSet[n];
     for (int i = 0; i < n; i++) {
+      guard.checkPeriodically(i);
       neighborSets[i] = new BitSet(n);
       for (final int j : adj[i])
         neighborSets[i].set(j);
@@ -125,8 +127,10 @@ public class AlgoKTruss extends AbstractAlgoProcedure {
     final int[] support = new int[edgeCount];
     final boolean[] removed = new boolean[edgeCount];
 
-    // Compute initial support for each edge
+    // Compute initial support for each edge: a bit-set clone and intersection per edge, each O(nodeCount / 64),
+    // and all of it before the peeling loop that carries the checkpoint.
     for (int e = 0; e < edgeCount; e++) {
+      guard.checkPeriodically(e);
       final int u = edges.get(e)[0];
       final int v = edges.get(e)[1];
       // |N(u) ∩ N(v)| — use BitSet AND
@@ -209,9 +213,11 @@ public class AlgoKTruss extends AbstractAlgoProcedure {
       final BitSet[] neighborSetsOrig, final Map<Long, Integer> edgeMap,
       final List<int[]> edges, final int edgeCount) {
 
-    // Rebuild neighbor sets (fresh copy)
+    // Rebuild neighbor sets (fresh copy). A nodeCount x nodeCount bit matrix and an O(E) fill, both before the
+    // peeling loop below, so its checkpoint never reaches them.
     final BitSet[] neighborSets = new BitSet[n];
     for (int i = 0; i < n; i++) {
+      guard.checkPeriodically(i);
       neighborSets[i] = new BitSet(n);
       for (final int j : adj[i])
         neighborSets[i].set(j);
@@ -222,8 +228,10 @@ public class AlgoKTruss extends AbstractAlgoProcedure {
     // edgeTruss[e] = the truss number assigned to edge e
     final int[] edgeTruss = new int[edgeCount];
 
-    // Compute initial support
+    // Compute initial support: a bit-set clone and intersection per edge, each O(nodeCount / 64) - the most
+    // expensive single phase here on a large graph, and the last one that had no checkpoint.
     for (int e = 0; e < edgeCount; e++) {
+      guard.checkPeriodically(e);
       final int u = edges.get(e)[0];
       final int v = edges.get(e)[1];
       final BitSet inter = (BitSet) neighborSets[u].clone();

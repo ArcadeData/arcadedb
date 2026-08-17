@@ -129,7 +129,7 @@ public class AlgoAPSP extends AbstractAlgoProcedure {
     // Fill direct edges. Neighbours and weights are built together - from the columnar edge properties when
     // the view has them, from the edge records otherwise - so a weight always belongs to the neighbour it is
     // written against, whatever the edge-type filter and whichever backing answered (issue #6301).
-    final GraphData.WeightedAdjacency weighted = graph.weightedAdjacency(Vertex.DIRECTION.OUT, weightProperty,
+    final GraphData.WeightedAdjacency weighted = graph.weightedAdjacency(guard, Vertex.DIRECTION.OUT, weightProperty,
         relTypes);
     final int[][] adj = weighted.neighbors();
     final double[][] edgeWts = weighted.weights();

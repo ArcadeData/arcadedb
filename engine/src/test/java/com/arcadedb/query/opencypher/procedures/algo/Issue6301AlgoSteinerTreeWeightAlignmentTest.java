@@ -274,6 +274,81 @@ class Issue6301AlgoSteinerTreeWeightAlignmentTest {
     }
   }
 
+  @Test
+  void aViewThatMaterialisedADifferentPropertyDoesNotMakeTheGraphUnweighted() {
+    // The narrower half of the same defect, and the one a coarse "does this view have edge properties?" gate
+    // walks straight into: the view materialises `other`, the query asks for `w`, so every getEdgeProperty
+    // returns null and every edge silently weighs 1.0 - which inverts the answer here, since X-Y-Z costs 2.0
+    // and the direct X-Z hop costs 50.0. A null property value is also how "this edge has no value" is
+    // reported, so the caller cannot tell the two apart and has to ask the sharper question up front.
+    database.getSchema().getType("ROAD").createProperty("other", Type.DOUBLE);
+    database.transaction(() -> {
+      final MutableVertex x = database.newVertex("N").set("name", "X").save();
+      final MutableVertex y = database.newVertex("N").set("name", "Y").save();
+      final MutableVertex z = database.newVertex("N").set("name", "Z").save();
+      x.newEdge("ROAD", y, true, new Object[] { "w", 1.0, "other", 1.0 }).save();
+      y.newEdge("ROAD", z, true, new Object[] { "w", 1.0, "other", 1.0 }).save();
+      x.newEdge("ROAD", z, true, new Object[] { "w", 50.0, "other", 1.0 }).save();
+    });
+
+    final GraphAnalyticalView view = GraphAnalyticalView.builder(database)
+        .withName("steiner-view-other-property")
+        .withVertexTypes("N")
+        .withEdgeTypes("ROAD")
+        .withEdgeProperties("other")
+        .build();
+    try {
+      final List<Result> rows = steinerTree("X", "Z", "ROAD", "w");
+      assertThat(totalWeightOf(rows))
+          .as("the view holds `other`, not `w`, so the weights must come from the edge records")
+          .isEqualTo(2.0);
+    } finally {
+      view.drop();
+    }
+  }
+
+  @Test
+  void anActiveOverlayDoesNotLendItsWeightsToTheWrongEdges() {
+    // The overlay case, exercised through algo.bellmanford so the narrowing is pinned for a caller outside the
+    // procedures rewritten here. Edge property columns are aligned with the base CSR's forward slots, while
+    // getNeighborIds serves the overlay's view of the node - deletions dropped, additions merged, the list
+    // re-sorted - so the n-th neighbour is no longer the n-th edge of the column store. The provider now says
+    // it cannot serve edge properties in that state, and the weights come from the records instead.
+    database.transaction(() -> {
+      final MutableVertex x = database.newVertex("N").set("name", "X").save();
+      final MutableVertex y = database.newVertex("N").set("name", "Y").save();
+      final MutableVertex z = database.newVertex("N").set("name", "Z").save();
+      x.newEdge("ROAD", y, true, new Object[] { "w", 1.0 }).save();
+      y.newEdge("ROAD", z, true, new Object[] { "w", 1.0 }).save();
+      x.newEdge("ROAD", z, true, new Object[] { "w", 50.0 }).save();
+    });
+
+    final GraphAnalyticalView view = GraphAnalyticalView.builder(database)
+        .withName("overlay-view")
+        .withVertexTypes("N")
+        .withEdgeTypes("ROAD")
+        .withEdgeProperties("w")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+    try {
+      assertThat(view.hasEdgeProperties()).as("no overlay yet, so the columns are addressable").isTrue();
+
+      // A committed change the synchronous view absorbs into its delta overlay rather than by rebuilding.
+      database.transaction(() -> {
+        final MutableVertex extra = database.newVertex("N").set("name", "W").save();
+        vertexOf("X").newEdge("ROAD", extra, true, new Object[] { "w", 7.0 }).save();
+      });
+
+      assertThat(view.hasEdgeProperties())
+          .as("with an overlay active the positional mapping no longer holds, so the honest answer is no")
+          .isFalse();
+      assertThat(view.hasEdgeProperty("ROAD", "w")).isFalse();
+      assertThat(bellmanFordWeight()).as("X-Y-Z at 2.0, read from the edge records").isEqualTo(2.0);
+    } finally {
+      view.drop();
+    }
+  }
+
   // ── Helpers ──────────────────────────────────────────────────────────────
 
   /** The weight of the {@code algo.bellmanford} path from X to Z over the {@code w} property. */
@@ -326,6 +401,10 @@ class Issue6301AlgoSteinerTreeWeightAlignmentTest {
     } finally {
       database.rollback();
     }
+  }
+
+  private com.arcadedb.graph.Vertex vertexOf(final String name) {
+    return (com.arcadedb.graph.Vertex) vertexNamed(name);
   }
 
   private Object vertexNamed(final String name) {

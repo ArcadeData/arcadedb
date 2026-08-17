@@ -122,7 +122,7 @@ public class AlgoBellmanFord extends AbstractAlgoProcedure {
     // traversal (issue #6301) and, worse, fell back to a unit weight for EVERY edge whenever the graph was
     // CSR-backed without the property column: the same query answered `weightProperty` on OLTP and ignored it
     // entirely once a Graph Analytical View existed.
-    final GraphData.WeightedAdjacency weighted = graph.weightedAdjacency(Vertex.DIRECTION.OUT,
+    final GraphData.WeightedAdjacency weighted = graph.weightedAdjacency(guard, Vertex.DIRECTION.OUT,
         weightProperty != null && !weightProperty.isEmpty() ? weightProperty : null, relTypes);
     final int[][] adj = weighted.neighbors();
     final double[][] adjW = weighted.weights();
@@ -175,8 +175,10 @@ public class AlgoBellmanFord extends AbstractAlgoProcedure {
         break;
     }
 
-    // Check for negative cycles reachable from start
+    // Check for negative cycles reachable from start: one more pass over every edge, guarded like the
+    // relaxation passes above rather than left as the one unabortable loop in the method.
     boolean negativeCycle = false;
+    guard.check();
     for (int k = 0; k < edgeCount; k++) {
       final int u = edgeFrom[k];
       final int v = edgeTo[k];

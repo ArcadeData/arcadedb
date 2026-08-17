@@ -695,16 +695,19 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
      * A {@code null} {@code weightProperty} means unit weights, and then this is {@link #adjacency} with a
      * {@code 1.0} beside every entry.
      *
+     * @param guard          checkpoint for the walk; it visits every edge of the graph, so it is itself one of the
+     *                       graph-driven loops that has to be abortable
      * @param dir            traversal direction; {@code BOTH} lists a node's outgoing and incoming edges alike
      * @param weightProperty edge property holding the weight, or {@code null} for unit weights
      * @param relTypes       edge types to filter by, empty/null for all of them
      */
-    public WeightedAdjacency weightedAdjacency(final Vertex.DIRECTION dir, final String weightProperty,
-        final String... relTypes) {
+    public WeightedAdjacency weightedAdjacency(final WorkGuard guard, final Vertex.DIRECTION dir,
+        final String weightProperty, final String... relTypes) {
       if (weightProperty == null) {
         final int[][] neighbors = adjacency(dir, relTypes);
         final double[][] weights = new double[nodeCount][];
         for (int i = 0; i < nodeCount; i++) {
+          guard.checkPeriodically(i);
           weights[i] = new double[neighbors[i].length];
           Arrays.fill(weights[i], 1.0);
         }
@@ -713,13 +716,18 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
 
       // getEdgeProperty() addresses an edge by (type, direction, position), so "all types" has to be resolved
       // to the actual list before the columnar path can be used at all. A provider that cannot enumerate its
-      // types, or has not materialised the property columns, sends us to the edge records - which are exact.
-      final String[] types = relTypes != null && relTypes.length > 0 ? relTypes
-          : provider != null ? provider.getMaterializedEdgeTypes() : null;
-      if (provider != null && provider.hasEdgeProperties() && types != null && types.length > 0)
-        return weightedAdjacencyFromColumns(dir, weightProperty, types);
+      // types, or cannot serve THIS property for every one of them, sends us to the edge records - which are
+      // exact. Asking only whether the provider has edge properties at all is not enough: a view built over
+      // `distance` answers yes to a call asking for `cost`, and then every getEdgeProperty returns null and the
+      // whole graph is silently unweighted - the same wrong answer as a misaligned weight, reached from the
+      // other direction.
+      if (provider != null && provider.servesEdgeProperty(weightProperty, relTypes)) {
+        final String[] types = relTypes != null && relTypes.length > 0 ? relTypes
+            : provider.getMaterializedEdgeTypes();
+        return weightedAdjacencyFromColumns(guard, dir, weightProperty, types);
+      }
 
-      return weightedAdjacencyFromRecords(dir, weightProperty, relTypes);
+      return weightedAdjacencyFromRecords(guard, dir, weightProperty, relTypes);
     }
 
     /**
@@ -727,39 +735,47 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
      * {@link GraphTraversalProvider#getEdgeProperty}. Concatenating the slices keeps that alignment, where
      * merging them into the sorted list {@link #adjacency} returns would lose it.
      */
-    private WeightedAdjacency weightedAdjacencyFromColumns(final Vertex.DIRECTION dir, final String weightProperty,
-        final String[] types) {
+    private WeightedAdjacency weightedAdjacencyFromColumns(final WorkGuard guard, final Vertex.DIRECTION dir,
+        final String weightProperty, final String[] types) {
       final Vertex.DIRECTION[] directions = dir == Vertex.DIRECTION.BOTH ?
           new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN } :
           new Vertex.DIRECTION[] { dir };
 
+      // The (type, direction) pairs are the same for every node, so they are flattened once here rather than
+      // re-derived by a second nested walk inside the loop.
+      final int sliceCount = types.length * directions.length;
+      final String[] sliceType = new String[sliceCount];
+      final Vertex.DIRECTION[] sliceDirection = new Vertex.DIRECTION[sliceCount];
+      for (int s = 0, t = 0; t < types.length; t++)
+        for (final Vertex.DIRECTION d : directions) {
+          sliceType[s] = types[t];
+          sliceDirection[s] = d;
+          s++;
+        }
+
       final int[][] neighbors = new int[nodeCount][];
       final double[][] weights = new double[nodeCount][];
-      final int[][] slices = new int[types.length * directions.length][];
+      final int[][] slices = new int[sliceCount][];
       for (int i = 0; i < nodeCount; i++) {
+        guard.checkPeriodically(i);
         int degree = 0;
-        int s = 0;
-        for (final String type : types)
-          for (final Vertex.DIRECTION d : directions) {
-            final int[] slice = provider.getNeighborIds(i, d, type);
-            slices[s++] = slice;
-            degree += slice.length;
-          }
+        for (int s = 0; s < sliceCount; s++) {
+          slices[s] = provider.getNeighborIds(i, sliceDirection[s], sliceType[s]);
+          degree += slices[s].length;
+        }
 
         final int[] nodeNeighbors = new int[degree];
         final double[] nodeWeights = new double[degree];
         int pos = 0;
-        s = 0;
-        for (final String type : types)
-          for (final Vertex.DIRECTION d : directions) {
-            final int[] slice = slices[s++];
-            for (int j = 0; j < slice.length; j++) {
-              nodeNeighbors[pos] = slice[j];
-              final Object weight = provider.getEdgeProperty(i, j, d, type, weightProperty);
-              nodeWeights[pos] = weight instanceof Number num ? num.doubleValue() : 1.0;
-              pos++;
-            }
+        for (int s = 0; s < sliceCount; s++) {
+          final int[] slice = slices[s];
+          for (int j = 0; j < slice.length; j++) {
+            nodeNeighbors[pos] = slice[j];
+            final Object weight = provider.getEdgeProperty(i, j, sliceDirection[s], sliceType[s], weightProperty);
+            nodeWeights[pos] = weight instanceof Number num ? num.doubleValue() : 1.0;
+            pos++;
           }
+        }
         neighbors[i] = nodeNeighbors;
         weights[i] = nodeWeights;
       }
@@ -771,14 +787,15 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
      * Works for a CSR-backed graph too - {@link #getVertex} and {@link #indexOf} bridge back to the records -
      * which is what makes it the fallback whenever the columnar path cannot answer exactly.
      */
-    private WeightedAdjacency weightedAdjacencyFromRecords(final Vertex.DIRECTION dir, final String weightProperty,
-        final String[] relTypes) {
+    private WeightedAdjacency weightedAdjacencyFromRecords(final WorkGuard guard, final Vertex.DIRECTION dir,
+        final String weightProperty, final String[] relTypes) {
       final int[][] neighbors = new int[nodeCount][];
       final double[][] weights = new double[nodeCount][];
       // One growable pair of scratch buffers for the whole graph rather than a list per node: the degree is
       // unknown before the walk, and a per-node ArrayList<Double> would box every weight.
       int[] scratchNeighbors = new int[16];
       double[] scratchWeights = new double[16];
+      int edgeStep = 0;
 
       for (int i = 0; i < nodeCount; i++) {
         final Vertex vertex = getVertex(i);
@@ -795,6 +812,9 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
             vertex.getEdges(dir);
         int degree = 0;
         for (final Edge edge : edges) {
+          // Throttled by EDGE rather than by vertex: one supernode can hold millions of them, and the walk
+          // deserialises each, so a per-vertex checkpoint would leave that whole node unabortable.
+          guard.checkPeriodically(edgeStep++);
           try {
             final RID neighborRid = GraphEngine.neighborRid(edge, vertexRid, dir);
             final int neighbor = neighborRid != null ? indexOf(neighborRid) : -1;

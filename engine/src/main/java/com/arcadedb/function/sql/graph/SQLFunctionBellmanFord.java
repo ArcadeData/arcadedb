@@ -109,7 +109,16 @@ public class SQLFunctionBellmanFord extends SQLFunctionMathAbstract {
     final Vertex.DIRECTION dir = parseDirection(direction);
 
     final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(db);
-    final boolean useCSR = provider != null && provider.hasEdgeProperties();
+    // getEdgeProperty() is addressed per edge type and this function takes no type filter, so the columnar path
+    // can only resolve a graph whose provider holds exactly one type - and only when that type carries the
+    // property actually asked for. Anything else read a null property value for every edge and treated the whole
+    // graph as unit-weighted, silently ignoring weightProperty (issue #6301); those cases now take the edge
+    // records below, which are exact.
+    final String[] materializedTypes = provider != null ? provider.getMaterializedEdgeTypes() : null;
+    final String csrEdgeType = materializedTypes != null && materializedTypes.length == 1 ? materializedTypes[0] : null;
+    final boolean unweighted = weightProperty == null || weightProperty.isEmpty();
+    final boolean useCSR = provider != null && provider.hasEdgeProperties()
+        && (unweighted || (csrEdgeType != null && provider.servesEdgeProperty(weightProperty, csrEdgeType)));
 
     for (int i = 0; i < n; i++) {
       final Vertex v = vertices.get(i);
@@ -134,7 +143,7 @@ public class SQLFunctionBellmanFord extends SQLFunctionMathAbstract {
               continue;
             double w = 1.0;
             if (weightProperty != null && !weightProperty.isEmpty()) {
-              final Object wObj = provider.getEdgeProperty(nodeId, ni, dir, null, weightProperty);
+              final Object wObj = provider.getEdgeProperty(nodeId, ni, dir, csrEdgeType, weightProperty);
               if (wObj instanceof Number num)
                 w = num.doubleValue();
             }

@@ -147,7 +147,7 @@ public class AlgoSteinerTree extends AbstractAlgoProcedure {
     // hand-rolled second traversal this replaced filled the weights positionally from an unfiltered
     // getEdges(BOTH) walk and attached them to whatever neighbour happened to sit at that index, so a relTypes
     // filter or a Graph Analytical View each silently changed the tree Dijkstra went on to find (issue #6301).
-    final GraphData.WeightedAdjacency weighted = graph.weightedAdjacency(Vertex.DIRECTION.BOTH, weightProperty,
+    final GraphData.WeightedAdjacency weighted = graph.weightedAdjacency(guard, Vertex.DIRECTION.BOTH, weightProperty,
         relTypes);
     final int[][] adj = weighted.neighbors();
     final double[][] adjW = weighted.weights();

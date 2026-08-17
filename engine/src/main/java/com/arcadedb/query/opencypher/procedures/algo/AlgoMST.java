@@ -137,14 +137,17 @@ public class AlgoMST extends AbstractAlgoProcedure {
     // pass 2.
     // Pass 1: count
     int edgeCount = 0;
+    int edgeStep = 0;
     for (int i = 0; i < n; i++) {
-      // Both passes deserialise every edge record of the graph, so each is O(V + E) of real work with nothing
-      // but the graph to bound it (issue #6302).
-      guard.checkPeriodically(i);
       final Iterable<Edge> edges = relTypes != null && relTypes.length > 0 ?
           vertices.get(i).getEdges(Vertex.DIRECTION.OUT, relTypes) :
           vertices.get(i).getEdges(Vertex.DIRECTION.OUT);
       for (final Edge e : edges) {
+        // Both passes deserialise every edge record of the graph, so each is O(V + E) of real work with nothing
+        // but the graph to bound it (issue #6302). Throttled by EDGE rather than by vertex: a near-star graph
+        // puts millions of edges inside a single vertex iteration, and a per-vertex checkpoint would leave that
+        // whole node unabortable - which is exactly the case the budget cannot catch when it is disabled.
+        guard.checkPeriodically(edgeStep++);
         try {
           if (ridToIdx.containsKey(e.getIn())) {
             edgeCount++;
@@ -170,12 +173,13 @@ public class AlgoMST extends AbstractAlgoProcedure {
     final int[]    ev = new int[edgeCount];
     final double[] ew = new double[edgeCount];
     int ec = 0;
+    edgeStep = 0;
     for (int i = 0; i < n; i++) {
-      guard.checkPeriodically(i);
       final Iterable<Edge> edges = relTypes != null && relTypes.length > 0 ?
           vertices.get(i).getEdges(Vertex.DIRECTION.OUT, relTypes) :
           vertices.get(i).getEdges(Vertex.DIRECTION.OUT);
       for (final Edge e : edges) {
+        guard.checkPeriodically(edgeStep++);
         try {
           final Integer j = ridToIdx.get(e.getIn());
           if (j == null)

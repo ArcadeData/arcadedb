@@ -185,6 +185,48 @@ public interface GraphTraversalProvider {
   }
 
   /**
+   * Returns true if this provider can serve {@code propertyName} for {@code edgeType} through
+   * {@link #getEdgeProperty}.
+   * <p>
+   * {@link #hasEdgeProperties()} answers the coarser question - are there edge property columns at all - and a
+   * caller that asks only that one gets {@code null} back from every {@link #getEdgeProperty} call when the view
+   * happens to materialise a <em>different</em> property than the one requested. Since a {@code null} property
+   * value is also the ordinary way of saying "this edge has no value", the caller cannot tell the two apart and
+   * silently treats the whole graph as unweighted. That is the same failure as reading a weight that belongs to
+   * another edge, arrived at from the other direction, so the question a weighted algorithm has to ask is this
+   * one: can you serve <em>this</em> property?
+   *
+   * @param edgeType     the edge type name
+   * @param propertyName the property the caller intends to read
+   */
+  default boolean hasEdgeProperty(final String edgeType, final String propertyName) {
+    return false;
+  }
+
+  /**
+   * Returns true if this provider can serve {@code propertyName} for every one of {@code edgeTypes} - or, when
+   * none are given, for every type it materialises.
+   * <p>
+   * The question a weighted algorithm actually has to ask, and the reason it is answered here rather than
+   * open-coded per caller: "all types" has to be resolved against what the provider holds before the per-type
+   * check means anything, and a caller that resolves it differently gets a different answer to the same
+   * question. Answers {@code false} for a provider that cannot enumerate its types, since it then cannot
+   * promise anything about the ones it was not told about.
+   *
+   * @param propertyName the property the caller intends to read
+   * @param edgeTypes    the types in play, empty or null for every materialised one
+   */
+  default boolean servesEdgeProperty(final String propertyName, final String... edgeTypes) {
+    final String[] types = edgeTypes != null && edgeTypes.length > 0 ? edgeTypes : getMaterializedEdgeTypes();
+    if (types == null || types.length == 0)
+      return false;
+    for (final String type : types)
+      if (!hasEdgeProperty(type, propertyName))
+        return false;
+    return true;
+  }
+
+  /**
    * Returns an edge property value from columnar storage, or null if not materialized.
    * <p>
    * The {@code neighborIndex} is the position within the node's adjacency list for the given direction

@@ -1207,6 +1207,15 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   @Override
+  public boolean hasEdgeProperty(final String edgeType, final String propertyName) {
+    final Snapshot snap = this.snapshot;
+    if (snap == null || snap.edgeColumnStores == null || snap.overlay != null)
+      return false;
+    final ColumnStore edgeColStore = snap.edgeColumnStores.get(edgeType);
+    return edgeColStore != null && edgeColStore.getColumn(propertyName) != null;
+  }
+
+  @Override
   public Object getEdgeProperty(final int nodeId, final int neighborIndex,
       final Vertex.DIRECTION direction, final String edgeType, final String propertyName) {
     final Snapshot snap = checkBuilt();

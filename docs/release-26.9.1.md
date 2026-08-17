@@ -2574,7 +2574,7 @@ Two more procedures were reading weights through the same broken helper and are 
   when a view existed. It also now builds its edge list in parallel primitive arrays rather than a
   `List<int[]>` and a `List<Double>`, which the O(V x E) relaxation loop reads up to `V - 1` times.
 
-**One provider-contract change comes with it.** `GraphTraversalProvider.hasEdgeProperties()` now means "edge
+**Two provider-contract changes come with it.** `GraphTraversalProvider.hasEdgeProperties()` now means "edge
 property columns are materialised **and** the positional mapping `getEdgeProperty` relies on is exact", and
 `GraphAnalyticalView` answers `false` while a delta overlay is active. The columns are aligned with the base
 CSR's forward edge slots, while `getNeighborIds` serves the overlay's view of the node - deletions dropped,
@@ -2583,6 +2583,17 @@ column store. Callers (`algo.apsp`, `algo.bellmanford`, `algo.steinerTree`, `SQL
 `SQLFunctionBellmanFord`, `algo.dijkstra.singleSource`) now read the edge records in that state, which is
 slower and exact, instead of a weight belonging to another edge. This is the same "say unknown rather than
 guess" convention `countEdgesBetween` and `getMeanEdgesPerConnectedPair` already use.
+
+The second is `servesEdgeProperty(propertyName, edgeTypes...)`, which is the question a weighted algorithm
+actually has to ask. `hasEdgeProperties()` answers only "are there edge property columns at all", so a view built
+with `.withEdgeProperties("distance")` answered yes to a call asking for `cost` - and since a missing column and
+an edge with no value both come back as `null`, the caller could not tell them apart and treated the entire graph
+as unweighted. That is the same wrong answer as a misaligned weight, reached from the other direction, and it
+silently inverted results: on a graph where `X-Y-Z` costs 2.0 and the direct `X-Z` hop costs 50.0, unit weights
+make the 50.0 hop win. `algo.apsp`, `algo.bellmanford`, `algo.steinerTree`, `algo.dijkstra.singleSource`,
+`SQLFunctionAstar` and `SQLFunctionBellmanFord` now all gate on it and fall back to the edge records otherwise.
+`SQLFunctionBellmanFord` additionally passed `null` as the edge type to `getEdgeProperty`, which can never
+resolve a column store, so its CSR path had been using a unit weight for every edge unconditionally.
 
 [#6301](https://github.com/ArcadeData/arcadedb/issues/6301)
 
