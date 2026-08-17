@@ -155,10 +155,17 @@ class Issue6281PerDatabaseFlushQueueTest extends TestHelper {
       assertThat(flush.tryReserveQueueSlot(first)).isFalse();
       assertThat(flush.tryReserveQueueSlot(second)).isFalse();
 
+      // The gauge an operator can still compare against arcadedb.pageFlushQueue. pageFlushQueueLength is the SUM
+      // across databases now - 2 x capacity right here - which is why it needed a companion and not just a doc note.
+      assertThat(flush.maxSlotsUsedByAnyDatabase()).as(
+          "the busiest database's share is what the setting bounds, whatever the shared queue holds").isEqualTo(capacity);
+
       // A poll frees a slot of exactly ONE database: the one whose batch it was.
       flush.flushPagesFromQueueToDisk(null, 20L);
       assertThat(flush.slotsUsedBy(first)).as("the polled batch was the first database's").isEqualTo(capacity - 1);
       assertThat(flush.slotsUsedBy(second)).as("and its poll gave nothing back to the other").isEqualTo(capacity);
+      assertThat(flush.maxSlotsUsedByAnyDatabase()).as("the busiest is now the database that lost nothing")
+          .isEqualTo(capacity);
     } finally {
       second.drop();
     }

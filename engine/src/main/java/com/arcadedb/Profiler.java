@@ -268,6 +268,9 @@ public class Profiler {
     json.put("pagesReadSize", new JSONObject().put("space", pagesReadSize));
     json.put("pagesWrittenSize", new JSONObject().put("space", pagesWrittenSize));
     json.put("pageFlushQueueLength", new JSONObject().put("value", pageFlushQueueLength));
+    // The per-database companion (#6281): pageFlushQueueLength is a sum across databases and no longer comparable
+    // with arcadedb.pageFlushQueue, while this one is exactly what that setting bounds.
+    json.put("pageFlushQueueMaxPerDatabase", new JSONObject().put("value", pStats.pageFlushQueueMaxPerDatabase));
     json.put("asyncQueueLength", new JSONObject().put("value", asyncQueueLength));
     json.put("asyncParallelLevel", new JSONObject().put("count", asyncParallelLevel));
     json.put("pageCacheHits", new JSONObject().put("count", pageCacheHits));
@@ -498,8 +501,8 @@ public class Profiler {
       buffer.append("%n INDEXES compactions=%d".formatted(indexCompactions));
 
       buffer.append(
-        "%n PAGE-MANAGER flushQueue=%d flushQueueWaits=%d deferredRAM=%s cacheHits=%d cacheMiss=%d concModExceptions=%d evictionRuns=%d pagesEvicted=%d".formatted(
-          pageFlushQueueLength, pStats.flushQueueWaits, FileUtils.getSizeAsString(pStats.deferredRAMBytes),
+        "%n PAGE-MANAGER flushQueue=%d flushQueueMaxPerDb=%d flushQueueWaits=%d deferredRAM=%s cacheHits=%d cacheMiss=%d concModExceptions=%d evictionRuns=%d pagesEvicted=%d".formatted(
+          pageFlushQueueLength, pStats.pageFlushQueueMaxPerDatabase, pStats.flushQueueWaits, FileUtils.getSizeAsString(pStats.deferredRAMBytes),
           pageCacheHits, pageCacheMiss, concurrentModificationExceptions, evictionRuns, pagesEvicted));
 
       // #5608: read this line together with concModExceptions above. Contention absorbed by a merge never becomes a

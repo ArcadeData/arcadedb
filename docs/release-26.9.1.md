@@ -2515,4 +2515,12 @@ The bound that *is* expressed in bytes remains `arcadedb.flushSuspendMaxDeferred
 or less, which used to fail at startup on `ArrayBlockingQueue`'s constructor, is now raised to 1: with
 admission as the only bound, a budget of 0 would refuse every publication for ever.
 
+**One published metric changed scale with it.** `pageFlushQueueLength` used to top out at `pageFlushQueue`,
+because the queue's capacity was that setting - so `pageFlushQueueLength >= pageFlushQueue` was a natural
+"the pipeline is full" alert. It is now a sum across every open database and can run to
+`pageFlushQueue x open databases`, which makes that comparison meaningless. The signal it used to carry is
+published alongside it as `pageFlushQueueMaxPerDatabase` (and as `flushQueueMaxPerDb` in the profiler dump):
+the busiest single database's share, which is exactly what `pageFlushQueue` bounds, so that is the one to
+alert on.
+
 [#6281](https://github.com/ArcadeData/arcadedb/issues/6281)

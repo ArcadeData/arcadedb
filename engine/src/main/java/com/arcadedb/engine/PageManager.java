@@ -186,7 +186,21 @@ public class PageManager extends LockContext {
     public long pagesReadSize;
     public long pagesWritten;
     public long pagesWrittenSize;
+    /**
+     * Batches waiting in the flush pipeline across EVERY open database. Its scale changed with issue #6281: until
+     * then the queue was capacity-bound to {@code arcadedb.pageFlushQueue}, so this reaching that value meant "the
+     * pipeline is full". The bound is now per database, so this is a sum and can reach
+     * {@code pageFlushQueue x open databases}. An alert comparing it against {@code pageFlushQueue} therefore no
+     * longer says what it used to - {@link #pageFlushQueueMaxPerDatabase} is the number that still does.
+     */
     public int  pageFlushQueueLength;
+    /**
+     * The busiest single database's share of that pipeline - reserved by a committer or occupied by its batch - which
+     * is what {@code arcadedb.pageFlushQueue} actually bounds since issue #6281. This reaching the configured value
+     * is the "a database is at its bound, and its committers are being held" signal that
+     * {@link #pageFlushQueueLength} used to carry, and it is the one to alert on.
+     */
+    public int  pageFlushQueueMaxPerDatabase;
     public long cacheHits;
     public long cacheMiss;
     public long concurrentModificationExceptions;
@@ -1354,6 +1368,7 @@ public class PageManager extends LockContext {
     stats.pagesWritten = totalPagesWritten.get();
     stats.pagesWrittenSize = totalPagesWrittenSize.get();
     stats.pageFlushQueueLength = flushThread != null ? flushThread.queue.size() : 0;
+    stats.pageFlushQueueMaxPerDatabase = flushThread != null ? flushThread.maxSlotsUsedByAnyDatabase() : 0;
     stats.cacheHits = cacheHits.get();
     stats.cacheMiss = cacheMiss.get();
     stats.concurrentModificationExceptions = totalConcurrentModificationExceptions.get();

@@ -549,6 +549,18 @@ public class PageManagerFlushThread extends Thread {
         "flush-queue slots of database '" + batch.database.getName() + "' went negative (" + remaining + ")";
   }
 
+  /**
+   * The busiest database's slot count: what {@code arcadedb.pageFlushQueue} bounds, and therefore the number an
+   * operator can still compare against that setting now that {@code pageFlushQueueLength} is a sum across databases
+   * (issue #6281). O(open databases), read once per stats scrape and never on a write path.
+   */
+  int maxSlotsUsedByAnyDatabase() {
+    int max = 0;
+    for (final AtomicInteger slots : slotsInUse.values())
+      max = Math.max(max, slots.get());
+    return max;
+  }
+
   /** How many pipeline slots a database is currently using (reserved or queued). Package-private for the tests. */
   int slotsUsedBy(final BasicDatabase database) {
     if (database == null)
