@@ -200,6 +200,61 @@ class Issue6281PerDatabaseFlushQueueTest extends TestHelper {
   }
 
   /**
+   * A batch left over from a database that has since been closed must not be able to spend a DIFFERENT database's
+   * budget - specifically not the budget of a database reopened at the same path.
+   * <p>
+   * {@code LocalDatabase} defines equality by database PATH, not by instance, so a stale batch's {@code database}
+   * field resolves to whatever entry is keyed at that path now. Releasing through a map lookup would therefore
+   * decrement the new instance's count for a slot it never took: an assertion failure here, and silent admission
+   * drift with assertions off.
+   * <p>
+   * Two things close that, and this test pins the first: the emptied wrapper is taken OUT of the queue when its
+   * database goes, so there is nothing left to poll. The second - the batch carrying the counter it was charged on
+   * rather than looking one up - is defence in depth, and measured as such: with the queue removal in place this
+   * test passes even with that capture reverted, because it can no longer reach the release. It is kept because the
+   * removal has to be remembered at every future path that could leave a batch queued across a close, and the
+   * capture does not.
+   */
+  @Test
+  void aBatchOfAClosedDatabaseCannotSpendTheBudgetOfOneReopenedAtTheSamePath() throws Exception {
+    final String path = "target/databases/" + getClass().getSimpleName() + "-recycled";
+    final PageManagerFlushThread flush = smallQueueFlushThread(4);
+
+    final Database first = TestHelper.createDatabase(path);
+    try {
+      flush.scheduleFlushOfPages(new ArrayList<>(List.of(page((DatabaseInternal) first, 0))));
+      flush.scheduleFlushOfPages(new ArrayList<>(List.of(page((DatabaseInternal) first, 1))));
+      assertThat(flush.slotsUsedBy(first)).isEqualTo(2);
+
+      // The database goes away with its batches still in the pipeline.
+      flush.removeAllPagesOfDatabase(first);
+      assertThat(flush.queue).as("an emptied batch of a closed database has no business staying queued").isEmpty();
+    } finally {
+      first.drop();
+    }
+
+    // A new database at the SAME path: a different instance, an equal map key.
+    final Database second = TestHelper.createDatabase(path);
+    try {
+      assertThat(second).isEqualTo(first);
+      assertThat(second).isNotSameAs(first);
+
+      flush.scheduleFlushOfPages(new ArrayList<>(List.of(page((DatabaseInternal) second, 0))));
+      assertThat(flush.slotsUsedBy(second)).isEqualTo(1);
+
+      // Drain everything the pipeline still holds. The new database must be charged for its own batch and nothing
+      // else - a stale release landing here would take its count to -1 and trip the assert inside.
+      while (!flush.queue.isEmpty())
+        flush.flushPagesFromQueueToDisk(null, 20L);
+
+      assertThat(flush.slotsUsedBy(second)).as("the reopened database pays for its own batches and no one else's")
+          .isZero();
+    } finally {
+      second.drop();
+    }
+  }
+
+  /**
    * A non-positive {@code arcadedb.pageFlushQueue} is raised to 1 rather than rejected.
    * <p>
    * It used to be rejected, by {@code ArrayBlockingQueue}'s constructor, and that was fine while the queue carried

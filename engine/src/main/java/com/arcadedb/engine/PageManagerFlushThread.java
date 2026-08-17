@@ -72,8 +72,15 @@ public class PageManagerFlushThread extends Thread {
    * writes hard on all of them at once should lower {@code arcadedb.pageFlushQueue} accordingly; the bound that IS
    * expressed in bytes, and the one to reach for when heap is the concern, is
    * {@code arcadedb.flushSuspendMaxDeferredRAM}.
+   * <p>
+   * <b>Package-private, where it used to be public.</b> While the queue carried the capacity a direct
+   * {@code queue.offer} was merely impolite; now that admission is the only bound and {@link #offerBatch} is the one
+   * place a slot is charged, a direct offer silently bypasses the accounting - which is exactly what several
+   * white-box tests were doing before this issue swept them. Narrowing the field makes that a compile error outside
+   * this package instead of a discipline to remember. Nothing outside needed it: {@code PageManager} is in this
+   * package too, and the depth reaches operators through {@code PPageManagerStats}.
    */
-  public final         LinkedBlockingQueue<PagesToFlush>                        queue               = new LinkedBlockingQueue<>();
+  final                LinkedBlockingQueue<PagesToFlush>                        queue               = new LinkedBlockingQueue<>();
   private final        String                                                   logContext;
   private volatile     boolean                                                  running             = true;
   // Per-database suspension REFCOUNT (issue #5068): flushing is suspended while the count is > 0. Backup,
@@ -274,6 +281,22 @@ public class PageManagerFlushThread extends Thread {
   public static class PagesToFlush {
     public final BasicDatabase     database;
     public final List<MutablePage> pages;
+    /**
+     * The very counter of {@link #slotsInUse} this batch's slot was taken from, captured when the batch entered the
+     * queue and used to give that slot back when it leaves (issue #6281 review, round 9).
+     * <p>
+     * A reference and not a second map lookup, because the lookup would not be asking the same question by then.
+     * {@code LocalDatabase} defines equality by DATABASE PATH, not by instance, so a batch of a database that has
+     * since been closed resolves - through its stale {@code database} field - to whatever entry is keyed at that
+     * path NOW. A database dropped and recreated at the same path (a restore, a re-provision, any number of tests)
+     * would therefore have the NEW instance's budget decremented for a batch that was never charged against it:
+     * assertion failure in the test lanes, and silent admission drift with assertions off. Holding the counter
+     * removes the question - the release goes to the number the charge came from, whatever the map says later.
+     * <p>
+     * Plain field, no volatile: it is written before {@code queue.offer} and read after {@code queue.poll}, and a
+     * {@link BlockingQueue} establishes happens-before between the two.
+     */
+    private AtomicInteger slotCharged;
 
     public PagesToFlush(final List<MutablePage> pages) {
       // removeAllPagesOfDatabase()/removePagesOfFileFromBatch() mutate this list (clear()/it.remove()) when a
@@ -411,8 +434,15 @@ public class PageManagerFlushThread extends Thread {
    *                 {@code false} charges one here instead, for a caller that never reserved.
    */
   void offerBatch(final PagesToFlush batch, final boolean slotHeld) {
-    if (!slotHeld && batch.database != null)
-      slotsInUse.computeIfAbsent(batch.database, k -> new AtomicInteger()).incrementAndGet();
+    if (batch.database != null) {
+      // Resolved ONCE, here, and carried by the batch from now on - see PagesToFlush.slotCharged for why the release
+      // side must not ask the map again. Safe to resolve here and not at reservation time: the two happen within one
+      // publication of a database that is by definition still open, so this is the same counter the reservation
+      // incremented; what is not safe is resolving it after the batch has sat in the queue across a close.
+      batch.slotCharged = slotsInUse.computeIfAbsent(batch.database, k -> new AtomicInteger());
+      if (!slotHeld)
+        batch.slotCharged.incrementAndGet();
+    }
     // The queue is unbounded (the bound is admission), so this never blocks and never returns false.
     queue.offer(batch);
   }
@@ -537,16 +567,20 @@ public class PageManagerFlushThread extends Thread {
     signalQueueSlotAvailable();
   }
 
-  /** Releases the slot a batch occupied from the moment it was reserved to the moment it left {@link #queue}. */
+  /**
+   * Releases the slot a batch occupied from the moment it was reserved to the moment it left {@link #queue}, giving
+   * it back to the exact counter it was taken from rather than to whatever {@link #slotsInUse} holds for that path
+   * now (see {@link PagesToFlush#slotCharged}).
+   */
   private void releaseSlotOfPolledBatch(final PagesToFlush batch) {
-    if (batch.database == null)
-      return;
-    final AtomicInteger slots = slotsInUse.get(batch.database);
+    final AtomicInteger slots = batch.slotCharged;
     if (slots == null)
+      // The shutdown sentinel, or a batch that reached the queue without going through offerBatch: neither was
+      // charged, so neither has anything to give back.
       return;
     final int remaining = slots.decrementAndGet();
-    assert remaining >= 0 :
-        "flush-queue slots of database '" + batch.database.getName() + "' went negative (" + remaining + ")";
+    assert remaining >= 0 : "flush-queue slots of database '" + (batch.database != null ? batch.database.getName() : "?")
+        + "' went negative (" + remaining + ")";
   }
 
   /**
@@ -1401,12 +1435,19 @@ public class PageManagerFlushThread extends Thread {
 
   public void removeAllPagesOfDatabase(final Database database) {
     for (final PagesToFlush pagesToFlush : queue.stream().toList())
-      if (database.equals(pagesToFlush.database))
+      if (database.equals(pagesToFlush.database)) {
         synchronized (pagesToFlush.pages) {
           for (final MutablePage page : pagesToFlush.pages)
             pageIndex.remove(page.getPageId());
           pagesToFlush.pages.clear();
         }
+        // And take the emptied wrapper OUT of the queue rather than leaving it to be polled and skipped. It carries
+        // no pages any more, so the poll would do nothing but release its slot - and by then this database's budget
+        // is gone and, since databases compare by PATH, a database reopened at the same path in the meantime would
+        // be the one that resolved. Removing it here is what makes that window not exist rather than merely
+        // survivable (issue #6281 review, round 9; the slot it held goes with the budget dropped below).
+        queue.remove(pagesToFlush);
+      }
 
     // Also clean index entries for pages currently being flushed, and forget the database's pending count with them
     pageIndex.removeAllOfDatabase(database);
