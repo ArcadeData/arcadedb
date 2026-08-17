@@ -2542,3 +2542,45 @@ the busiest single database's share, which is exactly what `pageFlushQueue` boun
 alert on.
 
 [#6281](https://github.com/ArcadeData/arcadedb/issues/6281)
+
+### An index build now holds the asynchronous workers still, and asynchronously dispatched DDL runs instead of being refused
+
+Three things changed here, two of which are worth checking against how you run builds.
+
+**An index build parks the database's async workers for its whole duration.** It always needed to: the build
+scans the buckets, and a record written by an async worker during that scan is in neither the scan nor the
+index - it was saved before the index existed, so it staged no entry for it either, and the result is an index
+that is readable, reported healthy, and answers lookups with nothing. `REBUILD INDEX` and `CHECK DATABASE ...
+FIX` already parked the workers; the ordinary `CREATE INDEX` path did not park them at all, and now does. The
+pause is also gated rather than fired and forgotten - each worker commits its open batch and confirms it has
+parked before the scan starts, where previously the build began whether or not any worker had reached it.
+
+The operational consequence, named because it is bigger than "index builds pay a short barrier": while a build
+runs, tasks submitted to `async()` for that database queue up behind the parked workers, and once a worker's
+queue fills the backpressure reaches the submitting thread too. On a long build that is the database's whole
+asynchronous ingestion path stalled for the duration. There is no cheaper correct arrangement - releasing the
+workers between the index's registration and the scan would index a record written in that window twice, once
+by its own staged operation and once by the scan - so a build is now something to schedule off peak write load
+rather than merely something it was advisable to.
+
+**`CREATE INDEX` and `REBUILD INDEX` sent with `awaitResponse=false` now work.** They used to hang, and since
+26.9.1's #6281 they were refused with a clear `NeedRetryException` and a "run it synchronously" workaround: the
+statement ran on one of the async workers, and the barrier it needs enqueues a task on every worker including
+that one. A statement that parses to DDL is now dispatched to a small JVM-wide pool whose threads are not
+workers of any executor, so the barrier is satisfiable. Everything that is not DDL still runs on the workers
+exactly as before - that matters, because a worker owns a batch transaction and is the unit
+`ThreadBucketSelectionStrategy` pins a bucket to, so "as many workers as buckets" stays the way to keep
+concurrent asynchronous writers from contending. Two new settings size the pool:
+`arcadedb.asyncCommandPoolThreads` (0 = cores, min 2) and `arcadedb.asyncCommandQueueSize` (1024). When that
+queue fills, the statement runs on the submitting thread instead of being dropped, which for
+`awaitResponse=false` means the acknowledgement waits for the statement; the `pool=async_command`
+caller-runs gauge is where that shows up.
+
+**A callback that throws no longer reaches the executor-wide error handler.** An exception escaping the
+`onError` of an `async().command(...)` callback used to propagate into the worker loop, which reported it to
+the handler registered with `async().onError(...)` and rolled back the worker's in-flight batch. It is now
+contained and logged at WARNING. The batch of unrelated tasks surviving somebody else's callback bug is the
+point; the change is mentioned because a deployment that watched only the executor-wide handler will now find
+that class of failure in the log instead.
+
+[#6303](https://github.com/ArcadeData/arcadedb/issues/6303)

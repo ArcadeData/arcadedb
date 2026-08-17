@@ -136,41 +136,52 @@ public final class AsyncCommandPool {
       }, "ArcadeDB-AsyncCommand-" + workerSeq.incrementAndGet());
       t.setDaemon(true);
       return t;
-    }, (task, exec) -> {
-      final long fallbacks = callerRunCount.incrementAndGet();
-      final long now = System.currentTimeMillis();
-      final long last = lastSaturationWarnMs.get();
-      if (now - last > SATURATION_WARN_INTERVAL_MS && lastSaturationWarnMs.compareAndSet(last, now))
-        LogManager.instance().log(AsyncCommandPool.class, Level.WARNING,
-            "Asynchronous command pool saturated: queue full (capacity=%d, threads=%d), running the command on the "
-                + "submitting thread - a caller that asked not to wait for the response will wait for it "
-                + "(cumulative caller-runs fallbacks=%d). Raise '%s' or '%s'", null,
-            queueSize, exec.getMaximumPoolSize(), fallbacks,
-            GlobalConfiguration.ASYNC_COMMAND_POOL_THREADS.getKey(), GlobalConfiguration.ASYNC_COMMAND_QUEUE_SIZE.getKey());
-
-      // MARKED AS A POOL THREAD FOR THE DURATION, even though it is the submitter's. The flag means "this thread is
-      // currently BEING an asynchronously dispatched command", and everything that reads it needs that to be true
-      // here too: a CREATE INDEX run inline would otherwise reach the barrier and wait for the in-flight-command set
-      // it is itself a member of. Restored rather than cleared, so a submitter that is already running one command
-      // (a command that dispatches another) is left as it was.
-      final boolean previous = isPoolThread();
-      POOL_THREAD.set(Boolean.TRUE);
-      try {
-        // Run it UNCONDITIONALLY, including on a shut-down pool - unlike the pools that hand back a Future, which
-        // can cancel one instead. There is no future here to cancel and no result to return: the submitter has
-        // already counted this command as in flight, so a task that is neither run nor completed leaves that count
-        // raised for ever and every later waitCompletion() on that database waits out its whole budget. Nothing
-        // shuts this pool down today; this is the answer that stays correct if something ever does.
-        task.run();
-      } finally {
-        if (previous)
-          POOL_THREAD.set(Boolean.TRUE);
-        else
-          POOL_THREAD.remove();
-      }
-    });
+    }, (task, exec) -> runOnCaller(task, queueSize, exec.getMaximumPoolSize()));
     pool.allowCoreThreadTimeOut(true);
     this.executor = pool;
+  }
+
+  /**
+   * The caller-runs rejection policy: a saturated pool executes the command on the thread that submitted it.
+   * <p>
+   * Package-private and taking its numbers as arguments rather than reading them off the executor, because this is
+   * the path most of the pool's safety argument is ABOUT - the self-deadlock exemption, and the runner's
+   * "touch no transaction and no context we did not create" contract both exist for it - and it is the one a real
+   * pool cannot be made to take on demand without queueing a thousand blocking statements. Driven directly by
+   * {@code AsyncCommandPoolCallerRunsTest}.
+   */
+  void runOnCaller(final Runnable task, final int queueCapacity, final int poolThreads) {
+    final long fallbacks = callerRunCount.incrementAndGet();
+    final long now = System.currentTimeMillis();
+    final long last = lastSaturationWarnMs.get();
+    if (now - last > SATURATION_WARN_INTERVAL_MS && lastSaturationWarnMs.compareAndSet(last, now))
+      LogManager.instance().log(AsyncCommandPool.class, Level.WARNING,
+          "Asynchronous command pool saturated: queue full (capacity=%d, threads=%d), running the command on the "
+              + "submitting thread - a caller that asked not to wait for the response will wait for it "
+              + "(cumulative caller-runs fallbacks=%d). Raise '%s' or '%s'", null,
+          queueCapacity, poolThreads, fallbacks,
+          GlobalConfiguration.ASYNC_COMMAND_POOL_THREADS.getKey(), GlobalConfiguration.ASYNC_COMMAND_QUEUE_SIZE.getKey());
+
+    // MARKED AS A POOL THREAD FOR THE DURATION, even though it is the submitter's. The flag means "this thread is
+    // currently BEING an asynchronously dispatched command", and everything that reads it needs that to be true
+    // here too: a CREATE INDEX run inline would otherwise reach the barrier and wait for the in-flight-command set
+    // it is itself a member of. Restored rather than cleared, so a submitter that is already running one command
+    // (a command that dispatches another) is left as it was.
+    final boolean previous = isPoolThread();
+    POOL_THREAD.set(Boolean.TRUE);
+    try {
+      // Run it UNCONDITIONALLY, including on a shut-down pool - unlike the pools that hand back a Future, which
+      // can cancel one instead. There is no future here to cancel and no result to return: the submitter has
+      // already counted this command as in flight, so a task that is neither run nor completed leaves that count
+      // raised for ever and every later waitCompletion() on that database waits out its whole budget. Nothing
+      // shuts this pool down today; this is the answer that stays correct if something ever does.
+      task.run();
+    } finally {
+      if (previous)
+        POOL_THREAD.set(Boolean.TRUE);
+      else
+        POOL_THREAD.remove();
+    }
   }
 
   public static AsyncCommandPool getInstance() {

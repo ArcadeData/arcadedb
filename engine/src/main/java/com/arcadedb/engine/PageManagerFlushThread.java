@@ -786,6 +786,11 @@ public class PageManagerFlushThread extends Thread {
                 // means the purge has not run yet and will collect whatever we defer; `isOpen()` false means the
                 // batch belongs to nobody and is dropped. There is no third case in which a defer can outlive its
                 // database.
+                //
+                // Returning from HERE, not breaking: this method handles exactly one polled batch per call, so the
+                // return drops this batch and nothing else - and it is inside the outer try whose finally clears
+                // nextPagesToFlush, which therefore still runs. Worth saying because the nesting is deep enough that
+                // a future refactor lifting this block into a helper would silently take that finally with it.
                 if (!db.isOpen())
                   return;
 

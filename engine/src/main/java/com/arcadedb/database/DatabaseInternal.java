@@ -140,6 +140,16 @@ public interface DatabaseInternal extends Database {
    * wrote; it is not enough for one that SCANS while it builds something out of the scan, because a record written
    * during the scan is missed by it and, having been saved before the index existed, staged no entry for it either.
    * Every scan-based index build therefore holds this instead.
+   * <p>
+   * <b>The cost, because it is not small and callers hold this for their whole build.</b> While the quiescence is
+   * held every worker of the database is parked, so a task queued behind the park - a plain
+   * {@code async().createRecord(...)} from an unrelated caller - waits for the build, and once that worker's bounded
+   * queue fills, the backpressure in {@code scheduleTask} reaches the SUBMITTING thread too. On a long build (a
+   * sorted build that spills to disk, say) that is the database's whole asynchronous ingestion path stalled for the
+   * duration. It is the right trade and not an oversight: the alternative is the silently incomplete index of
+   * #6281, and releasing the workers between the index's registration and the scan does not help - a record written
+   * in that window would then be indexed twice, once by its own staged operation and once by the scan. A build is
+   * also not something to run on a database at peak write load, which this makes true rather than merely advisable.
    *
    * @return a handle to close when the scan is done. Never null; a database that never used the async API gets one
    *     that does nothing.

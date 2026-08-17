@@ -679,16 +679,27 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     // exists for is an HTTP worker in the middle of its own request, with its own DatabaseContext and very possibly
     // its own open transaction. Adopting them and then committing and removing them would end that request's
     // transaction from underneath it. So the rule is: touch nothing this method did not create.
-    final boolean contextCreated = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath()) == null;
+    final DatabaseContext.DatabaseContextTL existing = DatabaseContext.INSTANCE.getContextIfExists(
+        database.getDatabasePath());
+    final boolean contextCreated = existing == null;
+    final DatabaseContext.DatabaseContextTL dbContext = contextCreated ?
+        DatabaseContext.INSTANCE.init(database) :
+        existing;
+
+    // asyncMode is set exactly as a worker sets it, because that flag is NOT "am I on an async worker": it is what
+    // makes the default round-robin bucket strategy pick a bucket per THREAD, so concurrent asynchronous writers
+    // stop competing for the same pages. It matters here even though only DDL is routed to this pool, because a
+    // sqlscript carrying one DDL statement brings whatever else it contains with it. What the flag is NOT is a
+    // usable answer to "can this thread drain its own queue" - see note b of #6303 and the comment in
+    // RebuildIndexStatement, which is precisely the confusion that used to make it refuse DDL dispatched here.
+    //
+    // Set and RESTORED, rather than set only on a context we created: on the caller-runs path the context belongs to
+    // the submitter's own request, so leaving the flag raised would change the bucket selection of everything that
+    // request does afterwards - and leaving it alone instead would run this statement under a different rule from
+    // the identical one that was not rejected. Same shape as the principal binding in DatabaseAsyncCommand.
+    final boolean previousAsyncMode = dbContext.asyncMode;
+    dbContext.asyncMode = true;
     try {
-      // asyncMode is set exactly as a worker sets it, because that flag is NOT "am I on an async worker": it is what
-      // makes the default round-robin bucket strategy pick a bucket per THREAD, so concurrent asynchronous writers
-      // stop competing for the same pages. A dispatched command wrote under that rule before this issue moved it
-      // here, and it runs on a shared pool now, so it needs it at least as much. What the flag is NOT is a usable
-      // answer to "can this thread drain its own queue" - see note b of #6303 and the comment in
-      // RebuildIndexStatement, which is precisely the confusion that used to make it refuse DDL dispatched here.
-      if (contextCreated)
-        DatabaseContext.INSTANCE.init(database).asyncMode = true;
       // Whether the transaction is OURS. On the caller-runs path it may well not be, and then there is nothing to
       // commit and nothing to roll back: the command is part of the submitter's transaction and its owner decides
       // its fate.
@@ -720,6 +731,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       } finally {
         if (contextCreated)
           DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
+        else
+          dbContext.asyncMode = previousAsyncMode;
       }
     } finally {
       try {
