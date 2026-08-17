@@ -813,22 +813,29 @@ public enum GlobalConfiguration {
       where the stack is at risk. Raise it only if a legitimate, deeply-nested or very long generated query needs it.""",
       Integer.class, 200),
 
-  CYPHER_ALGO_MAX_WALK_MEMORY("arcadedb.cypher.algoMaxWalkMemory", SCOPE.DATABASE,
+  CYPHER_ALGO_MAX_WORKING_MEMORY("arcadedb.cypher.algoMaxWorkingMemory", SCOPE.DATABASE,
       """
-      Maximum heap, in bytes, that a single call to an OpenCypher algorithm procedure may reserve for the per-node \
-      int buffers one of its knobs sizes: algo.node2vec materialises walksPerNode x nodeCount walks of walkLength \
-      steps each, algo.randomWalk a single walk of steps entries, and algo.slpa one label-memory row of iterations \
-      entries per node. Those knobs have no graph-derived ceiling to clamp against - \
-      unlike a top-k bound, which is capped by the node count - so a large but perfectly in-range int would \
-      otherwise reach the allocator unchecked, or wrap the int product on the way there and surface as a \
-      NegativeArraySizeException from inside the algorithm. The estimate is computed in saturating long \
-      arithmetic and checked BEFORE anything is allocated: a call over the budget is rejected as a client error \
-      naming the knobs that produced the estimate and this setting. Negative number means no limit. When left at \
-      the default it auto-scales with the JVM max heap (one eighth of it, never below 64MB), so the buffers \
-      of a legitimate large run stay a fraction of the heap they share with the rest of the query.""",
+      Maximum heap, in bytes, that a single call to an OpenCypher algorithm procedure may reserve for the dense \
+      working set it builds beside the graph: the random-walk buffers of algo.node2vec (walksPerNode x nodeCount \
+      walks of walkLength steps) and algo.randomWalk (a single walk of steps entries), algo.slpa's label memory \
+      (one row of iterations entries per node), the nodeCount x dimension embedding matrices of algo.node2vec, \
+      algo.fastrp, algo.hashgnn and algo.graphsage, the nodeCount x nodeCount matrices of algo.apsp, \
+      algo.simRank, algo.maxFlow and algo.kShortestPaths, and the terminals x nodeCount tables and \
+      terminal-pair arrays of algo.steinerTree. None of these has a graph-derived ceiling to clamp against - \
+      unlike a top-k bound, which is capped by the node count - so a large but perfectly in-range int, a \
+      terminal list of any length, or simply a large graph, would otherwise reach the allocator unchecked, or \
+      wrap the int product on the way there and surface as a NegativeArraySizeException from inside the \
+      algorithm. Every estimate is computed in saturating long arithmetic and reserved BEFORE anything is \
+      allocated, and reservations accumulate over the call, so what is bounded is the working set of the whole \
+      call rather than one allocation of it: a call over the budget is rejected as a client error naming the \
+      component and the knobs that produced the estimate, together with this setting. Negative number means no \
+      limit. When left at the default it auto-scales with the JVM max heap (one eighth of it, never below 64MB), \
+      so the working set of a legitimate large run stays a fraction of the heap it shares with the rest of the \
+      query.""",
       Long.class, 64 * 1024 * 1024L, null, value -> {
         // Auto-scale the default with the JVM max heap: one eighth of it, never below the 64MB floor so that a
-        // typical run (a few million walk entries) keeps working on small footprints.
+        // typical run (a few million walk entries, or a mid-sized graph at the default embedding dimension)
+        // keeps working on small footprints.
         final long maxHeap = Runtime.getRuntime().maxMemory();
         if (maxHeap == Long.MAX_VALUE)
           // Heap is unbounded (no -Xmx): keep the conservative floor rather than an effectively unlimited cap.

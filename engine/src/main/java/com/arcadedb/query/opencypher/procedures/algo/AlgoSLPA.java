@@ -112,7 +112,6 @@ public class AlgoSLPA extends AbstractAlgoProcedure {
     final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
-    final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH);
 
     // Memory: memory[v] is a list of labels heard by v (including its initial label)
     // Using int[] lists backed by arrays for performance.
@@ -120,16 +119,17 @@ public class AlgoSLPA extends AbstractAlgoProcedure {
     // Unlike the other iteration knobs, SLPA's `iterations` buys heap as well as time: every node keeps one row of
     // `iterations + 1` ints, so the matrix is nodeCount x (iterations + 1) and a value that merely looks large -
     // {iterations: 1000000} on a 10k-node graph is 40 GB - reaches the allocator with nothing between it and the
-    // heap. The footprint is estimated in saturating long arithmetic and checked against the same budget the walk
-    // buffers use, BEFORE the first row is allocated; `iterations + 1` is computed in long because at
+    // heap. The footprint is reserved against the call's working-memory budget, in saturating long arithmetic,
+    // BEFORE the first row is allocated; `iterations + 1` is computed in long because at
     // Integer.MAX_VALUE the int form wraps to Integer.MIN_VALUE and died as a bare NegativeArraySizeException.
     final long rowCapacity = iterations + 1L;
-    checkBufferBudget(db,
-        saturatingProduct(n, saturatingSum(saturatingProduct(rowCapacity, WALK_ENTRY_BYTES), WALK_ROW_OVERHEAD_BYTES)),
-        "label memory", "iterations=" + iterations + " over " + n + " nodes");
+    newMemoryBudget(db).reserve(matrixBytes(n, rowCapacity, INT_BYTES), "the label memory",
+        "iterations=" + iterations + " over " + n + " nodes");
     if (rowCapacity > Integer.MAX_VALUE)
       throw new IllegalArgumentException(getName() + "(): iterations=" + iterations + " needs " + rowCapacity
           + " label entries per node, more than the " + Integer.MAX_VALUE + " a Java array can hold");
+
+    final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH);
 
     final int[][] memory     = new int[n][];
     final int[]   memorySize = new int[n];
