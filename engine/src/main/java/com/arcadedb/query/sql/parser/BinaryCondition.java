@@ -51,16 +51,37 @@ public class BinaryCondition extends BooleanExpression {
 
   /**
    * Folds the comparison at plan time, but only when both of its operands are written in the statement as literals
-   * ({@code 1 = 0}, {@code 'a' = 'b'}, {@code 1 = 1 + 1}). See {@link Expression#isLiteral()} for why a bound
-   * parameter and a function call are excluded even though both could be computed without a record.
+   * ({@code 1 = 0}, {@code 'a' = 'b'}, {@code 1 = 1 + 1}).
    */
   @Override
   public boolean isAlwaysFalse(final CommandContext context) {
+    return literalVerdict(context, Boolean.FALSE);
+  }
+
+  /**
+   * The mirror of {@link #isAlwaysFalse(CommandContext)}, folded under the same literal-only restriction: a comparison
+   * whose operands are both written in the statement ({@code 1 = 1}, {@code 'a' = 'a'}, {@code 2 = 1 + 1}) is true for
+   * every record or for none, and the planner can drop the filter instead of evaluating it once per record.
+   */
+  @Override
+  public boolean isAlwaysTrue(final CommandContext context) {
+    return literalVerdict(context, Boolean.TRUE);
+  }
+
+  /**
+   * Evaluates the comparison at plan time, but only when both of its operands are written in the statement as literals.
+   * See {@link Expression#isLiteral()} for why a bound parameter and a function call are excluded even though both
+   * could be computed without a record.
+   *
+   * @return true when the fold is possible AND its verdict is {@code expected}; false whenever the comparison cannot be
+   * folded, which is the conservative answer both callers need
+   */
+  private boolean literalVerdict(final CommandContext context, final Boolean expected) {
     if (left == null || right == null || !left.isLiteral() || !right.isLiteral())
       return false;
 
     try {
-      return Boolean.FALSE.equals(evaluate((Result) null, context));
+      return expected.equals(evaluate((Result) null, context));
     } catch (final Exception e) {
       // a comparison the operator cannot make (eg. between incompatible types) is left to the runtime to report
       return false;

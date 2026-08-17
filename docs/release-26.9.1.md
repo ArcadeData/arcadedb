@@ -2604,3 +2604,73 @@ row source has come back with nothing: a `LIMIT 0` over a shape the schema can d
 schema, without evaluating anything, and only the shapes that cannot be answered any other way are replayed.
 
 [#6185](https://github.com/ArcadeData/arcadedb/issues/6185)
+## An always-true filter is dropped at plan time instead of being evaluated once per record (#6184)
+
+The mirror of #6174. That issue taught the planner to recognise a filter that is false for every record; a filter
+that is *true* for every record was still built as a filter step and evaluated per record, so `SELECT FROM C` and
+`SELECT FROM C WHERE 1=1` - the same query, written twice - produced two different plans:
+
+```
+SELECT FROM C                    -> + FETCH FROM TYPE C
+                                      + FETCH FROM BUCKET 1 (C_0) ASC
+
+SELECT FROM C WHERE 1=1          -> + FETCH FROM TYPE C WITH FILTER
+                                      + SCAN WITH FILTER BUCKET 1 (C_0)
+                                        1 = 1
+```
+
+The second paid a predicate evaluation per record, and lost the plain bucket fetch, to learn something the
+statement had already said.
+
+Nothing was stuck for want of a rule. `BooleanExpression.isAlwaysTrue()` had existed all along and was overridden
+by `AndBlock`, `OrBlock`, `ParenthesisBlock` and `NotBlock` - but **no leaf could implement it**, because the
+signature took no `CommandContext` and folding a comparison needs one to reach `operator.execute(...)`. So
+`BinaryCondition` never overrode it and the recursion always bottomed out at `false`: the method had no consumer
+outside the AST's own recursion, and `NOT (1=1)` was not folded as always-*false* either, even though
+`NotBlock.isAlwaysFalse` delegates to exactly this method for its negated branch.
+
+`isAlwaysTrue` now takes a `CommandContext`, the shape `isAlwaysFalse` got when it was introduced. The no-argument
+form is gone rather than kept alongside it - it had no caller outside the four AST classes that recursed into it,
+so two forms would only have been two things to keep consistent. `BinaryCondition` folds both verdicts through one
+private helper under the same restriction: **both** operands must be `Expression.isLiteral()`, which excludes a
+bound parameter (the plan outlives the execution that bound it) and a function call (nothing on `SQLFunction` marks
+a function as pure). `WHERE ? = 1` and `WHERE uuid() IS NOT NULL` are therefore still planned as scans, as they
+must be.
+
+The planner drops the where clause in `init()`, before the clauses are rearranged into index searches, so
+everything downstream sees the statement it would have seen without a `WHERE` at all: the projected properties
+computed for column pushdown, the choice between `FetchFromTypeWithFilterStep` and `FetchFromTypeExecutionStep`,
+and the hardwired `count(*)` plan. `NOT (1=0)` folds to always-true and `NOT (1=1)` to the always-false
+`EMPTY RESULT` of #6174, both for free through the existing `NotBlock` delegation.
+
+Dropping a filter is a wider step than folding one to an empty result: an always-false fold can only be wrong by
+returning too few rows, while dropping an always-true filter changes which fetch step is chosen. The regression
+test therefore compares the folded plan against the plan of the same statement written without its `WHERE` - step
+class by step class, so the fetch step and the bucket steps under it both have to agree - and then compares the
+records returned, their order, and the `readRecord` count.
+
+One place the filter survives the whole-clause fold is behind an index. `WHERE 1=1 AND indexedProperty = 'x'` is not
+true for every record, so the clause stays - and then the index search takes the second term as its key and hands the
+`1=1` back as a *residual condition*, which was chained as a `FILTER ITEMS WHERE` step and evaluated once per index
+entry. A residual that is true for every record is now recognised as no filter at all, on both the single-index and
+the parallel-index paths, so the plan is the one the same statement without the constant term would have got. The
+index itself was never at risk: it was selected before and after, the residual only rode along behind it.
+
+One `OrBlock` detail changed with it: an empty disjunction used to answer `isAlwaysTrue()` with `true`. It now
+answers `false`, matching what `isAlwaysFalse` has always answered for the same block. Neither verdict reads it as
+the neutral element, even though that reading (an `OR` with no alternatives is `FALSE`) is available: the parser
+cannot produce an empty `OrBlock`, both answers are load-bearing - one drops the filter, the other replaces the plan
+with an empty source - and deducing either for a block that can only arrive by accident would trade correctness for
+an optimisation nothing can trigger. An empty `AndBlock`, by contrast, is exactly what a filter with no terms left
+looks like, so it does answer `isAlwaysTrue`, and that is what lets an emptied residual condition drop its step.
+
+**API note for code that extends the SQL parser**: `BooleanExpression.isAlwaysTrue()` is replaced by
+`isAlwaysTrue(CommandContext)` rather than kept alongside it, so an out-of-tree subclass that overrode the no-argument
+form no longer overrides anything. This is a compile error against the new signature and a silently inert override
+only if the subclass keeps the old method as an unrelated one; nothing inside ArcadeDB called the no-argument form
+outside the four AST classes that recursed into it.
+
+The value here is smaller than #6174's: nothing sends `WHERE 1=1` as a probe the way Spark sends `WHERE 1=0`, so
+this is symmetry and a small constant per record rather than a full scan avoided.
+
+[#6184](https://github.com/ArcadeData/arcadedb/issues/6184)
