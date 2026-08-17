@@ -113,6 +113,12 @@ public class TimeSeriesApiSpec implements OpenApiContributor {
 
     post.setResponses(SpecBuilders.standardResponses("200", success,
         "400", "401", "403", "404", "500"));
+    // Added explicitly rather than through standardResponses, whose 413 text describes an oversized REQUEST
+    // body: here it is the response that would be too large (issue #5719). Both shapes can raise it - the raw
+    // one on its rows, the aggregated one on its buckets.
+    post.getResponses().addApiResponse("413", SpecBuilders.errorResponse(
+        "The rows or buckets exceed 'arcadedb.server.httpQueryMaxResultRows': narrow the range, "
+            + "widen 'bucketInterval', or page the query"));
 
     final PathItem pathItem = new PathItem();
     pathItem.setPost(post);

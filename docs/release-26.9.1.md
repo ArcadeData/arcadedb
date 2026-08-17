@@ -2674,3 +2674,64 @@ The value here is smaller than #6174's: nothing sends `WHERE 1=1` as a probe the
 this is symmetry and a small constant per record rather than a full scan avoided.
 
 [#6184](https://github.com/ArcadeData/arcadedb/issues/6184)
+## The HTTP query endpoints now have a hard row ceiling a caller cannot widen (#5719)
+
+**Breaking change.** `arcadedb.server.httpQueryMaxResultRows` is a new server setting, defaulting to
+**1,000,000**, that bounds the number of rows a single HTTP query or command response materializes. A
+deployment that relies on an HTTP caller pulling an unbounded result in one response - typically by sending
+`"limit": -1` - has to raise it or set it to `-1` to keep that working.
+
+The ceiling closes the gap that #5716 left open. `arcadedb.server.httpQueryDefaultLimit` (default 20,000)
+caps only the callers that state no limit of their own: since #5716 a request carrying a `limit` field, and a
+query carrying its own `LIMIT`, are both honored as written, because a response silently cut below what the
+caller asked for is exactly the defect #5711 fixed. The consequence is that an authenticated caller writing
+`SELECT FROM HugeType LIMIT 100000000` - or an application that builds `LIMIT n` from user input - could make
+the server serialize an arbitrarily large result into one JSON document. No privilege boundary moved (`limit:
+-1` was always available to the same actor), but the bar to reaching it accidentally dropped, and in a
+multi-tenant deployment the implicit 20,000 cap had been doing real protective work.
+
+The new setting is the HTTP twin of `arcadedb.server.grpcQueryMaxResultRows` and behaves the same way. A
+stated cap at or below the ceiling is the caller's own bound and is honored silently, truncation reported with
+`truncated` exactly as before. A larger one - or an unlimited `-1`/`0` - cannot widen the response past the
+ceiling, and a result that would exceed it **fails with HTTP 413 naming the setting** instead of being
+truncated: a truncated response indistinguishable from a complete one is what #5711 removed, and
+re-introducing it for the callers #5716 protects would only have moved it. The refusal is raised from inside
+the handler, so an auto-committed write command whose result nobody will ever see is rolled back rather than
+committed behind an error status.
+
+A finite default was chosen over a disabled one because every other resource ceiling the server ships -
+`httpBodyContentMaxSize`, `grpcQueryMaxResultRows`, `grpcStreamMaxMaterializedRows` - is finite by default, and
+a ceiling an operator has to discover before it protects anything protects nobody. At 1,000,000 it sits 50x
+above the default page cap, so a realistic paging or export client never meets it.
+
+The two settings cannot be configured into disagreeing. `httpQueryDefaultLimit` is itself lowered to the
+ceiling when it is configured above it (or left unlimited while the ceiling is not), so a caller that states
+no limit at all is never refused - it gets the ordinary reported truncation it has always got, at the lower of
+the two values. The refusal is for a caller that asked to go past the ceiling, never for one served by the
+default.
+
+Two things the ceiling deliberately does not bound, both worth knowing before sizing it. It bounds the size of
+a response, not the peak cost of refusing one: the rows are serialized up to the ceiling before the result
+turns out to exceed it, and the work is then thrown away, so a client that routinely brushes the ceiling
+produces real garbage rather than merely a smaller payload - the same trade the gRPC path makes, and the price
+of never truncating silently. And it bounds the response, not the work a command does to produce it: a write
+that returns its rows (`UPDATE ... RETURN AFTER`) applies to every matching record before the response is
+built, and is then rolled back with the refusal, so the ceiling is not a guard against write amplification.
+
+Two paths that used to escape any bound are bounded at the fetch rather than at serialization: the `LIMIT` the
+POST endpoints push down into a command that states none is now capped by the ceiling (an unlimited `limit`
+used to push nothing down at all), and `profileExecution: detailed`, which drains the whole result set into
+memory before serializing it, drains at most one row past the cap the response will honor. The TimeSeries
+query endpoint enforces the ceiling on both of its shapes - the raw rows, and the buckets of an `aggregation`
+request, which reads no `limit` at all and so had the ceiling as its only possible bound - but only over the
+response it builds: `TimeSeriesEngine.query()` materializes the whole requested range before any limit is
+known, so bounding that fetch needs an engine-level change and is left as follow-up work.
+
+On the status code: 413 is conventionally about an oversized *request* body, and no standard code says "the
+response you asked for is too large to send". 413 is the closest fit and keeps the refusal in the 4xx range,
+where it belongs - the request is answerable, just not as written - but a client that maps status codes
+mechanically should note that the fix is to narrow or page the query, not to shrink the request body. The
+error body distinguishes the two: this refusal names `arcadedb.server.httpQueryMaxResultRows` in its `error`
+field and carries the ceiling in `exceptionArgs`, in every server mode.
+
+[#5719](https://github.com/ArcadeData/arcadedb/issues/5719)
