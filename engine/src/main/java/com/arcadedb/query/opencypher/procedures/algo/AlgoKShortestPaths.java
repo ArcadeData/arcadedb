@@ -116,7 +116,8 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
     // formulation is a client error naming the node count and the budget, rather than an OutOfMemoryError.
     // Only one mask is ever live, so the peak is priced once rather than per spur node.
     newMemoryBudget(db).reserve(saturatingSum(matrixBytes(n, n, DOUBLE_BYTES), matrixBytes(n, n, BOOLEAN_BYTES)),
-        "the weight matrix and the removed-edge mask", "2 matrices of " + n + " x " + n + " nodes");
+        "the weight matrix and the removed-edge mask",
+        "a double matrix and a boolean matrix, each " + n + " x " + n + " nodes");
 
     // Build weighted adjacency matrix (OUT direction)
     final double[][] weightMatrix = new double[n][n];

@@ -129,11 +129,32 @@ public class AlgoNode2Vec extends AbstractAlgoProcedure {
     final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
+
+    // Both reservations are made off the node count and the knobs alone, so they come before the adjacency
+    // lists are materialised: a call that cannot afford its buffers should not first pay the O(edges) build.
+    final MemoryBudget memory = newMemoryBudget(db);
+    // Sized in long arithmetic: `n * walksPerNode` wraps int for a large walksPerNode, which used to size the
+    // walk matrix with a negative or (for an exact multiple of 2^32) far too small a value.
+    final long totalWalksAsLong = saturatingProduct(n, walksPerNode);
+    // Per walk: one matrix row of walkLength ints, plus one entry of the walkOrder shuffle array.
+    final long bytesPerWalk = MATRIX_ROW_OVERHEAD_BYTES + INT_BYTES + INT_BYTES * walkLen;
+    memory.reserve(saturatingProduct(totalWalksAsLong, bytesPerWalk), "the random walk buffer",
+        "walksPerNode=" + walksPerNode + " x walkLength=" + walkLen + " over " + n + " nodes");
+    // The two nodeCount x embeddingDimension matrices of phase 2 are reserved here too, because both stay alive
+    // to the end of the call alongside the walk matrix and because a run that cannot afford them should not
+    // first spend minutes generating walks. The dimension cap bounds one embedding ROW at 32 KB and says
+    // nothing about the matrix, which at the default dimension of 128 costs about 2 KB per node - the same
+    // order as the walk buffer priced above.
+    memory.reserve(saturatingProduct(2L, matrixBytes(n, dim, DOUBLE_BYTES)), "the embedding matrices",
+        "2 matrices of " + n + " nodes x embeddingDimension=" + dim);
+    if (totalWalksAsLong > Integer.MAX_VALUE)
+      throw new IllegalArgumentException(getName() + "(): walksPerNode=" + walksPerNode + " over " + n + " nodes needs "
+          + totalWalksAsLong + " walks, more than the " + Integer.MAX_VALUE + " entries a Java array can hold");
+
     final int[][] adj = graph.adjacency(dir, relTypes);
 
     final Random rng = seed >= 0 ? new Random(seed) : new Random();
     final WorkGuard guard = newWorkGuard(context);
-    final MemoryBudget memory = newMemoryBudget(db);
 
     // A context window wider than the walk already spans the whole walk, so clamping it changes no result.
     // Without the clamp `pos + window` wraps int for a large windowSize, leaving winEnd below winStart: the
@@ -144,24 +165,6 @@ public class AlgoNode2Vec extends AbstractAlgoProcedure {
     final int window = Math.min(rawWindow, walkLen);
 
     // ── Phase 1: Generate biased random walks ──────────────────────────────
-    // Sized in long arithmetic: `n * walksPerNode` wraps int for a large walksPerNode, which used to size the
-    // walk matrix with a negative or (for an exact multiple of 2^32) far too small a value.
-    final long totalWalksAsLong = saturatingProduct(n, walksPerNode);
-    // Per walk: one matrix row of walkLength ints, plus one entry of the walkOrder shuffle array.
-    final long bytesPerWalk = MATRIX_ROW_OVERHEAD_BYTES + INT_BYTES + INT_BYTES * walkLen;
-    memory.reserve(saturatingProduct(totalWalksAsLong, bytesPerWalk), "the random walk buffer",
-        "walksPerNode=" + walksPerNode + " x walkLength=" + walkLen + " over " + n + " nodes");
-    // The two nodeCount x embeddingDimension matrices of phase 2 are reserved here, before phase 1 allocates
-    // anything, because both stay alive to the end of the call alongside the walk matrix and because a run
-    // that cannot afford them should not first spend minutes generating walks. The dimension cap bounds one
-    // embedding ROW at 32 KB and says nothing about the matrix, which at the default dimension of 128 costs
-    // about 2 KB per node - the same order as the walk buffer priced above.
-    memory.reserve(saturatingProduct(2L, matrixBytes(n, dim, DOUBLE_BYTES)), "the embedding matrices",
-        "2 matrices of " + n + " nodes x embeddingDimension=" + dim);
-    if (totalWalksAsLong > Integer.MAX_VALUE)
-      throw new IllegalArgumentException(getName() + "(): walksPerNode=" + walksPerNode + " over " + n + " nodes needs "
-          + totalWalksAsLong + " walks, more than the " + Integer.MAX_VALUE + " entries a Java array can hold");
-
     final int totalWalks = (int) totalWalksAsLong;
     final int[][] walks = new int[totalWalks][walkLen];
     int wi = 0;

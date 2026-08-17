@@ -112,6 +112,23 @@ public class AlgoGraphSAGE extends AbstractAlgoProcedure {
     final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
+    // Initial node features: [log-normalised degree, Gaussian noise × (inDim-1)]
+    final int initDim = Math.max(outDim, 16);
+
+    // Peak working set: the feature matrix a layer reads, the one it writes, and that layer's projection.
+    // Neither `layers` nor the matrices it walks through raise the peak - each layer drops the matrix it read -
+    // so the estimate is per-layer rather than per-run. initDim >= outDim, so the widest projection is the one
+    // of the first layer, whose concatenation is 2 x initDim wide. The node count and the knob are all the
+    // estimates need, so they are reserved before the adjacency lists are materialised: a call that cannot
+    // afford its matrices should not first pay the O(edges) build.
+    final MemoryBudget memory = newMemoryBudget(db);
+    memory.reserve(matrixBytes(n, initDim, DOUBLE_BYTES), "the node feature matrix",
+        n + " nodes x " + initDim + " initial features");
+    if (layers > 0)
+      memory.reserve(saturatingSum(matrixBytes(n, outDim, DOUBLE_BYTES), matrixBytes(outDim, 2L * initDim, DOUBLE_BYTES)),
+          "the layer matrices", n + " nodes x embeddingDimension=" + outDim + " plus a projection of "
+              + outDim + " x " + (2L * initDim));
+
     final int[][] adj = graph.adjacency(dir, relTypes);
 
     final int[] degree = new int[n];
@@ -122,21 +139,6 @@ public class AlgoGraphSAGE extends AbstractAlgoProcedure {
         maxDeg = degree[i];
     }
     final double logMaxDeg = maxDeg > 0 ? Math.log1p(maxDeg) : 1.0;
-
-    // Initial node features: [log-normalised degree, Gaussian noise × (inDim-1)]
-    final int initDim = Math.max(outDim, 16);
-
-    // Peak working set: the feature matrix a layer reads, the one it writes, and that layer's projection.
-    // Neither `layers` nor the matrices it walks through raise the peak - each layer drops the matrix it read -
-    // so the estimate is per-layer rather than per-run. initDim >= outDim, so the widest projection is the one
-    // of the first layer, whose concatenation is 2 x initDim wide.
-    final MemoryBudget memory = newMemoryBudget(db);
-    memory.reserve(matrixBytes(n, initDim, DOUBLE_BYTES), "the node feature matrix",
-        n + " nodes x " + initDim + " initial features");
-    if (layers > 0)
-      memory.reserve(saturatingSum(matrixBytes(n, outDim, DOUBLE_BYTES), matrixBytes(outDim, 2L * initDim, DOUBLE_BYTES)),
-          "the layer matrices", n + " nodes x embeddingDimension=" + outDim + " plus a projection of "
-              + outDim + " x " + (2L * initDim));
 
     final Random rng = seed >= 0 ? new Random(seed) : new Random();
     double[][] embed = new double[n][initDim];

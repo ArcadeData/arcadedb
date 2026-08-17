@@ -111,22 +111,24 @@ public class AlgoHashGNN extends AbstractAlgoProcedure {
     final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
-    final int[][] adj = graph.adjacency(dir, relTypes);
 
     // Use 4× over-parameterised bit space for good hash quality
     final int numFeatures = Math.max(embDim * 4, 64);
-    final Random rng = seed >= 0 ? new Random(seed) : new Random();
 
     // Three nodeCount-scaled matrices live at once here, and the two feature matrices - not the embedding one -
     // are the larger pair: they are four times as wide as the embedding, so even as booleans they cost half a
     // byte per embedding dimension per node against the embedding's eight. The embeddingDimension cap bounds a
-    // row, not a matrix; at the default of 128 the three together cost about 2 KB per node. All reserved before
-    // the first one is allocated.
+    // row, not a matrix; at the default of 128 the three together cost about 2 KB per node. The node count and
+    // the knob are all the estimates need, so they are reserved before the adjacency lists are materialised: a
+    // call that cannot afford its matrices should not first pay the O(edges) build.
     final MemoryBudget memory = newMemoryBudget(db);
     memory.reserve(saturatingProduct(2L, matrixBytes(n, numFeatures, BOOLEAN_BYTES)), "the feature matrices",
         "2 matrices of " + n + " nodes x " + numFeatures + " features (embeddingDimension=" + embDim + " x 4)");
     memory.reserve(matrixBytes(n, embDim, DOUBLE_BYTES), "the embedding matrix",
         n + " nodes x embeddingDimension=" + embDim);
+
+    final int[][] adj = graph.adjacency(dir, relTypes);
+    final Random rng = seed >= 0 ? new Random(seed) : new Random();
 
     // Initialise: each node gets ~12.5% sparse random binary feature vector
     final boolean[][] features = new boolean[n][numFeatures];
