@@ -355,6 +355,29 @@ class HttpQueryMaxResultRowsIT extends BaseGraphServerTest {
   }
 
   @Test
+  void theLargestStatableLimitIsClampedBeforeTheProbeCanOverflow() throws Exception {
+    // The two guards against Integer.MAX_VALUE meet here. With the ceiling on, the clamp runs first, so the
+    // LIMIT pushed down is the ceiling + 1 and truncationProbeLimit's saturation is never even reached.
+    final JSONObject maxLimit = new JSONObject()
+        .put("language", "sql")
+        .put("command", "SELECT i FROM " + TYPE_NAME)
+        .put("limit", Integer.MAX_VALUE);
+
+    assertThat(send("query", maxLimit).statusCode()).isEqualTo(413);
+
+    // With the ceiling off, the clamp is a no-op and the saturation guard is what has to hold: 'limit
+    // 2147483648' would be pushed down otherwise, and the request would not come back with every row.
+    getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_HTTP_QUERY_MAX_RESULT_ROWS, -1);
+    try {
+      final JSONObject served = query(maxLimit);
+      assertThat(served.getJSONArray("result").length()).isEqualTo(TOTAL_ROWS);
+      assertThat(served.getBoolean("truncated")).isFalse();
+    } finally {
+      getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_HTTP_QUERY_MAX_RESULT_ROWS, CEILING);
+    }
+  }
+
+  @Test
   void theCeilingCanBeTurnedOff() throws Exception {
     // -1 restores the pre-#5719 behaviour for a deployment that needs an unbounded escape hatch.
     getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_HTTP_QUERY_MAX_RESULT_ROWS, -1);
