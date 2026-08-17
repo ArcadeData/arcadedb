@@ -22,6 +22,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -49,6 +50,10 @@ public class CartesianProduct extends AbstractPhysicalOperator {
 
   @Override
   public ResultSet execute(final CommandContext context, final int nRecords) {
+    // A cartesian product emits |right| rows per left row without touching a source, so guarding the scans
+    // below it bounds nothing here: the check has to be on the row this operator itself produces (issue #6266).
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+
     return new ResultSet() {
       private ResultSet leftResults = null;
       private List<Result> rightResultsCache = null;
@@ -68,6 +73,8 @@ public class CartesianProduct extends AbstractPhysicalOperator {
       public Result next() {
         if (!hasNext())
           throw new NoSuchElementException();
+
+        guard.check();
 
         final Result rightResult = rightResultsCache.get(rightIndex);
 
@@ -101,8 +108,10 @@ public class CartesianProduct extends AbstractPhysicalOperator {
 
         // Materialize right side for reuse across left rows
         rightResultsCache = new ArrayList<>();
-        while (rightResults.hasNext())
+        while (rightResults.hasNext()) {
+          guard.check();
           rightResultsCache.add(rightResults.next());
+        }
 
         // Get first left row
         if (leftResults.hasNext())

@@ -134,6 +134,7 @@ import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.query.sql.parser.ExplainResultSet;
 
 import java.util.ArrayList;
@@ -295,9 +296,12 @@ public class CypherExecutionPlan {
     final boolean hasWriteOps = !statement.isReadOnly();
 
     if (hasWriteOps) {
-      // Materialize the ResultSet to force write operation execution
+      // Materialize the ResultSet to force write operation execution. The drain is the statement, so the
+      // command deadline is tested here too - nothing downstream of it can (issue #6266).
+      final WorkGuard guard = WorkGuard.forCommandDeadline(context);
       final List<ResultInternal> materializedResults = new ArrayList<>();
       while (resultSet.hasNext()) {
+        guard.check();
         materializedResults.add((ResultInternal) resultSet.next());
       }
       // Surface the CRUD-count accumulator built up by the mutation steps (CreateStep, SetStep,
@@ -320,12 +324,25 @@ public class CypherExecutionPlan {
 
     // Read-only path: GQL FINISH still suppresses any rows the MATCH would have produced.
     if (statement.hasFinishClause()) {
-      while (resultSet.hasNext())
+      final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+      while (resultSet.hasNext()) {
+        guard.check();
         resultSet.next();
+      }
       return new IteratorResultSet(Collections.<Result>emptyList().iterator());
     }
 
     return resultSet;
+  }
+
+  /**
+   * Makes a nested plan share the enclosing command's deadline instead of starting a fresh budget from now.
+   * Without this a statement could buy itself unlimited time by nesting: every {@code CALL { }} body, every
+   * correlated {@code COUNT { }} probe and every UNION branch runs on a context of its own (issue #6266).
+   */
+  private static void inheritCommandDeadline(final BasicCommandContext context, final CommandContext outerContext) {
+    if (outerContext != null)
+      context.setCommandDeadline(outerContext.getCommandDeadline(), outerContext.getCommandDeadlineDescription());
   }
 
   private boolean canUseOptimizedPhysicalPlan() {
@@ -359,13 +376,16 @@ public class CypherExecutionPlan {
       ctx.setDatabase(database);
       ctx.setInputParameters(parameters);
       setupFunctionResolver(ctx);
+      inheritCommandDeadline(ctx, outerContext);
 
       // Execute each branch with the seed row, collect all results
+      final WorkGuard unionGuard = WorkGuard.forCommandDeadline(ctx);
       final List<ResultInternal> allResults = new ArrayList<>();
       final Set<String> seen = removeDuplicates ? new HashSet<>() : null;
       for (final CypherExecutionPlan branchPlan : branchPlans) {
         final ResultSet rs = branchPlan.executeWithSeedRow(seedRow, outerContext);
         while (rs.hasNext()) {
+          unionGuard.check();
           final Result row = rs.next();
           if (removeDuplicates) {
             final String key = buildResultKey(row);
@@ -390,6 +410,7 @@ public class CypherExecutionPlan {
     // fully read-only CALL, violating the "read queries allocate nothing" constraint.
     if (outerContext != null && !statement.isReadOnly())
       context.setStatistics(outerContext.getStatistics());
+    inheritCommandDeadline(context, outerContext);
 
     // Create a seed step that returns the seed row
     final AbstractExecutionStep seedStep = new AbstractExecutionStep(context) {
@@ -441,13 +462,15 @@ public class CypherExecutionPlan {
    * @param outerContext the enclosing command context, may be null
    */
   public long countRows(final Result seedRow, final CommandContext outerContext) {
-    final Long pushedDown = tryCountRowsPushDown(seedRow);
+    final Long pushedDown = tryCountRowsPushDown(seedRow, outerContext);
     if (pushedDown != null)
       return pushedDown;
 
+    final WorkGuard guard = WorkGuard.forCommandDeadline(outerContext);
     long count = 0L;
     try (final ResultSet resultSet = executeWithSeedRow(seedRow, outerContext)) {
       while (resultSet.hasNext()) {
+        guard.check();
         resultSet.next();
         count++;
       }
@@ -463,7 +486,7 @@ public class CypherExecutionPlan {
    * produces, and a push-down never produces them, so the arithmetic that would relate the two is not the one
    * {@link #applySkipAndLimit} does to the single row a count comes back as.
    */
-  private Long tryCountRowsPushDown(final Result seedRow) {
+  private Long tryCountRowsPushDown(final Result seedRow, final CommandContext outerContext) {
     if (statement instanceof UnionStatement)
       return null;
 
@@ -485,6 +508,7 @@ public class CypherExecutionPlan {
     context.setDatabase(database);
     context.setInputParameters(parameters);
     setupFunctionResolver(context);
+    inheritCommandDeadline(context, outerContext);
 
     final AbstractExecutionStep countStep = tryCountPushDown(context, true, correlation);
     if (countStep == null)

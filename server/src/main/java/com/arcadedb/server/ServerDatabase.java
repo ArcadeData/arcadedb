@@ -489,6 +489,11 @@ public class ServerDatabase implements DatabaseInternal {
     return wrapped.isAsyncProcessing();
   }
 
+  @Override
+  public void waitForAsyncCompletion() {
+    wrapped.waitForAsyncCompletion();
+  }
+
   public DocumentIndexer getIndexer() {
     return wrapped.getIndexer();
   }

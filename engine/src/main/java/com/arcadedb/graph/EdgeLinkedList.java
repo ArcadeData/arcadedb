@@ -26,6 +26,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.exception.BrokenChunkChainException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -147,12 +148,13 @@ public class EdgeLinkedList {
         if (previousRID == null || previousRID.equals(current.getIdentity()))
           return head;
         current = loadChunkForWrite(previousRID);
-      } catch (final ConcurrentModificationException | SerializationException | NegativeArraySizeException
-                     | BufferUnderflowException | IndexOutOfBoundsException | IllegalArgumentException
-                     | ClassCastException | SchemaException e) {
-        // "This chunk cannot be read", in the two shapes the chain can produce it: loadChunkForWrite maps a
-        // vanished record to a retryable conflict, and a corrupted body fails to decode. Both stop the pinning
-        // here and are re-raised by the collection walk. Anything else - an I/O fault surfacing as
+      } catch (final ConcurrentModificationException | BrokenChunkChainException | SerializationException
+                     | NegativeArraySizeException | BufferUnderflowException | IndexOutOfBoundsException
+                     | IllegalArgumentException | ClassCastException | SchemaException e) {
+        // "This chunk cannot be read", in the shapes the chain can produce it: loadChunkForWrite maps a vanished
+        // record to a retryable conflict, a segment too big for its page whose chunk chain is structurally broken
+        // now says so outright (#6258), and a corrupted body fails to decode. All stop the pinning here and are
+        // re-raised by the collection walk. Anything else - an I/O fault surfacing as a plain
         // DatabaseOperationException - is not a broken chain and must not be mistaken for one, because the
         // collection walk might then read a chunk this pass failed to pin.
         return head;

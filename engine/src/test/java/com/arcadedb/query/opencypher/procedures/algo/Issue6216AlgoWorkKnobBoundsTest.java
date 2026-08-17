@@ -28,6 +28,8 @@ import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -51,7 +53,7 @@ import static org.assertj.core.api.Assertions.within;
  *       not mean "a smaller run", it means an answer the algorithm cannot produce, and today those values are
  *       either silently absorbed or reach the allocator as a nameless NegativeArraySizeException;</li>
  *   <li>heap - {@code walksPerNode x nodeCount x walkLength} and {@code steps} size real buffers, checked in
- *       saturating long arithmetic against {@code arcadedb.cypher.algoMaxWalkMemory} before allocating, which
+ *       saturating long arithmetic against {@code arcadedb.cypher.algoMaxWorkingMemory} before allocating, which
  *       is also what catches the {@code n * walksPerNode} int overflow;</li>
  *   <li>time - no honest ceiling exists, so a long run is made abortable (thread interrupt and
  *       {@code arcadedb.command.timeout}) rather than forbidden.</li>
@@ -106,18 +108,18 @@ class Issue6216AlgoWorkKnobBoundsTest {
   void node2VecRejectsAWalkMatrixLargerThanTheWalkMemoryBudget() {
     // Default knobs on a 4-node graph: 40 walks of 80 steps, roughly 14 KB of walk buffers. With the budget
     // set below that the call must be refused before allocating, naming both knobs and the setting to raise.
-    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WALK_MEMORY, 1024L);
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1024L);
 
     assertThatThrownBy(() -> drain("CALL algo.node2vec({embeddingDimension: 4}) YIELD node RETURN node"))
         .as("a walk matrix over the budget must be refused up front")
         .hasStackTraceContaining("walksPerNode=10 x walkLength=80 over 4 nodes")
-        .hasStackTraceContaining(GlobalConfiguration.CYPHER_ALGO_MAX_WALK_MEMORY.getKey());
+        .hasStackTraceContaining(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getKey());
   }
 
   @Test
   void node2VecRunsWhenTheWalkMatrixFitsTheBudget() {
     // Over-reach guard: the same call with a budget above the estimate must be untouched by the check.
-    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WALK_MEMORY, 1024L * 1024L);
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1024L * 1024L);
 
     assertThat(drain("CALL algo.node2vec({embeddingDimension: 4, walkLength: 5, walksPerNode: 2, seed: 42}) "
         + "YIELD node RETURN node")).hasSize(4);
@@ -141,7 +143,7 @@ class Issue6216AlgoWorkKnobBoundsTest {
   void node2VecRejectsMoreWalksThanAJavaArrayCanHoldEvenWithTheBudgetDisabled() {
     // The budget is what normally catches an oversized matrix, but the long product must still be refused on
     // its own account when the budget is switched off: 2^32 rows do not fit a Java array whatever the heap is.
-    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WALK_MEMORY, -1L);
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, -1L);
 
     assertThatThrownBy(() -> drain("CALL algo.node2vec({walksPerNode: 1073741824, walkLength: 8}) YIELD node RETURN node"))
         .hasStackTraceContaining("4294967296 walks, more than the 2147483647 entries a Java array can hold");
@@ -162,7 +164,7 @@ class Issue6216AlgoWorkKnobBoundsTest {
 
   @Test
   void randomWalkRejectsAWalkLargerThanTheWalkMemoryBudget() {
-    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WALK_MEMORY, 1024L);
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1024L);
 
     assertThatThrownBy(() -> drain("""
         MATCH (a:Node {name: 'A'}) \
@@ -171,12 +173,12 @@ class Issue6216AlgoWorkKnobBoundsTest {
         RETURN path, steps"""))
         .as("a walk buffer over the budget must be refused up front")
         .hasStackTraceContaining("steps=5000")
-        .hasStackTraceContaining(GlobalConfiguration.CYPHER_ALGO_MAX_WALK_MEMORY.getKey());
+        .hasStackTraceContaining(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getKey());
   }
 
   @Test
   void randomWalkRejectsMoreStepsThanAJavaArrayCanHoldEvenWithTheBudgetDisabled() {
-    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WALK_MEMORY, -1L);
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, -1L);
 
     assertThatThrownBy(() -> drain("""
         MATCH (a:Node {name: 'A'}) \
@@ -310,7 +312,7 @@ class Issue6216AlgoWorkKnobBoundsTest {
   @Test
   void theWorkGuardAbortsAnInterruptedCallAndClearsTheFlag() {
     final CommandContext context = new BasicCommandContext().setDatabase(database);
-    final AbstractAlgoProcedure.WorkGuard guard = new AlgoMaxKCut().newWorkGuard(context);
+    final WorkGuard guard = new AlgoMaxKCut().newWorkGuard(context);
 
     Thread.currentThread().interrupt();
     try {
@@ -330,7 +332,7 @@ class Issue6216AlgoWorkKnobBoundsTest {
   void theWorkGuardAbortsOnceTheCommandDeadlineHasPassed() {
     database.getConfiguration().setValue(GlobalConfiguration.COMMAND_TIMEOUT, 1L);
     final CommandContext context = new BasicCommandContext().setDatabase(database);
-    final AbstractAlgoProcedure.WorkGuard guard = new AlgoMaxKCut().newWorkGuard(context);
+    final WorkGuard guard = new AlgoMaxKCut().newWorkGuard(context);
 
     await(5);
 
@@ -390,11 +392,10 @@ class Issue6216AlgoWorkKnobBoundsTest {
     // unguarded run has to grind through 200 million x 128 operations before it can notice the deadline.
     database.getConfiguration().setValue(GlobalConfiguration.COMMAND_TIMEOUT, 1L);
 
-    final long start = System.currentTimeMillis();
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     assertThatThrownBy(() -> drain("CALL algo.node2vec({embeddingDimension: 128, walkLength: 2, walksPerNode: 1, "
         + "windowSize: 1, negSamples: 200000000, iterations: 1, seed: 17}) YIELD node RETURN node"))
         .hasStackTraceContaining(GlobalConfiguration.COMMAND_TIMEOUT.getKey());
-    final long elapsed = System.currentTimeMillis() - start;
 
     // The bound comes from measurement, not taste: the whole test method runs in 0.33 s with the checkpoint
     // in place and 24.0 s with it removed, so 5 s sits roughly 16x above the passing case and 5x below the
@@ -406,8 +407,7 @@ class Issue6216AlgoWorkKnobBoundsTest {
     // passing case reach 5 s (where the failing case would be at 360 s), or 5x faster to bring the failing
     // case under it. If it ever does flake, raise the bound rather than dropping the assertion - "it throws"
     // alone passes with the checkpoint removed, which is how the first version of this test was wrong.
-    assertThat(elapsed).as("the deadline must be observed inside the sampling loop, not after it")
-        .isLessThan(5_000L);
+    stopwatch.assertStayedUnder(5_000L, "the deadline observed inside the sampling loop, not after it");
   }
 
   @Test
@@ -415,7 +415,7 @@ class Issue6216AlgoWorkKnobBoundsTest {
     // The budget is the only thing bounding `steps`, and it accepts "negative = no limit". With it disabled a
     // huge steps value is neither memory- nor - without a checkpoint in the step loop - time-bounded. The walk
     // is a directed cycle, so it never dead-ends and would otherwise run all 500 million steps.
-    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WALK_MEMORY, -1L);
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, -1L);
     database.getConfiguration().setValue(GlobalConfiguration.COMMAND_TIMEOUT, 1L);
 
     assertThatThrownBy(() -> drain("""
