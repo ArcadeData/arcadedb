@@ -2111,6 +2111,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       withheld.computeIfAbsent(addresses[i], a -> new ArrayList<>()).add(String.valueOf(owners[i]));
     }
 
+    // The common case on a correctly declared cluster, and getPeerHttpEndpoints() asks on every request: answer it
+    // without building a renderer that would render nothing.
+    if (withheld.isEmpty())
+      return "";
+
     final StringBuilder collisions = new StringBuilder();
     for (final Map.Entry<String, List<String>> collision : withheld.entrySet()) {
       Collections.sort(collision.getValue());

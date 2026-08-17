@@ -249,7 +249,11 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
             // Ends in exactly the two TestServerHelper calls below - the overrides that exist
             // (BaseRaftHATest, RaftStorageDirectoryIT) add to it through super, they do not replace it - so
             // repeating them afterwards only re-walked folders that were already gone. The other branch has to
-            // make them itself: the folders are removed whether or not the databases were dropped.
+            // make them itself: the folders are removed whether or not the databases were dropped, and it cannot
+            // reach them through deleteDatabaseFolders() because that drops the databases first, which is exactly
+            // what a class returning false asked not to happen. So an override of deleteDatabaseFolders() runs
+            // only on this branch - fine today (the one class returning false, ServerReadOnlyDatabasesIT, does not
+            // override it, and the two that do inherit true), and the thing to know before adding a third.
             deleteDatabaseFolders();
           else {
             TestServerHelper.checkActiveDatabases(false);
