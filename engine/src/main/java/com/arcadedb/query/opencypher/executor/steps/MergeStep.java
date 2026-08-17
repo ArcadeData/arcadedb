@@ -38,6 +38,7 @@ import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.SetClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
+import com.arcadedb.query.opencypher.executor.LabelReplacements;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
@@ -91,6 +92,10 @@ public class MergeStep extends AbstractExecutionStep {
       private int bufferIndex = 0;
       private boolean finished = false;
       private boolean mergedStandalone = false;
+      // Tracks the vertices an ON CREATE/ON MATCH SET n:Label replaced, so a node relabelled while processing one
+      // row is not still the deleted original when a later row - or a second alias of the same row - reaches it.
+      // Same reasoning, and same class, as SetStep and RemoveStep (issues #6312, #6313).
+      private final LabelReplacements labelReplacements = new LabelReplacements();
 
       @Override
       public boolean hasNext() {
@@ -132,7 +137,7 @@ public class MergeStep extends AbstractExecutionStep {
               if (context.isProfiling())
                 rowCount++;
 
-              final List<Result> mergedResults = executeMerge(inputResult);
+              final List<Result> mergedResults = executeMerge(inputResult, labelReplacements);
               buffer.addAll(mergedResults);
             } finally {
               if (context.isProfiling())
@@ -151,7 +156,7 @@ public class MergeStep extends AbstractExecutionStep {
               if (context.isProfiling())
                 rowCount++;
 
-              final List<Result> mergedResults = executeMerge(null);
+              final List<Result> mergedResults = executeMerge(null, labelReplacements);
               buffer.addAll(mergedResults);
               mergedStandalone = true;
             } finally {
@@ -178,7 +183,7 @@ public class MergeStep extends AbstractExecutionStep {
    * @param inputResult input result from previous step (may be null for standalone MERGE)
    * @return list of results containing matched or created elements
    */
-  private List<Result> executeMerge(final Result inputResult) {
+  private List<Result> executeMerge(final Result inputResult, final LabelReplacements labelReplacements) {
     final PathPattern pathPattern = mergeClause.getPathPattern();
 
     // Cypher null-propagation: a named path variable that was explicitly bound
@@ -224,9 +229,9 @@ public class MergeStep extends AbstractExecutionStep {
         if (r instanceof ResultInternal)
           ((ResultInternal) r).removeProperty("  wasCreated");
         if (wasCreated && mergeClause.hasOnCreateSet())
-          applySetClause(mergeClause.getOnCreateSet(), (ResultInternal) r);
+          applySetClause(mergeClause.getOnCreateSet(), (ResultInternal) r, labelReplacements);
         else if (!wasCreated && mergeClause.hasOnMatchSet())
-          applySetClause(mergeClause.getOnMatchSet(), (ResultInternal) r);
+          applySetClause(mergeClause.getOnMatchSet(), (ResultInternal) r, labelReplacements);
       }
 
       // Commit transaction if we started it
@@ -1290,13 +1295,20 @@ public class MergeStep extends AbstractExecutionStep {
   /**
    * Applies a SET clause to the result (used for ON CREATE SET / ON MATCH SET).
    *
-   * @param setClause the SET clause to apply
-   * @param result the result containing variables to update
+   * @param setClause          the SET clause to apply
+   * @param result             the result containing variables to update
+   * @param labelReplacements  the vertices a label write earlier in this step replaced, and the machinery to
+   *                           perform the next one
    */
   @SuppressWarnings("unchecked")
-  private void applySetClause(final SetClause setClause, final Result result) {
+  private void applySetClause(final SetClause setClause, final Result result,
+      final LabelReplacements labelReplacements) {
     if (setClause == null || setClause.isEmpty())
       return;
+
+    // A node an earlier row of this MERGE relabelled reaches this row as the deleted original: point every alias
+    // of it - the MERGE's own variable and anything the input row bound to the same node - at the replacement.
+    labelReplacements.redirect(result);
 
     for (final SetClause.SetItem item : setClause.getItems()) {
       final String variable = item.getVariable();
@@ -1397,6 +1409,7 @@ public class MergeStep extends AbstractExecutionStep {
         case LABELS: {
           if (!(obj instanceof Vertex vertex))
             break;
+          vertex = labelReplacements.resolve(vertex);
           final List<String> existingLabels = Labels.getLabels(vertex);
           final List<String> allLabels = new ArrayList<>(existingLabels);
           int newLabelsCount = 0;
@@ -1408,18 +1421,13 @@ public class MergeStep extends AbstractExecutionStep {
           final String newTypeName = Labels.ensureCompositeType(
               context.getDatabase().getSchema(), allLabels);
           if (!vertex.getTypeName().equals(newTypeName)) {
-            final MutableVertex newVertex = context.getDatabase().newVertex(newTypeName);
-            for (final String prop : vertex.getPropertyNames())
-              newVertex.set(prop, vertex.get(prop));
-            newVertex.save();
+            // The record moves, so the same shared rewrite SET and REMOVE use: it carries the edges over with
+            // their properties, migrates a self-loop once and onto the replacement rather than onto the record
+            // about to be deleted, and records what moved so every alias can follow it.
+            labelReplacements.replace(vertex, newTypeName);
             if (newLabelsCount > 0)
               context.getStatistics().addLabelsAdded(newLabelsCount);
-            for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.OUT))
-              newVertex.newEdge(edge.getTypeName(), edge.getVertex(Vertex.DIRECTION.IN));
-            for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.IN))
-              edge.getVertex(Vertex.DIRECTION.OUT).newEdge(edge.getTypeName(), newVertex);
-            vertex.delete();
-            ((ResultInternal) result).setProperty(variable, newVertex);
+            labelReplacements.redirect(result);
           }
           break;
         }

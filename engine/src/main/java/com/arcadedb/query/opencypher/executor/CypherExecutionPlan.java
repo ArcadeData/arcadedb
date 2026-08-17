@@ -1262,11 +1262,7 @@ public class CypherExecutionPlan {
             entryIndex += 2; // skip both the next OPTIONAL MATCH and the WITH clause
             // Update boundVariables from the WITH clause
             final WithClause nextWith = ((ClauseEntry) clausesInOrder.get(entryIndex)).getTypedClause();
-            boundVariables.clear();
-            for (final ReturnClause.ReturnItem item : nextWith.getItems()) {
-              final String alias = item.getAlias();
-              boundVariables.add(alias != null ? alias : item.getExpression().getText());
-            }
+            applyProjectionToScope(nextWith.getItems(), boundVariables);
             break;
           }
 
@@ -1278,11 +1274,7 @@ public class CypherExecutionPlan {
             entryIndex++; // skip the WITH clause (already handled)
             // Update boundVariables from the WITH clause
             final WithClause nextWith = ((ClauseEntry) clausesInOrder.get(entryIndex)).getTypedClause();
-            boundVariables.clear();
-            for (final ReturnClause.ReturnItem item : nextWith.getItems()) {
-              final String alias = item.getAlias();
-              boundVariables.add(alias != null ? alias : item.getExpression().getText());
-            }
+            applyProjectionToScope(nextWith.getItems(), boundVariables);
             break;
           }
         }
@@ -1292,12 +1284,8 @@ public class CypherExecutionPlan {
       case WITH:
         final WithClause withClause = entry.getTypedClause();
         currentStep = buildWithStep(withClause, currentStep, context, functionFactory);
-        // WITH resets the scope: only WITH output variables are in scope afterwards
-        boundVariables.clear();
-        for (final ReturnClause.ReturnItem item : withClause.getItems()) {
-          final String alias = item.getAlias();
-          boundVariables.add(alias != null ? alias : item.getExpression().getText());
-        }
+        // An explicit WITH resets the scope to its own output variables; WITH * forwards the incoming one
+        applyProjectionToScope(withClause.getItems(), boundVariables);
         break;
 
       case MERGE:
@@ -1652,6 +1640,33 @@ public class CypherExecutionPlan {
   }
 
   /**
+   * Applies a {@code WITH} projection to the set of variables in scope after it.
+   * <p>
+   * An explicit projection list resets the scope to exactly what it names, which is what makes a variable the
+   * following clauses do not import unavailable. {@code WITH *} names nothing: it forwards the incoming scope
+   * unchanged, so the names stay bound (#6311). Treating its single {@code "*"} item as if it were a projected
+   * variable used to leave the scope holding the literal name {@code *} and nothing else, which is how a
+   * variable shared with a following MATCH stopped being recognised as already bound - and a shared variable
+   * that is not recognised is a Cartesian product rather than a join. A {@code WITH *, expr AS alias} both
+   * forwards and adds.
+   */
+  private static void applyProjectionToScope(final List<ReturnClause.ReturnItem> items, final Set<String> scope) {
+    boolean forwardsAll = false;
+    final List<String> projected = new ArrayList<>(items.size());
+    for (final ReturnClause.ReturnItem item : items) {
+      final String alias = item.getAlias();
+      final String name = alias != null ? alias : item.getExpression().getText();
+      if ("*".equals(name))
+        forwardsAll = true;
+      else
+        projected.add(name);
+    }
+    if (!forwardsAll)
+      scope.clear();
+    scope.addAll(projected);
+  }
+
+  /**
    * Builds execution step for a MATCH clause.
    * Backward-compatible overload without bound variable tracking.
    */
@@ -1997,6 +2012,21 @@ public class CypherExecutionPlan {
             // Check if this hop requires IN traversal on a unidirectional edge.
             // Unidirectional edges don't store incoming links, so we must restructure:
             // instead of (bound)-[IN]->(target), scan target type and go (target)-[OUT]->(bound).
+            // #6311: the names a hop must identity-check its target against are the ones the row already
+            // carries when the hop RUNS: everything bound before this MATCH plus everything this MATCH has
+            // bound so far (earlier comma-separated patterns, earlier hops). Snapshot them here rather than
+            // handing the step the planner's live `boundVariables` set: that set is mutated after the clause
+            // is planned - which is what used to supply this clause's own variables - and a following WITH
+            // clears it, so the join on a variable shared between two patterns of the SAME MATCH silently
+            // degraded into a Cartesian product the moment a `WITH *` followed.
+            //
+            // The snapshot also carries this hop's own target and relationship names, added just above. That is
+            // deliberate and costs nothing: the check reads a name only when the row ALSO already holds a vertex
+            // under it, and a name this hop is about to bind for the first time is absent from the row. Excluding
+            // them would instead need the set rebuilt per hop in the opposite order, for no gain.
+            final Set<String> targetIdentityVars = new HashSet<>(boundVariables);
+            targetIdentityVars.addAll(matchVariables);
+
             final Direction effectiveDir = directionOverride != null ? directionOverride : relPattern.getDirection();
             final boolean needsReverseOnUnidirectional = !reversed
                 && effectiveDir == Direction.IN
@@ -2006,7 +2036,7 @@ public class CypherExecutionPlan {
             if (needsReverseOnUnidirectional) {
               // Restructure: scan target type with MatchNodeStep, then traverse OUT to validate
               // against the bound source. The bound source becomes the "target" of the relationship.
-              final Set<String> boundWithSource = new HashSet<>(boundVariables);
+              final Set<String> boundWithSource = new HashSet<>(targetIdentityVars);
               boundWithSource.add(effectiveSourceVar);
               final MatchNodeStep scanStep = new MatchNodeStep(effectiveTargetVar, effectiveTargetNode, context);
               if (isOptional && matchChainStart == null) {
@@ -2024,7 +2054,7 @@ public class CypherExecutionPlan {
               // Normal case: pass target node pattern for label filtering, bound variables for identity
               // checking, and a snapshot for relationship uniqueness scoping.
               nextStep = new MatchRelationshipStep(effectiveSourceVar, relVar, effectiveTargetVar, relPattern,
-                  pathVariable, effectiveTargetNode, boundVariables, new HashSet<>(boundVariables),
+                  pathVariable, effectiveTargetNode, targetIdentityVars, new HashSet<>(boundVariables),
                   directionOverride, context);
             }
           }
@@ -2583,9 +2613,15 @@ public class CypherExecutionPlan {
                   nextStep = new ExpandPathStep(currentSourceVar, pathVariable, relVar, targetVar, relPattern, false,
                       targetNode, pathPattern.getEffectivePathMode(), computePrevVarsForVlp(pathPattern, i, legacyBoundVariables), context);
                 } else {
-                  // Fixed-length relationship - pass path variable, target node pattern, and bound variables
+                  // Fixed-length relationship - pass path variable, target node pattern, and bound variables.
+                  // #6311: the same snapshot rule as the ordered builder above - the hop identity-checks its
+                  // target against what the row carries when it RUNS, so it gets the names bound before this
+                  // MATCH plus the ones this MATCH has bound so far (this hop's own included, harmlessly - see
+                  // the note there), never the planner's live set, which a following WITH empties.
+                  final Set<String> targetIdentityVars = new HashSet<>(legacyBoundVariables);
+                  targetIdentityVars.addAll(matchVariables);
                   nextStep = new MatchRelationshipStep(currentSourceVar, relVar, targetVar, relPattern, pathVariable,
-                      targetNode, legacyBoundVariables, context);
+                      targetNode, targetIdentityVars, context);
                 }
 
                 // Update source for next hop in multi-hop patterns
