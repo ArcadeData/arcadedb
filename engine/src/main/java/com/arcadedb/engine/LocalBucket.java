@@ -3086,13 +3086,19 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // content show up a second time as a document in its own right, which is #6196 all over again on a record that
         // had escaped it. The collapse of such a legacy head is therefore right, and it even ends the ambiguity for
         // good; what it cannot be is REPLAYED, because the two collapse kinds each name the one committed marker the
-        // replay may write over and neither of them is FIRST_CHUNK-into-content. Poison the page and collapse anyway:
-        // the transaction keeps its write, it just gives up the merge on a shape no database this build writes has.
-        if (updatePlaceholderContent && !placeholderContentHead && slotMergeOn)
-          slotTx.poisonSlotRebasePage(fileId, pageId);
+        // replay may write over and neither of them is FIRST_CHUNK-into-content. So it is handed no pre-image, which
+        // is how it is told not to track, and the page is poisoned instead - but only if the collapse REALLY happened.
+        // A legacy content head that stays a chain is the shape it always was, replayable under SLOT_KIND_FIRST_CHUNK
+        // by the tracking further down, and poisoning it up front would have cost it that for nothing (PR review).
+        final boolean legacyAmbiguousContentHead = updatePlaceholderContent && !placeholderContentHead;
 
         if (collapseChunkChainToRecord(rid, buffer, page, pageId, positionInPage, recordPositionInPage, chunkHeaderPos,
-                chunkRegionEnd, chunkBaseImage, updatePlaceholderContent, slotTx)) {
+                chunkRegionEnd, legacyAmbiguousContentHead ? null : chunkBaseImage, updatePlaceholderContent, slotTx)) {
+          // The slot changed and no tracked image accounts for it: a page rebased from some OTHER slot's write would
+          // re-derive this one from the committed image and quietly resurrect the chain.
+          if (legacyAmbiguousContentHead && slotMergeOn)
+            slotTx.poisonSlotRebasePage(fileId, pageId);
+
           if (!discardRecordAfter)
             ((RecordInternal) record).setBuffer(buffer.getNotReusable());
           return true;

@@ -98,8 +98,9 @@ class Issue6196PlaceholderContentChainTest extends BucketPageLayoutTestSupport {
   }
 
   /**
-   * The whole life of such a record through the pointer: rewritten large (the chain is reused), shrunk back (the
-   * chain shrinks and stays a chain, #6178), grown again, and finally deleted with the chain behind it.
+   * The whole life of such a record through the pointer: rewritten large (the chain is reused), shrunk back (since
+   * #6286 the chain COLLAPSES into the negated-size shape a content record has when it fits its page), grown again,
+   * and finally deleted with whatever it had become behind it.
    */
   @Test
   void theContentChainKeepsItsMarkerThroughEveryRewrite() {
@@ -116,6 +117,10 @@ class Issue6196PlaceholderContentChainTest extends BucketPageLayoutTestSupport {
     Map<String, Object> layout = bucketStats(TYPE);
     assertThat((Long) layout.get("totalPlaceholderRecords")).as("the pointer must still be a pointer: " + layout)
         .isEqualTo(1L);
+    assertThat((Long) layout.get("totalChunks")).as("and the content's own chain is collapsed away (#6286): " + layout)
+        .isEqualTo(chunksOfTheSealingRecord);
+    assertThat((Long) layout.get("totalSurrogateRecords"))
+        .as("into the negated-size shape a content record has: " + layout).isEqualTo(1L);
     assertThat(countRecordsHolding("p")).as("nor must a shrink multiply the content").isEqualTo(1L);
 
     database.transaction(() -> placeholder.asDocument(true).modify().set("v", HUGE).save());
@@ -161,6 +166,53 @@ class Issue6196PlaceholderContentChainTest extends BucketPageLayoutTestSupport {
     assertThat(countRecordsHolding(HUGE)).as("the duplicate is gone").isEqualTo(1L);
     database.transaction(() -> assertThat(placeholder.asDocument(true).getString("v")).isEqualTo(HUGE));
 
+    checkDatabase();
+  }
+
+  /**
+   * The other way a legacy ambiguous head stops being ambiguous, and it needs no {@code FIX}: an ordinary UPDATE
+   * through the pointer that shrinks the record back inside the region its slot owns collapses it (#6286), and the
+   * collapse writes the NEGATED size marker - which is the very thing the ambiguous shape was missing. The duplicate
+   * a scan used to hand out goes with it.
+   * <p>
+   * Which sign that collapse writes is decided by the FLAG the slot was reached through and never by the marker
+   * found, because the marker is exactly what cannot tell a legacy content head from a record's own head chunk. Get
+   * that wrong and the collapse writes a POSITIVE size, which is #6196 all over again on a record that was already
+   * suffering from it - so the copy count is what this asserts, not the byte.
+   * <p>
+   * The write is not offered to the disjoint-slot merge (neither collapse kind names FIRST_CHUNK as the marker it
+   * replays over) and the page is poisoned instead; a legacy head that does NOT collapse keeps its ordinary
+   * head-chunk tracking, which is what the second half of this test pins.
+   */
+  @Test
+  void anUpdateCollapsesALegacyAmbiguousContentHeadAndEndsItsAmbiguity() {
+    final RID placeholder = placeholderWithChainedContent();
+    final RID content = contentRidOf(placeholder);
+
+    writeMarkerByteAt(content, FIRST_CHUNK_MARKER);
+    assertThat(countRecordsHolding(HUGE)).as("the shape #6196 reported: the content is scanned twice").isEqualTo(2L);
+
+    // Still far too big for the region the content record's slot owns: it stays a chain, and stays ambiguous.
+    final String stillHuge = "s".repeat(200 * 1024);
+    database.transaction(() -> placeholder.asDocument(true).modify().set("v", stillHuge).save());
+    assertThat(markerByteAt(content)).as("a rewrite that stays a chain leaves the legacy marker alone")
+        .isEqualTo(FIRST_CHUNK_MARKER);
+    assertThat(countRecordsHolding(stillHuge)).as("so the duplicate is still there").isEqualTo(2L);
+
+    // Back to a handful of bytes: now it fits, and the collapse writes the marker the shape was missing.
+    database.transaction(() -> placeholder.asDocument(true).modify().set("v", "p").save());
+
+    final Map<String, Object> layout = bucketStats(TYPE);
+    assertThat((Long) layout.get("totalPlaceholderRecords")).as("the pointer must still be a pointer: " + layout)
+        .isEqualTo(1L);
+    assertThat((Long) layout.get("totalSurrogateRecords"))
+        .as("and its content a surrogate, not a record of its own: " + layout).isEqualTo(1L);
+    assertThat((Long) layout.get("totalChunks")).as("with the chain freed: " + layout)
+        .isEqualTo(chunksOfTheSealingRecord);
+    assertThat(countRecordsHolding("p")).as("one copy, through the pointer, and no second one").isEqualTo(1L);
+
+    database.transaction(() -> assertThat(placeholder.asDocument(true).getString("v")).isEqualTo("p"));
+    // Nothing left for CHECK DATABASE to repair: the update did what the FIX would have done, and more.
     checkDatabase();
   }
 
