@@ -817,14 +817,14 @@ public enum GlobalConfiguration {
       """
       Maximum heap, in bytes, that a single call to an OpenCypher algorithm procedure may reserve for the dense \
       working set it builds beside the graph: the random-walk buffers of algo.node2vec (walksPerNode x nodeCount \
-      walks of walkLength steps) and algo.randomWalk (a single walk of steps entries), the nodeCount x dimension \
-      embedding matrices of algo.node2vec, algo.fastrp, algo.hashgnn and algo.graphsage, the nodeCount x \
-      nodeCount matrices of algo.apsp, algo.simRank, algo.maxFlow and algo.kShortestPaths, and the \
-      terminals x nodeCount tables and terminal-pair arrays of algo.steinerTree. None of these has a \
-      graph-derived ceiling to clamp against - unlike a top-k bound, which is capped by the node count - so a \
-      large but perfectly in-range int, a terminal list of any length, or simply a large graph, would otherwise \
-      reach the allocator unchecked, or wrap the int product on the way there and surface as a \
-      NegativeArraySizeException from inside the \
+      walks of walkLength steps) and algo.randomWalk (a single walk of steps entries), algo.slpa's label memory \
+      (one row of iterations entries per node), the nodeCount x dimension embedding matrices of algo.node2vec, \
+      algo.fastrp, algo.hashgnn and algo.graphsage, the nodeCount x nodeCount matrices of algo.apsp, \
+      algo.simRank, algo.maxFlow and algo.kShortestPaths, and the terminals x nodeCount tables and \
+      terminal-pair arrays of algo.steinerTree. None of these has a graph-derived ceiling to clamp against - \
+      unlike a top-k bound, which is capped by the node count - so a large but perfectly in-range int, a \
+      terminal list of any length, or simply a large graph, would otherwise reach the allocator unchecked, or \
+      wrap the int product on the way there and surface as a NegativeArraySizeException from inside the \
       algorithm. Every estimate is computed in saturating long arithmetic and reserved BEFORE anything is \
       allocated, and reservations accumulate over the call, so what is bounded is the working set of the whole \
       call rather than one allocation of it: a call over the budget is rejected as a client error naming the \

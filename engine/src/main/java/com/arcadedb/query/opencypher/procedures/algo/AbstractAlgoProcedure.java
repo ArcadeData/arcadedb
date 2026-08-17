@@ -255,8 +255,8 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   /**
    * Heap cost of one row of a two-dimensional array on top of its payload: 16-byte array header, 4-byte length,
    * 4 bytes of padding and the 8-byte reference the enclosing array holds. Rows are often short - a walk of a
-   * few steps, an embedding of a few dozen doubles - so this overhead is a real part of the footprint rather
-   * than a rounding error.
+   * few steps, a label memory of a few iterations, an embedding of a few dozen doubles - so this overhead is a
+   * real part of the footprint rather than a rounding error.
    * <p>
    * A heuristic for a budget check, not a guarantee: the true figure moves with the JVM's object layout
    * (compressed oops on or off, alignment). It does not need to be exact - it only has to keep the estimate in
@@ -267,7 +267,7 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   /** Heap cost of one {@code boolean} array element, which the JVM stores as a byte. */
   protected static final long BOOLEAN_BYTES = 1L;
 
-  /** Heap cost of one {@code int} array element, the entry type of the walk buffers. */
+  /** Heap cost of one {@code int} array element, the entry type of the walk buffers and of SLPA's label memory. */
   protected static final long INT_BYTES = 4L;
 
   /** Heap cost of one {@code double} array element, the entry type of every embedding and distance matrix. */
@@ -368,7 +368,16 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     }
   }
 
-  /** Adds two non-negative longs, saturating at {@link Long#MAX_VALUE} instead of wrapping. */
+  /**
+   * Adds two non-negative longs, saturating at {@link Long#MAX_VALUE} instead of wrapping.
+   * <p>
+   * The companion to {@link #saturatingProduct(long, long)}, and required wherever a footprint estimate mixes the
+   * two: a saturated product plus a per-row overhead wraps to a large <em>negative</em> number, and a negative
+   * estimate passes {@link MemoryBudget#reserve} unconditionally - the budget check would be silently disabled by
+   * exactly the input it exists to refuse. No current caller can reach that (every estimate here is bounded by an
+   * {@code int}-sized count), so this closes the shape rather than an instance.
+   * </p>
+   */
   protected static long saturatingSum(final long a, final long b) {
     try {
       return Math.addExact(a, b);

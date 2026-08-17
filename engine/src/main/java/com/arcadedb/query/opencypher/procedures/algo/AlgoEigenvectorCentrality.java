@@ -80,10 +80,11 @@ public class AlgoEigenvectorCentrality extends AbstractAlgoProcedure {
 
     final String[] relTypes    = args.length > 0 ? extractRelTypes(args[0]) : null;
     final Vertex.DIRECTION dir = args.length > 1 ? parseDirection(extractString(args[1], "direction")) : Vertex.DIRECTION.BOTH;
-    final int maxIterations    = args.length > 2 ? extractInt((Number) args[2], "maxIterations") : 20;
+    final int maxIterations    = args.length > 2 ? extractInt((Number) args[2], "maxIterations", 1) : 20;
     final double tolerance     = args.length > 3 ? ((Number) args[3]).doubleValue() : 1e-6;
 
     final Database db = context.getDatabase();
+    final WorkGuard guard = newWorkGuard(context);
 
     final GraphData graph = loadGraph(db, null, relTypes, context);
 
@@ -99,8 +100,13 @@ public class AlgoEigenvectorCentrality extends AbstractAlgoProcedure {
       scores[i] = 1.0;
 
     for (int iteration = 0; iteration < maxIterations; iteration++) {
+      // maxIterations is a caller-supplied knob and the tolerance break only fires if the graph converges, so the
+      // outer loop carries the checkpoint. One iteration is O(n + m), which swallows a flag test whole.
+      guard.check();
       // newScores[v] = sum of scores[u] for all neighbors u of v
       for (int v = 0; v < n; v++) {
+        // A single iteration walks the whole graph, so on a large one the checkpoint belongs inside the pass too.
+        guard.checkPeriodically(v);
         double sum = 0.0;
         for (final int u : adj[v])
           sum += scores[u];
