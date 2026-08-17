@@ -127,18 +127,20 @@ class CypherPairJoinLabelFilterIssue6304Test extends TestHelper {
   }
 
   /**
-   * Both arms filtered at once. The reference here is the OLTP path rather than the materialization pipeline,
-   * which answers 0 for this shape: labelling <em>both</em> shared variables when at least one of the labels is
-   * written on the second comma-separated pattern makes the pipeline drop every row, whichever of the two
-   * patterns carries which label. That is a defect of its own, unrelated to the push-down and not addressed
-   * here; the two counts below are derived by hand from the six-vertex fixture instead. Only c1 qualifies - its
-   * author p1 is a Person and its mentioned p2 is a Person, and p1 KNOWS p2 - while c2's author b1 is a Bot.
+   * Both arms filtered at once. Only c1 qualifies - its author p1 is a Person and its mentioned p2 is a Person,
+   * and p1 KNOWS p2 - while c2's author b1 is a Bot.
+   * <p>
+   * This shape used to be cross-checked against the OLTP count alone, because the materialization pipeline
+   * answered 0 for it: labelling <em>both</em> shared variables when at least one of the labels was written on
+   * the second comma-separated pattern made the logical plan drop that label, and the anchor scan then named a
+   * type the schema does not have. That was filed as issue #6322 and fixed, so the ordinary three-way
+   * cross-check applies here like everywhere else in this class.
    */
   @Test
   void bothArmEndpointLabelsAreAppliedTogether() {
-    assertTheCsrPathAgreesWithTheOltpPath(
+    assertCsrAgreesWithTheOltpPathAndThePipeline(
         "MATCH (p1)-[:KNOWS]->(p2), (p1:Person)<-[:AUTHORED]-(c:Comment)-[:MENTIONS]->(p2:Person)", 1);
-    assertTheCsrPathAgreesWithTheOltpPath(
+    assertCsrAgreesWithTheOltpPathAndThePipeline(
         "MATCH (p1)-[:KNOWS]->(p2), (p1:Person)<-[:AUTHORED]-(c:Comment)-[:MENTIONS]->(p2:Bot)", 0);
   }
 
@@ -269,22 +271,6 @@ class CypherPairJoinLabelFilterIssue6304Test extends TestHelper {
     assertThat(GraphTraversalProviderRegistry.findProvider(database, "AUTHORED", "MENTIONS", "REPLY_OF", "KNOWS"))
         .isNotNull();
     return view;
-  }
-
-  /**
-   * As {@link #assertCsrAgreesWithTheOltpPathAndThePipeline} without the pipeline cross-check, for the one shape
-   * where the pipeline is itself wrong. What it still asserts is the invariant the issue is about: the answer
-   * must not depend on whether a Graph Analytical View happens to cover the edge types.
-   */
-  private void assertTheCsrPathAgreesWithTheOltpPath(final String matchClause, final long expected) {
-    assertThat(scalarOf(matchClause + " RETURN count(*) AS c")).as(matchClause + " (OLTP)").isEqualTo(expected);
-
-    final GraphAnalyticalView view = newViewOverEverything();
-    try {
-      assertThat(scalarOf(matchClause + " RETURN count(*) AS c")).as(matchClause + " (CSR)").isEqualTo(expected);
-    } finally {
-      view.drop();
-    }
   }
 
   /** The single {@code c} value of a one-row query. */

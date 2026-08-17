@@ -24,7 +24,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
-import com.arcadedb.schema.DocumentType;
+import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
@@ -34,6 +34,7 @@ import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.DocumentType;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -218,12 +219,11 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
           }
           return count;
         }
-        // Fallback: check type name per neighbor
+        // Fallback: check the type per neighbor
         int count = 0;
         for (final int nid : neighborIds) {
           final RID rid = provider.getRID(nid);
-          final String typeName = db.getSchema().getTypeByBucketId(rid.getBucketId()).getName();
-          if (targetLabel.equals(typeName))
+          if (db.getSchema().getTypeByBucketId(rid.getBucketId()).instanceOf(targetLabel))
             count++;
         }
         return count;
@@ -233,7 +233,7 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
     // OLTP fallback with target filtering
     long count = 0;
     for (final Vertex neighbor : vertex.getVertices(direction, edgeTypes)) {
-      if (targetLabel.equals(neighbor.getTypeName()))
+      if (Labels.hasLabel(neighbor, targetLabel))
         count++;
     }
     return count;
@@ -241,13 +241,20 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
 
   private volatile int[] cachedTargetBuckets;
 
+  /**
+   * The buckets a vertex carrying {@code targetLabel} can live in. Polymorphic, because a Cypher label is
+   * satisfied by every type that extends it: a vertex written as {@code (:Post:Draft)} has the composite type
+   * {@code Draft~Post}, which extends {@code Post} and lives in its own buckets, and a pattern asking for
+   * {@code (p:Post)} matches it. Reading only the type's own buckets counted a strictly smaller set than the
+   * pattern described (issue #6322).
+   */
   private int[] resolveTargetBuckets(final Database db) {
     if (cachedTargetBuckets != null)
       return cachedTargetBuckets;
     final DocumentType type = db.getSchema().getType(targetLabel);
     if (type == null)
       return null;
-    final var buckets = type.getBuckets(false);
+    final var buckets = type.getBuckets(true);
     final int[] ids = new int[buckets.size()];
     for (int i = 0; i < buckets.size(); i++)
       ids[i] = buckets.get(i).getFileId();
