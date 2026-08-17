@@ -2580,3 +2580,27 @@ still disables interleaving entirely, giving immediate concatenation in the pre-
 no on-disk format change, no migration.
 
 [#6064](https://github.com/ArcadeData/arcadedb/issues/6064)
+## A schema probe spelled `LIMIT 0` gets a RowDescription over a row source the schema cannot describe (#6185)
+
+`SELECT expand(shortestPath(#1:0, #1:5)) LIMIT 0` is a schema probe, and #6172 had already made a probe
+describable no matter how its rows are computed: when the statement returns nothing, the Postgres wire protocol
+replays it without the clause that empties it and reads the columns off the first row, which is the only way to
+name the columns of a row source that is not a schema type - a graph function, a `TRAVERSE`, a `MATCH`, a constant
+table. The trigger for that replay looked only at the `WHERE` clause, so a client that spells the probe `LIMIT 0` -
+Tableau and several JDBC/BI tools do - was answered with an empty RowDescription again, exactly as before the fix.
+
+The trigger is now "the statement is empty by construction", the same question the SQL planner asks in #6174 when
+it folds the fetch away, and it is read at every level of the query, so `LIMIT 0` on the probed subquery counts as
+well as `LIMIT 0` on the statement the client sent. Only a literal `LIMIT 0` qualifies (`Limit.isAlwaysEmpty()`): a
+bound `LIMIT ?` belongs to one execution, and the replay must not be triggered by a value the next execution can
+change.
+
+The two spellings are deliberately not answered in the same order, because they do not carry the same intent. The
+replay evaluates the query's projection for real, once, on one row - the caveat that has been documented on
+`sampleProbeColumns` since #6172 - so a projected function with a side effect runs once per probe that takes that
+path. `WHERE 1=0` has no purpose other than probing, so it is replayed first, as it always was. `LIMIT 0` is also
+how a client asks an expensive query for nothing at all, so it is replayed only after the static resolution of the
+row source has come back with nothing: a `LIMIT 0` over a shape the schema can describe is answered from the
+schema, without evaluating anything, and only the shapes that cannot be answered any other way are replayed.
+
+[#6185](https://github.com/ArcadeData/arcadedb/issues/6185)

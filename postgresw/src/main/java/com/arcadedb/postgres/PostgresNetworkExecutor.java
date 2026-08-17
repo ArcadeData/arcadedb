@@ -48,6 +48,7 @@ import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.query.sql.parser.FromItem;
 import com.arcadedb.query.sql.parser.Identifier;
+import com.arcadedb.query.sql.parser.Limit;
 import com.arcadedb.query.sql.parser.MatchStatement;
 import com.arcadedb.query.sql.parser.Projection;
 import com.arcadedb.query.sql.parser.ProjectionItem;
@@ -1157,8 +1158,13 @@ public class PostgresNetworkExecutor extends Thread {
 
   /**
    * Schema-discovery fallback for queries that returned 0 rows. RowDescription must still carry column metadata
-   * so JDBC clients (Spark/PySpark probe schema with WHERE 1=0) can build a typed result set. Returns null when
-   * no schema match is found, letting the caller fall through to the empty-RowDescription default.
+   * so JDBC clients - Spark and PySpark probe a schema with {@code WHERE 1=0}, Tableau and several JDBC/BI tools
+   * with {@code LIMIT 0} - can build a typed result set. Returns null when no schema match is found, letting the
+   * caller fall through to the empty-RowDescription default.
+   * <p>
+   * Two answers are available, and which one is asked first is decided by how the probe is spelled: a replay of
+   * the query without the clause that empties it ({@link #sampleProbeColumns}) or a static resolution of the row
+   * source ({@link #getColumnsFromQuerySchema}). See {@link ProbeSpelling}.
    */
   private Map<String, PostgresType> resolveEmptyResultSchemaColumns(final String query, final String language,
       final Object[] parameters, final Statement alreadyParsed) {
@@ -1172,49 +1178,99 @@ public class PostgresNetworkExecutor extends Thread {
     // the extended protocol parsed this very text when it prepared the portal: reuse it instead of parsing twice
     final Statement parsed = alreadyParsed != null ? alreadyParsed : parseStatement(query);
 
-    // A schema probe returns no rows by construction, so replaying it without its constant-false filter is the
-    // only way to learn the columns of a row source that is not a schema type - a graph function, a TRAVERSE, a
-    // constant table (issue #6156). It is also the most faithful answer for the shapes the schema can describe,
-    // because the columns and their types come from the very rows the un-probed query would return.
-    final Map<String, PostgresType> sampled = sampleProbeColumns(parsed, parameters);
-    if (sampled != null && !sampled.isEmpty())
-      return sampled;
+    final ProbeSpelling probe = probeSpelling(parsed);
 
-    if (!query.toUpperCase(Locale.ENGLISH).trim().startsWith("SELECT") && !(parsed instanceof MatchStatement))
-      return null;
+    // A constant-false filter has no purpose other than probing, so it is answered by the replay first: replaying
+    // the statement without it is the only way to learn the columns of a row source that is not a schema type - a
+    // graph function, a TRAVERSE, a constant table (issue #6156) - and it is the most faithful answer for the
+    // shapes the schema can describe too, because the columns and their types come from the very rows the
+    // un-probed query would return.
+    if (probe == ProbeSpelling.CONSTANT_FALSE_FILTER) {
+      final Map<String, PostgresType> sampled = sampleProbeColumns(parsed, parameters);
+      if (sampled != null && !sampled.isEmpty())
+        return sampled;
+    }
 
-    final Map<String, PostgresType> schemaColumns = getColumnsFromQuerySchema(query, parsed);
-    return schemaColumns != null && !schemaColumns.isEmpty() ? schemaColumns : null;
+    if (query.toUpperCase(Locale.ENGLISH).trim().startsWith("SELECT") || parsed instanceof MatchStatement) {
+      final Map<String, PostgresType> schemaColumns = getColumnsFromQuerySchema(query, parsed);
+      if (schemaColumns != null && !schemaColumns.isEmpty())
+        return schemaColumns;
+    }
+
+    // LIMIT 0 is the other spelling of a probe (issue #6185), but unlike a constant-false filter it is also how a
+    // client asks an expensive query for nothing at all. So it earns the replay - which evaluates the projection
+    // for real, once - only where nothing else can answer: after the static resolution above has come back empty.
+    if (probe == ProbeSpelling.LIMIT_ZERO) {
+      final Map<String, PostgresType> sampled = sampleProbeColumns(parsed, parameters);
+      if (sampled != null && !sampled.isEmpty())
+        return sampled;
+    }
+
+    return null;
   }
 
   /**
-   * Runs the probe again with its constant-false filters removed and reports the columns of the first row it
+   * How a statement says, in its own text, that it cannot return a row. Both spellings mark a schema probe, and
+   * the caller replays either of them, but they do not deserve the replay equally - see
+   * {@link #resolveEmptyResultSchemaColumns}, which orders them against the static resolution.
+   */
+  private enum ProbeSpelling {
+    NOT_A_PROBE, CONSTANT_FALSE_FILTER, LIMIT_ZERO
+  }
+
+  /**
+   * Reads off the statement, or a subquery it selects from, whether it is empty by construction and how it says
+   * so - the same question {@code SelectExecutionPlanner.emptyByConstructionReason} asks when it folds the fetch
+   * away. A constant-false filter wins over a {@code LIMIT 0} found at another level, because it is the spelling
+   * that can have no other purpose.
+   * <p>
+   * Nothing here evaluates a function or reads a bound parameter: {@code WhereClause.isAlwaysFalse} folds only
+   * comparisons between literals, and {@link Limit#isAlwaysEmpty()} only a literal {@code LIMIT 0}. This is asked
+   * of every query that comes back empty, the vast majority of which are not probes at all.
+   */
+  private ProbeSpelling probeSpelling(final Statement parsed) {
+    if (!(parsed instanceof SelectStatement select))
+      return ProbeSpelling.NOT_A_PROBE;
+
+    // the database has to be on the context: the constant-folding below needs it
+    final CommandContext context = createProbeContext();
+
+    ProbeSpelling spelling = ProbeSpelling.NOT_A_PROBE;
+    for (SelectStatement level = select; level != null; level = selectedSubQuery(level)) {
+      if (isAlwaysFalseFilter(level.getWhereClause(), context))
+        return ProbeSpelling.CONSTANT_FALSE_FILTER;
+
+      final Limit limit = level.getLimit();
+      if (limit != null && limit.isAlwaysEmpty())
+        spelling = ProbeSpelling.LIMIT_ZERO;
+    }
+
+    return spelling;
+  }
+
+  /**
+   * Runs the probe again with the clauses that empty it removed, and reports the columns of the first row it
    * returns. This is what makes a probe describable no matter how its rows are computed: whatever the un-probed
-   * query would send on the wire is exactly what gets announced. Returns null when the statement carries no
-   * constant-false filter - then the empty result is the query's own answer and there is nothing to replay - or
-   * when the replay itself finds no row.
+   * query would send on the wire is exactly what gets announced. Returns null when the replay finds no row.
+   * <p>
+   * Only a statement the caller has already classified as a probe ({@link #probeSpelling}) reaches this, so the
+   * AST deep copy below is never paid for by a query that legitimately returns no rows - the common case on this
+   * path by a wide margin.
    * <p>
    * Note that the replay evaluates the query's projection for real, once, on one row. The original probe never
-   * did: its filter discards every row before the projection runs. So a projected function that has a side
-   * effect - a sequence's {@code next()}, a user-defined function that writes - is invoked once per probe that
-   * takes this path. The alternative is to describe a computed projection by guessing, which is what left this
-   * whole family of queries undescribable in the first place; the statically-resolvable shapes are answered
-   * without a replay by {@link #getColumnsFromQuerySchema} whenever they return rows of their own.
+   * did: its filter, or its LIMIT 0, discards every row before the projection runs. So a projected function that
+   * has a side effect - a sequence's {@code next()}, a user-defined function that writes - is invoked once per
+   * probe that takes this path. The alternative is to describe a computed projection by guessing, which is what
+   * left this whole family of queries undescribable in the first place; the statically-resolvable shapes are
+   * answered without a replay by {@link #getColumnsFromQuerySchema} whenever it can name their columns.
    */
   private Map<String, PostgresType> sampleProbeColumns(final Statement parsed, final Object[] parameters) {
     if (!(parsed instanceof SelectStatement select))
       return null;
 
     try {
-      // the database has to be on the context: both the constant-folding below and the replay itself need it
-      final BasicCommandContext context = new BasicCommandContext();
-      context.setConfiguration(server.getConfiguration());
-      context.setDatabase(database);
-
-      // Read the parsed statement before copying it: a query that legitimately returns no rows is the common
-      // case on this path and must not pay for an AST deep copy it turns out it cannot use.
-      if (!hasAlwaysFalseFilter(select, context))
-        return null;
+      // the database has to be on the context: the replay runs against it
+      final CommandContext context = createProbeContext();
 
       final SelectStatement sample = select.copy();
       stripProbe(sample, context);
@@ -1229,23 +1285,19 @@ public class PostgresNetworkExecutor extends Thread {
     }
   }
 
-  /**
-   * Whether the statement, or a subquery it selects from, filters on a condition that is false for every row.
-   * That is what marks the statement as a schema probe and makes it worth replaying.
-   */
-  private boolean hasAlwaysFalseFilter(final SelectStatement select, final CommandContext context) {
-    if (isAlwaysFalseFilter(select.getWhereClause(), context))
-      return true;
-
-    final SelectStatement subQuery = selectedSubQuery(select);
-    return subQuery != null && hasAlwaysFalseFilter(subQuery, context);
+  private CommandContext createProbeContext() {
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setConfiguration(server.getConfiguration());
+    context.setDatabase(database);
+    return context;
   }
 
   /**
-   * Turns a copy of the probe into the query it is a probe of, in place: the constant-false filters go, and so
-   * do the clauses that only choose which rows come back. Dropping ORDER BY, SKIP and LIMIT costs nothing - the
-   * columns of a row do not depend on where it sits in the result - and it keeps the replay from materializing
-   * and sorting a whole result set just to hand over its first row.
+   * Turns a copy of the probe into the query it is a probe of, in place: the constant-false filters go, and so do
+   * the clauses that only choose which rows come back - the {@code LIMIT 0} of a probe spelled that way among them.
+   * Dropping ORDER BY, SKIP and LIMIT costs nothing - the columns of a row do not depend on where it sits in the
+   * result - and it keeps the replay from materializing and sorting a whole result set just to hand over its first
+   * row.
    * <p>
    * A whole WHERE clause goes, not just the constant-false term inside it, so {@code WHERE 1=0 AND name = :n}
    * samples the unfiltered target. That rests on the caller reading nothing but column names and types off the
