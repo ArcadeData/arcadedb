@@ -438,6 +438,51 @@ class Issue6264AlgoIterationKnobGuardTest {
     assertThat(sum).isCloseTo(1.0, within(1e-6));
   }
 
+  /**
+   * The one place this PR changes what a kernel computes rather than only when it stops: SimRank's per-iteration
+   * reset of the n x n similarity matrix became an {@code Arrays.fill} plus the diagonal, instead of an
+   * element-by-element write of {@code i == j ? 1.0 : 0.0}. The two are equivalent, and this pins the value that
+   * proves it.
+   * <p>
+   * The fixture is a hub pointing at two leaves, so the leaves share their only in-neighbour and
+   * {@code sim(A, B) = decay x sim(hub, hub) = 0.8} - a value the four-node cycle cannot produce, since there
+   * every SimRank of two distinct nodes is 0 and a broken reset would go unnoticed.
+   * <p>
+   * The assertion runs at more than one iteration count on purpose. The reset exists only for the diagonal (the
+   * {@code u < v} loop writes every off-diagonal cell itself), and the buffers are swapped each round, so dropping
+   * it leaves {@code sim(hub, hub)} at 0 from the second iteration onwards: one iteration still returns 0.8 and
+   * only three reveals the difference.
+   */
+  @Test
+  void simRankStillComputesTheSameSimilarityAfterTheMatrixResetRefactor() {
+    final DatabaseFactory factory = new DatabaseFactory("./target/databases/test-issue-6264-simrank-shared-parent");
+    if (factory.exists())
+      factory.open().drop();
+    final Database shared = factory.create();
+    try {
+      shared.getSchema().createVertexType("Node");
+      shared.getSchema().createEdgeType("LINK");
+      shared.transaction(() -> {
+        final MutableVertex hub = shared.newVertex("Node").set("name", "H").save();
+        final MutableVertex a = shared.newVertex("Node").set("name", "A").save();
+        final MutableVertex b = shared.newVertex("Node").set("name", "B").save();
+        hub.newEdge("LINK", a, true, (Object[]) null).save();
+        hub.newEdge("LINK", b, true, (Object[]) null).save();
+      });
+
+      for (final int iterations : new int[] { 1, 3 }) {
+        final ResultSet rs = shared.query("opencypher", "MATCH (a:Node {name: 'A'}), (b:Node {name: 'B'}) "
+            + "CALL algo.simRank(a, b, 'LINK', 0.8, " + iterations + ") YIELD similarity RETURN similarity");
+        assertThat(rs.hasNext()).isTrue();
+        assertThat(((Number) rs.next().getProperty("similarity")).doubleValue())
+            .as("two nodes sharing their only in-neighbour are decay-similar, at %d iterations", iterations)
+            .isCloseTo(0.8, within(1e-9));
+      }
+    } finally {
+      shared.drop();
+    }
+  }
+
   // ── Helpers ──────────────────────────────────────────────────────────────
 
   private List<Result> drain(final String query) {
