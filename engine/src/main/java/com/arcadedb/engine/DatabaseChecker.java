@@ -1347,14 +1347,11 @@ public class DatabaseChecker {
           continue;
       }
 
-      final boolean startedNewTx = !database.isTransactionActive();
-      if (startedNewTx && fix)
-        database.begin();
-
+      // #6320: the transaction the repairs are made in belongs to check() itself now - it batches its commits, so it
+      // cannot be handed one that might be somebody else's. It used to be begun here, and only when no transaction was
+      // already open, which is the one case where batching would have had to be off: through HTTP a command always
+      // arrives with one open, so the bucket repairs of a production CHECK DATABASE FIX would never have been bounded.
       final Map<String, Object> stats = bucket.check(verboseLevel, fix);
-
-      if (startedNewTx && fix)
-        database.commit();
 
       updateStats(stats);
 

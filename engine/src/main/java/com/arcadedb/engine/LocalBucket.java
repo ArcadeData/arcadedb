@@ -156,14 +156,6 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private static final   long                      FNV_PRIME                        = 0x100000001b3L;
   private static final   int                       CHUNKS_BEFORE_LOOP_DETECTION     = 64;
   /**
-   * How much page memory the orphaned-chunk sweep of {@link #check} may take for modification in one run (#6294).
-   * The bound is in BYTES and not in chunks because that is what the cost is: the enclosing transaction keeps a copy
-   * of every page it modifies, so a backlog spread thinly over many pages is far more expensive than the same number
-   * of chunks packed into few. A run that reaches it stops, reports what it left, and the next {@code FIX} continues -
-   * which is how a bulk repair converges instead of ending as the {@code OutOfMemoryError} of #4653.
-   */
-  private static final   int                       ORPHAN_RECLAIM_BUDGET_BYTES      = 32 * 1024 * 1024;
-  /**
    * Layout of the trace {@link #loadMultiPageRecord} keeps of the chain it walked, one stride per chunk consumed, so
    * the read can be validated against what it actually READ instead of against the version of the pages that read
    * happened to touch (#6217). Four longs in one flat array rather than an object per chunk: this is the read path of
@@ -1109,7 +1101,52 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
   }
 
+  /**
+   * Walks every slot of the bucket, reports what it finds and - under {@code fix} - repairs it.
+   * <p>
+   * <b>Under {@code fix} this owns the transaction its repairs are made in</b> (#6320), begins it here and commits it
+   * before returning, nested inside whatever the caller has open exactly as {@code GraphDatabaseChecker}'s passes and
+   * {@code DatabaseChecker.checkDocuments} already do. It has to: the repairs are batched
+   * ({@link RepairTransaction#commitBatchIfFull}) and a batch commit must never land on a transaction someone else is
+   * filling. A read-only run touches nothing and keeps the caller's transaction, so a caller checking its own
+   * uncommitted work still sees it.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
   public Map<String, Object> check(final int verboseLevel, final boolean fix) {
+    // #6320: how many pages of repairs one transaction of this pass may accumulate before committing and opening the
+    // next. Read once - it is a database-scoped setting and cannot change under a running check - and read here rather
+    // than kept in a field because a bucket outlives any number of checks.
+    final RepairTransaction repairTx = new RepairTransaction(fix ?
+            database.getConfiguration().getValueAsInteger(GlobalConfiguration.CHECK_DATABASE_REPAIR_BATCH_PAGES) :
+            0);
+
+    if (!fix)
+      return checkInternal(verboseLevel, false, repairTx);
+
+    // #6320: the counter count(*) answers from is invalidated BEFORE the first repair, not only after the last one.
+    // A repair used to be one transaction, so nothing it did was durable until the end and the invalidation at the
+    // end of checkInternal became visible with it; batching makes every batch durable as it commits, and the records
+    // those batches removed are removed through deleteRecordInternal, which registers no bucket delta for the
+    // commit-time fold to apply. Left until the end, the counter would go on serving the pre-repair number - to any
+    // concurrent count(*), and to the next one after a run that failed part-way - for as long as the repair takes,
+    // which on the backlogs this exists to clear is the whole point of the run (PR review). Invalidated up front, a
+    // reader falls through to the authoritative scan instead. Still invalidated at the end as well: a count() that
+    // recomputes mid-run caches what it saw, and the batches after it move on again.
+    cachedRecordCount.set(-1);
+
+    repairTx.begin();
+    boolean completed = false;
+    try {
+      final Map<String, Object> stats = checkInternal(verboseLevel, true, repairTx);
+      completed = true;
+      return stats;
+    } finally {
+      repairTx.finish(completed);
+    }
+  }
+
+  private Map<String, Object> checkInternal(final int verboseLevel, final boolean fix, final RepairTransaction repairTx) {
     final Map<String, Object> stats = new HashMap<>();
 
     final int totalPages = getTotalPages();
@@ -1366,6 +1403,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           LogManager.instance().log(this, Level.SEVERE, "- " + warning);
         warning = null;
       }
+
+      // #6320: at the PAGE boundary and nowhere inside it. The slot loop above reads its page through a reference
+      // taken before any repair on it, and a commit half-way through would leave it reading an image whose
+      // transaction is gone; here the next iteration takes a fresh one anyway.
+      repairTx.commitBatchIfFull();
     }
 
     // Both reconciliations run AFTER the walk and against the state it left, which is what makes their answers
@@ -1373,8 +1415,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // here rather than inline. Only the RETURNED totals are corrected; the per-page tallies the verbose log prints
     // have already gone out, and they describe the page as the walk found it, which is what a physical-layout log is
     // for.
-    reconcilePlaceholderPointers(totals, placeholderPointers, repairedAwaySlots, totalPages, verboseLevel, fix);
-    reclaimOrphanedChunks(totals, chunkSlots, reachableChunks, chunkReachabilityComplete, verboseLevel, fix);
+    reconcilePlaceholderPointers(totals, placeholderPointers, repairedAwaySlots, totalPages, verboseLevel, fix, repairTx);
+    reclaimOrphanedChunks(totals, chunkSlots, reachableChunks, chunkReachabilityComplete, verboseLevel, fix, repairTx);
 
     if (fix)
       // #5149: reconcile the cached record counter that count(*) relies on. Invalidating forces the next
@@ -1437,6 +1479,88 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
+   * The transaction one run of {@link #check(int, boolean)} makes its repairs in, and the only thing that knows
+   * whether that run still OWNS one (#6320).
+   * <p>
+   * <b>The batching.</b> {@link #commitBatchIfFull} commits the repairs made so far and opens the next transaction
+   * once they have dirtied {@code batchPages} pages - the same accounting
+   * {@code GraphDatabaseChecker.commitRepairBatchIfFull} makes over the graph repairs, against the same setting,
+   * {@link GlobalConfiguration#CHECK_DATABASE_REPAIR_BATCH_PAGES}. #6294 bounded the orphaned-chunk sweep with a memory
+   * budget of its own and stopped when it was spent, leaving the rest for the next {@code FIX}; the record repairs of
+   * the same method - four force-deletes in the per-slot loop, each taking its record's page plus every page its chain
+   * touches - were bounded by nothing at all and could reach the {@code OutOfMemoryError} of #4653 through the other
+   * loop. Bounding them the same way would have been the wrong half of the answer twice over: what is scarce is ONE
+   * pool (the transaction's page copies), so two budgets over it cannot both be right; and a repair that stops when the
+   * pool is spent leaves an operator running {@code FIX} over and over to converge. Committing instead gives the pool
+   * back, so one run repairs everything a bucket has wrong, with the memory bounded throughout.
+   * <p>
+   * PAGES, not repairs: the WAL entry carries page images, and how many records a repair touched says nothing about
+   * how many distinct pages it dirtied. {@code TransactionContext.getModifiedPages()} counts modified and new pages,
+   * which is what the entry will hold - and under HA what a Raft entry must stay below (#6128).
+   * <p>
+   * A SOFT ceiling, checked BETWEEN units of repair work and never inside one: a transaction can exceed it by whatever
+   * the unit in flight dirties (a chain repair walking a very long chain). It never interrupts a repair half-way,
+   * which is the property that makes a partial run safe - every record is either repaired or untouched. Set the
+   * configuration to 0 to get the single all-or-nothing transaction back, memory cost included.
+   * <p>
+   * <b>Why ownership is a field and not {@code database.isTransactionActive()}</b>, which is the subtle half: that
+   * question asks whether ANY transaction is on the thread, and the answer is yes for the caller's own whenever this
+   * check runs nested inside one - which through HTTP is every production run. A batch commit that throws has already
+   * disposed its context ({@code LocalDatabase.commit} pops it in a {@code finally} whether or not the write
+   * succeeded), so from that moment this run owns nothing and what is on the thread belongs to the caller. Cleaning
+   * "the" transaction up on that evidence would roll back work this class never made - the other buckets a
+   * {@code CHECK DATABASE FIX} already repaired into the same command transaction, or anything else the caller was
+   * holding (PR review on #6320). Tracked explicitly instead, so the cleanup can only ever touch a transaction this
+   * run opened and still holds.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private final class RepairTransaction {
+    private final int     batchPages;
+    private       boolean owned;
+
+    private RepairTransaction(final int batchPages) {
+      this.batchPages = batchPages;
+    }
+
+    /** Opens the transaction the repairs are made in, nested inside whatever the caller has open. */
+    private void begin() {
+      database.begin();
+      owned = true;
+    }
+
+    private void commitBatchIfFull() {
+      if (!owned || batchPages <= 0)
+        return;
+      if (database.getTransaction().getModifiedPages() < batchPages)
+        return;
+
+      // Ownership is dropped BEFORE the commit and taken back after it, and that order is the whole point: see the
+      // class comment. Between these two lines this run owns nothing, which is exactly the state a throwing commit
+      // leaves behind - and the state finish() must not act on.
+      owned = false;
+      database.commit();
+      database.begin();
+      owned = true;
+    }
+
+    /**
+     * Ends the transaction this run opened, if it still holds one. A repair left half-applied is never committed: the
+     * batches before it stay, which is the semantics #6128 gave the graph repairs, and the batch in flight goes back.
+     */
+    private void finish(final boolean completed) {
+      if (!owned)
+        return;
+
+      owned = false;
+      if (completed)
+        database.commit();
+      else
+        database.rollback();
+    }
+  }
+
+  /**
    * Follows every placeholder POINTER the walk of {@link #check} found, and answers the two questions a pointer raises
    * that its own slot cannot: does it still lead to a CONTENT record, and is that record the pre-#6196 ambiguous shape
    * a scan hands out twice.
@@ -1464,7 +1588,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    */
   private void reconcilePlaceholderPointers(final CheckStats totals, final LongHashSet placeholderPointers,
                                             final LongHashSet repairedAwaySlots, final int totalPages,
-                                            final int verboseLevel, final boolean fix) {
+                                            final int verboseLevel, final boolean fix, final RepairTransaction repairTx) {
     if (placeholderPointers.isEmpty())
       return;
 
@@ -1536,6 +1660,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         totals.warnings.add(warning);
         if (verboseLevel > 0)
           LogManager.instance().log(this, Level.SEVERE, "- " + warning);
+        // #6320: between two pointers, which is between two repairs - a freed pointer slot is one page and complete.
+        repairTx.commitBatchIfFull();
         break;
       }
       }
@@ -1573,6 +1699,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       totals.warnings.add(warning);
       if (verboseLevel > 0)
         LogManager.instance().log(this, Level.SEVERE, "- " + warning);
+      // Between two content heads, and a no-op on a run without FIX: the batch pages are 0 unless there are repairs.
+      repairTx.commitBatchIfFull();
     }
   }
 
@@ -1604,6 +1732,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * a bucket of 1.5M chunks carries 243821 orphans, and one warning apiece would be a report nobody can read built
    * out of a quarter of a million strings.
    * <p>
+   * <b>What it may spend</b> is bounded by {@link RepairTransaction#commitBatchIfFull}, shared with every other repair of the run
+   * since #6320, where it used to keep a memory budget of its own and stop at it - leaving the rest of the backlog for
+   * the next {@code FIX}. Committing the batch gives the pages back instead, so the whole backlog goes in one run.
+   * <p>
    * <b>Same precondition the rest of {@code check(fix)} already carries</b>: it is an ADMIN operation, expected to run
    * without concurrent writers on the bucket. The marks are collected page by page, so a chain rewritten by a
    * concurrent commit half-way through the walk can leave its new chunk unmarked; the very same window is what lets
@@ -1615,7 +1747,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    */
   private void reclaimOrphanedChunks(final CheckStats totals, final LongHashSet chunkSlots,
                                      final LongHashSet reachableChunks, final boolean reachabilityComplete,
-                                     final int verboseLevel, final boolean fix) {
+                                     final int verboseLevel, final boolean fix, final RepairTransaction repairTx) {
     if (chunkSlots.isEmpty())
       return;
 
@@ -1631,15 +1763,6 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       return;
     }
 
-    // The pages this sweep may take for modification, sized by MEMORY and not by a count of chunks: the enclosing
-    // transaction holds a copy of every page it modifies, so the cost of a reclaim is pages x pageSize whatever the
-    // backlog is. A bucket can hold a very large one - the leak is per incident but permanent, so it accumulates -
-    // and freeing all of it in one transaction is how a repair turns into an OutOfMemoryError (#4653). Bounded, so
-    // the run converges instead: what is left over is counted, said out loud, and taken by the next FIX.
-    final int pageBudget = Math.max(1, ORPHAN_RECLAIM_BUDGET_BYTES / pageSize);
-    final LongHashSet pagesTaken = new LongHashSet();
-    long leftForNextRun = 0L;
-
     for (final long chunkPosition : chunkSlots.toArray()) {
       if (reachableChunks.contains(chunkPosition))
         continue;
@@ -1651,17 +1774,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       if (!fix)
         continue;
 
-      final long chunkPageId = chunkPosition / maxRecordsInPage;
-      if (pagesTaken.size() >= pageBudget && !pagesTaken.contains(chunkPageId)) {
-        ++leftForNextRun;
-        continue;
-      }
-
       final RID chunkRID = new RID(fileId, chunkPosition);
       try {
         // The chain this chunk belonged to no longer exists to be walked, so only its own slot is freed.
         freeSlotOnly(chunkRID);
-        pagesTaken.add(chunkPageId);
         // Deliberately NOT added to deletedRecordsAfterFix: that list is the RIDs of RECORDS this run removed, and a
         // continuation chunk is a fragment of one, under a RID no caller ever held.
         ++totals.orphanedChunksReclaimed;
@@ -1677,15 +1793,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         if (verboseLevel > 0)
           LogManager.instance().log(this, Level.SEVERE, "- " + warning);
       }
-    }
 
-    if (leftForNextRun > 0)
-      // Not a warning: nothing is wrong, the run simply stopped where it said it would. The returned counters carry
-      // the same fact - orphanedChunks is what was found, orphanedChunksReclaimed what this run gave back.
-      LogManager.instance().log(this, Level.INFO,
-              "- reclaimed %d orphaned chunks of bucket '%s' and stopped at the %d-page budget; %d are left - run CHECK "
-                      + "DATABASE FIX again to continue", totals.orphanedChunksReclaimed, componentName, pageBudget,
-              leftForNextRun);
+      // #6320: between two chunks, which is between two repairs. The memory this sweep can hold is what its own budget
+      // used to bound by STOPPING; giving the pages back instead is what lets a backlog of any size be reclaimed by ONE
+      // run rather than by as many runs as the backlog divided by the budget.
+      repairTx.commitBatchIfFull();
+    }
   }
 
   /**
@@ -4835,8 +4948,17 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       // WRITE CHUNK SIZE
       final boolean lastChunk = bufferSize <= chunkSize;
-      if (bufferSize < chunkSize) {
-        // LAST CHUNK
+      if (lastChunk) {
+        // LAST CHUNK: everything past it is chain the record no longer needs, and its pointer is what frees it below.
+        //
+        // #6319: the two facts have to be established by the SAME condition, and for a long time they were not - the
+        // chain was cut whenever the content ended AT OR BEFORE this chunk, but the tail was handed to freeChunkChain
+        // only when it ended strictly BEFORE it. Content that ends exactly on a chunk boundary therefore cut the chain
+        // and freed nothing: the chunks past the cut kept their slots and their pointers to each other, reachable from
+        // no record, for the life of the bucket. Far from a corner case - a record whose chunks were grown one field
+        // at a time and then loses a field lands on a boundary by construction, because the boundary is where that
+        // field's own bytes were appended. Measured on CRUDTest.multiUpdatesOverlap: every single record that stayed a
+        // chain across the shrink round leaked its whole tail, 243821 orphaned chunks out of 1545495.
         chunkSize = bufferSize;
         chunkToDeletePointer = nextChunkPointer;
       }

@@ -3188,3 +3188,77 @@ could not tell the count push-down from the full type scan it exists to replace.
 [#6280](https://github.com/ArcadeData/arcadedb/issues/6280)
 [#6279](https://github.com/ArcadeData/arcadedb/issues/6279)
 [#6270](https://github.com/ArcadeData/arcadedb/issues/6270)
+
+## An update that shrinks onto a chunk boundary frees the chunks it drops, and one `FIX` clears the backlog (#6319, #6320, #6314)
+
+### Ordinary updates leaked continuation chunks (#6319)
+
+A record too big for its page is stored as a chain of chunks, and an update rewrites the chain it already
+has. Which chunk is the last one, and which chunks are therefore no longer needed, were decided by two
+different comparisons: the chain was CUT whenever the new content ended at or before the chunk being
+written, and the tail was FREED only when it ended strictly before it. Content ending exactly ON a chunk
+boundary fell between them - cut, and freed by nothing. The chunks past the cut kept their slots and their
+pointers to one another, reachable from no record, for the life of the bucket.
+
+That is not a corner case to be hit by luck. A chain grown one field at a time has a boundary exactly where
+that field's bytes were appended, so a record that later loses a field lands on one by construction:
+
+```
+records still stored as a chain across the shrink round : 7359
+orphaned chunks they left behind                        : 14719     (every one of them, its whole tail)
+```
+
+Measured on a scaled-down `CRUDTest.multiUpdatesOverlap`; at full scale the same workload carried 243821
+orphans in a bucket of 1545495 chunk slots. Both decisions now come from the same condition, and the same
+run leaks nothing. Existing backlogs are reclaimed by `CHECK DATABASE FIX`, which #6294 taught to find them.
+
+### `CHECK DATABASE FIX` bounds the memory of every repair it makes, and finishes in one run (#6320)
+
+#6294 bounded the orphaned-chunk sweep with a memory budget of its own, because the transaction a repair
+runs in keeps a copy of every page it modifies. The RECORD repairs of the same pass - the force-deletes of
+records whose slot offset, size or chunk chain cannot be read, each taking its record's page plus every page
+its chain touches - were bounded by nothing, and could reach the `OutOfMemoryError` of #4653 through the
+other loop.
+
+A second budget would have been the wrong answer twice over: what is scarce is ONE pool, so two bounds over
+it cannot both be right, and a repair that STOPS when the pool is spent leaves an operator running `FIX`
+over and over to converge. The mechanism that gives the pool back already existed for the graph repairs
+(`arcadedb.checkDatabaseRepairBatchPages`, #6128) and now bounds every bucket repair as well: records,
+dangling placeholder pointers and orphaned chunks alike. One run repairs everything a bucket has wrong, with
+the memory bounded throughout, and the sweep no longer leaves a backlog for the next `FIX`.
+
+**Behaviour change worth scripting around.** A bucket repair is no longer all-or-nothing. It used to join
+whatever transaction the caller had open - through HTTP a command always arrives with one - so nothing was
+durable until the whole command finished and a mid-run failure rolled back everything. Each bucket now
+repairs in a transaction of its own, committed in batches, so a run that fails part-way leaves the batches
+before it applied. That is the same trade #6128 made for the graph repairs and the reason the memory is
+bounded at all; the counters in the report say what was done, and a re-run continues from there. Setting
+`arcadedb.checkDatabaseRepairBatchPages` to 0 restores the single all-or-nothing transaction, memory cost
+included.
+
+The batch is taken between whole units of repair work and never inside one, so no record is ever left
+half-repaired, and the counter `count(*)` answers from is invalidated when a repair STARTS rather than only
+when it ends - a batch that has committed has really removed those records, and the counter must not go on
+serving the number from before it.
+
+### A component must believe its own file about how to address it (#6314)
+
+`PaginatedComponent` turns a page number into a file offset with a page size it is CONSTRUCTED with, while
+the file's real page size is baked into its name. The two TimeSeries components discarded the value parsed
+off the name and re-derived it from the live `arcadedb.bucketDefaultPageSize` instead, so a database whose
+configuration changed between two runs reopened its `.tstb`/`.tstd` files at a stride they were never
+written with. Nothing downstream could catch it - the page manager resolves a page with the caller's page
+size - so the failure was a misaligned read of real bytes rather than an error, with the component's page
+count computed from the wrong divisor on top of it. Both now pass the parsed page size and version through,
+as every other component's factory handler already did, and the agreement is asserted once in
+`PaginatedComponent` next to the file-id check #6283 added.
+
+The by-id `FileManager.getOrCreateFile` had the mirror of #6283's hazard on the other key: an id already
+registered handed back whatever file was registered under it, without ever looking at the path it was asked
+for. Its one production caller, the HA follower's file-creation path, already checked exactly this itself
+(#6063); the check now belongs to the API, throwing the same `SchemaException` so the quarantine-and-resync
+that path keys on is unaffected.
+
+[#6319](https://github.com/ArcadeData/arcadedb/issues/6319)
+[#6320](https://github.com/ArcadeData/arcadedb/issues/6320)
+[#6314](https://github.com/ArcadeData/arcadedb/issues/6314)
