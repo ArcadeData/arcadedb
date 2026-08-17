@@ -24,6 +24,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 
 import com.arcadedb.utility.IntHashSet;
@@ -86,9 +87,9 @@ public final class PropagateChainOp implements CountOp {
   }
 
   @Override
-  public long execute(final GraphTraversalProvider provider, final Database db) {
+  public long execute(final GraphTraversalProvider provider, final Database db, final WorkGuard guard) {
     if (anchorRid != null)
-      return executeFromSeededAnchor(provider, db);
+      return executeFromSeededAnchor(provider, db, guard);
 
     final int nodeCount = provider.getNodeCount();
     final int hops = edgeTypes.length;
@@ -109,7 +110,7 @@ public final class PropagateChainOp implements CountOp {
     if (inequalityIdxA >= 0 && inequalityIdxB >= 0
         && Math.min(inequalityIdxA, inequalityIdxB) == 0
         && hops <= 2)
-      return executePerSourceInequality(provider, nodeCount, validBuckets);
+      return executePerSourceInequality(provider, nodeCount, validBuckets, guard);
 
     // Standard dense array propagation for chains without inequality
     // (or with inequality source not at position 0)
@@ -131,6 +132,9 @@ public final class PropagateChainOp implements CountOp {
     }
 
     for (int hop = 0; hop < hops; hop++) {
+      // One hop is a full O(V + E) pass, so a per-hop check is the natural granularity here - the pass itself is
+      // sequential array arithmetic that a per-element check would only slow down (issue #6266).
+      guard.check();
       current = CSRCountUtils.propagateOneHop(provider, current, directions[hop], edgeTypes[hop]);
       CSRCountUtils.filterByBuckets(bucketIds, current, validBuckets[hop + 1]);
     }
@@ -164,7 +168,7 @@ public final class PropagateChainOp implements CountOp {
    * A label written on the seeded position filters the bound vertex rather than naming a set to enumerate:
    * {@code COUNT { (n:Q)-[:LINKS]->(:Q) }} under an {@code n} of another label is 0, not the count over {@code Q}.
    */
-  private long executeFromSeededAnchor(final GraphTraversalProvider provider, final Database db) {
+  private long executeFromSeededAnchor(final GraphTraversalProvider provider, final Database db, final WorkGuard guard) {
     if (!anchorMatchesLabel(db, nodeLabels[0], anchorRid.getBucketId()))
       return 0;
 
@@ -180,6 +184,7 @@ public final class PropagateChainOp implements CountOp {
 
     int[] frontier = new int[] { anchorId };
     for (int h = 0; h < hops - 1; h++) {
+      guard.check();
       frontier = expandFrontier(provider, frontier, provider.getNeighborView(directions[h], edgeTypes[h]), h,
           validBuckets[h + 1]);
       if (frontier.length == 0)
@@ -240,7 +245,7 @@ public final class PropagateChainOp implements CountOp {
    * For Q6 (10K persons × ~1.7K frontier nodes each): ~17M CSR ops (comparable to dense + self-loop).
    */
   private long executePerSourceInequality(final GraphTraversalProvider provider,
-      final int nodeCount, final IntHashSet[] validBuckets) {
+      final int nodeCount, final IntHashSet[] validBuckets, final WorkGuard guard) {
     final int idxB = Math.max(inequalityIdxA, inequalityIdxB);
 
     // Pre-fetch NeighborViews for hops up to the inequality target
@@ -261,6 +266,7 @@ public final class PropagateChainOp implements CountOp {
     long totalCount = 0;
 
     for (int srcId = 0; srcId < nodeCount; srcId++) {
+      guard.check();
       if (anchorBuckets != null && !anchorBuckets.contains(bucketIds[srcId]))
         continue;
 
@@ -659,7 +665,7 @@ public final class PropagateChainOp implements CountOp {
   }
 
   @Override
-  public long executeOLTP(final Database db) {
+  public long executeOLTP(final Database db, final WorkGuard guard) {
     // Try to find a GAV provider for accelerated neighbor lookups even in the OLTP path. One that holds a subset of
     // the vertex types cannot serve: it answers for the vertices it maps with the adjacency it holds, which is
     // missing every edge that leaves the view (issue #5757).
@@ -682,11 +688,13 @@ public final class PropagateChainOp implements CountOp {
     }
 
     for (int hop = 0; hop < edgeTypes.length; hop++) {
+      guard.check();
       final IntHashSet targetBuckets = CSRCountUtils.buildValidBuckets(db, nodeLabels[hop + 1]);
 
       final RidLongHashMap next = new RidLongHashMap();
       final int h = hop;
       current.forEach((bucketId, offset, pathCount) -> {
+        guard.check();
         final RID rid = db.newRID(bucketId, offset);
         expandNeighbors(db, provider, rid, directions[h], edgeTypes[h], targetBuckets,
             neighborRid -> next.add(neighborRid, pathCount));

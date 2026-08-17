@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
@@ -36,17 +37,21 @@ import java.util.Set;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class BasicCommandContext implements CommandContext {
-  protected       DatabaseInternal     database;
-  protected       boolean              recordMetrics           = false;
-  protected       CommandContext       parent;
-  protected       CommandContext       child;
-  protected       Map<String, Object>  variables;
-  protected       QueryStatistics      statistics;
-  protected       Map<String, Object>  cachedValues;
-  protected       Map<String, Object>  inputParameters;
-  protected       ContextConfiguration configuration           = new ContextConfiguration();
-  protected final Set<String>          declaredScriptVariables = new HashSet<>();
-  protected       boolean              profiling               = false;
+  protected          DatabaseInternal     database;
+  protected          boolean              recordMetrics           = false;
+  protected          CommandContext       parent;
+  protected          CommandContext       child;
+  protected          Map<String, Object>  variables;
+  protected          QueryStatistics      statistics;
+  protected          Map<String, Object>  cachedValues;
+  protected          Map<String, Object>  inputParameters;
+  protected          ContextConfiguration configuration           = new ContextConfiguration();
+  protected final    Set<String>          declaredScriptVariables = new HashSet<>();
+  protected          boolean              profiling               = false;
+  /** {@code arcadedb.command.timeout} in ms, {@code -1} until resolved. See {@link #getCommandTimeout()}. */
+  protected volatile long                 commandTimeout          = -1L;
+  /** Absolute deadline, {@code 0} until computed. See {@link #getCommandDeadline()}. */
+  protected volatile long                 commandDeadline         = 0L;
 
   @Override
   public Object getVariablePath(final String name) {
@@ -255,6 +260,39 @@ public class BasicCommandContext implements CommandContext {
   }
 
   @Override
+  public long getCommandTimeout() {
+    if (commandTimeout < 0) {
+      if (parent != null)
+        commandTimeout = parent.getCommandTimeout();
+      else {
+        final DatabaseInternal db = getDatabase();
+        commandTimeout = db == null ? 0L : db.getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT);
+      }
+    }
+    return commandTimeout;
+  }
+
+  @Override
+  public long getCommandDeadline() {
+    if (commandDeadline == 0L) {
+      if (parent != null)
+        commandDeadline = parent.getCommandDeadline();
+      else {
+        final long timeout = getCommandTimeout();
+        // The clock is read here and never again: everything downstream compares against this one instant, so
+        // a statement cannot buy itself more time by nesting.
+        commandDeadline = timeout > 0 ? System.currentTimeMillis() + timeout : Long.MAX_VALUE;
+      }
+    }
+    return commandDeadline;
+  }
+
+  @Override
+  public void setCommandDeadline(final long deadlineEpochMillis) {
+    this.commandDeadline = deadlineEpochMillis;
+  }
+
+  @Override
   public CommandContext incrementVariable(String name) {
     if (name != null) {
       if (name.startsWith("$"))
@@ -409,6 +447,12 @@ public class BasicCommandContext implements CommandContext {
     copy.parent = parent;
     copy.child = child;
     copy.profiling = profiling;
+    // The deadline is the command's, not the context's: a parallel bucket-scan worker that gets its own copy
+    // must share the budget rather than restart it. Resolved here rather than copied as-is, because copying an
+    // unresolved deadline is the same thing as not copying one - every worker would then read the clock for
+    // itself and a type scanned across N buckets would get N budgets (issue #6266).
+    copy.commandTimeout = getCommandTimeout();
+    copy.commandDeadline = getCommandDeadline();
     // Share the same statistics accumulator so mutations performed through the copied context
     // aggregate into one place instead of silently vanishing.
     copy.statistics = statistics;

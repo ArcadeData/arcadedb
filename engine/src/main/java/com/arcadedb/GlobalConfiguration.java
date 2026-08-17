@@ -704,7 +704,18 @@ public enum GlobalConfiguration {
       Integer.class, 16, integerRangeAsStrings(1, 31)),
 
   // COMMAND
-  COMMAND_TIMEOUT("arcadedb.command.timeout", SCOPE.DATABASE, "Default timeout for commands (in ms)", Long.class, 0),
+  COMMAND_TIMEOUT("arcadedb.command.timeout", SCOPE.DATABASE, """
+      Maximum time in ms a single command may run before being aborted with a TimeoutException. The deadline is \
+      taken once, when execution starts, and is shared by everything the statement does - a CALL subquery, a \
+      correlated COUNT { }, a UNION branch and a CALL algo.* procedure all run against the same instant rather than \
+      each starting a fresh budget. It is checked inside the scan, expansion and filter loops, so a statement that \
+      produces no row for minutes is bounded too, not only one that streams rows. Covers SQL and openCypher, \
+      including SELECT/UPDATE/DELETE/MATCH/TRAVERSE and the openCypher algo.* procedures; a per-statement SQL \
+      TIMEOUT clause overrides it for the statement that carries one. Gremlin and the other polyglot scripting \
+      engines are NOT covered - they have their own arcadedb.polyglotCommand.timeout - and neither is regular \
+      expression backtracking, which arcadedb.command.regexTimeout bounds separately. Set to 0 (the default) to \
+      disable.""",
+      Long.class, 0),
 
   COMMAND_REGEX_TIMEOUT("arcadedb.command.regexTimeout", SCOPE.DATABASE, """
       Maximum time in ms a single regular expression evaluation may run before being aborted (an entire scan, for a \

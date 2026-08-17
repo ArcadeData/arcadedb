@@ -22,6 +22,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import org.junit.jupiter.api.Test;
 
@@ -192,7 +193,7 @@ class PartitionedTriangleOpCallerRunsTest {
     final PartitionedTriangleOp op = new PartitionedTriangleOp(new String[] { "IN_CITY" },
         new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT }, "KNOWS");
 
-    final long count = op.execute(new StubProvider(knowsView, partitionView), null);
+    final long count = op.execute(new StubProvider(knowsView, partitionView), null, WorkGuard.forCommandDeadline(null));
 
     // Each triangle is counted 6 times (each of the 3 nodes as u, each of its 2 neighbors as v).
     assertThat(count).isEqualTo(6L * triangles);
@@ -298,7 +299,7 @@ class PartitionedTriangleOpCallerRunsTest {
     }, "chunk0-leak-test-releaser");
     releaser.start();
 
-    assertThatThrownBy(() -> op.execute(new StubProvider(knowsView, partitionView), null))
+    assertThatThrownBy(() -> op.execute(new StubProvider(knowsView, partitionView), null, WorkGuard.forCommandDeadline(null)))
         .isInstanceOf(IllegalStateException.class)
         .hasMessage("simulated chunk-0 failure");
 

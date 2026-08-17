@@ -85,8 +85,13 @@ public class MatchStep extends AbstractExecutionStep {
   }
 
   private void fetchNext(final CommandContext context, final int nRecords) {
+    // A pattern edge that matches nothing walks the whole upstream inside a single call, so the command
+    // deadline is tested per candidate rather than per emitted row (issue #6266).
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+
     nextResult = null;
     while (true) {
+      guard.check();
       if (traverser != null && traverser.hasNext(context)) {
         nextResult = traverser.next(context);
         break;
@@ -105,6 +110,7 @@ public class MatchStep extends AbstractExecutionStep {
 
       boolean found = false;
       while (traverser.hasNext(context)) {
+        guard.check();
         nextResult = traverser.next(context);
         if (nextResult != null) {
           found = true;

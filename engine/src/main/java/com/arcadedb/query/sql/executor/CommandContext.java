@@ -95,6 +95,31 @@ public interface CommandContext {
     return getOrComputeRegexDeadline(cacheKey, GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(getDatabase()));
   }
 
+  /**
+   * Returns {@code arcadedb.command.timeout} in milliseconds for this context's database, or {@code 0} when the
+   * setting is disabled. Resolved once and remembered, so the hot paths that build a {@link WorkGuard} per
+   * batch do not re-read the configuration.
+   */
+  long getCommandTimeout();
+
+  /**
+   * Returns the absolute epoch-millis instant past which this command must stop, or {@link Long#MAX_VALUE} when
+   * {@code arcadedb.command.timeout} is disabled.
+   * <p>
+   * The deadline is computed on first use and then fixed for the lifetime of the context, and a context without
+   * one of its own inherits its parent's. That is what makes the setting mean "no command runs longer than X"
+   * rather than "no single step runs longer than X": a subquery, a {@code CALL} into a procedure or a per-row
+   * expansion that builds its own guard all land on the same instant instead of each starting a fresh budget
+   * (issue #6266).
+   */
+  long getCommandDeadline();
+
+  /**
+   * Pins this context's deadline to an already-computed instant. Used where a nested plan runs with a context
+   * of its own but must share the outer command's budget.
+   */
+  void setCommandDeadline(long deadlineEpochMillis);
+
   CommandContext incrementVariable(String getNeighbors);
 
   Map<String, Object> getVariables();
