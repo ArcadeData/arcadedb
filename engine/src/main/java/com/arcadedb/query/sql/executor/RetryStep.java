@@ -102,6 +102,13 @@ public class RetryStep extends AbstractExecutionStep {
         // would fix the wording and break something worth more - a PartialResultTimeoutException that
         // reached here would stop being one, turning a TIMEOUT n RETURN clause's documented
         // return-what-you-have into a failure. The wording of a race loses to that.
+        //
+        // Note this leaves the block by a different door than running out of attempts does: it does not run
+        // the ELSE body and it does not consult ELSE FAIL. That is deliberate. The deadline says the command
+        // must stop, so an ELSE body - arbitrary statements, possibly writes, on a transaction that was just
+        // rolled back - is more work the operator asked us not to do; and returning the empty result set
+        // `ELSE ... AND CONTINUE` asks for would leave the caller unable to tell a block that legitimately
+        // produced nothing from one the deadline cut off, which is the silent failure issue #6322 named.
         rollbackQuietly(ctx);
         if (commandDeadlineReached(ctx))
           throw ex;
@@ -176,6 +183,13 @@ public class RetryStep extends AbstractExecutionStep {
    * Read from the step's own context rather than from the attempt's: a {@code TIMEOUT} clause inside the body
    * publishes on the child context {@link #initPlan} builds per attempt, so it does not answer here and stays
    * retryable, while {@code arcadedb.command.timeout} and an enclosing {@code TIMEOUT} clause do.
+   * <p>
+   * Deliberately not consulting {@link CommandContext#isCommandDeadlinePartial()}, which everywhere else
+   * separates a hard bound from a {@code TIMEOUT n RETURN} that asks for the rows produced so far. A partial
+   * deadline cannot be the one in force here: it is published by {@link StatementTimeouts} onto the context of
+   * the statement carrying the clause, and a script line runs on a plan of its own, so it never reaches the
+   * script context this step is pulled with - verified by reading the deadline back inside a
+   * {@code COMMIT RETRY} body that follows a {@code SELECT ... TIMEOUT n RETURN} line in the same script.
    */
   private static boolean commandDeadlineReached(final CommandContext ctx) {
     return ctx != null && System.currentTimeMillis() > ctx.getCommandDeadline();

@@ -163,12 +163,61 @@ class CommitRetryCommandDeadlineIssue6322Test extends TestHelper {
     assertThat(ATTEMPTS.get()).isEqualTo(4);
   }
 
+  /**
+   * {@code ELSE CONTINUE} asks for the empty result set instead of the failure when the attempts run out. An
+   * expired command deadline is not "the attempts ran out": it leaves the block by a different door, without
+   * running the {@code ELSE} body and without consulting {@code ELSE FAIL}, and raises.
+   * <p>
+   * That is the behaviour the issue asked for - it names "with no {@code ELSE FAIL}, returns an empty result
+   * set instead of the error" as part of the defect - and the reason is that the alternative is unreadable at
+   * the caller: an empty result set cannot be told apart from a block that legitimately produced no rows, so a
+   * command cut off by its deadline would look like one that simply had nothing to say.
+   */
+  @Test
+  void anExpiredDeadlineRaisesEvenWhenElseAsksToContinue() {
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_TIMEOUT, 300L);
+    burnMillis = 900;
+
+    assertThatThrownBy(() -> database.command("sqlscript", scriptElseContinue(10)))
+        .isInstanceOf(TimeoutException.class)
+        .hasMessageContaining(GlobalConfiguration.COMMAND_TIMEOUT.getKey());
+
+    assertThat(ATTEMPTS.get()).isEqualTo(1);
+  }
+
+  /** The same block with no deadline in force: every attempt is spent and {@code ELSE CONTINUE} is honoured. */
+  @Test
+  void elseContinueStillAnswersAnEmptyResultSetWithoutADeadline() {
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_TIMEOUT, 0L);
+    database.getConfiguration().setValue(GlobalConfiguration.TX_RETRY_DELAY, 0);
+
+    int rows = 0;
+    try (final ResultSet rs = database.command("sqlscript", scriptElseContinue(3))) {
+      while (rs.hasNext()) {
+        rs.next();
+        rows++;
+      }
+    }
+
+    assertThat(rows).isEqualTo(0);
+    assertThat(ATTEMPTS.get()).isEqualTo(3);
+  }
+
   private static String script(final int retries) {
     return """
         BEGIN;
         INSERT INTO Attempt SET n = 1;
         SELECT boom6322();
         COMMIT RETRY %d;
+        """.formatted(retries);
+  }
+
+  private static String scriptElseContinue(final int retries) {
+    return """
+        BEGIN;
+        INSERT INTO Attempt SET n = 1;
+        SELECT boom6322();
+        COMMIT RETRY %d ELSE CONTINUE;
         """.formatted(retries);
   }
 }
