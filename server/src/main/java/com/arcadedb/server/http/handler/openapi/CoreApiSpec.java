@@ -460,6 +460,8 @@ public class CoreApiSpec implements OpenApiContributor {
     responses.addApiResponse("400", SpecBuilders.errorResponse("Bad request"));
     responses.addApiResponse("401", SpecBuilders.errorResponse("Unauthorized"));
     responses.addApiResponse("404", SpecBuilders.errorResponse("Database not found"));
+    responses.addApiResponse("413", SpecBuilders.errorResponse(
+        "The result exceeds 'arcadedb.server.httpQueryMaxResultRows': narrow or page the query"));
     responses.addApiResponse("500", SpecBuilders.errorResponse("Internal server error"));
     return responses;
   }
@@ -470,6 +472,8 @@ public class CoreApiSpec implements OpenApiContributor {
     responses.addApiResponse("400", SpecBuilders.errorResponse("Bad request"));
     responses.addApiResponse("401", SpecBuilders.errorResponse("Unauthorized"));
     responses.addApiResponse("404", SpecBuilders.errorResponse("Database not found"));
+    responses.addApiResponse("413", SpecBuilders.errorResponse(
+        "The result exceeds 'arcadedb.server.httpQueryMaxResultRows': narrow or page the command"));
     responses.addApiResponse("500", SpecBuilders.errorResponse("Internal server error"));
     return responses;
   }
@@ -506,7 +510,9 @@ public class CoreApiSpec implements OpenApiContributor {
         honored as written and only a query stating none is capped by the server default \
         ('arcadedb.server.httpQueryDefaultLimit'). Use -1 for no cap. The response always reports the cap \
         that was applied ('limit'), how many rows it carries ('returned') and whether rows were left \
-        behind ('truncated').""").example(100));
+        behind ('truncated'). No value here can widen a single response past the server's hard ceiling \
+        ('arcadedb.server.httpQueryMaxResultRows'): a result that would exceed it is refused with 413 \
+        instead of being truncated.""").example(100));
     schema.setRequired(List.of("command"));
     return schema;
   }

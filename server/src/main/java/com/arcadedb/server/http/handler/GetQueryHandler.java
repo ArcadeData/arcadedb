@@ -81,7 +81,10 @@ public class GetQueryHandler extends AbstractQueryHandler {
         profile.addEngineNanos(System.nanoTime() - engineStart);
 
         final long serializationStart = System.nanoTime();
-        final SerializationOutcome outcome = serializeResultSet(database, serializer, limit, response, qResult, includeTypeHints);
+        // ... and above all of them the hard ceiling, which no caller can widen: a response that would exceed
+        // it is refused with 413 rather than truncated (issue #5719).
+        final SerializationOutcome outcome = serializeResultSetBounded(database, serializer, limit, getMaxResultRows(),
+            response, qResult, includeTypeHints);
         reportLimits(response, limit, outcome);
         logIfTruncatedByDefault(database.getName(), text, limit, requestLimit, planLimit, outcome);
         profile.addSerializationNanos(System.nanoTime() - serializationStart);

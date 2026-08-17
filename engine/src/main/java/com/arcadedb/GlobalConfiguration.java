@@ -1255,8 +1255,28 @@ public enum GlobalConfiguration {
       its own LIMIT clause, are both honored as written and are never capped by this value. When this default \
       does cut a result short the response reports `"truncated": true` next to `returned` and `limit`, and the \
       server logs a warning: the truncation is never silent (issue #5711). Set to -1 or 0 for unlimited \
-      (WARNING: removes the protection against materializing an unbounded result set in memory). Default is 20000""",
+      (WARNING: removes the protection against materializing an unbounded result set in memory). A value above \
+      'arcadedb.server.httpQueryMaxResultRows' - including unlimited - is lowered to it, so the two settings \
+      cannot disagree and a caller that states no limit is never refused, only truncated. Default is 20000""",
       Integer.class, 20_000),
+
+  SERVER_HTTP_QUERY_MAX_RESULT_ROWS("arcadedb.server.httpQueryMaxResultRows", SCOPE.SERVER,
+      """
+      Hard ceiling on the number of rows the HTTP query/command endpoints materialize into a single response. \
+      Where 'arcadedb.server.httpQueryDefaultLimit' caps only the callers that state no limit of their own, this \
+      ceiling also bounds the ones that do: a request `limit` at or below it - and a LIMIT the query itself \
+      carries - is honored as written, while a larger value, or an explicitly unlimited `limit` of -1/0, cannot \
+      push a single response past it. A result that would exceed the ceiling fails the request with HTTP 413 \
+      naming this setting, exactly as the gRPC unary ExecuteQuery path answers RESOURCE_EXHAUSTED, rather than \
+      silently truncating: a truncated response indistinguishable from a complete one is the defect issue #5711 \
+      fixed. A caller that states no limit at all is never refused: 'arcadedb.server.httpQueryDefaultLimit' is \
+      itself lowered to this ceiling, so such a caller gets the ordinary reported truncation instead. Note that \
+      this bounds the SIZE of a response, not the peak cost of refusing one - the rows are serialized up to the \
+      ceiling before the result is found to exceed it - nor the work a command does before returning: a write \
+      that returns its rows applies to every matching record, and is then rolled back with the refusal. Set to \
+      -1 or 0 for unlimited (WARNING: removes the protection against materializing an unbounded result set in \
+      memory). Default is 1000000""",
+      Integer.class, 1_000_000),
 
   SERVER_HTTP_STREAMING_READ_TIMEOUT("arcadedb.server.httpStreamingReadTimeout", SCOPE.SERVER,
       """

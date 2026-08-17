@@ -196,7 +196,10 @@ public class RemoteHttpComponent extends RWLockContext {
    * ({@code arcadedb.server.httpQueryDefaultLimit}) and the driver logs a warning when that cap drops rows
    * (issue #5711).
    * <p>
-   * Beware that removing the cap makes the server materialize the whole result set in memory before answering.
+   * Beware that removing the cap makes the server materialize the whole result set in memory before answering,
+   * up to the server's hard ceiling ({@code arcadedb.server.httpQueryMaxResultRows}, 1,000,000 rows by
+   * default): a result larger than that is refused with HTTP 413 rather than truncated, so a driver asking for
+   * an unbounded page must be ready for a response it has to narrow or paginate (issue #5719).
    */
   public void setMaxResultRows(final Integer maxResultRows) {
     this.maxResultRows = maxResultRows;
