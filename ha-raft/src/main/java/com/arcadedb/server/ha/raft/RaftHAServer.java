@@ -153,6 +153,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private final    AtomicBoolean           httpFallbackWarned = new AtomicBoolean(false);
   // Logged at most once: notes that peer HTTPS endpoints are derived from this node's local HTTPS port.
   private final    AtomicBoolean           httpsFallbackWarned = new AtomicBoolean(false);
+  // Logged at most once per protocol: warns that a peer-to-peer endpoint was WITHHELD because two peers
+  // resolved to it. Distinct from the two latches above, which fire whenever an address is derived at all -
+  // which a healthy homogeneous StatefulSet also does (issue #6267).
+  private final    AtomicBoolean           httpAmbiguityWarned = new AtomicBoolean(false);
+  private final    AtomicBoolean           httpsAmbiguityWarned = new AtomicBoolean(false);
   // Client-reachable Bolt endpoints (optional object-form 'bolt' field in HA_SERVER_LIST). Advertised
   // in the Bolt ROUTE routing table so neo4j:// drivers can discover leader/followers.
   private final    Map<RaftPeerId, String> boltAddresses      = new HashMap<>();
@@ -1939,8 +1944,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // occupies a slot beyond it - the same sizing getRoutingTable uses, for the same reason.
     final String[] addresses = new String[peers.size() + 1];
     final boolean[] fromConfig = new boolean[addresses.length];
+    final RaftPeerId[] owners = new RaftPeerId[addresses.length];
     addresses[0] = address;
     fromConfig[0] = declared.containsKey(peerId);
+    owners[0] = peerId;
     int resolved = 1;
 
     for (final RaftPeer peer : peers) {
@@ -1951,11 +1958,54 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         continue;
       addresses[resolved] = other;
       fromConfig[resolved] = declared.containsKey(peer.getId());
+      owners[resolved] = peer.getId();
       ++resolved;
     }
 
     final Map<String, int[]> claims = claimsByAddress(addresses, fromConfig, resolved);
-    return identifiesOnePeer(claims.get(address), fromConfig[0]) ? address : null;
+    if (identifiesOnePeer(claims.get(address), fromConfig[0]))
+      return address;
+
+    warnAmbiguousPeerAddress(https, address, addresses, owners, resolved);
+    return null;
+  }
+
+  /**
+   * Tells the operator, once per protocol, that a peer-to-peer endpoint was <em>withheld</em> - which peers
+   * could not be told apart, and what to write to fix it.
+   * <p>
+   * Without this the refusal is silent (issue #6267): {@link #unambiguousPeerAddress} answers {@code null} and
+   * every caller decides for itself whether to say anything, so the misconfiguration is visible only where one
+   * happens to log it. Neither existing warning covers it. {@link #deriveHttpAddressWithWarning} and its HTTPS
+   * twin fire whenever an address is <em>derived at all</em>, which is also what a perfectly healthy homogeneous
+   * Kubernetes StatefulSet does, so they cannot distinguish "deriving, and fine" from "deriving, and two peers
+   * just collapsed onto one address"; {@link #warnAmbiguousRouting} says exactly this, but about the client
+   * routing tables of issue #6183, not about the peer-to-peer endpoints a resync and a cluster verify dial.
+   * <p>
+   * Once per protocol rather than once per attempt: the resync and verify paths ask on every attempt, and a
+   * misconfiguration that does not change between attempts should not be re-reported on each one.
+   */
+  private void warnAmbiguousPeerAddress(final boolean https, final String address, final String[] addresses,
+      final RaftPeerId[] owners, final int count) {
+    if (!(https ? httpsAmbiguityWarned : httpAmbiguityWarned).compareAndSet(false, true))
+      return;
+
+    final StringBuilder shared = new StringBuilder();
+    for (int i = 0; i < count; i++)
+      if (address.equals(addresses[i])) {
+        if (!shared.isEmpty())
+          shared.append(", ");
+        shared.append(owners[i]);
+      }
+
+    final String protocol = https ? "HTTPS" : "HTTP";
+    final String field = https ? "https" : "http";
+    LogManager.instance().log(this, Level.WARNING,
+        "HA %s peer endpoints are ambiguous: peers %s all resolve to %s, which two listening sockets cannot both own. "
+            + "Their %s endpoint is withheld rather than guessed, so a snapshot resync and a cluster verify refuse to "
+            + "dial them and report them unverified instead of answering for the wrong node. Declare each node's %s port "
+            + "explicitly with the 'host:{raft:..,%s:..}' object syntax in %s.",
+        protocol, shared, address, protocol, protocol, field, GlobalConfiguration.HA_SERVER_LIST.getKey());
   }
 
   /** Tells the operator, once per protocol, that peers shared an address and what to write to fix it. */

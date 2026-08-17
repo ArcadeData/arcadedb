@@ -123,6 +123,19 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
       final String peerId = peer.getId().toString();
       peerJson.put("id", peerId);
       peerJson.put("address", peer.getAddress());
+      // The peer's HTTP endpoint as resolved, plus whether that endpoint identifies this peer and no other.
+      // With no 'http' port declared in arcadedb.ha.serverList a peer's endpoint is derived as its Raft host
+      // plus THIS node's port, so on a cluster whose nodes differ by port every peer collapses onto one
+      // address. Reporting the address alone would show an operator a plausible endpoint per peer with nothing
+      // to say that it names none of them, and they would find out only when a resync or a verify refuses to
+      // dial. The flag is present only when set, so a correctly declared cluster carries no extra field
+      // (issue #6267).
+      final String httpAddress = raftHAServer.getPeerHttpAddress(peer.getId());
+      if (httpAddress != null) {
+        peerJson.put("httpAddress", httpAddress);
+        if (raftHAServer.getUnambiguousPeerHttpAddress(peer.getId()) == null)
+          peerJson.put("httpAddressAmbiguous", true);
+      }
 
       final boolean peerIsLeader = leaderId != null && peer.getId().equals(leaderId);
       peerJson.put("role", peerIsLeader ? "LEADER" : "FOLLOWER");
@@ -250,15 +263,21 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
           if (!dbName.startsWith(ArcadeDBServer.RESERVED_DATABASE_PREFIX))
             dbNames.add(dbName);
       } else {
-        final String httpAddr = raftHAServer.getPeerHttpAddress(peerId);
-        if (httpAddr == null) {
+        // The guarded address, not the best-effort one (issue #6267). This fan-out attributes whatever comes back
+        // to peerIdStr, so an address that resolves to the wrong node - or to this one - fills the matrix with a
+        // reassuring answer nobody asked for: on a cluster whose peers collapse onto one derived address, every
+        // peer would report the local node's databases and the matrix would show them present everywhere. Same
+        // guard the resync and verify paths use, so the three cannot drift apart.
+        final PeerDialAddress dial = PeerDialAddress.resolve(raftHAServer, peerId, "peer");
+        if (dial.refused()) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Presence matrix: not querying peer '%s': %s", peerIdStr, dial.refusal());
           unreachable.add(peerIdStr);
           continue;
         }
-        final String httpsAddr = raftHAServer.getPeerHttpsAddress(peerId);
         try {
           final List<LeaderDatabaseQuery.DatabaseInfo> infos =
-              LeaderDatabaseQuery.fetch(httpAddr, httpsAddr, clusterToken, timeoutMs, server);
+              LeaderDatabaseQuery.fetch(dial.httpAddress(), dial.httpsAddress(), clusterToken, timeoutMs, server);
           for (final LeaderDatabaseQuery.DatabaseInfo info : infos)
             dbNames.add(info.name());
         } catch (final InterruptedException e) {
