@@ -2543,6 +2543,122 @@ alert on.
 
 [#6281](https://github.com/ArcadeData/arcadedb/issues/6281)
 
+## A placeholder's content record can stop being a chunk chain, like every other record (#6286)
+
+#6178 gave a record that shrinks back inside the region its own slot owns a way out of being a chunk chain:
+the head chunk is rewritten as a plain record and the chain behind it is freed. One record shape was left
+out - the CONTENT record of a placeholder - and the reason was mechanical rather than principled. Such a
+record is recognised by the NEGATIVE size marker its slot carries, which is what tells a scan the slot holds
+somebody else's content rather than a document of its own; the collapse could only write a plain POSITIVE
+size, so collapsing one would have been #6196 all over again on the one record shape that had escaped it.
+
+The collapse now writes the sign the shape calls for. A content record that shrinks back inside its region
+becomes the ordinary negated-size record it would have been had it never outgrown its page, instead of
+keeping 13 bytes of chunk header for ever and routing every read and write through the chunk path. It is the
+same transition the head chunk of a record of its own already made, with its own slot kind
+(`SLOT_KIND_CHUNK_COLLAPSED_TO_PLACEHOLDER_CONTENT`) so the commit-time disjoint-slot merge replays it only
+onto a committed slot that still carries the marker the write started from - the same bytes behind the other
+marker being a different record is the whole reason the kinds exist.
+
+One case stays out of the merge rather than out of the collapse: a database written before #6196 holds a
+content head still wearing the ambiguous `FIRST_CHUNK`, which no marker can tell from a record's own. Such a
+head is collapsed too - reached through its pointer, the flag says what it is, and the negated marker the
+collapse writes ends the ambiguity for good - but the page is poisoned instead of tracked, because neither
+collapse kind names that starting marker. The transaction keeps its write and gives up only the merge, on a
+shape no current build produces.
+
+[#6286](https://github.com/ArcadeData/arcadedb/issues/6286)
+
+## `CHECK DATABASE` follows a placeholder pointer, and reclaims the chunks nothing points at (#6292, #6293, #6294)
+
+Three things the bucket checker could not say about a bucket, all found while building the #6196 fixtures.
+
+### A dangling placeholder pointer made `count(*)` and a scan disagree for good (#6292)
+
+`check()` classified a placeholder POINTER slot, counted it, and moved on - it never followed the pointer to
+ask whether anything was on the other end. So a pointer whose CONTENT record was gone stayed on its page for
+ever, and the two counts of one type disagreed permanently while the checker called the database clean:
+
+```
+select count(@rid) as c from P   -->  7      (a scan: the pointer resolves to nothing and is skipped)
+select count(*)    as c from P   -->  8      (the cached counter: a pointer slot is a record)
+check database                   -->  totalErrors: 0
+```
+
+The commonest way to produce one was `CHECK DATABASE FIX` itself: the broken-chain branch force-deletes a
+content record whose chain cannot be walked, and freed the content's slot only. Corruption and an
+interrupted repair reach the same state.
+
+Every pointer is now followed, and its target classified: a content record of either shape (a negated size,
+or the `FIRST_CHUNK_PLACEHOLDER_CONTENT` head #6196 added), the pre-#6196 ambiguous head, or nothing a
+pointer may lead to. The last is reported with both RIDs and, with `FIX`, the pointer is removed -
+reconciling `count(*)` with the scan. It costs nothing new: #6196 already paid one page fetch per pointer to
+read that marker, and only the branch that asks this question was missing. Two new report fields,
+`danglingPlaceholderPointers` and `danglingPlaceholderPointersFixed`, count them.
+
+The repair frees the pointer's SLOT and nothing else, where the ordinary delete would follow the pointer
+first. That distinction is load-bearing: a pointer can be dangling because it was CORRUPTED, in which case it
+now names whatever record happens to live at that position, and deleting that record is exactly the damage
+the pass exists to prevent.
+
+A pointer left dangling by a deletion the same run made is removed with it and not booked as a second error.
+The record had one defect, `FIX` removed it, and the pointer is the rest of that removal.
+
+### The FIX run described the database it found, not the one it left (#6293)
+
+A record deleted during the run was counted in `totalDeletedRecords` AND under the category tally it had held
+before, because the slot was classified first and repaired after:
+
+```json
+"totalDeletedRecords": 1, "deletedRecordsAfterFix": ["#1:5"],
+"totalMultiPageRecords": 1, "totalActiveRecords": 6, "totalAllocatedRecords": 11
+```
+
+A re-run reported `totalMultiPageRecords: 0` and `totalAllocatedRecords: 10`. One report described the same
+record twice, on exactly the numbers an operator diffs across runs to decide whether a `FIX` did anything.
+
+The obvious repair - decrement the category counter next to each `++totalDeletedRecords` - would have had
+four sites each remember which of five categories it had incremented, which is the same duplication one level
+down. The classification is a VALUE now: the slot walk decides which category the slot fell into, the
+counting happens once at the end of the per-slot block, and a slot the repair removed simply carries the
+deleted category instead. The per-page verbose tallies come from the same decision, so they no longer
+disagree with the totals about whether a multi-page record is also an active one.
+
+### Orphaned continuation chunks are reclaimed, and three comments stop promising something nothing did (#6294)
+
+Force-deleting a record with a broken chunk chain frees the HEAD slot only. Three places in the tree told the
+reader the rest would be "reclaimed by compaction or a database check". Neither ever did: `check()` counted a
+`NEXT_CHUNK` slot under `totalChunks` and moved on, and `compressPage` re-flows a page's LIVE slots - an
+orphaned chunk still has one, so it was re-flowed along with everything else rather than dropped. The leak
+was bounded per incident and permanent, surviving every repair short of an export and reimport.
+
+Reachability cannot be answered from a chunk's own slot - the same asymmetry that made #6196's content
+records need a marker - so it is answered from the other end. The chain walk `check()` already makes for
+every head now marks the chunks that head reaches, and a head the run repaired away marks nothing, which
+frees its chunks at the source as well. After the pass, every `NEXT_CHUNK` slot nothing marked is reported
+under `orphanedChunks` and, with `FIX`, freed and counted under `orphanedChunksReclaimed` - the shape
+`orphanedEdgeSegments` / `orphanedEdgeSegmentsReclaimed` already has, down to failing closed: an unmarked
+LIVE chunk deleted as an orphan is destroyed data, so ANY gap in the marking (a page the walk could not read,
+a chain walk stopped by an I/O fault, a slot that could not be classified) disables the sweep entirely rather
+than shrinking it.
+
+**An orphan is a COUNT, not an error and not a warning.** Nothing is corrupted by one: no record is wrong, no
+query is affected, no two counts disagree - the bucket is carrying dead space. That matches how
+`orphanedEdgeSegments` and `orphanedExternalRecords` are already reported, and the scale is what makes it
+matter rather than being a matter of taste. The first measurement of a real workload found **243821 orphaned
+chunks in a bucket of 1.5 million** (`CRUDTest.multiUpdatesOverlap`, 131072 records put through thirteen
+rounds of updates): a leak that has always been there, that nothing collected, and that one warning apiece
+would have reported as a quarter of a million strings.
+
+**The reclaim is bounded by memory, not by count.** The enclosing transaction holds a copy of every page it
+modifies, so a backlog spread thinly across pages costs pages x pageSize whatever the number of chunks is. A
+run frees what fits a 32 MB page budget, reports the rest through the gap between `orphanedChunks` and
+`orphanedChunksReclaimed`, and says so in the log; the next `FIX` continues. A bulk repair that converges is
+worth more than one that ends as the `OutOfMemoryError` of #4653.
+
+[#6292](https://github.com/ArcadeData/arcadedb/issues/6292)
+[#6293](https://github.com/ArcadeData/arcadedb/issues/6293)
+[#6294](https://github.com/ArcadeData/arcadedb/issues/6294)
 ## An edge weight belongs to the edge it was read from, whichever backing answered (#6301)
 
 `algo.steinerTree` paired weights with neighbours **by iteration position**. The adjacency list was built with

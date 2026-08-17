@@ -114,6 +114,16 @@ public class TransactionContext implements Transaction {
    * different marker are a different record, and a slot that changed from one to the other under us is a conflict.
    */
   public static final byte SLOT_KIND_FIRST_CHUNK_PLACEHOLDER_CONTENT = 5;
+  /**
+   * {@code SLOT_KIND_CHUNK_COLLAPSED_TO_RECORD} for a placeholder's CONTENT record: the chain shrank back inside the
+   * region its own slot owns and became the plain NEGATED-size shape a content record small enough for its page has
+   * always had (#6286). The pre-image is the head chunk carrying
+   * {@code LocalBucket.FIRST_CHUNK_PLACEHOLDER_CONTENT}, the final image is the content, and the only difference from
+   * the collapse of a record of its own is the marker the replay expects on the committed page and the SIGN of the
+   * one it writes - which is the whole point of the two being different kinds: the same bytes behind the other marker
+   * are a different record, handed out by a scan as a document rather than skipped as somebody's content.
+   */
+  public static final byte SLOT_KIND_CHUNK_COLLAPSED_TO_PLACEHOLDER_CONTENT = 6;
 
   private final DatabaseInternal                     database;
   private final Map<Integer, Integer>                newPageCounters       = new ConcurrentHashMap<>();
