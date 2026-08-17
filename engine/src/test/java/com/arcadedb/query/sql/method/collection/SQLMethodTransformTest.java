@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.method.collection;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.database.async.AsyncQuiesce;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
@@ -236,6 +237,12 @@ class SQLMethodTransformTest {
 
       @Override
       public void waitForAsyncCompletion() {
+      }
+
+      @Override
+      public AsyncQuiesce quiesceAsync() {
+        return () -> {
+        };
       }
 
       @Override

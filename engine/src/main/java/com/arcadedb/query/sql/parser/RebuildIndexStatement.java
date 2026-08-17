@@ -21,8 +21,8 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.async.AsyncQuiesce;
 import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.OperationProgress;
@@ -104,22 +104,21 @@ public class RebuildIndexStatement extends DDLStatement {
 
     final Database database = context.getDatabase();
 
-    // The refusal of issue #2097, hoisted here and living only here. buildIndex() has raised it for years when this
-    // runs on one of the async executor's own worker threads (an HTTP command with awaitResponse=false), for the very
-    // reason the barrier below cannot run there either - but buildIndex() is reached only much further down, and
-    // never at all on the statsOnly branch, so leaving the check there would let the barrier answer first, with a
-    // message about waiting rather than about rebuilding.
+    // THE REFUSAL OF #2097 IS GONE FROM HERE, and one mechanism is left where there were two (issue #6303, note b).
+    // It tested the DatabaseContext.asyncMode thread-local; the barrier below tests thread IDENTITY
+    // (isCurrentThreadOneOfMyWorkers). Two spellings of one question that agreed while the only thread with the flag
+    // set was a worker - and they were never asking the same question. asyncMode means "pick a bucket per thread so
+    // concurrent asynchronous writers do not compete for the same pages"; identity means "is this the thread that
+    // would have to dequeue my own marker". Only the second one has anything to do with whether the barrier can be
+    // satisfied.
     //
-    // Moved rather than duplicated: a second copy in buildIndex() would be unreachable (that method has one call
-    // site, below this point) and would be a second wording of the same refusal to keep in step. The index name is
-    // carried up so the message loses nothing by moving - `REBUILD INDEX *` names no single index and says so.
-    final DatabaseContext.DatabaseContextTL asyncContext = DatabaseContext.INSTANCE.getContextIfExists(
-        database.getDatabasePath());
-    if (asyncContext != null && asyncContext.asyncMode)
-      throw new NeedRetryException(
-          "Cannot rebuild " + (all || name == null ? "the indexes" : "index '" + name.getValue() + "'")
-              + " while running in asynchronous context. "
-              + "Use synchronous execution (awaitResponse=true) or run the command directly.");
+    // Since #6303 they disagree, which is what makes the difference concrete: a command dispatched with
+    // awaitResponse=false runs on AsyncCommandPool, which sets asyncMode (it writes concurrently, so it wants the
+    // per-thread bucket) and is NOT a worker (so the barrier CAN be satisfied). Keeping the flag check here would go
+    // on refusing exactly the operation this issue set out to give back.
+    //
+    // A rebuild that reaches a worker some other way is still refused - by the barrier below, in the same terms and
+    // with the same exception type.
 
     // Both branches below SCAN the live data, and a worker of the async executor keeps ONE transaction open across up
     // to ASYNC_TX_BATCH_SIZE tasks - so records it has already written can still be uncommitted, and invisible to any
@@ -145,7 +144,14 @@ public class RebuildIndexStatement extends DDLStatement {
     ((DatabaseInternal) database).waitForAsyncCompletion();
 
     if (statsOnly)
-      return recomputeStatistics(database, result);
+      // Quiesced and not merely barriered (issue #6303, item 2). This branch SCANS the type and then OVERWRITES the
+      // BM25 corpus counters with what the scan found, so a record written by an async worker halfway through the
+      // scan is not merely missed - it is counted out of a total that then replaces the real one. The rebuild
+      // branch below inherits its quiescence from BucketIndexBuilder, one index at a time; this branch reaches no
+      // builder at all and has to hold its own.
+      try (final AsyncQuiesce asyncPaused = ((DatabaseInternal) database).quiesceAsync()) {
+        return recomputeStatistics(database, result);
+      }
 
     final AtomicLong total = new AtomicLong();
     final AtomicLong misplaced = new AtomicLong();
