@@ -217,14 +217,11 @@ public class AndBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean isAlwaysTrue() {
-    if (subBlocks.isEmpty())
-      return true;
-
-    for (BooleanExpression exp : subBlocks) {
-      if (!exp.isAlwaysTrue()) {
+  public boolean isAlwaysTrue(final CommandContext context) {
+    // an empty AND block is the neutral element, ie. TRUE
+    for (final BooleanExpression exp : subBlocks) {
+      if (!exp.isAlwaysTrue(context))
         return false;
-      }
     }
     return true;
   }

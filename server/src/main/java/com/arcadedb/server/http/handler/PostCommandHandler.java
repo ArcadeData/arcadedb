@@ -218,7 +218,14 @@ public class PostCommandHandler extends AbstractQueryHandler {
     // The cap used to push a LIMIT down into a command that states none: the caller's own 'limit' when
     // present, the configured default otherwise. A command that already carries a LIMIT is left untouched and
     // its own value decides the response size, resolved from the execution plan after execution.
-    final int autoLimit = requestLimit != null ? requestLimit : getDefaultRowLimit();
+    //
+    // Bounded by the hard ceiling before it is pushed down, not only when the rows are serialized: an
+    // unlimited 'limit' used to push nothing down at all, so the whole result reached the handler - and with
+    // 'profileExecution: detailed' it was materialized in full by materializeResultSet before any cap could
+    // look at it. With the ceiling in the pushed-down LIMIT the engine stops one row past it (issue #5719).
+    // Only the caller's own value needs clamping here: getDefaultRowLimit() is already bounded by the ceiling.
+    final int maxResultRows = getMaxResultRows();
+    final int autoLimit = requestLimit != null ? applyMaxResultRows(requestLimit, maxResultRows) : getDefaultRowLimit();
     final boolean autoLimited = requiresAutomaticLimit(command, language, autoLimit);
     // Kept for the log: a warning must show the operator the query the caller sent, not the rewritten one.
     final String originalCommand = command;
@@ -271,7 +278,8 @@ public class PostCommandHandler extends AbstractQueryHandler {
           profile.addEngineNanos(System.nanoTime() - engineStart);
 
           final long serializationStart = System.nanoTime();
-          outcome = serializeResultSet(database, serializer, limit, response, qResult, includeTypeHints);
+          outcome = serializeResultSetBounded(database, serializer, limit, maxResultRows, response, qResult,
+              includeTypeHints);
           response.put("explain", explainText);
           response.put("explainPlan", executionPlan.toResult().toJSON());
           profile.addSerializationNanos(System.nanoTime() - serializationStart);
@@ -280,12 +288,19 @@ public class PostCommandHandler extends AbstractQueryHandler {
             // Materialize the ResultSet inside the engine timer so the serialization
             // timer captures only the wire-format conversion and not query work.
             // materializeResultSet closes the source and returns a fresh in-memory ResultSet.
-            qResult = materializeResultSet(qResult);
+            //
+            // Bounded by the same cap the response will honor: this is the one place that drains the whole
+            // result set into memory before any cap is applied, so a command carrying its own huge LIMIT -
+            // which is left as written and therefore gets no pushed-down bound - could materialize an
+            // arbitrary number of rows here (issue #5719). One row above the cap, as the pushdown does, so
+            // the truncation stays detectable.
+            qResult = materializeResultSet(qResult, truncationProbeLimit(applyMaxResultRows(limit, maxResultRows)));
           }
           profile.addEngineNanos(System.nanoTime() - engineStart);
 
           final long serializationStart = System.nanoTime();
-          outcome = serializeResultSet(database, serializer, limit, response, qResult, includeTypeHints);
+          outcome = serializeResultSetBounded(database, serializer, limit, maxResultRows, response, qResult,
+              includeTypeHints);
 
           if (qResult != null) {
             final var qStats = qResult.getStatistics();
@@ -356,11 +371,15 @@ public class PostCommandHandler extends AbstractQueryHandler {
    * original execution plan, and returns a new {@link ResultSet} backed by the
    * list. The source {@link ResultSet} is closed. Used by the profiler to
    * separate engine execution time from serialization time.
+   *
+   * @param maxRows how many rows to drain at most, {@code 0} or less for all of them. Rows past it are dropped
+   *                with the source, which is safe only because the caller sizes it above the cap the response
+   *                will honor: what is dropped here would have been dropped by the serializer anyway.
    */
-  private static ResultSet materializeResultSet(final ResultSet source) {
+  private static ResultSet materializeResultSet(final ResultSet source, final int maxRows) {
     try {
       final List<Result> rows = new ArrayList<>();
-      while (source.hasNext())
+      while (source.hasNext() && (maxRows <= 0 || rows.size() < maxRows))
         rows.add(source.next());
 
       final Optional<ExecutionPlan> plan = source.getExecutionPlan();

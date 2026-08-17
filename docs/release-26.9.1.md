@@ -2639,3 +2639,497 @@ deadline is, so it is one budget for the whole command however the command is de
 reconfigure; with the setting disabled the resolution still reads no clock at all.
 
 [#6304](https://github.com/ArcadeData/arcadedb/issues/6304)
+## A placeholder's content record can stop being a chunk chain, like every other record (#6286)
+
+#6178 gave a record that shrinks back inside the region its own slot owns a way out of being a chunk chain:
+the head chunk is rewritten as a plain record and the chain behind it is freed. One record shape was left
+out - the CONTENT record of a placeholder - and the reason was mechanical rather than principled. Such a
+record is recognised by the NEGATIVE size marker its slot carries, which is what tells a scan the slot holds
+somebody else's content rather than a document of its own; the collapse could only write a plain POSITIVE
+size, so collapsing one would have been #6196 all over again on the one record shape that had escaped it.
+
+The collapse now writes the sign the shape calls for. A content record that shrinks back inside its region
+becomes the ordinary negated-size record it would have been had it never outgrown its page, instead of
+keeping 13 bytes of chunk header for ever and routing every read and write through the chunk path. It is the
+same transition the head chunk of a record of its own already made, with its own slot kind
+(`SLOT_KIND_CHUNK_COLLAPSED_TO_PLACEHOLDER_CONTENT`) so the commit-time disjoint-slot merge replays it only
+onto a committed slot that still carries the marker the write started from - the same bytes behind the other
+marker being a different record is the whole reason the kinds exist.
+
+One case stays out of the merge rather than out of the collapse: a database written before #6196 holds a
+content head still wearing the ambiguous `FIRST_CHUNK`, which no marker can tell from a record's own. Such a
+head is collapsed too - reached through its pointer, the flag says what it is, and the negated marker the
+collapse writes ends the ambiguity for good - but the page is poisoned instead of tracked, because neither
+collapse kind names that starting marker. The transaction keeps its write and gives up only the merge, on a
+shape no current build produces.
+
+[#6286](https://github.com/ArcadeData/arcadedb/issues/6286)
+
+## `CHECK DATABASE` follows a placeholder pointer, and reclaims the chunks nothing points at (#6292, #6293, #6294)
+
+Three things the bucket checker could not say about a bucket, all found while building the #6196 fixtures.
+
+### A dangling placeholder pointer made `count(*)` and a scan disagree for good (#6292)
+
+`check()` classified a placeholder POINTER slot, counted it, and moved on - it never followed the pointer to
+ask whether anything was on the other end. So a pointer whose CONTENT record was gone stayed on its page for
+ever, and the two counts of one type disagreed permanently while the checker called the database clean:
+
+```
+select count(@rid) as c from P   -->  7      (a scan: the pointer resolves to nothing and is skipped)
+select count(*)    as c from P   -->  8      (the cached counter: a pointer slot is a record)
+check database                   -->  totalErrors: 0
+```
+
+The commonest way to produce one was `CHECK DATABASE FIX` itself: the broken-chain branch force-deletes a
+content record whose chain cannot be walked, and freed the content's slot only. Corruption and an
+interrupted repair reach the same state.
+
+Every pointer is now followed, and its target classified: a content record of either shape (a negated size,
+or the `FIRST_CHUNK_PLACEHOLDER_CONTENT` head #6196 added), the pre-#6196 ambiguous head, or nothing a
+pointer may lead to. The last is reported with both RIDs and, with `FIX`, the pointer is removed -
+reconciling `count(*)` with the scan. It costs nothing new: #6196 already paid one page fetch per pointer to
+read that marker, and only the branch that asks this question was missing. Two new report fields,
+`danglingPlaceholderPointers` and `danglingPlaceholderPointersFixed`, count them.
+
+The repair frees the pointer's SLOT and nothing else, where the ordinary delete would follow the pointer
+first. That distinction is load-bearing: a pointer can be dangling because it was CORRUPTED, in which case it
+now names whatever record happens to live at that position, and deleting that record is exactly the damage
+the pass exists to prevent.
+
+A pointer left dangling by a deletion the same run made is removed with it and not booked as a second error.
+The record had one defect, `FIX` removed it, and the pointer is the rest of that removal.
+
+### The FIX run described the database it found, not the one it left (#6293)
+
+A record deleted during the run was counted in `totalDeletedRecords` AND under the category tally it had held
+before, because the slot was classified first and repaired after:
+
+```json
+"totalDeletedRecords": 1, "deletedRecordsAfterFix": ["#1:5"],
+"totalMultiPageRecords": 1, "totalActiveRecords": 6, "totalAllocatedRecords": 11
+```
+
+A re-run reported `totalMultiPageRecords: 0` and `totalAllocatedRecords: 10`. One report described the same
+record twice, on exactly the numbers an operator diffs across runs to decide whether a `FIX` did anything.
+
+The obvious repair - decrement the category counter next to each `++totalDeletedRecords` - would have had
+four sites each remember which of five categories it had incremented, which is the same duplication one level
+down. The classification is a VALUE now: the slot walk decides which category the slot fell into, the
+counting happens once at the end of the per-slot block, and a slot the repair removed simply carries the
+deleted category instead. The per-page verbose tallies come from the same decision, so they no longer
+disagree with the totals about whether a multi-page record is also an active one.
+
+### Orphaned continuation chunks are reclaimed, and three comments stop promising something nothing did (#6294)
+
+Force-deleting a record with a broken chunk chain frees the HEAD slot only. Three places in the tree told the
+reader the rest would be "reclaimed by compaction or a database check". Neither ever did: `check()` counted a
+`NEXT_CHUNK` slot under `totalChunks` and moved on, and `compressPage` re-flows a page's LIVE slots - an
+orphaned chunk still has one, so it was re-flowed along with everything else rather than dropped. The leak
+was bounded per incident and permanent, surviving every repair short of an export and reimport.
+
+Reachability cannot be answered from a chunk's own slot - the same asymmetry that made #6196's content
+records need a marker - so it is answered from the other end. The chain walk `check()` already makes for
+every head now marks the chunks that head reaches, and a head the run repaired away marks nothing, which
+frees its chunks at the source as well. After the pass, every `NEXT_CHUNK` slot nothing marked is reported
+under `orphanedChunks` and, with `FIX`, freed and counted under `orphanedChunksReclaimed` - the shape
+`orphanedEdgeSegments` / `orphanedEdgeSegmentsReclaimed` already has, down to failing closed: an unmarked
+LIVE chunk deleted as an orphan is destroyed data, so ANY gap in the marking (a page the walk could not read,
+a chain walk stopped by an I/O fault, a slot that could not be classified) disables the sweep entirely rather
+than shrinking it.
+
+**An orphan is a COUNT, not an error and not a warning.** Nothing is corrupted by one: no record is wrong, no
+query is affected, no two counts disagree - the bucket is carrying dead space. That matches how
+`orphanedEdgeSegments` and `orphanedExternalRecords` are already reported, and the scale is what makes it
+matter rather than being a matter of taste. The first measurement of a real workload found **243821 orphaned
+chunks in a bucket of 1.5 million** (`CRUDTest.multiUpdatesOverlap`, 131072 records put through thirteen
+rounds of updates): a leak that has always been there, that nothing collected, and that one warning apiece
+would have reported as a quarter of a million strings.
+
+**The reclaim is bounded by memory, not by count.** The enclosing transaction holds a copy of every page it
+modifies, so a backlog spread thinly across pages costs pages x pageSize whatever the number of chunks is. A
+run frees what fits a 32 MB page budget, reports the rest through the gap between `orphanedChunks` and
+`orphanedChunksReclaimed`, and says so in the log; the next `FIX` continues. A bulk repair that converges is
+worth more than one that ends as the `OutOfMemoryError` of #4653.
+
+[#6292](https://github.com/ArcadeData/arcadedb/issues/6292)
+[#6293](https://github.com/ArcadeData/arcadedb/issues/6293)
+[#6294](https://github.com/ArcadeData/arcadedb/issues/6294)
+## An edge weight belongs to the edge it was read from, whichever backing answered (#6301)
+
+`algo.steinerTree` paired weights with neighbours **by iteration position**. The adjacency list was built with
+the `relTypes` filter applied and in the backing store's order; the weight array beside it was filled
+positionally from an *unfiltered* `getEdges(BOTH)` walk in OLTP order. Nothing reconciled the two, so
+`adjW[i][j]` was "the weight of the j-th edge I happened to see", not "the weight of the edge to `adj[i][j]`".
+That array is what Dijkstra runs on in step 1, so the **tree itself** moved, not only the `weight` column.
+
+Two shapes made it visible. An edge type the caller excluded still lent its weight to an included edge: three
+vertices on a `ROAD` path of weight 1 per hop plus one `NOISE` edge of weight 999 hanging off the first
+returned `weight: 999.0` and `totalWeight: 1000.0` for a tree that costs 2.0. And the same query answered
+differently depending on whether a Graph Analytical View happened to exist, because the CSR neighbour order
+need not match the OLTP one - a view is meant to be a transparent accelerator, and here its mere presence made
+the procedure prefer a 51.0 tree over the 2.0 one.
+
+The fix removes the second traversal rather than repairing it. `GraphData.weightedAdjacency(direction,
+weightProperty, relTypes)` produces the neighbour list and its weights from **one** walk of the same edges -
+from the view's columnar edge properties when it has them, from the edge records otherwise - so the pairing is
+correct by construction and the two backings return the same multiset of `(neighbour, weight)` pairs.
+
+Two more procedures were reading weights through the same broken helper and are fixed with it:
+
+- **`algo.apsp`** with no `relTypes` filter on a view that materialises edge properties produced an *empty*
+  weight row against a non-empty neighbour row, i.e. an `ArrayIndexOutOfBoundsException` for a query that
+  worked perfectly without the view. With several edge types it mismatched instead of failing, because the
+  adjacency is sorted across types and the weights were concatenated per type.
+- **`algo.bellmanford`** fell back to a **unit weight for every edge** whenever the graph was CSR-backed and
+  the view had no column for the requested property - silently ignoring `weightProperty` altogether, and only
+  when a view existed. It also now builds its edge list in parallel primitive arrays rather than a
+  `List<int[]>` and a `List<Double>`, which the O(V x E) relaxation loop reads up to `V - 1` times.
+
+**Two provider-contract changes come with it.** `GraphTraversalProvider.hasEdgeProperties()` now means "edge
+property columns are materialised **and** the positional mapping `getEdgeProperty` relies on is exact", and
+`GraphAnalyticalView` answers `false` while a delta overlay is active. The columns are aligned with the base
+CSR's forward edge slots, while `getNeighborIds` serves the overlay's view of the node - deletions dropped,
+additions merged in, the whole list re-sorted - so the n-th neighbour of that list is not the n-th edge of the
+column store. Callers (`algo.apsp`, `algo.bellmanford`, `algo.steinerTree`, `SQLFunctionAstar`,
+`SQLFunctionBellmanFord`, `algo.dijkstra.singleSource`) now read the edge records in that state, which is
+slower and exact, instead of a weight belonging to another edge. This is the same "say unknown rather than
+guess" convention `countEdgesBetween` and `getMeanEdgesPerConnectedPair` already use.
+
+The second is `edgeWeightsOf(nodeId, direction, propertyName, defaultWeight, edgeTypes...)`, which returns one
+node's neighbours and their weights together and is now **the only supported way to read an edge property
+positionally**. Pairing `getNeighborIds` with `getEdgeProperty` by hand is wrong in two ways that produce a wrong
+answer rather than an error: a multi-type neighbour list is merged and sorted across types while the property
+columns are per type, and `DIRECTION.BOTH` has no column at all - a provider resolves `OUT` and `IN` only, so a
+`BOTH` lookup returns `null` for every edge. `bellmanFord()`'s direction argument *defaults* to `BOTH`, so the
+plain three-argument `bellmanFord(src, dst, 'weight')` had been unit-weighting the entire graph the moment a
+view existed; `astar()` with `direction: 'BOTH'` priced every edge at 0.0, making all paths tie. Its companion
+`servesEdgeProperty(propertyName, edgeTypes...)` answers the gating question. `hasEdgeProperties()` answers only "are there edge property columns at all", so a view built
+with `.withEdgeProperties("distance")` answered yes to a call asking for `cost` - and since a missing column and
+an edge with no value both come back as `null`, the caller could not tell them apart and treated the entire graph
+as unweighted. That is the same wrong answer as a misaligned weight, reached from the other direction, and it
+silently inverted results: on a graph where `X-Y-Z` costs 2.0 and the direct `X-Z` hop costs 50.0, unit weights
+make the 50.0 hop win. `algo.apsp`, `algo.bellmanford`, `algo.steinerTree`, `algo.dijkstra.singleSource`,
+`SQLFunctionAstar` and `SQLFunctionBellmanFord` now all gate on it and fall back to the edge records otherwise.
+`SQLFunctionBellmanFord` additionally passed `null` as the edge type to `getEdgeProperty`, which can never
+resolve a column store, so its CSR path had been using a unit weight for every edge unconditionally.
+
+[#6301](https://github.com/ArcadeData/arcadedb/issues/6301)
+
+## The phase a graph-algorithm call spends its time in is now abortable too (#6295, #6302)
+
+#6216 and #6264 gave every iteration-shaped `algo.*` knob a checkpoint inside the loop it drives, on the
+principle that for time there is no honest ceiling to pick, so a long run should be **abortable** rather than
+forbidden. Both picked their procedures by asking "does it have an iteration knob?". Two blind spots follow
+from that question, and this release closes both.
+
+### The dominant phase is not always the loop the knob drives (#6295)
+
+`arcadedb.command.timeout` set to 1000 ms, on a 2000-node graph:
+`CALL algo.hashgnn({embeddingDimension: 4096, iterations: 1})` **ran for 112,988 ms and returned a result** -
+the deadline overshot by 113x and never observed. `algo.hashgnn`'s MinHash reduction runs *after* the
+`iterations` loop and costs `4 x embeddingDimension²` operations per node, and that bounded per-node figure is
+then multiplied by an unbounded node count. The lens missed it because `embeddingDimension` *has* a ceiling
+(#6065 capped it at 4096), which made it look handled.
+
+The question that finds this shape is **"which loop over the node count has no checkpoint"**, not "which knob
+has no cap". Asking it across the package also found the pre-loop initialisation of `algo.hashgnn`,
+`algo.fastrp` and `algo.graphsage`, and `algo.slpa`'s post-processing and its O(degree²) `mostFrequent`. All
+now carry a checkpoint.
+
+### A guard belongs wherever the work is unbounded, not only where a knob multiplies it (#6302)
+
+The four densest procedures in the package had no guard at all, and `algo.apsp` makes the case on its own: the
+#6263 working-memory budget caps its distance matrix at `arcadedb.cypher.algoMaxWorkingMemory`, whose 64 MB
+floor **admits n ≈ 2890**, and 2890³ is ~2.4e10 iterations of the Floyd-Warshall triple loop. That is minutes
+of CPU on one query thread during which `Thread.interrupt()`, `arcadedb.command.timeout` and the client
+cancelling all did nothing. The budget and the timeout are meant to be complementary halves of one guarantee,
+and the memory half was waving through a run the time half could not stop.
+
+A sweep over all 68 procedures asking "can one call of this run for minutes on an accepted input?" settled the
+rest in one pass. Every procedure whose dominant loop is superlinear in the graph is now abortable:
+`algo.apsp`, `algo.kShortestPaths`, `algo.steinerTree`, `algo.mst`, `algo.bellmanford`, `algo.betweenness`,
+`algo.closeness`, `algo.harmonic`, `algo.eccentricity`, `algo.maxFlow`, `algo.msa`, `algo.knn`,
+`algo.hierarchicalClustering`, `algo.clique`, `algo.allSimplePaths`, `algo.kTruss`, `algo.triangleCount`,
+`algo.localClusteringCoefficient`, `algo.densestSubgraph`, `algo.bipartiteMatching`, `algo.voteRank` and
+`algo.richClub`.
+
+Procedures that make a single O(V + E) pass are deliberately left alone: one pass costs what loading the graph
+and emitting the rows already cost, so a checkpoint inside it would bound nothing the surrounding pipeline does
+not. One gap is named rather than hidden: `algo.localClusteringCoefficient`'s CSR path hands the whole
+computation to a `GraphAlgorithms` kernel that counts triangles across a thread pool, and the `WorkCheckpoint`
+hook is specified to be called between iterations on the calling thread - covering that kernel is a change to
+how it partitions its work, not a checkpoint that can be dropped in.
+
+[#6295](https://github.com/ArcadeData/arcadedb/issues/6295)
+[#6302](https://github.com/ArcadeData/arcadedb/issues/6302)
+
+## `algo.mst`'s edge arrays are priced against the working-memory budget (#6300)
+
+#6263 reserved the dense working set of every `algo.*` procedure that builds one, choosing them by two
+criteria: sized by a knob, or quadratic in the node count. `algo.mst` is neither - it is linear in the **edge**
+count, three parallel arrays plus the index sort, 24 bytes per edge - which reads like the graph paying for
+itself. But linear in the edge count is not small: the edge count is the largest linear dimension a graph has,
+usually an order of magnitude above the node count, and at 100M edges that is ~2.4 GB requested with no check
+and no error naming what asked for it, i.e. exactly the `OutOfMemoryError` shape #6065, #6216 and #6263 exist
+to replace with a client error. "Linear" was never the criterion; the criterion is whether the caller can
+predict a ceiling.
+
+The reservation is made **as the counting pass runs** rather than once it has finished. Both refuse the same
+calls, but a check afterwards first pays in full for a traversal it will then throw away - the same argument
+that puts `algo.steinerTree`'s reservation ahead of its adjacency build. The new
+`MemoryBudget.capacityFor(bytesPerItem)` is what hands the walk its own stopping rule; the refusal itself still
+goes through `MemoryBudget.reserve`, so the message names the same component and the same setting either way.
+
+[#6300](https://github.com/ArcadeData/arcadedb/issues/6300)
+## A super-node's read walk keeps its recency order for the whole walk, not just the first 1,024 entries (#6064)
+
+`arcadedb.graph.supernodeInterleaveRounds` (#6048) was a **cliff**. Up to `rounds × stripes` entries - 64 × 16 =
+1,024 by default - a promoted super-node's read walk took one entry per stripe chain per turn, which is what
+puts an edge of recency rank `r` back at a position of order `r` (#6044). The very next entry froze the
+rotation: the chain holding the turn was drained to exhaustion, then the next, then the next. Past 1,024 the
+returned position stopped having any relation to recency, and the error grew with the vertex's DEGREE again -
+the exact failure #6044 fixed, pushed past a constant.
+
+A query with a small `LIMIT` never reaches the cliff. A query with a **large but still bounded** one - an
+export, a batch job, paginated admin tooling, `MATCH (h)-[:LINK]->(x) RETURN x LIMIT 5000` - fell off it
+silently: it asked for a bounded result, got one, and the newest edges it expected near the front were spread
+across the whole list. The only lever was raising `supernodeInterleaveRounds` for every unbounded read in the
+database too, which is precisely the full-walk locality cost #6048 removed.
+
+The rotation now **widens** instead of stopping. Past `rounds × stripes` entries it keeps turning, but takes
+`rounds` entries from each chain per turn instead of one, doubling that batch on every completed round. Both
+properties hold at once:
+
+- **Locality** (what #6048 was about): the chain switches over a walk of `D` entries drop from `D` to about
+  `stripes × log D`, and once the batch outgrows a chunk every visit is a sequential run through one chain, so
+  the resident-page pressure the interleaving costs decays instead of persisting. Counted against the previous
+  degrade on a 1,000,000-edge walk at the defaults, that is ~1,184 chain switches against ~1,040 - 0.1% of the
+  entries walked, either way.
+- **Rank fidelity** (what #6064 is about): an entry at depth `d` in its chain is emitted no later than the end
+  of the batch that reaches depth `d`, which is at most twice `d`, so its position stays within a constant
+  factor of its true rank for the WHOLE walk. Measured on a 3,000-edge super-node at 16 stripes and 4 rounds
+  (a 64-entry threshold, deliberately small to put most of the walk past it), the worst position/rank ratio is
+  2.4; before, rank 40 came back at position 2,386, a ratio of 58.
+
+No new setting, and nothing has to be told what the query's `LIMIT` was - which is the alternative this
+replaces, and it would have meant threading a "how many do you actually need" hint from every query engine's
+execution plan down into `EdgeLinkedList`, across an iterator API that has no concept of one.
+`supernodeInterleaveRounds` keeps its meaning (how long the walk stays at one entry per turn) and its `0`
+still disables interleaving entirely, giving immediate concatenation in the pre-#6044 order. Read-side only:
+no on-disk format change, no migration.
+
+[#6064](https://github.com/ArcadeData/arcadedb/issues/6064)
+## A schema probe spelled `LIMIT 0` gets a RowDescription over a row source the schema cannot describe (#6185)
+
+`SELECT expand(shortestPath(#1:0, #1:5)) LIMIT 0` is a schema probe, and #6172 had already made a probe
+describable no matter how its rows are computed: when the statement returns nothing, the Postgres wire protocol
+replays it without the clause that empties it and reads the columns off the first row, which is the only way to
+name the columns of a row source that is not a schema type - a graph function, a `TRAVERSE`, a `MATCH`, a constant
+table. The trigger for that replay looked only at the `WHERE` clause, so a client that spells the probe `LIMIT 0` -
+Tableau and several JDBC/BI tools do - was answered with an empty RowDescription again, exactly as before the fix.
+
+The trigger is now "the statement is empty by construction", the same question the SQL planner asks in #6174 when
+it folds the fetch away, and it is read at every level of the query, so `LIMIT 0` on the probed subquery counts as
+well as `LIMIT 0` on the statement the client sent. Only a literal `LIMIT 0` qualifies (`Limit.isAlwaysEmpty()`): a
+bound `LIMIT ?` belongs to one execution, and the replay must not be triggered by a value the next execution can
+change.
+
+The two spellings are deliberately not answered in the same order, because they do not carry the same intent. The
+replay evaluates the query's projection for real, once, on one row - the caveat that has been documented on
+`sampleProbeColumns` since #6172 - so a projected function with a side effect runs once per probe that takes that
+path. `WHERE 1=0` has no purpose other than probing, so it is replayed first, as it always was. `LIMIT 0` is also
+how a client asks an expensive query for nothing at all, so it is replayed only after the static resolution of the
+row source has come back with nothing: a `LIMIT 0` over a shape the schema can describe is answered from the
+schema, without evaluating anything, and only the shapes that cannot be answered any other way are replayed.
+
+[#6185](https://github.com/ArcadeData/arcadedb/issues/6185)
+## An always-true filter is dropped at plan time instead of being evaluated once per record (#6184)
+
+The mirror of #6174. That issue taught the planner to recognise a filter that is false for every record; a filter
+that is *true* for every record was still built as a filter step and evaluated per record, so `SELECT FROM C` and
+`SELECT FROM C WHERE 1=1` - the same query, written twice - produced two different plans:
+
+```
+SELECT FROM C                    -> + FETCH FROM TYPE C
+                                      + FETCH FROM BUCKET 1 (C_0) ASC
+
+SELECT FROM C WHERE 1=1          -> + FETCH FROM TYPE C WITH FILTER
+                                      + SCAN WITH FILTER BUCKET 1 (C_0)
+                                        1 = 1
+```
+
+The second paid a predicate evaluation per record, and lost the plain bucket fetch, to learn something the
+statement had already said.
+
+Nothing was stuck for want of a rule. `BooleanExpression.isAlwaysTrue()` had existed all along and was overridden
+by `AndBlock`, `OrBlock`, `ParenthesisBlock` and `NotBlock` - but **no leaf could implement it**, because the
+signature took no `CommandContext` and folding a comparison needs one to reach `operator.execute(...)`. So
+`BinaryCondition` never overrode it and the recursion always bottomed out at `false`: the method had no consumer
+outside the AST's own recursion, and `NOT (1=1)` was not folded as always-*false* either, even though
+`NotBlock.isAlwaysFalse` delegates to exactly this method for its negated branch.
+
+`isAlwaysTrue` now takes a `CommandContext`, the shape `isAlwaysFalse` got when it was introduced. The no-argument
+form is gone rather than kept alongside it - it had no caller outside the four AST classes that recursed into it,
+so two forms would only have been two things to keep consistent. `BinaryCondition` folds both verdicts through one
+private helper under the same restriction: **both** operands must be `Expression.isLiteral()`, which excludes a
+bound parameter (the plan outlives the execution that bound it) and a function call (nothing on `SQLFunction` marks
+a function as pure). `WHERE ? = 1` and `WHERE uuid() IS NOT NULL` are therefore still planned as scans, as they
+must be.
+
+The planner drops the where clause in `init()`, before the clauses are rearranged into index searches, so
+everything downstream sees the statement it would have seen without a `WHERE` at all: the projected properties
+computed for column pushdown, the choice between `FetchFromTypeWithFilterStep` and `FetchFromTypeExecutionStep`,
+and the hardwired `count(*)` plan. `NOT (1=0)` folds to always-true and `NOT (1=1)` to the always-false
+`EMPTY RESULT` of #6174, both for free through the existing `NotBlock` delegation.
+
+Dropping a filter is a wider step than folding one to an empty result: an always-false fold can only be wrong by
+returning too few rows, while dropping an always-true filter changes which fetch step is chosen. The regression
+test therefore compares the folded plan against the plan of the same statement written without its `WHERE` - step
+class by step class, so the fetch step and the bucket steps under it both have to agree - and then compares the
+records returned, their order, and the `readRecord` count.
+
+One place the filter survives the whole-clause fold is behind an index. `WHERE 1=1 AND indexedProperty = 'x'` is not
+true for every record, so the clause stays - and then the index search takes the second term as its key and hands the
+`1=1` back as a *residual condition*, which was chained as a `FILTER ITEMS WHERE` step and evaluated once per index
+entry. A residual that is true for every record is now recognised as no filter at all, on both the single-index and
+the parallel-index paths, so the plan is the one the same statement without the constant term would have got. The
+index itself was never at risk: it was selected before and after, the residual only rode along behind it.
+
+One `OrBlock` detail changed with it: an empty disjunction used to answer `isAlwaysTrue()` with `true`. It now
+answers `false`, matching what `isAlwaysFalse` has always answered for the same block. Neither verdict reads it as
+the neutral element, even though that reading (an `OR` with no alternatives is `FALSE`) is available: the parser
+cannot produce an empty `OrBlock`, both answers are load-bearing - one drops the filter, the other replaces the plan
+with an empty source - and deducing either for a block that can only arrive by accident would trade correctness for
+an optimisation nothing can trigger. An empty `AndBlock`, by contrast, is exactly what a filter with no terms left
+looks like, so it does answer `isAlwaysTrue`, and that is what lets an emptied residual condition drop its step.
+
+**API note for code that extends the SQL parser**: `BooleanExpression.isAlwaysTrue()` is replaced by
+`isAlwaysTrue(CommandContext)` rather than kept alongside it, so an out-of-tree subclass that overrode the no-argument
+form no longer overrides anything. This is a compile error against the new signature and a silently inert override
+only if the subclass keeps the old method as an unrelated one; nothing inside ArcadeDB called the no-argument form
+outside the four AST classes that recursed into it.
+
+The value here is smaller than #6174's: nothing sends `WHERE 1=1` as a probe the way Spark sends `WHERE 1=0`, so
+this is symmetry and a small constant per record rather than a full scan avoided.
+
+[#6184](https://github.com/ArcadeData/arcadedb/issues/6184)
+## The HTTP query endpoints now have a hard row ceiling a caller cannot widen (#5719)
+
+**Breaking change.** `arcadedb.server.httpQueryMaxResultRows` is a new server setting, defaulting to
+**1,000,000**, that bounds the number of rows a single HTTP query or command response materializes. A
+deployment that relies on an HTTP caller pulling an unbounded result in one response - typically by sending
+`"limit": -1` - has to raise it or set it to `-1` to keep that working.
+
+The ceiling closes the gap that #5716 left open. `arcadedb.server.httpQueryDefaultLimit` (default 20,000)
+caps only the callers that state no limit of their own: since #5716 a request carrying a `limit` field, and a
+query carrying its own `LIMIT`, are both honored as written, because a response silently cut below what the
+caller asked for is exactly the defect #5711 fixed. The consequence is that an authenticated caller writing
+`SELECT FROM HugeType LIMIT 100000000` - or an application that builds `LIMIT n` from user input - could make
+the server serialize an arbitrarily large result into one JSON document. No privilege boundary moved (`limit:
+-1` was always available to the same actor), but the bar to reaching it accidentally dropped, and in a
+multi-tenant deployment the implicit 20,000 cap had been doing real protective work.
+
+The new setting is the HTTP twin of `arcadedb.server.grpcQueryMaxResultRows` and behaves the same way. A
+stated cap at or below the ceiling is the caller's own bound and is honored silently, truncation reported with
+`truncated` exactly as before. A larger one - or an unlimited `-1`/`0` - cannot widen the response past the
+ceiling, and a result that would exceed it **fails with HTTP 413 naming the setting** instead of being
+truncated: a truncated response indistinguishable from a complete one is what #5711 removed, and
+re-introducing it for the callers #5716 protects would only have moved it. The refusal is raised from inside
+the handler, so an auto-committed write command whose result nobody will ever see is rolled back rather than
+committed behind an error status.
+
+A finite default was chosen over a disabled one because every other resource ceiling the server ships -
+`httpBodyContentMaxSize`, `grpcQueryMaxResultRows`, `grpcStreamMaxMaterializedRows` - is finite by default, and
+a ceiling an operator has to discover before it protects anything protects nobody. At 1,000,000 it sits 50x
+above the default page cap, so a realistic paging or export client never meets it.
+
+The two settings cannot be configured into disagreeing. `httpQueryDefaultLimit` is itself lowered to the
+ceiling when it is configured above it (or left unlimited while the ceiling is not), so a caller that states
+no limit at all is never refused - it gets the ordinary reported truncation it has always got, at the lower of
+the two values. The refusal is for a caller that asked to go past the ceiling, never for one served by the
+default.
+
+Two things the ceiling deliberately does not bound, both worth knowing before sizing it. It bounds the size of
+a response, not the peak cost of refusing one: the rows are serialized up to the ceiling before the result
+turns out to exceed it, and the work is then thrown away, so a client that routinely brushes the ceiling
+produces real garbage rather than merely a smaller payload - the same trade the gRPC path makes, and the price
+of never truncating silently. And it bounds the response, not the work a command does to produce it: a write
+that returns its rows (`UPDATE ... RETURN AFTER`) applies to every matching record before the response is
+built, and is then rolled back with the refusal, so the ceiling is not a guard against write amplification.
+
+Two paths that used to escape any bound are bounded at the fetch rather than at serialization: the `LIMIT` the
+POST endpoints push down into a command that states none is now capped by the ceiling (an unlimited `limit`
+used to push nothing down at all), and `profileExecution: detailed`, which drains the whole result set into
+memory before serializing it, drains at most one row past the cap the response will honor. The TimeSeries
+query endpoint enforces the ceiling on both of its shapes - the raw rows, and the buckets of an `aggregation`
+request, which reads no `limit` at all and so had the ceiling as its only possible bound - but only over the
+response it builds: `TimeSeriesEngine.query()` materializes the whole requested range before any limit is
+known, so bounding that fetch needs an engine-level change and is left as follow-up work.
+
+On the status code: 413 is conventionally about an oversized *request* body, and no standard code says "the
+response you asked for is too large to send". 413 is the closest fit and keeps the refusal in the 4xx range,
+where it belongs - the request is answerable, just not as written - but a client that maps status codes
+mechanically should note that the fix is to narrow or page the query, not to shrink the request body. The
+error body distinguishes the two: this refusal names `arcadedb.server.httpQueryMaxResultRows` in its `error`
+field and carries the ceiling in `exceptionArgs`, in every server mode.
+
+[#5719](https://github.com/ArcadeData/arcadedb/issues/5719)
+## An ambiguous HA endpoint is reported again when the collision changes, not once per node lifetime (#6297)
+
+The warning #6267 added for a withheld peer-to-peer endpoint - two peers resolving to one `host:port`, so
+the address identifies at most one of them and nothing can say which - was logged at most once per
+`RaftHAServer`, which in a server process means once for its lifetime. That is right up until the operator
+acts on it. They read the line, declare the two ports it named, and the *next* collision - a different pair,
+or a peer added at runtime onto an address already taken - is the one nobody is told about, because the latch
+is spent.
+
+The latch is now the rendered collision list itself. An unchanged verdict stays quiet however often the
+resync and verify paths ask, a changed one is reported whatever produced it, and a pass that finds no
+collision clears the memory, so a misconfiguration that is fixed and later reintroduced is announced rather
+than swallowed as "already reported". That last part needs the callers to hand over the *clean* views too,
+which is the half that was missing: both `getRoutingTable` and the per-peer accessor used to consult the
+warning only when the current view was already ambiguous, so the stored verdict outlived the collision it
+described. It covered HTTPS as well, since only the group-wide HTTP resolver was unconditional. The client
+routing-table warning now also names the peers that collided and the address they share, which its
+peer-to-peer twin already did. `httpAddressAmbiguous` on `GET /api/v1/cluster` is unchanged and remains the
+always-current view, recomputed per request.
+
+### `EXPLAIN` and `PROFILE` now name the RID push-down (#6279)
+
+`MATCH NODE` gained an `[id: <rid>]` marker alongside the existing `[index: ]`, `[partition: ]` and
+`[filter: ]`, so a plan says whether the `ID(x) = <literal|parameter>` equality was lifted out of the `WHERE`
+clause and into the node lookup at plan time:
+
+```
++ MATCH NODE (a) [id: #1:0]
++ MATCH NODE (b) [id: #4:0]
+```
+
+That is the optimization #3216 was closed on, and its resolution asks users to write the query so it fires -
+with parameters or literals rather than a value only known per row. Until now the plan was the one place that
+would not confirm it had. `EXPLAIN` answers without running the query; a push-down that can only be resolved
+per row (#3864) is named as `[id: per-row]` rather than valued.
+
+### The test suite
+
+The rest of this work is internal. A server test's teardown reset the configuration before the cleanup that
+resolves its paths from it, and because `SERVER_DATABASE_DIRECTORY` defaults to
+`${arcadedb.server.rootPath}/databases` over a root path that defaults to null - and an unresolvable variable
+resolves to the empty string rather than failing - the cleanup was asking to recursively delete `/databases0`
+while the test's own `./target/databases0` survived teardown untouched. The order is fixed and a guard now
+refuses a path that did not resolve, so a future reordering degrades to a logged no-op instead of a
+`deleteRecursively` at the filesystem root.
+
+Alongside it, the wall-clock pass of #6260 was extended to the `server` and `network` suites, and the
+`@Timeout` annotations in the engine suite were classified the same way: a bound that separates a bounded
+operation from an unbounded one is a tripwire and is sized clear of an honest budget plus a stop-the-world
+pause, while a bound that *is* the assertion - a laziness or complexity claim with no other practical
+expression - is measured on the stall-discounted clock instead. Two tests that reported coverage they did not
+have were repaired rather than deleted: one asserted only that two elapsed times were not negative, the other
+could not tell the count push-down from the full type scan it exists to replace.
+
+[#6297](https://github.com/ArcadeData/arcadedb/issues/6297)
+[#6280](https://github.com/ArcadeData/arcadedb/issues/6280)
+[#6279](https://github.com/ArcadeData/arcadedb/issues/6279)
+[#6270](https://github.com/ArcadeData/arcadedb/issues/6270)

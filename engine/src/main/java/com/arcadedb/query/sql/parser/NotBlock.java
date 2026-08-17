@@ -134,11 +134,12 @@ public class NotBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean isAlwaysTrue() {
-    if (negate)
+  public boolean isAlwaysTrue(final CommandContext context) {
+    if (sub == null)
       return false;
 
-    return sub.isAlwaysTrue();
+    // NOT <always false> is true for every record; without the NOT this block is a pass-through
+    return negate ? sub.isAlwaysFalse(context) : sub.isAlwaysTrue(context);
   }
 
   @Override
@@ -147,7 +148,7 @@ public class NotBlock extends BooleanExpression {
       return false;
 
     // NOT <always true> is false for every record; without the NOT this block is a pass-through
-    return negate ? sub.isAlwaysTrue() : sub.isAlwaysFalse(context);
+    return negate ? sub.isAlwaysTrue(context) : sub.isAlwaysFalse(context);
   }
 }
 /* JavaCC - OriginalChecksum=1926313b3f854235aaa20811c22d583b (do not edit this line) */

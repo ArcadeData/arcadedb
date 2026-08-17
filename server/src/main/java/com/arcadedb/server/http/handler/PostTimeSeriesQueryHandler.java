@@ -114,6 +114,16 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
 
     final List<Object[]> rows = engine.query(fromTs, toTs, columnIndices, tagFilter);
 
+    // The hard ceiling no caller can widen (issue #5719): a caller that states a huge 'limit', or an unlimited
+    // one, is refused rather than served an arbitrarily large response. Checked here, before the JSON is built,
+    // so the ceiling at least keeps the second and larger copy of the range out of the heap - it cannot keep the
+    // first one out, because engine.query() above materializes the whole range before any limit is known. That
+    // is a bound on the fetch, and it belongs in the engine, not in this handler.
+    final int maxResultRows = getMaxResultRows();
+    final int ceiling = applyMaxResultRows(limit, maxResultRows);
+    if (ceiling != limit && rows.size() > ceiling)
+      throw resultSetTooLarge(maxResultRows);
+
     // Build column names for response
     final JSONArray colNames = new JSONArray();
     if (columnIndices == null) {
@@ -193,6 +203,15 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
         tagFilter);
 
     final List<Long> timestamps = aggResult.getBucketTimestamps();
+
+    // The same ceiling the raw branch enforces (issue #5719). This branch reads no 'limit' at all, so the
+    // ceiling is the only bound there is: a small 'bucketInterval' over a wide range produces one response row
+    // per bucket, which is the same unbounded response the raw branch was refused for. The engine's own
+    // MAX_FLAT_BUCKETS only chooses between a flat array and a map, it is not a response-size bound.
+    final int maxResultRows = getMaxResultRows();
+    if (maxResultRows > 0 && timestamps.size() > maxResultRows)
+      throw resultSetTooLarge(maxResultRows);
+
     final JSONArray buckets = new JSONArray();
 
     for (final long ts : timestamps) {

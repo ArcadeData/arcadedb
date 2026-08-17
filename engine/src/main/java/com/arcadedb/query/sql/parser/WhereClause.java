@@ -219,6 +219,16 @@ public class WhereClause extends SimpleNode {
     return baseExpression != null && baseExpression.isAlwaysFalse(context);
   }
 
+  /**
+   * Whether this filter keeps every record, decidable from the statement alone (eg. {@code WHERE 1=1}), so that the
+   * planner can drop it and build the plan the statement without a WHERE would have got.
+   *
+   * @see BooleanExpression#isAlwaysTrue(CommandContext)
+   */
+  public boolean isAlwaysTrue(final CommandContext context) {
+    return baseExpression != null && baseExpression.isAlwaysTrue(context);
+  }
+
   public void setBaseExpression(final BooleanExpression baseExpression) {
     this.baseExpression = baseExpression;
   }

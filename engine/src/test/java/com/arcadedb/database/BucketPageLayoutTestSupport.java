@@ -20,10 +20,14 @@ package com.arcadedb.database;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.engine.MutablePage;
+import com.arcadedb.engine.PageId;
+import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -197,5 +201,97 @@ public abstract class BucketPageLayoutTestSupport extends TestHelper {
   protected static long numberProperty(final Result row, final String name) {
     final Object value = row.getProperty(name);
     return value == null ? 0L : ((Number) value).longValue();
+  }
+
+  /** The single row {@code CHECK DATABASE} answers with, run with or without {@code FIX}. */
+  protected Result checkDatabaseRow(final boolean fix) {
+    try (final ResultSet rs = database.command("sql", fix ? "check database fix" : "check database")) {
+      return rs.next();
+    }
+  }
+
+  /** {@code CHECK DATABASE} folds the per-bucket warning lists into a set, so this reads it as the collection it is. */
+  protected static Collection<?> warningsOf(final Result row) {
+    final Object warnings = row.getProperty("warnings");
+    return warnings == null ? List.of() : (Collection<?>) warnings;
+  }
+
+  /**
+   * Records a full SCAN returns. {@code count(@rid)} and not {@code count(*)}: the latter answers from the bucket's
+   * cached counter without reading a page, so the two disagree exactly when a slot the counter counts is one a scan
+   * skips - which is a difference several of these tests are about rather than something they may paper over.
+   */
+  protected long countRecords(final String typeName) {
+    final long[] total = new long[1];
+    database.transaction(() -> {
+      try (final ResultSet rs = database.query("SQL", "select count(@rid) as c from " + typeName)) {
+        total[0] = ((Number) rs.next().getProperty("c")).longValue();
+      }
+    });
+    return total[0];
+  }
+
+  /** The counter {@code count(*)} answers from: O(1), never a scan, and the other half of the comparison above. */
+  protected long countRecordsFromCounter(final String typeName) {
+    final long[] total = new long[1];
+    database.transaction(() -> {
+      try (final ResultSet rs = database.query("SQL", "select count(*) as c from " + typeName)) {
+        total[0] = ((Number) rs.next().getProperty("c")).longValue();
+      }
+    });
+    return total[0];
+  }
+
+  /** Records a scan returns holding exactly {@code value} - the count that notices a record handed out twice. */
+  protected long countRecordsHolding(final String typeName, final String value) {
+    final long[] total = new long[1];
+    database.transaction(() -> {
+      try (final ResultSet rs = database.query("SQL", "select count(@rid) as c from " + typeName + " where v = :v",
+          Map.of("v", value))) {
+        total[0] = ((Number) rs.next().getProperty("c")).longValue();
+      }
+    });
+    return total[0];
+  }
+
+  /**
+   * Runs {@code body} on the page holding {@code rid}, taken for modification so a write lands in the caller's
+   * transaction. The way every test here fabricates a physical shape the engine no longer produces - a legacy marker,
+   * a chain broken mid-flight, a slot freed behind the record that references it.
+   */
+  protected long onSlot(final RID rid, final PageAccess body) {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final int pageSize = ((PaginatedComponentFile) db.getFileManager().getFile(rid.getBucketId())).getPageSize();
+    final int pageNumber = (int) (rid.getPosition() / maxRecordsInPageOf(rid));
+    try {
+      return body.apply(db.getTransaction().getPageToModify(new PageId(db, rid.getBucketId(), pageNumber), pageSize, false));
+    } catch (final Exception e) {
+      throw new RuntimeException(e);
+    }
+  }
+
+  /** Content offset of {@code rid}'s slot on {@code page}, marker included: what the record table entry holds. */
+  protected int recordOffsetOf(final MutablePage page, final RID rid) {
+    final int slot = (int) (rid.getPosition() % maxRecordsInPageOf(rid));
+    // PAGE_RECORD_TABLE_OFFSET == PAGE_RECORD_COUNT_IN_PAGE_OFFSET(0) + SHORT_SERIALIZED_SIZE; one uint per slot.
+    return (int) page.readUnsignedInt(Binary.SHORT_SERIALIZED_SIZE + slot * Binary.INT_SERIALIZED_SIZE);
+  }
+
+  /** Frees a slot without touching anything that references it: an interrupted repair, or physical corruption. */
+  protected void freeSlotBehindItsBack(final RID rid) {
+    database.transaction(() -> onSlot(rid, page -> {
+      final int slot = (int) (rid.getPosition() % maxRecordsInPageOf(rid));
+      page.writeUnsignedInt(Binary.SHORT_SERIALIZED_SIZE + slot * Binary.INT_SERIALIZED_SIZE, 0L);
+      return 0L;
+    }));
+  }
+
+  private int maxRecordsInPageOf(final RID rid) {
+    return ((LocalBucket) database.getSchema().getBucketById(rid.getBucketId())).getMaxRecordsInPage();
+  }
+
+  @FunctionalInterface
+  protected interface PageAccess {
+    long apply(MutablePage page) throws Exception;
   }
 }

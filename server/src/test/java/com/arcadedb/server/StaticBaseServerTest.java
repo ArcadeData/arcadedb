@@ -46,9 +46,13 @@ public abstract class StaticBaseServerTest {
   @BeforeEach
   public void beginTest() {
     TestServerHelper.checkActiveDatabases();
-    TestServerHelper.deleteDatabaseFolders(5);
 
+    // Issue #6297: the configuration first, THEN the cleanup that resolves its paths. The previous class ends on a
+    // resetAll(), and SERVER_DATABASE_DIRECTORY read from a reset configuration resolves to '/databases' rather than
+    // to './target/databases', so cleaning first deleted nothing this class was about to write to.
     setTestConfiguration();
+
+    TestServerHelper.deleteDatabaseFolders(5);
 
     LogManager.instance().log(StaticBaseServerTest.class, Level.FINE, "Starting test...");
   }
