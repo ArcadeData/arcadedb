@@ -40,11 +40,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * #6065 capped every embedding-dimension knob at {@code MAX_EMBEDDING_DIMENSION} and #6216 priced the
  * random-walk buffers against a heap budget. Between them they left the largest allocation of these procedures
  * outside every budget: the matrices themselves. A dimension cap bounds one embedding <em>row</em> at 32 KB and
- * says nothing about a {@code nodeCount x dimension} matrix - at the default dimension of 128 the pair
- * {@code algo.node2vec} keeps costs about 2 KB per node, the same order as the walk buffer that was already
- * checked, and 2 GB at a million nodes. The {@code nodeCount x nodeCount} matrices of {@code algo.apsp},
- * {@code algo.simRank}, {@code algo.maxFlow} and {@code algo.kShortestPaths} have no knob at all: the graph
- * alone sizes them.
+ * says nothing about a {@code nodeCount x dimension} matrix - at the default dimension of 128 the pair of them
+ * {@code algo.node2vec} keeps alive costs about 2 KB per node, the same order as the walk buffer that was
+ * already checked, and 2 GB at a million nodes. The {@code nodeCount x nodeCount} matrices of
+ * {@code algo.apsp}, {@code algo.simRank}, {@code algo.maxFlow} and {@code algo.kShortestPaths} have no knob
+ * at all: the graph alone sizes them, and {@code algo.steinerTree}'s are sized by a caller-supplied list that
+ * nothing bounds.
  * <p>
  * The budget of #6216 was therefore generalised from walks to the whole working set of one call
  * ({@code arcadedb.cypher.algoMaxWorkingMemory}), and reservations accumulate over the call, so a procedure
