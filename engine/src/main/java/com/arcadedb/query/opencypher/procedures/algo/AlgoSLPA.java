@@ -124,7 +124,8 @@ public class AlgoSLPA extends AbstractAlgoProcedure {
     // buffers use, BEFORE the first row is allocated; `iterations + 1` is computed in long because at
     // Integer.MAX_VALUE the int form wraps to Integer.MIN_VALUE and died as a bare NegativeArraySizeException.
     final long rowCapacity = iterations + 1L;
-    checkBufferBudget(db, saturatingProduct(n, saturatingProduct(rowCapacity, WALK_ENTRY_BYTES) + WALK_ROW_OVERHEAD_BYTES),
+    checkBufferBudget(db,
+        saturatingProduct(n, saturatingSum(saturatingProduct(rowCapacity, WALK_ENTRY_BYTES), WALK_ROW_OVERHEAD_BYTES)),
         "label memory", "iterations=" + iterations + " over " + n + " nodes");
     if (rowCapacity > Integer.MAX_VALUE)
       throw new IllegalArgumentException(getName() + "(): iterations=" + iterations + " needs " + rowCapacity

@@ -317,6 +317,24 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   }
 
   /**
+   * Adds two non-negative longs, saturating at {@link Long#MAX_VALUE} instead of wrapping.
+   * <p>
+   * The companion to {@link #saturatingProduct(long, long)}, and required wherever a footprint estimate mixes the
+   * two: a saturated product plus a per-row overhead wraps to a large <em>negative</em> number, and a negative
+   * estimate passes {@link #checkBufferBudget} unconditionally - the budget check would be silently disabled by
+   * exactly the input it exists to refuse. No current caller can reach that (every estimate here is bounded by an
+   * {@code int}-sized count), so this closes the shape rather than an instance.
+   * </p>
+   */
+  protected static long saturatingSum(final long a, final long b) {
+    try {
+      return Math.addExact(a, b);
+    } catch (final ArithmeticException e) {
+      return Long.MAX_VALUE;
+    }
+  }
+
+  /**
    * Cooperative abort check for the CPU-bound loops of the algorithm procedures.
    * <p>
    * The knobs that drive those loops ({@code iterations}, {@code restarts}, {@code simulations},
