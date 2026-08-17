@@ -2262,8 +2262,7 @@ this is not one, while everything that walks or rewrites the CHAIN treats the tw
 
 **Databases written before this** still hold the ambiguous shape, and no reader can tell it from an ordinary
 multi-page record - only the pointer that leads to it can. Rather than have every reader tolerate the ambiguity
-for ever, `CHECK DATABASE` now follows each placeholder pointer (one page read per placeholder, on a shape that is
-rare to begin with), reports a content record still stored the old way as an error naming its RID, and
+for ever, `CHECK DATABASE` now follows each placeholder pointer, reports a content record still stored the old way as an error naming its RID, and
 `CHECK DATABASE FIX` repairs it by rewriting that one marker. It is a repair and never a deletion: not a byte of
 the record, its chunk header or its chain is touched.
 
@@ -2274,5 +2273,11 @@ record and the write lands on content the placeholder pointer still references. 
 release before this one already had - the marker is what closes it, and `CHECK DATABASE FIX` is what applies the
 marker to data written earlier. A read-only scan of an unrepaired database merely returns the record twice; a
 read-modify-write over one is worth the FIX first.
+
+Following the pointers costs `CHECK DATABASE` one page fetch per placeholder POINTER - every one of them, not only
+the chunked case it is looking for, because the marker on the other end is the only thing that tells the two apart.
+A pre-#6149 bucket dense with placeholders therefore pays one extra fetch each, of pages the same pass reads
+anyway, on an operation that already reads every page of the bucket and walks the full chunk chain of every
+multi-page record.
 
 [#6196](https://github.com/ArcadeData/arcadedb/issues/6196)

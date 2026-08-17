@@ -18,6 +18,7 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponentFile;
@@ -63,6 +64,8 @@ class Issue6196PlaceholderContentChainTest extends BucketPageLayoutTestSupport {
 
   /** Continuation chunks the record that SEALS page 0 owns - every chunk in the bucket that is not the content's. */
   private long chunksOfTheSealingRecord;
+  /** The record that seals page 0 by spilling: an ordinary multi-page record, and the only other chunk head around. */
+  private RID  sealingRecord;
 
   /**
    * The issue as reported: the placeholder's content must be a document exactly once, under the RID the user knows,
@@ -165,6 +168,82 @@ class Issue6196PlaceholderContentChainTest extends BucketPageLayoutTestSupport {
   }
 
   /**
+   * The commit-time half of the marker: the disjoint-slot merge replays a head chunk only onto a committed slot that
+   * still carries the marker the write started from, and the two kinds are what tell it which one that is.
+   * <p>
+   * Driven through {@code rebaseRecordOnPage} directly, in the manner {@code Issue6129ChunkedSlotMergeTest} already
+   * uses for the tracking guards and for the same reason: the shape transition this refuses - a slot that turns from
+   * a record's head chunk into a placeholder's content, or back, under a concurrent commit - is one no write path
+   * produces today, so a test that went through the engine would prove nothing about the guard. What must not happen
+   * is that a future one reaches it and is silently mis-merged, which is what the two refusals below assert.
+   * <p>
+   * The two positive controls are not decoration: without them a guard that refused EVERYTHING would pass this test.
+   */
+  @Test
+  void aHeadChunkIsOnlyReplayedOntoTheMarkerItsWriteStartedFrom() {
+    final RID content = contentRidOf(placeholderWithChainedContent());
+
+    database.begin();
+    try {
+      final LocalBucket bucket = bucketOf(TYPE);
+
+      // The CONTENT record's head chunk: replayable as placeholder content, refused as a record.
+      final byte[] contentImage = chunkImageOf(content);
+      assertThat(rebase(bucket, content, contentImage, TransactionContext.SLOT_KIND_FIRST_CHUNK))
+          .as("a content head must not be replayed under the kind of a record's own head").isFalse();
+      assertThat(rebase(bucket, content, contentImage, TransactionContext.SLOT_KIND_FIRST_CHUNK_PLACEHOLDER_CONTENT))
+          .as("and must be replayable under its own").isTrue();
+
+      // The record that SEALED page 0: an ordinary multi-page record, and the mirror of the above.
+      final byte[] recordImage = chunkImageOf(sealingRecord);
+      assertThat(rebase(bucket, sealingRecord, recordImage,
+          TransactionContext.SLOT_KIND_FIRST_CHUNK_PLACEHOLDER_CONTENT))
+          .as("a record's head must not be replayed under the kind of a content head").isFalse();
+      assertThat(rebase(bucket, sealingRecord, recordImage, TransactionContext.SLOT_KIND_FIRST_CHUNK))
+          .as("and must be replayable under its own").isTrue();
+    } finally {
+      database.rollback();
+    }
+
+    database.transaction(() -> assertThat(placeholderRecordCount()).isEqualTo(1L));
+    checkDatabase();
+  }
+
+  /**
+   * The image the disjoint-slot merge keeps for a head chunk: everything after the marker, i.e.
+   * {@code [int chunkSize][long nextChunk][chunkSize bytes of content]}. Replaying it unchanged is a no-op write, so
+   * the positive controls above assert the guard and not the content.
+   */
+  private byte[] chunkImageOf(final RID rid) {
+    final byte[][] image = new byte[1][];
+    onSlot(rid, page -> {
+      // Both markers this test meets are one zigzag byte, so the chunk header starts right after it.
+      final int chunkHeaderPos = recordOffsetOf(page, rid) + 1;
+      final int size = Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE + page.readInt(chunkHeaderPos);
+      image[0] = new byte[size];
+      page.readByteArray(chunkHeaderPos, image[0], 0, size);
+      return 0L;
+    });
+    return image[0];
+  }
+
+  /** Replays {@code image} onto the slot of {@code rid} under {@code kind}, as a commit-time slot rebase would. */
+  private boolean rebase(final LocalBucket bucket, final RID rid, final byte[] image, final byte kind) {
+    final boolean[] rebased = new boolean[1];
+    onSlot(rid, page -> {
+      rebased[0] = bucket.rebaseRecordOnPage(page, (int) (rid.getPosition() % bucket.getMaxRecordsInPage()), image,
+          image, kind);
+      return 0L;
+    });
+    return rebased[0];
+  }
+
+  /** Placeholder pointers the bucket holds, so the rolled-back replays above are shown to have changed nothing. */
+  private long placeholderRecordCount() {
+    return (Long) bucketStats(TYPE).get("totalPlaceholderRecords");
+  }
+
+  /**
    * The fixture #6196 needs: a placeholder POINTER whose CONTENT record is itself a chunk chain. Both halves are
    * required - a page with a free tail of exactly zero (since #6149 the only shape that still produces a pointer) and
    * a value no page can host whole.
@@ -175,7 +254,7 @@ class Issue6196PlaceholderContentChainTest extends BucketPageLayoutTestSupport {
       database.getSchema().createDocumentType(TYPE, 1).createProperty("v", Type.STRING);
       placeholder[0] = database.newDocument(TYPE).set("v", "p").save().getIdentity();
     });
-    sealFirstPage(TYPE);
+    sealingRecord = sealFirstPage(TYPE);
     chunksOfTheSealingRecord = (Long) bucketStats(TYPE).get("totalChunks");
 
     database.transaction(() -> placeholder[0].asDocument(true).modify().set("v", HUGE).save());

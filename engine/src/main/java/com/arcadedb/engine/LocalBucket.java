@@ -1302,9 +1302,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * plain {@link #FIRST_CHUNK} marker, indistinguishable from a record of its own and therefore handed out a second
    * time by every scan.
    * <p>
-   * Only {@link #check} asks, and only about a slot a pointer led it to, so the cost is one page read per placeholder
-   * on a shape that is rare to begin with. Never throws: a pointer that cannot be followed is a different problem,
-   * reported by the link pass of CHECK DATABASE rather than mistaken for this one.
+   * Only {@link #check} asks, and only about a slot a pointer led it to, so it costs one page fetch per placeholder
+   * POINTER - every one of them, not only the chunked case this is looking for, because the marker is the only thing
+   * that tells the two apart and reading it is the whole question. That is the deliberate trade, and the scale to
+   * judge it against is what {@code check} already spends on the same pass: it reads every page of the bucket and
+   * walks the FULL continuation chain of every multi-page record. A pre-#6149 bucket dense with placeholders pays one
+   * more fetch each, of pages the walk itself touches anyway, on an operation that is already O(pages + chunks).
+   * <p>
+   * Never throws: a pointer that cannot be followed is a different problem, reported by the link pass of CHECK
+   * DATABASE rather than mistaken for this one.
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
