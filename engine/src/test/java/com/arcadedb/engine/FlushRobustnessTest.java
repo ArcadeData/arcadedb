@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.PageManagerFlushThread.PagesToFlush;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -114,13 +115,17 @@ class FlushRobustnessTest extends TestHelper {
     // The no-progress window is read per call from the database's own configuration.
     db.getConfiguration().setValue(GlobalConfiguration.FLUSH_ALL_PAGES_TIMEOUT, 300L);
     try {
-      final long start = System.currentTimeMillis();
+      final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
       final boolean flushed = flush.waitAllPagesOfDatabaseAreFlushed(db);
-      final long elapsed = System.currentTimeMillis() - start;
       assertThat(flushed).as("the wait must report that it gave up (#4928)").isFalse();
-      assertThat(elapsed)
-          .as("the wait must give up loudly after the no-progress window instead of spinning forever (#4928)")
-          .isBetween(250L, 10_000L);
+      // The floor keeps the test honest - it proves the wait really did block on the no-progress window rather
+      // than failing instantly for some unrelated reason. It reads raw wall clock on purpose: a JVM stall only
+      // makes "at least this long" more true, so there is nothing to discount.
+      assertThat(stopwatch.elapsedMs())
+          .as("the wait must actually block on the no-progress window (#4928)")
+          .isGreaterThanOrEqualTo(250L);
+      stopwatch.assertGaveUpWithin(10_000L,
+          "giving up after the 300ms no-progress window from spinning forever on a page nothing will flush");
     } finally {
       db.getConfiguration().setValue(GlobalConfiguration.FLUSH_ALL_PAGES_TIMEOUT, 60_000L);
       flush.pageIndex.remove(stuckPageId);

@@ -21,6 +21,7 @@ package com.arcadedb.database.async;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -94,16 +95,14 @@ class AsyncShutdownPromptHelpingBailTest extends TestHelper {
       // The wedge stays in place for the whole shutdown: worker 0 is handled first by close() and
       // must exit on the consumed FORCE_EXIT alone (worker 1 is only interrupted afterwards, via
       // the offer-failed path, and honors it).
-      final long start = System.currentTimeMillis();
+      final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
       async.close();
-      final long elapsed = System.currentTimeMillis() - start;
 
       // Without the bail: worker 0 sat in the helping loop for the full 8s grace period before the
       // escalation interrupt. With it: worker 0 exits within one offer window of consuming the
       // marker.
-      assertThat(elapsed)
-          .as("close() must not pay the full grace period for a worker that already consumed FORCE_EXIT")
-          .isLessThan(5_000);
+      stopwatch.assertGaveUpWithin(5_000,
+          "one offer window from the full 8s grace period a worker that already consumed FORCE_EXIT used to pay");
     } finally {
       releaseWedge.countDown();
       proceed.countDown();

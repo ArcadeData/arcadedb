@@ -503,7 +503,9 @@ public class PluginApiSpec implements OpenApiContributor {
     result.addProperty("localPeerId", SpecBuilders.string("Leader's peer identifier"));
     result.addProperty("localChecksums", SpecBuilders.object("Leader's file name to checksum map"));
     result.addProperty("peers", SpecBuilders.arrayOf(peerResult, "Every other peer's comparison result"));
-    result.addProperty("overallStatus", SpecBuilders.string("ALL_CONSISTENT or INCONSISTENCY_DETECTED"));
+    result.addProperty("overallStatus", SpecBuilders.string(
+        "ALL_CONSISTENT when every peer was compared and agreed, INCONSISTENCY_DETECTED when a compared peer "
+            + "differs, VERIFICATION_INCOMPLETE when nothing diverged but at least one peer could not be verified"));
 
     final Schema<Object> schema = SpecBuilders.object(
         "Per-file checksums of one database. A follower response carries only its own 'localChecksums', "

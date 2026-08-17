@@ -20,13 +20,14 @@ package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.schema.LocalSchema;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -212,67 +213,103 @@ class TimeSeriesTagDictionaryTest extends TestHelper {
   }
 
   /**
-   * #6258, item 3: the self-heal must not be keyed on the PHYSICAL size of the file.
+   * The self-heal must not be gated on this instance's page counter (issue #6198). That counter is seeded
+   * from the physical file size and afterwards only the schema-registered component gets it bumped at
+   * commit, so a second instance built while the writer's committed pages are still in the flush queue
+   * reads zero pages for a file that already holds a header and a data page. Gating on it made the
+   * lookup answer {@code null} in exactly the state the self-heal exists for - which is why the sibling
+   * test above passed alone and failed in a full-suite run, where the flush queue is behind.
    * <p>
-   * This is what made {@link #aSecondWaveOfIdsIsAlsoResolvedByReloading} flake on CI while passing everywhere else,
-   * and it was never a timing artefact of the test. A dictionary page is committed into the page cache immediately
-   * and written to the file by the asynchronous flush thread whenever it gets round to it. An instance that opens in
-   * that window sees a file of zero bytes, so its page counter says the dictionary is empty - and the reload that
-   * exists precisely to resolve an id it never interned itself declined to run, handing back {@code null} for a value
-   * sitting in the page cache. On a loaded machine the window is wide enough to hit; on an HA follower, where every
-   * id arrives from the leader, it is the whole failure mode.
-   * <p>
-   * Made deterministic by holding the flush thread for the entire fixture, so the file is provably still empty when
-   * the second instance opens - which the preconditions below ASSERT rather than assume, because a fixture that
-   * quietly stopped producing an unflushed file would go on passing while testing nothing.
+   * The flush is suspended here to pin that state down instead of racing the flusher for it.
    */
   @Test
-  void anIdIsResolvedWhileItsPageIsStillOnlyInTheCache() throws Exception {
+  void anIdIsResolvedWhileTheWriterPagesAreStillInTheFlushQueue() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
 
-    final long[] fileSize = new long[1];
-    final int[] followerPages = new int[1];
-    final String[] resolved = new String[2];
-    final int[] followerSize = new int[1];
-    final Throwable[] failure = new Throwable[1];
+    final AtomicReference<TimeSeriesTagDictionary> followerRef = new AtomicReference<>();
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
 
+    // suspendFlushAndExecute() swallows whatever the callback throws, so nothing is asserted in here:
+    // the fixture is built, any failure is carried out, and the assertions run below.
     db.getPageManager().suspendFlushAndExecute(db, () -> {
       try {
-        // Created INSIDE the suspension, header page included: everything this dictionary ever wrote is in the page
-        // cache and not one byte of it has reached the file.
-        final TimeSeriesTagDictionary writer = new TimeSeriesTagDictionary(db, "tags_unflushed",
-            db.getDatabasePath() + "/tags_unflushed");
-        ((LocalSchema) db.getSchema()).registerFile(writer);
-        writer.initHeaderPage();
+        final TimeSeriesTagDictionary writer = createDictionary("tags_unflushed");
         writer.internAll(List.of("host_a", "host_b", "host_c"));
-
-        // The follower of the two tests above, opened while the file is still empty - which is what an HA follower
-        // does whenever it re-opens between the leader's write and the flush that follows it.
-        final TimeSeriesTagDictionary follower = new TimeSeriesTagDictionary(db, "tags_unflushed",
-            db.getDatabasePath() + "/tags_unflushed", writer.getFileId());
-
-        fileSize[0] = ((PaginatedComponentFile) db.getFileManager().getFile(writer.getFileId())).getSize();
-        followerPages[0] = follower.getTotalPages();
-        resolved[0] = follower.getById(2);
-        resolved[1] = follower.getById(3);
-        followerSize[0] = follower.size();
-      } catch (final Throwable e) {
-        // suspendFlushAndExecute swallows whatever the callback throws, so carry it out by hand.
-        failure[0] = e;
+        followerRef.set(new TimeSeriesTagDictionary(db, "tags_unflushed",
+            db.getDatabasePath() + "/tags_unflushed", writer.getFileId()));
+      } catch (final Throwable t) {
+        failure.set(t);
       }
     });
 
-    if (failure[0] != null)
-      throw new AssertionError("the fixture failed: " + failure[0], failure[0]);
+    if (failure.get() != null)
+      throw new IllegalStateException("Failed to build the unflushed-writer fixture", failure.get());
 
-    assertThat(fileSize[0])
-        .as("precondition: the dictionary's pages must still be unwritten, or this test proves nothing").isZero();
-    assertThat(followerPages[0])
-        .as("precondition: an instance opened on that file must therefore count no pages at all").isZero();
+    final TimeSeriesTagDictionary follower = followerRef.get();
+    assertThat(follower).isNotNull();
+    // The fixture: not one page of this file had reached the disk when the follower was built
+    assertThat(follower.getTotalPages()).isZero();
+    assertThat(follower.size()).isZero();
 
-    assertThat(resolved[0]).as("an id whose page is committed but unflushed must still resolve").isEqualTo("host_b");
-    assertThat(resolved[1]).isEqualTo("host_c");
-    assertThat(followerSize[0]).as("and the reload it triggered must have loaded the whole dictionary").isEqualTo(3);
+    assertThat(follower.getById(2)).isEqualTo("host_b");
+    assertThat(follower.size()).isEqualTo(3);
+    assertThat(follower.getById(1)).isEqualTo("host_a");
+    assertThat(follower.getById(3)).isEqualTo("host_c");
+    // The reload also brought the page counter in step, so a later append cannot allocate over a page
+    // that already holds entries
+    assertThat(follower.getTotalPages()).isEqualTo(2);
+  }
+
+  /**
+   * The highest-stakes reader of the same page counter is {@link TimeSeriesTagDictionary#openOrCreate}:
+   * it decides between adopting a file that is already on disk and writing a fresh header over it, and
+   * the wrong answer there resets the id space and orphans every id already stored in a data page. This
+   * drives that branch in the state the counter gets wrong - a populated file, none of it flushed - and
+   * asserts the ids survived and the sequence continues rather than restarting.
+   */
+  @Test
+  void openOrCreateAdoptsAPopulatedFileWhoseComponentIsAbsentFromTheSchema() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final LocalSchema schema = (LocalSchema) db.getSchema();
+    final List<ColumnDefinition> columns = List.of(
+        new ColumnDefinition("time", Type.LONG, ColumnDefinition.ColumnRole.TIMESTAMP),
+        new ColumnDefinition("host", Type.STRING, ColumnDefinition.ColumnRole.TAG));
+
+    final AtomicReference<TimeSeriesTagDictionary> adoptedRef = new AtomicReference<>();
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+
+    db.getPageManager().suspendFlushAndExecute(db, () -> {
+      try {
+        final TimeSeriesTagDictionary writer = createDictionary("Adopted" + TimeSeriesTagDictionary.NAME_SUFFIX);
+        writer.internAll(List.of("host_a", "host_b", "host_c"));
+
+        // Drop the component from the schema while leaving its file registered with the file manager:
+        // that is the state the adopt branch exists for, and not one page of it has reached the disk.
+        schema.removeFile(writer.getFileId());
+
+        adoptedRef.set(TimeSeriesTagDictionary.openOrCreate(db, "Adopted", columns,
+            TimeSeriesBucket.VERSION_DICTIONARY_TAGS));
+      } catch (final Throwable t) {
+        failure.set(t);
+      }
+    });
+
+    if (failure.get() != null)
+      throw new IllegalStateException("Failed to build the unflushed-adopt fixture", failure.get());
+
+    final TimeSeriesTagDictionary adopted = adoptedRef.get();
+    assertThat(adopted).isNotNull();
+
+    // Adopted, not re-initialised: every id already assigned still resolves to the value it was given
+    assertThat(adopted.size()).isEqualTo(3);
+    assertThat(adopted.getById(1)).isEqualTo("host_a");
+    assertThat(adopted.getById(2)).isEqualTo("host_b");
+    assertThat(adopted.getById(3)).isEqualTo("host_c");
+    assertThat(adopted.getId("host_b")).isEqualTo(2);
+
+    // ...and the id space continues where it left off instead of restarting and colliding with them
+    assertThat(adopted.intern("host_d")).isEqualTo(4);
+    assertThat(adopted.getById(4)).isEqualTo("host_d");
   }
 
   /**

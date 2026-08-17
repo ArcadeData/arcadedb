@@ -332,6 +332,7 @@ public class Profiler {
     json.put("snapshotBarrierMaxTime", new JSONObject().put("value", pStats.snapshotBarrierMaxMillis));
     json.put("snapshotBarriersInexact", new JSONObject().put("count", pStats.snapshotBarriersInexact));
     json.put("deferredRAM", new JSONObject().put("space", pStats.deferredRAMBytes));
+    json.put("pageFlushQueueWaits", new JSONObject().put("count", pStats.flushQueueWaits));
 
     final long freeSpace = new File(".").getFreeSpace();
     final long totalSpace = new File(".").getTotalSpace();
@@ -497,8 +498,8 @@ public class Profiler {
       buffer.append("%n INDEXES compactions=%d".formatted(indexCompactions));
 
       buffer.append(
-        "%n PAGE-MANAGER flushQueue=%d deferredRAM=%s cacheHits=%d cacheMiss=%d concModExceptions=%d evictionRuns=%d pagesEvicted=%d".formatted(
-          pageFlushQueueLength, FileUtils.getSizeAsString(pStats.deferredRAMBytes),
+        "%n PAGE-MANAGER flushQueue=%d flushQueueWaits=%d deferredRAM=%s cacheHits=%d cacheMiss=%d concModExceptions=%d evictionRuns=%d pagesEvicted=%d".formatted(
+          pageFlushQueueLength, pStats.flushQueueWaits, FileUtils.getSizeAsString(pStats.deferredRAMBytes),
           pageCacheHits, pageCacheMiss, concurrentModificationExceptions, evictionRuns, pagesEvicted));
 
       // #5608: read this line together with concModExceptions above. Contention absorbed by a merge never becomes a

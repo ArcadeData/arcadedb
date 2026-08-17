@@ -41,11 +41,12 @@ import java.util.stream.Stream;
  * <p>Config map parameters (all optional):
  * <ul>
  *   <li>{@code embeddingDimension} (int, default 128, max {@value AbstractAlgoProcedure#MAX_EMBEDDING_DIMENSION}) – embedding size</li>
- *   <li>{@code walkLength} (int, default 80) – steps per random walk</li>
- *   <li>{@code walksPerNode} (int, default 10) – walks generated per node</li>
- *   <li>{@code iterations} (int, default 1) – training epochs over all walks</li>
- *   <li>{@code windowSize} (int, default 10) – Skip-gram context window radius</li>
- *   <li>{@code negSamples} (int, default 5) – negative samples per positive pair</li>
+ *   <li>{@code walkLength} (int, default 80, minimum 1) – steps per random walk</li>
+ *   <li>{@code walksPerNode} (int, default 10, minimum 1) – walks generated per node</li>
+ *   <li>{@code iterations} (int, default 1, minimum 1) – training epochs over all walks</li>
+ *   <li>{@code windowSize} (int, default 10, minimum 1) – Skip-gram context window radius, clamped to
+ *       {@code walkLength} since a wider window already spans the whole walk</li>
+ *   <li>{@code negSamples} (int, default 5, minimum 0) – negative samples per positive pair</li>
  *   <li>{@code learningRate} (double, default 0.025) – initial SGD learning rate</li>
  *   <li>{@code p} (double, default 1.0) – return parameter: high p → less return</li>
  *   <li>{@code q} (double, default 1.0) – in-out parameter: low q → DFS-like,
@@ -63,6 +64,12 @@ import java.util.stream.Stream;
  * RETURN node.name, embedding
  * </pre>
  * </p>
+ *
+ * <p>The walk matrix is {@code walksPerNode x nodeCount} walks of {@code walkLength} steps. Its footprint is
+ * estimated in {@code long} arithmetic and checked against
+ * {@link com.arcadedb.GlobalConfiguration#CYPHER_ALGO_MAX_WALK_MEMORY} before anything is allocated, so a
+ * large but in-range knob is rejected by name rather than wrapping the product or exhausting the heap. The
+ * training loops honour thread interruption and {@code arcadedb.command.timeout}.</p>
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -99,12 +106,14 @@ public class AlgoNode2Vec extends AbstractAlgoProcedure {
     validateArgs(args);
 
     final Map<String, Object> config = args.length > 0 ? extractMap(args[0], "config") : null;
-    final int dim = config != null && config.get("embeddingDimension") instanceof Number n ? extractEmbeddingDimension(n, "embeddingDimension") : 128;
-    final int walkLen = config != null && config.get("walkLength") instanceof Number n ? extractInt(n, "walkLength") : 80;
-    final int walksPerNode = config != null && config.get("walksPerNode") instanceof Number n ? extractInt(n, "walksPerNode") : 10;
-    final int epochs = config != null && config.get("iterations") instanceof Number n ? extractInt(n, "iterations") : 1;
-    final int window = config != null && config.get("windowSize") instanceof Number n ? extractInt(n, "windowSize") : 10;
-    final int negSamples = config != null && config.get("negSamples") instanceof Number n ? extractInt(n, "negSamples") : 5;
+    final int dim =
+        config != null && config.get("embeddingDimension") instanceof Number n ? extractEmbeddingDimension(n, "embeddingDimension") : 128;
+    final int walkLen = config != null && config.get("walkLength") instanceof Number n ? extractInt(n, "walkLength", 1) : 80;
+    final int walksPerNode =
+        config != null && config.get("walksPerNode") instanceof Number n ? extractInt(n, "walksPerNode", 1) : 10;
+    final int epochs = config != null && config.get("iterations") instanceof Number n ? extractInt(n, "iterations", 1) : 1;
+    final int rawWindow = config != null && config.get("windowSize") instanceof Number n ? extractInt(n, "windowSize", 1) : 10;
+    final int negSamples = config != null && config.get("negSamples") instanceof Number n ? extractInt(n, "negSamples", 0) : 5;
     final double lr0 = config != null && config.get("learningRate") instanceof Number n ? n.doubleValue() : 0.025;
     final double p = config != null && config.get("p") instanceof Number n ? n.doubleValue() : 1.0;
     final double q = config != null && config.get("q") instanceof Number n ? n.doubleValue() : 1.0;
@@ -121,13 +130,34 @@ public class AlgoNode2Vec extends AbstractAlgoProcedure {
     final int[][] adj = graph.adjacency(dir, relTypes);
 
     final Random rng = seed >= 0 ? new Random(seed) : new Random();
+    final WorkGuard guard = newWorkGuard(context);
+
+    // A context window wider than the walk already spans the whole walk, so clamping it changes no result.
+    // Without the clamp `pos + window` wraps int for a large windowSize, leaving winEnd below winStart: the
+    // Skip-gram inner loop then never runs and the procedure quietly returns untrained embeddings.
+    // The ceiling is walkLen and not walkLen - 1 on purpose: winStart and winEnd are clamped to
+    // [0, walkLen - 1] anyway, so the tighter bound buys nothing and would send windowSize to 0 at
+    // walkLength 1, below the minimum of 1 the extraction above enforces.
+    final int window = Math.min(rawWindow, walkLen);
 
     // ── Phase 1: Generate biased random walks ──────────────────────────────
-    final int totalWalks = n * walksPerNode;
+    // Sized in long arithmetic: `n * walksPerNode` wraps int for a large walksPerNode, which used to size the
+    // walk matrix with a negative or (for an exact multiple of 2^32) far too small a value.
+    final long totalWalksAsLong = saturatingProduct(n, walksPerNode);
+    // Per walk: one matrix row of walkLength ints, plus one entry of the walkOrder shuffle array.
+    final long bytesPerWalk = WALK_ROW_OVERHEAD_BYTES + WALK_ENTRY_BYTES + WALK_ENTRY_BYTES * walkLen;
+    checkWalkBudget(db, saturatingProduct(totalWalksAsLong, bytesPerWalk),
+        "walksPerNode=" + walksPerNode + " x walkLength=" + walkLen + " over " + n + " nodes");
+    if (totalWalksAsLong > Integer.MAX_VALUE)
+      throw new IllegalArgumentException(getName() + "(): walksPerNode=" + walksPerNode + " over " + n + " nodes needs "
+          + totalWalksAsLong + " walks, more than the " + Integer.MAX_VALUE + " entries a Java array can hold");
+
+    final int totalWalks = (int) totalWalksAsLong;
     final int[][] walks = new int[totalWalks][walkLen];
     int wi = 0;
     for (int v = 0; v < n; v++) {
       for (int w = 0; w < walksPerNode; w++) {
+        guard.check();
         final int[] walk = walks[wi++];
         walk[0] = v;
         if (walkLen == 1 || adj[v].length == 0) {
@@ -137,6 +167,9 @@ public class AlgoNode2Vec extends AbstractAlgoProcedure {
         // First step: uniform random neighbour
         walk[1] = adj[v][rng.nextInt(adj[v].length)];
         for (int step = 2; step < walkLen; step++) {
+          // One walk is walkLength steps and walkLength has no ceiling of its own, so the checkpoint belongs
+          // inside the walk too, not only between walks.
+          guard.checkPeriodically(step);
           final int prev = walk[step - 2];
           final int curr = walk[step - 1];
           if (adj[curr].length == 0) {
@@ -152,22 +185,31 @@ public class AlgoNode2Vec extends AbstractAlgoProcedure {
     // W: input embeddings, WCtx: context embeddings
     final double[][] W = new double[n][dim];
     final double[][] WCtx = new double[n][dim];
-    // Xavier initialisation for W
+    // Xavier initialisation for W.
+    // Every remaining O(nodeCount) / O(totalWalks) loop below carries a checkpoint too. "Bounded by the walk
+    // budget" is not a time bound for any of them: the budget is tunable and accepts a negative value meaning
+    // no limit, in which case totalWalks is capped only by Integer.MAX_VALUE - the same reasoning that put a
+    // checkpoint in algo.randomWalk's step loop.
     final double scale = 1.0 / Math.sqrt(dim);
-    for (int i = 0; i < n; i++)
+    for (int i = 0; i < n; i++) {
+      guard.checkPeriodically(i);
       for (int d = 0; d < dim; d++)
         W[i][d] = (rng.nextDouble() * 2.0 - 1.0) * scale;
+    }
     // WCtx initialised to zero (standard word2vec)
 
     // Walk index array for shuffling
     final int[] walkOrder = new int[totalWalks];
-    for (int i = 0; i < totalWalks; i++)
+    for (int i = 0; i < totalWalks; i++) {
+      guard.checkPeriodically(i);
       walkOrder[i] = i;
+    }
 
     final double[] grad = new double[dim]; // accumulated gradient for center node
     for (int epoch = 0; epoch < epochs; epoch++) {
       // Shuffle walk order
       for (int i = totalWalks - 1; i > 0; i--) {
+        guard.checkPeriodically(i);
         final int j = rng.nextInt(i + 1);
         final int tmp = walkOrder[i];
         walkOrder[i] = walkOrder[j];
@@ -177,14 +219,21 @@ public class AlgoNode2Vec extends AbstractAlgoProcedure {
       final double lr = lr0 * (1.0 - (double) epoch / epochs);
 
       for (final int walkIdx : walkOrder) {
+        guard.check();
         final int[] walk = walks[walkIdx];
         for (int pos = 0; pos < walkLen; pos++) {
           final int center = walk[pos];
           Arrays.fill(grad, 0.0);
 
           final int winStart = Math.max(0, pos - window);
-          final int winEnd = Math.min(walkLen - 1, pos + window);
+          // In long arithmetic: `window` is clamped to `walkLen`, but `walkLen` itself is bounded only by the
+          // walk-memory budget, so an operator who raises that far enough could still make `pos + window` wrap.
+          final int winEnd = (int) Math.min(walkLen - 1L, pos + (long) window);
           for (int ctx = winStart; ctx <= winEnd; ctx++) {
+            // The context loop, not the walk loop, is what bounds abort latency here: a window as wide as the
+            // walk makes a single walk O(walkLength x walkLength), so a checkpoint between walks could be
+            // hours apart.
+            guard.checkPeriodically(ctx);
             if (ctx == pos)
               continue;
             final int ctxNode = walk[ctx];
@@ -199,6 +248,15 @@ public class AlgoNode2Vec extends AbstractAlgoProcedure {
 
             // Negative samples: target = 0
             for (int ns = 0; ns < negSamples; ns++) {
+              // negSamples is the innermost knob of all, and the only one with neither a heap ceiling nor a
+              // maximum: one (position, context) pair costs negSamples x dim. The enclosing checkpoint runs
+              // before the sampling starts, so without one here a single pair is unabortable however long it
+              // takes - the same "checkpoint outside the unbounded loop" shape closed above for windowSize.
+              // Note ns restarts at 0 per pair, so this also tests once per pair and not only every 1024
+              // samples. Deliberate: one flag test per pair is what keeps the default negSamples of 5
+              // responsive, since the ctx checkpoint above fires only about once every 1024 positions when
+              // the window is narrow.
+              guard.checkPeriodically(ns);
               int neg = rng.nextInt(n);
               if (neg == center || neg == ctxNode)
                 neg = (neg + 1) % n;
