@@ -54,6 +54,15 @@ class LSMVectorIndexSearcherPoolTest {
   private static final int    DIMENSIONS  = 32;
   private static final int    NUM_VECTORS = 2_000;
   private static final int    K           = 10;
+  /**
+   * {@code maxIdle} handed to {@link GraphSearcherPool}, i.e. the number of searchers it aims to keep alive.
+   */
+  private static final int    POOL_SIZE   = 4;
+  /**
+   * Threads releasing into that pool concurrently. Deliberately larger than {@link #POOL_SIZE}: the point is to
+   * exercise the pool while it is over-subscribed.
+   */
+  private static final int    CONCURRENCY = 8;
 
   @BeforeEach
   @AfterEach
@@ -77,7 +86,7 @@ class LSMVectorIndexSearcherPoolTest {
       assertThat(stat(index(db), "pooledGraphSearchers")).as("pooling disabled must keep no searcher alive").isZero();
     }
 
-    GlobalConfiguration.VECTOR_INDEX_SEARCHER_POOL_SIZE.setValue(4);
+    GlobalConfiguration.VECTOR_INDEX_SEARCHER_POOL_SIZE.setValue(POOL_SIZE);
     try (final Database db = new DatabaseFactory(DB_PATH).open()) {
       final LSMVectorIndex index = index(db);
       // Repeat: only the second search onwards can actually reuse a pooled instance.
@@ -96,7 +105,7 @@ class LSMVectorIndexSearcherPoolTest {
     final float[][] vectors = randomVectors(NUM_VECTORS, 5);
     createDatabase(vectors);
 
-    GlobalConfiguration.VECTOR_INDEX_SEARCHER_POOL_SIZE.setValue(4);
+    GlobalConfiguration.VECTOR_INDEX_SEARCHER_POOL_SIZE.setValue(POOL_SIZE);
     try (final Database db = new DatabaseFactory(DB_PATH).open()) {
       final LSMVectorIndex index = index(db);
 
@@ -125,13 +134,13 @@ class LSMVectorIndexSearcherPoolTest {
     final float[][] vectors = randomVectors(NUM_VECTORS, 7);
     createDatabase(vectors);
 
-    GlobalConfiguration.VECTOR_INDEX_SEARCHER_POOL_SIZE.setValue(4);
+    GlobalConfiguration.VECTOR_INDEX_SEARCHER_POOL_SIZE.setValue(POOL_SIZE);
     try (final Database db = new DatabaseFactory(DB_PATH).open()) {
       final LSMVectorIndex index = index(db);
       final float[] query = randomVectors(1, 42)[0];
       final List<RID> expected = searchRids(index, query);
 
-      final ExecutorService pool = Executors.newFixedThreadPool(8);
+      final ExecutorService pool = Executors.newFixedThreadPool(CONCURRENCY);
       try {
         final List<Callable<List<RID>>> tasks = new ArrayList<>();
         for (int i = 0; i < 200; i++)
@@ -144,7 +153,16 @@ class LSMVectorIndexSearcherPoolTest {
         assertThat(pool.awaitTermination(30, TimeUnit.SECONDS)).isTrue();
       }
 
-      assertThat(stat(index, "pooledGraphSearchers")).isLessThanOrEqualTo(4);
+      // What the pool promises is that it does not grow WITHOUT BOUND, not that it never exceeds maxIdle:
+      // GraphSearcherPool.release() reads idleCount and increments it without a lock ("racy by design"), so all
+      // CONCURRENCY releasers in flight can read a count below the cap and then all increment. The worst case is
+      // therefore maxIdle - 1 observed by every one of them, i.e. maxIdle + CONCURRENCY - 1, and asserting
+      // maxIdle alone contradicts the contract of the code under test - it failed as "expected 5L to be less
+      // than or equal to 4L" under full-suite CPU contention (issue #6314). "Never share a searcher", the
+      // property this test is named for, is what the per-task result comparison above checks.
+      assertThat(stat(index, "pooledGraphSearchers"))
+          .as("GraphSearcherPool.release() allows a transient overshoot of up to one searcher per concurrent releaser")
+          .isLessThanOrEqualTo(POOL_SIZE + CONCURRENCY - 1L);
     }
   }
 

@@ -94,6 +94,18 @@ public abstract class PaginatedComponent extends Component {
           "Component '" + name + "' was built on file id " + fileId + " but the file registered under that name has id "
               + file.getFileId() + " ('" + file.getFilePath() + "')");
 
+    // The same invariant as the id one, on the other field a component uses to address its file (issue #6314): the
+    // page size IS the stride, so a component that disagrees with its file reads page N from N * theWrongNumber.
+    // PageManager resolves every page with the CALLER's page size, and only the snapshot path ever consults the
+    // file's own, so nothing downstream turns that into an exception - it is real bytes at the wrong offset, and
+    // pageCount below is computed from the wrong divisor on top. The page size is baked into the file name, so this
+    // can only be a component that re-derived it from somewhere else (a live configuration value, say) instead of
+    // taking the one ComponentFactory parsed off the name.
+    if (file.getPageSize() != pageSize)
+      throw new IllegalStateException(
+          "Component '" + name + "' was built with page size " + pageSize + " but its file '" + file.getFilePath()
+              + "' has page size " + file.getPageSize());
+
     final long fileSize = file.getSize();
     if (fileSize == 0)
       // NEW FILE, CREATE HEADER PAGE

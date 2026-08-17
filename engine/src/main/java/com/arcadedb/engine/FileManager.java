@@ -18,6 +18,7 @@
  */
 package com.arcadedb.engine;
 
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
 
 import java.io.File;
@@ -442,10 +443,27 @@ public class FileManager {
     }
   }
 
+  /**
+   * The by-<em>id</em> mirror of {@link #getOrCreateFile(String, String, ComponentFile.MODE)}, and it has the same
+   * hazard: it is keyed by the id alone, so an id that is already registered hands that file back whatever
+   * {@code filePath} the caller asked for, and the caller then goes on using a file that is not the one it named.
+   * The by-name half of that pair was closed at the component layer by issue #6283; this one is closed here
+   * (issue #6314), so the guarantee "the file you get back is the file you asked for" belongs to
+   * {@code FileManager} for both keys rather than to whichever caller remembered to check.
+   * <p>
+   * A caller that has to tell "already applied" apart from "diverged" still needs its own branch on the two, and
+   * the HA follower's {@code ArcadeStateMachine.createNewFiles} has one: a matching name is an idempotent replay
+   * it skips, a differing one is a file-id space that has diverged from the leader's, which it turns into the
+   * quarantine-and-resync path (issue #6063). This check therefore fires for nobody today; it is what makes the
+   * next caller not have to re-derive that reasoning. It throws the same {@link SchemaException} that caller does,
+   * so a caller that does reach it is classified exactly as it would have classified itself.
+   *
+   * @throws SchemaException when {@code fileId} is already registered under a different file name
+   */
   public ComponentFile getOrCreateFile(final int fileId, final String filePath) throws IOException {
     ComponentFile file = fileIdMap.get(fileId);
     if (file != null)
-      return file;
+      return checkFileNameMatches(file, filePath);
 
     synchronized (this) {
       file = fileIdMap.get(fileId);
@@ -453,10 +471,25 @@ public class FileManager {
         file = new PaginatedComponentFile(filePath, mode);
         registerFile(file);
         recordCreate(file);
-      }
+      } else
+        checkFileNameMatches(file, filePath);
 
       return file;
     }
+  }
+
+  /**
+   * Asserts that an already-registered file is the one the caller named. The comparison is on the file name and
+   * not on the whole path: the id, page size, version and extension a component addresses its file through all
+   * live in that name, while the directory prefix is the database path both sides already share.
+   */
+  private static ComponentFile checkFileNameMatches(final ComponentFile file, final String filePath) {
+    final String requestedName = new File(filePath).getName();
+    if (!file.getFileName().equals(requestedName))
+      throw new SchemaException(
+          "File id " + file.getFileId() + " is already registered as '" + file.getFileName() + "' but was requested as '"
+              + requestedName + "' ('" + filePath + "')");
+    return file;
   }
 
   /**
