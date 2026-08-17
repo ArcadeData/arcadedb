@@ -30,12 +30,10 @@ import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 
-import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
@@ -102,8 +100,6 @@ class SuperNodeConcurrentAppendHABenchmark extends BaseRaftHATest {
     final int savedRetryDelay = GlobalConfiguration.TX_RETRY_DELAY.getValueAsInteger();
     GlobalConfiguration.TX_RETRY_DELAY.setValue(1);
     try {
-      Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(500, TimeUnit.MILLISECONDS)
-          .until(() -> findLeaderIndex() >= 0);
       final int leaderIndex = findLeaderIndex();
       assertThat(leaderIndex).as("a leader must be elected").isGreaterThanOrEqualTo(0);
       final ArcadeDBServer leaderServer = getServer(leaderIndex);

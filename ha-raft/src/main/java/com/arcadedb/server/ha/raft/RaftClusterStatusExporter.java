@@ -19,9 +19,6 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.log.LogManager;
-import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.serializer.json.JSONArray;
-import com.arcadedb.serializer.json.JSONObject;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 
@@ -34,8 +31,12 @@ import java.util.Objects;
 import java.util.logging.Level;
 
 /**
- * Exports cluster status as JSON, prints cluster configuration tables, and manages
- * the replication lag monitor.
+ * Prints the cluster configuration table and manages the replication lag monitor.
+ * <p>
+ * It used to also build a cluster-status JSON, which nothing called: the live status endpoint is
+ * {@link GetClusterHandler}, which assembles its own. A second, unreachable builder of the same document is how
+ * two views of one cluster drift apart - and it did, since the reachable one reports the peer-address ambiguity
+ * of issue #6267 and this one never would have - so it was removed rather than kept in step by hand.
  */
 class RaftClusterStatusExporter {
 
@@ -50,110 +51,6 @@ class RaftClusterStatusExporter {
   RaftClusterStatusExporter(final RaftHAServer haServer, final ClusterMonitor clusterMonitor) {
     this.haServer = haServer;
     this.clusterMonitor = clusterMonitor;
-  }
-
-  // -- Status Export --
-
-  JSONObject exportClusterStatus() {
-    final var haJSON = new JSONObject();
-
-    haJSON.put("protocol", "ratis");
-    haJSON.put("clusterName", haServer.getClusterName());
-    haJSON.put("leader", haServer.getLeaderName());
-    // Raw role vs. ability to serve: a freshly elected leader rejects writes until it has committed its
-    // current-term no-op (issue #5453). Both come from one snapshot so the pair is never contradictory.
-    final RaftHAServer.LeadershipState leadership = haServer.getLeadershipState();
-    haJSON.put("isLeader", leadership.leader());
-    haJSON.put("leaderReady", leadership.leaderReady());
-    haJSON.put("localPeerId", haServer.getLocalPeerId().toString());
-    haJSON.put("configuredServers", haServer.getConfiguredServers());
-    haJSON.put("quorum", haServer.getQuorum().name());
-    haJSON.put("currentTerm", haServer.getCurrentTerm());
-    haJSON.put("commitIndex", haServer.getCommitIndex());
-    haJSON.put("lastAppliedIndex", haServer.getLastAppliedIndex());
-
-    // Peer list with replication state (follower indices available only on leader)
-    final var followerStates = haServer.getFollowerStates();
-    final var replicationLatencies = haServer.getReplicationLatencies();
-    final var peers = new JSONArray();
-    final RaftPeerId leaderId = haServer.getLeaderId();
-    for (final RaftPeer peer : haServer.getLivePeers()) {
-      final var peerJSON = new JSONObject();
-      final String peerId = peer.getId().toString();
-      peerJSON.put("id", peerId);
-      peerJSON.put("address", peer.getAddress());
-      peerJSON.put("httpAddress", haServer.getPeerHttpAddress(peer.getId()));
-      peerJSON.put("isLocal", peer.getId().equals(haServer.getLocalPeerId()));
-      peerJSON.put("role", leaderId != null && peer.getId().equals(leaderId) ? "LEADER" : "FOLLOWER");
-
-      for (final var fs : followerStates)
-        if (peerId.equals(fs.get("peerId"))) {
-          peerJSON.put("matchIndex", fs.get("matchIndex"));
-          peerJSON.put("nextIndex", fs.get("nextIndex"));
-          // Time since the leader last heard from this follower (issue #5314): the honest meaning of the
-          // value the CLUSTER CONFIGURATION table used to mislabel as "LATENCY".
-          peerJSON.put("lastContactMs", fs.get("lastRpcElapsedMs"));
-          // Real measured appendEntries/heartbeat round-trip latency (issue #5314), load-independent.
-          final RaftHAServer.ReplicationLatency rtt = replicationLatencies.get(peerId);
-          if (rtt != null) {
-            peerJSON.put("replicationRttMs", rtt.meanMs());
-            peerJSON.put("replicationRttP99Ms", rtt.p99Ms());
-          }
-          if (clusterMonitor != null) {
-            final var lags = clusterMonitor.getReplicaLags();
-            final Long lag = lags.get(peerId);
-            if (lag != null)
-              peerJSON.put("lagging", lag > clusterMonitor.getLagWarningThreshold()
-                  && clusterMonitor.getLagWarningThreshold() > 0);
-            // Studio renders this as a colored badge in the cluster view, so a STALLED follower
-            // jumps out at the operator without having to compare numbers in their head.
-            peerJSON.put("replicaStatus", clusterMonitor.getReplicaStatus(peerId).name());
-          }
-          break;
-        }
-
-      peers.put(peerJSON);
-    }
-    haJSON.put("peers", peers);
-
-    // Database list
-    final var databases = new JSONArray();
-    final var stateMachineForBaseline = haServer.getStateMachine();
-    for (final String dbName : haServer.getServer().getDatabaseNames()) {
-      // Never expose reserved internal databases (e.g. the Raft control directory '.raft').
-      if (ArcadeDBServer.isReservedDatabaseName(dbName))
-        continue;
-      final var databaseJSON = new JSONObject();
-      databaseJSON.put("name", dbName);
-      databaseJSON.put("quorum", haServer.getQuorum().name());
-
-      // Surface the bootstrap baseline applied via BOOTSTRAP_FINGERPRINT_ENTRY (#4147 phase 7).
-      // Null when no bootstrap entry has been committed for this database yet, which is the
-      // normal case for clusters that pre-date #4147 or that never engaged the bootstrap path.
-      final var baseline = stateMachineForBaseline != null
-          ? stateMachineForBaseline.getBootstrapBaseline(dbName) : null;
-      if (baseline != null) {
-        databaseJSON.put("bootstrapLastTxId", baseline.lastTxId());
-        databaseJSON.put("bootstrapFingerprint", baseline.fingerprint());
-      }
-      databases.put(databaseJSON);
-    }
-    haJSON.put("databases", databases);
-
-    // Metrics
-    final var stateMachine = haServer.getStateMachine();
-    final var metricsJSON = new JSONObject();
-    metricsJSON.put("electionCount", stateMachine.getElectionCount());
-    metricsJSON.put("lastElectionTime", stateMachine.getLastElectionTime());
-    metricsJSON.put("startTime", stateMachine.getStartTime());
-    metricsJSON.put("lagWarningThreshold", clusterMonitor.getLagWarningThreshold());
-    haJSON.put("metrics", metricsJSON);
-
-    // Required by RemoteHttpComponent for cluster configuration
-    haJSON.put("leaderAddress", haServer.getLeaderHttpAddress());
-    haJSON.put("replicaAddresses", haServer.getReplicaAddresses());
-
-    return haJSON;
   }
 
   // -- Cluster Configuration Printing --

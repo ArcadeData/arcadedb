@@ -120,13 +120,14 @@ class PluginApiSpecTest {
         "leaderId", "leaderHttpAddress", "electionCount", "lastElectionTime", "uptime",
         "peers", "databases", "databasePresence", "alerts");
 
-    // Pinned to the exact set (not .contains(...)): GetClusterHandler writes exactly these 12 fields
+    // Pinned to the exact set (not .contains(...)): GetClusterHandler writes exactly these 14 fields
     // per peer, no more, no fewer.
     final Schema<?> peersProperty = schema.getProperties().get("peers");
     final Schema<?> peerItemSchema = peersProperty.getItems();
     assertThat(peerItemSchema.getProperties().keySet()).containsExactlyInAnyOrder(
-        "id", "address", "role", "matchIndex", "nextIndex", "replicationLag", "lastContactMs",
-        "replicaStatus", "laggingForMs", "lagging", "replicationRttMs", "replicationRttP99Ms");
+        "id", "address", "httpAddress", "httpAddressAmbiguous", "role", "matchIndex", "nextIndex",
+        "replicationLag", "lastContactMs", "replicaStatus", "laggingForMs", "lagging", "replicationRttMs",
+        "replicationRttP99Ms");
   }
 
   @Test
@@ -143,8 +144,12 @@ class PluginApiSpecTest {
     final Schema<?> peerItemSchema = peersProperty.getItems();
     final Map<String, Schema> peerProperties = peerItemSchema.getProperties();
 
+    // httpAddress/httpAddressAmbiguous (issue #6267) are conditional too: the address is written only when it
+    // resolves, and the ambiguity flag only when it is true - a correctly declared cluster carries neither the
+    // flag nor a reason to look for it.
     for (final String conditionalField : List.of("matchIndex", "nextIndex", "replicationLag",
-        "lastContactMs", "replicaStatus", "laggingForMs", "lagging", "replicationRttMs", "replicationRttP99Ms")) {
+        "lastContactMs", "replicaStatus", "laggingForMs", "lagging", "replicationRttMs", "replicationRttP99Ms",
+        "httpAddress", "httpAddressAmbiguous")) {
       final Schema<?> fieldSchema = peerProperties.get(conditionalField);
       assertThat(fieldSchema.getDescription())
           .as("'%s' is written only for a non-leader peer with a health sample; its description must say so",

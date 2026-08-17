@@ -537,6 +537,19 @@ function renderNodeCards(data) {
       }
     }
 
+    // The HTTP endpoint this node resolved for the peer does not identify it alone - two or more peers resolve
+    // to it - so a snapshot resync and a cluster verify refuse to dial it. Showing the address with no caveat
+    // would let a misconfigured cluster look correctly addressed until one of those operations refuses
+    // (issue #6267).
+    var addressWarning = "";
+    if (peer.httpAddressAmbiguous) {
+      addressWarning = '<div style="font-size:0.72rem; color:orange; margin-top:2px;">'
+        + '<i class="fas fa-exclamation-triangle" style="margin-right:4px;"></i>HTTP endpoint '
+        + escapeHtml(peer.httpAddress || "")
+        + " does not identify this peer alone: declare its 'http' port in arcadedb.ha.serverList"
+        + '</div>';
+    }
+
     var card = '<div class="' + colClass + '">'
       + '<div class="card h-100" style="border: 2px solid ' + borderColor + '; border-radius: 10px;">'
       + '<div class="card-body py-2 px-3">'
@@ -547,6 +560,7 @@ function renderNodeCards(data) {
       + '<div style="font-size:0.78rem; color:var(--text-secondary); margin-top:4px;">'
       + '<i class="fas fa-network-wired" style="margin-right:4px;"></i>' + escapeHtml(peer.address || "")
       + '</div>'
+      + addressWarning
       + lagLine
       + '</div></div></div>';
 

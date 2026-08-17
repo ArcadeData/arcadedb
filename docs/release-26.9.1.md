@@ -2235,6 +2235,53 @@ nameless `NegativeArraySizeException`.
 
 [#6216](https://github.com/ArcadeData/arcadedb/issues/6216)
 
+## A peer address that identifies nobody says so, instead of waiting for an operation to refuse (#6267)
+
+Five follow-ups from #6221 / #6226. Four are visible to an operator; the rest are test hygiene.
+
+**A withheld peer-to-peer endpoint is now reported.** `getUnambiguousPeerHttpAddress` and its HTTPS twin refuse
+an address two peers both resolve to by returning `null` (#6202), and every caller then decided for itself
+whether to say anything - so the refusal was visible only where one happened to log it, and invisible everywhere
+else. Neither existing warning covered it: the derive warnings fire whenever an address is derived **at all**,
+which is also what a perfectly healthy homogeneous Kubernetes StatefulSet does, so they cannot distinguish
+"deriving, and fine" from "deriving, and two peers just collapsed onto one address". There is now a one-time
+WARNING per protocol - modelled on the `warnAmbiguousRouting` of #6183, but for the peer-to-peer endpoints rather
+than the client routing tables - naming the peers that could not be told apart, the address they share, and the
+`host:{raft:..,http:..}` field to declare in `arcadedb.ha.serverList`. HTTP and HTTPS have separate latches: a
+cluster that declares distinct `http` ports and shares an `https` one must still hear about the second.
+
+**Observable change in `GET /api/v1/cluster`.** Each peer entry now carries `httpAddress` and, only when it is
+not the peer's alone, `httpAddressAmbiguous: true`. Before this, the status endpoint and the Studio HA panel
+displayed a plausible address for every peer with nothing to say that it named none of them, and an operator
+found out when a snapshot resync or a cluster verify refused to dial. A correctly declared cluster carries
+neither field's flag, so nothing changes for one. Studio renders the flag as a warning line on the node's card.
+
+**The presence matrix dialled the address nothing had checked.** `GET /api/v1/cluster?presence=true` asks every
+peer which databases it holds and attributes the answer to that peer - the same unattended dial the verify
+endpoint was making before #6221, with the same failure: on a cluster whose peers collapse onto one derived
+address, every peer was queried on the leader's own endpoint and reported the leader's database list as its own,
+so the matrix showed every database present on every node. It resolves through `PeerDialAddress` now, so a peer
+it cannot identify is reported in `unreachable` - with the reason logged - rather than answered for by whoever
+picked up.
+
+`RaftClusterStatusExporter.exportClusterStatus()`, a second cluster-status JSON builder that nothing has called,
+was removed rather than taught about any of this: the live endpoint is `GetClusterHandler`, and an unreachable
+second view of one cluster is how two views drift apart.
+
+**Test-only, in the HA lane.** `BaseRaftHATest.RESYNC_RETRY_TIMEOUT_MS` drops from 120 s to 30 s. #6226 added an
+instrument rather than guessing, and it has now reported: across nine full `ha-integration-tests` runs (235 tests
+each) not one wait exceeded the 10 s report threshold, and the slowest of the ten classes that use those helpers
+took 53 s wall-clock for the whole class, cluster startup and teardown included. 30 s is what the rest of that
+class already treats as long enough for a cluster to do anything it is going to do - `waitForReplicationIsCompleted`,
+`waitAllReplicasAreConnected` and the leader-election wait all use it - so the one budget with no measurement
+behind it was also the only one four times larger than its siblings. The report threshold drops to 5 s with it, to
+keep the same resolution for the next cut. `DynamicMembershipTest` no longer leaves its own teardown holding a
+peer it evicted to a replica's contract: the base class now waits for, and compares, exactly the servers
+`getServerToCheck()` names, which turned a 30 s-per-evicted-server timeout and a `DatabaseAreNotIdentical` charged
+to `endTest` into neither. Seven `await().until(() -> findLeaderIndex() >= 0)` wrappers that #6226 made redundant
+are gone, and three copies of "only the servers still running" collapse into one helper.
+
+[#6267](https://github.com/ArcadeData/arcadedb/issues/6267)
 ## The same iteration-knob guard, applied to the fourteen `algo.*` procedures #6216 left out of scope (#6264)
 
 [#6216](https://github.com/ArcadeData/arcadedb/issues/6216) established what an iteration-shaped knob needs -
