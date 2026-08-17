@@ -530,6 +530,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   public void executeCommand(ExecuteCommandRequest req, StreamObserver<ExecuteCommandResponse> resp) {
 
     final long t0 = System.nanoTime();
+    // Guards the catch block against calling onError once the success path has already fully delivered a
+    // terminal onNext/onCompleted pair - the same double-close exposure noted for the in-band error response
+    // this replaces (issue #6192).
+    boolean responded = false;
 
     try {
       // Check if this is an externally-managed transaction (started via beginTransaction RPC)
@@ -545,6 +549,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         return;
       }
 
+      final ExecuteCommandResponse response;
       if (txCtx != null) {
         // External transaction - execute command on the transaction's dedicated thread
         LogManager.instance().log(this, Level.FINE,
@@ -553,16 +558,15 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         Future<ExecuteCommandResponse> future = txCtx.executor.submit(() ->
             executeCommandInternal(req, t0, txCtx.db, true));
 
-        ExecuteCommandResponse response = future.get();
-        resp.onNext(response);
-        resp.onCompleted();
+        response = future.get();
       } else {
         // No external transaction - execute on current thread
         Database db = getDatabase(req.getDatabase(), req.getCredentials());
-        ExecuteCommandResponse response = executeCommandInternal(req, t0, db, false);
-        resp.onNext(response);
-        resp.onCompleted();
+        response = executeCommandInternal(req, t0, db, false);
       }
+      resp.onNext(response);
+      resp.onCompleted();
+      responded = true;
 
     } catch (Exception e) {
       // Unwrap ExecutionException to get the root cause
@@ -572,23 +576,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       }
       LogManager.instance().log(this, Level.SEVERE, "ERROR in executeCommand", cause);
 
-      if (cause instanceof ServerIsNotTheLeaderException) {
-        // Rethrown by executeCommandInternal because it cannot be expressed in the response envelope: it needs
-        // the trailers to name the node to go to instead (issue #6183).
+      // Every failure now goes through GrpcErrorMapper and a gRPC error status, the same as createRecord,
+      // beginTransaction, commitTransaction and graphBatchLoad - not just the leader refusal that needed the
+      // redirect trailers (issue #6183). The in-band success=false envelope this RPC used to fall back to for
+      // everything else erased the exception type on the wire; the client's handleGrpcException/
+      // GrpcClientErrorMapper already rebuilds the exact type from the status + trailers (issue #6192).
+      if (!responded)
         resp.onError(GrpcErrorMapper.toStatusRuntimeException(cause, "ExecuteCommand", ha()));
-        return;
-      }
-
-      final long ms = (System.nanoTime() - t0) / 1_000_000L;
-      ExecuteCommandResponse err = ExecuteCommandResponse
-          .newBuilder()
-          .setSuccess(false)
-          .setMessage(cause.getMessage() == null ? cause.toString() : cause.getMessage())
-          .setAffectedRecords(0L)
-          .setExecutionTimeMs(ms)
-          .build();
-      resp.onNext(err);
-      resp.onCompleted();
     }
   }
 
@@ -801,27 +795,17 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         /* no-op */
       }
 
-      // "You are talking to the wrong node" is not a command result, and this envelope has nowhere to put the
-      // address of the right one: a redirect only travels on an error's trailers (issue #6183). Rethrown, once
-      // the rollback above has run, for executeCommand to map into the same refusal graphBatchLoad answers with.
-      // Every other failure keeps the success=false envelope this RPC has always used.
-      //
-      // A statement sent to a follower does not normally get here at all: RaftReplicatedDatabase.command
-      // forwards a DDL or non-idempotent statement to the leader rather than refusing it. What reaches this
-      // branch is the leadership change that lands between that decision and the schema write - the second
-      // isLeader() check inside recordFileChanges - where the caller is holding a failure it can only act on
-      // if it is told which node to repeat it against.
-      if (e instanceof ServerIsNotTheLeaderException notTheLeader)
-        throw notTheLeader;
-
-      final long ms = (System.nanoTime() - t0) / 1_000_000L;
-      return ExecuteCommandResponse
-          .newBuilder()
-          .setSuccess(false)
-          .setMessage(e.getMessage() == null ? e.toString() : e.getMessage())
-          .setAffectedRecords(0L)
-          .setExecutionTimeMs(ms)
-          .build();
+      // Every failure is rethrown, once the rollback above has run, for executeCommand to map through
+      // GrpcErrorMapper into a gRPC error status (issue #6192) - this response envelope has nowhere to carry
+      // the exception type, and for a leader refusal nowhere to carry the redirect trailers either
+      // (issue #6183). A statement sent to a follower does not normally raise that one at all:
+      // RaftReplicatedDatabase.command forwards a DDL or non-idempotent statement to the leader rather than
+      // refusing it. What reaches this branch is the leadership change that lands between that decision and
+      // the schema write - the second isLeader() check inside recordFileChanges - where the caller is holding
+      // a failure it can only act on if it is told which node to repeat it against.
+      if (e instanceof RuntimeException re)
+        throw re;
+      throw new RuntimeException(e);
     } finally {
       ProtocolContext.clear();
       recordGrpcProfile("grpc.command", profile, db != null ? db.getName() : req.getDatabase(),

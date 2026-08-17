@@ -234,17 +234,19 @@ public class Issue5040GrpcTransactionHijackIT extends BaseGraphServerTest {
   void crossTenantExecuteCommandIsDenied() {
     final String txId = beginOwnerTransaction();
 
-    // executeCommand surfaces execution/authorization errors in-band (success=false) rather than a gRPC
-    // error status. The denial must come from the transaction-scoped authorization gate.
-    final ExecuteCommandResponse response = attackerStub().executeCommand(ExecuteCommandRequest.newBuilder()
+    // executeCommand now surfaces execution/authorization errors as a gRPC error status through
+    // GrpcErrorMapper, the same as every other RPC (issue #6192). The denial must come from the
+    // transaction-scoped authorization gate.
+    final ExecuteCommandRequest request = ExecuteCommandRequest.newBuilder()
         .setDatabase(OWNER_DB)
         .setCredentials(creds(ATTACKER_USER, ATTACKER_PASS))
         .setCommand("INSERT INTO Doc5040 SET name = 'intruder'")
         .setTransaction(TransactionContext.newBuilder().setTransactionId(txId).build())
-        .build());
+        .build();
 
-    assertThat(response.getSuccess()).isFalse();
-    assertThat(response.getMessage()).contains("has not access to database '" + OWNER_DB + "'");
+    assertThatThrownBy(() -> attackerStub().executeCommand(request))
+        .isInstanceOf(StatusRuntimeException.class)
+        .hasMessageContaining("has not access to database '" + OWNER_DB + "'");
 
     // Nothing was written into the owner's transaction; the owner can still roll back cleanly.
     final RollbackTransactionResponse ownerRollback =
