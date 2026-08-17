@@ -2133,6 +2133,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * verdict is reported whatever produced it. A pass that finds no collision clears the memory rather than
    * reporting, so a misconfiguration that is fixed and later reintroduced is announced again.
    * <p>
+   * Deliberately a plain {@code getAndSet} and not a {@code compareAndSet} loop. Two threads arriving with two
+   * DIFFERENT verdicts can both be told "changed" and both log; that is a duplicate warning about a
+   * misconfiguration that really did change, which is the outcome this method exists to produce, and a CAS loop
+   * would only decide which of the two the operator is not told about. The old {@code AtomicBoolean} had the same
+   * race with a worse shape - the loser was silenced permanently rather than for one pass.
+   * <p>
    * Package-private for testing.
    */
   static boolean isNewAmbiguityVerdict(final AtomicReference<String> lastReported, final String collisions) {

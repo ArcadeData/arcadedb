@@ -246,12 +246,17 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
 
           LogManager.instance().log(this, Level.FINE, "END OF THE TEST: Cleaning test %s...", getClass().getName());
           if (dropDatabasesAtTheEnd())
+            // Ends in exactly the two TestServerHelper calls below - the overrides that exist
+            // (BaseRaftHATest, RaftStorageDirectoryIT) add to it through super, they do not replace it - so
+            // repeating them afterwards only re-walked folders that were already gone. The other branch has to
+            // make them itself: the folders are removed whether or not the databases were dropped.
             deleteDatabaseFolders();
+          else {
+            TestServerHelper.checkActiveDatabases(false);
+            TestServerHelper.deleteDatabaseFolders(getServerCount());
+          }
 
           checkArcadeIsTotallyDown();
-
-          TestServerHelper.checkActiveDatabases(dropDatabasesAtTheEnd());
-          TestServerHelper.deleteDatabaseFolders(getServerCount());
         } finally {
           GlobalConfiguration.resetAll();
           GlobalConfiguration.TEST.setValue(false);
