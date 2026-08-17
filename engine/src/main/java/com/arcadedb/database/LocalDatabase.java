@@ -442,6 +442,25 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     return false;
   }
 
+  @Override
+  public void waitForAsyncCompletion() {
+    // Read the field, never async(): that accessor CREATES the executor - worker threads included - and a database
+    // that never used async must not grow a thread pool just because somebody asked whether it was idle.
+    final DatabaseAsyncExecutorImpl executor = async;
+    if (executor == null)
+      return;
+
+    // Unconditional, and that is the whole point (issue #6281). isProcessing() is not a precondition that can be
+    // tested first: a worker keeps ONE transaction open across up to ASYNC_TX_BATCH_SIZE tasks, so an executor whose
+    // queues are drained and whose workers are parked can still be holding thousands of uncommitted records.
+    // waitCompletion() is the only operation that closes that batch - it enqueues a marker BEHIND everything already
+    // submitted on every worker and that marker commits - so it has to run even when the executor looks idle.
+    // The loop then covers what a single pass cannot: tasks submitted by OTHER threads while this one was waiting.
+    do {
+      executor.waitCompletion();
+    } while (isAsyncProcessing());
+  }
+
   public DatabaseAsyncExecutor async() {
     if (async == null) {
       asyncLock.lock();

@@ -113,12 +113,13 @@ class Issue6259FlushQueueAdmissionTest extends TestHelper {
         Thread.sleep(1);
       }
 
-      // Fill every remaining slot. Committers are admitted one per free slot, so this is the state a burst against a
-      // slow disk reaches on its own - reached here deterministically instead.
-      for (int i = flush.queue.remainingCapacity(); i > 0; i--)
+      // Fill every remaining slot OF THIS DATABASE's budget (per-database since #6281). Committers are admitted one
+      // per free slot, so this is the state a burst against a slow disk reaches on its own - reached here
+      // deterministically instead.
+      for (int i = flush.slotsUsedBy(db) + 1; i <= flush.getQueueCapacity(); i++)
         flush.scheduleFlushOfPages(new ArrayList<>(List.of(page(db, i))));
-      assertThat(flush.queue.remainingCapacity()).as("the flush queue must be full for this test to test anything")
-          .isZero();
+      assertThat(flush.slotsUsedBy(db)).as("the database's flush budget must be exhausted for this test to test anything")
+          .isEqualTo(flush.getQueueCapacity());
 
       committer = new Thread(() -> {
         try {
@@ -165,7 +166,7 @@ class Issue6259FlushQueueAdmissionTest extends TestHelper {
     final long deadline = System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(ASSERTION_TIMEOUT_SEC);
     while (!flush.queue.isEmpty() && System.currentTimeMillis() < deadline)
       Thread.sleep(5);
-    assertThat(flush.queueReservations.get()).as("and no publication may leave a reservation behind").isZero();
+    assertThat(flush.slotsUsedBy(db)).as("and no publication may leave a reservation behind").isZero();
   }
 
   /**
@@ -185,15 +186,15 @@ class Issue6259FlushQueueAdmissionTest extends TestHelper {
 
     flush.scheduleFlushOfPages(new ArrayList<>(List.of(page(db, 0))));
     flush.scheduleFlushOfPages(new ArrayList<>(List.of(page(db, 1))));
-    assertThat(flush.queue.remainingCapacity()).isZero();
-    assertThat(flush.queueReservations.get()).as("an enqueued batch holds a slot, not a reservation").isZero();
+    assertThat(flush.slotsUsedBy(db)).as("an enqueued batch KEEPS the slot it was reserved on until it is polled")
+        .isEqualTo(2);
 
     final CountDownLatch admitted = new CountDownLatch(1);
     final AtomicReference<Throwable> failure = new AtomicReference<>();
     final Thread committer = new Thread(() -> {
       try {
-        if (flush.reserveQueueSlot()) {
-          flush.releaseQueueReservation(false);
+        if (flush.reserveQueueSlot(db)) {
+          flush.releaseQueueReservation(db);
           admitted.countDown();
         }
       } catch (final Throwable e) {
@@ -213,7 +214,9 @@ class Issue6259FlushQueueAdmissionTest extends TestHelper {
         .isTrue();
     committer.join(TimeUnit.SECONDS.toMillis(ASSERTION_TIMEOUT_SEC));
     assertThat(failure.get()).isNull();
-    assertThat(flush.queueReservations.get()).isZero();
+    // One batch left the queue and the admitted committer gave its slot straight back: the other batch still holds
+    // the one it was enqueued on.
+    assertThat(flush.slotsUsedBy(db)).isEqualTo(1);
   }
 
   /**
@@ -227,12 +230,12 @@ class Issue6259FlushQueueAdmissionTest extends TestHelper {
     final PageManagerFlushThread flush = smallQueueFlushThread(2);
 
     flush.scheduleFlushOfPages(new ArrayList<>(List.of(page(db, 0))));
-    assertThat(flush.reserveQueueSlot()).as("one slot left, so one more caller gets in").isTrue();
+    assertThat(flush.reserveQueueSlot(db)).as("one slot left, so one more caller gets in").isTrue();
 
     final CountDownLatch admitted = new CountDownLatch(1);
     final Thread other = new Thread(() -> {
       try {
-        if (flush.reserveQueueSlot())
+        if (flush.reserveQueueSlot(db))
           admitted.countDown();
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
@@ -245,9 +248,8 @@ class Issue6259FlushQueueAdmissionTest extends TestHelper {
         .isFalse();
 
     // The reservation is honoured: the enqueue finds the room it was promised, without waiting.
-    flush.scheduleFlushOfPages(new ArrayList<>(List.of(page(db, 1))), true);
-    assertThat(flush.queue.remainingCapacity()).isZero();
-    assertThat(flush.queueReservations.get()).isZero();
+    flush.scheduleFlushOfPages(new ArrayList<>(List.of(page(db, 1))), db);
+    assertThat(flush.slotsUsedBy(db)).as("both slots are now held by enqueued batches").isEqualTo(2);
 
     other.interrupt();
     other.join(TimeUnit.SECONDS.toMillis(ASSERTION_TIMEOUT_SEC));
@@ -266,23 +268,27 @@ class Issue6259FlushQueueAdmissionTest extends TestHelper {
 
     // An empty batch is never enqueued (the empty list is the shutdown sentinel), with or without a reservation.
     flush.scheduleFlushOfPages(new ArrayList<>());
-    assertThat(flush.queueReservations.get()).isZero();
-    assertThat(flush.reserveQueueSlot()).isTrue();
-    flush.scheduleFlushOfPages(new ArrayList<>(), true);
-    assertThat(flush.queueReservations.get()).as("a reservation handed to an empty batch must come straight back")
+    assertThat(flush.slotsUsedBy(db)).isZero();
+    assertThat(flush.reserveQueueSlot(db)).isTrue();
+    flush.scheduleFlushOfPages(new ArrayList<>(), db);
+    assertThat(flush.slotsUsedBy(db)).as("a reservation handed to an empty batch must come straight back")
         .isZero();
 
-    // A real publication, through the whole PageManager path.
+    // A real publication, through the whole PageManager path. The slot stays with the batch until the (real, running)
+    // flush thread polls it, so the assertion is about what is left AFTER the pipeline drains.
     final PageManager pageManager = db.getPageManager();
     pageManager.publishPages(List.of(page(db, 7)), null, true);
-    assertThat(pageManager.getFlushThread().queueReservations.get()).isZero();
+    final long deadline = System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(ASSERTION_TIMEOUT_SEC);
+    while (pageManager.getFlushThread().slotsUsedBy(db) > 0 && System.currentTimeMillis() < deadline)
+      Thread.sleep(5);
+    assertThat(pageManager.getFlushThread().slotsUsedBy(db)).isZero();
 
     // And a batch dropped because the thread is shutting down. closeAndJoin returns at once here: this flush thread
     // was constructed but never start()ed, and Thread.join() on a thread in NEW state returns immediately. What is
     // under test is the shutdown flag, not the join.
     flush.closeAndJoin();
     flush.scheduleFlushOfPages(new ArrayList<>(List.of(page(db, 8))));
-    assertThat(flush.queueReservations.get()).as("a batch dropped at shutdown must not strand its slot").isZero();
+    assertThat(flush.slotsUsedBy(db)).as("a batch dropped at shutdown must not strand its slot").isZero();
   }
 
   /**
@@ -315,11 +321,11 @@ class Issue6259FlushQueueAdmissionTest extends TestHelper {
         try {
           start.await();
           for (int i = 0; i < 2_000; i++) {
-            if (!flush.reserveQueueSlot())
+            if (!flush.reserveQueueSlot(db))
               return;
             maxHeld.accumulateAndGet(held.incrementAndGet(), Math::max);
             held.decrementAndGet();
-            flush.releaseQueueReservation(false);
+            flush.releaseQueueReservation(db);
           }
         } catch (final Throwable e) {
           failure.compareAndSet(null, e);
@@ -338,7 +344,7 @@ class Issue6259FlushQueueAdmissionTest extends TestHelper {
         "the CAS loop must never hand out more reservations than the queue has slots: each one is a promise that the enqueue inside the page-manager lock will not block")
         .isLessThanOrEqualTo(capacity);
     assertThat(maxHeld.get()).as("and the race must actually have contended, or this test proves nothing").isGreaterThan(1);
-    assertThat(flush.queueReservations.get()).isZero();
+    assertThat(flush.slotsUsedBy(db)).isZero();
 
     // PHASE 2: the whole path at once - producers reserving and enqueueing, a drainer polling - so the two halves of
     // the sum (queue size and reservations) move against each other under contention rather than one at a time.
@@ -351,9 +357,9 @@ class Issue6259FlushQueueAdmissionTest extends TestHelper {
       final Thread producer = new Thread(() -> {
         try {
           for (int i = 0; i < batchesPerProducer; i++) {
-            final boolean reserved = flush.reserveQueueSlot();
+            final boolean reserved = flush.reserveQueueSlot(db);
             assertThat(reserved).isTrue();
-            flush.scheduleFlushOfPages(new ArrayList<>(List.of(page(db, id * batchesPerProducer + i))), true);
+            flush.scheduleFlushOfPages(new ArrayList<>(List.of(page(db, id * batchesPerProducer + i))), db);
           }
         } catch (final Throwable e) {
           failure.compareAndSet(null, e);
@@ -386,7 +392,7 @@ class Issue6259FlushQueueAdmissionTest extends TestHelper {
 
     assertThat(failure.get()).isNull();
     assertThat(flush.queue).isEmpty();
-    assertThat(flush.queueReservations.get()).as(
+    assertThat(flush.slotsUsedBy(db)).as(
         "the accounting must come back to zero: a slot leaked per round shrinks the pipeline until it stops admitting anything")
         .isZero();
     assertThat(flush.pageIndex.pendingOf(db)).as("and every page must have left the pipeline").isZero();

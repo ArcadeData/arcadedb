@@ -113,6 +113,19 @@ public interface DatabaseInternal extends Database {
 
   boolean isAsyncProcessing();
 
+  /**
+   * Barrier against the asynchronous executor: returns only once every task already submitted has run <b>and</b> the
+   * batch transaction each worker keeps open across {@link com.arcadedb.GlobalConfiguration#ASYNC_TX_BATCH_SIZE} tasks
+   * has been committed. Does nothing - and in particular does not start the executor - on a database that never used
+   * it.
+   * <p>
+   * This is what a caller that needs to <i>read</i> what the async side wrote has to use. Polling
+   * {@link #isAsyncProcessing()} instead is not equivalent, and that was the bug of issue #6281: the predicate answers
+   * about TASKS, and the tasks of a batch are all long finished while their records are still uncommitted, so an index
+   * built on the strength of a {@code false} there was built over a bucket that did not contain them yet.
+   */
+  void waitForAsyncCompletion();
+
   long getResultSetLimit();
 
   long getReadTimeout();

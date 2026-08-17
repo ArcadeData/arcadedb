@@ -1229,7 +1229,7 @@ public class PageManager extends LockContext {
         // between them that throws, which is exactly the refactor that would otherwise strand a reservation. And a
         // stranded one is silent and permanent: the flush pipeline is one slot smaller for the life of the process,
         // with nothing in a running system ever pointing at it (review of #6269).
-        releaseFlushQueueSlot();
+        releaseFlushQueueSlot(pagesToWrite);
     }
   }
 
@@ -1449,9 +1449,9 @@ public class PageManager extends LockContext {
    * {@link #writePages} without the two waits that must be served before the page-manager lock, for the caller that
    * has already served them: {@link #publishPages} (issues #6200 and #6259).
    *
-   * @param flushSlotReserved a flush-queue reservation taken by the caller before it took the lock. This method owns
-   *                          it from here on - handing it to the enqueue, or giving it back on any path that does not
-   *                          reach one - so the caller must not release it again.
+   * @param flushSlotReserved a flush-pipeline slot taken by the caller, on the pages' own database's budget, before it
+   *                          took the lock. This method owns it from here on - handing it to the enqueue, or giving it
+   *                          back on any path that does not reach one - so the caller must not release it again.
    */
   private void writePagesNoBackpressure(final List<MutablePage> updatedPages, final boolean asyncFlush,
       final boolean flushSlotReserved) throws IOException, InterruptedException {
@@ -1461,7 +1461,8 @@ public class PageManager extends LockContext {
         for (final MutablePage page : updatedPages)
           putPageInReadCache(new CachedPage(page, true));
         handedOver = true;
-        flushThread.scheduleFlushOfPages(updatedPages, flushSlotReserved);
+        flushThread.scheduleFlushOfPages(updatedPages,
+            flushSlotReserved ? updatedPages.getFirst().getPageId().getDatabase() : null);
       } else {
         // SYNCHRONOUS FLUSH
         for (final MutablePage page : updatedPages) {
@@ -1475,14 +1476,15 @@ public class PageManager extends LockContext {
         // The read-cache loop above threw, or anything a later refactor puts before the hand-off does: the enqueue
         // was never reached, so the slot goes back rather than being held by a publication that is not going to
         // happen. Unlike its twin in publishPages this one IS reachable today - putPageInReadCache does I/O.
-        releaseFlushQueueSlot();
+        releaseFlushQueueSlot(updatedPages);
     }
   }
 
   /**
    * Reserves the flush-queue slot the enqueue inside the page-manager lock will need, waiting HERE - outside that
    * lock - for as long as the queue is full (issue #6259). See
-   * {@link PageManagerFlushThread#reserveQueueSlot()} for why the wait cannot live where the enqueue does.
+   * {@link PageManagerFlushThread#reserveQueueSlot(com.arcadedb.database.BasicDatabase)} for why the wait cannot live
+   * where the enqueue does, and why the budget it draws on is the batch's own database's (issue #6281).
    *
    * @return {@code false} when there is nothing to enqueue, or when the flush thread is shutting down: either way no
    *     reservation is held and none has to be released.
@@ -1491,7 +1493,7 @@ public class PageManager extends LockContext {
     final PageManagerFlushThread thread = flushThread;
     if (thread == null || pages == null || pages.isEmpty())
       return false;
-    return thread.reserveQueueSlot();
+    return thread.reserveQueueSlot(pages.getFirst().getPageId().getDatabase());
   }
 
   /**
@@ -1500,10 +1502,10 @@ public class PageManager extends LockContext {
    * window, which needs every database in the JVM to have been closed mid-publication - and would have thrown at the
    * enqueue long before reaching this.
    */
-  private void releaseFlushQueueSlot() {
+  private void releaseFlushQueueSlot(final List<MutablePage> pages) {
     final PageManagerFlushThread thread = flushThread;
-    if (thread != null)
-      thread.releaseQueueReservation(false);
+    if (thread != null && pages != null && !pages.isEmpty())
+      thread.releaseQueueReservation(pages.getFirst().getPageId().getDatabase());
   }
 
   protected void flushPage(final MutablePage page) throws IOException {

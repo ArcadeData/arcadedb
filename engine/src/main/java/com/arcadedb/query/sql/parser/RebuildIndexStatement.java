@@ -112,6 +112,13 @@ public class RebuildIndexStatement extends DDLStatement {
 
     final Database database = context.getDatabase();
 
+    // A rebuild SCANS the buckets, so it needs the same barrier a CREATE INDEX does (issue #6281): a worker of the
+    // async executor keeps one transaction open across up to ASYNC_TX_BATCH_SIZE tasks, so records it has already
+    // written can still be uncommitted - and invisible to this scan - even with every queue drained. Rebuilding
+    // around them produces exactly what the issue was about: an index missing entries, and lookups that silently
+    // answer nothing for records that are there. Costs nothing on a database that never used the async API.
+    ((DatabaseInternal) database).waitForAsyncCompletion();
+
     final Index.BuildIndexCallback callback = (document, totalIndexed) -> {
       total.incrementAndGet();
 
