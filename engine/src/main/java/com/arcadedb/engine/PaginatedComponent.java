@@ -75,6 +75,25 @@ public abstract class PaginatedComponent extends Component {
     this.pageSize = pageSize;
     this.file = (PaginatedComponentFile) database.getFileManager().getOrCreateFile(name, filePath, mode);
 
+    // The component and the file it holds MUST agree on the id (issue #6283). getOrCreateFile() is keyed by the
+    // component NAME and not by the path, so a name that is already registered hands back that file - carrying
+    // whatever id it was created with - while this component keeps the id it was built with, which on the
+    // id-allocating path above is a brand new one from FileManager.newFileId(). The component would then address
+    // pages of a file id that is not the file it holds. In #6198 that surfaced as "File with id 2 was not found"
+    // thrown from PageManager.loadPage, far from the cause; the variant where the bogus id happens to resolve to
+    // some other component's file is considerably worse than an exception, hence the loud failure right here,
+    // before a single page is addressed.
+    // A caller that legitimately has to build on an already-registered file resolves it FIRST through
+    // FileManager.getFileByComponentName() and constructs on that file's real id, as
+    // TimeSeriesTagDictionary.openOrCreate() does.
+    // The id newFileId() reserved for a construction that ends here is abandoned: nothing fills that slot and
+    // nothing reclaims it. Deliberate - this is a programming error on a path that no legitimate caller takes,
+    // and one leaked slot in the file table costs far less than a reclaim protocol racing concurrent creations.
+    if (file.getFileId() != fileId)
+      throw new IllegalStateException(
+          "Component '" + name + "' was built on file id " + fileId + " but the file registered under that name has id "
+              + file.getFileId() + " ('" + file.getFilePath() + "')");
+
     final long fileSize = file.getSize();
     if (fileSize == 0)
       // NEW FILE, CREATE HEADER PAGE
