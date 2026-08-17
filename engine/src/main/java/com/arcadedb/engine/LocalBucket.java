@@ -156,6 +156,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private static final   long                      FNV_PRIME                        = 0x100000001b3L;
   private static final   int                       CHUNKS_BEFORE_LOOP_DETECTION     = 64;
   /**
+   * How much page memory the orphaned-chunk sweep of {@link #check} may take for modification in one run (#6294).
+   * The bound is in BYTES and not in chunks because that is what the cost is: the enclosing transaction keeps a copy
+   * of every page it modifies, so a backlog spread thinly over many pages is far more expensive than the same number
+   * of chunks packed into few. A run that reaches it stops, reports what it left, and the next {@code FIX} continues -
+   * which is how a bulk repair converges instead of ending as the {@code OutOfMemoryError} of #4653.
+   */
+  private static final   int                       ORPHAN_RECLAIM_BUDGET_BYTES      = 32 * 1024 * 1024;
+  /**
    * Layout of the trace {@link #loadMultiPageRecord} keeps of the chain it walked, one stride per chunk consumed, so
    * the read can be validated against what it actually READ instead of against the version of the pages that read
    * happened to touch (#6217). Four longs in one flat array rather than an object per chunk: this is the read path of
@@ -1125,9 +1133,6 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // page and walks every chain.
     final LongHashSet chunkSlots = new LongHashSet();
     final LongHashSet reachableChunks = new LongHashSet();
-    // The chunks a chain lost because THIS run force-deleted its head. Orphans, and swept as such - but not errors the
-    // database had before the run started, which is what separates them from a leak an earlier repair left behind.
-    final LongHashSet chunksOrphanedByThisRun = new LongHashSet();
     // FAIL CLOSED, exactly as the edge-segment reclaim does: a chain walk that could not read a page, or a page or
     // slot the pass could not read at all, leaves live chunks unmarked - and an unmarked live chunk deleted as an
     // orphan is destroyed data. Any such gap disables the sweep entirely rather than shrinking it.
@@ -1267,12 +1272,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                 pageMaxOffset = (int) endPosition;
 
               // #6294: the chunks a head walks through are LIVE only while that head is. One this pass repaired away
-              // takes its whole chain with it, and those chunks are exactly what the sweep is looking for.
+              // marks NOTHING, so its whole chain - including the chunks before the break - is swept at the source,
+              // which is what the issue's "free them at the source" asks for without walking past a broken pointer.
               if (chainWalk.incomplete)
                 chunkReachabilityComplete = false;
-              else if (!chainWalk.chunks.isEmpty())
-                chainWalk.chunks.forEach(
-                        (category == SlotCategory.DELETED ? chunksOrphanedByThisRun : reachableChunks)::add);
+              else if (category != SlotCategory.DELETED)
+                chainWalk.chunks.forEach(reachableChunks::add);
 
             } catch (final Exception e) {
               ++totals.totalErrors;
@@ -1369,8 +1374,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // have already gone out, and they describe the page as the walk found it, which is what a physical-layout log is
     // for.
     reconcilePlaceholderPointers(totals, placeholderPointers, repairedAwaySlots, totalPages, verboseLevel, fix);
-    reclaimOrphanedChunks(totals, chunkSlots, reachableChunks, chunksOrphanedByThisRun, chunkReachabilityComplete,
-            verboseLevel, fix);
+    reclaimOrphanedChunks(totals, chunkSlots, reachableChunks, chunkReachabilityComplete, verboseLevel, fix);
 
     if (fix)
       // #5149: reconcile the cached record counter that count(*) relies on. Invalidating forces the next
@@ -1593,6 +1597,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * disables the sweep entirely rather than shrinking it. That is the same rule the edge-segment reclaim follows and
    * for the same reason.
    * <p>
+   * <b>A leak is not a corruption</b>, so an orphan is a COUNT and never an error or a per-chunk warning: no record is
+   * wrong, no query is affected, no two counts disagree - the bucket is simply carrying dead space.
+   * {@code orphanedEdgeSegments} and {@code orphanedExternalRecords} are reported exactly that way, and the scale is
+   * the reason it matters here rather than being a matter of taste: measured on {@code CRUDTest.multiUpdatesOverlap},
+   * a bucket of 1.5M chunks carries 243821 orphans, and one warning apiece would be a report nobody can read built
+   * out of a quarter of a million strings.
+   * <p>
    * <b>Same precondition the rest of {@code check(fix)} already carries</b>: it is an ADMIN operation, expected to run
    * without concurrent writers on the bucket. The marks are collected page by page, so a chain rewritten by a
    * concurrent commit half-way through the walk can leave its new chunk unmarked; the very same window is what lets
@@ -1600,15 +1611,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * {@code GraphDatabaseChecker}'s orphan reclaim and {@code count()}'s counter reconciliation are both stated to
    * require. This adds no exposure of its own, and buys none back either.
    *
-   * @param chunksOrphanedByThisRun the chunks a chain lost because this run force-deleted its head. Swept like any
-   *                                other orphan, but not counted as an error the database had before the run: the
-   *                                record had one defect, and this is the rest of removing it.
-   *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   private void reclaimOrphanedChunks(final CheckStats totals, final LongHashSet chunkSlots,
-                                     final LongHashSet reachableChunks, final LongHashSet chunksOrphanedByThisRun,
-                                     final boolean reachabilityComplete, final int verboseLevel, final boolean fix) {
+                                     final LongHashSet reachableChunks, final boolean reachabilityComplete,
+                                     final int verboseLevel, final boolean fix) {
     if (chunkSlots.isEmpty())
       return;
 
@@ -1624,46 +1631,61 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       return;
     }
 
+    // The pages this sweep may take for modification, sized by MEMORY and not by a count of chunks: the enclosing
+    // transaction holds a copy of every page it modifies, so the cost of a reclaim is pages x pageSize whatever the
+    // backlog is. A bucket can hold a very large one - the leak is per incident but permanent, so it accumulates -
+    // and freeing all of it in one transaction is how a repair turns into an OutOfMemoryError (#4653). Bounded, so
+    // the run converges instead: what is left over is counted, said out loud, and taken by the next FIX.
+    final int pageBudget = Math.max(1, ORPHAN_RECLAIM_BUDGET_BYTES / pageSize);
+    final LongHashSet pagesTaken = new LongHashSet();
+    long leftForNextRun = 0L;
+
     for (final long chunkPosition : chunkSlots.toArray()) {
       if (reachableChunks.contains(chunkPosition))
         continue;
 
-      final RID chunkRID = new RID(fileId, chunkPosition);
-      final boolean orphanedByThisRun = chunksOrphanedByThisRun.contains(chunkPosition);
-
+      // Counted whether or not it is freed: "how much is leaked" and "how much this run gave back" are different
+      // questions, and orphanedChunks/orphanedChunksReclaimed are the two answers.
       ++totals.orphanedChunks;
-      if (!orphanedByThisRun)
-        ++totals.totalErrors;
 
-      // As above, orphanedByThisRun implies fix.
-      String warning = orphanedByThisRun ?
-              "chunk %s belonged to a record this run removed: reclaimed".formatted(chunkRID) :
-              "chunk %s is reachable from no record and its space is leaked%s".formatted(chunkRID,
-                      fix ? ": reclaimed" : "; run CHECK DATABASE FIX to reclaim it");
+      if (!fix)
+        continue;
 
-      if (fix) {
-        try {
-          // The chain this chunk belonged to no longer exists to be walked, so only its own slot is freed.
-          freeSlotOnly(chunkRID);
-          // Deliberately NOT added to deletedRecordsAfterFix: that list is the RIDs of RECORDS this run removed, and
-          // a continuation chunk is a fragment of one, under a RID no caller ever held. orphanedChunksReclaimed is
-          // what counts them, and the warnings name them.
-          ++totals.orphanedChunksReclaimed;
-          --totals.totalChunks;
-          --totals.totalAllocatedRecords;
-          ++totals.totalDeletedRecords;
-        } catch (final Exception e) {
-          if (orphanedByThisRun)
-            ++totals.totalErrors;
-          warning = "chunk %s is reachable from no record and could not be reclaimed: %s".formatted(chunkRID,
-                  e.getMessage());
-        }
+      final long chunkPageId = chunkPosition / maxRecordsInPage;
+      if (pagesTaken.size() >= pageBudget && !pagesTaken.contains(chunkPageId)) {
+        ++leftForNextRun;
+        continue;
       }
 
-      totals.warnings.add(warning);
-      if (verboseLevel > 0)
-        LogManager.instance().log(this, Level.SEVERE, "- " + warning);
+      final RID chunkRID = new RID(fileId, chunkPosition);
+      try {
+        // The chain this chunk belonged to no longer exists to be walked, so only its own slot is freed.
+        freeSlotOnly(chunkRID);
+        pagesTaken.add(chunkPageId);
+        // Deliberately NOT added to deletedRecordsAfterFix: that list is the RIDs of RECORDS this run removed, and a
+        // continuation chunk is a fragment of one, under a RID no caller ever held.
+        ++totals.orphanedChunksReclaimed;
+        --totals.totalChunks;
+        --totals.totalAllocatedRecords;
+        ++totals.totalDeletedRecords;
+      } catch (final Exception e) {
+        // A warning, unlike the reclaim itself: this one is a repair that did not happen, which is worth telling the
+        // operator about, where a chunk that WAS reclaimed is worth nothing more than the counter above.
+        final String warning = "chunk %s is reachable from no record and could not be reclaimed: %s".formatted(chunkRID,
+                e.getMessage());
+        totals.warnings.add(warning);
+        if (verboseLevel > 0)
+          LogManager.instance().log(this, Level.SEVERE, "- " + warning);
+      }
     }
+
+    if (leftForNextRun > 0)
+      // Not a warning: nothing is wrong, the run simply stopped where it said it would. The returned counters carry
+      // the same fact - orphanedChunks is what was found, orphanedChunksReclaimed what this run gave back.
+      LogManager.instance().log(this, Level.INFO,
+              "- reclaimed %d orphaned chunks of bucket '%s' and stopped at the %d-page budget; %d are left - run CHECK "
+                      + "DATABASE FIX again to continue", totals.orphanedChunksReclaimed, componentName, pageBudget,
+              leftForNextRun);
   }
 
   /**

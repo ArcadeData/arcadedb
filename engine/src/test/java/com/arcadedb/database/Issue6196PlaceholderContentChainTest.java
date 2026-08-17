@@ -260,8 +260,8 @@ class Issue6196PlaceholderContentChainTest extends BucketPageLayoutTestSupport {
    * placeholder POINTER that led to the record is removed with it (#6292 - left behind, it is a slot every scan skips
    * and {@code count(*)} counts, for good), and the continuation chunks the overwritten pointer had already cut the
    * chain off from are reclaimed (#6294 - nothing collected them before, whatever the comments promised). Those three
-   * chunks were leaked the moment the pointer was corrupted, before this run started, so they are errors of the
-   * database and not of the repair; the pointer is not, because the record it referenced is one this very run removed.
+   * chunks are dead space rather than a corruption, so they are counted and reclaimed without being booked as errors:
+   * the record had ONE defect, and one error is what the run reports.
    */
   @Test
   void aLegacyContentHeadWithABrokenChainIsReportedOnce() {
@@ -287,8 +287,10 @@ class Issue6196PlaceholderContentChainTest extends BucketPageLayoutTestSupport {
     assertThat(orphanedChunks).as("the cut-off chunks must be found: " + fixed.toJSON()).isPositive();
     assertThat(numberProperty(fixed, "orphanedChunksReclaimed")).as("and reclaimed: " + fixed.toJSON())
         .isEqualTo(orphanedChunks);
+    // ONE error: the broken chain. The chunks it leaked are dead space, not a corruption - no record is wrong and no
+    // query is affected - so they are counted and reclaimed, never booked as errors of their own.
     assertThat(numberProperty(fixed, "totalErrors"))
-        .as("one broken chain plus the chunks it had already leaked: " + fixed.toJSON()).isEqualTo(1L + orphanedChunks);
+        .as("one record, one defect it can act on, one error: " + fixed.toJSON()).isEqualTo(1L);
 
     // Nothing is left for a second run to find: not the slot the pointer led to, not the pointer, not the chunks.
     final Result again = checkDatabaseRow(false);

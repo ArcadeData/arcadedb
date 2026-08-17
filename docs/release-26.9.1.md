@@ -2642,8 +2642,19 @@ LIVE chunk deleted as an orphan is destroyed data, so ANY gap in the marking (a 
 a chain walk stopped by an I/O fault, a slot that could not be classified) disables the sweep entirely rather
 than shrinking it.
 
-A chunk orphaned by this run's own force-delete is swept like any other but is not counted as an error the
-database had before the run started, for the same reason the pointer above is not.
+**An orphan is a COUNT, not an error and not a warning.** Nothing is corrupted by one: no record is wrong, no
+query is affected, no two counts disagree - the bucket is carrying dead space. That matches how
+`orphanedEdgeSegments` and `orphanedExternalRecords` are already reported, and the scale is what makes it
+matter rather than being a matter of taste. The first measurement of a real workload found **243821 orphaned
+chunks in a bucket of 1.5 million** (`CRUDTest.multiUpdatesOverlap`, 131072 records put through thirteen
+rounds of updates): a leak that has always been there, that nothing collected, and that one warning apiece
+would have reported as a quarter of a million strings.
+
+**The reclaim is bounded by memory, not by count.** The enclosing transaction holds a copy of every page it
+modifies, so a backlog spread thinly across pages costs pages x pageSize whatever the number of chunks is. A
+run frees what fits a 32 MB page budget, reports the rest through the gap between `orphanedChunks` and
+`orphanedChunksReclaimed`, and says so in the log; the next `FIX` continues. A bulk repair that converges is
+worth more than one that ends as the `OutOfMemoryError` of #4653.
 
 [#6292](https://github.com/ArcadeData/arcadedb/issues/6292)
 [#6293](https://github.com/ArcadeData/arcadedb/issues/6293)
