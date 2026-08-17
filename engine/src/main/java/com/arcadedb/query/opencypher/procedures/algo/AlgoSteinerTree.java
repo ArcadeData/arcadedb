@@ -59,7 +59,7 @@ import java.util.stream.Stream;
  * </p>
  *
  * <p>Working set: a {@code terminals x nodeCount} pair of Dijkstra tables plus one entry per terminal pair -
- * about {@code t²/2} of them - in four parallel arrays, both reserved through
+ * about {@code t²/2} of them - in five parallel primitive arrays, both reserved through
  * {@link AbstractAlgoProcedure.MemoryBudget} before anything is allocated. Quadratic in a list the caller
  * supplies and nothing bounds, which is why the pair count is also computed in {@code long}.</p>
  *
@@ -125,7 +125,11 @@ public class AlgoSteinerTree extends AbstractAlgoProcedure {
     final MemoryBudget memory = newMemoryBudget(db);
     memory.reserve(saturatingSum(matrixBytes(t, n, DOUBLE_BYTES), matrixBytes(t, n, INT_BYTES)),
         "the per-terminal Dijkstra tables", t + " terminals x " + n + " nodes");
-    memory.reserve(saturatingProduct(pairCount, 2 * INT_BYTES + DOUBLE_BYTES + BOXED_INTEGER_BYTES),
+    // Per pair: the endpoints pU/pV, the weight pW, and the two int arrays the index sort works over (the
+    // order and the merge scratch). Four ints and a double, all primitive - which is what
+    // sortedIndexesByWeight() is for: through Arrays.sort(Integer[], Comparator) the sort alone used to cost
+    // 24 bytes per pair, more than everything else here put together (issue #6289).
+    memory.reserve(saturatingProduct(pairCount, 4 * INT_BYTES + DOUBLE_BYTES),
         "the terminal-pair arrays", pairCount + " pairs over " + t + " terminals");
     if (pairCount > Integer.MAX_VALUE)
       throw new IllegalArgumentException(getName() + "(): " + t + " terminalNodes make " + pairCount
@@ -168,11 +172,9 @@ public class AlgoSteinerTree extends AbstractAlgoProcedure {
         pi++;
       }
 
-    // Sort by weight for Kruskal's
-    final Integer[] sortIdx = new Integer[pairs];
-    for (int i = 0; i < pairs; i++)
-      sortIdx[i] = i;
-    Arrays.sort(sortIdx, (a, b) -> Double.compare(pW[a], pW[b]));
+    // Sort by weight for Kruskal's, over primitive indices: `pairs` is quadratic in a terminal list the caller
+    // supplies, so a boxed Integer[] here is ~2M objects at 2000 terminals.
+    final int[] sortIdx = sortedIndexesByWeight(pW, pairs);
 
     // Union-Find on terminal indices
     final int[] parent = new int[t];

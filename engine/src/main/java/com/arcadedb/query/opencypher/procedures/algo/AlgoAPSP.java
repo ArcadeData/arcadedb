@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
@@ -27,8 +28,9 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Function;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 /**
@@ -46,6 +48,12 @@ import java.util.stream.Stream;
  * Note: this algorithm is O(V²) in memory and O(V³) in time. Only suitable for graphs
  * with up to a few thousand vertices - a bound the distance matrix's reservation through
  * {@link AbstractAlgoProcedure.MemoryBudget} now enforces rather than merely advises.
+ * </p>
+ * <p>
+ * The rows are produced lazily from the completed distance matrix, so the O(V²) figure above is the matrix and
+ * nothing else: a caller that reads one row holds one row. This is the only {@code algo.*} procedure whose row
+ * count is quadratic in the graph rather than bounded by a top-k, a component count or one neighbourhood, which
+ * is what made materialising it eagerly the largest allocation of the call (issue #6296).
  * </p>
  * <p>
  * Example:
@@ -154,20 +162,36 @@ public class AlgoAPSP extends AbstractAlgoProcedure {
       }
     }
 
-    // Collect results: only reachable pairs with i != j
-    final List<Result> results = new ArrayList<>();
-    for (int i = 0; i < n; i++) {
-      for (int j = 0; j < n; j++) {
-        if (i == j || dist[i][j] >= INF)
-          continue;
-        final ResultInternal r = new ResultInternal();
-        r.setProperty("source", graph.getRID(i));
-        r.setProperty("target", graph.getRID(j));
-        r.setProperty("distance", dist[i][j]);
-        results.add(r);
-      }
-    }
-    return results.stream();
+    // Emit the reachable pairs (i != j) lazily, one row at a time.
+    //
+    // The rows are the largest allocation this procedure makes, and until issue #6296 they were the one thing in
+    // it that no budget saw: the matrix reserved above is n x n DOUBLES, the result is up to n² - n ROW OBJECTS,
+    // each a ResultInternal with a three-entry property map. At the 64 MB floor of
+    // arcadedb.cypher.algoMaxWorkingMemory the matrix check admits n ≈ 2890, and a connected graph of that size
+    // then produced ~8.3M rows - well over a gigabyte, held all at once, against the 64 MB the budget had just
+    // finished enforcing beside it. The call died of the allocation the budget was not looking at.
+    //
+    // Nothing required them to exist together: the matrix is complete before the first row is emitted, so the
+    // rows are a pure projection of it. Streaming them makes the row-side footprint O(1) and hands the decision
+    // of how many to hold to the consumer, which is where it belongs - CallStep keeps the iterator rather than
+    // collecting it (see CallStep#executeProcedure), so a LIMIT upstream now costs what it says it costs.
+    return IntStream.range(0, n).mapToObj(i -> {
+      final double[] distances = dist[i];
+      final RID source = graph.getRID(i);  // one lookup per SOURCE rather than one per pair
+      return IntStream.range(0, n)
+          // Identical to the eager loop's `if (i == j || dist[i][j] >= INF) continue`, NaN included: a NaN
+          // distance would pass both forms of this test differently, but none can reach the matrix - every
+          // write to it above, the edge fill and the Floyd-Warshall relaxation alike, is guarded by `<`,
+          // which a NaN fails.
+          .filter(j -> j != i && distances[j] < INF)
+          .mapToObj(j -> {
+            final ResultInternal r = new ResultInternal();
+            r.setProperty("source", source);
+            r.setProperty("target", graph.getRID(j));
+            r.setProperty("distance", distances[j]);
+            return (Result) r;
+          });
+    }).flatMap(Function.identity());
   }
 
   private void fillDistanceMatrixFromOLTP(final GraphData graph, final int n, final double[][] dist,
