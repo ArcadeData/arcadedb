@@ -24,6 +24,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.PageManagerFlushThread.PagesToFlush;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -167,10 +168,10 @@ class Issue6200PerDatabaseDeferredBacklogTest extends TestHelper {
           flush.flushPagesFromQueueToDisk(null, 20L);
         assertThat(flush.deferredRAMBytes.get()).as("the backlog is far over the cap").isGreaterThan(CAP_BYTES);
 
-        final long begin = System.currentTimeMillis();
+        final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
         flush.awaitDeferredBacklogUnderCap(otherDb);
-        assertThat(System.currentTimeMillis() - begin).as(
-            "a database that is not suspended must not wait on another database's backlog").isLessThan(1_000);
+        stopwatch.assertStayedUnder(1_000,
+            "a free database returning at once, not waiting on another database's over-cap backlog");
       } finally {
         flush.setSuspended(suspendedDb, false);
       }
@@ -468,7 +469,7 @@ class Issue6200PerDatabaseDeferredBacklogTest extends TestHelper {
         pages.add(new MutablePage(new PageId(db, FILE_ID, i), pageSize, new byte[pageSize], 0, 0));
       final PagesToFlush trapped = new PagesToFlush(pages);
       flush.pageIndex.putAll(pages);
-      flush.queue.offer(trapped);
+      flush.offerBatch(trapped, false);
       flush.flushPagesFromQueueToDisk(null, 20L);
       assertThat(flush.getDeferredRAMBytesOf(db)).isEqualTo((long) 600 * pageSize);
 
@@ -553,7 +554,7 @@ class Issue6200PerDatabaseDeferredBacklogTest extends TestHelper {
       final int pageNumber) {
     final MutablePage page = new MutablePage(new PageId(database, FILE_ID, pageNumber), PAGE_SIZE, new byte[PAGE_SIZE], 0, 0);
     flush.pageIndex.put(page);
-    flush.queue.offer(new PagesToFlush(List.of(page)));
+    flush.offerBatch(new PagesToFlush(List.of(page)), false);
     return page;
   }
 
@@ -565,6 +566,6 @@ class Issue6200PerDatabaseDeferredBacklogTest extends TestHelper {
     for (int i = 0; i < pages; i++)
       batch.add(new MutablePage(new PageId(database, FILE_ID, round * pages + i), pageSize, new byte[pageSize], 0, 0));
     flush.pageIndex.putAll(batch);
-    flush.queue.offer(new PagesToFlush(batch));
+    flush.offerBatch(new PagesToFlush(batch), false);
   }
 }

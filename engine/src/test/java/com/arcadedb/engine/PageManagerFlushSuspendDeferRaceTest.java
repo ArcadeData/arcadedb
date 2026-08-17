@@ -92,7 +92,7 @@ class PageManagerFlushSuspendDeferRaceTest extends TestHelper {
     final MutablePage page = new MutablePage(pageId, 1024, new byte[1024], 0, 0);
     final PagesToFlush batch = new PagesToFlush(List.of(page));
     flush.pageIndex.put(page);
-    flush.queue.offer(batch);
+    flush.offerBatch(batch, false);
 
     final Thread flusher = new Thread(() -> {
       try {

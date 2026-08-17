@@ -25,7 +25,6 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.server.ArcadeDBServer;
 
-import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CountDownLatch;
@@ -61,8 +60,6 @@ class SuperNodeAppendHAConsistencyIT extends BaseRaftHATest {
     final int savedRetryDelay = GlobalConfiguration.TX_RETRY_DELAY.getValueAsInteger();
     GlobalConfiguration.TX_RETRY_DELAY.setValue(1);
     try {
-      Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(500, TimeUnit.MILLISECONDS)
-          .until(() -> findLeaderIndex() >= 0);
       final int leaderIndex = findLeaderIndex();
       assertThat(leaderIndex).as("a leader must be elected").isGreaterThanOrEqualTo(0);
       final ArcadeDBServer leaderServer = getServer(leaderIndex);

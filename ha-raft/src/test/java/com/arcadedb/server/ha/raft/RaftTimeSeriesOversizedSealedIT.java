@@ -65,8 +65,6 @@ class RaftTimeSeriesOversizedSealedIT extends BaseRaftHATest {
     final Object previousCap = GlobalConfiguration.HA_TS_MAX_SEALED_INLINE_SIZE.getValue();
     GlobalConfiguration.HA_TS_MAX_SEALED_INLINE_SIZE.setValue(10L);
     try {
-      Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(500, TimeUnit.MILLISECONDS)
-          .until(() -> findLeaderIndex() >= 0);
       final int leaderIndex = findLeaderIndex();
       assertThat(leaderIndex).as("a leader must be elected").isGreaterThanOrEqualTo(0);
 

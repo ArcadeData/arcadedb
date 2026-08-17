@@ -21,6 +21,7 @@ package com.arcadedb.index.sparsevector;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.utility.StallAwareStopwatch;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -58,13 +59,10 @@ class PaginatedSparseVectorEngineBackpressureTest extends TestHelper {
       // to acquire it, so the call must return without observable delay.
       mutatorLock.lock();
       try {
-        final long t0 = System.nanoTime();
+        final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
         engine.put(0, new RID(0, 1L), 0.5f);
-        final long elapsedMs = (System.nanoTime() - t0) / 1_000_000L;
         assertThat(engine.memtablePostings()).isEqualTo(1L);
-        assertThat(elapsedMs)
-            .as("put below the hard limit must not contend the mutator lock")
-            .isLessThan(50L);
+        stopwatch.assertStayedUnder(50L, "a put that never touches the held mutator lock, not one that blocks on it");
       } finally {
         mutatorLock.unlock();
       }

@@ -468,7 +468,15 @@ public enum GlobalConfiguration {
       spanning several pages). Leave headroom when picking a value close to the replicated-entry limit.""",
       Integer.class, 256),
 
-  PAGE_FLUSH_QUEUE("arcadedb.pageFlushQueue", SCOPE.DATABASE, "Size of the asynchronous page flush queue", Integer.class, 512),
+  PAGE_FLUSH_QUEUE("arcadedb.pageFlushQueue", SCOPE.DATABASE,
+      """
+      Maximum number of page batches EACH database may have waiting in the asynchronous flush pipeline. A committer of \
+      a database that has reached it waits - before taking the page-manager lock, never inside it - until one of that \
+      database's own batches is written; the committers of every other database are admitted straight through. This \
+      was a single JVM-wide bound before issue #6281, which is what let one database's write burst against a slow \
+      volume throttle the commits of unrelated databases on idle ones. Values below 1 are raised to 1: this is now \
+      the only bound on the pipeline, so a budget of 0 would refuse every publication for ever.\
+      """, Integer.class, 512),
 
   FLUSH_SUSPEND_MAX_DEFERRED_RAM("arcadedb.flushSuspendMaxDeferredRAM", SCOPE.DATABASE,
       """
@@ -704,7 +712,19 @@ public enum GlobalConfiguration {
       Integer.class, 16, integerRangeAsStrings(1, 31)),
 
   // COMMAND
-  COMMAND_TIMEOUT("arcadedb.command.timeout", SCOPE.DATABASE, "Default timeout for commands (in ms)", Long.class, 0),
+  COMMAND_TIMEOUT("arcadedb.command.timeout", SCOPE.DATABASE, """
+      Maximum time in ms a single command may run before being aborted with a TimeoutException. The deadline is \
+      taken once, when execution starts, and is shared by everything the statement does - a CALL subquery, a \
+      correlated COUNT { }, a UNION branch and a CALL algo.* procedure all run against the same instant rather than \
+      each starting a fresh budget. It is checked inside the scan, expansion and filter loops, so a statement that \
+      produces no row for minutes is bounded too, not only one that streams rows. Covers SQL and openCypher, \
+      including SELECT/UPDATE/DELETE/MATCH/TRAVERSE and the openCypher algo.* procedures. A per-statement SQL \
+      TIMEOUT clause is enforced alongside it and the earlier of the two wins, so a statement may ask for less \
+      time than this setting allows but not for more. Gremlin and the other polyglot scripting \
+      engines are NOT covered - they have their own arcadedb.polyglotCommand.timeout - and neither is regular \
+      expression backtracking, which arcadedb.command.regexTimeout bounds separately. Set to 0 (the default) to \
+      disable.""",
+      Long.class, 0),
 
   COMMAND_REGEX_TIMEOUT("arcadedb.command.regexTimeout", SCOPE.DATABASE, """
       Maximum time in ms a single regular expression evaluation may run before being aborted (an entire scan, for a \
@@ -813,21 +833,29 @@ public enum GlobalConfiguration {
       where the stack is at risk. Raise it only if a legitimate, deeply-nested or very long generated query needs it.""",
       Integer.class, 200),
 
-  CYPHER_ALGO_MAX_WALK_MEMORY("arcadedb.cypher.algoMaxWalkMemory", SCOPE.DATABASE,
+  CYPHER_ALGO_MAX_WORKING_MEMORY("arcadedb.cypher.algoMaxWorkingMemory", SCOPE.DATABASE,
       """
-      Maximum heap, in bytes, that a single call to an OpenCypher random-walk algorithm procedure may reserve for \
-      its walk buffers: algo.node2vec materialises walksPerNode x nodeCount walks of walkLength steps each, and \
-      algo.randomWalk a single walk of steps entries. Those knobs have no graph-derived ceiling to clamp against - \
-      unlike a top-k bound, which is capped by the node count - so a large but perfectly in-range int would \
-      otherwise reach the allocator unchecked, or wrap the int product on the way there and surface as a \
-      NegativeArraySizeException from inside the walk generator. The estimate is computed in saturating long \
-      arithmetic and checked BEFORE anything is allocated: a call over the budget is rejected as a client error \
-      naming the knobs that produced the estimate and this setting. Negative number means no limit. When left at \
-      the default it auto-scales with the JVM max heap (one eighth of it, never below 64MB), so the walk buffers \
-      of a legitimate large run stay a fraction of the heap they share with the rest of the query.""",
+      Maximum heap, in bytes, that a single call to an OpenCypher algorithm procedure may reserve for the dense \
+      working set it builds beside the graph: the random-walk buffers of algo.node2vec (walksPerNode x nodeCount \
+      walks of walkLength steps) and algo.randomWalk (a single walk of steps entries), algo.slpa's label memory \
+      (one row of iterations entries per node), the nodeCount x dimension embedding matrices of algo.node2vec, \
+      algo.fastrp, algo.hashgnn and algo.graphsage, the nodeCount x nodeCount matrices of algo.apsp, \
+      algo.simRank, algo.maxFlow and algo.kShortestPaths, and the terminals x nodeCount tables and \
+      terminal-pair arrays of algo.steinerTree. None of these has a graph-derived ceiling to clamp against - \
+      unlike a top-k bound, which is capped by the node count - so a large but perfectly in-range int, a \
+      terminal list of any length, or simply a large graph, would otherwise reach the allocator unchecked, or \
+      wrap the int product on the way there and surface as a NegativeArraySizeException from inside the \
+      algorithm. Every estimate is computed in saturating long arithmetic and reserved BEFORE anything is \
+      allocated, and reservations accumulate over the call, so what is bounded is the working set of the whole \
+      call rather than one allocation of it: a call over the budget is rejected as a client error naming the \
+      component and the knobs that produced the estimate, together with this setting. Negative number means no \
+      limit. When left at the default it auto-scales with the JVM max heap (one eighth of it, never below 64MB), \
+      so the working set of a legitimate large run stays a fraction of the heap it shares with the rest of the \
+      query.""",
       Long.class, 64 * 1024 * 1024L, null, value -> {
         // Auto-scale the default with the JVM max heap: one eighth of it, never below the 64MB floor so that a
-        // typical run (a few million walk entries) keeps working on small footprints.
+        // typical run (a few million walk entries, or a mid-sized graph at the default embedding dimension)
+        // keeps working on small footprints.
         final long maxHeap = Runtime.getRuntime().maxMemory();
         if (maxHeap == Long.MAX_VALUE)
           // Heap is unbounded (no -Xmx): keep the conservative floor rather than an effectively unlimited cap.

@@ -25,6 +25,7 @@ import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.index.Index;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -88,8 +89,18 @@ class ACIDTransactionTest extends TestHelper {
     database.transaction(() -> assertThat(database.countType("V", true)).isEqualTo(TOT));
   }
 
+  /**
+   * Creates an index while asynchronous inserts of the very records it has to cover are in flight, then crashes.
+   * <p>
+   * This used to be {@code indexCreationWhileAsyncMustFail} and expected a {@link NeedRetryException} from the
+   * creation. That expectation has been dead for a long time - {@code TypeIndexBuilder.create()} drains the async
+   * executor before building instead of refusing - so the {@code catch} was never entered and the test asserted
+   * nothing about the index at all: only the record count, which an EMPTY index satisfies just as well as a complete
+   * one. That is exactly what issue #6281 found it hiding, so what it checks now is the index (see
+   * {@link com.arcadedb.index.Issue6281AsyncBatchIndexBuildTest} for the barrier itself).
+   */
   @Test
-  void indexCreationWhileAsyncMustFail() {
+  void indexCreatedWhileAsyncInsertsAreInFlightSurvivesACrash() {
     final Database db = database;
 
     final int TOT = 100;
@@ -107,12 +118,8 @@ class ACIDTransactionTest extends TestHelper {
         db.async().createRecord(v, null);
       }
 
-      // creating the index should throw exception because there's an aync creation ongoing: sometimes it doesn't happen, the async is finished
-      try {
-        database.getSchema().getType("V").createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "id");
-      } catch (NeedRetryException e) {
-        //no action
-      }
+      // The records are still being written asynchronously here: the creation must WAIT for them, not race them.
+      database.getSchema().getType("V").createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "id");
 
       db.async().waitCompletion();
 
@@ -126,7 +133,20 @@ class ACIDTransactionTest extends TestHelper {
 
     verifyDatabaseWasNotClosedProperly();
 
-    database.transaction(() -> assertThat(database.countType("V", true)).isEqualTo(TOT));
+    database.transaction(() -> {
+      assertThat(database.countType("V", true)).isEqualTo(TOT);
+
+      // The index has to have survived the crash covering EVERY record: a build that ran ahead of the async commits
+      // leaves an index that is readable, healthy and empty, and every lookup below then silently answers nothing.
+      final Index index = database.getSchema().getIndexByName("V[id]");
+      assertThat(index.countEntries()).as("the index must cover every asynchronously inserted record").isEqualTo(TOT);
+
+      for (int i = 0; i < TOT; i++)
+        try (final ResultSet rs = database.query("sql", "select from V where id = ?", i)) {
+          assertThat(rs.hasNext()).as("record id " + i + " must be reachable through the index").isTrue();
+          assertThat(rs.next().<Integer>getProperty("id")).isEqualTo(i);
+        }
+    });
   }
 
   @Test

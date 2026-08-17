@@ -70,7 +70,7 @@ class PageManagerFlushSuspendBackpressureTest extends TestHelper {
         final PageId pageId = new PageId(database, 9, i);
         final MutablePage page = new MutablePage(pageId, PAGE_SIZE, new byte[PAGE_SIZE], 0, 0);
         flush.pageIndex.put(page);
-        flush.queue.offer(new PagesToFlush(List.of(page)));
+        flush.offerBatch(new PagesToFlush(List.of(page)), false);
       }
 
       // Drive the flush thread by hand: with the database suspended every batch is deferred, never written.
@@ -119,7 +119,7 @@ class PageManagerFlushSuspendBackpressureTest extends TestHelper {
       final PageId pageId = new PageId(database, 9, i);
       final MutablePage page = new MutablePage(pageId, PAGE_SIZE, new byte[PAGE_SIZE], 0, 0);
       flush.pageIndex.put(page);
-      flush.queue.offer(new PagesToFlush(List.of(page)));
+      flush.offerBatch(new PagesToFlush(List.of(page)), false);
     }
 
     for (int i = 0; i < batches; i++)
