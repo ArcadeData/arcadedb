@@ -1424,6 +1424,12 @@ public class PageManagerFlushThread extends Thread {
     // queue - emptied above, but still there - and will be polled after this: releaseSlotOfPolledBatch finds no entry
     // and does nothing, which is the right answer for a budget that no longer exists. Dropping it here is what keeps
     // the closed Database instance from being pinned as a map key for the flush thread's lifetime.
+    //
+    // Safe to drop rather than zero because nothing re-enters it for THIS database: every caller reaches here from
+    // LocalDatabase.close() (the drop path and the final purge alike) or from the test-only kill simulation, and
+    // close() has already set open=false, which is what PageManager.flushPage and the publication path check. A live
+    // database never passes through here, so a later computeIfAbsent cannot mint a fresh budget that disagrees with
+    // batches still physically in the queue (review of #6281, round 5).
     slotsInUse.remove(database);
 
     // Deliberately outside that monitor: batchRAM takes each batch's own monitor, and the one nesting this class

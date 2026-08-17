@@ -104,17 +104,21 @@ public class RebuildIndexStatement extends DDLStatement {
 
     final Database database = context.getDatabase();
 
-    // The refusal of issue #2097 comes FIRST, ahead of the barrier below. buildIndex() has raised it for years when
-    // this runs on one of the async executor's own worker threads (an HTTP command with awaitResponse=false), for the
-    // very reason the barrier cannot run there either - and buildIndex() is reached only much further down, and never
-    // at all on the statsOnly branch. Leaving it where it was would have let the barrier answer first, with a message
-    // about waiting rather than about rebuilding, and would have left #2097's own regression test asserting a
-    // refusal that no longer came from the place it was written for.
+    // The refusal of issue #2097, hoisted here and living only here. buildIndex() has raised it for years when this
+    // runs on one of the async executor's own worker threads (an HTTP command with awaitResponse=false), for the very
+    // reason the barrier below cannot run there either - but buildIndex() is reached only much further down, and
+    // never at all on the statsOnly branch, so leaving the check there would let the barrier answer first, with a
+    // message about waiting rather than about rebuilding.
+    //
+    // Moved rather than duplicated: a second copy in buildIndex() would be unreachable (that method has one call
+    // site, below this point) and would be a second wording of the same refusal to keep in step. The index name is
+    // carried up so the message loses nothing by moving - `REBUILD INDEX *` names no single index and says so.
     final DatabaseContext.DatabaseContextTL asyncContext = DatabaseContext.INSTANCE.getContextIfExists(
         database.getDatabasePath());
     if (asyncContext != null && asyncContext.asyncMode)
       throw new NeedRetryException(
-          "Cannot rebuild index while running in asynchronous context. "
+          "Cannot rebuild " + (all || name == null ? "the indexes" : "index '" + name.getValue() + "'")
+              + " while running in asynchronous context. "
               + "Use synchronous execution (awaitResponse=true) or run the command directly.");
 
     // Both branches below SCAN the live data, and a worker of the async executor keeps ONE transaction open across up
@@ -320,18 +324,11 @@ public class RebuildIndexStatement extends DDLStatement {
       throw new CommandExecutionException(
           "Cannot rebuild index '" + idx.getName() + "' because it's manual and there aren't indications of what to index");
 
-    // Check if we're running in an async context (e.g., via HTTP API with awaitResponse=false).
-    // Index rebuild requires scheduling blocking tasks on all async threads, which will deadlock
-    // if we're already running on one of those threads. In this case, throw NeedRetryException
-    // to allow the operation to be retried in a non-async context.
+    // The async-context refusal of issue #2097 used to live here. It now runs at the top of executeDDL(), the only
+    // path that reaches this method, because the async barrier added there (issue #6281) would otherwise deadlock
+    // before this check was ever consulted - and because the statsOnly branch returns without coming here at all,
+    // so a check in this method could never have covered it.
     // See: https://github.com/ArcadeData/arcadedb/issues/2097
-    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(
-        database.getDatabasePath());
-    if (context != null && context.asyncMode) {
-      throw new NeedRetryException(
-          "Cannot rebuild index '" + idx.getName() + "' while running in asynchronous context. " +
-          "Use synchronous execution (awaitResponse=true) or run the command directly.");
-    }
 
     // Sticky once true (#6040): sees whether ANY attempt so far got past its own dropIndex() call, so exhaustion
     // is judged against the right budget below - extended once the index has actually been dropped, not just the
