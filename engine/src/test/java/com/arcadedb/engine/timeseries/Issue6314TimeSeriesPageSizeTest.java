@@ -134,6 +134,39 @@ class Issue6314TimeSeriesPageSizeTest extends TestHelper {
   }
 
   /**
+   * The new {@code PaginatedComponent} guard does NOT turn a database written under a different
+   * {@code bucketDefaultPageSize} into one that refuses to open - which is the natural thing to assume about a
+   * guard added in the same change, and it is worth pinning rather than leaving to be re-derived.
+   * <p>
+   * The guard compares the component against the file it holds, and every load path now takes the page size FROM
+   * that file, so the two agree by construction whatever the configuration happens to say. What the guard catches
+   * is a component that re-derived the value from somewhere else, i.e. the defect this change removes - it is a
+   * programming-error tripwire, not a compatibility gate. A database carrying files at three different strides at
+   * once opens all of them, each at its own.
+   */
+  @Test
+  void reopeningUnderAnyConfiguredPageSizeSucceedsWhateverTheFilesWereWrittenAt() throws Exception {
+    GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.setValue(CREATE_PAGE_SIZE);
+    appendRows(createType("Wide"), 200);
+
+    // A second type created at a different stride, so the database now holds files written at BOTH.
+    GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.setValue(REOPEN_PAGE_SIZE);
+    appendRows(createType("Narrow"), 200);
+
+    // ...and reopened under a third value that matches neither.
+    GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.setValue(32_768);
+    reopenDatabase();
+
+    final TimeSeriesEngine wide = ((LocalTimeSeriesType) database.getSchema().getType("Wide")).getEngine();
+    final TimeSeriesEngine narrow = ((LocalTimeSeriesType) database.getSchema().getType("Narrow")).getEngine();
+
+    assertThat(wide.getShard(0).getMutableBucket().getPageSize()).isEqualTo(CREATE_PAGE_SIZE);
+    assertThat(narrow.getShard(0).getMutableBucket().getPageSize()).isEqualTo(REOPEN_PAGE_SIZE);
+    assertThat(wide.query(Long.MIN_VALUE, Long.MAX_VALUE, null, null)).hasSize(200);
+    assertThat(narrow.query(Long.MIN_VALUE, Long.MAX_VALUE, null, null)).hasSize(200);
+  }
+
+  /**
    * The other half of the pass-through: the component must report the version its file name carries rather than
    * claiming {@code CURRENT_VERSION} for a file that says otherwise. A type created by this build is at
    * {@code CURRENT_VERSION}, and the point of pinning it here is that the value now comes from the file.
