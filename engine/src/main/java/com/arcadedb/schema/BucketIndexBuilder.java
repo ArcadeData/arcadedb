@@ -72,15 +72,26 @@ public class BucketIndexBuilder extends IndexBuilder<Index> {
   public Index create() {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
+    // The FOURTH way into a bucket scan, and the one issue #6281's first pass missed. TypeIndexBuilder pays the
+    // barrier before delegating here, and so does REBUILD INDEX - but this builder is reachable on its own through
+    // the public Schema.buildBucketIndex(...), which is how CHECK DATABASE ... FIX rebuilds an index it found
+    // damaged (DatabaseChecker). Reached that way it would scan a bucket that does not yet contain whatever an async
+    // worker is still holding in its open batch, and produce the same silently incomplete index #6281 is about.
+    // Paying it twice on the paths that already did costs one marker round-trip per worker on an executor that is by
+    // then drained; missing it once costs an index.
+    database.waitForAsyncCompletion();
+
     final int totalThreads = database.async().getThreadCount();
-    final CountDownLatch semaphoreToStart = new CountDownLatch(totalThreads);
     final CountDownLatch semaphoreAfterFinish = new CountDownLatch(1);
 
     try {
+      // These tasks park every worker for the duration of the build, so nothing writes underneath it. They used to
+      // count down a second latch, semaphoreToStart, that nothing ever awaited - the build began whether or not the
+      // workers had actually reached the pause. What that latch was reaching for is what the barrier above now
+      // provides properly, so it is gone rather than left looking like a guard.
       for (int i = 0; i < totalThreads; i++) {
         ((DatabaseAsyncExecutorImpl) database.async()).scheduleTask(i, new DatabaseAsyncExecuteAlone(semaphoreAfterFinish, () -> {
           try {
-            semaphoreToStart.countDown();
             semaphoreAfterFinish.await(Long.MAX_VALUE, TimeUnit.MILLISECONDS);
           } catch (InterruptedException e) {
             // SHUTDOWN IN PROGRESS

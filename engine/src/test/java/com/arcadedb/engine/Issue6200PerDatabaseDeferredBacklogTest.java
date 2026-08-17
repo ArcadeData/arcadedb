@@ -469,7 +469,7 @@ class Issue6200PerDatabaseDeferredBacklogTest extends TestHelper {
         pages.add(new MutablePage(new PageId(db, FILE_ID, i), pageSize, new byte[pageSize], 0, 0));
       final PagesToFlush trapped = new PagesToFlush(pages);
       flush.pageIndex.putAll(pages);
-      flush.queue.offer(trapped);
+      flush.offerBatch(trapped, false);
       flush.flushPagesFromQueueToDisk(null, 20L);
       assertThat(flush.getDeferredRAMBytesOf(db)).isEqualTo((long) 600 * pageSize);
 
@@ -554,7 +554,7 @@ class Issue6200PerDatabaseDeferredBacklogTest extends TestHelper {
       final int pageNumber) {
     final MutablePage page = new MutablePage(new PageId(database, FILE_ID, pageNumber), PAGE_SIZE, new byte[PAGE_SIZE], 0, 0);
     flush.pageIndex.put(page);
-    flush.queue.offer(new PagesToFlush(List.of(page)));
+    flush.offerBatch(new PagesToFlush(List.of(page)), false);
     return page;
   }
 
@@ -566,6 +566,6 @@ class Issue6200PerDatabaseDeferredBacklogTest extends TestHelper {
     for (int i = 0; i < pages; i++)
       batch.add(new MutablePage(new PageId(database, FILE_ID, round * pages + i), pageSize, new byte[pageSize], 0, 0));
     flush.pageIndex.putAll(batch);
-    flush.queue.offer(new PagesToFlush(batch));
+    flush.offerBatch(new PagesToFlush(batch), false);
   }
 }

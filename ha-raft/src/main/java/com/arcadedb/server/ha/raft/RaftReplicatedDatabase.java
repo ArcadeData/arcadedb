@@ -1192,6 +1192,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   @Override
+  public void waitForAsyncCompletion() {
+    proxied.waitForAsyncCompletion();
+  }
+
+  @Override
   public LocalTransactionExplicitLock acquireLock() {
     return proxied.acquireLock();
   }

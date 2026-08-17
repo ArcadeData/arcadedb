@@ -235,6 +235,10 @@ class SQLMethodTransformTest {
       }
 
       @Override
+      public void waitForAsyncCompletion() {
+      }
+
+      @Override
       public long getResultSetLimit() {
         return 0;
       }

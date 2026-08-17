@@ -189,8 +189,12 @@ class Issue5279ConcurrentInsertTest extends TestHelper {
     // that happens to be re-placing its record exactly when a page fills up can still lose the race and retry.
     assertThat(conflicts.get()).as("pure inserts must not raise concurrent modifications").isLessThanOrEqualTo(2);
 
-    database.transaction(
-        () -> assertThat(database.countType("Case", false)).isEqualTo(1L + (long) threadCount * insertsPerThread));
+    // ...and the count has to be told about that tolerance, because the insert runs at attempts=1: a conflict
+    // tolerated above means that record was NOT written. Expecting the full total while allowing a conflict asserts
+    // both that a conflict may happen and that it may not, so the run where one DOES happen fails here (2000 against
+    // 2001) instead of at the tolerance meant to absorb it (issue #6281, same trap as the sibling Update test).
+    database.transaction(() -> assertThat(database.countType("Case", false))//
+        .isEqualTo(1L + (long) threadCount * insertsPerThread - conflicts.get()));
   }
 
   /**

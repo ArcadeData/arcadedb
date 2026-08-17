@@ -102,15 +102,55 @@ public class RebuildIndexStatement extends DDLStatement {
       }
     }
 
+    final Database database = context.getDatabase();
+
+    // The refusal of issue #2097, hoisted here and living only here. buildIndex() has raised it for years when this
+    // runs on one of the async executor's own worker threads (an HTTP command with awaitResponse=false), for the very
+    // reason the barrier below cannot run there either - but buildIndex() is reached only much further down, and
+    // never at all on the statsOnly branch, so leaving the check there would let the barrier answer first, with a
+    // message about waiting rather than about rebuilding.
+    //
+    // Moved rather than duplicated: a second copy in buildIndex() would be unreachable (that method has one call
+    // site, below this point) and would be a second wording of the same refusal to keep in step. The index name is
+    // carried up so the message loses nothing by moving - `REBUILD INDEX *` names no single index and says so.
+    final DatabaseContext.DatabaseContextTL asyncContext = DatabaseContext.INSTANCE.getContextIfExists(
+        database.getDatabasePath());
+    if (asyncContext != null && asyncContext.asyncMode)
+      throw new NeedRetryException(
+          "Cannot rebuild " + (all || name == null ? "the indexes" : "index '" + name.getValue() + "'")
+              + " while running in asynchronous context. "
+              + "Use synchronous execution (awaitResponse=true) or run the command directly.");
+
+    // Both branches below SCAN the live data, and a worker of the async executor keeps ONE transaction open across up
+    // to ASYNC_TX_BATCH_SIZE tasks - so records it has already written can still be uncommitted, and invisible to any
+    // scan, even with every queue drained (issue #6281). Wait for that batch first.
+    //
+    // The two branches are hurt differently by that window, and both claims below are measured rather than assumed.
+    //
+    // The REBUILD proper does NOT lose index entries: those records staged their index operations in their own
+    // transaction when they were saved, and applying them at commit repopulates what the rebuild's scan could not
+    // see. A regression test written to catch a loss there passes with this call removed, which is why there is no
+    // such test. What it costs is a rebuild computed over a partial view - the misplaced-record detection of issue
+    // #832, and the reported totals.
+    //
+    // The statsOnly branch is worse, which is why this sits AHEAD of it rather than after: it recomputes the BM25
+    // corpus counters by scanning the type and then OVERWRITES the counters with what the scan found. Run inside the
+    // window it finds nothing committed and writes "0 documents" over counters the records had already bumped when
+    // they were saved, so the corpus size stays 0 for a type full of documents and every BM25 score is computed
+    // against it until somebody recomputes again. That one does not heal itself, and it has a test
+    // (Issue6281AsyncBatchIndexBuildTest#aStatsRecomputeOverAnIdleAsyncExecutorStillCountsItsUncommittedBatch:
+    // 0 of 200 documents counted with this call removed).
+    //
+    // Costs nothing on a database that never used the async API.
+    ((DatabaseInternal) database).waitForAsyncCompletion();
+
     if (statsOnly)
-      return recomputeStatistics(context.getDatabase(), result);
+      return recomputeStatistics(database, result);
 
     final AtomicLong total = new AtomicLong();
     final AtomicLong misplaced = new AtomicLong();
     // Types found to contain records sitting outside their partition hash-target bucket (issue #832).
     final Set<DocumentType> typesToRepartition = ConcurrentHashMap.newKeySet();
-
-    final Database database = context.getDatabase();
 
     final Index.BuildIndexCallback callback = (document, totalIndexed) -> {
       total.incrementAndGet();
@@ -293,18 +333,11 @@ public class RebuildIndexStatement extends DDLStatement {
       throw new CommandExecutionException(
           "Cannot rebuild index '" + idx.getName() + "' because it's manual and there aren't indications of what to index");
 
-    // Check if we're running in an async context (e.g., via HTTP API with awaitResponse=false).
-    // Index rebuild requires scheduling blocking tasks on all async threads, which will deadlock
-    // if we're already running on one of those threads. In this case, throw NeedRetryException
-    // to allow the operation to be retried in a non-async context.
+    // The async-context refusal of issue #2097 used to live here. It now runs at the top of executeDDL(), the only
+    // path that reaches this method, because the async barrier added there (issue #6281) would otherwise deadlock
+    // before this check was ever consulted - and because the statsOnly branch returns without coming here at all,
+    // so a check in this method could never have covered it.
     // See: https://github.com/ArcadeData/arcadedb/issues/2097
-    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(
-        database.getDatabasePath());
-    if (context != null && context.asyncMode) {
-      throw new NeedRetryException(
-          "Cannot rebuild index '" + idx.getName() + "' while running in asynchronous context. " +
-          "Use synchronous execution (awaitResponse=true) or run the command directly.");
-    }
 
     // Sticky once true (#6040): sees whether ANY attempt so far got past its own dropIndex() call, so exhaustion
     // is judged against the right budget below - extended once the index has actually been dropped, not just the

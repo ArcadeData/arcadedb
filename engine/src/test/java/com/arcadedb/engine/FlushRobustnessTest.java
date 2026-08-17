@@ -85,7 +85,7 @@ class FlushRobustnessTest extends TestHelper {
     final MutablePage healthyPage = new MutablePage(healthyPageId, pageSize, new byte[pageSize], 0, 0);
     flush.pageIndex.put(brokenPage);
     flush.pageIndex.put(healthyPage);
-    flush.queue.offer(new PagesToFlush(List.of(brokenPage, healthyPage)));
+    flush.offerBatch(new PagesToFlush(List.of(brokenPage, healthyPage)), false);
 
     // #4928: the broken page's IOException must be contained: the batch continues, the healthy page reaches
     // the disk, and no entry leaks in pageIndex (a leak would hang the database close).
