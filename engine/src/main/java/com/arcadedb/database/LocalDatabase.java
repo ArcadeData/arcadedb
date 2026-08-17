@@ -446,6 +446,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public void waitForAsyncCompletion() {
     // Read the field, never async(): that accessor CREATES the executor - worker threads included - and a database
     // that never used async must not grow a thread pool just because somebody asked whether it was idle.
+    //
+    // And read it WITHOUT asyncLock, unlike isAsyncProcessing() one method up. That lock exists to serialize the
+    // lazy creation in async(); the field is volatile and, once assigned, is never assigned again - not even on
+    // close - so the only two values this read can see are "no executor yet" and "the one and only executor". A
+    // lock here would buy nothing and would be held across a blocking wait.
     final DatabaseAsyncExecutorImpl executor = async;
     if (executor == null)
       return;

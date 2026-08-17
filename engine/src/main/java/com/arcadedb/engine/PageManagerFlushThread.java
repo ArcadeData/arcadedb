@@ -318,6 +318,11 @@ public class PageManagerFlushThread extends Thread {
     setDaemon(true);
     this.pageManager = pageManager;
     this.logContext = LogManager.instance().getContext();
+    // Clamped, where `new ArrayBlockingQueue(queueCapacity)` used to throw IllegalArgumentException on a
+    // non-positive setting. Deliberate rather than an oversight: with admission as the only bound, a capacity of 0
+    // would refuse EVERY publication for ever - an unrecoverable hang instead of a startup failure - and the queue no
+    // longer takes a capacity argument that would reject it on the way in. One is the smallest budget that still
+    // makes progress. See the PAGE_FLUSH_QUEUE javadoc.
     this.queueCapacity = Math.max(1, configuration.getValueAsInteger(GlobalConfiguration.PAGE_FLUSH_QUEUE));
     final long maxDeferredMB = configuration.getValueAsLong(GlobalConfiguration.FLUSH_SUSPEND_MAX_DEFERRED_RAM);
     this.maxDeferredRAM = maxDeferredMB > 0 ? maxDeferredMB * 1024 * 1024 : 0;

@@ -34,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Issue #6281: an index is built by SCANNING the buckets, so everything the asynchronous executor was asked to write
  * has to be committed before the build starts. The guard that was supposed to ensure that polled
- * {@code database.isAsyncProcessing()} and only drained the executor when it answered {@code true}.
+ * {@code database.isAsyncProcessing()} and drained the executor only when it answered {@code true}.
  * <p>
  * That predicate answers about TASKS, while a worker opens one transaction when it starts and keeps it open across up
  * to {@link com.arcadedb.GlobalConfiguration#ASYNC_TX_BATCH_SIZE} tasks (10240 by default). An executor whose queues

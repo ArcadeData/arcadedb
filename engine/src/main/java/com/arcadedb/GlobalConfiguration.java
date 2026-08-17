@@ -474,7 +474,8 @@ public enum GlobalConfiguration {
       a database that has reached it waits - before taking the page-manager lock, never inside it - until one of that \
       database's own batches is written; the committers of every other database are admitted straight through. Was a \
       single JVM-wide bound until issue #6281, which made one database's write burst against a slow volume throttle \
-      the commits of unrelated databases on idle ones.\
+      the commits of unrelated databases on idle ones. Values below 1 are raised to 1: since #6281 this is the only \
+      bound on the pipeline, so a budget of 0 would refuse every publication for ever.\
       """, Integer.class, 512),
 
   FLUSH_SUSPEND_MAX_DEFERRED_RAM("arcadedb.flushSuspendMaxDeferredRAM", SCOPE.DATABASE,
