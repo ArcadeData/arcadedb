@@ -2277,8 +2277,8 @@ Priced against the budget, all before anything is allocated:
 |---|---|
 | `algo.node2vec` | walk matrix + 2 x `nodeCount x embeddingDimension` |
 | `algo.fastrp` | 2 x `nodeCount x dimensions` |
-| `algo.hashgnn` | 2 x `nodeCount x 4·embeddingDimension` feature matrices + 1 x `nodeCount x embeddingDimension` |
-| `algo.graphsage` | 2 x `nodeCount x embeddingDimension` + the layer's `embeddingDimension x 2·initDim` projection |
+| `algo.hashgnn` | 2 x `nodeCount x 4 x embeddingDimension` feature matrices + 1 x `nodeCount x embeddingDimension` |
+| `algo.graphsage` | 2 x `nodeCount x embeddingDimension` + the layer's `embeddingDimension x 2 x initDim` projection |
 | `algo.apsp` | `nodeCount x nodeCount` distance matrix |
 | `algo.simRank` | 2 x `nodeCount x nodeCount` similarity matrices |
 | `algo.maxFlow` | `nodeCount x nodeCount` capacity + residual matrices |

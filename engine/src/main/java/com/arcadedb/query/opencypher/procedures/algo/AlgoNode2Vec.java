@@ -65,13 +65,10 @@ import java.util.stream.Stream;
  * </pre>
  * </p>
  *
- * <p>The call holds two dense structures: a walk matrix of {@code walksPerNode x nodeCount} walks of
- * {@code walkLength} steps, and the two {@code nodeCount x embeddingDimension} matrices of the Skip-gram model.
- * Both footprints are estimated in {@code long} arithmetic and reserved against
- * {@link com.arcadedb.GlobalConfiguration#CYPHER_ALGO_MAX_WORKING_MEMORY} before anything is allocated, so a
- * large but in-range knob, or a graph too large for the dimension asked for, is rejected by name rather than
- * wrapping the product or exhausting the heap. The training loops honour thread interruption and
- * {@code arcadedb.command.timeout}.</p>
+ * <p>Working set: a walk matrix of {@code walksPerNode x nodeCount} walks of {@code walkLength} steps AND the
+ * two {@code nodeCount x embeddingDimension} matrices of the Skip-gram model, which are alive at the same time
+ * and so reserved together through {@link AbstractAlgoProcedure.MemoryBudget} before anything is allocated. The
+ * training loops honour thread interruption and {@code arcadedb.command.timeout}.</p>
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

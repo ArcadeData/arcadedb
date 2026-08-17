@@ -58,11 +58,9 @@ import java.util.stream.Stream;
  * </pre>
  * </p>
  *
- * <p>The working set is two {@code nodeCount x (4 x embeddingDimension)} feature matrices plus one
- * {@code nodeCount x embeddingDimension} embedding matrix. All three footprints are estimated in {@code long}
- * arithmetic and reserved against {@link com.arcadedb.GlobalConfiguration#CYPHER_ALGO_MAX_WORKING_MEMORY}
- * before the first is allocated, so a graph too large for the dimension asked for is rejected as a client error
- * naming the knob rather than surfacing as an {@code OutOfMemoryError}.</p>
+ * <p>Working set: two {@code nodeCount x (4 x embeddingDimension)} feature matrices plus one
+ * {@code nodeCount x embeddingDimension} embedding matrix - the feature pair being the larger of the two -
+ * reserved through {@link AbstractAlgoProcedure.MemoryBudget} before the first is allocated.</p>
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

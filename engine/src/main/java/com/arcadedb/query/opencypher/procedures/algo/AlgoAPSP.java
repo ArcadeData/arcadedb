@@ -44,9 +44,8 @@ import java.util.stream.Stream;
  * </p>
  * <p>
  * Note: this algorithm is O(V²) in memory and O(V³) in time. Only suitable for graphs
- * with up to a few thousand vertices. The distance matrix is reserved against
- * {@link com.arcadedb.GlobalConfiguration#CYPHER_ALGO_MAX_WORKING_MEMORY} before it is allocated, so a graph
- * past that point is refused as a client error instead of exhausting the heap.
+ * with up to a few thousand vertices - a bound the distance matrix's reservation through
+ * {@link AbstractAlgoProcedure.MemoryBudget} now enforces rather than merely advises.
  * </p>
  * <p>
  * Example:

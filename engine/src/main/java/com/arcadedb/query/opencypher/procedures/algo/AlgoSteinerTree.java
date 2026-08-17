@@ -58,12 +58,10 @@ import java.util.stream.Stream;
  * </pre>
  * </p>
  *
- * <p>The working set is quadratic in the terminal list, which the caller supplies and nothing bounds: a
- * {@code terminals x nodeCount} pair of Dijkstra tables, and one entry per terminal pair - about
- * {@code t²/2} of them - in four parallel arrays. Both footprints are estimated in {@code long} arithmetic
- * and reserved against {@link com.arcadedb.GlobalConfiguration#CYPHER_ALGO_MAX_WORKING_MEMORY} before
- * anything is allocated, so an oversized terminal list is rejected as a client error naming the parameter
- * rather than wrapping the pair count or exhausting the heap.</p>
+ * <p>Working set: a {@code terminals x nodeCount} pair of Dijkstra tables plus one entry per terminal pair -
+ * about {@code t²/2} of them - in four parallel arrays, both reserved through
+ * {@link AbstractAlgoProcedure.MemoryBudget} before anything is allocated. Quadratic in a list the caller
+ * supplies and nothing bounds, which is why the pair count is also computed in {@code long}.</p>
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

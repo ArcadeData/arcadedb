@@ -62,11 +62,8 @@ import java.util.stream.Stream;
  * </pre>
  * </p>
  *
- * <p>The working set is two {@code nodeCount x dimensions} matrices. Their footprint is estimated in
- * {@code long} arithmetic and reserved against
- * {@link com.arcadedb.GlobalConfiguration#CYPHER_ALGO_MAX_WORKING_MEMORY} before either is allocated, so a
- * graph too large for the dimension asked for is rejected as a client error naming the knob rather than
- * surfacing as an {@code OutOfMemoryError}.</p>
+ * <p>Working set: two {@code nodeCount x dimensions} matrices, reserved through
+ * {@link AbstractAlgoProcedure.MemoryBudget} before either is allocated.</p>
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

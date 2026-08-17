@@ -59,11 +59,9 @@ import java.util.stream.Stream;
  * </pre>
  * </p>
  *
- * <p>The working set is two {@code nodeCount x embeddingDimension} feature matrices - the one a layer reads
- * and the one it writes - plus that layer's projection matrix. Their footprint is estimated in {@code long}
- * arithmetic and reserved against {@link com.arcadedb.GlobalConfiguration#CYPHER_ALGO_MAX_WORKING_MEMORY}
- * before the first is allocated, so a graph too large for the dimension asked for is rejected as a client error
- * naming the knob rather than surfacing as an {@code OutOfMemoryError}.</p>
+ * <p>Working set: the feature matrix a layer reads, the one it writes, and that layer's projection - a
+ * per-layer peak, since each layer drops the matrix it read - reserved through
+ * {@link AbstractAlgoProcedure.MemoryBudget} before the first is allocated.</p>
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -112,7 +110,8 @@ public class AlgoGraphSAGE extends AbstractAlgoProcedure {
     final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
-    // Initial node features: [log-normalised degree, Gaussian noise × (inDim-1)]
+
+    // Initial node features: [log-normalised degree, Gaussian noise x (inDim-1)]
     final int initDim = Math.max(outDim, 16);
 
     // Peak working set: the feature matrix a layer reads, the one it writes, and that layer's projection.
