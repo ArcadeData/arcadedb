@@ -756,39 +756,38 @@ public class TimeSeriesBucket extends PaginatedComponent {
   }
 
   /**
-   * Returns the total sample count stored in this bucket.
+   * Returns the total sample count stored in this bucket, or 0 when the file carries no header page.
    */
   public long getSampleCount() throws IOException {
-    if (getTotalPages() == 0)
-      return 0;
-    final BasePage headerPage = database.getTransaction().getPage(new PageId(database, fileId, 0), pageSize);
-    return headerPage.readLong(HEADER_SAMPLE_COUNT_OFFSET);
+    final BasePage headerPage = readHeaderPage();
+    return headerPage == null ? 0 : headerPage.readLong(HEADER_SAMPLE_COUNT_OFFSET);
   }
 
   /**
-   * Returns the minimum timestamp across all samples.
+   * Returns the minimum timestamp across all samples, or {@link Long#MAX_VALUE} when there is none - the same
+   * empty marker {@link #initHeaderPage()} writes and {@link #clearDataPages()} restores, so a bucket with no
+   * header page yet answers exactly like an initialised empty one instead of claiming the epoch.
    */
   public long getMinTimestamp() throws IOException {
-    final BasePage headerPage = database.getTransaction().getPage(new PageId(database, fileId, 0), pageSize);
-    return headerPage.readLong(HEADER_MIN_TS_OFFSET);
+    final BasePage headerPage = readHeaderPage();
+    return headerPage == null ? Long.MAX_VALUE : headerPage.readLong(HEADER_MIN_TS_OFFSET);
   }
 
   /**
-   * Returns the maximum timestamp across all samples.
+   * Returns the maximum timestamp across all samples, or {@link Long#MIN_VALUE} when there is none (see
+   * {@link #getMinTimestamp()} for why that, and not 0).
    */
   public long getMaxTimestamp() throws IOException {
-    final BasePage headerPage = database.getTransaction().getPage(new PageId(database, fileId, 0), pageSize);
-    return headerPage.readLong(HEADER_MAX_TS_OFFSET);
+    final BasePage headerPage = readHeaderPage();
+    return headerPage == null ? Long.MIN_VALUE : headerPage.readLong(HEADER_MAX_TS_OFFSET);
   }
 
   /**
-   * Returns the number of data pages (excluding header page).
+   * Returns the number of data pages (excluding header page), or 0 when the file carries no header page.
    */
   public int getDataPageCount() throws IOException {
-    if (getTotalPages() == 0)
-      return 0;
-    final BasePage headerPage = database.getTransaction().getPage(new PageId(database, fileId, 0), pageSize);
-    return headerPage.readInt(HEADER_DATA_PAGE_COUNT);
+    final BasePage headerPage = readHeaderPage();
+    return headerPage == null ? 0 : headerPage.readInt(HEADER_DATA_PAGE_COUNT);
   }
 
   /**
@@ -801,19 +800,21 @@ public class TimeSeriesBucket extends PaginatedComponent {
   }
 
   /**
-   * Returns true if a compaction was in progress (crash recovery check).
+   * Returns true if a compaction was in progress (crash recovery check). A file with no header page has
+   * nothing to recover, so it answers false.
    */
   public boolean isCompactionInProgress() throws IOException {
-    final BasePage headerPage = database.getTransaction().getPage(new PageId(database, fileId, 0), pageSize);
-    return headerPage.readByte(HEADER_COMPACTION_FLAG) == 1;
+    final BasePage headerPage = readHeaderPage();
+    return headerPage != null && headerPage.readByte(HEADER_COMPACTION_FLAG) == 1;
   }
 
   /**
-   * Gets the compaction watermark (sealed store file offset).
+   * Gets the compaction watermark (sealed store file offset), or 0 - what {@link #initHeaderPage()} writes -
+   * when the file carries no header page.
    */
   public long getCompactionWatermark() throws IOException {
-    final BasePage headerPage = database.getTransaction().getPage(new PageId(database, fileId, 0), pageSize);
-    return headerPage.readLong(HEADER_COMPACTION_WATERMARK);
+    final BasePage headerPage = readHeaderPage();
+    return headerPage == null ? 0L : headerPage.readLong(HEADER_COMPACTION_WATERMARK);
   }
 
   /**
@@ -968,6 +969,49 @@ public class TimeSeriesBucket extends PaginatedComponent {
   }
 
   // --- Private helpers ---
+
+  /**
+   * Resolves the header page (page 0) for reading, or returns {@code null} when this file carries none.
+   * Every header reader goes through here so the answer to "is there a header?" is given once and given the
+   * same way (issue #6283); a reader that asks the transaction directly gets neither half of this right.
+   * <p>
+   * <b>It must not fabricate the page.</b> {@code tx.getPage()} resolves with {@code createIfNotExists=true}, so on
+   * a file with no page 0 it does not report absence - it invents a zero-filled page, caches it, and reads zeros
+   * out of it. That phantom is exactly what {@code TimeSeriesTagDictionary.readStoredHeader()} was built to avoid
+   * (issue #6198), and reading a real 0 out of it is worse than an exception: for min/max timestamp, 0 is a
+   * perfectly legal value.
+   * <p>
+   * <b>Nor may it gate on {@link #getTotalPages()}</b>, which two of these readers used to do. That counter is
+   * per-instance: it is seeded from the physical file size at construction and afterwards only the component
+   * registered with the schema gets it bumped at commit, so it under-reports for an instance built over a file
+   * whose committed pages are still in the flush queue - conflating "this instance has seen nothing" with "the
+   * file holds nothing" (issue #6198 again). The magic in page 0 has no such blind spot.
+   * <p>
+   * The active transaction's own page set comes first: it holds the copy this transaction must read - one it
+   * modified, or the page {@link #initHeaderPage()} added and has not committed yet - and neither is visible to
+   * the page manager. When the probe below does find the page, it is re-resolved through the transaction so the
+   * read takes part in its isolation like every other page read of this bucket; that second call is a read-cache
+   * hit, the page having just been loaded.
+   */
+  private BasePage readHeaderPage() throws IOException {
+    final PageId headerPageId = new PageId(database, fileId, 0);
+    final TransactionContext tx = database.getTransactionIfExists();
+    final boolean inTransaction = tx != null && tx.isActive();
+
+    BasePage headerPage;
+    if (inTransaction && tx.hasPageForRecord(headerPageId))
+      headerPage = tx.getPage(headerPageId, pageSize);
+    else {
+      // (isNew=true, createIfNotExists=false): the pair that answers "absent" with null instead of creating the
+      // page, as TimeSeriesTagDictionary.readStoredHeader() does. With isNew=false the page manager would throw
+      // on a page that is not there.
+      headerPage = database.getPageManager().getImmutablePage(headerPageId, pageSize, true, false);
+      if (headerPage != null && inTransaction)
+        headerPage = tx.getPage(headerPageId, pageSize);
+    }
+
+    return headerPage != null && headerPage.readInt(HEADER_MAGIC_OFFSET) == MAGIC_VALUE ? headerPage : null;
+  }
 
   void initHeaderPage() throws IOException {
     final TransactionContext tx = database.getTransaction();
