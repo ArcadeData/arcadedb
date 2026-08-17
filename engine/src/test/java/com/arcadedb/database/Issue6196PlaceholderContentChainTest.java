@@ -168,6 +168,43 @@ class Issue6196PlaceholderContentChainTest extends BucketPageLayoutTestSupport {
   }
 
   /**
+   * The compound legacy shape: a content record still wearing the ambiguous marker whose chain is ALSO broken. Two
+   * independent defects on one record, and CHECK DATABASE FIX must book it once - the broken chain is what it can act
+   * on, so the record is force-deleted, and the ambiguity reconciliation must then leave alone a slot that is no
+   * longer there rather than report a second error and a repair that could not have happened.
+   */
+  @Test
+  void aLegacyContentHeadWithABrokenChainIsReportedOnce() {
+    final RID content = contentRidOf(placeholderWithChainedContent());
+
+    writeMarkerByteAt(content, FIRST_CHUNK_MARKER);
+    breakChainAt(content);
+
+    final Result fixed = checkDatabaseRow(true);
+    assertThat(numberProperty(fixed, "totalErrors"))
+        .as("one record, one defect it can act on, one error: " + fixed.toJSON()).isEqualTo(1L);
+    assertThat(warningsOf(fixed).toString()).as("and the broken chain is what it names: " + fixed.toJSON())
+        .contains("broken multi-page chunk chain").doesNotContain("could not be repaired");
+    assertThat((Collection<?>) fixed.getProperty("deletedRecordsAfterFix"))
+        .as("the record a broken chain costs is the one that is deleted: " + fixed.toJSON())
+        .hasToString("[" + content + "]");
+
+    // Nothing ambiguous is left for a second run to find: the slot the pointer led to is gone.
+    final Result again = checkDatabaseRow(false);
+    assertThat(numberProperty(again, "totalErrors")).as("and the database checks out afterwards: " + again.toJSON())
+        .isZero();
+  }
+
+  /** Points the head chunk of {@code rid} at a page far past the end of the bucket, which breaks its chain. */
+  private void breakChainAt(final RID rid) {
+    database.transaction(() -> onSlot(rid, page -> {
+      // [marker:1][chunkSize:int][nextChunkPointer:long][content...]
+      page.writeLong(recordOffsetOf(page, rid) + 1 + Binary.INT_SERIALIZED_SIZE, Integer.MAX_VALUE);
+      return 0L;
+    }));
+  }
+
+  /**
    * The commit-time half of the marker: the disjoint-slot merge replays a head chunk only onto a committed slot that
    * still carries the marker the write started from, and the two kinds are what tell it which one that is.
    * <p>

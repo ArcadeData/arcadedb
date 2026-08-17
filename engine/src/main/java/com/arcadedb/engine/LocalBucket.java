@@ -1097,7 +1097,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                 // is the whole of the bug. Never throws - a pointer that leads nowhere is a different problem, already
                 // reported by the CHECK DATABASE pass that follows the links.
                 final long contentPosition = page.readLong((int) (recordPositionInPage + recordSize[1]));
-                if (isLegacyAmbiguousContentHead(contentPosition))
+                if (isLegacyAmbiguousContentHead(totalPages, contentPosition))
                   legacyContentHeads.add(contentPosition);
 
                 recordSize[0] = MINIMUM_RECORD_SIZE;
@@ -1217,6 +1217,18 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     if (!legacyContentHeads.isEmpty()) {
       for (final long contentPosition : legacyContentHeads.toArray()) {
         final RID contentRID = new RID(fileId, contentPosition);
+
+        // ASK AGAIN, because the pass has run since the pointer was followed and may have taken the slot with it: the
+        // compound shape - a legacy content head whose chain is ALSO broken - is force-deleted by the broken-chain
+        // branch above, which already counted it and already reported it. Reconciling it here as well would book the
+        // same record twice, under a second error and a "could not be repaired" warning naming a record that is no
+        // longer there to repair. The re-ask is the general form of that guard rather than a membership test against
+        // deletedRecordsAfterFix: whatever removed or rewrote the slot, whoever reported it, it is no longer the
+        // ambiguous shape and is not this pass's to report. It costs one page fetch per head actually found in the
+        // legacy shape - a set that is empty on every database this build wrote (code review on #6287).
+        if (!isLegacyAmbiguousContentHead(totalPages, contentPosition))
+          continue;
+
         --totalMultiPageRecords;
         ++totalSurrogateRecords;
         ++totalErrors;
@@ -1320,14 +1332,18 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * Never throws: a pointer that cannot be followed is a different problem, reported by the link pass of CHECK
    * DATABASE rather than mistaken for this one.
    *
+   * @param totalPages the page count {@link #check} snapshotted before its walk, so both of its questions - is this
+   *                   pointer's target ambiguous, and is it still - are answered against the same bucket the walk
+   *                   itself covered, rather than against a count that may have moved under it.
+   *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
-  private boolean isLegacyAmbiguousContentHead(final long contentPosition) {
+  private boolean isLegacyAmbiguousContentHead(final int totalPages, final long contentPosition) {
     try {
       if (contentPosition < 0)
         return false;
       final int contentPageId = (int) (contentPosition / maxRecordsInPage);
-      if (contentPageId >= getTotalPages())
+      if (contentPageId >= totalPages)
         return false;
 
       final BasePage contentPage = database.getTransaction()
