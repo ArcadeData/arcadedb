@@ -57,6 +57,11 @@ public class GraphDatabaseChecker {
    * repair loops would put a configuration lookup on the per-record path for a value that cannot change under it.
    */
   private final int              repairBatchPages;
+  /**
+   * Adjacency-entry budget of {@link AdjacencyProbeCache} (issue #6062), read once per checker for the same reason
+   * as {@link #repairBatchPages}: it is a database-scoped setting and cannot change under a running check.
+   */
+  private final int              adjacencyCacheEntries;
 
   // Progress reporting (issue #5372): the step identity (name/index/totalSteps) is assigned by the caller
   // (DatabaseChecker owns the step plan); this class emits within-step done/total, throttled to integer
@@ -74,6 +79,25 @@ public class GraphDatabaseChecker {
     this.graphEngine = database.getGraphEngine();
     this.repairBatchPages = database.getConfiguration()
         .getValueAsInteger(GlobalConfiguration.CHECK_DATABASE_REPAIR_BATCH_PAGES);
+    this.adjacencyCacheEntries = database.getConfiguration()
+        .getValueAsInteger(GlobalConfiguration.CHECK_DATABASE_ADJACENCY_CACHE_ENTRIES);
+  }
+
+  /**
+   * Publishes what the back-reference probes of one pass cost (issue #6062), so the answer to "why is CHECK DATABASE
+   * still slow on this database" is in the result rather than in a profiler.
+   * <p>
+   * {@code adjacencyProbes} is how many back-reference questions the pass asked - two per edge, structurally.
+   * {@code adjacencyProbeListWalks} is how many walks of an adjacency list answering them took: it used to equal the
+   * probe count, and now grows with the number of DISTINCT lists instead. It can exceed the probe count on a list
+   * the cache cannot represent, which walks twice on its first probe and once thereafter - see
+   * {@link AdjacencyProbeCache#getListWalks()}. {@code adjacencyEntriesScanned} is the entries those walks visited,
+   * which is the number that was quadratic in a hub's degree.
+   */
+  private static void putProbeCounters(final Map<String, Object> stats, final AdjacencyProbeCache probeCache) {
+    stats.put("adjacencyProbes", probeCache.getProbes());
+    stats.put("adjacencyProbeListWalks", probeCache.getListWalks());
+    stats.put("adjacencyEntriesScanned", probeCache.getEntriesScanned());
   }
 
   /** Installs the progress receiver and this checker's step identity in the caller's step plan. */
@@ -548,6 +572,12 @@ public class GraphDatabaseChecker {
     final Set<RID> deletedRecords = new LinkedHashSet<>();
     /** Adjacency entries this run re-linked, of either kind - see the {@code reconnectedEdges} stat (issue #6136). */
     long reconnectedEdges = 0;
+    /**
+     * Answers the "does the far vertex point back?" probe without re-walking the same list once per incident edge
+     * (issue #6062). Scoped to this pass: the images it holds are only valid while the lists are not written to, and
+     * the repairs this pass plans are applied after the scan, with the cache dropped first.
+     */
+    final AdjacencyProbeCache probeCache = new AdjacencyProbeCache(graphEngine, adjacencyCacheEntries);
 
     final Map<String, Object> stats = new HashMap<>();
 
@@ -563,9 +593,11 @@ public class GraphDatabaseChecker {
 
           // No longer re-assigned from the two checks: neither of them writes the vertex any more (#6136), so the
           // saved mutable copy they used to hand back does not exist and the immutable one stays current.
-          checkOutgoingEdges(fix, vertex, vertexIdentity, plan, missingReferences, missingReferenceErrors, report);
+          checkOutgoingEdges(fix, vertex, vertexIdentity, plan, missingReferences, missingReferenceErrors, report,
+              probeCache);
 
-          checkIncomingEdges(fix, vertex, vertexIdentity, plan, missingReferences, missingReferenceErrors, report);
+          checkIncomingEdges(fix, vertex, vertexIdentity, plan, missingReferences, missingReferenceErrors, report,
+              probeCache);
 
         } catch (final Throwable e) {
           report.warn("vertex " + record.getIdentity() + " cannot be loaded (error: " + describe(e) + ")");
@@ -616,6 +648,10 @@ public class GraphDatabaseChecker {
 
       progressComplete();
 
+      // NOTHING PROBES AFTER THIS POINT, and everything below writes to the very lists the images describe: drop
+      // them rather than reason about which repair invalidates which image.
+      probeCache.clear();
+
       if (fix) {
         reconnectedEdges = applyRepairPlan(plan, report);
 
@@ -653,6 +689,7 @@ public class GraphDatabaseChecker {
 
     } finally {
       putRepairCounters(stats, autoFix.get(), report.prunedDanglingEntries, reconnectedEdges);
+      putProbeCounters(stats, probeCache);
       stats.put("deletedRecordsAfterFix", deletedRecords);
       stats.put("corruptedRecords", report.corruptedRecords);
       stats.put("duplicateLightEdges", report.duplicateLightEdges);
@@ -892,7 +929,7 @@ public class GraphDatabaseChecker {
 
   private void checkIncomingEdges(final boolean fix, final Vertex vertex, final RID vertexIdentity,
       final RepairPlan plan, final Map<RID, Long> missingReferences, final Map<RID, String> missingReferenceErrors,
-      final CheckReport report) {
+      final CheckReport report, final AdjacencyProbeCache probeCache) {
     final Set<RID> reconnectInEdges = plan.reconnectInEdges;
     final Set<RID> reconnectOutEdges = plan.reconnectOutEdges;
 
@@ -1061,7 +1098,9 @@ public class GraphDatabaseChecker {
                 if (((EdgeType) edge.getType()).isBidirectional() && inVertex != null) {
                   Boolean connected = null;
                   try {
-                    connected = inVertex.isConnectedTo(vertexIdentity, Vertex.DIRECTION.OUT, edge.getTypeName());
+                    // Same question isConnectedTo(vertexIdentity, OUT, type) answered, memoised per list (#6062).
+                    connected = probeCache.isConnectedTo(inVertex, Vertex.DIRECTION.OUT, vertexIdentity,
+                        edge.getTypeName());
                   } catch (final Exception probeError) {
                     // The FAR vertex's OUT list is unreadable: never blame this edge record for it (before this
                     // guard the probe failure flagged the edge as corrupted and fix mode deleted a VALID edge).
@@ -1102,6 +1141,16 @@ public class GraphDatabaseChecker {
 
             if (fix && removeEntry) {
               in.remove();
+              // EVERY image, not just this vertex's (#6062). The remove is not local to the list being walked:
+              // EdgeVertexIterator.remove() DELETES the edge record first, and GraphEngine.deleteEdge takes the
+              // edge out of BOTH endpoints' lists - so a prune here can change a list this cache holds an image of,
+              // for a vertex the walk has not reached and through an endpoint pair a corrupt entry may misreport.
+              // Naming the affected lists exactly would mean trusting the very pointers the prune is happening
+              // because of, so the whole cache goes instead: prunes are repairs on a damaged database, and paying
+              // one rebuild each is the price of the probe never answering from a list that no longer exists that
+              // way. The worst case - damage that is overwhelmingly dangling entries - is no slower than it was
+              // before this cache existed.
+              probeCache.clear();
               // Pruning a dangling list entry IS a repair, and counting it is what keeps autoFix meaning "repairs
               // performed" now that it no longer counts deletes that failed (issue #6128). Without this an operator
               // who ran FIX over a database whose only damage was dangling references - the commonest shape, since
@@ -1128,7 +1177,7 @@ public class GraphDatabaseChecker {
 
   private void checkOutgoingEdges(final boolean fix, final Vertex vertex, final RID vertexIdentity,
       final RepairPlan plan, final Map<RID, Long> missingReferences, final Map<RID, String> missingReferenceErrors,
-      final CheckReport report) {
+      final CheckReport report, final AdjacencyProbeCache probeCache) {
     final Set<RID> reconnectOutEdges = plan.reconnectOutEdges;
     final Set<RID> reconnectInEdges = plan.reconnectInEdges;
 
@@ -1310,7 +1359,9 @@ public class GraphDatabaseChecker {
                   // CHECK THE EDGE IS CONNECTED FROM THE OTHER SIDE
                   Boolean connected = null;
                   try {
-                    connected = outVertex.isConnectedTo(vertexIdentity, Vertex.DIRECTION.IN, edge.getTypeName());
+                    // See the twin in checkIncomingEdges: memoised per list rather than re-walked per edge (#6062).
+                    connected = probeCache.isConnectedTo(outVertex, Vertex.DIRECTION.IN, vertexIdentity,
+                        edge.getTypeName());
                   } catch (final Exception probeError) {
                     // The FAR vertex's IN list is unreadable: never blame this edge record for it (before this
                     // guard the probe failure flagged the edge as corrupted and fix mode deleted a VALID edge).
@@ -1350,6 +1401,9 @@ public class GraphDatabaseChecker {
 
             if (fix && removeEntry) {
               out.remove();
+              // See the twin in checkIncomingEdges: the prune deletes the edge record, so it can change any list
+              // this cache holds an image of, and every image is dropped rather than guessed at (#6062).
+              probeCache.clear();
               // See the twin in checkIncomingEdges: a pruned dangling entry is a repair and is counted as one.
               ++report.prunedDanglingEntries;
             }
@@ -1482,6 +1536,12 @@ public class GraphDatabaseChecker {
     final Set<RID> unreadableListVertices = new HashSet<>();
     /** Records this run actually removed, surfaced as {@code deletedRecordsAfterFix}. */
     final Set<RID> deletedRecords = new LinkedHashSet<>();
+    /**
+     * Answers "does this endpoint's list name the edge?" without re-walking the same list once per incident edge
+     * (issue #6062). Safe for the whole scan: this pass writes nothing while it scans - the deletes happen in the
+     * repair loop below, after the cache is dropped.
+     */
+    final AdjacencyProbeCache probeCache = new AdjacencyProbeCache(graphEngine, adjacencyCacheEntries);
 
     final Map<String, Object> stats = new HashMap<>();
 
@@ -1539,9 +1599,12 @@ public class GraphDatabaseChecker {
 
             if (inVertex != null)
               try {
-                final EdgeLinkedList inEdges = graphEngine.getEdgeHeadChunk((VertexInternal) inVertex, Vertex.DIRECTION.IN);
+                // Memoised per list (#6062). A vertex with no IN list at all answers false, exactly as the
+                // inEdges == null arm this replaces did, and an unreadable one still throws into the guard below.
+                final boolean referenced = probeCache.containsEdge((VertexInternal) inVertex, Vertex.DIRECTION.IN,
+                    edgeRID);
                 inProbed = true;
-                if (inEdges == null || !inEdges.containsEdge(edgeRID)) {
+                if (!referenced) {
                   // LEGITIMATE FOR A UNIDIRECTIONAL EDGE TYPE, a defect for a bidirectional one - which is why the
                   // raw counter below cannot be read as a defect count and #6090 added ones that can. Bumped here
                   // unconditionally, exactly as before, so its published meaning does not shift under existing
@@ -1578,9 +1641,11 @@ public class GraphDatabaseChecker {
 
             if (outVertex != null)
               try {
-                final EdgeLinkedList outEdges = graphEngine.getEdgeHeadChunk((VertexInternal) outVertex, Vertex.DIRECTION.OUT);
+                // See the incoming side: memoised per list rather than re-walked per edge (#6062).
+                final boolean referenced = probeCache.containsEdge((VertexInternal) outVertex, Vertex.DIRECTION.OUT,
+                    edgeRID);
                 outProbed = true;
-                if (outEdges == null || !outEdges.containsEdge(edgeRID)) {
+                if (!referenced) {
                   // ALWAYS A DEFECT, for every edge type: no outgoing traversal can reach the record. Same
                   // unconditional bump of the legacy counter as the incoming side, for the same reason.
                   missingReferenceBack.incrementAndGet();
@@ -1680,6 +1745,9 @@ public class GraphDatabaseChecker {
 
       progressComplete();
 
+      // NOTHING PROBES AFTER THIS POINT and the repair loop deletes records: drop the images (#6062).
+      probeCache.clear();
+
       if (fix) {
         for (final RID rid : report.corruptedRecords) {
           if (rid == null)
@@ -1721,6 +1789,7 @@ public class GraphDatabaseChecker {
       // it as evidence that this arm prunes today. reconnectedEdges is structurally zero here for the same reason:
       // this arm plans no re-links.
       putRepairCounters(stats, autoFix.get(), report.prunedDanglingEntries, 0L);
+      putProbeCounters(stats, probeCache);
       stats.put("deletedRecordsAfterFix", deletedRecords);
       stats.put("corruptedRecords", report.corruptedRecords);
       stats.put("invalidLinks", report.invalidLinks);
