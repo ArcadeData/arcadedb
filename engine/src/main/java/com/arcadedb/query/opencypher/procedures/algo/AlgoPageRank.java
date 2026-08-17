@@ -103,7 +103,7 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
     final double dampingFactor = config != null && config.get("dampingFactor") instanceof Number n ?
         n.doubleValue() : 0.85;
     final int maxIterations = config != null && config.get("maxIterations") instanceof Number n ?
-        extractInt(n, "maxIterations") : 20;
+        extractInt(n, "maxIterations", 1) : 20;
     final double tolerance = config != null && config.get("tolerance") instanceof Number n ?
         n.doubleValue() : 0.0001;
     final String weightProperty = config != null ? (String) config.get("weightProperty") : null;
@@ -112,25 +112,28 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
         "IN".equalsIgnoreCase(dirStr) ? Vertex.DIRECTION.IN : Vertex.DIRECTION.OUT;
 
     final Database db = context.getDatabase();
+    final WorkGuard guard = newWorkGuard(context);
 
     // Try CSR-accelerated path (only for unweighted PageRank)
     final GraphTraversalProvider provider = weightProperty == null ? findProvider(db, null) : null;
     if (provider instanceof GraphAnalyticalView gav) {
       context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
-      return executeWithCSR(context, gav, dampingFactor, maxIterations, direction);
+      return executeWithCSR(context, gav, dampingFactor, maxIterations, direction, guard);
     }
 
     // Fall back to OLTP path
-    return executeWithOLTP(db, dampingFactor, maxIterations, tolerance, weightProperty, direction);
+    return executeWithOLTP(db, dampingFactor, maxIterations, tolerance, weightProperty, direction, guard);
   }
 
   private Stream<Result> executeWithCSR(final CommandContext context, final GraphAnalyticalView gav,
-      final double dampingFactor, final int maxIterations, final Vertex.DIRECTION direction) {
+      final double dampingFactor, final int maxIterations, final Vertex.DIRECTION direction, final WorkGuard guard) {
     final int n = gav.getNodeCount();
     if (n == 0)
       return Stream.empty();
 
-    final double[] scores = GraphAlgorithms.pageRank(gav, dampingFactor, maxIterations, direction);
+    // The CSR kernel has no convergence test at all, so maxIterations alone decides when it stops: the guard is
+    // the only thing that can end a run the caller no longer wants.
+    final double[] scores = GraphAlgorithms.pageRank(gav, dampingFactor, maxIterations, direction, guard::check);
 
     // Set result count hint for CallStep count-only optimization
     context.setVariable(CommandContext.RESULT_COUNT_HINT_VAR, (long) n);
@@ -145,7 +148,7 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
 
   private Stream<Result> executeWithOLTP(final Database db, final double dampingFactor,
       final int maxIterations, final double tolerance, final String weightProperty,
-      final Vertex.DIRECTION direction) {
+      final Vertex.DIRECTION direction, final WorkGuard guard) {
     final List<Vertex> vertices = new ArrayList<>();
     final Iterator<Vertex> vertIter = getAllVertices(db, null);
     while (vertIter.hasNext())
@@ -216,6 +219,9 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
       scores[i] = initialScore;
 
     for (int iter = 0; iter < maxIterations; iter++) {
+      // maxIterations is a caller-supplied knob and the tolerance break only fires if the graph converges, so the
+      // outer loop carries the checkpoint. One iteration is O(n + m), which swallows a flag test whole.
+      guard.check();
       final double[] newScores = new double[n];
       double dangling = 0.0;
 
@@ -225,6 +231,8 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
       }
 
       for (int i = 0; i < n; i++) {
+        // A single iteration walks the whole graph, so on a large one the checkpoint belongs inside the pass too.
+        guard.checkPeriodically(i);
         final int[] neighbors = outNeighbors[i];
         if (neighbors.length == 0)
           continue;
