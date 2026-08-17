@@ -30,6 +30,17 @@ import java.util.concurrent.TimeUnit;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+/**
+ * Advisory GHSA-xmjm-8q85-g778 and the overflow guards around it.
+ * <p>
+ * Every {@code @Timeout} here is a HANG DETECTOR, not a latency bound (issue #6270): what each of these methods
+ * regresses to is an unbounded loop or a materialised billion-element list, and what the method actually CLAIMS is
+ * carried by a structural assertion - {@code containsExactly} on the returned elements, {@code isInstanceOf}
+ * {@code LongRangeList} on the lazy one, {@code assertThatThrownBy} on the rejected one. None of those can pass
+ * while the range is being materialised, so the annotation only has to be wide enough that a stop-the-world pause
+ * cannot masquerade as the regression. The honest budget of each method is microseconds; at 5 s and 10 s these
+ * were inside the range of the 24 s stalls issue #6260 was filed on.
+ */
 @SuppressWarnings("unchecked")
 class RangeFunctionTest {
 
@@ -37,7 +48,7 @@ class RangeFunctionTest {
 
   /** Reported case: step skips past Long.MAX_VALUE - must return only the start element. */
   @Test
-  @Timeout(value = 5, unit = TimeUnit.SECONDS)
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
   void positiveStepOverflowReturnsOnlyFittingElements() {
     @SuppressWarnings("unchecked")
     final List<Long> result = (List<Long>) fn.execute(
@@ -47,7 +58,7 @@ class RangeFunctionTest {
 
   /** Step of 1 right up to Long.MAX_VALUE must return all 4 values. */
   @Test
-  @Timeout(value = 5, unit = TimeUnit.SECONDS)
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
   void positiveStepUpToMaxValue() {
     @SuppressWarnings("unchecked")
     final List<Long> result = (List<Long>) fn.execute(
@@ -61,7 +72,7 @@ class RangeFunctionTest {
 
   /** Single-element range exactly at Long.MAX_VALUE. */
   @Test
-  @Timeout(value = 5, unit = TimeUnit.SECONDS)
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
   void singleElementAtMaxValue() {
     @SuppressWarnings("unchecked")
     final List<Long> result = (List<Long>) fn.execute(
@@ -71,7 +82,7 @@ class RangeFunctionTest {
 
   /** Negative step that skips past Long.MIN_VALUE - must return only the start element. */
   @Test
-  @Timeout(value = 5, unit = TimeUnit.SECONDS)
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
   void negativeStepUnderflowReturnsOnlyFittingElements() {
     @SuppressWarnings("unchecked")
     final List<Long> result = (List<Long>) fn.execute(
@@ -81,7 +92,7 @@ class RangeFunctionTest {
 
   /** Step of -1 right down to Long.MIN_VALUE must return all 4 values. */
   @Test
-  @Timeout(value = 5, unit = TimeUnit.SECONDS)
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
   void negativeStepDownToMinValue() {
     @SuppressWarnings("unchecked")
     final List<Long> result = (List<Long>) fn.execute(
@@ -95,7 +106,7 @@ class RangeFunctionTest {
 
   /** Single-element range exactly at Long.MIN_VALUE. */
   @Test
-  @Timeout(value = 5, unit = TimeUnit.SECONDS)
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
   void singleElementAtMinValue() {
     @SuppressWarnings("unchecked")
     final List<Long> result = (List<Long>) fn.execute(
@@ -105,7 +116,7 @@ class RangeFunctionTest {
 
   /** Extreme: step = Long.MIN_VALUE; guard evaluates to 0 (MIN - MIN = 0 in two's-complement). */
   @Test
-  @Timeout(value = 5, unit = TimeUnit.SECONDS)
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
   void negativeStepLongMinValue() {
     @SuppressWarnings("unchecked")
     final List<Long> result = (List<Long>) fn.execute(
@@ -115,7 +126,7 @@ class RangeFunctionTest {
 
   /** Symmetric to negativeStepLongMinValue: step = Long.MAX_VALUE on the positive branch. */
   @Test
-  @Timeout(value = 5, unit = TimeUnit.SECONDS)
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
   void positiveStepLongMaxValue() {
     @SuppressWarnings("unchecked")
     final List<Long> result = (List<Long>) fn.execute(
@@ -134,7 +145,7 @@ class RangeFunctionTest {
 
   /** Advisory GHSA-xmjm-8q85-g778: the range is lazy, so a huge one costs a constant amount of heap. */
   @Test
-  @Timeout(value = 10, unit = TimeUnit.SECONDS)
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
   void largeRangeIsLazy() {
     final long previous = GlobalConfiguration.QUERY_MAX_RANGE_SIZE.getValueAsLong();
     try {
@@ -150,7 +161,7 @@ class RangeFunctionTest {
 
   /** Advisory GHSA-xmjm-8q85-g778: the reported PoC must be rejected as a client error, not attempted. */
   @Test
-  @Timeout(value = 10, unit = TimeUnit.SECONDS)
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
   void oversizedRangeIsRejected() {
     assertThatThrownBy(() -> fn.execute(new Object[]{ 0L, 9_999_999_999L }, null))
         .isInstanceOf(CommandSemanticException.class)
@@ -160,7 +171,7 @@ class RangeFunctionTest {
 
   /** Even with the configured limit disabled, a range cannot exceed the maximum size of a Java list. */
   @Test
-  @Timeout(value = 10, unit = TimeUnit.SECONDS)
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
   void rangeBiggerThanAListIsRejectedEvenWithoutLimit() {
     final long previous = GlobalConfiguration.QUERY_MAX_RANGE_SIZE.getValueAsLong();
     try {

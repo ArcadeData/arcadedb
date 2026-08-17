@@ -21,6 +21,7 @@ package com.arcadedb.server;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -171,14 +172,14 @@ class Issue5470BatchStreamStallIT extends BaseGraphServerTest {
       out.write(line.getBytes(StandardCharsets.UTF_8));
       out.flush();
 
-      final long startMs = System.currentTimeMillis();
+      final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
       final BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
       final String statusLine = in.readLine();
-      final long elapsedMs = System.currentTimeMillis() - startMs;
 
       // Either the server answers (preferred: 408 with the counters) or it closes the connection, but it must
       // never wait for the relaxed streaming budget before reacting.
-      assertThat(elapsedMs).isLessThan((long) STREAMING_BUDGET_MS);
+      stopwatch.assertGaveUpWithin((long) STREAMING_BUDGET_MS,
+          "the socket timeout that cuts off a silent client from the relaxed streaming budget");
       if (statusLine != null)
         assertThat(statusLine).contains("408");
     }
