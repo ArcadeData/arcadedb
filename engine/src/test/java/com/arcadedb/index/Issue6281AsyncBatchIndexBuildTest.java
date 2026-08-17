@@ -199,6 +199,42 @@ class Issue6281AsyncBatchIndexBuildTest extends TestHelper {
     assertThat(metadata.getSumDocLength()).as("and so must the length total it averages").isPositive();
   }
 
+  /**
+   * The fourth way into a bucket scan: {@code Schema.buildBucketIndex(...)} on its own.
+   * <p>
+   * {@code TypeIndexBuilder} pays the barrier before delegating down to this builder, and so does
+   * {@code REBUILD INDEX} - but it is public API in its own right, and {@code CHECK DATABASE ... FIX} rebuilds a
+   * damaged index through it. Reached that way it has to pay the barrier itself, or it produces exactly the
+   * silently incomplete index this issue is about.
+   */
+  @Test
+  void aBucketIndexBuiltDirectlyOverAnIdleAsyncExecutorStillCoversItsUncommittedBatch() throws Exception {
+    database.transaction(() -> database.getSchema().createDocumentType("V", 1).createProperty("id", Type.INTEGER));
+    final String bucketName = database.getSchema().getType("V").getBuckets(false).getFirst().getName();
+
+    database.async().setParallelLevel(2);
+
+    final CountDownLatch executed = new CountDownLatch(TOT);
+    for (int i = 0; i < TOT; i++) {
+      final MutableDocument v = database.newDocument("V");
+      v.set("id", i);
+      database.async().createRecord(v, record -> executed.countDown());
+    }
+
+    assertThat(executed.await(30, TimeUnit.SECONDS)).isTrue();
+    waitForIdleAsyncExecutor();
+    assertThat(database.countType("V", false)).as("the async batch must still be open").isZero();
+
+    final Index bucketIndex = database.getSchema().buildBucketIndex("V", bucketName, new String[] { "id" })
+        .withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true).create();
+
+    database.async().waitCompletion();
+
+    assertThat(database.countType("V", false)).isEqualTo(TOT);
+    assertThat(bucketIndex.countEntries()).as("a directly built bucket index must cover every record of its bucket")
+        .isEqualTo(TOT);
+  }
+
   private void assertIndexCoversEveryRecord() {
     assertThat(database.countType("V", false)).isEqualTo(TOT);
 
