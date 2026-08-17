@@ -72,7 +72,7 @@ public final class PartitionedTriangleOp implements CountOp {
   @Override
   public long execute(final GraphTraversalProvider provider, final Database db, final WorkGuard guard) {
     final int nodeCount = provider.getNodeCount();
-    final int[] personPartition = buildPartitionMapping(provider, nodeCount);
+    final int[] personPartition = buildPartitionMapping(provider, nodeCount, guard);
 
     final NeighborView knowsView = provider.getNeighborView(Vertex.DIRECTION.BOTH, triangleEdgeType);
     if (knowsView == null)
@@ -172,7 +172,8 @@ public final class PartitionedTriangleOp implements CountOp {
     return count;
   }
 
-  private int[] buildPartitionMapping(final GraphTraversalProvider provider, final int nodeCount) {
+  private int[] buildPartitionMapping(final GraphTraversalProvider provider, final int nodeCount,
+      final WorkGuard guard) {
     final int[] partition = new int[nodeCount];
     Arrays.fill(partition, -1);
 
@@ -189,6 +190,7 @@ public final class PartitionedTriangleOp implements CountOp {
     final int[] firstNbrs = firstView.neighbors();
 
     for (int p = 0; p < nodeCount; p++) {
+      guard.checkPeriodically(p);
       final int fStart = firstView.offset(p);
       final int fEnd = firstView.offsetEnd(p);
       if (fStart == fEnd)

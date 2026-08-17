@@ -131,7 +131,11 @@ public interface CommandContext {
    * read the deadline off this context - would never see it (issue #6266).
    * <p>
    * Every value is honoured, including {@code 0} - which pins a deadline already in the past, so the next check
-   * aborts - and {@link Long#MAX_VALUE}, which lifts the bound entirely.
+   * aborts - and {@link Long#MAX_VALUE}, which lifts the bound entirely. The one exception is
+   * {@link Long#MIN_VALUE}, which the implementation reserves as its "not resolved yet" marker and will
+   * therefore re-resolve rather than pin. Nothing can produce it - an epoch-millis instant that far in the past
+   * has no meaning and no arithmetic here reaches it - so it is named only so the next reader does not have to
+   * rediscover it.
    */
   void setCommandDeadline(long deadlineEpochMillis, String description);
 

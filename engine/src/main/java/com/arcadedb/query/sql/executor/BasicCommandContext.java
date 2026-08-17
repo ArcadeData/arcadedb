@@ -49,10 +49,19 @@ public class BasicCommandContext implements CommandContext {
   protected final    Set<String>          declaredScriptVariables = new HashSet<>();
   protected          boolean              profiling               = false;
   /**
-   * {@link Long#MIN_VALUE} means "not resolved yet" for the two fields below. A sentinel outside the value
-   * domain rather than a plausible one, so that no legitimate value can be mistaken for "unresolved": a pinned
-   * deadline of {@code 0} means "already expired", which a caller may well want and which a {@code 0} sentinel
-   * would have silently discarded on the next read.
+   * {@link Long#MIN_VALUE} means "not resolved yet" for the two fields below.
+   * <p>
+   * The three resolvers that read them do a lazy check-then-set on a volatile without synchronizing, and the
+   * race that allows is tolerated deliberately: two threads resolving concurrently walk the same parent chain
+   * and read the same configuration, so they converge on equivalent values, and the loser's write is equivalent
+   * to the winner's. Locking here would put a monitor on a path taken once per batch by every guarded loop in
+   * the engine to protect a computation that is idempotent by construction. The one value that is <em>not</em>
+   * idempotent - the clock read - is why {@link #copy()} resolves before copying rather than letting each
+   * worker resolve its own.
+   * <p>
+   * The sentinel is outside the value domain rather than a plausible instant, so that no legitimate value can
+   * be mistaken for "unresolved": a pinned deadline of {@code 0} means "already expired", which a caller may
+   * well want and which a {@code 0} sentinel would have silently discarded on the next read.
    */
   private static final long               UNRESOLVED              = Long.MIN_VALUE;
   /** {@code arcadedb.command.timeout} in ms. See {@link #getCommandTimeout()}. */

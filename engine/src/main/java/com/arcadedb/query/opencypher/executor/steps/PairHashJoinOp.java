@@ -132,8 +132,10 @@ public final class PairHashJoinOp implements CountOp {
       int[] bucketIds = null;
       if (arm2Buckets != null) {
         bucketIds = new int[nodeCount];
-        for (int v = 0; v < nodeCount; v++)
+        for (int v = 0; v < nodeCount; v++) {
+          guard.checkPeriodically(v);
           bucketIds[v] = provider.getRID(v).getBucketId();
+        }
       }
 
       if (allArm2Views) {
@@ -165,9 +167,11 @@ public final class PairHashJoinOp implements CountOp {
     long total = 0;
     if (probeViewFallback != null) {
       final int[] probeNbrs = probeViewFallback.neighbors();
-      for (int p1 = 0; p1 < nodeCount; p1++)
+      for (int p1 = 0; p1 < nodeCount; p1++) {
+        guard.checkPeriodically(p1);
         for (int j = probeViewFallback.offset(p1), end = probeViewFallback.offsetEnd(p1); j < end; j++)
           total += pairCounts.get(CSRCountUtils.packPair(p1, probeNbrs[j]), 0);
+      }
     } else {
       for (int p1 = 0; p1 < nodeCount; p1++) {
         guard.checkPeriodically(p1);
@@ -366,8 +370,10 @@ public final class PairHashJoinOp implements CountOp {
     int[] bucketIds = null;
     if (arm2Buckets != null && allArm2Views) {
       bucketIds = new int[nodeCount];
-      for (int v = 0; v < nodeCount; v++)
+      for (int v = 0; v < nodeCount; v++) {
+        guard.checkPeriodically(v);
         bucketIds[v] = provider.getRID(v).getBucketId();
+      }
     }
 
     for (int startId = 0; startId < nodeCount; startId++) {
