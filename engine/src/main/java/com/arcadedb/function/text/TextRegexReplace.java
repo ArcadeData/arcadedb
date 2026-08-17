@@ -34,10 +34,6 @@ import java.util.regex.PatternSyntaxException;
 public class TextRegexReplace extends AbstractTextFunction {
   private static final int MAX_PATTERN_LENGTH = 500;
 
-  // context.getCachedValue()/setCachedValue() key for the shared deadline - see execute() for why this needs to
-  // be shared, not recomputed per call.
-  private static final String DEADLINE_CACHE_KEY = "__TEXT_REGEXREPLACE_DEADLINE__";
-
   @Override
   protected String getSimpleName() {
     return "regexReplace";
@@ -83,9 +79,9 @@ public class TextRegexReplace extends AbstractTextFunction {
     // could still cost up to rowCount * regexTimeout overall. context is null in some direct/unit-test
     // invocations of this function (see TextRegexReplaceTest); GlobalConfiguration.getValueAsLong(Database)
     // falls back to the compiled-in default in that case, and the deadline is simply not shared across calls
-    // when there's no context to cache it on.
+    // when there's no context to carry it.
     final long regexDeadline = context != null ?
-        context.getOrComputeRegexDeadline(DEADLINE_CACHE_KEY) :
+        context.getRegexDeadline() :
         TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(null));
 
     try {

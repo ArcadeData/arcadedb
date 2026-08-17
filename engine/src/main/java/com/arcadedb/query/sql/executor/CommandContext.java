@@ -56,44 +56,25 @@ public interface CommandContext {
   CommandContext setCachedValue(String key, Object value);
 
   /**
-   * Returns an absolute {@code arcadedb.command.regexTimeout} deadline (see {@link TimeBoundRegex#newDeadline(long)})
-   * shared for the lifetime of this context, computing and caching it on first call. Centralizes the
-   * get-cached-or-compute-and-cache pattern every regex-bounding call site in the engine needs to share one
-   * deadline across a series of related matches (issue #5886) - each call site previously hand-rolled this
-   * with its own cache key, which is exactly how a real bug shipped: two independently-chosen keys collided
-   * (a fixed {@code "MATCHES_DEADLINE"} key colliding with the pattern cache's {@code "MATCHES_" + <regex
-   * text>} keys for the literal pattern text {@code DEADLINE}). Centralizing here still requires each caller
-   * to pass a key that can't collide with anything else it puts in this same cache, but removes the need to
-   * hand-write the get-or-compute logic itself at every site.
-   *
-   * <p>The deadline is shared across every row evaluated through <em>this</em> context, but not necessarily
-   * across an entire query: {@code FetchFromTypeExecutionStep.syncPullParallel} gives each parallel bucket-scan
-   * worker its own {@link #copy()} of the context (deliberately, so workers don't race on this same cache's
-   * non-thread-safe backing map), so each worker computes its own deadline independently. A type scanned in
-   * parallel across N buckets is therefore bounded by {@code N * timeoutMillis} overall, not one shared budget.
-   * This is a much narrower gap than the one this method closes: bucket count is a schema/DDL property, not
-   * attacker-controlled the way row/item counts are.
-   *
-   * @param cacheKey      the {@link #getCachedValue(String)} key to store the deadline under - must not collide
-   *                      with any other key this context's cache holds
-   * @param timeoutMillis maximum time allowed from now, in milliseconds; a value {@code <= 0} disables the bound
+   * Returns the absolute {@code arcadedb.command.regexTimeout} deadline (see {@link TimeBoundRegex#newDeadline(long)})
+   * every regex evaluated through this command must finish by, resolved from
+   * {@link GlobalConfiguration#COMMAND_REGEX_TIMEOUT} on first use and then fixed - like
+   * {@link #getCommandDeadline()}, and for the same reason: a bound that restarts is not a bound.
+   * <p>
+   * One deadline per command rather than one per call site. Every site that bounds a regex against catastrophic
+   * backtracking needs to share a budget across a series of matches (issue #5886), and the deadline used to live
+   * in {@link #getCachedValue(String)} under a key each site chose for itself. That gave a query as many budgets
+   * as it used regex features, and - because {@link #copy()} does not copy that cache - gave each parallel
+   * bucket-scan worker one more, so a type scanned across N buckets was bounded by {@code N * timeoutMillis}
+   * (issue #6304). Carried on the context and resolved before copying, it is one budget for the whole command,
+   * however the command is decomposed. It also removes the key-collision hazard that shipped a real bug: a fixed
+   * {@code "MATCHES_DEADLINE"} key collided with the pattern cache's {@code "MATCHES_" + <regex text>} keys for
+   * the literal pattern text {@code DEADLINE}.
+   * <p>
+   * With the setting disabled the resolution costs no clock read at all - {@link TimeBoundRegex#newDeadline(long)}
+   * answers {@link Long#MAX_VALUE} for a non-positive timeout.
    */
-  default long getOrComputeRegexDeadline(final String cacheKey, final long timeoutMillis) {
-    Long deadline = (Long) getCachedValue(cacheKey);
-    if (deadline == null) {
-      deadline = TimeBoundRegex.newDeadline(timeoutMillis);
-      setCachedValue(cacheKey, deadline);
-    }
-    return deadline;
-  }
-
-  /**
-   * Convenience overload of {@link #getOrComputeRegexDeadline(String, long)} that resolves {@code timeoutMillis}
-   * from {@link GlobalConfiguration#COMMAND_REGEX_TIMEOUT} for this context's database.
-   */
-  default long getOrComputeRegexDeadline(final String cacheKey) {
-    return getOrComputeRegexDeadline(cacheKey, GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(getDatabase()));
-  }
+  long getRegexDeadline();
 
   /**
    * Returns {@code arcadedb.command.timeout} in milliseconds for this context's database, or {@code 0} when the
@@ -137,7 +118,29 @@ public interface CommandContext {
    * has no meaning and no arithmetic here reaches it - so it is named only so the next reader does not have to
    * rediscover it.
    */
-  void setCommandDeadline(long deadlineEpochMillis, String description);
+  default void setCommandDeadline(final long deadlineEpochMillis, final String description) {
+    setCommandDeadline(deadlineEpochMillis, description, false);
+  }
+
+  /**
+   * As {@link #setCommandDeadline(long, String)}, additionally saying what reaching the deadline means.
+   *
+   * @param yieldPartialResults {@code true} for a bound that asks for the rows produced so far rather than for a
+   *                            failure - a SQL {@code TIMEOUT n RETURN} clause. See
+   *                            {@link #isCommandDeadlinePartial()}.
+   */
+  void setCommandDeadline(long deadlineEpochMillis, String description, boolean yieldPartialResults);
+
+  /**
+   * Whether reaching {@link #getCommandDeadline()} means "stop and yield what you have" rather than "fail".
+   * <p>
+   * Only a SQL {@code TIMEOUT n RETURN} clause sets this. A guard that reaches such a deadline raises
+   * {@link com.arcadedb.exception.PartialResultTimeoutException} instead of a plain
+   * {@link com.arcadedb.exception.TimeoutException}, and the step owning the clause turns that into the end of its
+   * result set. Without the distinction the clause could not be enforced inside a scan loop at all: a guard can
+   * only stop by throwing, and throwing is exactly what {@code RETURN} promises not to do (issue #6304).
+   */
+  boolean isCommandDeadlinePartial();
 
   CommandContext incrementVariable(String getNeighbors);
 

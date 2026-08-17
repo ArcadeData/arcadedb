@@ -143,6 +143,8 @@ public class TraverseStatement extends Statement {
       }
     }
 
+    if (timeout != null)
+      timeout.toString(params, builder);
   }
 
   public boolean refersToParent() {
@@ -165,6 +167,7 @@ public class TraverseStatement extends Statement {
     result.strategy = strategy;
     result.maxDepth = maxDepth == null ? null : maxDepth.copy();
     result.postFilter = postFilter == null ? null : postFilter.copy();
+    result.timeout = timeout == null ? null : timeout.copy();
     return result;
   }
 
@@ -189,6 +192,8 @@ public class TraverseStatement extends Statement {
       return false;
     if (!Objects.equals(maxDepth, that.maxDepth))
       return false;
+    if (!Objects.equals(timeout, that.timeout))
+      return false;
     return Objects.equals(postFilter, that.postFilter);
   }
 
@@ -201,6 +206,7 @@ public class TraverseStatement extends Statement {
     result = 31 * result + (strategy != null ? strategy.hashCode() : 0);
     result = 31 * result + (maxDepth != null ? maxDepth.hashCode() : 0);
     result = 31 * result + (postFilter != null ? postFilter.hashCode() : 0);
+    result = 31 * result + (timeout != null ? timeout.hashCode() : 0);
     return result;
   }
 

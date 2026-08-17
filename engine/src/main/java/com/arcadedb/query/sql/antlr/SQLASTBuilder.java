@@ -494,6 +494,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       stmt.setLimit((Limit) visit(ctx.limit()));
     }
 
+    // Parse TIMEOUT clause
+    if (ctx.timeout() != null) {
+      stmt.timeout = (Timeout) visit(ctx.timeout());
+    }
+
     return stmt;
   }
 
@@ -586,6 +591,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // LIMIT clause
     if (matchCtx.limit() != null) {
       stmt.limit = (Limit) visit(matchCtx.limit());
+    }
+
+    if (matchCtx.timeout() != null) {
+      stmt.timeout = (Timeout) visit(matchCtx.timeout());
     }
 
     return stmt;
@@ -1439,6 +1448,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       stmt.setStrategy(TraverseStatement.Strategy.DEPTH_FIRST);
     } else if (traverseCtx.BREADTH_FIRST() != null) {
       stmt.setStrategy(TraverseStatement.Strategy.BREADTH_FIRST);
+    }
+
+    // TIMEOUT clause (optional)
+    if (traverseCtx.timeout() != null) {
+      stmt.timeout = (Timeout) visit(traverseCtx.timeout());
     }
 
     return stmt;
@@ -4359,8 +4373,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // The grammar accepts TIMEOUT <n> (EXCEPTION | RETURN), and the executor has always honoured RETURN by
     // returning the rows produced so far instead of raising - but the strategy token was never read here, so
     // every clause arrived with a null strategy and behaved as EXCEPTION. Reading it makes both branches of
-    // TimeoutStep.fail()/AccumulatingTimeoutStep.fail() reachable, and lets StatementTimeouts leave a RETURN
-    // clause out of the in-loop guards, which can only raise (issue #6266).
+    // TimeoutStep.stop() reachable, and tells StatementTimeouts which kind of bound to pin on the context so
+    // the in-loop guards can stop a RETURN clause by yielding rather than by raising (issues #6266, #6304).
     if (ctx.RETURN() != null)
       timeout.setFailureStrategy(Timeout.RETURN);
     else if (ctx.EXCEPTION() != null)

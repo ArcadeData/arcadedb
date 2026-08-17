@@ -51,7 +51,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * The tests below are all the same experiment: a statement that needs far longer than the deadline it is given.
  * Without enforcement each one runs to completion and returns a result; with it each one aborts naming the setting,
  * which is the assertion - the message carries {@code arcadedb.command.timeout}, so a statement that stopped for any
- * other reason (including the pre-existing {@code AccumulatingTimeoutStep}, whose message does not) fails the test.
+ * other reason (including its own {@code TIMEOUT} clause, whose message names the clause instead) fails the test.
  * <p>
  * The 50 ms deadline is not a latency budget, it is a value far below what the statement costs. Measured on the
  * reference machine with the bound raised out of the way, the five openCypher statements each run for more than 6 s,
@@ -191,8 +191,8 @@ class Issue6266CommandTimeoutCoverageTest {
   @Test
   void sqlSelectWithARejectingFilterHonoursTheCommandTimeout() {
     // The granularity hole named in the issue: a filter that rejects every record spends the whole scan inside one
-    // hasNext(), and AccumulatingTimeoutStep is not re-entered until that call returns. The self-join below makes
-    // that single call long enough to be unmistakable.
+    // hasNext(), and TimeoutStep is not re-entered until that call returns. The self-join below makes that single
+    // call long enough to be unmistakable.
     setTimeout(50);
 
     assertThatThrownBy(() -> drainSql(
@@ -226,9 +226,11 @@ class Issue6266CommandTimeoutCoverageTest {
 
   @Test
   void theReturnFailureStrategyStillReturnsRatherThanThrowing() {
-    // TIMEOUT n RETURN asks for the rows produced so far instead of an exception. An in-loop guard only knows
-    // how to throw, so the deadline is deliberately not pinned for that strategy - otherwise widening the
-    // enforcement would silently convert a documented "return what you have" into a failure.
+    // TIMEOUT n RETURN asks for the rows produced so far instead of an exception. The deadline IS pinned for
+    // that strategy, and the guard raises a PartialResultTimeoutException the owning step converts into the end
+    // of its result set (issue #6304) - so widening the enforcement to the scan loop must still not turn a
+    // documented "return what you have" into a failure. Issue6304TimeoutFollowUpsTest asserts the other half:
+    // that it now stops early rather than grinding to the end of the scan first.
     assertThatCode(() -> drainSql(
         "SELECT FROM Node WHERE out('LINK').out('LINK').out('LINK').out('LINK').out('LINK').size() > 1000000 "
             + "TIMEOUT 50 RETURN"))

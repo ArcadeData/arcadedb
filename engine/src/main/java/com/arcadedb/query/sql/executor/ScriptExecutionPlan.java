@@ -215,18 +215,9 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
             return lastStep;
           }
         }
-        ResultSet lastResult = step.syncPull(context, DEFAULT_FETCH_RECORDS_PER_PULL);
-
-        if (lastResult == BreakStatement.BREAK_RESULTSET) {
+        if (drainLine(step) == BreakStatement.BREAK_RESULTSET) {
           lastStep = new BreakStep(context);
           return lastStep;
-        }
-
-        while (lastResult.hasNext()) {
-          while (lastResult.hasNext())
-            lastResult.next();
-
-          lastResult = step.syncPull(context, DEFAULT_FETCH_RECORDS_PER_PULL);
         }
       }
       this.lastStep = steps.get(steps.size() - 1);
@@ -248,10 +239,41 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
           return returnStep;
       }
 
+      if (drainLine(step) == BreakStatement.BREAK_RESULTSET)
+        return new BreakStep(context);
+    }
+
+    return null;
+  }
+
+  /**
+   * Runs one script line to exhaustion, leaving the command deadline as it found it.
+   * <p>
+   * Every line of a script is planned against the <em>same</em> context, so a line carrying a {@code TIMEOUT}
+   * clause pins its instant exactly where the lines after it will read it - and those have no
+   * {@link TimeoutStep} of their own to catch anything, so they abort on a bound that belonged to a statement
+   * that had already finished. {@code SELECT ... TIMEOUT 50; <anything slower than 50ms>;} failed on its second
+   * line for that reason. Restoring here scopes a clause to the statement that wrote it (issue #6304).
+   * <p>
+   * What the snapshot holds when no clause pinned anything is the command's own
+   * {@code arcadedb.command.timeout} instant, so restoring it keeps that bound in force across the whole script
+   * - which is right, because the script is one command.
+   * <p>
+   * The last line is drained by {@link #doExecute} rather than here, and deliberately keeps its pin: there is no
+   * statement after it to poison, and the context dies with the script.
+   *
+   * @return {@link BreakStatement#BREAK_RESULTSET} if the line broke out of an enclosing loop, otherwise
+   * {@code null}
+   */
+  private ResultSet drainLine(final ScriptLineStep step) {
+    final long deadline = context.getCommandDeadline();
+    final String deadlineDescription = context.getCommandDeadlineDescription();
+    final boolean deadlinePartial = context.isCommandDeadlinePartial();
+    try {
       ResultSet lastResult = step.syncPull(context, DEFAULT_FETCH_RECORDS_PER_PULL);
 
       if (lastResult == BreakStatement.BREAK_RESULTSET)
-        return new BreakStep(context);
+        return lastResult;
 
       while (lastResult.hasNext()) {
         while (lastResult.hasNext())
@@ -259,9 +281,10 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
 
         lastResult = step.syncPull(context, DEFAULT_FETCH_RECORDS_PER_PULL);
       }
+      return null;
+    } finally {
+      context.setCommandDeadline(deadline, deadlineDescription, deadlinePartial);
     }
-
-    return null;
   }
 
   @Override

@@ -2543,6 +2543,102 @@ alert on.
 
 [#6281](https://github.com/ArcadeData/arcadedb/issues/6281)
 
+## One `TIMEOUT` clause, honoured inside the scan, on every statement that should accept one (#6304)
+
+Five findings turned up while fixing #6266 and are answered together here: they are unrelated to each other
+beyond having been found in the same neighbourhood.
+
+### A count push-down no longer drops a label the pattern wrote down
+
+`MATCH (p1)-[:KNOWS]->(p2), (p1:Person)<-[:AUTHORED]-(c:Comment)-[:MENTIONS]->(p2)` counted the comments
+whose author is *not* a Person as well, but only when a Graph Analytical View happened to cover the three
+edge types. The pair-join operator's CSR build paths read the arm's endpoint straight into the probe lookup
+and never applied the endpoint's bucket filter - the table of bucket ids that filter needs was built by the
+branch that owned the *other* arm - while the OLTP fallback applied it. Same query, two answers, decided by
+whether a view exists.
+
+Two more drops of the same family are closed with it. `buildWithViews`, the branch named in the issue, was
+handed the second arm's filter and ignored it. And the detector read node labels off the build pattern only:
+the two comma-separated patterns share their endpoint variables, so `(p1:Person)-[:KNOWS]->(p2)` constrains
+exactly the variable the other pattern's arm ends on, and that label was dropped on *both* execution paths -
+a wrong answer with or without a view.
+
+Where the two patterns label the same variable differently the filter is an intersection, which the operator
+carries no room for, so the push-down now declines and the ordinary pipeline answers instead. It declines the
+same way for `(a:A:B)` and `(a:A|B)`, which it used to read as `(a:A)` - a filter that is neither.
+
+### `TIMEOUT n RETURN` stops when it says it will, and returns what it has
+
+The clause promises the rows produced so far rather than an exception. It delivered neither half. Its
+deadline was deliberately left out of the in-loop guards, because a guard can only stop by throwing - so a
+filter that rejects every record still scanned to the end inside one `hasNext()`, which is precisely the
+granularity hole #6266 set out to close. And when rows *did* pass the filter, the step marked itself timed
+out and then went on returning every remaining row, so nothing was ever truncated.
+
+A guard that reaches a deadline pinned by a `RETURN` clause now raises a distinct
+`PartialResultTimeoutException`, which the step owning the clause converts into the end of its result set.
+Every other bound keeps raising a plain `TimeoutException`; the distinction is what stops a genuine
+`arcadedb.command.timeout` abort from being swallowed into a silently truncated answer. An outer `RETURN`
+clause propagates the same meaning into nested plans, so a subquery yields rather than raising too.
+
+**Behaviour change.** `SELECT ... TIMEOUT n RETURN` used to return the complete result set. It now returns a
+prefix of it. That is what the clause has always been documented to do, and `EXCEPTION` - the default when
+neither token is written - is unaffected.
+
+### A `TIMEOUT` clause no longer outlives the script line that wrote it
+
+Found while reviewing the above, and a regression #6291 shipped: every line of a SQL script is planned against
+the *same* command context, so the instant a `TIMEOUT` clause pins landed exactly where the following lines
+read it - and those have no timeout step of their own to catch anything. This failed on its second line:
+
+```sql
+SELECT FROM Node WHERE v = 1 TIMEOUT 50;
+SELECT FROM SomethingSlower;
+```
+
+with `the command exceeded the TIMEOUT clause of 50ms`, a bound belonging to a statement that had already
+finished. A clause is now scoped to its own line. What the line restores is the command's own
+`arcadedb.command.timeout` instant, so that bound stays in force across the whole script - the script is one
+command.
+
+### `SELECT ... TIMEOUT n` and `UPDATE ... TIMEOUT n` now mean the same thing
+
+They did not. `UPDATE` measured wall clock from the first pull; `SELECT` charged only the time spent inside
+the pipeline, so a client streaming a large result slowly was not billed for its own pauses while the
+identical number on an `UPDATE` was. Same syntax, two bounds, and nothing said which one a statement got.
+
+Both are wall clock now, which is what the word means everywhere else in the engine:
+`arcadedb.command.timeout`, the ceiling over every statement, has been wall clock since #6266, so the
+accumulating variant was the only bound in the engine that was not. The two steps are one.
+
+**Behaviour change.** A consumer that pauses between fetches of a `SELECT ... TIMEOUT n` is now charged for
+the pause. A client that reads a large result set slowly and relies on a clause to bound only server-side
+work should raise the value or drop the clause.
+
+`TIMEOUT 0` also means one thing now. It disabled the clause on `UPDATE` and expired it on the spot on
+`SELECT`; it disables it everywhere, which is what `0` means for `arcadedb.command.timeout` and
+`arcadedb.command.regexTimeout` and is the reading that cannot turn a working statement into a failing one.
+
+### SQL `MATCH` and `TRAVERSE` accept `TIMEOUT`
+
+`SELECT ... TIMEOUT 100` parsed and `MATCH {...} RETURN ... TIMEOUT 100` was a syntax error, so bounding one
+expensive `MATCH` meant changing a database-wide setting. Both statements now take the clause, with the same
+`EXCEPTION | RETURN` strategies and the same wall-clock meaning as everywhere else. The profiled read timeout
+a `MatchStatement` was already setting on itself - and which nothing then read - takes effect with it.
+
+### One regex budget per command, not one per feature and per scan worker
+
+`arcadedb.command.regexTimeout` bounds a regex against catastrophic backtracking. The deadline lived in the
+command context's opaque value cache under a key each call site chose for itself, which gave a query as many
+budgets as it used regex features - and, because a parallel bucket-scan worker gets a `copy()` of the context
+and that copy does not carry the cache, one more budget per worker. A type scanned across N buckets was
+bounded by `N x regexTimeout`.
+
+The deadline is now a field of the context, resolved once and pinned into the copy exactly as the command
+deadline is, so it is one budget for the whole command however the command is decomposed. Nothing to
+reconfigure; with the setting disabled the resolution still reads no clock at all.
+
+[#6304](https://github.com/ArcadeData/arcadedb/issues/6304)
 ## A placeholder's content record can stop being a chunk chain, like every other record (#6286)
 
 #6178 gave a record that shrinks back inside the region its own slot owns a way out of being a chunk chain:

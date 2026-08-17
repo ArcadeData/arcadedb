@@ -31,14 +31,12 @@ import java.util.regex.PatternSyntaxException;
  * Example: n.name =~ '.*Smith', n.email =~ '.*@example\\.com'
  */
 public class RegexExpression implements BooleanExpression {
-  // Deadline caching MUST live on the CommandContext (below), never as an instance field on this class: unlike
-  // compiledPattern (content-addressed, safe to reuse across executions), a deadline is a point in time tied to
-  // one execution. CypherStatementCache caches parsed queries - including this AST node - by query text across
-  // repeated executions, so an instance-field deadline would be computed once on the first execution and then,
-  // once it lapsed (trivially within ~1s at the default regexTimeout), make every later execution of that same
-  // cached query text throw a spurious TimeoutException on any pattern, catastrophic or not.
-  private static final String DEADLINE_CACHE_KEY = "REGEX_EXPRESSION_DEADLINE";
-
+  // The deadline MUST live on the CommandContext (see execute() below), never as an instance field on this
+  // class: unlike compiledPattern (content-addressed, safe to reuse across executions), a deadline is a point in
+  // time tied to one execution. CypherStatementCache caches parsed queries - including this AST node - by query
+  // text across repeated executions, so an instance-field deadline would be computed once on the first execution
+  // and then, once it lapsed (trivially within ~1s at the default regexTimeout), make every later execution of
+  // that same cached query text throw a spurious TimeoutException on any pattern, catastrophic or not.
   private final Expression expression;
   private final Expression pattern;
   private Pattern compiledPattern;
@@ -77,13 +75,13 @@ public class RegexExpression implements BooleanExpression {
       }
     }
 
-    // Match against value. context.getOrComputeRegexDeadline() resolves context.getDatabase()'s per-database
+    // Match against value. context.getRegexDeadline() resolves context.getDatabase()'s per-database
     // override (falling back to the compiled-in default if a database is ever not bound to the context -
     // RegexExpression is, in practice, only ever constructed by the openCypher parser and evaluated with one
     // already bound). See MatchesCondition.matches() for why context.getConfiguration() would silently ignore a
     // per-database override here.
     final String valueStr = value.toString();
-    return TimeBoundRegex.matchesUntil(compiledPattern, valueStr, context.getOrComputeRegexDeadline(DEADLINE_CACHE_KEY));
+    return TimeBoundRegex.matchesUntil(compiledPattern, valueStr, context.getRegexDeadline());
   }
 
   @Override

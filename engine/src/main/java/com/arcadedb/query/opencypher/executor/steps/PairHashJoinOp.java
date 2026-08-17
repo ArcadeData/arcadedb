@@ -114,6 +114,24 @@ public final class PairHashJoinOp implements CountOp {
     final NeighborView arm1View = arm1SingleHop ? provider.getNeighborView(arm1Directions[0], arm1EdgeTypes[0]) : null;
     final NeighborView arm2View = arm2SingleHop ? provider.getNeighborView(arm2Directions[0], arm2EdgeTypes[0]) : null;
 
+    // Every NeighborView build path below needs arm1's view; none of them runs without it. The label filter of
+    // EITHER arm needs the bucket of a node id, so the table is built once here for both, rather than inside
+    // the branch that first wanted it - arm1's filter used to be dropped by all three of those paths precisely
+    // because the table was owned by the arm2 branch (issue #6304).
+    final int[] bucketIds;
+    if (arm1View != null && (arm1Buckets != null || arm2Buckets != null)) {
+      bucketIds = new int[nodeCount];
+      for (int v = 0; v < nodeCount; v++) {
+        guard.checkPeriodically(v);
+        bucketIds[v] = provider.getRID(v).getBucketId();
+      }
+    } else
+      bucketIds = null;
+
+    // A single-hop arm's only label filter sits on its endpoint, which is the one hop it has. arm1 is single-hop
+    // wherever arm1View exists, and the multi-hop arm1 case never reaches a path that reads this.
+    final IntHashSet arm1Filter = arm1View != null && arm1Buckets != null ? arm1Buckets[0] : null;
+
     // FAST PATH: Inline probe — skip the HashMap entirely.
     // For each build node, compute (ep1, ep2) and immediately check if the probe
     // edge exists via binary search on sorted CSR neighbor arrays. O(log d) per check.
@@ -129,25 +147,17 @@ public final class PairHashJoinOp implements CountOp {
         if (arm2Views[h] == null) { allArm2Views = false; break; }
       }
 
-      int[] bucketIds = null;
-      if (arm2Buckets != null) {
-        bucketIds = new int[nodeCount];
-        for (int v = 0; v < nodeCount; v++) {
-          guard.checkPeriodically(v);
-          bucketIds[v] = provider.getRID(v).getBucketId();
-        }
-      }
-
       if (allArm2Views) {
-        return buildAndProbeInline(arm1View, arm2Views, arm2Buckets, probeView, nodeCount, bucketIds, guard);
+        return buildAndProbeInline(arm1View, arm1Filter, arm2Views, arm2Buckets, probeView, nodeCount, bucketIds, guard);
       }
     }
 
     // FALLBACK: HashMap build + probe (for cases without full NeighborView coverage)
     if (arm1View != null && arm2View != null) {
-      buildWithViews(arm1View, arm2View, arm2Buckets, pairCounts, nodeCount, guard);
+      buildWithViews(arm1View, arm1Filter, arm2View, arm2Buckets != null ? arm2Buckets[0] : null, pairCounts, nodeCount,
+          bucketIds, guard);
     } else if (arm1View != null) {
-      buildWithArm1View(arm1View, provider, arm2Buckets, pairCounts, nodeCount, guard);
+      buildWithArm1View(arm1View, arm1Filter, provider, arm2Buckets, pairCounts, nodeCount, bucketIds, guard);
     } else {
       for (int startId = 0; startId < nodeCount; startId++) {
         guard.check();
@@ -246,8 +256,8 @@ public final class PairHashJoinOp implements CountOp {
    * When arm2 has exactly 2 hops (the Q2 case), fuses the arm2 walk with the probe
    * check inline to avoid allocating an intermediate int[] per build node.
    */
-  private long buildAndProbeInline(final NeighborView arm1View, final NeighborView[] arm2Views,
-      final IntHashSet[] arm2Buckets, final NeighborView probeView,
+  private long buildAndProbeInline(final NeighborView arm1View, final IntHashSet arm1Filter,
+      final NeighborView[] arm2Views, final IntHashSet[] arm2Buckets, final NeighborView probeView,
       final int nodeCount, final int[] bucketIds, final WorkGuard guard) {
     final int[] arm1Nbrs = arm1View.neighbors();
     final int[] probeNbrs = probeView.neighbors();
@@ -275,6 +285,7 @@ public final class PairHashJoinOp implements CountOp {
         // For each arm1 endpoint, pre-fetch probe range
         for (int i = a1Start; i < a1End; i++) {
           final int ep1 = arm1Nbrs[i];
+          if (arm1Filter != null && !arm1Filter.contains(bucketIds[ep1])) continue;
           final int pStart = probeView.offset(ep1);
           final int pEnd = probeView.offsetEnd(ep1);
           if (pStart == pEnd) continue;
@@ -310,6 +321,7 @@ public final class PairHashJoinOp implements CountOp {
 
       for (int i = a1Start; i < a1End; i++) {
         final int ep1 = arm1Nbrs[i];
+        if (arm1Filter != null && !arm1Filter.contains(bucketIds[ep1])) continue;
         final int pStart = probeView.offset(ep1);
         final int pEnd = probeView.offsetEnd(ep1);
         if (pStart == pEnd) continue;
@@ -327,10 +339,13 @@ public final class PairHashJoinOp implements CountOp {
    * Fast build when both arms are single-hop with NeighborViews.
    * For Q2: arm1=HAS_CREATOR(1 hop), arm2=REPLY_OF+HAS_CREATOR(2 hops) → arm2 is NOT single-hop.
    * But for simpler pair-joins where both arms are 1 hop, this avoids all per-node method calls.
+   * <p>
+   * The two endpoint filters are the labels the pattern put on the shared variables; dropping one does not make
+   * the join cheaper, it makes it count endpoints the pattern excluded (issue #6304).
    */
-  private void buildWithViews(final NeighborView arm1View, final NeighborView arm2View,
-      final IntHashSet[] arm2Buckets, final LongLongHashMap pairCounts,
-      final int nodeCount, final WorkGuard guard) {
+  private void buildWithViews(final NeighborView arm1View, final IntHashSet arm1Filter,
+      final NeighborView arm2View, final IntHashSet arm2Filter, final LongLongHashMap pairCounts,
+      final int nodeCount, final int[] bucketIds, final WorkGuard guard) {
     final int[] arm1Nbrs = arm1View.neighbors();
     final int[] arm2Nbrs = arm2View.neighbors();
     for (int startId = 0; startId < nodeCount; startId++) {
@@ -342,9 +357,15 @@ public final class PairHashJoinOp implements CountOp {
       final int a2End = arm2View.offsetEnd(startId);
       if (a2Start == a2End) continue;
 
-      for (int i = a1Start; i < a1End; i++)
-        for (int j = a2Start; j < a2End; j++)
-          pairCounts.increment(CSRCountUtils.packPair(arm1Nbrs[i], arm2Nbrs[j]));
+      for (int i = a1Start; i < a1End; i++) {
+        final int ep1 = arm1Nbrs[i];
+        if (arm1Filter != null && !arm1Filter.contains(bucketIds[ep1])) continue;
+        for (int j = a2Start; j < a2End; j++) {
+          final int ep2 = arm2Nbrs[j];
+          if (arm2Filter != null && !arm2Filter.contains(bucketIds[ep2])) continue;
+          pairCounts.increment(CSRCountUtils.packPair(ep1, ep2));
+        }
+      }
     }
   }
 
@@ -353,9 +374,9 @@ public final class PairHashJoinOp implements CountOp {
    * Uses pre-fetched NeighborViews for arm2 hops to avoid per-node getNeighborIds calls.
    * For Q2: arm1=HAS_CREATOR OUT (Comment→Person), arm2=REPLY_OF+HAS_CREATOR (Comment→Post→Person).
    */
-  private void buildWithArm1View(final NeighborView arm1View, final GraphTraversalProvider provider,
-      final IntHashSet[] arm2Buckets, final LongLongHashMap pairCounts,
-      final int nodeCount, final WorkGuard guard) {
+  private void buildWithArm1View(final NeighborView arm1View, final IntHashSet arm1Filter,
+      final GraphTraversalProvider provider, final IntHashSet[] arm2Buckets, final LongLongHashMap pairCounts,
+      final int nodeCount, final int[] bucketIds, final WorkGuard guard) {
     final int[] arm1Nbrs = arm1View.neighbors();
 
     // Pre-fetch NeighborViews for arm2 hops
@@ -364,16 +385,6 @@ public final class PairHashJoinOp implements CountOp {
     for (int h = 0; h < arm2EdgeTypes.length; h++) {
       arm2Views[h] = provider.getNeighborView(arm2Directions[h], arm2EdgeTypes[h]);
       if (arm2Views[h] == null) { allArm2Views = false; break; }
-    }
-
-    // Pre-compute bucketIds for arm2 intermediate type filtering
-    int[] bucketIds = null;
-    if (arm2Buckets != null && allArm2Views) {
-      bucketIds = new int[nodeCount];
-      for (int v = 0; v < nodeCount; v++) {
-        guard.checkPeriodically(v);
-        bucketIds[v] = provider.getRID(v).getBucketId();
-      }
     }
 
     for (int startId = 0; startId < nodeCount; startId++) {
@@ -390,9 +401,12 @@ public final class PairHashJoinOp implements CountOp {
         ep2Ids = CSRCountUtils.walkArm(provider, startId, arm2EdgeTypes, arm2Directions, arm2Buckets);
       if (ep2Ids.length == 0) continue;
 
-      for (int i = a1Start; i < a1End; i++)
+      for (int i = a1Start; i < a1End; i++) {
+        final int ep1 = arm1Nbrs[i];
+        if (arm1Filter != null && !arm1Filter.contains(bucketIds[ep1])) continue;
         for (final int ep2 : ep2Ids)
-          pairCounts.increment(CSRCountUtils.packPair(arm1Nbrs[i], ep2));
+          pairCounts.increment(CSRCountUtils.packPair(ep1, ep2));
+      }
     }
   }
 

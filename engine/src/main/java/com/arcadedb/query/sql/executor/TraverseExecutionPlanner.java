@@ -42,6 +42,7 @@ public class TraverseExecutionPlanner {
   private final PInteger                     maxDepth;
   private final Skip                         skip;
   private final Limit                        limit;
+  private final Timeout                      timeout;
 
   public TraverseExecutionPlanner(final TraverseStatement statement) {
     //copying the content, so that it can be manipulated and optimized
@@ -58,6 +59,7 @@ public class TraverseExecutionPlanner {
 
     this.skip = statement.getSkip();
     this.limit = statement.getLimit();
+    this.timeout = statement.getTimeout() == null ? null : statement.getTimeout().copy();
   }
 
   public InternalExecutionPlan createExecutionPlan(final CommandContext context) {
@@ -73,6 +75,13 @@ public class TraverseExecutionPlanner {
     if (limit != null) {
       result.chain(new LimitExecutionStep(limit, context));
     }
+
+    // Chained last so it wraps everything the statement does. TRAVERSE accepted no TIMEOUT clause until issue
+    // #6304 - the grammar had one for SELECT and UPDATE only - so bounding one expensive traversal meant
+    // changing arcadedb.command.timeout database-wide.
+    final TimeoutStep timeoutStep = StatementTimeouts.stepFor(timeout, context);
+    if (timeoutStep != null)
+      result.chain(timeoutStep);
 
     return result;
   }

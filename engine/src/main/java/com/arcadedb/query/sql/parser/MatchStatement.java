@@ -365,6 +365,8 @@ public class MatchStatement extends Statement {
       builder.append(" ");
       limit.toString(params, builder);
     }
+    if (timeout != null)
+      timeout.toString(params, builder);
   }
 
   @Override
@@ -387,6 +389,7 @@ public class MatchStatement extends Statement {
     result.unwind = unwind == null ? null : unwind.copy();
     result.skip = skip == null ? null : skip.copy();
     result.limit = limit == null ? null : limit.copy();
+    result.timeout = timeout == null ? null : timeout.copy();
     result.returnDistinct = this.returnDistinct;
     result.buildPatterns();
     return result;
@@ -421,6 +424,8 @@ public class MatchStatement extends Statement {
       return false;
     if (!Objects.equals(limit, that.limit))
       return false;
+    if (!Objects.equals(timeout, that.timeout))
+      return false;
 
     return returnDistinct == that.returnDistinct;
   }
@@ -437,6 +442,7 @@ public class MatchStatement extends Statement {
     result = 31 * result + (unwind != null ? unwind.hashCode() : 0);
     result = 31 * result + (skip != null ? skip.hashCode() : 0);
     result = 31 * result + (limit != null ? limit.hashCode() : 0);
+    result = 31 * result + (timeout != null ? timeout.hashCode() : 0);
     return result;
   }
 

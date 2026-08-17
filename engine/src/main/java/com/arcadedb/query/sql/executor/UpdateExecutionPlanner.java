@@ -142,9 +142,9 @@ public class UpdateExecutionPlanner {
   }
 
   private void handleTimeout(final UpdateExecutionPlan result, final CommandContext context, final Timeout timeout) {
-    if (timeout != null && timeout.getVal().longValue() > 0)
-      result.chain(new TimeoutStep(timeout, context));
-
+    final TimeoutStep step = StatementTimeouts.stepFor(timeout, context);
+    if (step != null)
+      result.chain(step);
   }
 
   private void handleReturnBefore(final UpdateExecutionPlan result, final CommandContext context, final boolean returnBefore) {

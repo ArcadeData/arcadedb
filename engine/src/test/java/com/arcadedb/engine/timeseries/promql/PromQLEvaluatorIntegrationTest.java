@@ -371,7 +371,7 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
   void promQLSqlFunctionAbortsOnCatastrophicPattern() {
     // End-to-end coverage for the promql() SQL function path specifically (as opposed to calling
     // PromQLEvaluator.evaluateInstant directly, as unparenthesizedCatastrophicPatternIsAbortedByRegexTimeout
-    // above does) - proves the context.getOrComputeRegexDeadline() -> evaluator.setRegexDeadline() wiring in
+    // above does) - proves the context.getRegexDeadline() -> evaluator.setRegexDeadline() wiring in
     // SQLFunctionPromQL actually bounds a catastrophic =~ label matcher reached through SELECT promql(...).
     database.getConfiguration().setValue(GlobalConfiguration.COMMAND_REGEX_TIMEOUT, 200L);
 
