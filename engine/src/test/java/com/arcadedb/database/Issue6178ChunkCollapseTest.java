@@ -20,7 +20,6 @@ package com.arcadedb.database;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.ConcurrentModificationException;
-import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
@@ -196,18 +195,15 @@ class Issue6178ChunkCollapseTest extends BucketPageLayoutTestSupport {
   }
 
   /**
-   * The one chunk head that must NOT be collapsed: the CONTENT record of a placeholder, which
-   * {@code createRecordInternal} spills into a chain of its own whenever no page can host it whole. Such a record is
-   * identified by the NEGATIVE size marker a plain collapse would replace with a positive one - and a positive size
-   * marker is exactly what tells {@code scan()} that a slot holds a document of its own, so collapsing it would make
-   * the placeholder's content appear a second time, as a record in its own right.
-   * <p>
-   * Since #6196 the head chunk of such a record carries {@code FIRST_CHUNK_PLACEHOLDER_CONTENT}, so the chain shape is
-   * no longer ambiguous; what is still missing is a collapse that writes the negated size marker back (#6286), which
-   * is why the guard stays.
+   * The other head chunk, and the last transition between the two shapes that was missing (#6286): the CONTENT record
+   * of a placeholder, which {@code createRecordInternal} spills into a chain of its own whenever no page can host it
+   * whole. It used to keep that chain however far it shrank, because the collapse could only write a plain POSITIVE
+   * size marker and a positive marker is exactly what tells {@code scan()} that a slot holds a document of its own.
+   * Writing the NEGATED size the shape is recognised by is all that was needed: the chain goes, and the content stays
+   * reachable through its pointer and through nothing else.
    */
   @Test
-  void aPlaceholderContentStoredAsAChainIsNeverCollapsed() {
+  void aPlaceholderContentShrinkingBackIntoItsRegionBecomesAContentRecord() {
     final RID[] placeholder = new RID[1];
 
     database.transaction(() -> {
@@ -239,51 +235,41 @@ class Issue6178ChunkCollapseTest extends BucketPageLayoutTestSupport {
     final long copiesBefore = countRecordsHolding("Surrogate", huge);
     assertThat(copiesBefore).as("a chunked placeholder content is scanned once, through its pointer").isEqualTo(1L);
 
-    // Back to a handful of bytes: the content record's own chain shrinks, and stays a chain.
+    final long chunksBefore = (Long) layout.get("totalChunks");
+    assertThat(chunksBefore).as("the content chain must really have continuation chunks: " + layout).isPositive();
+
+    // Back to a handful of bytes: the content record's own chain collapses into the negated-size shape.
     database.transaction(() -> placeholder[0].asDocument(true).modify().set("v", "p").save());
 
     layout = bucketStats("Surrogate");
     assertThat((Long) layout.get("totalPlaceholderRecords")).as("the pointer must still be a pointer: " + layout)
         .isEqualTo(1L);
+    assertThat((Long) layout.get("totalSurrogateRecords"))
+        .as("its content is still a surrogate, now a plain one: " + layout).isEqualTo(1L);
+    assertThat((Long) layout.get("totalMultiPageRecords"))
+        .as("and the only multi-page record left is the one that sealed page 0: " + layout).isEqualTo(1L);
+    assertThat((Long) layout.get("totalChunks")).as("the content record's own chain must be gone: " + layout)
+        .isLessThan(chunksBefore);
     assertThat(countRecords("Surrogate")).as("and the collapse must not have added a record of its own")
         .isEqualTo(recordsBefore);
-    // What the guard is worth: collapsing would have given the content record a plain POSITIVE size marker, which is
-    // precisely what makes a slot a document in its own right - the duplication #6196 removed, reintroduced on the one
-    // record shape that reaches this branch with the marker that hides it out of reach.
+    // What the negated marker is worth: a plain POSITIVE size marker is precisely what makes a slot a document in its
+    // own right - the duplication #6196 removed, which a collapse writing the wrong sign would reintroduce on the one
+    // record shape that reaches this branch behind a pointer.
     assertThat(countRecordsHolding("Surrogate", "p")).as("the collapse must not multiply the placeholder's content")
         .isEqualTo(copiesBefore);
 
     database.transaction(() -> assertThat(placeholder[0].asDocument(true).getString("v")).isEqualTo("p"));
+
+    // And it survives the round trip: grown back past its page it becomes a chain again, and shrunk again it collapses
+    // again, all through the same pointer.
+    database.transaction(() -> placeholder[0].asDocument(true).modify().set("v", huge).save());
+    database.transaction(() -> assertThat(placeholder[0].asDocument(true).getString("v")).isEqualTo(huge));
+    database.transaction(() -> placeholder[0].asDocument(true).modify().set("v", "p").save());
+    database.transaction(() -> assertThat(placeholder[0].asDocument(true).getString("v")).isEqualTo("p"));
+    assertThat(countRecordsHolding("Surrogate", "p")).as("still exactly one copy after the round trip")
+        .isEqualTo(copiesBefore);
+
     checkDatabase();
-  }
-
-  /**
-   * Records a full SCAN returns - the count that would change if a content record became visible on its own.
-   * {@code count(@rid)} and not {@code count(*)}: the latter answers from the bucket's cached counter without
-   * scanning a page, so it could not see the difference this test is about.
-   */
-  private long countRecords(final String typeName) {
-    final long[] total = new long[1];
-    database.transaction(() -> {
-      try (final ResultSet rs = database.query("SQL", "select count(@rid) as c from " + typeName)) {
-        total[0] = ((Number) rs.next().getProperty("c")).longValue();
-      }
-    });
-    return total[0];
-  }
-
-  /**
-   * Records a scan returns holding exactly {@code value} - the sharper form of the count above, and the one that
-   * would notice the placeholder's content being handed out a second time under a RID of its own.
-   */
-  private long countRecordsHolding(final String typeName, final String value) {
-    final long[] total = new long[1];
-    database.transaction(() -> {
-      try (final ResultSet rs = database.query("SQL", "select count(@rid) as c from " + typeName + " where v = ?", value)) {
-        total[0] = ((Number) rs.next().getProperty("c")).longValue();
-      }
-    });
-    return total[0];
   }
 
   /**
