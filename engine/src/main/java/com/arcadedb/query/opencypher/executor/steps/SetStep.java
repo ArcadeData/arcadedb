@@ -22,8 +22,6 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.TimeoutException;
-import com.arcadedb.graph.Edge;
-import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.SetClause;
@@ -31,6 +29,7 @@ import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
+import com.arcadedb.query.opencypher.executor.LabelReplacements;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.QueryStatistics;
@@ -77,10 +76,10 @@ public class SetStep extends AbstractExecutionStep {
       // clears the dirty flag but not the map), so subsequent rows can read through the
       // stored instance without reloading from storage.
       private final Map<RID, MutableDocument> writtenDocs = new HashMap<>();
-      // Tracks old-RID → new-Vertex replacements made by SET n:Label so that when the
-      // same node appears on a later row (row fanout), the operation is redirected to
-      // the already-replaced vertex and the idempotency check returns early.
-      private final Map<RID, Vertex> labelReplacements = new HashMap<>();
+      // Tracks the vertices SET n:Label replaced so that when the same node appears on a later row
+      // (row fanout), the operation is redirected to the already-replaced vertex and the idempotency
+      // check returns early.
+      private final LabelReplacements labelReplacements = new LabelReplacements();
 
       @Override
       public boolean hasNext() {
@@ -130,28 +129,14 @@ public class SetStep extends AbstractExecutionStep {
   }
 
   private void applySetOperations(final Result result, final Map<RID, MutableDocument> writtenDocs,
-      final Map<RID, Vertex> labelReplacements) {
+      final LabelReplacements labelReplacements) {
     if (setClause == null || setClause.isEmpty())
       return;
 
     // Pre-resolve any vertex aliases that were replaced by a label change on a prior row so
     // that property-SET operations (which go through resolveLatestDoc) observe the live vertex
-    // rather than the deleted original. Chain-traverse to the head in case a vertex was
-    // replaced more than once.
-    if (!labelReplacements.isEmpty()) {
-      for (final String propName : result.getPropertyNames()) {
-        final Object propValue = result.getProperty(propName);
-        if (propValue instanceof Vertex v) {
-          Vertex replacement = labelReplacements.get(v.getIdentity());
-          if (replacement != null) {
-            Vertex next;
-            while ((next = labelReplacements.get(replacement.getIdentity())) != null)
-              replacement = next;
-            ((ResultInternal) result).setProperty(propName, replacement);
-          }
-        }
-      }
-    }
+    // rather than the deleted original.
+    labelReplacements.redirect(result);
 
     final boolean wasInTransaction = context.getDatabase().isTransactionActive();
 
@@ -455,7 +440,7 @@ public class SetStep extends AbstractExecutionStep {
   }
 
   private void applyLabels(final SetClause.SetItem item, final Result result,
-      final Map<RID, MutableDocument> writtenDocs, final Map<RID, Vertex> labelReplacements) {
+      final Map<RID, MutableDocument> writtenDocs, final LabelReplacements labelReplacements) {
     final Object obj = result.getProperty(item.getVariable());
     // #5795: reject a label write targeting a node deleted earlier in the same query instead of
     // silently no-op'ing.
@@ -463,17 +448,18 @@ public class SetStep extends AbstractExecutionStep {
     if (!(obj instanceof Vertex vertex))
       return;
 
-    // If this vertex was already replaced on a prior row (row fanout hitting the same node),
-    // redirect to the replacement so the idempotency check below can use the current type.
-    final RID originalRid = vertex.getIdentity();
-    Vertex prior = labelReplacements.get(originalRid);
-    if (prior != null) {
-      Vertex next;
-      while ((next = labelReplacements.get(prior.getIdentity())) != null)
-        prior = next;
+    // If this vertex was already replaced on a prior row (row fanout hitting the same node), redirect to the
+    // replacement so the idempotency check below reads the current type. The per-row redirect() at the top of
+    // applySetOperations reaches this alias too, so today this only re-confirms it; it stays because it makes the
+    // method correct on its own terms - the write target is resolved here, not assumed to have been resolved by
+    // the caller - and it costs one map lookup that is skipped entirely until a label write actually happens.
+    final Vertex prior = labelReplacements.resolve(vertex);
+    if (prior != vertex) {
       propagateUpdateToSameNodeAliases(result, vertex, prior);
       vertex = prior;
     }
+    // The RID the write is about to displace: the live one, not the one the row happened to carry.
+    final RID originalRid = vertex.getIdentity();
 
     // Get existing labels and add new ones
     final List<String> existingLabels = Labels.getLabels(vertex);
@@ -493,24 +479,13 @@ public class SetStep extends AbstractExecutionStep {
     if (vertex.getTypeName().equals(newTypeName))
       return;
 
-    // Create new vertex with the composite type, copy all properties
-    final MutableVertex newVertex = context.getDatabase().newVertex(newTypeName);
-    for (final String prop : vertex.getPropertyNames())
-      newVertex.set(prop, vertex.get(prop));
-    newVertex.save();
+    // Rewrite the vertex under the composite type: the record moves, and the replacement is recorded so
+    // this row and every later one follow it.
+    labelReplacements.replace(vertex, newTypeName);
     if (newLabelsCount > 0)
       context.getStatistics().addLabelsAdded(newLabelsCount);
 
-    // Copy edges from old vertex to new vertex
-    for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.OUT))
-      newVertex.newEdge(edge.getTypeName(), edge.getVertex(Vertex.DIRECTION.IN));
-    for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.IN))
-      edge.getVertex(Vertex.DIRECTION.OUT).newEdge(edge.getTypeName(), newVertex);
-
-    // Delete old vertex and record the replacement for subsequent rows
-    vertex.delete();
-    propagateUpdateToSameNodeAliases(result, vertex, newVertex);
-    labelReplacements.put(originalRid, newVertex);
+    labelReplacements.redirect(result);
     // Invalidate any property-SET state for the old RID so subsequent rows don't read
     // stale MutableDocument entries. Combined SET n.prop+n:Label across fanout still has
     // ordering-dependent behaviour, but this prevents outright stale reads.
