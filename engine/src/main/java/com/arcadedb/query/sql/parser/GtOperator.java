@@ -21,7 +21,6 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.Identifiable;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 
@@ -47,12 +46,15 @@ public class GtOperator extends SimpleNode implements BinaryCompareOperator {
 
     if (right == null)
       return false;
-    if (left instanceof Identifiable && !(right instanceof Identifiable))
-      return false;
 
     if (!(left instanceof Comparable))
       return false;
 
+    // No Identifiable-vs-non-Identifiable short circuit here (issue #6188): a RID's own compareTo() already
+    // knows how to compare against its string spelling (e.g. a bound parameter holding "#1:2" instead of a
+    // real RID), and BinaryComparator.compareTo() falls through to that Comparable#compareTo(). Rejecting the
+    // pair up front - as this operator alone among Lt/Ge/Le used to - silently turned "@rid > :p" into "always
+    // false" whenever the parameter carried a RID's string form rather than a RID/Identifiable instance.
     return BinaryComparator.compareTo(left, right) > 0;
   }
 
