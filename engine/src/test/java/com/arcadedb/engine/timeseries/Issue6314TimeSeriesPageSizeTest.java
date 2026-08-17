@@ -52,6 +52,25 @@ class Issue6314TimeSeriesPageSizeTest extends TestHelper {
   private static final int REOPEN_PAGE_SIZE = 16_384;
   private static final int ROWS             = 3_000;
 
+  private int savedPageSize;
+
+  /**
+   * Save and restore around every test, the way the other page-size-sensitive tests do (e.g.
+   * {@code EdgeAppendMergeMultiPageChunkTest}). {@code TestHelper.afterTest()} resets the whole configuration
+   * regardless of outcome, so this is not what stops the setting leaking into the next class - it is what stops the
+   * restore from depending on a test body reaching its last line, and {@code endTest()} runs BEFORE the integrity
+   * check and the drop, so those see the default stride rather than whatever arm the test left behind.
+   */
+  @Override
+  protected void beginTest() {
+    savedPageSize = GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getValueAsInteger();
+  }
+
+  @Override
+  protected void endTest() {
+    GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.setValue(savedPageSize);
+  }
+
   private TimeSeriesEngine createType(final String typeName) {
     database.command("sql", "CREATE TIMESERIES TYPE " + typeName
         + " TIMESTAMP ts TAGS (hostname STRING) FIELDS (usage DOUBLE) SHARDS 1");
@@ -112,8 +131,6 @@ class Issue6314TimeSeriesPageSizeTest extends TestHelper {
     // Appending after the reopen keeps writing at the file's own stride.
     appendRows(reopened, 500);
     assertThat(reopened.query(Long.MIN_VALUE, Long.MAX_VALUE, null, null)).hasSize(ROWS + 500);
-
-    GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.reset();
   }
 
   /**
