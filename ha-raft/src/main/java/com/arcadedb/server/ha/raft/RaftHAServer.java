@@ -1790,6 +1790,17 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final RaftPeerId leaderId = getLeaderId();
     if (leaderId == null)
       return null;
+    return routingTableFor(protocol, leaderId);
+  }
+
+  /**
+   * The body of {@link #getRoutingTable}, given the leader rather than reading it from Ratis. Split out so the
+   * warn wiring below can be driven by a test without a live division - {@code getLeaderId()} answers null until
+   * one exists, which is before this method is reached, so the half of the contract that a CLEAN pass carries
+   * (clearing the verdict memory) would otherwise have nothing exercising it. Package-private for testing.
+   */
+  HAServerPlugin.RoutingTable routingTableFor(final HAServerPlugin.ROUTING_PROTOCOL protocol,
+      final RaftPeerId leaderId) {
     // Read once and passed down: the "was this declared or derived?" flag below and the address the resolver
     // returns must come from the same map, or a future second source could make them disagree about a peer.
     final Map<RaftPeerId, String> declared = declaredRoutingAddresses(protocol);
@@ -1830,8 +1841,13 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     }
 
     final HAServerPlugin.RoutingTable table = selectUnambiguousRouting(protocol, addresses, fromConfig, resolved);
-    if (table == null || table.readers().size() < resolved - 1)
-      warnAmbiguousRouting(protocol, addresses, fromConfig, owners, resolved);
+    // Unconditional, and that is the whole point: the verdict memory is only cleared by a pass that reaches it
+    // with nothing to say, so guarding this call on "is it ambiguous now?" left the memory holding the last
+    // collision forever. The operator would then fix that collision, hit it again later, and be told nothing -
+    // the exact case issue #6297 exists to fix. A clean view renders to the empty verdict, which is what clears
+    // the memory; it costs the two small maps describeAmbiguity builds before it can know that, on a path that
+    // runs per ROUTE request and per refusal, never per row.
+    warnAmbiguousRouting(protocol, addresses, fromConfig, owners, resolved);
     return table;
   }
 
@@ -1981,8 +1997,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       endpoints.put(owners[i], new PeerHttpEndpoint(addresses[i],
           !identifiesOnePeer(claims.get(addresses[i]), fromConfig[i])));
 
-    // No-op unless something is actually ambiguous, and then it names every collision this pass found - which
-    // is more than a per-peer caller can see, since that one asks about one address at a time.
+    // Logs nothing unless something is ambiguous, and then names every collision this pass found. Handed the
+    // clean views too: that is what resets the memory, so the same collision reappearing later is reported again.
     warnAmbiguousPeerAddress(false, addresses, fromConfig, owners, resolved, claims);
 
     return endpoints;
@@ -2024,10 +2040,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     }
 
     final Map<String, int[]> claims = claimsByAddress(addresses, fromConfig, resolved);
+    // Before the verdict on the peer asked about, not after it, and for the same reason getRoutingTable calls it
+    // unconditionally: a pass that finds nothing is the only thing that clears the memory, so returning early
+    // here left it holding a stale collision that silently swallowed the same one when it came back. It also
+    // matches what the warning already claims to be - a report of every collision the pass found, not of the one
+    // address the caller happened to ask about - so a healthy peer in an unhealthy cluster now says so.
+    warnAmbiguousPeerAddress(https, addresses, fromConfig, owners, resolved, claims);
+
     if (identifiesOnePeer(claims.get(address), fromConfig[0]))
       return address;
-
-    warnAmbiguousPeerAddress(https, addresses, fromConfig, owners, resolved, claims);
     return null;
   }
 
@@ -2055,8 +2076,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * would send the operator to declare two ports and leave the other pair withheld. That is also what makes the
    * verdict the right memory key - it is the whole picture, so any change to it is a change the operator has not
    * been told about yet.
+   * <p>
+   * Both callers hand over every resolved view, ambiguous or not, because a clean pass is the only thing that
+   * clears the memory. Package-private for testing.
    */
-  private void warnAmbiguousPeerAddress(final boolean https, final String[] addresses, final boolean[] fromConfig,
+  void warnAmbiguousPeerAddress(final boolean https, final String[] addresses, final boolean[] fromConfig,
       final RaftPeerId[] owners, final int count, final Map<String, int[]> claims) {
     final String collisions = describeAmbiguity(addresses, fromConfig, owners, count, claims);
     if (!isNewAmbiguityVerdict(https ? httpsAmbiguityReported : httpAmbiguityReported, collisions))
@@ -2076,8 +2100,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   /**
    * Tells the operator which peers shared a routing address and what to write to fix it, on the same
    * report-when-the-verdict-changes contract as its peer-to-peer twin above (issue #6297).
+   * <p>
+   * Called on <em>every</em> resolved view, ambiguous or not, because a clean pass is the only thing that clears
+   * the memory. Package-private for testing.
    */
-  private void warnAmbiguousRouting(final HAServerPlugin.ROUTING_PROTOCOL protocol, final String[] addresses,
+  void warnAmbiguousRouting(final HAServerPlugin.ROUTING_PROTOCOL protocol, final String[] addresses,
       final boolean[] fromConfig, final RaftPeerId[] owners, final int count) {
     final String collisions = describeAmbiguity(addresses, fromConfig, owners, count,
         claimsByAddress(addresses, fromConfig, count));

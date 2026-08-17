@@ -18,12 +18,19 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.HAServerPlugin;
+
 import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * Issue #6297: the ambiguity warnings must speak again when the verdict changes.
@@ -130,5 +137,101 @@ class Issue6297AmbiguityRearmTest {
 
     assertThat(RaftHAServer.describeAmbiguity(addresses, fromConfig, owners, 3,
         RaftHAServer.claimsByAddress(addresses, fromConfig, 3))).isEmpty();
+  }
+
+  /**
+   * The wiring, not the decision function: the memory is only cleared by a pass that reaches it with nothing to
+   * say, so a caller that consults the warning ONLY when the current view is already ambiguous can never clear it.
+   * The verdict then stays behind forever and the same collision, reintroduced after the operator fixes it, is
+   * swallowed as "already reported" - which is the case issue #6297 exists to fix, defeated by its own caller.
+   * Both warnings are therefore handed every resolved view, and these two tests are what says so.
+   */
+  @Test
+  void theRoutingCallerHandsOverACleanPassToo() {
+    final CapturingTestLogger log = CapturingTestLogger.install();
+    try {
+      // Declared, distinct gRPC ports: the routing view this server resolves is unambiguous.
+      final RaftHAServer raft = newDetachedServer(
+          "localhost:{raft:2434,grpc:5434},localhost:{raft:2435,grpc:5435},localhost:{raft:2436,grpc:5436}");
+
+      raft.warnAmbiguousRouting(GRPC, COLLIDING, DERIVED, THREE_PEERS, 3);
+      assertThat(log.countFormattedContaining(AMBIGUOUS_ROUTING)).as("a collision is reported").isEqualTo(1);
+      raft.warnAmbiguousRouting(GRPC, COLLIDING, DERIVED, THREE_PEERS, 3);
+      assertThat(log.countFormattedContaining(AMBIGUOUS_ROUTING)).as("unchanged, so nothing new").isEqualTo(1);
+
+      // The real caller, on a healthy cluster. Nothing is logged - and that is not what is under test: what is
+      // under test is that it REACHED the warning at all, which is the only thing that clears the memory.
+      assertThat(raft.routingTableFor(GRPC, RaftPeerId.valueOf("localhost_2434"))).isNotNull();
+      assertThat(log.countFormattedContaining(AMBIGUOUS_ROUTING)).as("a clean pass says nothing").isEqualTo(1);
+
+      raft.warnAmbiguousRouting(GRPC, COLLIDING, DERIVED, THREE_PEERS, 3);
+      assertThat(log.countFormattedContaining(AMBIGUOUS_ROUTING))
+          .as("the clean pass cleared the memory, so the collision coming back is news again")
+          .isEqualTo(2);
+    } finally {
+      log.uninstall();
+    }
+  }
+
+  /**
+   * The same for the peer-to-peer endpoint, driven through the public accessor. Over HTTPS on purpose:
+   * {@code getPeerHttpEndpoints} hands over every HTTP view already, so the HTTP memory was being cleared by
+   * accident of that one caller - the HTTPS memory is reached only through the per-peer accessor, which returned
+   * before the warning whenever the peer it was asked about was fine, and so had nothing clearing it at all.
+   */
+  @Test
+  void thePeerAddressCallerHandsOverACleanPassToo() {
+    final CapturingTestLogger log = CapturingTestLogger.install();
+    try {
+      // host:raftPort:httpPort:priority:httpsPort - distinct HTTPS ports, so the HTTPS view is unambiguous.
+      final RaftHAServer raft = newDetachedServer(
+          "localhost:2434:2480:0:2490,localhost:2435:2481:0:2491,localhost:2436:2482:0:2492");
+
+      warnHttps(raft, COLLIDING);
+      assertThat(log.countFormattedContaining(AMBIGUOUS_HTTPS)).isEqualTo(1);
+      warnHttps(raft, COLLIDING);
+      assertThat(log.countFormattedContaining(AMBIGUOUS_HTTPS)).as("unchanged, so nothing new").isEqualTo(1);
+
+      assertThat(raft.getUnambiguousPeerHttpsAddress(RaftPeerId.valueOf("localhost_2435")))
+          .isEqualTo("localhost:2491");
+      assertThat(log.countFormattedContaining(AMBIGUOUS_HTTPS)).as("a clean pass says nothing").isEqualTo(1);
+
+      warnHttps(raft, COLLIDING);
+      assertThat(log.countFormattedContaining(AMBIGUOUS_HTTPS))
+          .as("the clean pass cleared the memory, so the collision coming back is news again")
+          .isEqualTo(2);
+    } finally {
+      log.uninstall();
+    }
+  }
+
+  private static void warnHttps(final RaftHAServer raft, final String[] addresses) {
+    raft.warnAmbiguousPeerAddress(true, addresses, DERIVED, THREE_PEERS, 3,
+        RaftHAServer.claimsByAddress(addresses, DERIVED, 3));
+  }
+
+  private static final HAServerPlugin.ROUTING_PROTOCOL GRPC = HAServerPlugin.ROUTING_PROTOCOL.GRPC;
+
+  /** Peers B and C share an address; A owns its own. */
+  private static final String[]     COLLIDING   = { "host:2480", "host:2490", "host:2490" };
+  private static final boolean[]    DERIVED     = new boolean[3];
+  private static final RaftPeerId[] THREE_PEERS = { PEER_A, PEER_B, PEER_C };
+
+  private static final String AMBIGUOUS_ROUTING = "HA GRPC routing is ambiguous";
+  private static final String AMBIGUOUS_HTTPS   = "HA HTTPS peer endpoints are ambiguous";
+
+  /**
+   * A {@link RaftHAServer} built from {@code serverList} with Ratis never started: the peer group and the declared
+   * addresses are both populated by the constructor, which is all these paths read. The node names itself with the
+   * {@code prefix_N} convention, so it is the FIRST entry of the list.
+   */
+  private static RaftHAServer newDetachedServer(final String serverList) {
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.HA_SERVER_LIST, serverList);
+
+    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
+    when(mockServer.getServerName()).thenReturn("ArcadeDB_0");
+
+    return new RaftHAServer(mockServer, config);
   }
 }
