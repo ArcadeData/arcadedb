@@ -2280,4 +2280,11 @@ A pre-#6149 bucket dense with placeholders therefore pays one extra fetch each, 
 anyway, on an operation that already reads every page of the bucket and walks the full chunk chain of every
 multi-page record.
 
+One reporting detail to expect on an unrepaired database: only the TOTALS `CHECK DATABASE` returns are
+reconciled, because a content record can sit on a page the walk has already left behind and reconciling as it
+went would make the answer depend on the order the allocator happened to place the pages in. The per-page
+tallies printed by a verbose run are not, so for such a record a page's own `multiPageRecords` count disagrees
+with the top-level `totalSurrogateRecords` it was moved to. That is deliberate: a physical-layout log describes
+the page as the walk found it. Both agree again once the FIX has run.
+
 [#6196](https://github.com/ArcadeData/arcadedb/issues/6196)

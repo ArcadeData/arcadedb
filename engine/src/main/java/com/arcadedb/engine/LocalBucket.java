@@ -1309,6 +1309,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * walks the FULL continuation chain of every multi-page record. A pre-#6149 bucket dense with placeholders pays one
    * more fetch each, of pages the walk itself touches anyway, on an operation that is already O(pages + chunks).
    * <p>
+   * It is paid on every run, including on a database that has already been repaired and on one this build created -
+   * and the obvious saving, a persisted "no legacy shape here" flag set by a successful FIX, is deliberately not taken.
+   * Such a flag would have to stay true through every way old bytes can arrive in a repaired database - a restore from
+   * an older backup, an HA follower resynced from an older leader's snapshot, a file opened by an older binary and
+   * handed back - and a flag that is wrong makes {@code check} skip the one question that finds the shape, which is
+   * the failure this whole marker exists to end. A bounded, honest cost on an admin operation beats a cheap answer
+   * that can be stale (code review on #6287).
+   * <p>
    * Never throws: a pointer that cannot be followed is a different problem, reported by the link pass of CHECK
    * DATABASE rather than mistaken for this one.
    *
