@@ -1503,10 +1503,11 @@ public class PageManagerFlushThread extends Thread {
       final MutablePage indexed = pageIndex.remove(pageId);
       final List<MutablePage> detached = new ArrayList<>(1);
 
-      // Iterated directly rather than through a snapshot: ArrayBlockingQueue's iterator is weakly consistent and
+      // Iterated directly rather than through a snapshot: LinkedBlockingQueue's iterator is weakly consistent and
       // never throws ConcurrentModificationException, and this runs per replayed page, so the copy would be pure
-      // overhead. The walk is bounded by the flush queue depth (arcadedb.pageFlushQueue) plus the deferred backlog,
-      // which is itself capped by arcadedb.flushSuspendMaxDeferredRAM.
+      // overhead. The walk is bounded by the pipeline depth - since #6281 that is arcadedb.pageFlushQueue times the
+      // number of OPEN DATABASES, the queue itself no longer carrying a capacity - plus the deferred backlog, which
+      // is itself capped by arcadedb.flushSuspendMaxDeferredRAM.
       for (final PagesToFlush batch : queue)
         removePagesOfPageIdFromBatch(batch, pageId, detached);
 
