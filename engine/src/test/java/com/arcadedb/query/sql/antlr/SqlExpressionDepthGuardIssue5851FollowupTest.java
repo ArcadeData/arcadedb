@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.antlr;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.parser.Statement;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -54,16 +55,15 @@ class SqlExpressionDepthGuardIssue5851FollowupTest {
     final SQLAntlrParser parser = new SQLAntlrParser(null);
     final String sql = "SELECT FROM V WHERE " + "(".repeat(6000) + "1=1" + ")".repeat(6000);
 
-    final long start = System.currentTimeMillis();
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     assertThatThrownBy(() -> parser.parse(sql))
         .isInstanceOf(CommandSQLParsingException.class)
         .hasMessageContaining("nest")
         .hasMessageContaining("arcadedb.sql.maxExpressionDepth");
-    final long elapsed = System.currentTimeMillis() - start;
 
     // Rejected on the O(n) token-stream pre-scan, well before any ANTLR prediction work: previously this
     // exact input burned well over two minutes of CPU before being forcibly interrupted.
-    assertThat(elapsed).as("expected a fast rejection").isLessThan(5000);
+    stopwatch.assertGaveUpWithin(5000, "an O(n) token-stream rejection from the two minutes of ANTLR prediction it replaced");
   }
 
   @Test

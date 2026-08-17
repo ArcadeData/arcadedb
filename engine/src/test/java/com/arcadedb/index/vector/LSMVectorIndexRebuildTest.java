@@ -28,6 +28,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LSMVectorIndexMetadata;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.Pair;
+import com.arcadedb.utility.StallAwareStopwatch;
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Tag;
@@ -440,13 +441,12 @@ class LSMVectorIndexRebuildTest extends TestHelper {
     assertThat(stats.get("mutationsSinceRebuild")).isGreaterThanOrEqualTo((long) lowThreshold);
 
     // Search should return immediately (async rebuild starts in background)
-    final long startTime = System.nanoTime();
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     results = lsmIndex.findNeighborsFromVector(queryVector, 10);
-    final long elapsedMs = (System.nanoTime() - startTime) / 1_000_000;
     assertThat(results).isNotEmpty();
 
     // Search should have returned very fast (not blocked by rebuild)
-    assertThat(elapsedMs).as("Search should not block on async rebuild").isLessThan(5000);
+    stopwatch.assertStayedUnder(5000, "a search served from the graph it already has, not one that waits for the rebuild");
 
     // Wait for the async rebuild to complete. Polled rather than slept: the rebuild runs on a background thread, so
     // any fixed wait is a bet on how loaded the machine is (issue #5765).

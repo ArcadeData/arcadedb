@@ -20,6 +20,7 @@ package com.arcadedb.engine;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CountDownLatch;
@@ -294,6 +295,7 @@ class Issue6199DrainWakeupTest extends TestHelper {
     flush.pageIndex.put(page);
 
     final long begin = System.currentTimeMillis();
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     assertThat(flush.waitPendingPagesOfDatabaseUntil(db, begin + 200)).as("a page that never lands expires the deadline")
         .isFalse();
     // A TRIPWIRE, NOT A LATENCY ASSERTION, and its bound says so. What it can catch is a wait that came back only
@@ -301,8 +303,10 @@ class Issue6199DrainWakeupTest extends TestHelper {
     // expires, because this runs in the shared engine-suite JVM after ~12000 other tests, where a stop-the-world
     // pause of tens of seconds is not exotic - a 15 s bound here failed on exactly that, at 24 s, with the code
     // behaving correctly. The deadline being honoured is asserted above, by the return value.
-    assertThat(System.currentTimeMillis() - begin).as("the wait must be bounded by the deadline rather than unbounded")
-        .isLessThan(TimeUnit.MINUTES.toMillis(1));
+    //
+    // #6260: the stopwatch discounts that pause, so the tripwire no longer has to be widened out to a minute to
+    // survive it. 5 s is still far above the honest ~200 ms and far below the forever an unbounded wait takes.
+    stopwatch.assertGaveUpWithin(5_000L, "a wait bounded by its 200ms deadline from one that never ends on its own");
 
     assertThat(flush.waitPendingPagesOfDatabaseUntil(db, System.currentTimeMillis())).as(
         "an expired deadline must return at once instead of parking").isFalse();

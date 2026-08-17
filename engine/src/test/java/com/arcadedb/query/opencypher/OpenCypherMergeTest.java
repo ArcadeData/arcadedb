@@ -28,6 +28,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
@@ -1345,7 +1346,7 @@ class OpenCypherMergeTest {
       });
 
       // Run a batch of MERGEs scoped to parentA; each must NOT touch parentB's edges.
-      final long start = System.nanoTime();
+      final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
       db.transaction(() -> {
         for (int i = 0; i < 30; i++) {
           db.command("opencypher",
@@ -1353,7 +1354,6 @@ class OpenCypherMergeTest {
                   + "MERGE (n:CHUNK {name:'A_unique_" + i + "'})-[:in]->(a)");
         }
       });
-      final long elapsedMs = (System.nanoTime() - start) / 1_000_000L;
 
       final ResultSet underA = db.query("opencypher",
           "MATCH (n:CHUNK)-[:in]->(:DOCUMENT {name:'parentA'}) RETURN count(n) AS cnt");
@@ -1365,9 +1365,7 @@ class OpenCypherMergeTest {
       // the anchor's 0..N incoming edges per MERGE and finishes in well under
       // 1 s.  The 2 s threshold is loose enough to absorb GC pauses yet tight
       // enough to catch a regression to the buggy O(edges-of-type) path.
-      assertThat(elapsedMs)
-          .as("MERGE with bound anchor should not scale with noise edge count (elapsed: " + elapsedMs + "ms)")
-          .isLessThan(2000L);
+      stopwatch.assertStayedUnder(2000L, "the anchor's own incoming edges, not the 200k noise edges of the same type");
     }
 
     // Issue #4226: Sanity check - the "match by bound first" pattern (a)-[:in]->(n) with anchor on the source continues to work after the fix.

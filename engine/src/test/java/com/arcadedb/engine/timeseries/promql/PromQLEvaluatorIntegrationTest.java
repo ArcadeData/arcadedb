@@ -26,6 +26,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.TimeSeriesTypeBuilder;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.StallAwareStopwatch;
 
 import org.junit.jupiter.api.Test;
 
@@ -222,13 +223,12 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
     final String wildcardPattern = "a*".repeat(20) + "c";
     final PromQLExpr expr = new PromQLParser(typeName + "{host=~\"" + wildcardPattern + "\"}").parse();
 
-    final long begin = System.currentTimeMillis();
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     assertThatThrownBy(() -> evaluator.evaluateInstant(expr, 6000L)).isInstanceOf(TimeoutException.class);
-    final long elapsedMillis = System.currentTimeMillis() - begin;
 
     // Generous upper bound: proves the scan was aborted near the configured deadline rather than merely
     // being slow (the unbounded match takes tens of seconds).
-    assertThat(elapsedMillis).isLessThan(5000);
+    stopwatch.assertGaveUpWithin(5000, "the configured 200ms deadline from an unbounded match");
   }
 
   @Test
@@ -257,14 +257,13 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
     // TimeBoundRegex, so the reproducer here has to be the sequential-a*-without-nesting shape instead.
     final PromQLExpr expr = new PromQLParser(typeName + "{host=~\"" + "a*".repeat(20) + "c\"}").parse();
 
-    final long begin = System.currentTimeMillis();
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     // startMs=1000, endMs=10000, stepMs=1000 -> 10 steps, every one of which sees the ts=0 data point.
     assertThatThrownBy(() -> evaluator.evaluateRange(expr, 1000L, 10_000L, 1000L)).isInstanceOf(TimeoutException.class);
-    final long elapsedMillis = System.currentTimeMillis() - begin;
 
     // 10 independent 200ms-per-step budgets would take >= 2000ms; a shared deadline keeps the whole range
     // query close to the single configured 200ms bound instead.
-    assertThat(elapsedMillis).isLessThan(1000);
+    stopwatch.assertStayedUnder(1000, "one deadline shared by the whole range query, not one 200ms budget per step");
   }
 
   @Test
@@ -385,14 +384,13 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
     final String wildcardPattern = "a*".repeat(20) + "c";
     final String promqlExpr = typeName + "{host=~\"" + wildcardPattern + "\"}";
 
-    final long begin = System.currentTimeMillis();
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     assertThatThrownBy(() -> database.command("sql", "RETURN promql('" + promqlExpr + "', 6000)").close())
         .isInstanceOf(TimeoutException.class);
-    final long elapsedMillis = System.currentTimeMillis() - begin;
 
     // Generous upper bound: proves the call was aborted near the configured deadline rather than merely being
     // slow (the unbounded match takes tens of seconds).
-    assertThat(elapsedMillis).isLessThan(5000);
+    stopwatch.assertGaveUpWithin(5000, "the configured 200ms deadline from an unbounded match");
   }
 
   @Test

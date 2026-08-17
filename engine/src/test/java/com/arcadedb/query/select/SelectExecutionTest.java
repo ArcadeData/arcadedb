@@ -26,6 +26,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.StallAwareStopwatch;
 
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -388,13 +389,12 @@ public class SelectExecutionTest extends TestHelper {
     final SelectCompiled select = database.select().fromType("LikePathological")//
         .where().property("name").like().value("%a".repeat(20) + "c").compile();
 
-    final long begin = System.currentTimeMillis();
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     Assertions.assertThatThrownBy(() -> select.vertices().toList()).isInstanceOf(TimeoutException.class);
-    final long elapsedMillis = System.currentTimeMillis() - begin;
 
     // Generous upper bound: proves the query was aborted near the configured deadline rather than merely
     // being slow (the unbounded match takes tens of seconds).
-    assertThat(elapsedMillis).isLessThan(5000);
+    stopwatch.assertGaveUpWithin(5000, "the configured 200ms deadline from an unbounded match");
   }
 
   @Test

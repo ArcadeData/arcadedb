@@ -28,6 +28,7 @@ import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -390,11 +391,10 @@ class Issue6216AlgoWorkKnobBoundsTest {
     // unguarded run has to grind through 200 million x 128 operations before it can notice the deadline.
     database.getConfiguration().setValue(GlobalConfiguration.COMMAND_TIMEOUT, 1L);
 
-    final long start = System.currentTimeMillis();
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     assertThatThrownBy(() -> drain("CALL algo.node2vec({embeddingDimension: 128, walkLength: 2, walksPerNode: 1, "
         + "windowSize: 1, negSamples: 200000000, iterations: 1, seed: 17}) YIELD node RETURN node"))
         .hasStackTraceContaining(GlobalConfiguration.COMMAND_TIMEOUT.getKey());
-    final long elapsed = System.currentTimeMillis() - start;
 
     // The bound comes from measurement, not taste: the whole test method runs in 0.33 s with the checkpoint
     // in place and 24.0 s with it removed, so 5 s sits roughly 16x above the passing case and 5x below the
@@ -406,8 +406,7 @@ class Issue6216AlgoWorkKnobBoundsTest {
     // passing case reach 5 s (where the failing case would be at 360 s), or 5x faster to bring the failing
     // case under it. If it ever does flake, raise the bound rather than dropping the assertion - "it throws"
     // alone passes with the checkpoint removed, which is how the first version of this test was wrong.
-    assertThat(elapsed).as("the deadline must be observed inside the sampling loop, not after it")
-        .isLessThan(5_000L);
+    stopwatch.assertStayedUnder(5_000L, "the deadline observed inside the sampling loop, not after it");
   }
 
   @Test

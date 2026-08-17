@@ -21,6 +21,7 @@ package com.arcadedb.database;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -58,20 +59,29 @@ public class Issue5587TxRetryExponentialBackoffTest extends TestHelper {
     database.getConfiguration().setValue(GlobalConfiguration.TX_RETRY_DELAY_BASE, BASE_MS);
     try {
       final List<Long> failureTimestampsNanos = new ArrayList<>();
+      // #6260: a stop-the-world pause landing inside one gap would corrupt the comparison below in whichever
+      // direction it fell, so each gap is measured with the JVM's own stalls taken out of it.
+      final List<Long> failureStallNanos = new ArrayList<>();
       final AtomicInteger attempt = new AtomicInteger();
 
       database.transaction(() -> {
         if (attempt.incrementAndGet() < ATTEMPTS)
           throw new ConcurrentModificationException("forced retry");
-      }, false, ATTEMPTS, null, e -> failureTimestampsNanos.add(System.nanoTime()));
+      }, false, ATTEMPTS, null, e -> {
+        failureTimestampsNanos.add(System.nanoTime());
+        failureStallNanos.add(StallAwareStopwatch.jvmStallNanos());
+      });
 
       assertThat(attempt.get()).isEqualTo(ATTEMPTS);
       // one error callback per failed attempt, i.e. every attempt but the last
       assertThat(failureTimestampsNanos).hasSize(ATTEMPTS - 1);
 
       final List<Long> gapsMs = new ArrayList<>();
-      for (int i = 1; i < failureTimestampsNanos.size(); i++)
-        gapsMs.add((failureTimestampsNanos.get(i) - failureTimestampsNanos.get(i - 1)) / 1_000_000);
+      for (int i = 1; i < failureTimestampsNanos.size(); i++) {
+        final long spanNanos = failureTimestampsNanos.get(i) - failureTimestampsNanos.get(i - 1);
+        final long stalledNanos = failureStallNanos.get(i) - failureStallNanos.get(i - 1);
+        gapsMs.add(Math.max(0L, spanNanos - stalledNanos) / 1_000_000);
+      }
 
       final int half = gapsMs.size() / 2;
       final long earlyGapsSumMs = gapsMs.subList(0, half).stream().mapToLong(Long::longValue).sum();
@@ -95,16 +105,15 @@ public class Issue5587TxRetryExponentialBackoffTest extends TestHelper {
     database.getConfiguration().setValue(GlobalConfiguration.TX_RETRY_DELAY, 0);
     try {
       final AtomicInteger attempt = new AtomicInteger();
-      final long start = System.nanoTime();
+      final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
 
       database.transaction(() -> {
         if (attempt.incrementAndGet() < ATTEMPTS)
           throw new ConcurrentModificationException("forced retry");
       }, false, ATTEMPTS);
 
-      final long elapsedMs = (System.nanoTime() - start) / 1_000_000;
       assertThat(attempt.get()).isEqualTo(ATTEMPTS);
-      assertThat(elapsedMs).isLessThan(1_000);
+      stopwatch.assertStayedUnder(1_000, "10 retries with the delay disabled, not 10 retries that each sleep");
     } finally {
       database.getConfiguration().setValue(GlobalConfiguration.TX_RETRY_DELAY, savedCap);
     }

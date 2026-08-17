@@ -53,14 +53,13 @@ class TimeBoundRegexTest {
     final Pattern pathological = Pattern.compile("(.*a){20}$");
     final String input = "a".repeat(40) + "!";
 
-    final long begin = System.nanoTime();
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     assertThatThrownBy(() -> TimeBoundRegex.matches(pathological, input, 200))
         .isInstanceOf(TimeoutException.class);
-    final long elapsedMillis = (System.nanoTime() - begin) / 1_000_000L;
 
     // Generous upper bound: proves the match was aborted near the requested deadline rather than
     // merely being slow (the unbounded match takes tens of seconds).
-    assertThat(elapsedMillis).isLessThan(5000);
+    stopwatch.assertGaveUpWithin(5000, "the requested 200ms deadline from an unbounded match");
   }
 
   @Test
@@ -80,12 +79,11 @@ class TimeBoundRegexTest {
     final Pattern pathological = Pattern.compile("(.*a){20}$");
     final String input = "a".repeat(40) + "!";
 
-    final long begin = System.nanoTime();
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     assertThatThrownBy(() -> TimeBoundRegex.replaceAll(pathological, input, "x", 200))
         .isInstanceOf(TimeoutException.class);
-    final long elapsedMillis = (System.nanoTime() - begin) / 1_000_000L;
 
-    assertThat(elapsedMillis).isLessThan(5000);
+    stopwatch.assertGaveUpWithin(5000, "the requested 200ms deadline from an unbounded match");
   }
 
   @Test
@@ -98,18 +96,17 @@ class TimeBoundRegexTest {
     final long deadline = TimeBoundRegex.newDeadline(200);
 
     // First call consumes the whole 200ms budget and trips the deadline.
-    final long begin = System.nanoTime();
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     assertThatThrownBy(() -> TimeBoundRegex.replaceAllUntil(pathological, input, "x", deadline))
         .isInstanceOf(TimeoutException.class);
     // A second call against the same (now-expired) shared deadline must fail almost immediately, not run for
     // another full budget - proving the deadline is a shared, absolute point in time, not a per-call timeout.
     assertThatThrownBy(() -> TimeBoundRegex.replaceAllUntil(pathological, input, "x", deadline))
         .isInstanceOf(TimeoutException.class);
-    final long elapsedMillis = (System.nanoTime() - begin) / 1_000_000L;
 
     // Two independent 200ms budgets would take >= 400ms; a shared deadline keeps both calls close to the
     // single 200ms bound instead.
-    assertThat(elapsedMillis).isLessThan(1000);
+    stopwatch.assertStayedUnder(1000, "one 200ms deadline shared by both calls, not one each");
   }
 
   @Test

@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
@@ -374,7 +375,7 @@ class OpenCypherOptionalMatchTest {
         }
       });
 
-      long startTime = System.currentTimeMillis();
+      final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
       long startMemory = Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory();
 
       database.transaction(() -> {
@@ -412,7 +413,6 @@ class OpenCypherOptionalMatchTest {
         assertThat(rs.hasNext()).isFalse();
       });
 
-      long duration = System.currentTimeMillis() - startTime;
       long endMemory = Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory();
       long memoryUsed = endMemory - startMemory;
 
@@ -420,9 +420,7 @@ class OpenCypherOptionalMatchTest {
       //System.out.println("Memory used: " + (memoryUsed / 1024 / 1024) + "MB");
 
       // The query should complete in reasonable time and memory
-      assertThat(duration)
-          .as("Query should not take excessive time due to Cartesian product")
-          .isLessThan(5000); // 5 seconds max
+      stopwatch.assertStayedUnder(5000, "an aggregation over the matched rows, not over their Cartesian product");
     }
 
     /**

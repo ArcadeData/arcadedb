@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.method.string;
 
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.executor.SQLMethod;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -70,11 +71,10 @@ class SQLMethodNormalizeTest {
     // catastrophic match takes.
     final String pathologicalInput = "a".repeat(40) + "!";
 
-    final long begin = System.currentTimeMillis();
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     assertThatThrownBy(() -> method.execute(pathologicalInput, null, null, new Object[] { "NFC", "(.*a){20}$" }))
         .isInstanceOf(TimeoutException.class);
-    final long elapsedMillis = System.currentTimeMillis() - begin;
 
-    assertThat(elapsedMillis).isLessThan(5000);
+    stopwatch.assertGaveUpWithin(5000, "the configured 200ms deadline from an unbounded match");
   }
 }

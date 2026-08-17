@@ -30,6 +30,7 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
@@ -322,7 +323,7 @@ class ParameterTest {
           .as("the optimization must yield primitive float[] for the vector field")
           .isInstanceOf(float[].class);
 
-      final long start = System.currentTimeMillis();
+      final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
       database.transaction(() -> database.command("opencypher",
           """
           UNWIND $batch AS BatchEntry \
@@ -330,7 +331,6 @@ class ParameterTest {
           CREATE (p:CHUNK_EMBEDDING {vector: BatchEntry.vector}) \
           CREATE (p)-[:embb]->(b)""",
           params));
-      final long elapsed = System.currentTimeMillis() - start;
 
       database.transaction(() -> {
         try (final ResultSet rs = database.query("sql", "SELECT count(*) AS cnt FROM CHUNK_EMBEDDING")) {
@@ -352,9 +352,8 @@ class ParameterTest {
         }
       });
 
-      assertThat(elapsed)
-          .as("HTTP-path Cypher batch (%d entries x dim %d) took %d ms", batchSize, vectorDim, elapsed)
-          .isLessThan(maxElapsedMs);
+      stopwatch.assertStayedUnder(maxElapsedMs,
+          "a primitive float[] batch of " + batchSize + " entries x dim " + vectorDim + ", not a boxed List<Double> one");
     } finally {
       database.drop();
       FileUtils.deleteRecursively(new File(databasePath));

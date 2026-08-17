@@ -25,6 +25,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.PageSnapshotException;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.utility.StallAwareStopwatch;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -337,18 +338,18 @@ class Issue6125SnapshotBarrierAndCapTest extends TestHelper {
     // POLLS A REAL BATCH, AND THIS DATABASE IS QUIET, SO THE FABRICATED VALUE STANDS
     flushThread.nextPagesToFlush.set(new PageManagerFlushThread.PagesToFlush(new ArrayList<>(List.of(page))));
     try {
-      final long begin = System.currentTimeMillis();
+      final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
       assertThatThrownBy(() -> pageManager.openSnapshot(db))
           .as("the barrier must abandon the window rather than wait out a flush that never lands")
           .isInstanceOf(PageSnapshotException.class);
-      final long elapsed = System.currentTimeMillis() - begin;
 
-      // BOTH ENDS MATTER. The upper bound is the property under test - generous enough for a loaded CI runner, far
-      // below the forever the unbounded wait would have taken. The lower one keeps the test honest: it proves the
-      // barrier really did block on the fabricated batch and time out, rather than failing instantly for some
-      // unrelated reason that would make the ceiling assertion pass vacuously
-      assertThat(elapsed).as("the barrier must block on the in-flight batch and then give up within its budget")
-          .isBetween(1_000L, 60_000L);
+      // BOTH ENDS MATTER. The upper bound is the property under test - far below the forever the unbounded wait
+      // would have taken, and discounted for JVM stalls (#6260) rather than widened. The lower one keeps the test
+      // honest: it proves the barrier really did block on the fabricated batch and time out, rather than failing
+      // instantly for some unrelated reason that would make the ceiling assertion pass vacuously. It reads raw
+      // wall clock on purpose - a stall only makes "at least this long" more true
+      assertThat(stopwatch.elapsedMs()).as("the barrier must block on the in-flight batch").isGreaterThanOrEqualTo(1_000L);
+      stopwatch.assertGaveUpWithin(60_000L, "the barrier's own budget from waiting out a flush that never lands");
 
       // AND IT MUST HAVE LET GO: A FAILED BARRIER THAT KEPT THE GLOBAL LOCK WOULD BE WORSE THAN THE HANG IT REPLACES
       final AtomicBoolean acquired = new AtomicBoolean();

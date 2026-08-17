@@ -21,6 +21,7 @@ package com.arcadedb.database.async;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -91,9 +92,9 @@ class AsyncShutdownEscalationTest extends TestHelper {
       // Let worker 0 enter the helping loop before shutting down.
       Thread.sleep(300);
 
-      final long start = System.currentTimeMillis();
+      final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
       async.close();
-      assertThat(System.currentTimeMillis() - start).as("close() must stay bounded").isLessThan(15_000);
+      stopwatch.assertGaveUpWithin(15_000, "a bounded close() from one that waits out the interrupt-swallowing wedge");
 
       // The escalation must not leave worker 0 behind: without it, worker 0 kept looping in
       // offerHelping (forceShutdown set but unchecked until the hand-off resolves, and the wedged

@@ -58,6 +58,19 @@ General design principles:
   - The tags are a partition, not a set of overlapping labels: CI selects each lane with `-Dgroups`/`-DexcludedGroups` such that every test runs in exactly one lane. Tagging a class `vector` and one of its methods `slow` is fine, but do not expect that method in the slow lane
   - Required imports: `import org.junit.jupiter.api.Tag;`
   - A JUnit tag on a Cucumber `@Suite` does not work: Surefire's `groups`/`excludedGroups` reach the scenarios inside the suite rather than the suite class. Route a suite to a lane with `-Dsurefire.includes` instead, as `.github/workflows/mvn-test.yml` does for the openCypher TCK
+- Never assert on raw wall-clock elapsed time. A full-suite run shares one JVM, and a stop-the-world pause of tens of
+  seconds late in a 12,000-test run turns any bound with less headroom than that into a coin flip on the JVM's mood
+  (#6260). Measure with `com.arcadedb.utility.StallAwareStopwatch` (engine test-jar) instead: it discounts the JVM-wide
+  stall observed inside the measured window, so the bound can stay tight AND stop flaking. Pick the assertion that says
+  what the number is for, because the message is what stops the next person from "fixing" a red run by loosening it:
+  - `assertGaveUpWithin(bound, whatItSeparates)` when the bound is a tripwire between a bounded operation and an
+    unbounded one. Generous is free here: a wider bound cannot turn a passing run red
+  - `assertStayedUnder(bound, claim)` when the bound IS the assertion - a complexity claim with no other practical
+    expression (a regex that must not backtrack exponentially, one deadline shared across rows rather than charged per
+    row). Loosening it deletes the test
+  - a short wait expected to TIME OUT needs neither, and neither does a lower bound (`isGreaterThan`): a stall only
+    makes those more true
+  - `@Timeout` is plain wall clock and cannot be discounted, so size it as a hang detector, not as a latency bound
 - don't add Claude as author of any source code
 
 ## Build and Development Commands

@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -184,17 +185,16 @@ class MatchesConditionTest extends TestHelper {
       database.command("sql", "INSERT INTO Pathological SET name = '" + "a".repeat(40) + "!'");
     });
 
-    final long begin = System.currentTimeMillis();
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     assertThatThrownBy(() -> {
       final ResultSet rs = database.query("sql", "SELECT FROM Pathological WHERE name MATCHES '(.*a){20}$'");
       while (rs.hasNext())
         rs.next();
     }).isInstanceOf(TimeoutException.class);
-    final long elapsedMillis = System.currentTimeMillis() - begin;
 
     // Generous upper bound: proves the query was aborted near the configured deadline rather than
     // merely being slow (the unbounded match takes tens of seconds).
-    assertThat(elapsedMillis).isLessThan(5000);
+    stopwatch.assertGaveUpWithin(5000, "the configured 200ms deadline from an unbounded match");
   }
 
   @Test
@@ -217,17 +217,16 @@ class MatchesConditionTest extends TestHelper {
       database.command("sql", "INSERT INTO MultiPathological SET tags = " + list);
     });
 
-    final long begin = System.currentTimeMillis();
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     assertThatThrownBy(() -> {
       final ResultSet rs = database.query("sql", "SELECT FROM MultiPathological WHERE tags MATCHES '(.*a){20}$'");
       while (rs.hasNext())
         rs.next();
     }).isInstanceOf(TimeoutException.class);
-    final long elapsedMillis = System.currentTimeMillis() - begin;
 
     // 10 independent 200ms-per-item budgets would take >= 2000ms; a shared deadline keeps the whole evaluation
     // close to the single configured 200ms bound instead. 1000ms leaves generous CI-runner slack on both sides.
-    assertThat(elapsedMillis).isLessThan(1000);
+    stopwatch.assertStayedUnder(1000, "one 200ms budget shared by the whole evaluation, not one per row");
   }
 
   @Test
@@ -246,16 +245,15 @@ class MatchesConditionTest extends TestHelper {
         database.command("sql", "INSERT INTO PerRowPathological SET name = '" + pathological + "'");
     });
 
-    final long begin = System.currentTimeMillis();
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     assertThatThrownBy(() -> {
       final ResultSet rs = database.query("sql", "SELECT FROM PerRowPathological WHERE name MATCHES '(.*a){20}$'");
       while (rs.hasNext())
         rs.next();
     }).isInstanceOf(TimeoutException.class);
-    final long elapsedMillis = System.currentTimeMillis() - begin;
 
     // 10 independent 200ms-per-row budgets would take >= 2000ms; a query-wide shared deadline keeps the whole
     // scan close to the single configured 200ms bound instead.
-    assertThat(elapsedMillis).isLessThan(1000);
+    stopwatch.assertStayedUnder(1000, "one 200ms budget shared by the whole evaluation, not one per row");
   }
 }

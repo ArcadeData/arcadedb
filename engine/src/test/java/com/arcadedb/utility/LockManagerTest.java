@@ -264,11 +264,10 @@ class LockManagerTest {
     lockManager.tryLock(resource, "holder", 5000);
 
     final long timeoutMs = 300L;
-    final long start = System.currentTimeMillis();
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     final LockManager.LOCK_STATUS status = lockManager.tryLock(resource, "waiter", timeoutMs);
-    final long elapsed = System.currentTimeMillis() - start;
 
     assertThat(status).isEqualTo(LockManager.LOCK_STATUS.NO);
-    assertThat(elapsed).isLessThan(timeoutMs + 250);
+    stopwatch.assertStayedUnder(timeoutMs + 250, "one 300ms wait, not the 600ms a double-wait would produce");
   }
 }

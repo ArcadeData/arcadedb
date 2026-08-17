@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.utility.StallAwareStopwatch;
 import com.arcadedb.utility.TimeBoundRegex;
 import org.junit.jupiter.api.Test;
 
@@ -57,11 +58,10 @@ class QueryHelperLikeRegexTimeoutTest extends TestHelper {
   void likeAbortsCatastrophicBacktrackingWithinTheDeadline() {
     final String input = "a".repeat(41); // all 'a's: never matches the pattern's literal 'c' tail
 
-    final long begin = System.nanoTime();
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     assertThatThrownBy(() -> QueryHelper.like(input, PATHOLOGICAL_LIKE_PATTERN, 200)).isInstanceOf(TimeoutException.class);
-    final long elapsedMillis = (System.nanoTime() - begin) / 1_000_000L;
 
-    assertThat(elapsedMillis).isLessThan(5000);
+    stopwatch.assertGaveUpWithin(5000, "the configured 200ms deadline from an unbounded LIKE match");
   }
 
   @Test
@@ -73,15 +73,14 @@ class QueryHelperLikeRegexTimeoutTest extends TestHelper {
       database.command("sql", "INSERT INTO LikePathological SET name = '" + "a".repeat(41) + "'");
     });
 
-    final long begin = System.currentTimeMillis();
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     assertThatThrownBy(() -> {
       final ResultSet rs = database.query("sql", "SELECT FROM LikePathological WHERE name LIKE '" + PATHOLOGICAL_LIKE_PATTERN + "'");
       while (rs.hasNext())
         rs.next();
     }).isInstanceOf(TimeoutException.class);
-    final long elapsedMillis = System.currentTimeMillis() - begin;
 
-    assertThat(elapsedMillis).isLessThan(5000);
+    stopwatch.assertGaveUpWithin(5000, "the configured 200ms deadline from an unbounded LIKE match");
   }
 
   @Test
@@ -93,15 +92,14 @@ class QueryHelperLikeRegexTimeoutTest extends TestHelper {
       database.command("sql", "INSERT INTO ILikePathological SET name = '" + "A".repeat(41) + "'");
     });
 
-    final long begin = System.currentTimeMillis();
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     assertThatThrownBy(() -> {
       final ResultSet rs = database.query("sql", "SELECT FROM ILikePathological WHERE name ILIKE '" + PATHOLOGICAL_LIKE_PATTERN + "'");
       while (rs.hasNext())
         rs.next();
     }).isInstanceOf(TimeoutException.class);
-    final long elapsedMillis = System.currentTimeMillis() - begin;
 
-    assertThat(elapsedMillis).isLessThan(5000);
+    stopwatch.assertGaveUpWithin(5000, "the configured 200ms deadline from an unbounded LIKE match");
   }
 
   @Test
@@ -124,16 +122,15 @@ class QueryHelperLikeRegexTimeoutTest extends TestHelper {
       database.command("sql", "INSERT INTO MultiLikePathological SET tags = " + list);
     });
 
-    final long begin = System.currentTimeMillis();
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     assertThatThrownBy(() -> {
       final ResultSet rs = database.query("sql", "SELECT FROM MultiLikePathological WHERE tags LIKE '" + PATHOLOGICAL_LIKE_PATTERN + "'");
       while (rs.hasNext())
         rs.next();
     }).isInstanceOf(TimeoutException.class);
-    final long elapsedMillis = System.currentTimeMillis() - begin;
 
     // 10 independent 200ms-per-item budgets would take >= 2000ms; a shared deadline keeps the whole evaluation
     // close to the single configured 200ms bound instead. 1000ms leaves generous CI-runner slack on both sides.
-    assertThat(elapsedMillis).isLessThan(1000);
+    stopwatch.assertStayedUnder(1000, "one 200ms budget shared by the whole evaluation, not one per item");
   }
 }

@@ -31,6 +31,7 @@ import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
 
 import java.text.SimpleDateFormat;
@@ -732,13 +733,12 @@ class DocumentValidationTest extends TestHelper {
     final MutableDocument d = database.newDocument(clazz.getName());
     d.set("string", "a".repeat(40) + "!");
 
-    final long begin = System.currentTimeMillis();
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     assertThatThrownBy(d::validate).isInstanceOf(TimeoutException.class);
-    final long elapsedMillis = System.currentTimeMillis() - begin;
 
     // Generous upper bound: proves validation was aborted near the configured deadline rather than merely
     // being slow (the unbounded match takes tens of seconds).
-    assertThat(elapsedMillis).isLessThan(5000);
+    stopwatch.assertGaveUpWithin(5000, "the configured 200ms deadline from an unbounded match");
   }
 
   @Test
@@ -760,13 +760,12 @@ class DocumentValidationTest extends TestHelper {
     for (int i = 0; i < 10; i++)
       d.set("field" + i, pathological);
 
-    final long begin = System.currentTimeMillis();
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     assertThatThrownBy(d::validate).isInstanceOf(TimeoutException.class);
-    final long elapsedMillis = System.currentTimeMillis() - begin;
 
     // 10 independent 200ms-per-property budgets would take >= 2000ms; a shared deadline keeps the whole
     // document validation close to the single configured 200ms bound instead.
-    assertThat(elapsedMillis).isLessThan(1000);
+    stopwatch.assertStayedUnder(1000, "one 200ms budget shared by the whole document, not one per property");
   }
 
   @Test

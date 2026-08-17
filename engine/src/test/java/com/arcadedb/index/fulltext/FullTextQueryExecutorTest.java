@@ -24,6 +24,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -539,13 +540,12 @@ class FullTextQueryExecutorTest extends TestHelper {
       final LSMTreeFullTextIndex ftIndex = (LSMTreeFullTextIndex) index.getIndexesOnBuckets()[0];
       final FullTextQueryExecutor executor = new FullTextQueryExecutor(ftIndex);
 
-      final long begin = System.currentTimeMillis();
+      final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
       assertThatThrownBy(() -> executor.search("/(.*a){20}$/", -1)).isInstanceOf(TimeoutException.class);
-      final long elapsedMillis = System.currentTimeMillis() - begin;
 
       // Generous upper bound: proves the scan was aborted near the configured deadline rather than merely
       // being slow (the unbounded match takes tens of seconds).
-      assertThat(elapsedMillis).isLessThan(5000);
+      stopwatch.assertGaveUpWithin(5000, "the configured 200ms deadline from an unbounded scan");
     });
   }
 
@@ -576,11 +576,10 @@ class FullTextQueryExecutorTest extends TestHelper {
 
       final String wildcardPattern = "a" + "*a".repeat(19) + "*b";
 
-      final long begin = System.currentTimeMillis();
+      final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
       assertThatThrownBy(() -> executor.search(wildcardPattern, -1)).isInstanceOf(TimeoutException.class);
-      final long elapsedMillis = System.currentTimeMillis() - begin;
 
-      assertThat(elapsedMillis).isLessThan(5000);
+      stopwatch.assertGaveUpWithin(5000, "the configured 200ms deadline from an unbounded scan");
     });
   }
 }
