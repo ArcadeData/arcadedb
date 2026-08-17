@@ -25,6 +25,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -92,6 +93,8 @@ public class IndexSeekStep extends AbstractExecutionStep {
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     final boolean hasInput = prev != null;
+    // See MatchNodeStep: the command deadline is tested inside the seek loop, not between two batches.
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
 
     return new ResultSet() {
       private ResultSet prevResults = null;
@@ -134,6 +137,7 @@ public class IndexSeekStep extends AbstractExecutionStep {
           }
 
           while (buffer.size() < n) {
+            guard.check();
             // If we've exhausted index results for current input, get next input
             if (operatorResults == null || !operatorResults.hasNext()) {
               if (!prevResults.hasNext()) {
@@ -191,6 +195,7 @@ public class IndexSeekStep extends AbstractExecutionStep {
 
           // Fetch up to n results
           while (buffer.size() < n && operatorResults.hasNext()) {
+            guard.check();
             final long begin = context.isProfiling() ? System.nanoTime() : 0;
             try {
               if (context.isProfiling())

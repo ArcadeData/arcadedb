@@ -22,6 +22,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -59,6 +60,9 @@ public class NodeHashJoin extends AbstractPhysicalOperator {
 
   @Override
   public ResultSet execute(final CommandContext context, final int nRecords) {
+    // Bounds this operator's row loop by the command deadline - see WorkGuard for why between-batches is
+    // not enough (issue #6266).
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     return new ResultSet() {
       private Map<Object, List<Result>> hashTable = null;
       private ResultSet rightResults = null;
@@ -106,6 +110,7 @@ public class NodeHashJoin extends AbstractPhysicalOperator {
         }
 
         while (buffer.size() < n) {
+          guard.check();
           // If we've exhausted matches for current right row, get next right row
           if (matchingLeftResults == null || matchingIndex >= matchingLeftResults.size()) {
             if (!rightResults.hasNext()) {
@@ -150,6 +155,7 @@ public class NodeHashJoin extends AbstractPhysicalOperator {
 
         final ResultSet leftResults = leftChild.execute(context, -1);
         while (leftResults.hasNext()) {
+          guard.check();
           final Result leftResult = leftResults.next();
           final Object joinValue = leftResult.getProperty(joinVariable);
 

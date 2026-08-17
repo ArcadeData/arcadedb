@@ -371,6 +371,13 @@ public class PluginApiSpec implements OpenApiContributor {
     final Schema<Object> peer = SpecBuilders.object("One peer's replication health");
     peer.addProperty("id", SpecBuilders.string("Peer identifier"));
     peer.addProperty("address", SpecBuilders.string("Peer address"));
+    peer.addProperty("httpAddress", SpecBuilders.string(
+        "Peer HTTP endpoint as resolved by this node. Absent when it cannot be resolved."));
+    peer.addProperty("httpAddressAmbiguous", SpecBuilders.bool(
+        "True when the HTTP endpoint above does not identify this peer alone: two or more peers resolve to it, "
+            + "which is what happens when 'http' ports are not declared in arcadedb.ha.serverList and the nodes "
+            + "differ by port rather than by host. Peer-to-peer operations (snapshot resync, cluster verify) "
+            + "refuse to dial such a peer. Absent when the address is unambiguous."));
     peer.addProperty("role", SpecBuilders.string("LEADER or FOLLOWER"));
     peer.addProperty("matchIndex", SpecBuilders.integer(
         "Highest log entry known replicated. Absent for the leader's own entry and until a health sample exists."));

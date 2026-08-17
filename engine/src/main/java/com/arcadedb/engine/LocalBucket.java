@@ -28,6 +28,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.database.RecordEventsRegistry;
 import com.arcadedb.database.RecordInternal;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.exception.BrokenChunkChainException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.exception.DatabaseOperationException;
@@ -65,6 +66,7 @@ import static com.arcadedb.database.Binary.LONG_SERIALIZED_SIZE;
  * <li>-1 = placeholder pointer that points to another record in another page</li>
  * <li>-2 = first chunk of a multi page record</li>
  * <li>-3 = after first chunk of a multi page record</li>
+ * <li>-4 = first chunk of a placeholder content record that no page could host whole</li>
  * <li><-5 = placeholder content pointed from another record in another page</li>
  * </ul>
  * The record size is stored as a varint (variable integer size) + the length of the size itself.
@@ -87,6 +89,25 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   public static final    long                      RECORD_PLACEHOLDER_POINTER       = -1L;    // USE -1 AS SIZE TO STORE A PLACEHOLDER (THAT POINTS TO A RECORD ON ANOTHER PAGE)
   public static final    long                      FIRST_CHUNK                      = -2L;    // USE -2 TO MARK THE FIRST CHUNK OF A BIG RECORD. FOLLOWS THE CHUNK SIZE AND THE POINTER TO THE NEXT CHUNK
   public static final    long                      NEXT_CHUNK                       = -3L;    // USE -3 TO MARK THE SECOND AND FURTHER CHUNK THAT IS PART OF A BIG RECORD THAT DOES NOT FIT A PAGE. FOLLOWS THE CHUNK SIZE AND THE POINTER TO THE NEXT CHUNK OR 0 IF THE CURRENT CHUNK IS THE LAST (NO FURTHER CHUNKS)
+  /**
+   * The head chunk of a placeholder CONTENT record - same on-page layout as {@link #FIRST_CHUNK}, and reached through a
+   * {@link #RECORD_PLACEHOLDER_POINTER} on another page instead of standing for a record of its own (#6196).
+   * <p>
+   * A content record is otherwise recognised by the NEGATIVE size marker its slot carries, and every reader that walks
+   * a page skips it on that basis. A content record no page can host whole has no size in its slot at all - it is a
+   * chunk chain - so before this marker existed its head was written as a plain {@link #FIRST_CHUNK} and the "this slot
+   * is somebody's content" information was lost at that moment: {@code scan()} handed the bytes out a second time as a
+   * document of their own, {@code count()} counted them, and {@code check()} reported a multi-page record where there
+   * was a surrogate.
+   * <p>
+   * It costs nothing in the stored format: -4 was the one value the marker namespace still had free between
+   * {@link #NEXT_CHUNK} and {@link #RECORD_PLACEHOLDER_CONTENT}, and it is one zigzag byte exactly like the markers
+   * either side of it. Databases written before it still hold the ambiguous shape; {@link #check} reports one and
+   * repairs it in place with {@code fix}, so no reader has to tolerate the ambiguity for ever.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  public static final    long                      FIRST_CHUNK_PLACEHOLDER_CONTENT  = -4L;
   protected static final int                       PAGE_RECORD_COUNT_IN_PAGE_OFFSET = 0;
   protected static final int                       PAGE_RECORD_TABLE_OFFSET         =
           PAGE_RECORD_COUNT_IN_PAGE_OFFSET + Binary.SHORT_SERIALIZED_SIZE;
@@ -361,6 +382,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
 
     try {
+      // #6196: FIRST_CHUNK and not isChunkHead(), deliberately. A record EXISTS at this RID when the slot holds one of
+      // its own; the head chunk of a placeholder's CONTENT holds somebody else's bytes and answers false here exactly
+      // as the negated size marker of a content record that fitted its page always has.
       final long[] recordSize = readRecordSizeMarker(rid);
       return recordSize != null && (recordSize[0] > 0 || recordSize[0] == RECORD_PLACEHOLDER_POINTER
           || recordSize[0] == FIRST_CHUNK);
@@ -420,6 +444,30 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       return null;
 
     return page.readNumberAndSize(recordPositionInPage);
+  }
+
+  /**
+   * Whether the size marker of a slot says it holds the HEAD chunk of a multi-page record - a record of its own
+   * ({@link #FIRST_CHUNK}) or the CONTENT of a placeholder ({@link #FIRST_CHUNK_PLACEHOLDER_CONTENT}, #6196). The two
+   * carry the same header and the same chain behind it, so every reader that walks or rewrites the CHAIN asks this,
+   * and only the readers that decide whether the slot is a RECORD tell them apart.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private static boolean isChunkHead(final long recordSizeMarker) {
+    return recordSizeMarker == FIRST_CHUNK || recordSizeMarker == FIRST_CHUNK_PLACEHOLDER_CONTENT;
+  }
+
+  /**
+   * Whether the size marker of a slot says it holds the CONTENT of a placeholder, whichever of the two shapes it is
+   * stored in: a negated size when a page could host it whole, or the head of a chunk chain when none could (#6196).
+   * Such a slot is not a record - it is reachable only through the {@link #RECORD_PLACEHOLDER_POINTER} that references
+   * it - which is what every scan, count and existence check has to know about it.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private static boolean isPlaceholderContent(final long recordSizeMarker) {
+    return recordSizeMarker < RECORD_PLACEHOLDER_CONTENT || recordSizeMarker == FIRST_CHUNK_PLACEHOLDER_CONTENT;
   }
 
   @Override
@@ -513,7 +561,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                 if (view != null && !callback.onRecord(rid, view))
                   return;
               } else if (recordSize[0] == FIRST_CHUNK) {
-                // LOAD THE ENTIRE RECORD IN CHUNKS
+                // LOAD THE ENTIRE RECORD IN CHUNKS. #6196: FIRST_CHUNK and not isChunkHead() - a scan hands out
+                // records, and the head chunk of a placeholder's CONTENT is not one. Its bytes reach the caller
+                // through the pointer branch above, under the RID the user knows, and exactly once.
                 final Binary view = loadMultiPageRecord(rid, page, recordPositionInPage, recordSize);
                 if (!callback.onRecord(rid, view))
                   return;
@@ -609,7 +659,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         return placeholderContentFingerprint(
                 new RID(fileId, recordPage.readLong((int) (recordPositionInPage + recordSize[1]))));
 
-      if (recordSize[0] != FIRST_CHUNK || !withChunkChainTail)
+      if (!isChunkHead(recordSize[0]) || !withChunkChainTail)
         // An ordinary record: the whole of it is in its own slot, nothing left to cover.
         return NO_OFF_PAGE_FINGERPRINT;
 
@@ -661,8 +711,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       final int contentOffset;
       final int contentSize;
-      if (recordSize[0] == FIRST_CHUNK) {
+      if (isChunkHead(recordSize[0])) {
         // The content record outgrew its own page in turn: its head chunk here, the rest through the chain below.
+        // #6196 gave that head a marker of its own, and a database written before it holds the ambiguous FIRST_CHUNK:
+        // both are accepted, so a fingerprint taken before a CHECK DATABASE FIX still describes the same record after.
         final int chunkHeaderPos = (int) (recordPositionInPage + recordSize[1]);
         contentSize = contentPage.readInt(chunkHeaderPos);
         contentOffset = chunkHeaderPos + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE;
@@ -927,6 +979,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
             final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
 
+            // #6196: the same three shapes a scan hands out, and for the same reason - FIRST_CHUNK and not
+            // isChunkHead(), because the head chunk of a placeholder's CONTENT is counted through its pointer.
             if (recordSize[0] > 0 || recordSize[0] == RECORD_PLACEHOLDER_POINTER || recordSize[0] == FIRST_CHUNK)
               total++;
           }
@@ -981,6 +1035,22 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     final List<String> warnings = new ArrayList<>();
     final List<RID> deletedRecordsAfterFix = new ArrayList<>();
 
+    // #6196: positions of the CONTENT records a placeholder pointer references that are still stored as an AMBIGUOUS
+    // chunk head - the shape every release before FIRST_CHUNK_PLACEHOLDER_CONTENT wrote, and the one a scan hands out
+    // twice. Collected while the pointers are walked (one page read per placeholder, and placeholders are rare), then
+    // reconciled and repaired after the pass, which is what makes the answer independent of whether the content
+    // record happens to live on a page this walk has already been through.
+    final LongHashSet legacyContentHeads = new LongHashSet();
+    /**
+     * Of those, the ones MORE THAN ONE pointer leads to. The repair rests on the engine's own invariant - a placeholder
+     * pointer references the content record written for it and nothing else - and this is the one way that invariant
+     * can be caught failing without knowing what the bytes were meant to say: a content record belongs to exactly one
+     * pointer, so a second one leading to the same slot is proof that a pointer is corrupted, and no reading of it
+     * tells which. Refused rather than repaired, because the shape the repair would write is unrecoverable
+     * information: it says whose the record is (code review on #6287).
+     */
+    final LongHashSet ambiguousHeadsWithSeveralPointers = new LongHashSet();
+
     String warning = null;
 
     for (int pageId = 0; pageId < totalPages; ++pageId) {
@@ -1030,22 +1100,47 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
               } else if (recordSize[0] == RECORD_PLACEHOLDER_POINTER) {
                 pagePlaceholderRecords++;
                 totalPlaceholderRecords++;
+
+                // #6196: does this pointer lead to a content record still stored as an ambiguous chunk head? Only the
+                // pointer can tell, and only here: from the head chunk's own slot the two are indistinguishable, which
+                // is the whole of the bug. Never throws - a pointer that leads nowhere is a different problem, already
+                // reported by the CHECK DATABASE pass that follows the links.
+                final long contentPosition = page.readLong((int) (recordPositionInPage + recordSize[1]));
+                if (isLegacyAmbiguousContentHead(totalPages, contentPosition) && !legacyContentHeads.add(contentPosition))
+                  // A SECOND pointer to the same content record: one of them is corrupted, and this is the only way to
+                  // know it without knowing what the bytes meant. See the field's javadoc.
+                  ambiguousHeadsWithSeveralPointers.add(contentPosition);
+
                 recordSize[0] = MINIMUM_RECORD_SIZE;
-              } else if (recordSize[0] == FIRST_CHUNK) {
-                pageActiveRecords++;
-                pageMultiPageRecords++;
-                totalMultiPageRecords++;
+              } else if (isChunkHead(recordSize[0])) {
+                // #6196: a head chunk of either kind. Everything below is the same for the two - the chain, the walk
+                // that checks it, the size the header declares - and the ONE thing that is not is what the slot is:
+                // a record of its own, or the CONTENT of a placeholder, which is a surrogate exactly as a content
+                // record small enough to fit its page is, and is counted as one rather than as an active record.
+                final long headMarker = recordSize[0];
+                if (headMarker == FIRST_CHUNK_PLACEHOLDER_CONTENT) {
+                  pageSurrogateRecords++;
+                  totalSurrogateRecords++;
+                } else {
+                  pageActiveRecords++;
+                  pageMultiPageRecords++;
+                  totalMultiPageRecords++;
+                }
 
                 // Walk the continuation chain to detect a structurally broken multi-page record (a dangling or
                 // overwritten chunk pointer). check() otherwise validates only the first chunk's on-page size and
                 // would never notice a broken chain, leaving the record undeletable by every normal path because
                 // deleteRecordInternal throws the #4932 retry signal on it. On fix, force-delete it: the head slot is
                 // freed so the record finally disappears and any unreachable chunks are reclaimed later by compaction.
-                final String chainProblem = findBrokenChunkChain(rid, page, recordPositionInPage);
+                final String chainProblem = findBrokenChunkChain(rid, page, recordPositionInPage, false);
                 if (chainProblem != null) {
                   ++totalErrors;
-                  warning = "broken multi-page chunk chain for record %s: %s".formatted(rid, chainProblem);
+                  warning = "broken multi-page chunk chain for %srecord %s: %s".formatted(
+                          headMarker == FIRST_CHUNK_PLACEHOLDER_CONTENT ? "placeholder content " : "", rid, chainProblem);
                   if (fix) {
+                    // deletePlaceholderContent=true, so a content record is force-deleted here like any other head.
+                    // The pointer that referenced it is left behind and reads as a record that is simply not there,
+                    // which is the same outcome every other unrepairable record of this bucket gets.
                     deleteRecordInternal(rid, true, true, true);
                     deletedRecordsAfterFix.add(rid);
                     ++totalDeletedRecords;
@@ -1053,7 +1148,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                   }
                 }
 
-                if (recordSize[0] == FIRST_CHUNK)
+                if (recordSize[0] == headMarker)
                   recordSize[0] = page.readInt((int) (recordPositionInPage + recordSize[1]));
               } else if (recordSize[0] == NEXT_CHUNK) {
                 totalChunks++;
@@ -1123,6 +1218,65 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       }
     }
 
+    // #6196: every content record found behind a pointer while still wearing the ambiguous FIRST_CHUNK marker. The
+    // pass above counted each of them as a multi-page record of its own, which is precisely what they are NOT - so
+    // move them, and repair the marker so the next reader does not have to be told. Deliberately reconciled here and
+    // not inline: the head chunk can sit on a page the walk had already left behind, and a repair made mid-walk would
+    // then be counted one way or the other depending on nothing but the order the allocator happened to place them in.
+    // Only the RETURNED totals are corrected; the per-page tallies the verbose log prints have already gone out, and
+    // they describe the page as the walk found it, which is what a physical-layout log is for.
+    if (!legacyContentHeads.isEmpty()) {
+      for (final long contentPosition : legacyContentHeads.toArray()) {
+        final RID contentRID = new RID(fileId, contentPosition);
+
+        // ASK AGAIN, because the pass has run since the pointer was followed and may have taken the slot with it: the
+        // compound shape - a legacy content head whose chain is ALSO broken - is force-deleted by the broken-chain
+        // branch above, which already counted it and already reported it. Reconciling it here as well would book the
+        // same record twice, under a second error and a "could not be repaired" warning naming a record that is no
+        // longer there to repair. The re-ask is the general form of that guard rather than a membership test against
+        // deletedRecordsAfterFix: whatever removed or rewrote the slot, whoever reported it, it is no longer the
+        // ambiguous shape and is not this pass's to report. It costs one page fetch per head actually found in the
+        // legacy shape - a set that is empty on every database this build wrote (code review on #6287).
+        if (!isLegacyAmbiguousContentHead(totalPages, contentPosition))
+          continue;
+
+        if (ambiguousHeadsWithSeveralPointers.contains(contentPosition)) {
+          // Reported, never repaired: the counters are left saying multi-page record, which is what the slot itself
+          // still says, because with two pointers leading here nothing in the bucket knows which of them is the lie.
+          ++totalErrors;
+          warning = ("placeholder content record %s is stored as an ambiguous chunk chain (#6196) and is referenced by "
+                  + "more than one placeholder pointer: one of those pointers is corrupted, so the marker is left as it "
+                  + "is - repair the pointers first").formatted(contentRID);
+          warnings.add(warning);
+          if (verboseLevel > 0)
+            LogManager.instance().log(this, Level.SEVERE, "- " + warning);
+          warning = null;
+          continue;
+        }
+
+        --totalMultiPageRecords;
+        ++totalSurrogateRecords;
+        ++totalErrors;
+
+        // A repair, never a deletion: the record is intact, only the marker that says whose it is was never written.
+        // Reported as an error whether or not it is fixed, because unfixed it is one a user can see - the content is
+        // returned twice by a scan, under two different RIDs.
+        warning = "placeholder content record %s is stored as an ambiguous chunk chain (#6196) and is returned twice by a scan%s"
+                .formatted(contentRID, fix ? ": repaired" : "; run CHECK DATABASE FIX to repair it");
+        if (fix && !repairLegacyContentHead(contentRID)) {
+          --totalSurrogateRecords;
+          ++totalMultiPageRecords;
+          warning = "placeholder content record %s is stored as an ambiguous chunk chain (#6196) and could not be repaired"
+                  .formatted(contentRID);
+        }
+
+        warnings.add(warning);
+        if (verboseLevel > 0)
+          LogManager.instance().log(this, Level.SEVERE, "- " + warning);
+        warning = null;
+      }
+    }
+
     if (fix)
       // #5149: reconcile the cached record counter that count(*) relies on. Invalidating forces the next
       // count() to rescan authoritatively, and reusing the existing -1 sentinel means the value is
@@ -1177,6 +1331,114 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     stats.put("totalErrors", totalErrors);
 
     return stats;
+  }
+
+  /**
+   * Whether the slot at {@code contentPosition} - the target of a placeholder POINTER - holds a content record still
+   * stored the way every release before #6196 stored one that no page could host whole: as a chunk head wearing the
+   * plain {@link #FIRST_CHUNK} marker, indistinguishable from a record of its own and therefore handed out a second
+   * time by every scan.
+   * <p>
+   * Only {@link #check} asks, and only about a slot a pointer led it to, so it costs one page fetch per placeholder
+   * POINTER - every one of them, not only the chunked case this is looking for, because the marker is the only thing
+   * that tells the two apart and reading it is the whole question. That is the deliberate trade, and the scale to
+   * judge it against is what {@code check} already spends on the same pass: it reads every page of the bucket and
+   * walks the FULL continuation chain of every multi-page record. A pre-#6149 bucket dense with placeholders pays one
+   * more fetch each, of pages the walk itself touches anyway, on an operation that is already O(pages + chunks).
+   * <p>
+   * It is paid on every run, including on a database that has already been repaired and on one this build created -
+   * and the obvious saving, a persisted "no legacy shape here" flag set by a successful FIX, is deliberately not taken.
+   * Such a flag would have to stay true through every way old bytes can arrive in a repaired database - a restore from
+   * an older backup, an HA follower resynced from an older leader's snapshot, a file opened by an older binary and
+   * handed back - and a flag that is wrong makes {@code check} skip the one question that finds the shape, which is
+   * the failure this whole marker exists to end. A bounded, honest cost on an admin operation beats a cheap answer
+   * that can be stale (code review on #6287).
+   * <p>
+   * Never throws: a pointer that cannot be followed is a different problem, reported by the link pass of CHECK
+   * DATABASE rather than mistaken for this one.
+   *
+   * @param totalPages the page count {@link #check} snapshotted before its walk, so both of its questions - is this
+   *                   pointer's target ambiguous, and is it still - are answered against the same bucket the walk
+   *                   itself covered, rather than against a count that may have moved under it.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private boolean isLegacyAmbiguousContentHead(final int totalPages, final long contentPosition) {
+    try {
+      if (contentPosition < 0)
+        return false;
+      final int contentPageId = (int) (contentPosition / maxRecordsInPage);
+      if (contentPageId >= totalPages)
+        return false;
+
+      final BasePage contentPage = database.getTransaction()
+              .getPage(new PageId(database, file.getFileId(), contentPageId), pageSize);
+      final int positionInPage = (int) (contentPosition % maxRecordsInPage);
+      if (positionInPage >= contentPage.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET))
+        return false;
+
+      final int recordPositionInPage = getRecordPositionInPage(contentPage, positionInPage);
+      if (recordPositionInPage == 0)
+        return false;
+
+      return contentPage.readNumberAndSize(recordPositionInPage)[0] == FIRST_CHUNK;
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.FINE, "Unable to inspect the content record at position %d of bucket '%s'", e,
+              contentPosition, componentName);
+      return false;
+    }
+  }
+
+  /**
+   * Rewrites the marker of a legacy ambiguous content head (see {@link #isLegacyAmbiguousContentHead}) into
+   * {@link #FIRST_CHUNK_PLACEHOLDER_CONTENT}, which is the whole of the repair: the record's bytes, its chunk header,
+   * its chain and its RID are all correct and untouched, and the one thing that was never written down is which of the
+   * two kinds of head this is.
+   * <p>
+   * The rewrite is refused unless the new marker occupies EXACTLY the bytes the old one does. Both are one zigzag byte
+   * as {@code writeNumber} produces them, so the refusal is unreachable through a marker this engine wrote; it exists
+   * for the denormalised encoding a corrupted or hand-patched page can hold, where a shorter marker would leave the
+   * chunk header a byte adrift and cost the record its chain.
+   * <p>
+   * What it takes on trust is the engine's own invariant: a placeholder POINTER references the CONTENT record written
+   * for it and nothing else. A pointer corrupted into referencing an unrelated multi-page record would have this hide
+   * that record from scans - but such a database is already handing that record's bytes out through the placeholder,
+   * and unlike the force-delete {@code check(fix)} performs on a broken chain, this is reversible: not one byte of the
+   * record, its chunk header or its chain is touched, so rewriting the marker back restores it exactly.
+   * <p>
+   * The one form of that corruption which can be RECOGNISED rather than merely tolerated - two pointers leading to the
+   * same slot, which a healthy bucket cannot produce - is refused by the caller before it gets here, and reported
+   * instead. See {@code ambiguousHeadsWithSeveralPointers} in {@link #check}.
+   *
+   * @return true when the marker was rewritten.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private boolean repairLegacyContentHead(final RID contentRID) {
+    try {
+      final int contentPageId = (int) (contentRID.getPosition() / maxRecordsInPage);
+      final int positionInPage = (int) (contentRID.getPosition() % maxRecordsInPage);
+      final MutablePage contentPage = database.getTransaction()
+              .getPageToModify(new PageId(database, file.getFileId(), contentPageId), pageSize, false);
+
+      final int recordPositionInPage = getRecordPositionInPage(contentPage, positionInPage);
+      final long[] recordSize = contentPage.readNumberAndSize(recordPositionInPage);
+      if (recordSize[0] != FIRST_CHUNK
+              || recordSize[1] != Binary.getNumberSpace(FIRST_CHUNK_PLACEHOLDER_CONTENT))
+        return false;
+
+      // Not a single-slot change any merge could replay: the marker decides what the slot IS.
+      final TransactionContext slotTx = database.getTransactionIfExists();
+      if (slotTx != null && slotTx.isSlotMergeEnabled())
+        slotTx.poisonSlotRebasePage(fileId, contentPageId);
+
+      contentPage.writeNumber(recordPositionInPage, FIRST_CHUNK_PLACEHOLDER_CONTENT);
+      return true;
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Unable to repair the placeholder content record %s of bucket '%s'", e,
+              contentRID, componentName);
+      return false;
+    }
   }
 
   /**
@@ -1266,20 +1528,23 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // DELETED
         return null;
 
-      if (recordSize[0] < RECORD_PLACEHOLDER_CONTENT) {
-        if (!readPlaceHolderContent)
-          // PLACEHOLDER
-          return null;
+      // #6196: a placeholder CONTENT record is refused to a caller that did not ask for one, in BOTH the shapes it can
+      // be stored in - a negated size when a page could host it whole, and a chunk head when none could. The two are
+      // separated below only because the negated one has to be turned back into a size, while the chunk head is read
+      // by the chain walk exactly as a record's own head chunk is.
+      if (isPlaceholderContent(recordSize[0]) && !readPlaceHolderContent)
+        // PLACEHOLDER CONTENT: NOT A RECORD OF ITS OWN
+        return null;
 
+      if (recordSize[0] < RECORD_PLACEHOLDER_CONTENT)
         recordSize[0] *= -1;
-      }
 
       if (recordSize[0] == RECORD_PLACEHOLDER_POINTER) {
         // FOUND PLACEHOLDER, LOAD THE REAL RECORD
         final RID placeHolderPointer = new RID(rid.getBucketId(),
                 page.readLong((int) (recordPositionInPage + recordSize[1])));
         return getRecordInternal(placeHolderPointer, true);
-      } else if (recordSize[0] == FIRST_CHUNK) {
+      } else if (isChunkHead(recordSize[0])) {
         // FOUND 1ST CHUNK, LOAD THE ENTIRE MULTI-PAGE RECORD
         return loadMultiPageRecord(rid, page, recordPositionInPage, recordSize);
       } else if (recordSize[0] == NEXT_CHUNK)
@@ -1391,7 +1656,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           //
           // The record is being created at the page's content end, so it owns nothing yet: the head chunk takes the
           // whole free tail and seals the page (#6154).
-          writeMultiPageRecord(rid, buffer, selectedPage, newRecordPositionInPage, spaceAvailableInCurrentPage, 0, 0);
+          //
+          // #6196: this is the ONE place a placeholder's CONTENT record becomes a chunk chain (an update of one that
+          // no longer fits refuses to spill and has the caller recreate it here), so it is the one place the head
+          // chunk has to be told it is content rather than a record. Everything the negated size marker would have
+          // said about the slot is said by the marker this stamps, and by nothing else.
+          writeMultiPageRecord(rid, buffer, selectedPage, newRecordPositionInPage, spaceAvailableInCurrentPage, 0, 0,
+                  isPlaceHolder);
 
         } else {
           final int byteWritten = selectedPage.writeNumber(newRecordPositionInPage,
@@ -1502,7 +1773,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         if (spaceNeeded > spaceAvailableInCurrentPage) {
           // MULTI-PAGE RECORD: only the first chunk is pinned to this slot; writeMultiPageRecord places the rest.
           // Like a normal create, the restored record starts at the page's content end and owns nothing yet (#6154).
-          writeMultiPageRecord(rid, buffer, selectedPage, newRecordPositionInPage, spaceAvailableInCurrentPage, 0, 0);
+          // A record restored at an explicit RID is a record of its own, never a placeholder's content: the content of
+          // a placeholder has no RID anyone outside the bucket knows to ask for.
+          writeMultiPageRecord(rid, buffer, selectedPage, newRecordPositionInPage, spaceAvailableInCurrentPage, 0, 0,
+                  false);
         } else {
           final int byteWritten = selectedPage.writeNumber(newRecordPositionInPage, bufferSize);
           selectedPage.writeByteArray(newRecordPositionInPage + byteWritten, buffer.getContent(), buffer.getContentBeginOffset(), bufferSize);
@@ -1627,8 +1901,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     else if (lastRecordSize[0] == RECORD_PLACEHOLDER_POINTER)
       // PLACEHOLDER, CONSIDER NEXT 9 BYTES
       return lastRecordPositionInPage + LONG_SERIALIZED_SIZE + (int) lastRecordSize[1];
-    else if (lastRecordSize[0] == FIRST_CHUNK || lastRecordSize[0] == NEXT_CHUNK) {
-      // CHUNK
+    else if (isChunkHead(lastRecordSize[0]) || lastRecordSize[0] == NEXT_CHUNK) {
+      // CHUNK (of a record, or of a placeholder's content - the footprint is the same either way)
       final int chunkSize = page.readInt((int) (lastRecordPositionInPage + lastRecordSize[1]));
       return lastRecordPositionInPage + (int) lastRecordSize[1] + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE + chunkSize;
     } else
@@ -1869,13 +2143,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         return false;
       final long[] rs = page.readNumberAndSize(existingPos);
 
-      if (kind == TransactionContext.SLOT_KIND_FIRST_CHUNK) {
+      if (kind == TransactionContext.SLOT_KIND_FIRST_CHUNK
+              || kind == TransactionContext.SLOT_KIND_FIRST_CHUNK_PLACEHOLDER_CONTENT) {
         // #6129: the head chunk of a multi-page record. It keeps its slot and updateMultiPageRecord only rewrites
         // INSIDE the region that slot owns (the chunk size, the pointer to the next chunk and the chunk content), so
         // re-applying our final image at the same offset reproduces the page byte for byte - exactly as for a
         // same-or-smaller overwrite. What this check cannot see is the rest of the record, which lives on other
         // pages: that is covered before the write, by the chunk-chain fingerprint (see updateRecordInternal).
-        if (rs[0] != FIRST_CHUNK)
+        // #6196: the head of a placeholder's CONTENT is the same shape behind a different marker, and the kind says
+        // which one the write started from - a slot that changed from one to the other meanwhile is a conflict.
+        if (rs[0] != (kind == TransactionContext.SLOT_KIND_FIRST_CHUNK ? FIRST_CHUNK : FIRST_CHUNK_PLACEHOLDER_CONTENT))
           return false;
         final int chunkHeaderPos = (int) (existingPos + rs[1]);
         final byte[] committedChunk = readChunkImage(page, chunkHeaderPos);
@@ -2339,7 +2616,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
         recordSize[0] = LONG_SERIALIZED_SIZE;
         recordSize[1] = 1L;
-      } else if (recordSize[0] == FIRST_CHUNK) {
+      } else if (isChunkHead(recordSize[0])) {
+        // #6196: a head chunk of either kind - a record of its own, or the CONTENT of a placeholder that no page could
+        // host whole. Everything below treats the two identically (the chain, its region and its footprint are the
+        // same) except the two places the difference is the whole point: the un-spill further down, which would have
+        // to write back a marker this branch is not equipped to write, and the slot kind the merge is told.
+        final boolean placeholderContentHead = recordSize[0] == FIRST_CHUNK_PLACEHOLDER_CONTENT;
+        if (placeholderContentHead && !updatePlaceholderContent)
+          // A CONTENT RECORD IS NOT UPDATABLE ON ITS OWN, exactly as the negated-size shape below is not.
+          throw new RecordNotFoundException("Record " + rid + " not found", rid);
+
         // DISJOINT-SLOT MERGE (#6129): the head chunk of a multi-page record. It keeps its slot and its region on
         // THIS page - updateMultiPageRecord rewrites the chunk size, the pointer to the next chunk and the chunk
         // content, all inside the bytes the region covers - so the change this page sees is a single-slot write that
@@ -2375,13 +2661,21 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // the same rule #6163 sizes the head chunk with: the region, and not a byte more - shrinking is no licence to
         // take a neighbour's bytes.
         //
-        // NOT for the CONTENT record of a placeholder (updatePlaceholderContent), even though it reaches this branch
-        // whenever createRecordInternal had to spill it: such a record is identified by the NEGATIVE size marker it
-        // would have to be given back, and the plain positive marker this writes is what tells scan() and check()
-        // that a slot holds a record of its own. Collapsing one would make the placeholder's content show up a second
-        // time, as a document in its own right. It keeps its chain, which costs 13 bytes on a shape that needs a
-        // placeholder to exist at all - a legacy one, or the zero-free-tail page #6149 left as the last fallback.
-        if (!updatePlaceholderContent//
+        // NOT for the CONTENT record of a placeholder, even though it reaches this branch whenever
+        // createRecordInternal had to spill it. Such a record is identified by the NEGATIVE size marker it would have
+        // to be given back, and the plain positive marker the collapse writes is what tells scan() and check() that a
+        // slot holds a record of its own - so collapsing one would make the placeholder's content show up a second
+        // time, as a document in its own right, which is #6196 all over again on a record that had escaped it. It
+        // keeps its chain, which costs 13 bytes on a shape that needs a placeholder to exist at all - a legacy one, or
+        // the zero-free-tail page #6149 left as the last fallback. Making the collapse write a negated size marker
+        // instead is a follow-up (#6286), not a correctness matter.
+        //
+        // The FLAG is what carries this, and it has to be: a database written before #6196 holds a content head still
+        // wearing the ambiguous FIRST_CHUNK, which the marker cannot tell from a record's own. The marker test next to
+        // it is redundant - the throw at the top of this branch means placeholderContentHead can only be true here
+        // when updatePlaceholderContent is too - and is kept so this line states its own precondition instead of
+        // borrowing one from thirty lines up.
+        if (!updatePlaceholderContent && !placeholderContentHead//
                 && collapseChunkChainToRecord(rid, buffer, page, pageId, positionInPage, recordPositionInPage, chunkHeaderPos,
                 chunkRegionEnd, chunkBaseImage, slotTx)) {
           if (!discardRecordAfter)
@@ -2401,7 +2695,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           final byte[] chunkFinalImage = readChunkImage(page, chunkHeaderPos);
           if (chunkFinalImage != null)
             slotTx.trackRebasableUpdate(fileId, pageId, positionInPage, chunkBaseImage, chunkFinalImage,
-                    TransactionContext.SLOT_KIND_FIRST_CHUNK);
+                    placeholderContentHead ?
+                            TransactionContext.SLOT_KIND_FIRST_CHUNK_PLACEHOLDER_CONTENT :
+                            TransactionContext.SLOT_KIND_FIRST_CHUNK);
           else
             // The header no longer describes a chunk that fits the page: nothing here can be replayed safely.
             slotTx.poisonSlotRebasePage(fileId, pageId);
@@ -2562,9 +2858,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
             // #6154: the slot's own footprint and the bytes the shift just claimed are already accounted for; the
             // rest of what the head chunk is given - the free tail, when this is the page's last record - is not.
+            // A placeholder CONTENT record never reaches here: the "CANNOT CREATE A PLACEHOLDER OF PLACEHOLDER" branch
+            // above returns first and has the caller delete and recreate it, which is where its chain is written.
             writeMultiPageRecord(rid, buffer, page, recordPositionInPage, availableSpaceInCurrentPage,
                     spillRebasable ? MutablePage.COVERAGE_SLOT_MERGE : 0,
-                    slotFootprint + Math.max(slotEnlargement, 0));
+                    slotFootprint + Math.max(slotEnlargement, 0), false);
 
             if (!spillRebasable) {
               if (slotMergeOn)
@@ -2650,12 +2948,23 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * Structurally walks the chunk chain of a multi-page record WITHOUT MVCC version validation to detect a broken
    * chain: a continuation pointer to an out-of-range page, a slot that was cleaned, or a marker that is no longer
    * {@link #NEXT_CHUNK}. Used by {@link #check(int, boolean)}, which otherwise validates only the first chunk's
-   * on-page size and would never notice a broken chain. Returns {@code null} when the chain is intact, or a short
-   * human-readable reason when it is broken. Never throws.
+   * on-page size and would never notice a broken chain. Never throws.
+   * <p>
+   * Returns a short human-readable reason when the chain is broken, and {@code null} when it could not be PROVED
+   * broken - which covers both a chain that walks cleanly and one whose walk could not load a page at all. Every
+   * caller reads the two the same way (leave the record alone), and conflating them is deliberate: an I/O fault is
+   * not evidence of anything about the record, and since #6258 a confirmed break costs the record its retries and
+   * sends the operator to {@code CHECK DATABASE FIX}, which deletes it.
+   *
+   * @param fromNewestCommitted reads the continuation pages straight from the {@link PageManager} instead of through
+   *                            the transaction, so the walk sees the newest committed image rather than whatever this
+   *                            transaction has pinned. What {@link #confirmBrokenChunkChain} needs (#6258); the
+   *                            structural probes that answer for THIS transaction's view pass {@code false}.
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
-  private String findBrokenChunkChain(final RID rid, final BasePage firstPage, final int firstRecordPositionInPage) {
+  private String findBrokenChunkChain(final RID rid, final BasePage firstPage, final int firstRecordPositionInPage,
+                                      final boolean fromNewestCommitted) {
     try {
       BasePage chunkPage = firstPage;
       int chunkPositionInPage = firstRecordPositionInPage;
@@ -2683,7 +2992,28 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         if (nextPageId >= totalPages)
           return "next chunk pointer out of range at chunk " + chunkId;
 
-        chunkPage = database.getTransaction().getPage(new PageId(database, file.getFileId(), nextPageId), pageSize);
+        final PageId nextPageIdentity = new PageId(database, file.getFileId(), nextPageId);
+        try {
+          chunkPage = fromNewestCommitted ?
+                  database.getPageManager().getImmutablePage(nextPageIdentity, pageSize, false, true) :
+                  database.getTransaction().getPage(nextPageIdentity, pageSize);
+        } catch (final IOException e) {
+          // A page that cannot be LOADED AT ALL is an I/O fault, not a broken chain, and must not be answered as one
+          // - the line #6217 drew for validateChainRead, which this walk had not been held to (code review on #6258).
+          // It matters more here than it used to: since #6258 a confirmed break is a PERMANENT verdict that stops the
+          // retries and tells the operator to run CHECK DATABASE FIX, which deletes the record. One bad read of a
+          // healthy record must not reach that conclusion, and the callers all read null as "cannot prove a break":
+          // this walk retries, the tolerant delete keeps its retry semantics, and check() reports nothing to fix.
+          LogManager.instance().log(this, Level.FINE,
+                  "Unable to load page %s while walking the chunk chain of %s", e, nextPageIdentity, rid);
+          return null;
+        }
+
+        if (chunkPage == null)
+          // Defensive: neither page source answers null while it is allowed to materialise a missing page. A null
+          // here would still not be proof of a broken chain, so it must not be reported as one.
+          return null;
+
         chunkPositionInPage = getRecordPositionInPage(chunkPage, nextPositionInPage);
         if (chunkPositionInPage == 0)
           return "chunk slot cleaned at chunk " + chunkId;
@@ -2720,11 +3050,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         return false;
 
       final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
-      if (recordSize[0] != FIRST_CHUNK)
+      if (!isChunkHead(recordSize[0]))
         // NOT A MULTI-PAGE RECORD: A CME ON IT CANNOT COME FROM A BROKEN CHAIN
         return false;
 
-      return findBrokenChunkChain(rid, page, recordPositionInPage) != null;
+      return findBrokenChunkChain(rid, page, recordPositionInPage, false) != null;
     } catch (final Exception e) {
       return false;
     }
@@ -2796,10 +3126,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             // PARTIAL RECORD NOT FOUND
           }
 
-        } else if (recordSize[0] == FIRST_CHUNK) {
+        } else if (isChunkHead(recordSize[0])) {
           // The record continues on other pages through a chunk chain: freeing it touches more than this slot.
           if (slotMergeOn)
             slotTx.poisonSlotRebasePage(fileId, pageId);
+
+          // #6196: the head of a placeholder's CONTENT is freed by the same chain walk, but only on behalf of the
+          // pointer that references it - a direct delete of it is refused exactly as it is for the negated-size shape
+          // further down, which is what keeps a caller from leaving a pointer dangling.
+          if (recordSize[0] == FIRST_CHUNK_PLACEHOLDER_CONTENT && !deletePlaceholderContent)
+            throw new RecordNotFoundException("Record " + rid + " not found", rid);
 
           // 1ST CHUNK: DELETE ALL THE CHUNKS
           MutablePage chunkPage = page;
@@ -3149,7 +3485,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
         if (recordSize[0] == RECORD_PLACEHOLDER_POINTER)
           size = LONG_SERIALIZED_SIZE + (int) recordSize[1];
-        else if (recordSize[0] == FIRST_CHUNK || recordSize[0] == NEXT_CHUNK) {
+        else if (isChunkHead(recordSize[0]) || recordSize[0] == NEXT_CHUNK) {
           final int chunkSize = page.readInt(recordPositionInPage + (int) recordSize[1]);
           size = chunkSize + (int) recordSize[1] + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE; // LONG = nextChunkPointer
         } else if (recordSize[0] < RECORD_PLACEHOLDER_CONTENT)
@@ -3228,6 +3564,25 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // and how long it was. Sized for the chains that exist in practice and grown only by a record that has more.
       long[] chainTrace = new long[CHAIN_TRACE_STRIDE * 8];
       int chunks = 0;
+      // The continuation pointer the LAST traced chunk carried, so a chain the walk could not finish can be validated
+      // too: for a chain walked to its end this is 0, which is what the last chunk really holds.
+      long lastNextChunkPointer = 0L;
+
+      // Set ONLY by the branches that could not PARSE the chain, never by the read-vs-write validation below: the two
+      // have opposite answers and used to share one flag (#6258).
+      String brokenChainReason = null;
+      Exception brokenChainCause = null;
+
+      // Which kind of head this attempt started from - a record's own, or a placeholder's CONTENT (#6196). Read here
+      // rather than assumed, because a retry re-reads the slot and could find the other one.
+      final long headMarker = recordSize[0];
+
+      // Exact cycle detection, on the same terms as offPageContentFingerprint's walk: revisiting a continuation
+      // pointer is the only certain loop signal, and a chain that never revisits one is finite by construction. The
+      // set is allocated only once a chain turns out to be long, so the records that exist in practice - a handful of
+      // chunks - pay nothing for it. The self-reference check further down stays: it is free, and it names the loop
+      // for the chain that doubles back on its very first hop, long before this threshold (code review on #6258).
+      LongHashSet visitedChunks = null;
 
       boolean chainInconsistent = false;
       final Binary record = new Binary();
@@ -3254,6 +3609,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           chainTrace[trace + CHAIN_TRACE_SLOT] = currentSlot;
           chainTrace[trace + CHAIN_TRACE_CHUNK_SIZE] = chunkSize;
           ++chunks;
+          lastNextChunkPointer = nextChunkPointer;
 
           if (nextChunkPointer == 0)
             break;
@@ -3261,8 +3617,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           final int chunkPageId = (int) (nextChunkPointer / maxRecordsInPage);
           final int chunkPositionInPage = (int) (nextChunkPointer % maxRecordsInPage);
 
+          // Every reason below names the chunk the failing HOP LEFT, which is the numbering findBrokenChunkChain
+          // already uses - the two walks report the same break in the same words.
           if (chunkPageId >= getTotalPages()) {
-            chainInconsistent = true;
+            brokenChainReason = "next chunk pointer out of range at chunk " + (chunks - 1);
             break;
           }
 
@@ -3271,14 +3629,25 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
           final int nextRecordPositionInPage = getRecordPositionInPage(nextPage, chunkPositionInPage);
           if (nextRecordPositionInPage == 0) {
-            chainInconsistent = true;
+            brokenChainReason = "chunk slot cleaned at chunk " + (chunks - 1);
             break;
           }
 
-          if (nextPage.equals(page) && currentRecordPositionInPage == nextRecordPositionInPage)
-            throw new DatabaseOperationException(
-                    "Infinite loop on loading multi-page record " + originalRID + " chunk " + chunkPageId + "/"
-                            + chunkPositionInPage);
+          if (nextPage.equals(page) && currentRecordPositionInPage == nextRecordPositionInPage) {
+            brokenChainReason = "chain loop detected at chunk " + (chunks - 1) + " (" + chunkPageId + "/"
+                    + chunkPositionInPage + ")";
+            break;
+          }
+
+          if (chunks >= CHUNKS_BEFORE_LOOP_DETECTION) {
+            if (visitedChunks == null)
+              visitedChunks = new LongHashSet();
+            if (!visitedChunks.add(nextChunkPointer)) {
+              brokenChainReason = "chain loop detected at chunk " + (chunks - 1) + " (" + chunkPageId + "/"
+                      + chunkPositionInPage + " visited twice)";
+              break;
+            }
+          }
 
           page = nextPage;
           currentSlot = chunkPositionInPage;
@@ -3287,21 +3656,42 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           currentRecordSize = page.readNumberAndSize(currentRecordPositionInPage);
 
           if (currentRecordSize[0] != NEXT_CHUNK) {
-            chainInconsistent = true;
+            brokenChainReason = "unexpected marker at chunk " + (chunks - 1);
             break;
           }
         }
       } catch (final Exception e) {
-        chainInconsistent = true;
+        brokenChainReason = "error walking the chain: " + e.getMessage();
+        brokenChainCause = e;
       }
 
-      if (!chainInconsistent) {
+      if (brokenChainReason != null) {
+        // A CHAIN THAT DOES NOT PARSE IS NOT CONTENTION (#6258). Retrying can only change the answer if the chain the
+        // walk followed was not the committed one, so ask exactly that before spending the budget: prove the break
+        // first against the newest committed image and then against this read's own chunks. When both agree, the
+        // record is corrupted and every further attempt would walk into the same dead end and report a concurrency
+        // problem that does not exist.
+        final String confirmed = confirmBrokenChunkChain(originalRID, chainTrace, chunks, record, lastNextChunkPointer,
+                headMarker);
+        if (confirmed != null)
+          // Both reasons when they differ, and they can: this walk carries a loop detector the confirmation walk
+          // answers as the wrong marker it finds where the chain doubles back. The first is what the READ hit, the
+          // second what the committed image says - one diagnosis is not more true than the other, and an operator
+          // holding a corrupted record wants the pair.
+          throw new BrokenChunkChainException(
+                  "Multi-page record " + originalRID + " has a broken chunk chain (" + brokenChainReason
+                          + (confirmed.equals(brokenChainReason) ? "" : "; the committed image reports: " + confirmed)
+                          + "): the record is corrupted and cannot be read. Run CHECK DATABASE FIX to repair it",
+                  brokenChainCause);
+
+        chainInconsistent = true;
+      } else {
         // OUTSIDE the catch above, deliberately and as the page-version loop this replaced already was: everything
         // the validation reads OUT OF A PAGE is answered by isChunkStillTheOneRead, which never throws and reads a
         // chunk it cannot make sense of as a chunk that changed. What is left to come out of here is the failure to
         // LOAD a page at all, which is an I/O error and not a conflict - absorbing it would spend the retry budget
         // on a broken disk and then report it as "the record was modified during read".
-        final int verdict = validateChainRead(chainTrace, chunks, record);
+        final int verdict = validateChainRead(chainTrace, chunks, record, lastNextChunkPointer, headMarker);
         if (verdict == CHAIN_READ_REVALIDATED)
           database.getPageManager().incrementChunkChainReadRevalidations();
         chainInconsistent = verdict == CHAIN_READ_CHANGED;
@@ -3316,13 +3706,21 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       // Retry by re-fetching the first page with fresh data
       if (retry < maxRetries) {
+        final BasePage refreshedFirstPage = database.getPageManager().getImmutablePage(firstPageId, pageSize, false, true);
+        if (refreshedFirstPage == null)
+          throw new ConcurrentModificationException(
+                  "First page of multi-page record " + originalRID + " was removed during read");
+
+        if (!aRetryWouldReadSomethingElse(refreshedFirstPage, chainTrace, chunks))
+          throw new ConcurrentModificationException(
+                  "Multi-page record " + originalRID + " was modified during read and cannot be re-read in this "
+                          + "transaction: its chunks are pinned by the transaction's own snapshot, so no retry can "
+                          + "assemble a different one. Please retry the operation in a new transaction");
+
         LogManager.instance().log(this, Level.FINE,
                 "Multi-page record %s read inconsistent (attempt %d/%d), retrying...", originalRID,
                 retry + 1, maxRetries);
-        firstPage = database.getPageManager().getImmutablePage(firstPageId, pageSize, false, true);
-        if (firstPage == null)
-          throw new ConcurrentModificationException(
-                  "First page of multi-page record " + originalRID + " was removed during read");
+        firstPage = refreshedFirstPage;
         recordPositionInPage = getRecordPositionInPage(firstPage, firstChunkSlot);
         if (recordPositionInPage == 0)
           throw new ConcurrentModificationException(
@@ -3345,11 +3743,20 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * that cannot be read at all is left alone, exactly as the version check that preceded this did - there is nothing
    * to compare against, and failing a read on it would be inventing a conflict.
    *
+   * @param lastNextChunkPointer the continuation pointer the last traced chunk carried: 0 for a chain walked to its
+   *                             end, and the pointer that could not be followed for a walk the chain broke (#6258) -
+   *                             which is what lets a broken chain be validated by the same comparison as a whole one.
+   * @param headMarker           the marker the head chunk carried when the walk started, {@link #FIRST_CHUNK} or
+   *                             {@link #FIRST_CHUNK_PLACEHOLDER_CONTENT} (#6196). Carried rather than assumed because
+   *                             it is part of what the comparison checks: a head whose marker changed under the read
+   *                             is a slot that stopped being what it was, exactly like one whose size or pointer did.
+   *
    * @return {@link #CHAIN_READ_UNCHANGED}, {@link #CHAIN_READ_REVALIDATED} or {@link #CHAIN_READ_CHANGED}.
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
-  private int validateChainRead(final long[] chainTrace, final int chunks, final Binary record) throws IOException {
+  private int validateChainRead(final long[] chainTrace, final int chunks, final Binary record,
+                                final long lastNextChunkPointer, final long headMarker) throws IOException {
     int verdict = CHAIN_READ_UNCHANGED;
     int contentOffset = 0;
 
@@ -3364,14 +3771,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       if (currentPage != null && currentPage.getVersion() != chainTrace[trace + CHAIN_TRACE_PAGE_VERSION]) {
         // The pointer this chunk carries is the NEXT chunk's own (page, slot), so the chain's shape is checked with
         // the trace and nothing else: a chain that gained or lost a chunk, or whose next chunk was relocated, fails
-        // here even when every byte of content is the same.
+        // here even when every byte of content is the same. The last chunk is the one exception - there is no next
+        // trace entry to derive it from - so the walk hands its pointer over.
         final long nextChunkPointer = chunk + 1 < chunks ?
                 chainTrace[(chunk + 1) * CHAIN_TRACE_STRIDE + CHAIN_TRACE_PAGE_NUMBER] * (long) maxRecordsInPage
                         + chainTrace[(chunk + 1) * CHAIN_TRACE_STRIDE + CHAIN_TRACE_SLOT] :
-                0L;
+                lastNextChunkPointer;
 
         if (!isChunkStillTheOneRead(currentPage, (int) chainTrace[trace + CHAIN_TRACE_SLOT],
-                chunk == 0 ? FIRST_CHUNK : NEXT_CHUNK, chunkSize, nextChunkPointer, record, contentOffset))
+                chunk == 0 ? headMarker : NEXT_CHUNK, chunkSize, nextChunkPointer, record, contentOffset))
           return CHAIN_READ_CHANGED;
 
         verdict = CHAIN_READ_REVALIDATED;
@@ -3381,6 +3789,124 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
 
     return verdict;
+  }
+
+  /**
+   * Whether another attempt at {@link #loadMultiPageRecord} could possibly read anything other than what this one
+   * just did (#6258).
+   * <p>
+   * The retry exists for {@code READ_COMMITTED}, where the transaction caches no page: every attempt re-reads the
+   * whole chain from the {@link PageManager}, so a read torn by a commit landing mid-walk genuinely reassembles
+   * cleanly on the next pass. Under {@code REPEATABLE_READ} it is a different machine. The retry re-fetches the head
+   * page straight from the page manager, deliberately bypassing the transaction, but the walk takes its continuation
+   * pages from {@link TransactionContext#getPage}, which serves them from the snapshot this transaction has already
+   * pinned. So every attempt pairs a fresh head with the very same tails, reproduces the very same mix, and is
+   * rejected for the very same reason - the whole retry budget spent on a verdict that was settled before the first
+   * retry started, and spent on the slowest read path there is, under contention, on the largest records.
+   * <p>
+   * The question is answered from the trace rather than from the isolation level, because the isolation level is not
+   * actually what decides it: a retry is worth making when the head page has MOVED (the next walk starts from
+   * different bytes, and may well follow the chain somewhere else entirely), or when any continuation page is one
+   * this transaction has not pinned (it will be re-read, and can differ). When neither holds, the next walk reads
+   * byte for byte what this one read, and the read fails now instead of three chain walks from now.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private boolean aRetryWouldReadSomethingElse(final BasePage refreshedFirstPage, final long[] chainTrace,
+                                               final int chunks) {
+    if (chunks == 0)
+      // Nothing was read: there is no evidence a retry is futile.
+      return true;
+
+    if (refreshedFirstPage.getVersion() != chainTrace[/* chunk 0 */ CHAIN_TRACE_PAGE_VERSION])
+      // The head chunk this walk started from is no longer the committed one.
+      return true;
+
+    final TransactionContext transaction = database.getTransactionIfExists();
+    if (transaction == null)
+      return true;
+
+    for (int chunk = 1; chunk < chunks; ++chunk) {
+      final PageId pageId = new PageId(database, file.getFileId(),
+              (int) chainTrace[chunk * CHAIN_TRACE_STRIDE + CHAIN_TRACE_PAGE_NUMBER]);
+      if (!transaction.hasPageForRecord(pageId))
+        // Not pinned by this transaction: the next walk reloads it, and it can come back different.
+        return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Confirms that a chunk chain {@link #loadMultiPageRecord} could not parse is genuinely broken rather than a
+   * record that moved under the read (#6258), and returns the reason it is broken, or {@code null} when the break
+   * cannot be told apart from contention - in which case the caller retries exactly as it always did.
+   * <p>
+   * Two questions, in this order, because the second is the guard for the first:
+   * <ol>
+   * <li>Does the chain still fail to walk on the NEWEST committed image of its pages? A commit publishes its pages
+   * one at a time and readers take no lock, so a chain caught mid-publication can look broken for a few microseconds
+   * while being perfectly sound at both ends of it - and a walk that used this transaction's pinned pages can be
+   * following a chain that has since been rewritten. A clean walk here answers both: this is contention.</li>
+   * <li>Are the chunks this read consumed still, byte for byte, the ones the newest committed image holds? This is
+   * the guard the pre-existing {@link #isChunkChainBroken} probe never had: it is what rules out the half-published
+   * commit, whose new pages would have moved the record under this read.</li>
+   * </ol>
+   * Only when the fresh walk is broken AND the read's own chunks are current is the record corrupted, and only then
+   * does the read stop retrying and say so.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private String confirmBrokenChunkChain(final RID rid, final long[] chainTrace, final int chunks, final Binary record,
+                                         final long lastNextChunkPointer, final long headMarker) {
+    try {
+      final String reason = findBrokenChunkChainInNewestCommitted(rid);
+      if (reason == null)
+        // THE COMMITTED CHAIN WALKS CLEANLY: what this read met was a chain in motion, which is what the retry is for.
+        return null;
+
+      return validateChainRead(chainTrace, chunks, record, lastNextChunkPointer, headMarker) == CHAIN_READ_CHANGED ?
+              null :
+              reason;
+    } catch (final Exception e) {
+      // Could not prove corruption (an I/O fault, most likely): fall back to the retry rather than condemn a record.
+      LogManager.instance()
+              .log(this, Level.FINE, "Unable to confirm whether the chunk chain of %s is broken", e, rid);
+      return null;
+    }
+  }
+
+  /**
+   * {@link #findBrokenChunkChain} against the newest committed image of every page, transaction snapshot and all
+   * page versions ignored. Returns {@code null} when the chain walks cleanly, and also when the record is no longer
+   * there to walk (deleted, or no longer a chunked record): that is a record that changed, not a broken chain.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private String findBrokenChunkChainInNewestCommitted(final RID rid) throws IOException {
+    final int pageNumber = (int) (rid.getPosition() / maxRecordsInPage);
+    final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
+    if (pageNumber >= getTotalPages())
+      return null;
+
+    final BasePage head = database.getPageManager()
+            .getImmutablePage(new PageId(database, file.getFileId(), pageNumber), pageSize, false, true);
+    if (head == null)
+      return null;
+
+    if (positionInPage >= head.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET))
+      return null;
+
+    final int recordPositionInPage = getRecordPositionInPage(head, positionInPage);
+    if (recordPositionInPage == 0)
+      // DELETED UNDER THE READ
+      return null;
+
+    if (!isChunkHead(head.readNumberAndSize(recordPositionInPage)[0]))
+      // NO LONGER A MULTI-PAGE RECORD: the record was rewritten under the read.
+      return null;
+
+    return findBrokenChunkChain(rid, head, recordPositionInPage, true);
   }
 
   /**
@@ -3448,10 +3974,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    *                           a record spilling out of its page its own footprint plus whatever the in-page shift
    *                           just claimed for it (#6149). The rest is free tail this write takes, which is what
    *                           {@link #updatePageStatistics} has to be told (#6154).
+   * @param isPlaceHolderContent whether the record being written is the CONTENT of a placeholder rather than a record
+   *                           of its own, which decides the marker its head chunk is stamped with (#6196). The
+   *                           chain behind it is identical either way - only the head says which it is, and it is the
+   *                           only place that information exists once the negated size marker is out of reach.
    */
   private void writeMultiPageRecord(final RID originalRID, final Binary buffer, MutablePage currentPage, int newPosition,
                                     final int availableSpaceForFirstChunk, final int firstChunkCoverage,
-                                    final int slotBytesAlreadyOwned) throws IOException {
+                                    final int slotBytesAlreadyOwned, final boolean isPlaceHolderContent) throws IOException {
     // DISJOINT-SLOT MERGE (#5381): a multi-page write places chunk records onto pages via inline record-table
     // writes that bypass create/update/deleteRecordInternal, so it is NOT tracked. A chunk landing on a REUSED
     // page that also holds a tracked single-slot write would let the rebase re-derive that page from the tracked
@@ -3470,7 +4000,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     int chunkSize;
     try {
       // WRITE THE 1ST CHUNK
-      byteWritten = currentPage.writeNumber(newPosition, FIRST_CHUNK);
+      byteWritten = currentPage.writeNumber(newPosition,
+              isPlaceHolderContent ? FIRST_CHUNK_PLACEHOLDER_CONTENT : FIRST_CHUNK);
 
       newPosition += byteWritten;
 
@@ -4042,7 +4573,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       if (lastRecordSize[0] == RECORD_PLACEHOLDER_POINTER) {
         lastRecordSize[0] = LONG_SERIALIZED_SIZE;
         lastRecordSize[1] = 1L;
-      } else if (lastRecordSize[0] == FIRST_CHUNK || lastRecordSize[0] == NEXT_CHUNK) {
+      } else if (isChunkHead(lastRecordSize[0]) || lastRecordSize[0] == NEXT_CHUNK) {
         // CONSIDER THE CHUNK SIZE
         lastRecordSize[0] = page.readInt((int) (lastRecordPositionInPage + lastRecordSize[1]));
         lastRecordSize[1] = 1L + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE;

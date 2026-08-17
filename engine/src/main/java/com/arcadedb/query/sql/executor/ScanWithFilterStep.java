@@ -74,6 +74,8 @@ public class ScanWithFilterStep extends AbstractExecutionStep {
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     pullPrevious(context, nRecords);
+    // A filter that rejects every record scans the whole bucket inside one hasNext() (issue #6266).
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     final long begin = context.isProfiling() ? System.nanoTime() : 0;
     try {
       if (iterator == null) {
@@ -90,6 +92,7 @@ public class ScanWithFilterStep extends AbstractExecutionStep {
         private void fetchNextItem() {
           nextItem = null;
           while (iterator.hasNext()) {
+            guard.check();
             final Record record = iterator.next();
             totalFetched++;
 

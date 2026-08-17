@@ -24,6 +24,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.utility.IntHashSet;
 
 import java.util.ArrayList;
@@ -112,7 +113,7 @@ public final class AntiJoinChainOp implements CountOp {
   }
 
   @Override
-  public long execute(final GraphTraversalProvider provider, final Database db) {
+  public long execute(final GraphTraversalProvider provider, final Database db, final WorkGuard guard) {
     final int nodeCount = provider.getNodeCount();
     final int hops = edgeTypes.length;
 
@@ -129,7 +130,7 @@ public final class AntiJoinChainOp implements CountOp {
 
     // We need position 0 to be one of the anti-join endpoints for per-source iteration
     if (earlierIdx != 0)
-      return executeGenericAntiJoin(provider, db, nodeCount, validBuckets);
+      return executeGenericAntiJoin(db, guard);
 
     // FAST PATH: Edge-scan with algebraic computation for 3-hop chains where:
     // - Chain is (A) ←[E0]- (B) ←[E1]- (C) -[E2]→ (D)
@@ -149,7 +150,7 @@ public final class AntiJoinChainOp implements CountOp {
         && antiJoinEdgeType.equals(edgeTypes[0])
         && inequalityIdxA >= 0 && inequalityIdxB >= 0
         && ineqMin == 0 && ineqMax == hops) {
-      final long result = executeEdgeScanAlgebraic(provider, nodeCount, validBuckets);
+      final long result = executeEdgeScanAlgebraic(provider, nodeCount, validBuckets, guard);
       if (result >= 0)
         return result;
     }
@@ -168,11 +169,12 @@ public final class AntiJoinChainOp implements CountOp {
 
     // Pre-compute bucket IDs for CSR-based anchor iteration and frontier filtering. A pattern that labels no
     // position needs none of them.
-    final int[] bucketIds = anyLabelled(validBuckets) ? precomputeBucketIds(provider, nodeCount) : null;
+    final int[] bucketIds = anyLabelled(validBuckets) ? precomputeBucketIds(provider, nodeCount, guard) : null;
 
     long totalCount = 0;
 
     for (int anchorId = 0; anchorId < nodeCount; anchorId++) {
+      guard.check();
       if (anchorBuckets != null && !anchorBuckets.contains(bucketIds[anchorId]))
         continue;
 
@@ -205,7 +207,7 @@ public final class AntiJoinChainOp implements CountOp {
    * @return count, or -1 if NeighborViews unavailable (caller should fall back)
    */
   private long executeEdgeScanAlgebraic(final GraphTraversalProvider provider,
-      final int nodeCount, final IntHashSet[] validBuckets) {
+      final int nodeCount, final IntHashSet[] validBuckets, final WorkGuard guard) {
     final Vertex.DIRECTION revDir0 = directions[0] == Vertex.DIRECTION.OUT ? Vertex.DIRECTION.IN
         : directions[0] == Vertex.DIRECTION.IN ? Vertex.DIRECTION.OUT : Vertex.DIRECTION.BOTH;
     final NeighborView viewA = provider.getNeighborView(revDir0, edgeTypes[0]);
@@ -225,12 +227,13 @@ public final class AntiJoinChainOp implements CountOp {
     if ((pos1Buckets != null && pos1Buckets.isEmpty()) || (pos2Buckets != null && pos2Buckets.isEmpty()))
       return 0;
     final int[] bucketIds = (pos1Buckets != null || pos2Buckets != null)
-        ? precomputeBucketIds(provider, nodeCount) : null;
+        ? precomputeBucketIds(provider, nodeCount, guard) : null;
 
     long total = 0;
 
     // Scan all E1 (middle) edges by iterating pos1 nodes
     for (int b = 0; b < nodeCount; b++) {
+      guard.check();
       if (pos1Buckets != null && !pos1Buckets.contains(bucketIds[b]))
         continue;
 
@@ -277,10 +280,13 @@ public final class AntiJoinChainOp implements CountOp {
   }
 
   /** Pre-computes bucket IDs for all CSR nodes. One-time O(nodeCount) cost, amortized across all anchors. */
-  private static int[] precomputeBucketIds(final GraphTraversalProvider provider, final int nodeCount) {
+  private static int[] precomputeBucketIds(final GraphTraversalProvider provider, final int nodeCount,
+      final WorkGuard guard) {
     final int[] bucketIds = new int[nodeCount];
-    for (int v = 0; v < nodeCount; v++)
+    for (int v = 0; v < nodeCount; v++) {
+      guard.checkPeriodically(v);
       bucketIds[v] = provider.getRID(v).getBucketId();
+    }
     return bucketIds;
   }
 
@@ -300,10 +306,9 @@ public final class AntiJoinChainOp implements CountOp {
    * Fallback for anti-join patterns where neither endpoint is at position 0.
    * Uses dense propagation + per-node anti-join checking.
    */
-  private long executeGenericAntiJoin(final GraphTraversalProvider provider, final Database db,
-      final int nodeCount, final IntHashSet[] validBuckets) {
+  private long executeGenericAntiJoin(final Database db, final WorkGuard guard) {
     // Fall back to OLTP for this rare case
-    return executeOLTP(db);
+    return executeOLTP(db, guard);
   }
 
   /**
@@ -450,7 +455,7 @@ public final class AntiJoinChainOp implements CountOp {
   }
 
   @Override
-  public long executeOLTP(final Database db) {
+  public long executeOLTP(final Database db, final WorkGuard guard) {
     final String anchorLabel = nodeLabels[0];
     final int hops = edgeTypes.length;
     final int checkPos = Math.max(antiJoinSourceIdx, antiJoinTargetIdx);
@@ -460,7 +465,7 @@ public final class AntiJoinChainOp implements CountOp {
     // anchor's included, since issue #5757 - is walked by the recursive path, which needs no per-label map.
     for (int i = 0; i <= checkPos; i++) {
       if (nodeLabels[i] == null || !db.getSchema().existsType(nodeLabels[i]))
-        return executeOLTPRecursive(db);
+        return executeOLTPRecursive(db, guard);
     }
 
     // Pre-compute valid bucket IDs for type filtering at each position
@@ -484,7 +489,7 @@ public final class AntiJoinChainOp implements CountOp {
         }
       }
       if (!reused)
-        hopMaps[h] = buildNeighborRIDMap(db, nodeLabels[h], edgeTypes[h], directions[h], validBuckets[h + 1]);
+        hopMaps[h] = buildNeighborRIDMap(db, nodeLabels[h], edgeTypes[h], directions[h], validBuckets[h + 1], guard);
     }
 
     // Build anti-join neighbor map (reuse hop map if parameters match)
@@ -492,7 +497,8 @@ public final class AntiJoinChainOp implements CountOp {
     if (anchorIsSource && checkPos > 0 && antiJoinEdgeType.equals(edgeTypes[0]) && antiJoinDirection == directions[0])
       antiJoinMap = hopMaps[0];
     else if (anchorIsSource)
-      antiJoinMap = buildNeighborRIDMap(db, anchorLabel, antiJoinEdgeType, antiJoinDirection, validBuckets[antiJoinTargetIdx]);
+      antiJoinMap = buildNeighborRIDMap(db, anchorLabel, antiJoinEdgeType, antiJoinDirection,
+          validBuckets[antiJoinTargetIdx], guard);
     else
       antiJoinMap = null;
 
@@ -500,7 +506,7 @@ public final class AntiJoinChainOp implements CountOp {
     // tailCount[rid] = product of countEdges for hops checkPos..end.
     final Map<RID, Long> tailCounts;
     if (checkPos < hops)
-      tailCounts = buildTailCounts(db, nodeLabels[checkPos], checkPos);
+      tailCounts = buildTailCounts(db, nodeLabels[checkPos], checkPos, guard);
     else
       tailCounts = Collections.emptyMap();
 
@@ -508,6 +514,7 @@ public final class AntiJoinChainOp implements CountOp {
     final RID[] EMPTY = new RID[0];
     long totalCount = 0;
     for (final Iterator<? extends Identifiable> it = db.iterateType(anchorLabel, true); it.hasNext(); ) {
+      guard.check();
       final RID anchorRid = it.next().getIdentity();
 
       // Get anti-join neighbors for this anchor
@@ -573,7 +580,8 @@ public final class AntiJoinChainOp implements CountOp {
    * Uses the RID-only iterator to avoid loading neighbor vertex records from disk.
    */
   private Map<RID, RID[]> buildNeighborRIDMap(final Database db, final String sourceLabel,
-      final String edgeType, final Vertex.DIRECTION direction, final IntHashSet targetBuckets) {
+      final String edgeType, final Vertex.DIRECTION direction, final IntHashSet targetBuckets,
+      final WorkGuard guard) {
     final Map<RID, RID[]> map = new HashMap<>();
     if (sourceLabel == null || !db.getSchema().existsType(sourceLabel))
       return map;
@@ -583,6 +591,7 @@ public final class AntiJoinChainOp implements CountOp {
     final GraphTraversalProvider gavProvider = CSRCountUtils.findAcceleratingProvider(db, edgeType);
 
     for (final Iterator<? extends Identifiable> it = db.iterateType(sourceLabel, true); it.hasNext(); ) {
+      guard.check();
       final RID vertexRid = it.next().getIdentity();
       final List<RID> neighbors = new ArrayList<>();
 
@@ -614,7 +623,8 @@ public final class AntiJoinChainOp implements CountOp {
   /**
    * Pre-computes the tail count (product of edge degrees for remaining hops) for each vertex.
    */
-  private Map<RID, Long> buildTailCounts(final Database db, final String sourceLabel, final int fromHop) {
+  private Map<RID, Long> buildTailCounts(final Database db, final String sourceLabel, final int fromHop,
+      final WorkGuard guard) {
     final Map<RID, Long> counts = new HashMap<>();
     if (sourceLabel == null || !db.getSchema().existsType(sourceLabel))
       return counts;
@@ -624,6 +634,7 @@ public final class AntiJoinChainOp implements CountOp {
     final GraphTraversalProvider gavProvider = CSRCountUtils.findAcceleratingProvider(db, edgeTypes);
 
     for (final Iterator<? extends Identifiable> it = db.iterateType(sourceLabel, true); it.hasNext(); ) {
+      guard.check();
       final RID vertexRid = it.next().getIdentity();
       long tailCount = 1;
       for (int h = fromHop; h < edgeTypes.length; h++) {
@@ -650,10 +661,11 @@ public final class AntiJoinChainOp implements CountOp {
    * Recursive fallback for patterns where labels are missing or anti-join endpoints not at position 0.
    * Includes tail count optimization to avoid loading vertices at the last hops.
    */
-  private long executeOLTPRecursive(final Database db) {
+  private long executeOLTPRecursive(final Database db, final WorkGuard guard) {
     // An unlabelled anchor starts from every vertex in the schema (issue #5757).
     long total = 0;
     for (final Iterator<? extends Identifiable> it = CSRCountUtils.iterateAnchors(db, nodeLabels[0]); it.hasNext(); ) {
+      guard.check();
       final Vertex anchor = it.next().asVertex();
       final Set<RID> antiJoinSet = new HashSet<>();
       for (final RID rid : anchor.getConnectedVertexRIDs(antiJoinDirection, antiJoinEdgeType))

@@ -26,6 +26,7 @@ import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import com.arcadedb.utility.RidHashSet;
 
@@ -88,6 +89,9 @@ public class OptionalMatchStep extends AbstractExecutionStep {
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     final boolean hasInput = prev != null;
+    // Bounds this operator's row loop by the command deadline - see WorkGuard for why between-batches is
+    // not enough (issue #6266).
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
 
     return new ResultSet() {
       private ResultSet prevResults = null;
@@ -138,6 +142,7 @@ public class OptionalMatchStep extends AbstractExecutionStep {
           // Limit buffer size to prevent unbounded memory growth
           final int maxToFetch = Math.min(n, MAX_BUFFER_SIZE);
           while (buffer.size() < maxToFetch) {
+            guard.check();
             // If we have active match results for the current input row, continue streaming them
             if (currentMatchResults != null && currentMatchResults.hasNext()) {
               final long begin = context.isProfiling() ? System.nanoTime() : 0;
@@ -248,6 +253,7 @@ public class OptionalMatchStep extends AbstractExecutionStep {
           final int maxToFetch = Math.min(n, MAX_BUFFER_SIZE);
           boolean foundAnyMatch = false;
           while (buffer.size() < maxToFetch && matchResults.hasNext()) {
+            guard.check();
             buffer.add(matchResults.next());
             foundAnyMatch = true;
           }

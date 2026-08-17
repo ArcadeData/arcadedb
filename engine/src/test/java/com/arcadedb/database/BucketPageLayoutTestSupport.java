@@ -22,8 +22,11 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Type;
 
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -40,6 +43,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public abstract class BucketPageLayoutTestSupport extends TestHelper {
+  /** How many records {@link #createChunkedRecords} puts on page 0 before growing them all into chunk chains. */
+  protected static final int CHUNKED_RECORDS = 12;
+
+  /** Payload length every record built by {@link #createChunkedRecords} ends up with once they have all spilled. */
+  private int spilledPayloadSize;
+
   /**
    * Fills page 0 of a single-bucket type until a record no longer fits it: the next insert lands on another page,
    * which shows up as a RID position that is not the previous one plus one (a new page restarts at a multiple of the
@@ -114,6 +123,74 @@ public abstract class BucketPageLayoutTestSupport extends TestHelper {
         assertThat(numberProperty(row, "autoFix")).as("check database: " + row.toJSON()).isZero();
       }
     }
+  }
+
+  /**
+   * Creates {@link #CHUNKED_RECORDS} records whose slots all live on page 0 of a single-bucket type and grows every
+   * one of them until it has spilled into a chunk chain, so their continuation chunks share the pages that follow -
+   * the layout that produced #6217, and the one every chunked-read test needs. The RID at index {@code i} sits at
+   * slot {@code i} of page 0.
+   * <p>
+   * Lifted here from {@code Issue6217ChunkedReadFalseConflictTest} once
+   * {@code Issue6258ChunkedReadRetryAndCorruptionTest} needed the same layout.
+   */
+  protected RID[] createChunkedRecords(final String typeName) {
+    final RID[] rids = new RID[CHUNKED_RECORDS];
+    database.transaction(() -> {
+      database.getSchema().createDocumentType(typeName, 1).createProperty("payload", Type.STRING);
+      for (int i = 0; i < CHUNKED_RECORDS; i++)
+        rids[i] = database.newDocument(typeName).set("payload", "r" + i).save().getIdentity();
+    });
+
+    // A record only spills once its page cannot host its growth, and a record that spilled leaves its head chunk
+    // behind, so the shared page fills up in steps: keep growing everybody until the last one has left.
+    for (int size = 1_000; size <= 24_000; size += 1_000) {
+      spilledPayloadSize = size;
+      database.transaction(() -> {
+        for (int i = 0; i < CHUNKED_RECORDS; i++)
+          rids[i].asDocument(true).modify().set("payload", payload(i, 'x')).save();
+      });
+
+      if (CHUNKED_RECORDS == (Long) bucketStats(typeName).get("totalMultiPageRecords"))
+        return rids;
+    }
+    throw new AssertionError(
+        "Not every record of " + typeName + " spilled into a chunk chain: " + bucketStats(typeName));
+  }
+
+  /**
+   * Payload for {@link #createChunkedRecords}: the same length for every record and every round, so a rewrite reuses
+   * the chunk chain the record already has, and a per-round filler so a rewrite differs in EVERY chunk.
+   */
+  protected String payload(final int record, final char filler) {
+    final String marker = "r" + record + "-";
+    return marker + String.valueOf(filler).repeat(spilledPayloadSize - marker.length());
+  }
+
+  /** The single bucket of a type built by {@link #createChunkedRecords}. */
+  protected LocalBucket bucketOf(final String typeName) {
+    return (LocalBucket) database.getSchema().getType(typeName).getBuckets(false).getFirst();
+  }
+
+  /** Runs {@code body} on a thread of its own, so it commits in a transaction other than the caller's. */
+  protected void inAnotherThread(final Runnable body) {
+    final List<Throwable> errors = new CopyOnWriteArrayList<>();
+    final Thread thread = new Thread(() -> {
+      try {
+        body.run();
+      } catch (final Throwable e) {
+        errors.add(e);
+      }
+    }, "bucket-page-layout-writer");
+    thread.start();
+    try {
+      thread.join();
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new AssertionError(e);
+    }
+    if (!errors.isEmpty())
+      throw new AssertionError("the concurrent write failed: " + errors.getFirst(), errors.getFirst());
   }
 
   /** Null-tolerant read of a numeric check-database property, so a missing field fails clearly instead of NPE. */

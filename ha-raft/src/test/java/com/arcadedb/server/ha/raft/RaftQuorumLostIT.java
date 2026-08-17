@@ -134,18 +134,7 @@ class RaftQuorumLostIT extends BaseRaftHATest {
 
   @Override
   protected int[] getServerToCheck() {
-    final int count = getServerCount();
-    int alive = 0;
-    for (int i = 0; i < count; i++) {
-      if (getServer(i) != null && getServer(i).isStarted())
-        alive++;
-    }
-    final int[] result = new int[alive];
-    int idx = 0;
-    for (int i = 0; i < count; i++) {
-      if (getServer(i) != null && getServer(i).isStarted())
-        result[idx++] = i;
-    }
-    return result;
+    // Only the servers still running: this test stops one on purpose.
+    return startedServers();
   }
 }

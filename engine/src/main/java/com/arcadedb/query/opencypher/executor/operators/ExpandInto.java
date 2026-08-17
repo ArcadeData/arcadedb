@@ -29,6 +29,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.utility.RidHashSet;
 
 import java.util.ArrayList;
@@ -99,6 +100,9 @@ public class ExpandInto extends AbstractPhysicalOperator {
 
   @Override
   public ResultSet execute(final CommandContext context, final int nRecords) {
+    // Bounds this operator's row loop by the command deadline - see WorkGuard for why between-batches is
+    // not enough (issue #6266).
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     final ResultSet inputResults = child.execute(context, nRecords);
 
     return new ResultSet() {
@@ -135,6 +139,7 @@ public class ExpandInto extends AbstractPhysicalOperator {
         bufferIndex = 0;
 
         while (buffer.size() < n) {
+          guard.check();
           // Move to the next input row once the current pair has no relationship left to yield
           if (edgeIterator == null || !edgeIterator.hasNext()) {
             if (!inputResults.hasNext()) {

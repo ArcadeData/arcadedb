@@ -24,6 +24,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
@@ -805,7 +806,7 @@ public class OpenCypherMatchEnhancementsTest {
       final String sourceId = ids[0];
       final String targetId = ids[1];
 
-      final long startTime = System.currentTimeMillis();
+      final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
 
       db.transaction(() -> {
         final ResultSet rs = db.command("opencypher",
@@ -826,10 +827,7 @@ public class OpenCypherMatchEnhancementsTest {
             .isEqualTo(1);
       });
 
-      final long duration = System.currentTimeMillis() - startTime;
-      assertThat(duration)
-          .as("Query should execute quickly when filtering by specific IDs")
-          .isLessThan(5000);
+      stopwatch.assertStayedUnder(5000, "a lookup driven by the ID filter, not a full scan of the type");
     } finally {
       db.drop();
     }
@@ -855,7 +853,7 @@ public class OpenCypherMatchEnhancementsTest {
       row.put("target_id", targetId);
       batch.add(row);
 
-      final long startTime = System.currentTimeMillis();
+      final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
 
       db.transaction(() -> {
         final ResultSet rs = db.command("opencypher",
@@ -877,10 +875,7 @@ public class OpenCypherMatchEnhancementsTest {
             .isEqualTo(1);
       });
 
-      final long duration = System.currentTimeMillis() - startTime;
-      assertThat(duration)
-          .as("UNWIND + MATCH query should execute quickly when filtering by specific IDs")
-          .isLessThan(5000);
+      stopwatch.assertStayedUnder(5000, "a lookup driven by the ID filter, not a full scan of the type per unwound row");
     } finally {
       db.drop();
     }
