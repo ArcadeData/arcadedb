@@ -198,6 +198,37 @@ class HttpQueryMaxResultRowsIT extends BaseGraphServerTest {
   }
 
   @Test
+  void aCollectionInsideASingleRowCannotExpandPastTheCeiling() throws Exception {
+    // The graph serializers count elements, not rows, and one row can refer to arbitrarily many of them
+    // through a single property: `collect()` returns exactly ONE row holding the whole set. A cap tested only
+    // between rows and between properties expanded that row whole, and - being the only row - left nothing in
+    // the result set for the truncation probe to notice, so the response came back 200 with as many elements
+    // as the query found.
+    final HttpResponse<String> response = send("query", new JSONObject()
+        .put("language", "opencypher")
+        .put("command", "MATCH (n:" + TYPE_NAME + ") RETURN collect(n) AS vs")
+        .put("serializer", "graph")
+        .put("limit", -1));
+
+    assertThat(response.statusCode()).isEqualTo(413);
+    assertThat(response.body()).contains(SETTING);
+  }
+
+  @Test
+  void aCollectionThatFitsIsStillExpandedWhole() throws Exception {
+    // The guard above must not cut an expansion that fits: the same query over fewer rows is complete, and a
+    // complete response is never flagged.
+    final JSONObject response = query(new JSONObject()
+        .put("language", "opencypher")
+        .put("command", "MATCH (n:" + TYPE_NAME + ") WHERE n.i < " + (CEILING - 5) + " RETURN collect(n) AS vs")
+        .put("serializer", "graph")
+        .put("limit", -1));
+
+    assertThat(response.getJSONObject("result").getJSONArray("vertices").length()).isEqualTo(CEILING - 5);
+    assertThat(response.getBoolean("truncated")).isFalse();
+  }
+
+  @Test
   void aRefusedCommandIsRolledBackInsteadOfCommittedBehindTheError() throws Exception {
     // A write whose result nobody will ever see must not be left committed: the ceiling refuses by raising out
     // of the handler, which rolls the auto-commit transaction back.
