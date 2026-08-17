@@ -2234,6 +2234,46 @@ purpose ("more seeds than nodes" reads as "as many as exist" and is clamped to t
 nameless `NegativeArraySizeException`.
 
 [#6216](https://github.com/ArcadeData/arcadedb/issues/6216)
+
+## The same iteration-knob guard, applied to the fourteen `algo.*` procedures #6216 left out of scope (#6264)
+
+[#6216](https://github.com/ArcadeData/arcadedb/issues/6216) established what an iteration-shaped knob needs -
+a domain minimum rejected by name, and a checkpoint inside the loop it drives - and gave both to the three
+procedures its parent review had named. Fourteen more carried the identical defect, untouched:
+`algo.pageRank`, `algo.personalizedPageRank`, `algo.articleRank`, `algo.eigenvector`, `algo.hits`,
+`algo.katz`, `algo.louvain`, `algo.leiden`, `algo.labelPropagation`, `algo.slpa`, `algo.simRank`,
+`algo.fastrp`, `algo.hashgnn` and `algo.graphsage`. Every one extracted its knob with a plain
+`extractInt(n, "maxIterations")`, and none contained a single checkpoint.
+
+So `CALL algo.pageRank({maxIterations: 0})` returned the *uniform initial rank vector* as though it were a
+PageRank result, `algo.louvain` returned every node in its own community, and `algo.fastrp` the untouched
+random projection, and `algo.graphsage` the untouched random-Gaussian initial features presented as trained
+embeddings. The silent half is the more serious one: an un-iterated centrality is not obviously wrong to a
+caller, unlike an exception. All fourteen now reject a value below 1 with a message naming the procedure, the
+parameter and the value.
+
+For time there is still no honest ceiling to pick, so a large value is not forbidden but made abortable. Each
+iteration loop calls the shared `WorkGuard`, which observes a thread interrupt and the
+`arcadedb.command.timeout` deadline; a per-node checkpoint inside each pass bounds the abort latency below a
+whole sweep of the graph, throttled to once every 1024 nodes where a node's own work is small and unthrottled
+where it is already O(n). Six of the fourteen have no convergence test at all - the CSR PageRank kernel,
+`algo.simRank`, `algo.fastrp`, `algo.hashgnn`, `algo.graphsage` and `algo.slpa` - so the knob alone decided
+when they stopped and nothing could end the run early.
+
+Two of them hand the work to `GraphAlgorithms`, which lives below the query layer and knew nothing about
+deadlines. Rather than couple the OLAP kernels to the query engine, `GraphAlgorithms.pageRank` and
+`GraphAlgorithms.labelPropagation` gained an overload taking a `WorkCheckpoint`, a one-method interface in
+`com.arcadedb.graph.olap` that the procedures satisfy with a method reference to their own guard. Existing
+callers are unchanged and get a checkpoint that never aborts.
+
+`algo.slpa` needed one thing more. Alone among the fourteen its `iterations` buys heap as well as time: every
+node keeps a label-memory row of `iterations + 1` ints, so `{iterations: 1000000}` on a 10k-node graph asks
+for 40 GB, and at `Integer.MAX_VALUE` the `iterations + 1` wrapped to `Integer.MIN_VALUE` and died as a bare
+`NegativeArraySizeException` naming nothing. The footprint is now estimated in saturating `long` arithmetic
+and checked against the same `arcadedb.cypher.algoMaxWalkMemory` budget the walk buffers use, before the
+first row is allocated.
+
+[#6264](https://github.com/ArcadeData/arcadedb/issues/6264)
 ## A placeholder whose content had to spill into chunks is no longer returned twice by a scan (#6196)
 
 `SELECT FROM Doc` could return the same record twice, under two different RIDs, and `count(@rid)` counted it

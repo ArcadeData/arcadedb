@@ -81,10 +81,11 @@ public class AlgoLeiden extends AbstractAlgoProcedure {
     validateArgs(args);
 
     final String[] relTypes = args.length > 0 ? extractRelTypes(args[0]) : null;
-    final int maxIterations = args.length > 1 && args[1] instanceof Number n ? extractInt(n, "maxIterations") : 10;
+    final int maxIterations = args.length > 1 && args[1] instanceof Number n ? extractInt(n, "maxIterations", 1) : 10;
     final double resolution = args.length > 2 && args[2] instanceof Number n ? n.doubleValue() : 1.0;
 
     final Database db = context.getDatabase();
+    final WorkGuard guard = newWorkGuard(context);
 
     final GraphData graph = loadGraph(db, null, relTypes, context);
 
@@ -116,10 +117,15 @@ public class AlgoLeiden extends AbstractAlgoProcedure {
       communityDegree[i] = degree[i];
 
     for (int iter2 = 0; iter2 < maxIterations; iter2++) {
+      // maxIterations is a caller-supplied knob and the "nothing moved" break only fires if the graph settles, so
+      // the outer loop carries the checkpoint. One iteration is two passes over every edge.
+      guard.check();
       boolean changed = false;
 
       // Phase 1: Local moves (greedy modularity optimization)
       for (int i = 0; i < n; i++) {
+        // A single pass walks the whole graph, so on a large one the checkpoint belongs inside the pass too.
+        guard.checkPeriodically(i);
         final int currentComm = community[i];
         final long ki = degree[i];
 
@@ -161,6 +167,7 @@ public class AlgoLeiden extends AbstractAlgoProcedure {
       if (changed) {
         boolean refined = false;
         for (int i = 0; i < n; i++) {
+          guard.checkPeriodically(i);
           final int currentComm = community[i];
           final long ki = degree[i];
 
