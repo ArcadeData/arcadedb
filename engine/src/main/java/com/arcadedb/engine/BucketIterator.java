@@ -22,6 +22,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.BrokenChunkChainException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SerializationException;
@@ -206,6 +207,12 @@ public class BucketIterator implements Iterator<Record> {
 
               try {
                 nextBatch[writeIndex++] = database.lookupByRID(rid, false);
+              } catch (final BrokenChunkChainException e) {
+                // THE LOADER ITSELF SAYS SO (#6258): a chain the read could not parse, confirmed broken against the
+                // newest committed image with the read's own chunks proven current. No second walk needed here.
+                // UNDO THE RESERVED SLOT: see the JLS note on the ConcurrentModificationException arm below.
+                writeIndex--;
+                logSkippedRecord(e);
               } catch (final ConcurrentModificationException e) {
                 if (!bucket.isChunkChainBroken(rid))
                   // TRANSIENT CONTENTION, NOT PROVEN CORRUPTION: loadMultiPageRecord() throws this after
@@ -242,6 +249,10 @@ public class BucketIterator implements Iterator<Record> {
               final Binary view;
               try {
                 view = bucket.getRecordInternal(placeholderTargetRid, true);
+              } catch (final BrokenChunkChainException e) {
+                // See the identical arm on the NOT-DELETED branch above (#6258).
+                logSkippedRecord(e);
+                continue;
               } catch (final ConcurrentModificationException e) {
                 if (!bucket.isChunkChainBroken(placeholderTargetRid))
                   // TRANSIENT CONTENTION, NOT PROVEN CORRUPTION: see the identical disambiguation on the

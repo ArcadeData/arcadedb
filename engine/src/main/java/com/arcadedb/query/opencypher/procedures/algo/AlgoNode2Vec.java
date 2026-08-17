@@ -144,8 +144,12 @@ public class AlgoNode2Vec extends AbstractAlgoProcedure {
     // Sized in long arithmetic: `n * walksPerNode` wraps int for a large walksPerNode, which used to size the
     // walk matrix with a negative or (for an exact multiple of 2^32) far too small a value.
     final long totalWalksAsLong = saturatingProduct(n, walksPerNode);
-    // Per walk: one matrix row of walkLength ints, plus one entry of the walkOrder shuffle array.
-    final long bytesPerWalk = WALK_ROW_OVERHEAD_BYTES + WALK_ENTRY_BYTES + WALK_ENTRY_BYTES * walkLen;
+    // Per walk: one matrix row of walkLength ints, plus one entry of the walkOrder shuffle array. Saturating
+    // throughout, like the estimate itself: a footprint that mixes a saturated product with a plain addition wraps
+    // to a negative number, and a negative estimate passes the budget check unconditionally. walkLen is int-bounded
+    // so this one cannot reach that today - it is written this way so the shape is the same at every call site.
+    final long bytesPerWalk = saturatingSum(WALK_ROW_OVERHEAD_BYTES + WALK_ENTRY_BYTES,
+        saturatingProduct(WALK_ENTRY_BYTES, walkLen));
     checkWalkBudget(db, saturatingProduct(totalWalksAsLong, bytesPerWalk),
         "walksPerNode=" + walksPerNode + " x walkLength=" + walkLen + " over " + n + " nodes");
     if (totalWalksAsLong > Integer.MAX_VALUE)

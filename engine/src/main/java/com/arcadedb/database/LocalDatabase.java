@@ -40,6 +40,7 @@ import com.arcadedb.engine.WALFileFactoryEmbedded;
 import com.arcadedb.engine.timeseries.TimeSeriesBucket;
 import com.arcadedb.engine.timeseries.TimeSeriesTagDictionary;
 import com.arcadedb.exception.ArcadeDBException;
+import com.arcadedb.exception.BrokenChunkChainException;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
@@ -1426,6 +1427,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           LogManager.instance().log(this, Level.WARNING,
               "Cannot read record %s for index/external cleanup on delete (corrupted buffer): %s. Deleting the record anyway; "
                   + "run a database check to repair any dangling index entries.", record.getIdentity(), e.getMessage());
+        } catch (final BrokenChunkChainException e) {
+          // The loader itself confirmed the chunk chain is structurally broken (#6258), so there is nothing left to
+          // disambiguate here: the body cannot be assembled and never will be. Same tolerant path as the branch below,
+          // minus the structural probe that branch has to run because a ConcurrentModificationException does not say
+          // which of the two problems it is. Still gated on the opt-in: forcing through is an admin decision either way.
+          if (!tolerateBrokenChain)
+            throw e;
+          forceBrokenChainDelete = true;
+          logBrokenChainForceDelete(record.getIdentity(), e);
         } catch (final ConcurrentModificationException e) {
           // The record body could not be assembled for a consistent read, so its indexed keys and EXTERNAL pointers could
           // not be read for cleanup. loadMultiPageRecord throws this after exhausting TX_RETRIES, but exhausted retries do
@@ -1447,22 +1457,36 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       } else if (record instanceof Vertex) {
         try {
           graphEngine.deleteVertex((VertexInternal) record, forceBrokenChainDelete);
+        } catch (final BrokenChunkChainException e) {
+          // The record body could not be assembled to reach the vertex's edge lists, and the loader has already
+          // confirmed why (#6258): no structural probe needed, only the opt-in and the guard against re-forcing a
+          // delete that was already forced.
+          if (!tolerateBrokenChain || forceBrokenChainDelete)
+            throw e;
+          logBrokenChainForcePhysicalDelete(record.getIdentity(), e);
+          graphEngine.deleteVertex((VertexInternal) record, true);
         } catch (final ConcurrentModificationException e) {
           // The physical removal can raise the #4932 retry signal even when index cleanup did not (e.g. the type has no
           // index left to read, so the broken chain is only discovered here). Fall back to force ONLY when the chain is
           // confirmed structurally broken; a genuine transient conflict (or an already-forced delete) rethrows to retry.
           if (!tolerateBrokenChain || forceBrokenChainDelete || !bucket.isChunkChainBroken(record.getIdentity()))
             throw e;
-          logBrokenChainForceDelete(record.getIdentity(), e);
+          logBrokenChainForcePhysicalDelete(record.getIdentity(), e);
           graphEngine.deleteVertex((VertexInternal) record, true);
         }
       } else {
         try {
           bucket.deleteRecord(record.getIdentity(), forceBrokenChainDelete);
         } catch (final ConcurrentModificationException e) {
+          // NO BrokenChunkChainException ARM HERE, unlike the vertex branch above, and the asymmetry is real rather
+          // than an omission (code review on #6258): deleteRecordInternal walks the chunk chain itself and never
+          // loads the record, so it reports a break as the #4932 retry signal and the structural probe below is
+          // still what tells the two apart. The vertex branch differs because reaching a vertex's edge lists means
+          // READING it, which is where the loader's own verdict comes from. Add the arm here the day
+          // deleteRecordInternal learns to name a broken chain as one.
           if (!tolerateBrokenChain || forceBrokenChainDelete || !bucket.isChunkChainBroken(record.getIdentity()))
             throw e;
-          logBrokenChainForceDelete(record.getIdentity(), e);
+          logBrokenChainForcePhysicalDelete(record.getIdentity(), e);
           bucket.deleteRecord(record.getIdentity(), true);
         }
       }
@@ -1492,10 +1516,24 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     }
   }
 
-  private void logBrokenChainForceDelete(final RID rid, final ConcurrentModificationException e) {
+  /** The INDEX/EXTERNAL cleanup could not read the record, so the delete proceeds without it. */
+  private void logBrokenChainForceDelete(final RID rid, final Exception e) {
     LogManager.instance().log(this, Level.WARNING,
         "Cannot read record %s for index/external cleanup on delete (broken multi-page chunk chain): %s. Deleting the "
             + "record anyway; run a database check to repair any dangling index entries.", rid, e.getMessage());
+  }
+
+  /**
+   * The PHYSICAL removal could not read the record - a vertex's edge lists, or the chunks to free. A different stage
+   * from the index cleanup above, leaving different things behind, so it says so instead of reusing that message:
+   * an operator running with {@code DELETE_TOLERATE_BROKEN_CHAIN} on was told to look for dangling index entries
+   * when what survived was edges and orphaned chunks (code review on #6258).
+   */
+  private void logBrokenChainForcePhysicalDelete(final RID rid, final Exception e) {
+    LogManager.instance().log(this, Level.WARNING,
+        "Cannot read record %s to remove it physically (broken multi-page chunk chain): %s. Deleting it anyway; the "
+            + "chunks it can no longer reach, and any edge left pointing at it, are repaired by a database check.",
+        rid, e.getMessage());
   }
 
   /**

@@ -85,10 +85,11 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
     final Vertex sourceVertex = extractVertex(args[0], "sourceNode");
     final String[] relTypes = args.length > 1 ? extractRelTypes(args[1]) : null;
     final double dampingFactor = args.length > 2 && args[2] instanceof Number n ? n.doubleValue() : 0.85;
-    final int maxIterations = args.length > 3 && args[3] instanceof Number n ? extractInt(n, "maxIterations") : 20;
+    final int maxIterations = args.length > 3 && args[3] instanceof Number n ? extractInt(n, "maxIterations", 1) : 20;
     final double tolerance = args.length > 4 && args[4] instanceof Number n ? n.doubleValue() : 1e-6;
 
     final Database db = context.getDatabase();
+    final WorkGuard guard = newWorkGuard(context);
 
     // Try CSR-accelerated path
     final GraphTraversalProvider provider = findProvider(db, relTypes);
@@ -96,16 +97,17 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
       final int sourceIdx = provider.getNodeId(sourceVertex.getIdentity());
       if (sourceIdx >= 0) {
         context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
-        return executeWithCSR(provider, sourceIdx, relTypes, dampingFactor, maxIterations, tolerance);
+        return executeWithCSR(provider, sourceIdx, relTypes, dampingFactor, maxIterations, tolerance, guard);
       }
     }
 
     // Fall back to OLTP path
-    return executeWithOLTP(db, sourceVertex, relTypes, dampingFactor, maxIterations, tolerance);
+    return executeWithOLTP(db, sourceVertex, relTypes, dampingFactor, maxIterations, tolerance, guard);
   }
 
   private Stream<Result> executeWithCSR(final GraphTraversalProvider provider, final int sourceIdx,
-      final String[] relTypes, final double dampingFactor, final int maxIterations, final double tolerance) {
+      final String[] relTypes, final double dampingFactor, final int maxIterations, final double tolerance,
+      final WorkGuard guard) {
     final int n = provider.getNodeCount();
     if (n == 0)
       return Stream.empty();
@@ -126,6 +128,9 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
     rank[sourceIdx] = 1.0;
 
     for (int iter = 0; iter < maxIterations; iter++) {
+      // maxIterations is a caller-supplied knob and the tolerance break only fires if the graph converges, so the
+      // outer loop carries the checkpoint. One iteration is O(n + m), which swallows a flag test whole.
+      guard.check();
       final double[] newRank = new double[n];
       double dangling = 0.0;
       for (int i = 0; i < n; i++)
@@ -135,6 +140,8 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
       if (hasView) {
         final int[] inNbrs = inView.neighbors();
         for (int i = 0; i < n; i++) {
+          // A single iteration walks the whole graph, so on a large one the checkpoint belongs inside the pass too.
+          guard.checkPeriodically(i);
           double incoming = 0.0;
           for (int k = inView.offset(i), end = inView.offsetEnd(i); k < end; k++) {
             final int j = inNbrs[k];
@@ -146,6 +153,8 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
         }
       } else {
         for (int i = 0; i < n; i++) {
+          // The fallback branch of the same pass - the checkpoint belongs in whichever one runs.
+          guard.checkPeriodically(i);
           double incoming = 0.0;
           for (final int j : inAdjFallback[i])
             if (outDegree[j] > 0)
@@ -174,7 +183,7 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
   }
 
   private Stream<Result> executeWithOLTP(final Database db, final Vertex sourceVertex, final String[] relTypes,
-      final double dampingFactor, final int maxIterations, final double tolerance) {
+      final double dampingFactor, final int maxIterations, final double tolerance, final WorkGuard guard) {
 
     final GraphData graph = loadGraph(db, null, relTypes);
 
@@ -198,6 +207,9 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
     rank[sourceIdx] = 1.0;
 
     for (int iter2 = 0; iter2 < maxIterations; iter2++) {
+      // Same knob and same checkpoint as the CSR path above: the tolerance break only fires if the graph
+      // converges, so maxIterations is what ends the run and the guard is what can abort it.
+      guard.check();
       final double[] newRank = new double[n];
       double dangling = 0.0;
       for (int i = 0; i < n; i++)
@@ -205,6 +217,8 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
           dangling += rank[i];
 
       for (int i = 0; i < n; i++) {
+        // A single iteration walks the whole graph, so on a large one the checkpoint belongs inside the pass too.
+        guard.checkPeriodically(i);
         double incoming = 0.0;
         for (final int j : inAdj[i])
           if (outDegree[j] > 0)

@@ -2282,3 +2282,96 @@ to `endTest` into neither. Seven `await().until(() -> findLeaderIndex() >= 0)` w
 are gone, and three copies of "only the servers still running" collapse into one helper.
 
 [#6267](https://github.com/ArcadeData/arcadedb/issues/6267)
+## The same iteration-knob guard, applied to the fourteen `algo.*` procedures #6216 left out of scope (#6264)
+
+[#6216](https://github.com/ArcadeData/arcadedb/issues/6216) established what an iteration-shaped knob needs -
+a domain minimum rejected by name, and a checkpoint inside the loop it drives - and gave both to the three
+procedures its parent review had named. Fourteen more carried the identical defect, untouched:
+`algo.pageRank`, `algo.personalizedPageRank`, `algo.articleRank`, `algo.eigenvector`, `algo.hits`,
+`algo.katz`, `algo.louvain`, `algo.leiden`, `algo.labelPropagation`, `algo.slpa`, `algo.simRank`,
+`algo.fastrp`, `algo.hashgnn` and `algo.graphsage`. Every one extracted its knob with a plain
+`extractInt(n, "maxIterations")`, and none contained a single checkpoint.
+
+So `CALL algo.pageRank({maxIterations: 0})` returned the *uniform initial rank vector* as though it were a
+PageRank result, `algo.louvain` returned every node in its own community, and `algo.fastrp` the untouched
+random projection, and `algo.graphsage` the untouched random-Gaussian initial features presented as trained
+embeddings. The silent half is the more serious one: an un-iterated centrality is not obviously wrong to a
+caller, unlike an exception. All fourteen now reject a value below 1 with a message naming the procedure, the
+parameter and the value.
+
+For time there is still no honest ceiling to pick, so a large value is not forbidden but made abortable. Each
+iteration loop calls the shared `WorkGuard`, which observes a thread interrupt and the
+`arcadedb.command.timeout` deadline; a per-node checkpoint inside each pass bounds the abort latency below a
+whole sweep of the graph, throttled to once every 1024 nodes where a node's own work is small and unthrottled
+where it is already O(n). Six of the fourteen have no convergence test at all - the CSR PageRank kernel,
+`algo.simRank`, `algo.fastrp`, `algo.hashgnn`, `algo.graphsage` and `algo.slpa` - so the knob alone decided
+when they stopped and nothing could end the run early.
+
+Two of them hand the work to `GraphAlgorithms`, which lives below the query layer and knew nothing about
+deadlines. Rather than couple the OLAP kernels to the query engine, `GraphAlgorithms.pageRank` and
+`GraphAlgorithms.labelPropagation` gained an overload taking a `WorkCheckpoint`, a one-method interface in
+`com.arcadedb.graph.olap` that the procedures satisfy with a method reference to their own guard. Existing
+callers are unchanged and get a checkpoint that never aborts.
+
+`algo.slpa` needed one thing more. Alone among the fourteen its `iterations` buys heap as well as time: every
+node keeps a label-memory row of `iterations + 1` ints, so `{iterations: 1000000}` on a 10k-node graph asks
+for 40 GB, and at `Integer.MAX_VALUE` the `iterations + 1` wrapped to `Integer.MIN_VALUE` and died as a bare
+`NegativeArraySizeException` naming nothing. The footprint is now estimated in saturating `long` arithmetic
+and checked against the same `arcadedb.cypher.algoMaxWalkMemory` budget the walk buffers use, before the
+first row is allocated.
+
+[#6264](https://github.com/ArcadeData/arcadedb/issues/6264)
+## A placeholder whose content had to spill into chunks is no longer returned twice by a scan (#6196)
+
+`SELECT FROM Doc` could return the same record twice, under two different RIDs, and `count(@rid)` counted it
+twice with it. One record shape reached it: a **placeholder** whose CONTENT record was too large for any page to
+hold whole.
+
+A record that outgrows its own page normally becomes a chunk chain in place. When its slot is too small even for
+the 14 bytes a chunk header needs - since #6149 the only remaining case, and it takes a page with a free tail of
+exactly zero - the slot becomes a 9-byte POINTER instead and the content moves to a record of its own on another
+page. Such a content record is not a document; it is reachable only through the pointer, and every reader that
+walks a page knows to skip it because its slot carries its size **negated**. That is the entire mechanism, and it
+is the one thing a content record bigger than a page cannot have: it has no size in its slot at all, because it is
+a chain. `writeMultiPageRecord` stamped the plain `FIRST_CHUNK` marker of an ordinary multi-page record on its
+head, and at that moment the information that the slot belonged to somebody else was gone - there was nowhere
+else it was written down.
+
+So the bytes were handed out twice: once through the pointer, under the RID the application knows, and once as a
+document in their own right under the head chunk's RID. `check()` had the mirror of the same confusion, counting
+the record under `totalMultiPageRecords` and never under `totalSurrogateRecords`.
+
+The head chunk of a content record now carries a marker of its own, `FIRST_CHUNK_PLACEHOLDER_CONTENT` (-4), in the
+one value the marker namespace still had free between `NEXT_CHUNK` (-3) and the negated sizes (< -5). It costs
+nothing in the stored format - one zigzag byte, exactly like the markers either side of it - and it restores the
+rule the negated size marker always expressed: a scan, a `count()` and an existence check hand out records, and
+this is not one, while everything that walks or rewrites the CHAIN treats the two heads identically.
+
+**Databases written before this** still hold the ambiguous shape, and no reader can tell it from an ordinary
+multi-page record - only the pointer that leads to it can. Rather than have every reader tolerate the ambiguity
+for ever, `CHECK DATABASE` now follows each placeholder pointer, reports a content record still stored the old way as an error naming its RID, and
+`CHECK DATABASE FIX` repairs it by rewriting that one marker. It is a repair and never a deletion: not a byte of
+the record, its chunk header or its chain is touched.
+
+**Run that FIX before writing through a full scan of such a database.** Until it has run, the content record is
+still handed out under a RID of its own, and that RID looks like any other: an application that scans a type and
+updates or deletes what comes back can reach the content record directly, where nothing can tell it apart from a
+record and the write lands on content the placeholder pointer still references. This is the behaviour every
+release before this one already had - the marker is what closes it, and `CHECK DATABASE FIX` is what applies the
+marker to data written earlier. A read-only scan of an unrepaired database merely returns the record twice; a
+read-modify-write over one is worth the FIX first.
+
+Following the pointers costs `CHECK DATABASE` one page fetch per placeholder POINTER - every one of them, not only
+the chunked case it is looking for, because the marker on the other end is the only thing that tells the two apart.
+A pre-#6149 bucket dense with placeholders therefore pays one extra fetch each, of pages the same pass reads
+anyway, on an operation that already reads every page of the bucket and walks the full chunk chain of every
+multi-page record.
+
+One reporting detail to expect on an unrepaired database: only the TOTALS `CHECK DATABASE` returns are
+reconciled, because a content record can sit on a page the walk has already left behind and reconciling as it
+went would make the answer depend on the order the allocator happened to place the pages in. The per-page
+tallies printed by a verbose run are not, so for such a record a page's own `multiPageRecords` count disagrees
+with the top-level `totalSurrogateRecords` it was moved to. That is deliberate: a physical-layout log describes
+the page as the walk found it. Both agree again once the FIX has run.
+
+[#6196](https://github.com/ArcadeData/arcadedb/issues/6196)

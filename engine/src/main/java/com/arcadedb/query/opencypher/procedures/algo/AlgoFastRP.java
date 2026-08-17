@@ -98,7 +98,7 @@ public class AlgoFastRP extends AbstractAlgoProcedure {
 
     final Map<String, Object> config = args.length > 0 ? extractMap(args[0], "config") : null;
     final int dimensions = config != null && config.get("dimensions") instanceof Number n ? extractEmbeddingDimension(n, "dimensions") : 128;
-    final int iterations = config != null && config.get("iterations") instanceof Number n ? extractInt(n, "iterations") : 4;
+    final int iterations = config != null && config.get("iterations") instanceof Number n ? extractInt(n, "iterations", 1) : 4;
     final double normStrength = config != null && config.get("normalization") instanceof Number n ? n.doubleValue() : 0.0;
     final double selfInfluence = config != null && config.get("selfInfluence") instanceof Number n ? n.doubleValue() : 0.0;
     final long seed = config != null && config.get("seed") instanceof Number n ? n.longValue() : -1L;
@@ -106,6 +106,7 @@ public class AlgoFastRP extends AbstractAlgoProcedure {
     final Vertex.DIRECTION dir = parseDirection(config != null ? (String) config.get("direction") : null);
 
     final Database db = context.getDatabase();
+    final WorkGuard guard = newWorkGuard(context);
     final GraphData graph = loadGraph(db, null, relTypes, context);
 
     final int n = graph.nodeCount;
@@ -137,7 +138,12 @@ public class AlgoFastRP extends AbstractAlgoProcedure {
     // Iterative neighbourhood propagation
     final double[][] newEmbed = new double[n][dimensions];
     for (int iter = 0; iter < iterations; iter++) {
+      // iterations is a caller-supplied knob and this kernel has no convergence test at all, so it always runs the
+      // full count: the guard is the only thing that can end a run the caller no longer wants.
+      guard.check();
       for (int i = 0; i < n; i++) {
+        // A single propagation walks the whole graph, so on a large one the checkpoint belongs inside it too.
+        guard.checkPeriodically(i);
         final int deg = degree[i];
         // Self contribution
         for (int d = 0; d < dimensions; d++)
@@ -159,8 +165,10 @@ public class AlgoFastRP extends AbstractAlgoProcedure {
         normalizeL2(newEmbed[i]);
       }
       // Swap buffers
-      for (int i = 0; i < n; i++)
+      for (int i = 0; i < n; i++) {
+        guard.checkPeriodically(i);
         System.arraycopy(newEmbed[i], 0, embed[i], 0, dimensions);
+      }
     }
 
     return IntStream.range(0, n).mapToObj(i -> {
