@@ -559,8 +559,14 @@ class Issue5279ConcurrentUpdateTest extends BucketPageLayoutTestSupport {
     // the update went through the placeholder-pointer fall-through and not through an in-place content update.
     final Map<String, Object> rebuilt = bucketStats("Holder");
     assertThat((Long) rebuilt.get("totalPlaceholderRecords")).isEqualTo(1L);
-    // The new content record is chunked, next to the one that sealed page 0.
-    assertThat((Long) rebuilt.get("totalMultiPageRecords")).isEqualTo(2L);
+    // Still one content record, and still only one multi-page record - the one that sealed page 0. Since #6196 a
+    // content record spilled into a chain of its own is counted as the SURROGATE it is, not as a record.
+    assertThat((Long) rebuilt.get("totalSurrogateRecords")).isEqualTo(1L);
+    assertThat((Long) rebuilt.get("totalMultiPageRecords")).isEqualTo(1L);
+    // What proves the rebuild: the new content record fits no page, so it brought continuation chunks the plain
+    // 30 KB one it replaced did not have.
+    assertThat((Long) rebuilt.get("totalChunks")).as("the rebuilt content record must be a chain: " + rebuilt)
+        .isGreaterThan((Long) layout.get("totalChunks"));
 
     checkDatabase();
   }
