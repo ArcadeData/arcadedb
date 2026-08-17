@@ -3654,8 +3654,12 @@ public class CypherExecutionPlan {
     if (!(nodeStep instanceof MatchNodeStep))
       nodeStep = new MatchNodeStep(anchorVar, anchorNode, context);
 
-    // Determine target label for filtering (the counted node's label, if any)
+    // Determine target label for filtering (the counted node's label, if any). The step keys the
+    // filter on one name, which is not what a conjunction or a disjunction asks for, so a label set
+    // that name cannot stand for declines the push-down (issue #6322).
     final NodePattern countedNode = anchorNode == sourceNode ? targetNode : sourceNode;
+    if (!hasPushDownRepresentableLabel(countedNode))
+      return null;
     final String targetLabel = countedNode.hasLabels() ? countedNode.getLabels().get(0) : null;
 
     final CountEdgesReturnStep countStep = new CountEdgesReturnStep(
@@ -4165,19 +4169,66 @@ public class CypherExecutionPlan {
 
   /**
    * Checks whether two node patterns have labels that are type-disjoint in the schema,
-   * meaning no vertex can match both labels simultaneously.
+   * meaning no vertex can match both patterns simultaneously.
    * <p>
    * Two labels are disjoint if neither is a supertype/subtype of the other AND no type
    * in the schema is a subtype of both (which would allow a vertex to match both labels).
+   * <p>
+   * A node can write more than one label, and this is the one place where reading only the first of
+   * them can go wrong in <em>either</em> direction, because the answer is a proof rather than a
+   * filter: the caller uses it to conclude that two hops cannot be the same edge, so a wrong "yes"
+   * drops matches (issue #6322). The two spellings are therefore taken apart:
+   * <ul>
+   *   <li>{@code (a:A:B)} requires both, so proving <em>any</em> of its labels disjoint from any of
+   *   the other node's requirements proves the nodes disjoint;</li>
+   *   <li>{@code (a:A|B)} requires either, so the pattern is only disjoint when <em>every</em>
+   *   alternative is.</li>
+   * </ul>
+   * Reading the first label alone answers the conjunction too narrowly, which merely misses an
+   * opportunity, and the disjunction too widely, which is the wrong answer.
    */
   private boolean nodeLabelsAreTypeDisjoint(final NodePattern node1, final NodePattern node2) {
     if (!node1.hasLabels() || !node2.hasLabels())
       return false; // Without labels, can't prove disjointness
 
-    // Use the first label from each node for the check
-    final String label1 = node1.getLabels().get(0);
-    final String label2 = node2.getLabels().get(0);
+    // Every alternative of node1 must be disjoint from every alternative of node2. A conjunction is
+    // a single alternative listing all its labels; a disjunction is one alternative per label.
+    for (final List<String> alternative1 : labelAlternatives(node1))
+      for (final List<String> alternative2 : labelAlternatives(node2))
+        if (!alternativesAreTypeDisjoint(alternative1, alternative2))
+          return false;
 
+    return true;
+  }
+
+  /**
+   * The label sets a node pattern accepts: one set holding every label for a conjunction, one
+   * single-label set per alternative for a disjunction.
+   */
+  private static List<List<String>> labelAlternatives(final NodePattern node) {
+    if (!node.isLabelDisjunction())
+      return List.of(node.getLabels());
+
+    final List<List<String>> alternatives = new ArrayList<>(node.getLabels().size());
+    for (final String label : node.getLabels())
+      alternatives.add(List.of(label));
+    return alternatives;
+  }
+
+  /**
+   * Whether two conjunctions of labels cannot be satisfied by the same vertex, which holds as soon as
+   * one label of the first is type-disjoint from one label of the second.
+   */
+  private boolean alternativesAreTypeDisjoint(final List<String> labels1, final List<String> labels2) {
+    for (final String label1 : labels1)
+      for (final String label2 : labels2)
+        if (labelsAreTypeDisjoint(label1, label2))
+          return true;
+    return false;
+  }
+
+  /** Whether no vertex in the schema can carry both labels. */
+  private boolean labelsAreTypeDisjoint(final String label1, final String label2) {
     if (label1.equals(label2))
       return false; // Same label → not disjoint
 
@@ -4624,6 +4675,10 @@ public class CypherExecutionPlan {
 
     for (int i = 0; i <= hopCount; i++) {
       final NodePattern node = pathPattern.getNode(i);
+      // One name per hop is all the operator carries, and a conjunction or a disjunction is not one
+      // name; rather than count a set the pattern did not describe, decline (issue #6322).
+      if (!hasPushDownRepresentableLabel(node))
+        return null;
       nodeLabels[i] = node.hasLabels() ? node.getLabels().get(0) : null;
     }
 
@@ -4837,18 +4892,23 @@ public class CypherExecutionPlan {
     if (centralVar == null)
       return null; // no variable appears in multiple patterns
 
-    // Find the label for the central variable
+    // Find the label for the central variable. The variable is written once per arm and the
+    // operator enumerates one type of central node, so every occurrence has to agree on it: a label
+    // set the single name cannot stand for, or two occurrences naming different types, declines the
+    // push-down and leaves the query to the ordinary pipeline, which applies each of them (#6322).
     for (final MatchClause mc : statement.getMatchClauses()) {
       if (!mc.hasPathPatterns()) continue;
       for (final PathPattern pp : mc.getPathPatterns())
         for (int i = 0; i <= pp.getRelationshipCount(); i++) {
           final NodePattern node = pp.getNode(i);
-          if (centralVar.equals(node.getVariable()) && node.hasLabels()) {
-            centralLabel = node.getLabels().get(0);
-            break;
-          }
+          if (!centralVar.equals(node.getVariable()) || !node.hasLabels())
+            continue;
+          if (!hasPushDownRepresentableLabel(node))
+            return null;
+          if (labelsConflict(centralLabel, node.getLabels().get(0)))
+            return null;
+          centralLabel = node.getLabels().get(0);
         }
-      if (centralLabel != null) break;
     }
 
     final ArrayList<DegreeProductOp.Arm> armList = new ArrayList<>();
@@ -5256,7 +5316,11 @@ public class CypherExecutionPlan {
    * {@code (a:A:B)} keeps only what carries both and {@code (a:A|B)} keeps what carries either; taking the first
    * of the list turns each of them into {@code (a:A)}, which is neither. An operator built on that filter counts
    * a set the pattern did not describe, so the detector declines and leaves the query to the ordinary pipeline
-   * (issue #6304).
+   * (issue #6304, extended to the remaining detectors by issue #6322).
+   * <p>
+   * The one place a multi-label node is <em>not</em> answered by declining is
+   * {@link #nodeLabelsAreTypeDisjoint(NodePattern, NodePattern)}, which produces a proof rather than a filter
+   * and takes the two spellings apart instead.
    */
   private static boolean hasPushDownRepresentableLabel(final NodePattern node) {
     return !node.hasLabels() || (node.getLabels().size() == 1 && !node.isLabelDisjunction());
@@ -5335,6 +5399,10 @@ public class CypherExecutionPlan {
 
     for (int i = 0; i <= hopCount; i++) {
       final NodePattern node = pathPattern.getNode(i);
+      // One name per hop is all the operator carries, and a conjunction or a disjunction is not one
+      // name; rather than count a set the pattern did not describe, decline (issue #6322).
+      if (!hasPushDownRepresentableLabel(node))
+        return null;
       nodeLabels[i] = node.hasLabels() ? node.getLabels().get(0) : null;
     }
 

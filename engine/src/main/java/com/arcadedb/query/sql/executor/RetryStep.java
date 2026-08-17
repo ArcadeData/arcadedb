@@ -91,13 +91,27 @@ public class RetryStep extends AbstractExecutionStep {
         // TransactionManager's file-lock timeout during commit (see
         // TransactionManager.lockFilesInOrder). That contention is transient and almost always
         // clears after a short backoff, so retrying inside a COMMIT RETRY block is the right
-        // behavior. Query-level timeouts wrapped in RETRY will also retry, which is consistent
-        // with the user's explicit RETRY N directive.
+        // behavior. A TIMEOUT clause written inside the block is retried for the same reason: each
+        // attempt builds its own plan on a context of its own, so the clause starts its interval
+        // again. What is not retried is the command's own deadline - see below.
         try {
           ctx.getDatabase().rollback();
         } catch (Exception e) {
           // IGNORE IT
         }
+
+        // A retry is only a retry when its precondition can change. The command's deadline is one
+        // instant pinned for the whole statement (issue #6266), and every attempt this step starts
+        // inherits it, so once it has passed the remaining attempts abort on their first check: the
+        // block would spend its whole budget, plus a backoff sleep between each pair of attempts,
+        // re-reaching a bound that expired before the first retry, and then report the failure of the
+        // last attempt rather than the deadline that actually stopped it (issue #6322).
+        if (commandDeadlineReached(ctx))
+          throw ex instanceof TimeoutException ?
+              ex :
+              new TimeoutException(
+                  "COMMIT RETRY gave up after " + (attempt + 1) + " of " + retries + " attempts: the command exceeded the "
+                      + ctx.getCommandDeadlineDescription(), ex);
 
         if (attempt >= retries - 1) {
           if (elseBody != null && elseBody.size() > 0) {
@@ -121,6 +135,16 @@ public class RetryStep extends AbstractExecutionStep {
 
     finalResult = new EmptyStep(ctx);
     return finalResult.syncPull(ctx, nRecords);
+  }
+
+  /**
+   * Whether the deadline every attempt of this block runs under has already passed. Read from the step's own
+   * context rather than from the attempt's: a {@code TIMEOUT} clause inside the body publishes on the child
+   * context {@link #initPlan} builds per attempt, so it does not answer here and stays retryable, while
+   * {@code arcadedb.command.timeout} and an enclosing {@code TIMEOUT} clause do (issue #6322).
+   */
+  private static boolean commandDeadlineReached(final CommandContext ctx) {
+    return ctx != null && System.currentTimeMillis() > ctx.getCommandDeadline();
   }
 
   public ScriptExecutionPlan initPlan(final List<Statement> body, final CommandContext ctx) {
