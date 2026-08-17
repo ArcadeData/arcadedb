@@ -102,22 +102,29 @@ public class RebuildIndexStatement extends DDLStatement {
       }
     }
 
+    final Database database = context.getDatabase();
+
+    // Both branches below SCAN the live data, and a worker of the async executor keeps ONE transaction open across up
+    // to ASYNC_TX_BATCH_SIZE tasks - so records it has already written can still be uncommitted, and invisible to any
+    // scan, even with every queue drained (issue #6281). Wait for that batch first.
+    //
+    // Deliberately weaker than the claim the same barrier carries in TypeIndexBuilder, and measured rather than
+    // assumed: a rebuild that runs inside that window does NOT lose entries. Those records staged their index
+    // operations in their own transaction when they were saved, and applying them at commit repopulates what the
+    // rebuild's scan could not see - a regression test written to catch a loss here passes with this call removed,
+    // which is why there is no such test. What the window does cost is a rebuild computed over a partial view: the
+    // BM25 counters of the statsOnly branch (which is why this sits AHEAD of it rather than after), the misplaced-
+    // record detection of issue #832, and the reported totals. An operator who rebuilds right after a bulk async
+    // load expects those numbers to be about all of the data. Costs nothing on a database that never used async.
+    ((DatabaseInternal) database).waitForAsyncCompletion();
+
     if (statsOnly)
-      return recomputeStatistics(context.getDatabase(), result);
+      return recomputeStatistics(database, result);
 
     final AtomicLong total = new AtomicLong();
     final AtomicLong misplaced = new AtomicLong();
     // Types found to contain records sitting outside their partition hash-target bucket (issue #832).
     final Set<DocumentType> typesToRepartition = ConcurrentHashMap.newKeySet();
-
-    final Database database = context.getDatabase();
-
-    // A rebuild SCANS the buckets, so it needs the same barrier a CREATE INDEX does (issue #6281): a worker of the
-    // async executor keeps one transaction open across up to ASYNC_TX_BATCH_SIZE tasks, so records it has already
-    // written can still be uncommitted - and invisible to this scan - even with every queue drained. Rebuilding
-    // around them produces exactly what the issue was about: an index missing entries, and lookups that silently
-    // answer nothing for records that are there. Costs nothing on a database that never used the async API.
-    ((DatabaseInternal) database).waitForAsyncCompletion();
 
     final Index.BuildIndexCallback callback = (document, totalIndexed) -> {
       total.incrementAndGet();
