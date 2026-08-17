@@ -86,50 +86,36 @@ public class RetryStep extends AbstractExecutionStep {
           return result.syncPull(ctx, nRecords);
         }
         break;
-      } catch (final NeedRetryException | TimeoutException ex) {
-        // TimeoutException is also retried because the primary source under concurrent writes is
+      } catch (final TimeoutException ex) {
+        // A TimeoutException is retried because the primary source under concurrent writes is
         // TransactionManager's file-lock timeout during commit (see
         // TransactionManager.lockFilesInOrder). That contention is transient and almost always
         // clears after a short backoff, so retrying inside a COMMIT RETRY block is the right
         // behavior. A TIMEOUT clause written inside the block is retried for the same reason: each
-        // attempt builds its own plan on a context of its own, so the clause starts its interval
-        // again. What is not retried is the command's own deadline - see below.
-        try {
-          ctx.getDatabase().rollback();
-        } catch (Exception e) {
-          // IGNORE IT
-        }
-
-        // A retry is only a retry when its precondition can change. The command's deadline is one
-        // instant pinned for the whole statement (issue #6266), and every attempt this step starts
-        // inherits it, so once it has passed the remaining attempts abort on their first check: the
-        // block would spend its whole budget, plus a backoff sleep between each pair of attempts,
-        // re-reaching a bound that expired before the first retry, and then report the failure of the
-        // last attempt rather than the deadline that actually stopped it (issue #6322).
+        // attempt builds its own plan on a context of its own, so the clause starts its interval again.
+        // The command's own deadline is the one kind that cannot be cured by waiting, and it is
+        // already the exception the caller should see, so it propagates as it is.
+        rollbackQuietly(ctx);
         if (commandDeadlineReached(ctx))
-          throw ex instanceof TimeoutException ?
-              ex :
-              new TimeoutException(
-                  "COMMIT RETRY gave up after " + (attempt + 1) + " of " + retries + " attempts: the command exceeded the "
-                      + ctx.getCommandDeadlineDescription(), ex);
+          throw ex;
 
-        if (attempt >= retries - 1) {
-          if (elseBody != null && elseBody.size() > 0) {
-            final ScriptExecutionPlan plan = initPlan(elseBody, ctx);
-            final ExecutionStepInternal result = plan.executeFull();
-            if (result != null) {
-              this.finalResult = result;
-              return result.syncPull(ctx, nRecords);
-            }
-          }
-          if (elseFail) {
-            throw ex;
-          } else {
-            return new InternalResultSet();
-          }
-        }
+        final ResultSet finished = giveUpOrBackOff(ctx, nRecords, attempt, ex);
+        if (finished != null)
+          return finished;
+      } catch (final NeedRetryException ex) {
+        // A write conflict clears on its own, so this is the retry the user asked for - unless the
+        // command's deadline has passed, in which case the remaining attempts cannot even start their
+        // work. The deadline, not the conflict, is what ended the block, and saying so is the whole
+        // point: the conflict alone would leave a COMMIT RETRY 10 that made one attempt unexplained.
+        rollbackQuietly(ctx);
+        if (commandDeadlineReached(ctx))
+          throw new TimeoutException(
+              "COMMIT RETRY gave up after " + (attempt + 1) + " of " + retries + " attempts: the command exceeded the "
+                  + ctx.getCommandDeadlineDescription(), ex);
 
-        delayBetweenRetries(attempt);
+        final ResultSet finished = giveUpOrBackOff(ctx, nRecords, attempt, ex);
+        if (finished != null)
+          return finished;
       }
     }
 
@@ -138,10 +124,51 @@ public class RetryStep extends AbstractExecutionStep {
   }
 
   /**
-   * Whether the deadline every attempt of this block runs under has already passed. Read from the step's own
-   * context rather than from the attempt's: a {@code TIMEOUT} clause inside the body publishes on the child
-   * context {@link #initPlan} builds per attempt, so it does not answer here and stays retryable, while
-   * {@code arcadedb.command.timeout} and an enclosing {@code TIMEOUT} clause do (issue #6322).
+   * Ends the attempt that just failed: either the block is out of attempts - in which case the {@code ELSE}
+   * body runs and {@code ELSE FAIL} decides between raising {@code ex} and answering an empty result set - or
+   * the backoff interval is slept and the loop goes round again.
+   *
+   * @return the result set the block finished with, or {@code null} when another attempt is due
+   */
+  private ResultSet giveUpOrBackOff(final CommandContext ctx, final int nRecords, final int attempt,
+      final RuntimeException ex) {
+    if (attempt >= retries - 1) {
+      if (elseBody != null && !elseBody.isEmpty()) {
+        final ScriptExecutionPlan plan = initPlan(elseBody, ctx);
+        final ExecutionStepInternal result = plan.executeFull();
+        if (result != null) {
+          this.finalResult = result;
+          return result.syncPull(ctx, nRecords);
+        }
+      }
+      if (elseFail)
+        throw ex;
+      return new InternalResultSet();
+    }
+
+    delayBetweenRetries(attempt);
+    return null;
+  }
+
+  /** Discards the failed attempt's transaction. A rollback that itself fails changes nothing the caller can act on. */
+  private static void rollbackQuietly(final CommandContext ctx) {
+    try {
+      ctx.getDatabase().rollback();
+    } catch (Exception e) {
+      // IGNORE IT
+    }
+  }
+
+  /**
+   * Whether the deadline every attempt of this block runs under has already passed. A retry is only a retry
+   * when its precondition can change: the command's deadline is one instant pinned for the whole statement
+   * (issue #6266) and every attempt this step starts inherits it, so once it has passed the block would spend
+   * its remaining budget, plus a backoff sleep between each pair of attempts, re-reaching a bound that expired
+   * before the first retry (issue #6322).
+   * <p>
+   * Read from the step's own context rather than from the attempt's: a {@code TIMEOUT} clause inside the body
+   * publishes on the child context {@link #initPlan} builds per attempt, so it does not answer here and stays
+   * retryable, while {@code arcadedb.command.timeout} and an enclosing {@code TIMEOUT} clause do.
    */
   private static boolean commandDeadlineReached(final CommandContext ctx) {
     return ctx != null && System.currentTimeMillis() > ctx.getCommandDeadline();
