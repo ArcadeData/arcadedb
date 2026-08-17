@@ -755,7 +755,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    * Waiting for a PEER command would not be safe either, which is why the exemption is "on a pool thread" and not
    * "all but my own": the pool's queue is bounded, so a peer can be sitting behind this task in it with no thread
    * left to run it. What the barrier is actually for - the workers' open batches - is served by the per-worker
-   * markers, which run either way.
+   * markers, which run either way. The pool is JVM-wide, so this also exempts a thread running ANOTHER database's
+   * command; that is intended and rests on the same argument - see {@link AsyncCommandPool}'s POOL_THREAD javadoc.
    */
   private boolean hasPendingCommands() {
     return commandsInFlight.get() > 0 && !AsyncCommandPool.isPoolThread();

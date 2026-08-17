@@ -102,6 +102,13 @@ public final class AsyncCommandPool {
    * not which. That is enough for the only decision it drives, and it is the honest one: waiting for a PEER command
    * on a pool with a bounded queue is not safe either - the peer may be behind this task in the queue with no thread
    * left to run it.
+   * <p>
+   * <b>Which makes the exemption CROSS-DATABASE, and deliberately so.</b> A thread running database A's command is
+   * exempt from waiting on database B's in-flight commands too, should it reach B's executor - a script or trigger
+   * that spans databases is the shape that would. The same argument covers it: B's commands would be peers on this
+   * one bounded queue, so waiting for them is the same unsafe wait, and what the barrier is actually for - B's
+   * workers' open batches - is served by the per-worker markers, which run either way. Narrowing it to "all but my
+   * own command" would need per-thread task identity and would buy nothing this reasoning does not already give.
    */
   private static final ThreadLocal<Boolean> POOL_THREAD = new ThreadLocal<>();
 
@@ -138,7 +145,7 @@ public final class AsyncCommandPool {
             "Asynchronous command pool saturated: queue full (capacity=%d, threads=%d), running the command on the "
                 + "submitting thread - a caller that asked not to wait for the response will wait for it "
                 + "(cumulative caller-runs fallbacks=%d). Raise '%s' or '%s'", null,
-            exec.getQueue().remainingCapacity() + exec.getQueue().size(), exec.getMaximumPoolSize(), fallbacks,
+            queueSize, exec.getMaximumPoolSize(), fallbacks,
             GlobalConfiguration.ASYNC_COMMAND_POOL_THREADS.getKey(), GlobalConfiguration.ASYNC_COMMAND_QUEUE_SIZE.getKey());
 
       // MARKED AS A POOL THREAD FOR THE DURATION, even though it is the submitter's. The flag means "this thread is
