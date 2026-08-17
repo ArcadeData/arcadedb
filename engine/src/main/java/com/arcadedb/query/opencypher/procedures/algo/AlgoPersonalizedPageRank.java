@@ -153,6 +153,7 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
         }
       } else {
         for (int i = 0; i < n; i++) {
+          // The fallback branch of the same pass - the checkpoint belongs in whichever one runs.
           guard.checkPeriodically(i);
           double incoming = 0.0;
           for (final int j : inAdjFallback[i])
@@ -206,6 +207,8 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
     rank[sourceIdx] = 1.0;
 
     for (int iter2 = 0; iter2 < maxIterations; iter2++) {
+      // Same knob and same checkpoint as the CSR path above: the tolerance break only fires if the graph
+      // converges, so maxIterations is what ends the run and the guard is what can abort it.
       guard.check();
       final double[] newRank = new double[n];
       double dangling = 0.0;
@@ -214,6 +217,7 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
           dangling += rank[i];
 
       for (int i = 0; i < n; i++) {
+        // A single iteration walks the whole graph, so on a large one the checkpoint belongs inside the pass too.
         guard.checkPeriodically(i);
         double incoming = 0.0;
         for (final int j : inAdj[i])

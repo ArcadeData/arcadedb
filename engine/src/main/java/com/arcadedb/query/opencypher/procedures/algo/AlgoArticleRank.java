@@ -178,6 +178,7 @@ public class AlgoArticleRank extends AbstractAlgoProcedure {
         }
       } else {
         for (int i = 0; i < n; i++) {
+          // The fallback branch of the same pass - the checkpoint belongs in whichever one runs.
           guard.checkPeriodically(i);
           final int[] neighbors = outNeighborsFallback[i];
           if (neighbors.length == 0)
@@ -234,6 +235,8 @@ public class AlgoArticleRank extends AbstractAlgoProcedure {
       scores[i] = initialScore;
 
     for (int iter2 = 0; iter2 < maxIterations; iter2++) {
+      // Same knob and same checkpoint as the CSR path above: the tolerance break only fires if the graph
+      // converges, so maxIterations is what ends the run and the guard is what can abort it.
       guard.check();
       final double[] newScores = new double[n];
       double dangling = 0.0;
@@ -242,6 +245,7 @@ public class AlgoArticleRank extends AbstractAlgoProcedure {
           dangling += scores[i];
 
       for (int i = 0; i < n; i++) {
+        // A single iteration walks the whole graph, so on a large one the checkpoint belongs inside the pass too.
         guard.checkPeriodically(i);
         final Vertex v = vertices.get(i);
         final double denom = outDegrees[i] + avgOutDeg;

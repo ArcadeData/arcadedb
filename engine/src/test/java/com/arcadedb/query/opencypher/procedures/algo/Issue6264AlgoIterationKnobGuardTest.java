@@ -134,6 +134,11 @@ class Issue6264AlgoIterationKnobGuardTest {
   /**
    * A negative count reached the same loop and behaved exactly like zero, so it needs the same refusal: the two
    * differ only in that a negative one cannot even be read as "do nothing on purpose".
+   * <p>
+   * Three of the fourteen, sampled rather than exhaustive, and deliberately so: what distinguishes a negative
+   * value from zero lives entirely in {@code extractInt(value, name, minimum)}, which all fourteen share, and the
+   * per-procedure half - that the knob is extracted with a minimum at all - is what the zero case above covers
+   * for every one of them. Fourteen more rows here would re-test one shared comparison fourteen times.
    */
   @ParameterizedTest(name = "{0}({1})")
   @CsvSource(delimiter = '|', value = {
