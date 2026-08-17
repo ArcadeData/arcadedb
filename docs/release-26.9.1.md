@@ -2267,4 +2267,12 @@ rare to begin with), reports a content record still stored the old way as an err
 `CHECK DATABASE FIX` repairs it by rewriting that one marker. It is a repair and never a deletion: not a byte of
 the record, its chunk header or its chain is touched.
 
+**Run that FIX before writing through a full scan of such a database.** Until it has run, the content record is
+still handed out under a RID of its own, and that RID looks like any other: an application that scans a type and
+updates or deletes what comes back can reach the content record directly, where nothing can tell it apart from a
+record and the write lands on content the placeholder pointer still references. This is the behaviour every
+release before this one already had - the marker is what closes it, and `CHECK DATABASE FIX` is what applies the
+marker to data written earlier. A read-only scan of an unrepaired database merely returns the record twice; a
+read-modify-write over one is worth the FIX first.
+
 [#6196](https://github.com/ArcadeData/arcadedb/issues/6196)

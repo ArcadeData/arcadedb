@@ -1212,6 +1212,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // move them, and repair the marker so the next reader does not have to be told. Deliberately reconciled here and
     // not inline: the head chunk can sit on a page the walk had already left behind, and a repair made mid-walk would
     // then be counted one way or the other depending on nothing but the order the allocator happened to place them in.
+    // Only the RETURNED totals are corrected; the per-page tallies the verbose log prints have already gone out, and
+    // they describe the page as the walk found it, which is what a physical-layout log is for.
     if (!legacyContentHeads.isEmpty()) {
       for (final long contentPosition : legacyContentHeads.toArray()) {
         final RID contentRID = new RID(fileId, contentPosition);
