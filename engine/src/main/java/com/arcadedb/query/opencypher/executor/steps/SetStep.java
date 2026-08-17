@@ -448,8 +448,10 @@ public class SetStep extends AbstractExecutionStep {
     if (!(obj instanceof Vertex vertex))
       return;
 
-    // If this vertex was already replaced on a prior row (row fanout hitting the same node),
-    // redirect to the replacement so the idempotency check below can use the current type.
+    // If this vertex was already replaced on a prior row (row fanout hitting the same node), redirect to the
+    // replacement so the idempotency check below can use the current type. The per-row redirect() at the top of
+    // applySetOperations has normally done this already; resolving the write target itself does not depend on the
+    // row listing that variable as a column, which is the one case redirect() cannot reach.
     final Vertex prior = labelReplacements.resolve(vertex);
     if (prior != vertex) {
       propagateUpdateToSameNodeAliases(result, vertex, prior);

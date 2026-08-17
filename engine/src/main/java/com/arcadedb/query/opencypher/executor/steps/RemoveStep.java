@@ -250,6 +250,11 @@ public class RemoveStep extends AbstractExecutionStep {
     if (!(obj instanceof Vertex vertex))
       return;
 
+    // If a prior row already relabelled this node, work on the replacement so the idempotency check below reads
+    // the current type. The per-row redirect() has normally done this already; resolving the write target itself
+    // does not depend on the row listing that variable as a column, which is the one case redirect() cannot reach.
+    vertex = replacements.resolve(vertex);
+
     final List<String> currentLabels = Labels.getLabels(vertex);
     final List<String> labelsToRemove = item.getLabels();
 

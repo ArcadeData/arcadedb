@@ -2608,9 +2608,15 @@ public class CypherExecutionPlan {
                   nextStep = new ExpandPathStep(currentSourceVar, pathVariable, relVar, targetVar, relPattern, false,
                       targetNode, pathPattern.getEffectivePathMode(), computePrevVarsForVlp(pathPattern, i, legacyBoundVariables), context);
                 } else {
-                  // Fixed-length relationship - pass path variable, target node pattern, and bound variables
+                  // Fixed-length relationship - pass path variable, target node pattern, and bound variables.
+                  // #6311: the same snapshot rule as the ordered builder above - the hop identity-checks its
+                  // target against what the row carries when it RUNS, so it gets the names bound before this
+                  // MATCH plus the ones this MATCH has bound so far, never the planner's live set (which is
+                  // filled at the end of the clause and emptied again by a following WITH).
+                  final Set<String> targetIdentityVars = new HashSet<>(legacyBoundVariables);
+                  targetIdentityVars.addAll(matchVariables);
                   nextStep = new MatchRelationshipStep(currentSourceVar, relVar, targetVar, relPattern, pathVariable,
-                      targetNode, legacyBoundVariables, context);
+                      targetNode, targetIdentityVars, context);
                 }
 
                 // Update source for next hop in multi-hop patterns

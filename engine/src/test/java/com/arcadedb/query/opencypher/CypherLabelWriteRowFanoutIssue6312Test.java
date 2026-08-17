@@ -135,6 +135,28 @@ class CypherLabelWriteRowFanoutIssue6312Test {
   }
 
   @Test
+  void aBoundPathFollowsItsRelabelledMembers() {
+    cypher("CREATE (a:Keep:Drop {name:'a'})-[:E {w:7}]->(b {name:'b'})");
+
+    // The path was bound before the label write, and the write moves one of its nodes. Reading the path
+    // afterwards has to answer with the state that write left behind, not with the record it deleted.
+    assertThat(writingRows("MATCH p = (a:Drop)-[:E]->(b) REMOVE a:Drop RETURN [n IN nodes(p) | labels(n)] AS v"))
+        .containsExactly("[[Keep], []]");
+    assertThat(rows("MATCH (n {name:'a'}) RETURN labels(n) AS v")).containsExactly("[Keep]");
+    // The relationship the path carries is re-attached to the replacement, properties and all.
+    assertThat(writingRows("MATCH p = (a:Keep)-[:E]->(b) REMOVE a:Keep RETURN [r IN relationships(p) | r.w] AS v"))
+        .containsExactly("[7]");
+  }
+
+  @Test
+  void aCollectedListFollowsItsRelabelledMembers() {
+    cypher("CREATE (c:Gone {name:'c'})-[:E2]->(d {name:'d'})");
+
+    assertThat(writingRows("MATCH (c:Gone) WITH collect(c) AS cs, c AS one REMOVE one:Gone RETURN [n IN cs | labels(n)] AS v"))
+        .containsExactly("[[]]");
+  }
+
+  @Test
   void removeLabelIsIdempotentAcrossRowsAndCountsOnce() {
     cypher("CREATE (a:Gone:Stay {name:'a'})");
 
@@ -164,9 +186,20 @@ class CypherLabelWriteRowFanoutIssue6312Test {
   }
 
   private List<String> rows(final String query) {
+    return rows(query, false);
+  }
+
+  /**
+   * Same as {@link #rows(String)} for a query that also writes, which the read-only entry point rejects.
+   */
+  private List<String> writingRows(final String query) {
+    return rows(query, true);
+  }
+
+  private List<String> rows(final String query, final boolean writes) {
     final List<String> out = new ArrayList<>();
     database.transaction(() -> {
-      try (final ResultSet rs = database.query("opencypher", query)) {
+      try (final ResultSet rs = writes ? database.command("opencypher", query) : database.query("opencypher", query)) {
         while (rs.hasNext()) {
           final Result r = rs.next();
           out.add(String.valueOf(r.<Object>getProperty("v")));

@@ -24,11 +24,13 @@ import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -82,23 +84,100 @@ public final class LabelReplacements {
    * Points every alias of a row that still refers to a replaced vertex or to one of its re-attached edges at the
    * live record. Called before a row is written to and again after each replacement, so all aliases of the same
    * node observe the same state.
+   * <p>
+   * A row does not hold records only under their own name: a path variable, a {@code collect()} list or a map holds
+   * them too, and one left pointing at the deleted original answers with the state the node had before the write -
+   * the labels it no longer has - or fails outright the moment something re-reads it. Those are rebuilt around the
+   * live records, and only when something inside them actually moved.
    */
   public void redirect(final Result row) {
     if (row == null || vertices.isEmpty())
       return;
     for (final String name : row.getPropertyNames()) {
       final Object value = row.getProperty(name);
-      if (value instanceof Vertex vertex) {
-        final Vertex live = resolve(vertex);
-        if (live != vertex)
-          ((ResultInternal) row).setProperty(name, live);
-      } else if (value instanceof Edge edge && !edges.isEmpty()) {
-        final RID rid = edge.getIdentity();
-        final Edge live = rid != null ? edges.get(rid) : null;
-        if (live != null && live != edge)
-          ((ResultInternal) row).setProperty(name, live);
-      }
+      final Object live = redirectValue(value);
+      if (live != value)
+        ((ResultInternal) row).setProperty(name, live);
     }
+  }
+
+  /**
+   * Returns the live form of a row value, or the value itself - by identity, so the caller can tell whether
+   * anything moved - when nothing inside it was replaced.
+   */
+  private Object redirectValue(final Object value) {
+    if (value instanceof Vertex vertex)
+      return resolve(vertex);
+
+    if (value instanceof Edge edge) {
+      if (edges.isEmpty())
+        return value;
+      final RID rid = edge.getIdentity();
+      final Edge live = rid != null ? edges.get(rid) : null;
+      return live != null ? live : value;
+    }
+
+    if (value instanceof TraversalPath path)
+      return redirectPath(path);
+
+    if (value instanceof List<?> list) {
+      List<Object> rebuilt = null;
+      for (int i = 0; i < list.size(); i++) {
+        final Object element = list.get(i);
+        final Object live = redirectValue(element);
+        if (live != element && rebuilt == null)
+          rebuilt = new ArrayList<>(list);
+        if (rebuilt != null)
+          rebuilt.set(i, live);
+      }
+      return rebuilt != null ? rebuilt : value;
+    }
+
+    if (value instanceof Map<?, ?> map) {
+      Map<Object, Object> rebuilt = null;
+      for (final Map.Entry<?, ?> entry : map.entrySet()) {
+        final Object element = entry.getValue();
+        final Object live = redirectValue(element);
+        if (live != element && rebuilt == null)
+          rebuilt = new LinkedHashMap<>(map);
+        if (rebuilt != null)
+          rebuilt.put(entry.getKey(), live);
+      }
+      return rebuilt != null ? rebuilt : value;
+    }
+
+    return value;
+  }
+
+  /**
+   * Rebuilds a path around the live records when one of its members was replaced, keeping its shape.
+   */
+  private TraversalPath redirectPath(final TraversalPath path) {
+    final List<Vertex> pathVertices = path.getVertices();
+    if (pathVertices.isEmpty())
+      return path;
+    final List<Edge> pathEdges = path.getEdges();
+
+    boolean moved = false;
+    final List<Vertex> liveVertices = new ArrayList<>(pathVertices.size());
+    for (final Vertex vertex : pathVertices) {
+      final Vertex live = resolve(vertex);
+      moved |= live != vertex;
+      liveVertices.add(live);
+    }
+    final List<Edge> liveEdges = new ArrayList<>(pathEdges.size());
+    for (final Edge edge : pathEdges) {
+      final Object live = redirectValue(edge);
+      moved |= live != edge;
+      liveEdges.add((Edge) live);
+    }
+    if (!moved)
+      return path;
+
+    final TraversalPath rebuilt = new TraversalPath(liveVertices.get(0));
+    for (int i = 0; i < liveEdges.size(); i++)
+      rebuilt.addStep(liveEdges.get(i), liveVertices.get(i + 1));
+    return rebuilt;
   }
 
   /**
