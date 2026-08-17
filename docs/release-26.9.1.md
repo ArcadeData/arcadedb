@@ -2735,3 +2735,61 @@ error body distinguishes the two: this refusal names `arcadedb.server.httpQueryM
 field and carries the ceiling in `exceptionArgs`, in every server mode.
 
 [#5719](https://github.com/ArcadeData/arcadedb/issues/5719)
+## An ambiguous HA endpoint is reported again when the collision changes, not once per node lifetime (#6297)
+
+The warning #6267 added for a withheld peer-to-peer endpoint - two peers resolving to one `host:port`, so
+the address identifies at most one of them and nothing can say which - was logged at most once per
+`RaftHAServer`, which in a server process means once for its lifetime. That is right up until the operator
+acts on it. They read the line, declare the two ports it named, and the *next* collision - a different pair,
+or a peer added at runtime onto an address already taken - is the one nobody is told about, because the latch
+is spent.
+
+The latch is now the rendered collision list itself. An unchanged verdict stays quiet however often the
+resync and verify paths ask, a changed one is reported whatever produced it, and a pass that finds no
+collision clears the memory, so a misconfiguration that is fixed and later reintroduced is announced rather
+than swallowed as "already reported". That last part needs the callers to hand over the *clean* views too,
+which is the half that was missing: both `getRoutingTable` and the per-peer accessor used to consult the
+warning only when the current view was already ambiguous, so the stored verdict outlived the collision it
+described. It covered HTTPS as well, since only the group-wide HTTP resolver was unconditional. The client
+routing-table warning now also names the peers that collided and the address they share, which its
+peer-to-peer twin already did. `httpAddressAmbiguous` on `GET /api/v1/cluster` is unchanged and remains the
+always-current view, recomputed per request.
+
+### `EXPLAIN` and `PROFILE` now name the RID push-down (#6279)
+
+`MATCH NODE` gained an `[id: <rid>]` marker alongside the existing `[index: ]`, `[partition: ]` and
+`[filter: ]`, so a plan says whether the `ID(x) = <literal|parameter>` equality was lifted out of the `WHERE`
+clause and into the node lookup at plan time:
+
+```
++ MATCH NODE (a) [id: #1:0]
++ MATCH NODE (b) [id: #4:0]
+```
+
+That is the optimization #3216 was closed on, and its resolution asks users to write the query so it fires -
+with parameters or literals rather than a value only known per row. Until now the plan was the one place that
+would not confirm it had. `EXPLAIN` answers without running the query; a push-down that can only be resolved
+per row (#3864) is named as `[id: per-row]` rather than valued.
+
+### The test suite
+
+The rest of this work is internal. A server test's teardown reset the configuration before the cleanup that
+resolves its paths from it, and because `SERVER_DATABASE_DIRECTORY` defaults to
+`${arcadedb.server.rootPath}/databases` over a root path that defaults to null - and an unresolvable variable
+resolves to the empty string rather than failing - the cleanup was asking to recursively delete `/databases0`
+while the test's own `./target/databases0` survived teardown untouched. The order is fixed and a guard now
+refuses a path that did not resolve, so a future reordering degrades to a logged no-op instead of a
+`deleteRecursively` at the filesystem root.
+
+Alongside it, the wall-clock pass of #6260 was extended to the `server` and `network` suites, and the
+`@Timeout` annotations in the engine suite were classified the same way: a bound that separates a bounded
+operation from an unbounded one is a tripwire and is sized clear of an honest budget plus a stop-the-world
+pause, while a bound that *is* the assertion - a laziness or complexity claim with no other practical
+expression - is measured on the stall-discounted clock instead. Two tests that reported coverage they did not
+have were repaired rather than deleted: one asserted only that two elapsed times were not negative, the other
+could not tell the count push-down from the full type scan it exists to replace.
+
+[#6297](https://github.com/ArcadeData/arcadedb/issues/6297)
+[#6280](https://github.com/ArcadeData/arcadedb/issues/6280)
+[#6279](https://github.com/ArcadeData/arcadedb/issues/6279)
+[#6270](https://github.com/ArcadeData/arcadedb/issues/6270)
