@@ -117,23 +117,27 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     // idle cluster. Previously no latency figure was exposed in this JSON at all.
     final Map<String, RaftHAServer.ReplicationLatency> replicationLatencies = raftHAServer.getReplicationLatencies();
 
+    // Each peer's HTTP endpoint, plus whether that endpoint identifies that peer and no other. With no 'http'
+    // port declared in arcadedb.ha.serverList a peer's endpoint is derived as its Raft host plus THIS node's
+    // port, so on a cluster whose nodes differ by port every peer collapses onto one address. Reporting the
+    // address alone would show an operator a plausible endpoint per peer with nothing to say that it names
+    // none of them, and they would find out only when a resync or a verify refuses to dial (issue #6267).
+    // Resolved for the whole group in one pass: the question is about the group, since an address identifies a
+    // peer only if no other peer resolves to it, so asking per peer would resolve the group once per peer.
+    final Map<RaftPeerId, RaftHAServer.PeerHttpEndpoint> httpEndpoints = raftHAServer.getPeerHttpEndpoints();
+
     final JSONArray peers = new JSONArray();
     for (final RaftPeer peer : raftHAServer.getRaftGroup().getPeers()) {
       final JSONObject peerJson = new JSONObject();
       final String peerId = peer.getId().toString();
       peerJson.put("id", peerId);
       peerJson.put("address", peer.getAddress());
-      // The peer's HTTP endpoint as resolved, plus whether that endpoint identifies this peer and no other.
-      // With no 'http' port declared in arcadedb.ha.serverList a peer's endpoint is derived as its Raft host
-      // plus THIS node's port, so on a cluster whose nodes differ by port every peer collapses onto one
-      // address. Reporting the address alone would show an operator a plausible endpoint per peer with nothing
-      // to say that it names none of them, and they would find out only when a resync or a verify refuses to
-      // dial. The flag is present only when set, so a correctly declared cluster carries no extra field
-      // (issue #6267).
-      final String httpAddress = raftHAServer.getPeerHttpAddress(peer.getId());
-      if (httpAddress != null) {
-        peerJson.put("httpAddress", httpAddress);
-        if (raftHAServer.getUnambiguousPeerHttpAddress(peer.getId()) == null)
+      // Both fields are written only when they have something to say: a peer whose endpoint cannot be resolved
+      // carries neither, and a correctly declared cluster carries no flag.
+      final RaftHAServer.PeerHttpEndpoint httpEndpoint = httpEndpoints.get(peer.getId());
+      if (httpEndpoint != null) {
+        peerJson.put("httpAddress", httpEndpoint.address());
+        if (httpEndpoint.ambiguous())
           peerJson.put("httpAddressAmbiguous", true);
       }
 

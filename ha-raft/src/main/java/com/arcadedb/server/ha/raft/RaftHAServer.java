@@ -1927,6 +1927,59 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return unambiguousPeerAddress(peerId, true);
   }
 
+  /** A peer's HTTP endpoint as this node resolves it, and whether that endpoint identifies that peer alone. */
+  public record PeerHttpEndpoint(String address, boolean ambiguous) {
+  }
+
+  /**
+   * Every group peer's HTTP endpoint, each carrying the verdict {@link #getUnambiguousPeerHttpAddress} would
+   * give it, in one pass over the group rather than one pass per peer.
+   * <p>
+   * The per-peer accessors answer about one peer, and answering that question means resolving <em>all</em> of
+   * them to see who else claims the address - so a caller that wants the answer for the whole group, as the
+   * cluster-status endpoint does, would resolve the group once per peer and once more for the plain address:
+   * O(peers²) for a question that is O(peers). Cluster sizes make that harmless today, which is exactly why it
+   * is worth removing before the shape is copied somewhere it is not.
+   * <p>
+   * A peer whose address cannot be resolved at all is absent from the map rather than present with a
+   * {@code null} address: it is the same "nothing to report" an unknown peer produces from the accessors.
+   * The claim counting and the declared-beats-derived tie-break are the shared {@code claimsByAddress} /
+   * {@code identifiesOnePeer} pair, so this cannot answer differently from the accessors, and an ambiguity
+   * seen here trips the same one-time warning.
+   */
+  public Map<RaftPeerId, PeerHttpEndpoint> getPeerHttpEndpoints() {
+    final Collection<RaftPeer> peers = raftGroup.getPeers();
+    final String[] addresses = new String[peers.size()];
+    final boolean[] fromConfig = new boolean[addresses.length];
+    final RaftPeerId[] owners = new RaftPeerId[addresses.length];
+    int resolved = 0;
+
+    for (final RaftPeer peer : peers) {
+      final String address = resolveHttpAddress(peer);
+      if (address == null)
+        continue;
+      addresses[resolved] = address;
+      fromConfig[resolved] = httpAddresses.containsKey(peer.getId());
+      owners[resolved] = peer.getId();
+      ++resolved;
+    }
+
+    final Map<String, int[]> claims = claimsByAddress(addresses, fromConfig, resolved);
+    final Map<RaftPeerId, PeerHttpEndpoint> endpoints = new LinkedHashMap<>(resolved * 2);
+    String ambiguous = null;
+    for (int i = 0; i < resolved; i++) {
+      final boolean shared = !identifiesOnePeer(claims.get(addresses[i]), fromConfig[i]);
+      if (shared)
+        ambiguous = addresses[i];
+      endpoints.put(owners[i], new PeerHttpEndpoint(addresses[i], shared));
+    }
+
+    if (ambiguous != null)
+      warnAmbiguousPeerAddress(false, ambiguous, addresses, owners, resolved);
+
+    return endpoints;
+  }
+
   /**
    * Shared body of the two accessors above: an address is handed out only when the peer asked about is the only
    * one that resolves to it, or the only one that declared it. Parameterized by protocol rather than duplicated,
@@ -1983,7 +2036,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * routing tables of issue #6183, not about the peer-to-peer endpoints a resync and a cluster verify dial.
    * <p>
    * Once per protocol rather than once per attempt: the resync and verify paths ask on every attempt, and a
-   * misconfiguration that does not change between attempts should not be re-reported on each one.
+   * misconfiguration that does not change between attempts should not be re-reported on each one. The latch is
+   * per JVM and never rearms, the same convention {@link #deriveHttpAddressWithWarning} and
+   * {@link #warnAmbiguousRouting} follow, so a membership change that makes a <em>different</em> pair of peers
+   * collide is not logged again - the line names the peers that tripped it first, and a reader chasing a
+   * cluster they know is misconfigured should read {@code httpAddressAmbiguous} from {@code GET
+   * /api/v1/cluster}, which is recomputed per request and always current, rather than the log.
    */
   private void warnAmbiguousPeerAddress(final boolean https, final String address, final String[] addresses,
       final RaftPeerId[] owners, final int count) {

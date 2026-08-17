@@ -27,6 +27,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -113,6 +115,31 @@ class Issue6267AmbiguousPeerAddressWarningTest {
         .isZero();
     assertThat(log.countFormattedContaining(AMBIGUOUS_HTTPS, "localhost_2435", "localhost_2436", "localhost:2491"))
         .isEqualTo(1);
+  }
+
+  /**
+   * The group-wide resolver the cluster-status endpoint uses answers exactly what the per-peer accessors do,
+   * for every peer, on both an ambiguous and a correctly declared cluster. It exists only to avoid resolving
+   * the group once per peer, so the one thing it must never do is answer differently.
+   */
+  @Test
+  void theGroupWideEndpointsAgreeWithThePerPeerAccessors() {
+    for (final String serverList : new String[] {
+        "localhost:2434:2480,localhost:2435:2490,localhost:2436:2490",  // two peers share an address
+        "localhost:2434:2480,localhost:2435:2481,localhost:2436:2482" }) {
+      final RaftHAServer raft = newDetachedServer(serverList);
+
+      final Map<RaftPeerId, RaftHAServer.PeerHttpEndpoint> endpoints = raft.getPeerHttpEndpoints();
+
+      assertThat(endpoints).as("every peer of '%s' resolves to something", serverList).hasSize(3);
+      for (final Map.Entry<RaftPeerId, RaftHAServer.PeerHttpEndpoint> entry : endpoints.entrySet()) {
+        final RaftPeerId peerId = entry.getKey();
+        assertThat(entry.getValue().address()).isEqualTo(raft.getPeerHttpAddress(peerId));
+        assertThat(entry.getValue().ambiguous())
+            .as("peer %s of '%s'", peerId, serverList)
+            .isEqualTo(raft.getUnambiguousPeerHttpAddress(peerId) == null);
+      }
+    }
   }
 
   /**
