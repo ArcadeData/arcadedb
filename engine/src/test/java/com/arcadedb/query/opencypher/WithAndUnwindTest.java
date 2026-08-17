@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.MethodOrderer;
@@ -442,12 +443,11 @@ class WithAndUnwindTest {
     );
 
     // Query using WHERE clause (was slow before fix)
-    final long startWhere = System.nanoTime();
+    final StallAwareStopwatch whereStopwatch = StallAwareStopwatch.start();
     database.transaction(() ->
       database.command("opencypher",
           "UNWIND $batch AS e MATCH (a:BenchNode), (b:BenchNode) WHERE a.uid = e.src AND b.uid = e.dst CREATE (a)-[:BENCH_EDGE]->(b)",
           Map.of("batch", batch)));
-    final long whereTimeMs = (System.nanoTime() - startWhere) / 1_000_000;
 
     // Verify edges were created
     final ResultSet countResult = database.query("opencypher",
@@ -465,12 +465,10 @@ class WithAndUnwindTest {
         Map.of("src", "18", "dst", "19")
     );
 
-    final long startInline = System.nanoTime();
     database.transaction(() ->
       database.command("opencypher",
           "UNWIND $batch AS e MATCH (a:BenchNode {uid: e.src}), (b:BenchNode {uid: e.dst}) CREATE (a)-[:BENCH_EDGE]->(b)",
           Map.of("batch", batch2)));
-    final long inlineTimeMs = (System.nanoTime() - startInline) / 1_000_000;
 
     // Verify total edges
     final ResultSet countResult2 = database.query("opencypher",
@@ -483,8 +481,7 @@ class WithAndUnwindTest {
     // With 200 nodes, without pushdown it would do 200*200 = 40000 comparisons per UNWIND row
     // With pushdown it does ~200 comparisons per UNWIND row
     // Allow generous margin but ensure it's not catastrophically slow
-    assertThat(whereTimeMs).as("WHERE clause version should complete within 10 seconds (was timing out before fix)")
-        .isLessThan(10000);
+    whereStopwatch.assertStayedUnder(10000, "~200 comparisons per UNWIND row with the pushdown, not 200*200 without it");
   }
 
   /**

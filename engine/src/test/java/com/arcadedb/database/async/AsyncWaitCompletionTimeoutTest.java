@@ -21,6 +21,7 @@ package com.arcadedb.database.async;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -38,7 +39,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 class AsyncWaitCompletionTimeoutTest extends TestHelper {
 
   @Test
-  @Timeout(30)
+  // #6260: JUnit's timeout is plain wall clock and cannot be discounted for a stop-the-world pause the way the
+  // assertion below is; the method's own budget is already ~16s of latches, so 30s was a coin flip on a loaded JVM.
+  @Timeout(120)
   void waitCompletionHonorsTimeoutWhileQueueIsFull() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
     db.getConfiguration().setValue(GlobalConfiguration.ASYNC_OPERATIONS_QUEUE_SIZE, 2);
@@ -56,12 +59,11 @@ class AsyncWaitCompletionTimeoutTest extends TestHelper {
     for (int i = 0; i < 2; i++)
       assertThat(async.scheduleTask(0, noOpTask(), false, 0)).isTrue();
 
-    final long start = System.currentTimeMillis();
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     final boolean flushed = async.waitCompletion(700);
-    final long elapsed = System.currentTimeMillis() - start;
 
     assertThat(flushed).as("waitCompletion must report the timeout instead of a flush").isFalse();
-    assertThat(elapsed).as("the timeout budget must also bound the enqueue phase").isLessThan(5_000);
+    stopwatch.assertGaveUpWithin(5_000, "a 700ms budget spanning the enqueue phase from a wait that outlives the blocking task");
 
     release.countDown();
     assertThat(async.waitCompletion(10_000)).isTrue();
