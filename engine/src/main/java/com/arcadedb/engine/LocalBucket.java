@@ -1124,6 +1124,17 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     if (!fix)
       return checkInternal(verboseLevel, false, repairTx);
 
+    // #6320: the counter count(*) answers from is invalidated BEFORE the first repair, not only after the last one.
+    // A repair used to be one transaction, so nothing it did was durable until the end and the invalidation at the
+    // end of checkInternal became visible with it; batching makes every batch durable as it commits, and the records
+    // those batches removed are removed through deleteRecordInternal, which registers no bucket delta for the
+    // commit-time fold to apply. Left until the end, the counter would go on serving the pre-repair number - to any
+    // concurrent count(*), and to the next one after a run that failed part-way - for as long as the repair takes,
+    // which on the backlogs this exists to clear is the whole point of the run (PR review). Invalidated up front, a
+    // reader falls through to the authoritative scan instead. Still invalidated at the end as well: a count() that
+    // recomputes mid-run caches what it saw, and the batches after it move on again.
+    cachedRecordCount.set(-1);
+
     repairTx.begin();
     boolean completed = false;
     try {

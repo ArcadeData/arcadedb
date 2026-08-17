@@ -188,6 +188,57 @@ class Issue6320BucketRepairBatchTest extends BucketPageLayoutTestSupport {
     }
   }
 
+  /**
+   * The other thing batching changes about a repair, and the reason the record counter is invalidated at the START of
+   * a fix run and not only at its end (PR review on #6320).
+   * <p>
+   * {@code count(*)} answers from {@code LocalBucket}'s O(1) counter without reading a page, and the records a repair
+   * removes go through {@code deleteRecordInternal}, which deliberately registers no bucket delta for the commit-time
+   * fold to apply. While a repair was ONE transaction that did not matter: nothing it did was durable until the end,
+   * and the invalidation at the end became visible with it. Batching makes every batch durable as it commits, so a
+   * counter invalidated only at the end goes on serving the PRE-repair number for as long as the repair takes - and
+   * for good, if the run never reaches its end.
+   * <p>
+   * That last case is what this pins, because it needs no concurrency to observe: a run that commits a batch and then
+   * fails leaves records genuinely gone and a counter that never heard about it.
+   */
+  @Test
+  void aRepairThatCommittedABatchDoesNotLeaveTheRecordCounterStale() {
+    brokenChunkChains();
+
+    final long countedBefore = countRecordsFromCounter(TYPE);
+    assertThat(countedBefore).as("the counter must be populated before the repair starts").isEqualTo(RECORDS);
+
+    GlobalConfiguration.CHECK_DATABASE_REPAIR_BATCH_PAGES.setValue(1);
+
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final AtomicInteger commits = new AtomicInteger();
+    final Callable<Void> failSecondCommit = () -> {
+      if (commits.incrementAndGet() == 2)
+        throw new IllegalStateException("simulated replicated-entry rejection");
+      return null;
+    };
+
+    db.registerCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, failSecondCommit);
+    try {
+      assertThatThrownBy(() -> bucketOf(TYPE).check(0, true)).isInstanceOf(Exception.class);
+    } finally {
+      db.unregisterCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, failSecondCommit);
+    }
+
+    // Ground truth from the slot walk rather than from a scan: the records this run did NOT get to are still broken,
+    // and reading one throws. count() counts exactly these three categories.
+    final Map<String, Object> layout = bucketStats(TYPE);
+    final long reallyThere = (Long) layout.get("totalActiveRecords") + (Long) layout.get("totalPlaceholderRecords")
+        + (Long) layout.get("totalMultiPageRecords");
+
+    assertThat(reallyThere).as("the batch that committed really did remove records: " + layout)
+        .isLessThan(countedBefore);
+    assertThat(countRecordsFromCounter(TYPE))
+        .as("count(*) must not go on answering from a counter the committed batch made wrong: " + layout)
+        .isEqualTo(reallyThere);
+  }
+
   /** Every broken record is gone, no orphan is left, and a second run finds nothing to do. */
   private void assertRepaired(final List<RID> broken) {
     final Map<String, Object> after = bucketStats(TYPE);
