@@ -2542,3 +2542,41 @@ the busiest single database's share, which is exactly what `pageFlushQueue` boun
 alert on.
 
 [#6281](https://github.com/ArcadeData/arcadedb/issues/6281)
+## A super-node's read walk keeps its recency order for the whole walk, not just the first 1,024 entries (#6064)
+
+`arcadedb.graph.supernodeInterleaveRounds` (#6048) was a **cliff**. Up to `rounds × stripes` entries - 64 × 16 =
+1,024 by default - a promoted super-node's read walk took one entry per stripe chain per turn, which is what
+puts an edge of recency rank `r` back at a position of order `r` (#6044). The very next entry froze the
+rotation: the chain holding the turn was drained to exhaustion, then the next, then the next. Past 1,024 the
+returned position stopped having any relation to recency, and the error grew with the vertex's DEGREE again -
+the exact failure #6044 fixed, pushed past a constant.
+
+A query with a small `LIMIT` never reaches the cliff. A query with a **large but still bounded** one - an
+export, a batch job, paginated admin tooling, `MATCH (h)-[:LINK]->(x) RETURN x LIMIT 5000` - fell off it
+silently: it asked for a bounded result, got one, and the newest edges it expected near the front were spread
+across the whole list. The only lever was raising `supernodeInterleaveRounds` for every unbounded read in the
+database too, which is precisely the full-walk locality cost #6048 removed.
+
+The rotation now **widens** instead of stopping. Past `rounds × stripes` entries it keeps turning, but takes
+`rounds` entries from each chain per turn instead of one, doubling that batch on every completed round. Both
+properties hold at once:
+
+- **Locality** (what #6048 was about): the chain switches over a walk of `D` entries drop from `D` to about
+  `stripes × log D`, and once the batch outgrows a chunk every visit is a sequential run through one chain, so
+  the resident-page pressure the interleaving costs decays instead of persisting. Counted against the previous
+  degrade on a 1,000,000-edge walk at the defaults, that is ~1,184 chain switches against ~1,040 - 0.1% of the
+  entries walked, either way.
+- **Rank fidelity** (what #6064 is about): an entry at depth `d` in its chain is emitted no later than the end
+  of the batch that reaches depth `d`, which is at most twice `d`, so its position stays within a constant
+  factor of its true rank for the WHOLE walk. Measured on a 3,000-edge super-node at 16 stripes and 4 rounds
+  (a 64-entry threshold, deliberately small to put most of the walk past it), the worst position/rank ratio is
+  2.4; before, rank 40 came back at position 2,386, a ratio of 58.
+
+No new setting, and nothing has to be told what the query's `LIMIT` was - which is the alternative this
+replaces, and it would have meant threading a "how many do you actually need" hint from every query engine's
+execution plan down into `EdgeLinkedList`, across an iterator API that has no concept of one.
+`supernodeInterleaveRounds` keeps its meaning (how long the walk stays at one entry per turn) and its `0`
+still disables interleaving entirely, giving immediate concatenation in the pre-#6044 order. Read-side only:
+no on-disk format change, no migration.
+
+[#6064](https://github.com/ArcadeData/arcadedb/issues/6064)

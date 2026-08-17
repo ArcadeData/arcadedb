@@ -199,6 +199,81 @@ class InterleavedIteratorTest {
     assertThat(drainRest(it)).isEqualTo(first);
   }
 
+  /**
+   * #6064: with a batch, the rotation does not STOP past the threshold, it WIDENS - it keeps turning but takes
+   * geometrically more entries from each source per turn. Traced here with three 8-entry sources, a threshold of
+   * 3 and an initial batch of 1: entries 1-3 are the plain rotation, then each source gets 1 entry per turn for
+   * one round, then 2, then 4, and the tail of whatever is left.
+   */
+  @Test
+  void wideningTakesGeometricallyLongerVisitsInsteadOfStopping() {
+    final InterleavedIterator<String> it = new InterleavedIterator<>(
+        sources(of("a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8"), of("b1", "b2", "b3", "b4", "b5", "b6", "b7", "b8"),
+            of("c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8")), 3, 1);
+
+    assertThat(drainRest(it)).containsExactly(
+        // threshold not reached yet: one entry per turn
+        "a1", "b1", "c1",
+        // batch 1: one more full round, which is what completes the round that doubles it
+        "a2", "b2",
+        // batch 2
+        "c2", "c3", "a3", "a4", "b3", "b4",
+        // batch 4
+        "c4", "c5", "c6", "c7", "a5", "a6", "a7", "a8", "b5", "b6", "b7", "b8",
+        // batch 8: only c has anything left
+        "c8");
+  }
+
+  /**
+   * The widening reorders; it must never lose or duplicate an entry, wherever the threshold falls and whatever
+   * the batch, including sources of different lengths that leave the rotation mid-batch.
+   */
+  @Test
+  void wideningLosesNothingAtAnyThresholdOrBatch() {
+    for (long threshold = 0; threshold <= 14; threshold++)
+      for (long batch = 1; batch <= 5; batch++) {
+        final InterleavedIterator<String> it = new InterleavedIterator<>(
+            sources(of("a1", "a2", "a3", "a4"), of("b1", "b2"), of("c1", "c2", "c3", "c4", "c5")), threshold, batch);
+        assertThat(drainRest(it)).as("threshold=%d batch=%d", threshold, batch)
+            .containsExactlyInAnyOrder("a1", "a2", "a3", "a4", "b1", "b2", "c1", "c2", "c3", "c4", "c5");
+      }
+  }
+
+  /**
+   * A batch of {@code Long.MAX_VALUE} is the pre-#6064 degrade: the source holding the turn is drained to
+   * exhaustion and the rest are concatenated. It is what the two-argument constructor asks for, so the two must
+   * agree entry for entry.
+   */
+  @Test
+  void aMaxValueBatchIsTheOldDrainToExhaustion() {
+    final Iterator<String>[] wide = sources(of("a1", "a2", "a3"), of("b1", "b2", "b3"), of("c1", "c2", "c3"));
+    final Iterator<String>[] plain = sources(of("a1", "a2", "a3"), of("b1", "b2", "b3"), of("c1", "c2", "c3"));
+
+    assertThat(drainRest(new InterleavedIterator<>(wide, 2, Long.MAX_VALUE)))
+        .isEqualTo(drainRest(new InterleavedIterator<>(plain, 2)))
+        .containsExactly("a1", "b1", "b2", "b3", "c1", "c2", "c3", "a2", "a3");
+  }
+
+  /** A non-positive threshold widens from the very first entry, so a batch of 1 there is a plain rotation. */
+  @Test
+  void aNonPositiveThresholdArmsTheWideningImmediately() {
+    assertThat(drainRest(new InterleavedIterator<>(sources(of("a1", "a2"), of("b1", "b2"), of("c1", "c2")), 0, 1)))
+        .containsExactly("a1", "b1", "c1", "a2", "b2", "c2");
+  }
+
+  /** reset() re-arms the widening too: batch, visit quota and round counter all go back to their initial values. */
+  @Test
+  void resetReArmsTheWidening() {
+    final ResettableList<String> a = new ResettableList<>(List.of("a1", "a2", "a3", "a4"));
+    final ResettableList<String> b = new ResettableList<>(List.of("b1", "b2", "b3", "b4"));
+    final InterleavedIterator<String> it = new InterleavedIterator<>(sources(a, b), 2, 1);
+
+    final List<String> first = drainRest(it);
+    it.reset();
+    assertThat(it.getBrowsed()).isZero();
+    assertThat(drainRest(it)).isEqualTo(first);
+  }
+
   private static Iterator<String> of(final String... values) {
     return List.of(values).iterator();
   }
