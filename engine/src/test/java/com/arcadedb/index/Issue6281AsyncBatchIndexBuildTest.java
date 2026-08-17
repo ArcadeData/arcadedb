@@ -22,7 +22,9 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.FullTextIndexMetadata;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
@@ -150,6 +152,51 @@ class Issue6281AsyncBatchIndexBuildTest extends TestHelper {
     assertThat(raised.get()).hasMessageContaining("worker threads");
 
     database.async().waitCompletion();
+  }
+
+  /**
+   * The same barrier on {@code REBUILD INDEX ... WITH statsOnly = true}, which returns before the rebuild proper and
+   * so needs the wait ahead of it rather than after.
+   * <p>
+   * That branch recomputes the BM25 corpus counters by SCANNING the type and then OVERWRITING the counters with what
+   * the scan found. Run against an open async batch it finds nothing committed and writes "0 documents" over counters
+   * the records had already bumped when they were saved - so the corpus size stays 0 for a type holding 200
+   * documents, and every BM25 score is computed against it, until somebody recomputes again. Unlike the index-entry
+   * case this does NOT heal itself, which is why it gets a test and the rebuild path's weaker claim does not.
+   */
+  @Test
+  void aStatsRecomputeOverAnIdleAsyncExecutorStillCountsItsUncommittedBatch() throws Exception {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Doc").close();
+      database.command("sql", "CREATE PROPERTY Doc.content STRING").close();
+      database.command("sql", "CREATE INDEX ON Doc (content) FULL_TEXT").close();
+    });
+
+    database.async().setParallelLevel(2);
+
+    final CountDownLatch executed = new CountDownLatch(TOT);
+    for (int i = 0; i < TOT; i++) {
+      final MutableDocument doc = database.newDocument("Doc");
+      doc.set("content", "java tutorial alpha");
+      database.async().createRecord(doc, record -> executed.countDown());
+    }
+
+    assertThat(executed.await(30, TimeUnit.SECONDS)).isTrue();
+    waitForIdleAsyncExecutor();
+    assertThat(database.countType("Doc", false)).as("the async batch must still be open").isZero();
+
+    try (final ResultSet rs = database.command("sql", "REBUILD INDEX `Doc[content]` WITH statsOnly = true")) {
+      assertThat(rs.next().<Number>getProperty("statsRecomputed").intValue()).isEqualTo(1);
+    }
+
+    database.async().waitCompletion();
+
+    assertThat(database.countType("Doc", false)).isEqualTo(TOT);
+    final FullTextIndexMetadata metadata = ((LSMTreeFullTextIndex) ((TypeIndex) database.getSchema()
+        .getIndexByName("Doc[content]")).getIndexesOnBuckets()[0]).getFullTextMetadata();
+    assertThat(metadata.getTotalDocs()).as(
+        "the corpus size BM25 scores against must be the whole corpus, not what happened to be committed").isEqualTo(TOT);
+    assertThat(metadata.getSumDocLength()).as("and so must the length total it averages").isPositive();
   }
 
   private void assertIndexCoversEveryRecord() {

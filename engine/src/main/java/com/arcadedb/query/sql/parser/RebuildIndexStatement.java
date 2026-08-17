@@ -125,14 +125,23 @@ public class RebuildIndexStatement extends DDLStatement {
     // to ASYNC_TX_BATCH_SIZE tasks - so records it has already written can still be uncommitted, and invisible to any
     // scan, even with every queue drained (issue #6281). Wait for that batch first.
     //
-    // Deliberately weaker than the claim the same barrier carries in TypeIndexBuilder, and measured rather than
-    // assumed: a rebuild that runs inside that window does NOT lose entries. Those records staged their index
-    // operations in their own transaction when they were saved, and applying them at commit repopulates what the
-    // rebuild's scan could not see - a regression test written to catch a loss here passes with this call removed,
-    // which is why there is no such test. What the window does cost is a rebuild computed over a partial view: the
-    // BM25 counters of the statsOnly branch (which is why this sits AHEAD of it rather than after), the misplaced-
-    // record detection of issue #832, and the reported totals. An operator who rebuilds right after a bulk async
-    // load expects those numbers to be about all of the data. Costs nothing on a database that never used async.
+    // The two branches are hurt differently by that window, and both claims below are measured rather than assumed.
+    //
+    // The REBUILD proper does NOT lose index entries: those records staged their index operations in their own
+    // transaction when they were saved, and applying them at commit repopulates what the rebuild's scan could not
+    // see. A regression test written to catch a loss there passes with this call removed, which is why there is no
+    // such test. What it costs is a rebuild computed over a partial view - the misplaced-record detection of issue
+    // #832, and the reported totals.
+    //
+    // The statsOnly branch is worse, which is why this sits AHEAD of it rather than after: it recomputes the BM25
+    // corpus counters by scanning the type and then OVERWRITES the counters with what the scan found. Run inside the
+    // window it finds nothing committed and writes "0 documents" over counters the records had already bumped when
+    // they were saved, so the corpus size stays 0 for a type full of documents and every BM25 score is computed
+    // against it until somebody recomputes again. That one does not heal itself, and it has a test
+    // (Issue6281AsyncBatchIndexBuildTest#aStatsRecomputeOverAnIdleAsyncExecutorStillCountsItsUncommittedBatch:
+    // 0 of 200 documents counted with this call removed).
+    //
+    // Costs nothing on a database that never used the async API.
     ((DatabaseInternal) database).waitForAsyncCompletion();
 
     if (statsOnly)

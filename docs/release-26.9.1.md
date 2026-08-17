@@ -2484,9 +2484,13 @@ enqueues a marker *behind* everything already submitted on every worker, and tha
 no cheap predicate to test first, and testing one is what let the barrier be skipped. `isAsyncProcessing()` is
 deliberately left answering about tasks: broadening it to "a transaction is open" would make it permanently
 true for as long as the workers live. The same barrier now precedes `REBUILD INDEX`, whose scan sees the same
-partial view - there it does not lose index entries, since those records apply their own staged entries when
-they commit, but it does make the BM25 counters, the misplaced-record detection of #832 and the reported
-totals be about all of the data rather than about whatever happened to be committed.
+partial view. The rebuild proper does not lose index entries there - those records apply their own staged
+entries when they commit - so what it gains is the misplaced-record detection of #832 and the reported totals
+being about all of the data. `REBUILD INDEX ... WITH statsOnly = true` was worse off and is the reason the
+barrier sits ahead of that branch rather than after it: it recomputes the BM25 corpus counters by scanning the
+type and then *overwrites* the counters with what the scan found, so run against an open batch it wrote "0
+documents" over counters the records had already bumped. A type holding 200 documents was left scoring every
+BM25 query against a corpus of zero, and unlike the index-entry case that did not heal itself.
 
 `ACIDTransactionTest.indexCreationWhileAsyncMustFail`, which existed to cover exactly this, had been vacuous
 for years: it expected a `NeedRetryException` from a creation that has drained the executor rather than

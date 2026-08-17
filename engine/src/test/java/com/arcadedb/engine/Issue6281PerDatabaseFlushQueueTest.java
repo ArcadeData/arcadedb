@@ -200,6 +200,32 @@ class Issue6281PerDatabaseFlushQueueTest extends TestHelper {
   }
 
   /**
+   * A non-positive {@code arcadedb.pageFlushQueue} is raised to 1 rather than rejected.
+   * <p>
+   * It used to be rejected, by {@code ArrayBlockingQueue}'s constructor, and that was fine while the queue carried
+   * the capacity. Now that admission is the only bound, a budget of 0 would refuse every publication for ever - an
+   * unrecoverable hang in place of a startup failure - and there is no constructor left to reject it on the way in.
+   */
+  @Test
+  void aNonPositiveBudgetIsRaisedToOneRatherThanRefusingEveryPublication() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+
+    for (final int configured : new int[] { 0, -1 }) {
+      final PageManagerFlushThread flush = smallQueueFlushThread(configured);
+      assertThat(flush.getQueueCapacity()).as("a budget of %d must not stay one that admits nothing", configured)
+          .isEqualTo(1);
+
+      // And it genuinely admits: one batch in, the next caller held until that one is polled.
+      flush.scheduleFlushOfPages(new ArrayList<>(List.of(page(db, 0))));
+      assertThat(flush.slotsUsedBy(db)).isEqualTo(1);
+      assertThat(flush.tryReserveQueueSlot(db)).as("...and exactly one, so the second is refused").isFalse();
+
+      flush.flushPagesFromQueueToDisk(null, 20L);
+      assertThat(flush.slotsUsedBy(db)).isZero();
+    }
+  }
+
+  /**
    * Constructing the flush thread directly does NOT start the background thread, so the pipeline only moves when the
    * test moves it.
    */
