@@ -2192,7 +2192,7 @@ dimensions. `algo.randomWalk` had the one-dimensional version: `new int[steps + 
 `Integer.MIN_VALUE` at `steps = 2147483647`.
 
 Both are now estimated in saturating `long` arithmetic and checked **before** anything is allocated, against
-a new `arcadedb.cypher.algoMaxWalkMemory` budget that auto-scales with the JVM max heap (one eighth of it,
+a new `arcadedb.cypher.algoMaxWorkingMemory` budget that auto-scales with the JVM max heap (one eighth of it,
 never below 64MB) and can be raised or switched off (negative = no limit). This follows the house pattern
 of `arcadedb.queryMaxHeapElementsAllowedPerOp` and `arcadedb.queryMaxRangeSize` rather than inventing a
 per-knob constant: the error names the knobs that produced the estimate and the setting to raise, and
@@ -2317,10 +2317,12 @@ callers are unchanged and get a checkpoint that never aborts.
 node keeps a label-memory row of `iterations + 1` ints, so `{iterations: 1000000}` on a 10k-node graph asks
 for 40 GB, and at `Integer.MAX_VALUE` the `iterations + 1` wrapped to `Integer.MIN_VALUE` and died as a bare
 `NegativeArraySizeException` naming nothing. The footprint is now estimated in saturating `long` arithmetic
-and checked against the same `arcadedb.cypher.algoMaxWalkMemory` budget the walk buffers use, before the
-first row is allocated.
+and checked against the same budget the walk buffers use, before the first row is allocated. (That budget is
+renamed `arcadedb.cypher.algoMaxWorkingMemory` by #6263 below, which landed after this one and generalised it
+from walk buffers to the whole working set of a call; the label memory is priced through it unchanged.)
 
 [#6264](https://github.com/ArcadeData/arcadedb/issues/6264)
+
 ## A placeholder whose content had to spill into chunks is no longer returned twice by a scan (#6196)
 
 `SELECT FROM Doc` could return the same record twice, under two different RIDs, and `count(@rid)` counted it
@@ -2375,3 +2377,83 @@ with the top-level `totalSurrogateRecords` it was moved to. That is deliberate: 
 the page as the walk found it. Both agree again once the FIX has run.
 
 [#6196](https://github.com/ArcadeData/arcadedb/issues/6196)
+
+## The whole working set of a graph-algorithm call is budgeted, not just its walk buffers (#6263)
+
+Follow-up to #6216, which introduced a heap budget for the random-walk buffers of `algo.node2vec` and
+`algo.randomWalk`, and to #6065, which capped every embedding-dimension knob at 4096. Between them they left
+the *largest* allocation of these procedures outside every budget: the matrices themselves.
+
+A dimension cap bounds one embedding **row** at 32 KB and says nothing about a `nodeCount x dimension`
+**matrix**. At `algo.node2vec`'s default `embeddingDimension: 128` the two Skip-gram matrices cost about 2080
+bytes per node - 208 MB at 100 000 nodes, 2.1 GB at a million, 21 GB at ten million - which is the same order
+as the walk matrix on the same call, at ~3560 bytes per node, that #6216 already refused up front. One
+allocation was budgeted and the other, sitting beside it in the same method, was not. `algo.fastrp` made the
+gap plainest: it has no walk buffer at all, so no budget of any kind applied to it, and its two
+`nodeCount x dimensions` matrices had no ceiling whatsoever. The failure mode was an `OutOfMemoryError` rather
+than the client error naming a parameter that #6065 and #6216 both exist to produce - and an
+`OutOfMemoryError` on a shared server takes down work that had nothing to do with the query that caused it.
+
+`arcadedb.cypher.algoMaxWalkMemory` is therefore renamed **`arcadedb.cypher.algoMaxWorkingMemory`**. The key
+was introduced in this same unreleased version, so no deprecated alias is carried: the concept it implements -
+estimate the footprint in saturating `long` arithmetic, reject as a client error before allocating, auto-scale
+the default with the JVM heap - was never walk-specific, only its name was. Everything else about it is
+unchanged: default `max(64MB, maxHeap/8)`, negative means no limit, and the error is an
+`IllegalArgumentException`, so over HTTP it is a 400 rather than a 500.
+
+Reservations now **accumulate over the call** rather than being checked one allocation at a time. That is what
+the question "how much heap may this call take?" actually asks, and a single call routinely holds several of
+these at once: `algo.node2vec` keeps its walk matrix alive while it trains over two embedding matrices, so
+pricing each separately would let a call exceed the budget by however many components it happens to have. The
+error names the component that broke the budget, the counts that sized it, and what the call had already
+reserved:
+
+```
+algo.node2vec(): the embedding matrices would need 8448 bytes (2 matrices of 4 nodes x embeddingDimension=128),
+on top of the 14240 bytes this call already reserved, more than the 20000 bytes allowed.
+Set arcadedb.cypher.algoMaxWorkingMemory to raise the limit
+```
+
+Priced against the budget, all before anything is allocated:
+
+| procedure | working set |
+|---|---|
+| `algo.node2vec` | walk matrix + 2 x `nodeCount x embeddingDimension` |
+| `algo.fastrp` | 2 x `nodeCount x dimensions` |
+| `algo.hashgnn` | 2 x `nodeCount x 4 x embeddingDimension` feature matrices + 1 x `nodeCount x embeddingDimension` |
+| `algo.graphsage` | 2 x `nodeCount x embeddingDimension` + the layer's `embeddingDimension x 2 x initDim` projection |
+| `algo.apsp` | `nodeCount x nodeCount` distance matrix |
+| `algo.simRank` | 2 x `nodeCount x nodeCount` similarity matrices |
+| `algo.maxFlow` | `nodeCount x nodeCount` capacity + residual matrices |
+| `algo.kShortestPaths` | `nodeCount x nodeCount` weight matrix + removed-edge mask |
+| `algo.steinerTree` | `terminals x nodeCount` Dijkstra tables + four arrays of one entry per terminal pair |
+| `algo.randomWalk` | walk buffer (unchanged from #6216) |
+| `algo.slpa` | `nodeCount x (iterations + 1)` label memory (from #6264, repriced through the same budget) |
+
+The last four are the reason the rename is worth doing rather than adding a second walk-shaped key. Their
+matrices are sized by the graph alone, with no knob involved anywhere: `algo.simRank(a, b)` answers a question
+about exactly two nodes and allocates two full `nodeCount x nodeCount` matrices to do it, because the
+similarity of one pair is defined recursively over every pair - 1.6 GB at 10 000 nodes. `algo.apsp` already
+documented itself as suitable "up to a few thousand vertices", which was advice rather than a bound. These
+algorithms are cubic or worse in time, so the memory bound bites at roughly the scale where the runtime is
+already impractical; what changes is that the refusal now names the node count and the setting instead of
+arriving as an `OutOfMemoryError` several minutes in.
+
+`algo.hashgnn` turned up one thing worth stating separately: its **feature** matrices, not its embedding
+matrix, are the larger pair. They are four times as wide as the embedding, so even stored as `boolean` they
+cost half a byte per dimension per node against the embedding's eight - which is why they are priced by name
+rather than folded into an "embedding matrices" figure that would understate the call by a factor of two.
+
+`algo.steinerTree` carried the same defect in both of its forms, and is the only knob in the package a caller
+supplies as *data* rather than as a number: `terminalNodes` is a list, so nothing validates its length - not
+even the node count, since repeating the same vertex is accepted. Its length sizes a `terminals x nodeCount`
+pair of Dijkstra tables, and then `t * (t - 1) / 2` terminal pairs across four parallel arrays. That
+expression was evaluated in `int`, and the division by 2 happens *after* the product, so it wrapped at 46342
+terminals - the result fitting an `int` never saved it - and `new int[pairCount]` died as a bare
+`NegativeArraySizeException: -1073716337`, naming nothing. The count is now computed in `long`, priced (the
+real figure at that length is 1073767311 pairs, about 43 GB), and refused past `Integer.MAX_VALUE` entries
+whatever the heap setting says. The pair arrays include an `Integer[]` index array sorted through a
+`Comparator`, which costs 24 bytes an entry against the 4 of the `int` it carries; it is priced at what it
+actually costs rather than at what a primitive array would.
+
+[#6263](https://github.com/ArcadeData/arcadedb/issues/6263)

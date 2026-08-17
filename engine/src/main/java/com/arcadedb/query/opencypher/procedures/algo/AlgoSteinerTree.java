@@ -58,6 +58,11 @@ import java.util.stream.Stream;
  * </pre>
  * </p>
  *
+ * <p>Working set: a {@code terminals x nodeCount} pair of Dijkstra tables plus one entry per terminal pair -
+ * about {@code t²/2} of them - in four parallel arrays, both reserved through
+ * {@link AbstractAlgoProcedure.MemoryBudget} before anything is allocated. Quadratic in a list the caller
+ * supplies and nothing bounds, which is why the pair count is also computed in {@code long}.</p>
+ *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class AlgoSteinerTree extends AbstractAlgoProcedure {
@@ -105,12 +110,32 @@ public class AlgoSteinerTree extends AbstractAlgoProcedure {
     if (n == 0)
       return Stream.empty();
 
+    final int t = terminals.size();
+
+    // The terminal list is the knob here, and it is the one knob a caller supplies as data rather than as a
+    // number: nothing bounds its length, and it need not even be bounded by the node count, since repeating the
+    // same vertex is accepted. It sizes two working sets, both reserved before the adjacency build so that a
+    // list too long to serve costs nothing beyond the reservation:
+    //   - the Dijkstra tables, terminals x nodeCount of doubles plus the same of ints;
+    //   - one entry per terminal PAIR, about t²/2 of them, in four parallel arrays.
+    // The pair count is computed in long. In int, `t * (t - 1)` wraps just past 46341 terminals - the division
+    // by 2 happens after the product, so the wrap is not avoided by the result fitting an int - and a negative
+    // pairCount reached `new int[pairCount]` as a bare NegativeArraySizeException naming nothing.
+    final long pairCount = (long) t * (t - 1) / 2;
+    final MemoryBudget memory = newMemoryBudget(db);
+    memory.reserve(saturatingSum(matrixBytes(t, n, DOUBLE_BYTES), matrixBytes(t, n, INT_BYTES)),
+        "the per-terminal Dijkstra tables", t + " terminals x " + n + " nodes");
+    memory.reserve(saturatingProduct(pairCount, 2 * INT_BYTES + DOUBLE_BYTES + BOXED_INTEGER_BYTES),
+        "the terminal-pair arrays", pairCount + " pairs over " + t + " terminals");
+    if (pairCount > Integer.MAX_VALUE)
+      throw new IllegalArgumentException(getName() + "(): " + t + " terminalNodes make " + pairCount
+          + " terminal pairs, more than the " + Integer.MAX_VALUE + " entries a Java array can hold");
+
     // Build weighted adjacency lists (undirected for shortest paths)
     final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH, relTypes);
     final double[][] adjW = buildWeightedAdj(graph, adj, weightProperty);
 
     // Map terminals to their indices
-    final int t = terminals.size();
     final int[] termIdx = new int[t];
     for (int i = 0; i < t; i++) {
       final int idx = graph.indexOf(terminals.get(i).getIdentity());
@@ -129,11 +154,11 @@ public class AlgoSteinerTree extends AbstractAlgoProcedure {
     }
 
     // ── Step 2: Build complete graph on terminals, run MST (Kruskal's) ────
-    // Number of terminal pairs
-    final int pairCount = t * (t - 1) / 2;
-    final int[] pU = new int[pairCount];
-    final int[] pV = new int[pairCount];
-    final double[] pW = new double[pairCount];
+    // Number of terminal pairs, computed in long and bounded above.
+    final int pairs = (int) pairCount;
+    final int[] pU = new int[pairs];
+    final int[] pV = new int[pairs];
+    final double[] pW = new double[pairs];
     int pi = 0;
     for (int i = 0; i < t; i++)
       for (int j = i + 1; j < t; j++) {
@@ -144,8 +169,8 @@ public class AlgoSteinerTree extends AbstractAlgoProcedure {
       }
 
     // Sort by weight for Kruskal's
-    final Integer[] sortIdx = new Integer[pairCount];
-    for (int i = 0; i < pairCount; i++)
+    final Integer[] sortIdx = new Integer[pairs];
+    for (int i = 0; i < pairs; i++)
       sortIdx[i] = i;
     Arrays.sort(sortIdx, (a, b) -> Double.compare(pW[a], pW[b]));
 
@@ -159,7 +184,7 @@ public class AlgoSteinerTree extends AbstractAlgoProcedure {
     final int[] mstU = new int[t - 1];
     final int[] mstV = new int[t - 1];
     int mstSize = 0;
-    for (int k = 0; k < pairCount && mstSize < t - 1; k++) {
+    for (int k = 0; k < pairs && mstSize < t - 1; k++) {
       final int idx = sortIdx[k];
       if (pW[idx] == Double.MAX_VALUE)
         continue; // unreachable pair

@@ -44,7 +44,8 @@ import java.util.stream.Stream;
  * </p>
  * <p>
  * Note: this algorithm is O(V²) in memory and O(V³) in time. Only suitable for graphs
- * with up to a few thousand vertices.
+ * with up to a few thousand vertices - a bound the distance matrix's reservation through
+ * {@link AbstractAlgoProcedure.MemoryBudget} now enforces rather than merely advises.
  * </p>
  * <p>
  * Example:
@@ -100,6 +101,12 @@ public class AlgoAPSP extends AbstractAlgoProcedure {
     final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
+
+    // The distance matrix is nodeCount x nodeCount: 800 MB at 10 000 nodes, 80 GB at 100 000, with no knob
+    // involved - the graph alone sizes it. Reserved before it is allocated so that a graph too large for
+    // Floyd-Warshall is a client error naming the node count and the budget, rather than an OutOfMemoryError
+    // that takes the rest of the JVM's work down with it.
+    newMemoryBudget(db).reserve(matrixBytes(n, n, DOUBLE_BYTES), "the distance matrix", n + " x " + n + " nodes");
 
     // Allocate distance matrix: one large contiguous allocation is GC-friendly
     final double[][] dist = new double[n][n];

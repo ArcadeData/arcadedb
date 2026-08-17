@@ -255,58 +255,110 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   // ── Work bounds ──────────────────────────────────────────────────────────
 
   /**
-   * Heap cost of one row of a per-node {@code int} matrix on top of its payload: 16-byte array header, 4-byte
-   * length, 4 bytes of padding and the 8-byte reference the enclosing array holds. Such rows are typically short,
-   * so this overhead is a real part of the footprint rather than a rounding error.
+   * Heap cost of one row of a two-dimensional array on top of its payload: 16-byte array header, 4-byte length,
+   * 4 bytes of padding and the 8-byte reference the enclosing array holds. Rows are often short - a walk of a
+   * few steps, a label memory of a few iterations, an embedding of a few dozen doubles - so this overhead is a
+   * real part of the footprint rather than a rounding error.
    * <p>
    * A heuristic for a budget check, not a guarantee: the true figure moves with the JVM's object layout
    * (compressed oops on or off, alignment). It does not need to be exact - it only has to keep the estimate in
    * the right order of magnitude - so there is nothing to "correct" here short of measuring a specific JVM.
    */
-  protected static final long WALK_ROW_OVERHEAD_BYTES = 32L;
+  protected static final long MATRIX_ROW_OVERHEAD_BYTES = 32L;
 
-  /** Heap cost of one entry of a walk buffer, which is an {@code int}. */
-  protected static final long WALK_ENTRY_BYTES = 4L;
+  /** Heap cost of one {@code boolean} array element, which the JVM stores as a byte. */
+  protected static final long BOOLEAN_BYTES = 1L;
+
+  /** Heap cost of one {@code int} array element, the entry type of the walk buffers and of SLPA's label memory. */
+  protected static final long INT_BYTES = 4L;
+
+  /** Heap cost of one {@code double} array element, the entry type of every embedding and distance matrix. */
+  protected static final long DOUBLE_BYTES = 8L;
 
   /**
-   * Rejects, before a single byte is allocated, a random-walk buffer whose estimated heap footprint exceeds
-   * {@link GlobalConfiguration#CYPHER_ALGO_MAX_WALK_MEMORY}.
-   *
-   * @param db             database whose configuration carries the budget
-   * @param estimatedBytes estimated footprint, computed with {@link #saturatingProduct(long, long)}
-   * @param detail         breakdown of the knobs that produced the estimate, for the error message
-   *
-   * @see #checkBufferBudget(Database, long, String, String)
+   * Heap cost of one entry of an {@code Integer[]}: the 8-byte reference the array holds plus the 16-byte boxed
+   * object it points at. Three times the cost of the {@code int} it carries, which is why an index array sorted
+   * through a {@code Comparator} - the only reason these arrays are boxed at all - is priced separately rather
+   * than folded into a primitive figure that would understate it.
+   * <p>
+   * Like {@link #MATRIX_ROW_OVERHEAD_BYTES} this is a heuristic for a budget check: below 128 the JVM hands out
+   * cached {@code Integer} instances and the true cost is the reference alone.
    */
-  protected void checkWalkBudget(final Database db, final long estimatedBytes, final String detail) {
-    checkBufferBudget(db, estimatedBytes, "random walk buffer", detail);
+  protected static final long BOXED_INTEGER_BYTES = 24L;
+
+  /**
+   * Estimated heap footprint of a {@code new T[rows][columns]} of an element type {@code elementBytes} wide,
+   * row headers included, in saturating {@code long} arithmetic.
+   */
+  protected static long matrixBytes(final long rows, final long columns, final long elementBytes) {
+    return saturatingProduct(rows, saturatingSum(MATRIX_ROW_OVERHEAD_BYTES, saturatingProduct(columns, elementBytes)));
   }
 
   /**
-   * Rejects, before a single byte is allocated, a per-node buffer whose estimated heap footprint exceeds
-   * {@link GlobalConfiguration#CYPHER_ALGO_MAX_WALK_MEMORY}.
+   * The heap an algorithm call is allowed to spend on the dense working set it builds beside the graph, as a
+   * running total: walk buffers, {@code nodeCount x dimension} embedding matrices, {@code nodeCount x nodeCount}
+   * distance/similarity/capacity matrices.
    * <p>
-   * The knobs that size these buffers ({@code walksPerNode}, {@code walkLength}, {@code steps}, SLPA's
-   * {@code iterations}) have no graph-derived ceiling to clamp against, so they are bounded here by the resource
-   * they actually consume rather than by a guessed per-knob maximum: the budget scales with the JVM heap and is
-   * tunable, and the estimate is computed in saturating {@code long} arithmetic, so a product that would wrap
-   * {@code int} is caught here instead of surfacing as a {@code NegativeArraySizeException} from inside the
-   * allocator.
-   *
-   * @param db             database whose configuration carries the budget
-   * @param estimatedBytes estimated footprint, computed with {@link #saturatingProduct(long, long)}
-   * @param what           name of the buffer, for the error message ("random walk buffer", ...)
-   * @param detail         breakdown of the knobs that produced the estimate, for the error message
+   * These allocations have no graph-derived ceiling to clamp against - an embedding dimension multiplies the
+   * per-node cost however small the graph is, and a square matrix grows with the graph however modest the knobs
+   * are - so they are bounded by the resource they actually consume rather than by a guessed per-knob maximum:
+   * {@link GlobalConfiguration#CYPHER_ALGO_MAX_WORKING_MEMORY} scales with the JVM heap and is tunable, and
+   * every estimate is computed in saturating {@code long} arithmetic, so a product that would wrap {@code int}
+   * is caught here instead of surfacing as a {@code NegativeArraySizeException} from inside the algorithm.
+   * <p>
+   * The total accumulates because the budget answers one question - how much heap may this call take? - and a
+   * single call routinely holds several of these at once: node2vec keeps its walk matrix alive while training
+   * over two embedding matrices, and pricing each separately would let a call exceed the budget by however many
+   * components it happens to have. A reservation is never released: the unit being bounded is the call, and
+   * every component priced here lives to the end of it.
    */
-  protected void checkBufferBudget(final Database db, final long estimatedBytes, final String what,
-      final String detail) {
-    final long budget = db.getConfiguration().getValueAsLong(GlobalConfiguration.CYPHER_ALGO_MAX_WALK_MEMORY);
-    if (budget < 0 || estimatedBytes <= budget)
-      return;
-    throw new IllegalArgumentException(getName() + "(): the " + what + " would need "
-        + (estimatedBytes == Long.MAX_VALUE ? "over " + Long.MAX_VALUE : Long.toString(estimatedBytes)) + " bytes ("
-        + detail + "), more than the " + budget + " bytes allowed. Set "
-        + GlobalConfiguration.CYPHER_ALGO_MAX_WALK_MEMORY.getKey() + " to raise the limit");
+  protected final class MemoryBudget {
+    private final long limit;
+    private       long reserved;
+
+    private MemoryBudget(final long limit) {
+      this.limit = limit;
+    }
+
+    /**
+     * Adds {@code estimatedBytes} to this call's working set and rejects the call, before a single byte is
+     * allocated, if the running total no longer fits the budget.
+     *
+     * @param estimatedBytes estimated footprint, computed with {@link #matrixBytes(long, long, long)} or
+     *                       {@link #saturatingProduct(long, long)}
+     * @param component      what is about to be allocated, e.g. "the embedding matrices"
+     * @param detail         breakdown of the knobs and counts that produced the estimate, for the error message
+     */
+    public void reserve(final long estimatedBytes, final String component, final String detail) {
+      if (limit < 0)
+        // Negative means no limit: skip the bookkeeping too, so a disabled budget costs nothing.
+        return;
+      final long alreadyReserved = reserved;
+      reserved = saturatingSum(reserved, estimatedBytes);
+      if (reserved <= limit)
+        return;
+      throw new IllegalArgumentException(getName() + "(): " + component + " would need " + describe(estimatedBytes)
+          + " bytes (" + detail + ")"
+          + (alreadyReserved > 0 ? ", on top of the " + alreadyReserved + " bytes this call already reserved" : "")
+          + ", more than the " + limit + " bytes allowed. Set "
+          + GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getKey() + " to raise the limit");
+    }
+
+    /**
+     * A saturated estimate is reported as "over Long.MAX_VALUE" rather than as the ceiling itself: the figure
+     * is no longer representable, and quoting it as if it were exact would misstate by an unknown amount.
+     */
+    private static String describe(final long estimatedBytes) {
+      return estimatedBytes == Long.MAX_VALUE ? "over " + Long.MAX_VALUE : Long.toString(estimatedBytes);
+    }
+  }
+
+  /**
+   * Creates the {@link MemoryBudget} of one algorithm call, carrying
+   * {@link GlobalConfiguration#CYPHER_ALGO_MAX_WORKING_MEMORY}.
+   */
+  protected MemoryBudget newMemoryBudget(final Database db) {
+    return new MemoryBudget(db.getConfiguration().getValueAsLong(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY));
   }
 
   /** Multiplies two non-negative longs, saturating at {@link Long#MAX_VALUE} instead of wrapping. */
@@ -323,7 +375,7 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
    * <p>
    * The companion to {@link #saturatingProduct(long, long)}, and required wherever a footprint estimate mixes the
    * two: a saturated product plus a per-row overhead wraps to a large <em>negative</em> number, and a negative
-   * estimate passes {@link #checkBufferBudget} unconditionally - the budget check would be silently disabled by
+   * estimate passes {@link MemoryBudget#reserve} unconditionally - the budget check would be silently disabled by
    * exactly the input it exists to refuse. No current caller can reach that (every estimate here is bounded by an
    * {@code int}-sized count), so this closes the shape rather than an instance.
    * </p>

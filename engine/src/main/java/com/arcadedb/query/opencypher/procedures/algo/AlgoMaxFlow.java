@@ -108,6 +108,13 @@ public class AlgoMaxFlow extends AbstractAlgoProcedure {
     if (srcIdx == null || snkIdx == null)
       return Stream.empty();
 
+    // Edmonds-Karp keeps a dense capacity matrix and a dense residual matrix, both nodeCount x nodeCount and
+    // both alive to the end: 1.6 GB at 10 000 nodes, with no knob involved. Reserved before the first is
+    // allocated so that a graph too large for the dense formulation is a client error naming the node count and
+    // the budget, rather than an OutOfMemoryError.
+    newMemoryBudget(db).reserve(saturatingProduct(2L, matrixBytes(n, n, DOUBLE_BYTES)),
+        "the capacity and residual matrices", "2 matrices of " + n + " x " + n + " nodes");
+
     // Build capacity matrix as n×n array
     final double[][] capacity = new double[n][n];
 

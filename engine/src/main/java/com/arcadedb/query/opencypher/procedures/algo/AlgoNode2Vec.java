@@ -65,10 +65,9 @@ import java.util.stream.Stream;
  * </pre>
  * </p>
  *
- * <p>The walk matrix is {@code walksPerNode x nodeCount} walks of {@code walkLength} steps. Its footprint is
- * estimated in {@code long} arithmetic and checked against
- * {@link com.arcadedb.GlobalConfiguration#CYPHER_ALGO_MAX_WALK_MEMORY} before anything is allocated, so a
- * large but in-range knob is rejected by name rather than wrapping the product or exhausting the heap. The
+ * <p>Working set: a walk matrix of {@code walksPerNode x nodeCount} walks of {@code walkLength} steps AND the
+ * two {@code nodeCount x embeddingDimension} matrices of the Skip-gram model, which are alive at the same time
+ * and so reserved together through {@link AbstractAlgoProcedure.MemoryBudget} before anything is allocated. The
  * training loops honour thread interruption and {@code arcadedb.command.timeout}.</p>
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -127,6 +126,33 @@ public class AlgoNode2Vec extends AbstractAlgoProcedure {
     final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
+
+    // Both reservations are made off the node count and the knobs alone, so they come before the adjacency
+    // lists are materialised: a call that cannot afford its buffers should not first pay the O(edges) build.
+    final MemoryBudget memory = newMemoryBudget(db);
+    // Sized in long arithmetic: `n * walksPerNode` wraps int for a large walksPerNode, which used to size the
+    // walk matrix with a negative or (for an exact multiple of 2^32) far too small a value.
+    final long totalWalksAsLong = saturatingProduct(n, walksPerNode);
+    // Per walk: one matrix row of walkLength ints, plus one entry of the walkOrder shuffle array. Saturating
+    // throughout, like the estimate itself: a footprint that mixes a saturated product with a plain addition
+    // wraps to a negative number, and a negative estimate passes the budget check unconditionally. walkLen is
+    // int-bounded so this one cannot reach that today - it is written this way so the shape is the same at
+    // every call site.
+    final long bytesPerWalk = saturatingSum(MATRIX_ROW_OVERHEAD_BYTES + INT_BYTES,
+        saturatingProduct(INT_BYTES, walkLen));
+    memory.reserve(saturatingProduct(totalWalksAsLong, bytesPerWalk), "the random walk buffer",
+        "walksPerNode=" + walksPerNode + " x walkLength=" + walkLen + " over " + n + " nodes");
+    // The two nodeCount x embeddingDimension matrices of phase 2 are reserved here too, because both stay alive
+    // to the end of the call alongside the walk matrix and because a run that cannot afford them should not
+    // first spend minutes generating walks. The dimension cap bounds one embedding ROW at 32 KB and says
+    // nothing about the matrix, which at the default dimension of 128 costs about 2 KB per node - the same
+    // order as the walk buffer priced above.
+    memory.reserve(saturatingProduct(2L, matrixBytes(n, dim, DOUBLE_BYTES)), "the embedding matrices",
+        "2 matrices of " + n + " nodes x embeddingDimension=" + dim);
+    if (totalWalksAsLong > Integer.MAX_VALUE)
+      throw new IllegalArgumentException(getName() + "(): walksPerNode=" + walksPerNode + " over " + n + " nodes needs "
+          + totalWalksAsLong + " walks, more than the " + Integer.MAX_VALUE + " entries a Java array can hold");
+
     final int[][] adj = graph.adjacency(dir, relTypes);
 
     final Random rng = seed >= 0 ? new Random(seed) : new Random();
@@ -141,21 +167,6 @@ public class AlgoNode2Vec extends AbstractAlgoProcedure {
     final int window = Math.min(rawWindow, walkLen);
 
     // ── Phase 1: Generate biased random walks ──────────────────────────────
-    // Sized in long arithmetic: `n * walksPerNode` wraps int for a large walksPerNode, which used to size the
-    // walk matrix with a negative or (for an exact multiple of 2^32) far too small a value.
-    final long totalWalksAsLong = saturatingProduct(n, walksPerNode);
-    // Per walk: one matrix row of walkLength ints, plus one entry of the walkOrder shuffle array. Saturating
-    // throughout, like the estimate itself: a footprint that mixes a saturated product with a plain addition wraps
-    // to a negative number, and a negative estimate passes the budget check unconditionally. walkLen is int-bounded
-    // so this one cannot reach that today - it is written this way so the shape is the same at every call site.
-    final long bytesPerWalk = saturatingSum(WALK_ROW_OVERHEAD_BYTES + WALK_ENTRY_BYTES,
-        saturatingProduct(WALK_ENTRY_BYTES, walkLen));
-    checkWalkBudget(db, saturatingProduct(totalWalksAsLong, bytesPerWalk),
-        "walksPerNode=" + walksPerNode + " x walkLength=" + walkLen + " over " + n + " nodes");
-    if (totalWalksAsLong > Integer.MAX_VALUE)
-      throw new IllegalArgumentException(getName() + "(): walksPerNode=" + walksPerNode + " over " + n + " nodes needs "
-          + totalWalksAsLong + " walks, more than the " + Integer.MAX_VALUE + " entries a Java array can hold");
-
     final int totalWalks = (int) totalWalksAsLong;
     final int[][] walks = new int[totalWalks][walkLen];
     int wi = 0;
@@ -186,7 +197,7 @@ public class AlgoNode2Vec extends AbstractAlgoProcedure {
     }
 
     // ── Phase 2: Skip-gram with negative sampling ──────────────────────────
-    // W: input embeddings, WCtx: context embeddings
+    // W: input embeddings, WCtx: context embeddings. Both were reserved before phase 1 started.
     final double[][] W = new double[n][dim];
     final double[][] WCtx = new double[n][dim];
     // Xavier initialisation for W.

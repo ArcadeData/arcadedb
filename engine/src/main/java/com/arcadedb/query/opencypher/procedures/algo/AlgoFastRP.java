@@ -62,6 +62,9 @@ import java.util.stream.Stream;
  * </pre>
  * </p>
  *
+ * <p>Working set: two {@code nodeCount x dimensions} matrices, reserved through
+ * {@link AbstractAlgoProcedure.MemoryBudget} before either is allocated.</p>
+ *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class AlgoFastRP extends AbstractAlgoProcedure {
@@ -112,6 +115,16 @@ public class AlgoFastRP extends AbstractAlgoProcedure {
     final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
+
+    // The two nodeCount x dimensions matrices below are the whole working set of this procedure, and the only
+    // allocation of any size it makes: it has no walk buffer, so nothing else would ever price them. `dimensions`
+    // is capped at MAX_EMBEDDING_DIMENSION, which bounds one embedding ROW at 32 KB and says nothing about the
+    // matrix - at the default of 128 the pair costs about 2 KB per node, 2 GB at a million nodes. The node count
+    // and the knob are all the estimate needs, so the reservation comes before the adjacency lists are
+    // materialised: a call that cannot afford its matrices should not first pay the O(edges) build.
+    newMemoryBudget(db).reserve(saturatingProduct(2L, matrixBytes(n, dimensions, DOUBLE_BYTES)),
+        "the embedding matrices", "2 matrices of " + n + " nodes x dimensions=" + dimensions);
+
     final int[][] adj = graph.adjacency(dir, relTypes);
 
     final int[] degree = new int[n];
