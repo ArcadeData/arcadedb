@@ -169,6 +169,41 @@ class CypherLabelWriteRowFanoutIssue6312Test {
   }
 
   @Test
+  void mergeOnMatchSetLabelKeepsEdgesAndRedirectsEveryAlias() {
+    cypher("CREATE (a:Keep {name:'a'})-[:E {w:7}]->(b {name:'b'})");
+    cypher("MATCH (a {name:'a'}) CREATE (c {name:'c'})-[:E {w:9}]->(a)");
+    cypher("MATCH (a {name:'a'}) CREATE (a)-[:E {w:11}]->(a)");
+
+    // ON MATCH SET n:Label rewrites the record exactly as a bare SET does. The row also binds the same node
+    // under m, from the MATCH that fed the MERGE, and that alias has to follow it too.
+    assertThat(writingRows("""
+        MATCH (m {name:'a'})
+        MERGE (n {name:'a'})
+        ON MATCH SET n:Extra
+        RETURN labels(m) AS v""")).containsExactly("[Extra, Keep]");
+
+    assertThat(rows("MATCH (n {name:'a'}) RETURN labels(n) AS v")).containsExactly("[Extra, Keep]");
+    // Edge properties survive, and the self-loop is one live edge rather than a dangling one.
+    assertThat(rows("MATCH ()-[r:E]->() RETURN r.w AS v")).containsExactlyInAnyOrder("7", "9", "11");
+    assertThat(rows("MATCH (n {name:'a'})-[r]->(n) RETURN count(r) AS v")).containsExactly("1");
+    assertThat(rows("MATCH (n {name:'a'})-[:E]->(x) RETURN x.name AS v")).containsExactlyInAnyOrder("b", "a");
+  }
+
+  @Test
+  void mergeOnMatchSetLabelSurvivesTheSameNodeOnSeveralRows() {
+    cypher("CREATE (a:Keep {name:'a'})");
+
+    // Three rows, all merging onto the same node: the first relabels it, the other two must recognise the
+    // replacement rather than write through the record it deleted.
+    assertThat(writingRows("""
+        UNWIND [1,2,3] AS i
+        MERGE (n {name:'a'})
+        ON MATCH SET n:Extra
+        RETURN labels(n) AS v""")).containsExactly("[Extra, Keep]", "[Extra, Keep]", "[Extra, Keep]");
+    assertThat(rows("MATCH (n {name:'a'}) RETURN labels(n) AS v")).containsExactly("[Extra, Keep]");
+  }
+
+  @Test
   void removeLabelIsIdempotentAcrossRowsAndCountsOnce() {
     cypher("CREATE (a:Gone:Stay {name:'a'})");
 
