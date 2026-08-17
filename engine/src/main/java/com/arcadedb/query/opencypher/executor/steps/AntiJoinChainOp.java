@@ -130,7 +130,7 @@ public final class AntiJoinChainOp implements CountOp {
 
     // We need position 0 to be one of the anti-join endpoints for per-source iteration
     if (earlierIdx != 0)
-      return executeGenericAntiJoin(provider, db, nodeCount, validBuckets, guard);
+      return executeGenericAntiJoin(db, guard);
 
     // FAST PATH: Edge-scan with algebraic computation for 3-hop chains where:
     // - Chain is (A) ←[E0]- (B) ←[E1]- (C) -[E2]→ (D)
@@ -303,8 +303,7 @@ public final class AntiJoinChainOp implements CountOp {
    * Fallback for anti-join patterns where neither endpoint is at position 0.
    * Uses dense propagation + per-node anti-join checking.
    */
-  private long executeGenericAntiJoin(final GraphTraversalProvider provider, final Database db,
-      final int nodeCount, final IntHashSet[] validBuckets, final WorkGuard guard) {
+  private long executeGenericAntiJoin(final Database db, final WorkGuard guard) {
     // Fall back to OLTP for this rare case
     return executeOLTP(db, guard);
   }

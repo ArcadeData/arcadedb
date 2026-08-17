@@ -143,7 +143,7 @@ public final class PairHashJoinOp implements CountOp {
 
     // FALLBACK: HashMap build + probe (for cases without full NeighborView coverage)
     if (arm1View != null && arm2View != null) {
-      buildWithViews(arm1View, arm2View, arm2Buckets, pairCounts, nodeCount, provider, guard);
+      buildWithViews(arm1View, arm2View, arm2Buckets, pairCounts, nodeCount, guard);
     } else if (arm1View != null) {
       buildWithArm1View(arm1View, provider, arm2Buckets, pairCounts, nodeCount, guard);
     } else {
@@ -326,7 +326,7 @@ public final class PairHashJoinOp implements CountOp {
    */
   private void buildWithViews(final NeighborView arm1View, final NeighborView arm2View,
       final IntHashSet[] arm2Buckets, final LongLongHashMap pairCounts,
-      final int nodeCount, final GraphTraversalProvider provider, final WorkGuard guard) {
+      final int nodeCount, final WorkGuard guard) {
     final int[] arm1Nbrs = arm1View.neighbors();
     final int[] arm2Nbrs = arm2View.neighbors();
     for (int startId = 0; startId < nodeCount; startId++) {
