@@ -1212,6 +1212,15 @@ public class DatabaseChecker {
    * Package-private rather than private: the seam a test needs to drive this exact race deterministically, by
    * handing it a finding whose fileId has since gained a real component, instead of only documenting the residual
    * window in a comment (see {@code Issue6189ReclaimUnreferencedFilesTest}).
+   * <p>
+   * The "is it still gone from the schema" check and the "actually drop it" step are two separate calls rather
+   * than one, and cannot be otherwise: unregistering a schema component and removing a file are different
+   * subsystems with no shared lock to make them atomic together, which is exactly why the window between them is
+   * the one residual this method documents rather than closes. The "is it already gone from the FILE MANAGER"
+   * check does NOT have that excuse - both the check and the drop are one subsystem - so it is not a separate call
+   * at all: {@link FileManager#dropFile} reports whether it found anything to remove, atomically with removing it
+   * (issue #6189 review, second round), which is what {@code reclaimed} below trusts instead of a same-effect but
+   * racy {@code existsFile} call made before it.
    */
   void reclaimUnreferencedFiles(final List<UnreferencedFiles.UnreferencedFile> unreferenced) {
     final LinkedHashSet<String> reclaimed = (LinkedHashSet<String>) result.get("reclaimedUnreferencedFiles");
@@ -1228,16 +1237,14 @@ public class DatabaseChecker {
         continue;
       }
 
-      if (!database.getFileManager().existsFile(file.fileId()))
-        // Already gone by the time this file's turn came up - e.g. a second RECLAIM run in flight at once, or the
-        // file was dropped some other way. FileManager.dropFile() itself would silently no-op here (it only acts
-        // when the id still resolves), so without this check the loop below would still count it as reclaimed and
-        // log it as such. The end state this call wants - the file gone - already holds, so this is a silent skip
-        // rather than a warning: nothing went wrong, there is simply nothing left for THIS call to do.
-        continue;
-
       try {
-        database.getFileManager().dropFile(file.fileId());
+        if (!database.getFileManager().dropFile(file.fileId()))
+          // Already gone by the time this file's turn came up - e.g. a second RECLAIM run in flight at once, or the
+          // file was dropped some other way. dropFile() reports this atomically with checking, so - unlike the
+          // schema race above - there is no window left to warn about: whatever removed it already achieved the
+          // end state this call wanted, so this is a silent skip, not a warning.
+          continue;
+
         reclaimed.add(file.toString());
         if (verboseLevel >= 1)
           LogManager.instance().log(this, Level.INFO, "reclaimed unreferenced file %s", null, file);
