@@ -70,8 +70,6 @@ class RaftTimeSeriesReplication3NodesIT extends BaseRaftHATest {
 
   @Test
   void timeSeriesDataReplicatesToFollowers() throws Exception {
-    Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(500, TimeUnit.MILLISECONDS)
-        .until(() -> findLeaderIndex() >= 0);
     final int leaderIndex = findLeaderIndex();
     assertThat(leaderIndex).as("a leader must be elected").isGreaterThanOrEqualTo(0);
 
@@ -109,8 +107,6 @@ class RaftTimeSeriesReplication3NodesIT extends BaseRaftHATest {
   @Test
   @Tag("slow")
   void compactionReplicatesSealedBlocksAndClearsMutable() throws Exception {
-    Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(500, TimeUnit.MILLISECONDS)
-        .until(() -> findLeaderIndex() >= 0);
     final int leaderIndex = findLeaderIndex();
     assertThat(leaderIndex).as("a leader must be elected").isGreaterThanOrEqualTo(0);
 
@@ -162,8 +158,8 @@ class RaftTimeSeriesReplication3NodesIT extends BaseRaftHATest {
   @Test
   @Tag("slow")
   void compactionSurvivesLeadershipChange() throws Exception {
-    awaitLeaderElected();
     final int firstLeader = findLeaderIndex();
+    assertThat(firstLeader).as("a leader must be elected").isGreaterThanOrEqualTo(0);
 
     executeCommand(firstLeader,
         "sql", "CREATE TIMESERIES TYPE weather TIMESTAMP ts TAGS (location STRING) FIELDS (temperature DOUBLE) SHARDS 1");
@@ -174,10 +170,8 @@ class RaftTimeSeriesReplication3NodesIT extends BaseRaftHATest {
     timeSeriesEngine(findLeaderIndex()).compactAll();
     awaitAllServersReportSamples(30);
 
-    // Step the current leader down and wait for a leader to be (re)elected.
+    // Step the current leader down; findLeaderIndex() waits for the re-election on its own.
     getRaftPlugin(firstLeader).getRaftHAServer().transferLeadership(10_000);
-    Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(500, TimeUnit.MILLISECONDS)
-        .until(() -> findLeaderIndex() >= 0);
 
     // Write + compact under the new leadership.
     insertSamples(30, 50);
@@ -196,8 +190,8 @@ class RaftTimeSeriesReplication3NodesIT extends BaseRaftHATest {
   @Test
   @Tag("slow")
   void laggingFollowerCatchesUpWithSealedDataAfterRestart() throws Exception {
-    awaitLeaderElected();
     final int leader = findLeaderIndex();
+    assertThat(leader).as("a leader must be elected").isGreaterThanOrEqualTo(0);
 
     executeCommand(leader,
         "sql", "CREATE TIMESERIES TYPE weather TIMESTAMP ts TAGS (location STRING) FIELDS (temperature DOUBLE) SHARDS 1");
@@ -227,12 +221,6 @@ class RaftTimeSeriesReplication3NodesIT extends BaseRaftHATest {
       assertThat(countSamples(follower)).as("restarted follower sample count").isEqualTo(50L);
       assertThat(mutableSampleCount(follower)).as("restarted follower mutable bucket").isZero();
     });
-  }
-
-  private void awaitLeaderElected() {
-    Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(500, TimeUnit.MILLISECONDS)
-        .until(() -> findLeaderIndex() >= 0);
-    assertThat(findLeaderIndex()).as("a leader must be elected").isGreaterThanOrEqualTo(0);
   }
 
   private void insertSamples(final int fromInclusive, final int toExclusive) throws Exception {

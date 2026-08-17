@@ -94,7 +94,7 @@ public class AlgoSLPA extends AbstractAlgoProcedure {
     final Map<String, Object> config = args.length > 0 ? extractMap(args[0], "config") : null;
 
     final int iterations = config != null && config.get("iterations") instanceof Number num ?
-        extractInt(num, "iterations") : 20;
+        extractInt(num, "iterations", 1) : 20;
     final double threshold = config != null && config.get("threshold") instanceof Number num ?
         num.doubleValue() : 0.1;
     final long seedVal = config != null && config.get("seed") instanceof Number num ?
@@ -104,6 +104,7 @@ public class AlgoSLPA extends AbstractAlgoProcedure {
     final String[] relTypes = config != null ? extractRelTypes(config.get("relTypes")) : null;
 
     final Database db = context.getDatabase();
+    final WorkGuard guard = newWorkGuard(context);
 
     final GraphData graph = loadGraph(db, null, relTypes, context);
 
@@ -114,13 +115,28 @@ public class AlgoSLPA extends AbstractAlgoProcedure {
     final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH);
 
     // Memory: memory[v] is a list of labels heard by v (including its initial label)
-    // Using int[] lists backed by arrays for performance
+    // Using int[] lists backed by arrays for performance.
+    //
+    // Unlike the other iteration knobs, SLPA's `iterations` buys heap as well as time: every node keeps one row of
+    // `iterations + 1` ints, so the matrix is nodeCount x (iterations + 1) and a value that merely looks large -
+    // {iterations: 1000000} on a 10k-node graph is 40 GB - reaches the allocator with nothing between it and the
+    // heap. The footprint is estimated in saturating long arithmetic and checked against the same budget the walk
+    // buffers use, BEFORE the first row is allocated; `iterations + 1` is computed in long because at
+    // Integer.MAX_VALUE the int form wraps to Integer.MIN_VALUE and died as a bare NegativeArraySizeException.
+    final long rowCapacity = iterations + 1L;
+    checkBufferBudget(db,
+        saturatingProduct(n, saturatingSum(saturatingProduct(rowCapacity, WALK_ENTRY_BYTES), WALK_ROW_OVERHEAD_BYTES)),
+        "label memory", "iterations=" + iterations + " over " + n + " nodes");
+    if (rowCapacity > Integer.MAX_VALUE)
+      throw new IllegalArgumentException(getName() + "(): iterations=" + iterations + " needs " + rowCapacity
+          + " label entries per node, more than the " + Integer.MAX_VALUE + " a Java array can hold");
+
     final int[][] memory     = new int[n][];
     final int[]   memorySize = new int[n];
 
     // Each node starts with a unique label equal to its index
     for (int i = 0; i < n; i++) {
-      memory[i] = new int[iterations + 1];
+      memory[i] = new int[(int) rowCapacity];
       memory[i][0] = i;
       memorySize[i] = 1;
     }
@@ -131,13 +147,20 @@ public class AlgoSLPA extends AbstractAlgoProcedure {
       order[i] = i;
 
     for (int t = 0; t < iterations; t++) {
+      // iterations is a caller-supplied knob and this kernel has no convergence test at all, so it always runs the
+      // full count: the guard is the only thing that can end a run the caller no longer wants.
+      guard.check();
       // Shuffle node order each round
       for (int i = n - 1; i > 0; i--) {
+        guard.checkPeriodically(i);
         final int j = rng.nextInt(i + 1);
         final int tmp = order[i]; order[i] = order[j]; order[j] = tmp;
       }
 
-      for (final int listener : order) {
+      for (int idx = 0; idx < n; idx++) {
+        // A single round walks the whole graph, so on a large one the checkpoint belongs inside the round too.
+        guard.checkPeriodically(idx);
+        final int listener = order[idx];
         if (adj[listener].length == 0)
           continue;
 

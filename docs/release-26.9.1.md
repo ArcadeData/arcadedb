@@ -2235,6 +2235,93 @@ nameless `NegativeArraySizeException`.
 
 [#6216](https://github.com/ArcadeData/arcadedb/issues/6216)
 
+
+## A peer address that identifies nobody says so, instead of waiting for an operation to refuse (#6267)
+
+Five follow-ups from #6221 / #6226. Four are visible to an operator; the rest are test hygiene.
+
+**A withheld peer-to-peer endpoint is now reported.** `getUnambiguousPeerHttpAddress` and its HTTPS twin refuse
+an address two peers both resolve to by returning `null` (#6202), and every caller then decided for itself
+whether to say anything - so the refusal was visible only where one happened to log it, and invisible everywhere
+else. Neither existing warning covered it: the derive warnings fire whenever an address is derived **at all**,
+which is also what a perfectly healthy homogeneous Kubernetes StatefulSet does, so they cannot distinguish
+"deriving, and fine" from "deriving, and two peers just collapsed onto one address". There is now a one-time
+WARNING per protocol - modelled on the `warnAmbiguousRouting` of #6183, but for the peer-to-peer endpoints rather
+than the client routing tables - naming the peers that could not be told apart, the address they share, and the
+`host:{raft:..,http:..}` field to declare in `arcadedb.ha.serverList`. HTTP and HTTPS have separate latches: a
+cluster that declares distinct `http` ports and shares an `https` one must still hear about the second.
+
+**Observable change in `GET /api/v1/cluster`.** Each peer entry now carries `httpAddress` and, only when it is
+not the peer's alone, `httpAddressAmbiguous: true`. Before this, the status endpoint and the Studio HA panel
+displayed a plausible address for every peer with nothing to say that it named none of them, and an operator
+found out when a snapshot resync or a cluster verify refused to dial. A correctly declared cluster carries
+neither field's flag, so nothing changes for one. Studio renders the flag as a warning line on the node's card.
+
+**The presence matrix dialled the address nothing had checked.** `GET /api/v1/cluster?presence=true` asks every
+peer which databases it holds and attributes the answer to that peer - the same unattended dial the verify
+endpoint was making before #6221, with the same failure: on a cluster whose peers collapse onto one derived
+address, every peer was queried on the leader's own endpoint and reported the leader's database list as its own,
+so the matrix showed every database present on every node. It resolves through `PeerDialAddress` now, so a peer
+it cannot identify is reported in `unreachable` - with the reason logged - rather than answered for by whoever
+picked up.
+
+`RaftClusterStatusExporter.exportClusterStatus()`, a second cluster-status JSON builder that nothing has called,
+was removed rather than taught about any of this: the live endpoint is `GetClusterHandler`, and an unreachable
+second view of one cluster is how two views drift apart.
+
+**Test-only, in the HA lane.** `BaseRaftHATest.RESYNC_RETRY_TIMEOUT_MS` drops from 120 s to 30 s. #6226 added an
+instrument rather than guessing, and it has now reported: across nine full `ha-integration-tests` runs (235 tests
+each) not one wait exceeded the 10 s report threshold, and the slowest of the ten classes that use those helpers
+took 53 s wall-clock for the whole class, cluster startup and teardown included. 30 s is what the rest of that
+class already treats as long enough for a cluster to do anything it is going to do - `waitForReplicationIsCompleted`,
+`waitAllReplicasAreConnected` and the leader-election wait all use it - so the one budget with no measurement
+behind it was also the only one four times larger than its siblings. The report threshold drops to 5 s with it, to
+keep the same resolution for the next cut. `DynamicMembershipTest` no longer leaves its own teardown holding a
+peer it evicted to a replica's contract: the base class now waits for, and compares, exactly the servers
+`getServerToCheck()` names, which turned a 30 s-per-evicted-server timeout and a `DatabaseAreNotIdentical` charged
+to `endTest` into neither. Seven `await().until(() -> findLeaderIndex() >= 0)` wrappers that #6226 made redundant
+are gone, and three copies of "only the servers still running" collapse into one helper.
+
+[#6267](https://github.com/ArcadeData/arcadedb/issues/6267)
+## The same iteration-knob guard, applied to the fourteen `algo.*` procedures #6216 left out of scope (#6264)
+
+[#6216](https://github.com/ArcadeData/arcadedb/issues/6216) established what an iteration-shaped knob needs -
+a domain minimum rejected by name, and a checkpoint inside the loop it drives - and gave both to the three
+procedures its parent review had named. Fourteen more carried the identical defect, untouched:
+`algo.pageRank`, `algo.personalizedPageRank`, `algo.articleRank`, `algo.eigenvector`, `algo.hits`,
+`algo.katz`, `algo.louvain`, `algo.leiden`, `algo.labelPropagation`, `algo.slpa`, `algo.simRank`,
+`algo.fastrp`, `algo.hashgnn` and `algo.graphsage`. Every one extracted its knob with a plain
+`extractInt(n, "maxIterations")`, and none contained a single checkpoint.
+
+So `CALL algo.pageRank({maxIterations: 0})` returned the *uniform initial rank vector* as though it were a
+PageRank result, `algo.louvain` returned every node in its own community, and `algo.fastrp` the untouched
+random projection, and `algo.graphsage` the untouched random-Gaussian initial features presented as trained
+embeddings. The silent half is the more serious one: an un-iterated centrality is not obviously wrong to a
+caller, unlike an exception. All fourteen now reject a value below 1 with a message naming the procedure, the
+parameter and the value.
+
+For time there is still no honest ceiling to pick, so a large value is not forbidden but made abortable. Each
+iteration loop calls the shared `WorkGuard`, which observes a thread interrupt and the
+`arcadedb.command.timeout` deadline; a per-node checkpoint inside each pass bounds the abort latency below a
+whole sweep of the graph, throttled to once every 1024 nodes where a node's own work is small and unthrottled
+where it is already O(n). Six of the fourteen have no convergence test at all - the CSR PageRank kernel,
+`algo.simRank`, `algo.fastrp`, `algo.hashgnn`, `algo.graphsage` and `algo.slpa` - so the knob alone decided
+when they stopped and nothing could end the run early.
+
+Two of them hand the work to `GraphAlgorithms`, which lives below the query layer and knew nothing about
+deadlines. Rather than couple the OLAP kernels to the query engine, `GraphAlgorithms.pageRank` and
+`GraphAlgorithms.labelPropagation` gained an overload taking a `WorkCheckpoint`, a one-method interface in
+`com.arcadedb.graph.olap` that the procedures satisfy with a method reference to their own guard. Existing
+callers are unchanged and get a checkpoint that never aborts.
+
+`algo.slpa` needed one thing more. Alone among the fourteen its `iterations` buys heap as well as time: every
+node keeps a label-memory row of `iterations + 1` ints, so `{iterations: 1000000}` on a 10k-node graph asks
+for 40 GB, and at `Integer.MAX_VALUE` the `iterations + 1` wrapped to `Integer.MIN_VALUE` and died as a bare
+`NegativeArraySizeException` naming nothing. The footprint is now estimated in saturating `long` arithmetic
+and checked against the same `arcadedb.cypher.algoMaxWalkMemory` budget the walk buffers use, before the
+first row is allocated.
+
+[#6264](https://github.com/ArcadeData/arcadedb/issues/6264)
 ## A placeholder whose content had to spill into chunks is no longer returned twice by a scan (#6196)
 
 `SELECT FROM Doc` could return the same record twice, under two different RIDs, and `count(@rid)` counted it
