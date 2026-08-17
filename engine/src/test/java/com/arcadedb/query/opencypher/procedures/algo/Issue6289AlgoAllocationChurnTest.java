@@ -61,6 +61,14 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  *   <li>{@code MemoryBudget.reserve()} added to the running total before checking it, so a refused reservation
  *   was recorded as granted.</li>
  * </ol>
+ * <p>
+ * The allocation assertions carry {@code @Tag("performance")} rather than {@code @Tag("benchmark")}, and that is
+ * deliberate: {@code benchmark} is one of the three lanes CI <em>excludes</em> from the normal build
+ * ({@code -DexcludedGroups=slow,benchmark,vector}), and a regression guard that never runs guards nothing. These
+ * are not throughput measurements - they read {@code ThreadMXBean}'s per-thread allocation counter, which no GC
+ * and no concurrent test can move - so they belong in the default lane, where {@code performance} leaves them.
+ * The tag is a label for the reader, matching {@code RidScoreMinHeapTest}; the partition CLAUDE.md describes is
+ * untouched by it.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -272,7 +280,7 @@ class Issue6289AlgoAllocationChurnTest {
   // ── 3. A refused reservation is not a granted one ────────────────────────
 
   @Test
-  void arefusedReservationIsNotAddedToTheRunningTotal() {
+  void aRefusedReservationIsNotAddedToTheRunningTotal() {
     // MemoryBudget.reserve() used to add to the total and then check it, so a refusal left the budget
     // recording heap nobody was holding: the next reservation was charged against a component the call had
     // just been refused, and the "on top of the N bytes this call already reserved" in its message quoted a

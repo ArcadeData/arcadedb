@@ -179,10 +179,11 @@ public class AlgoAPSP extends AbstractAlgoProcedure {
       final double[] distances = dist[i];
       final RID source = graph.getRID(i);  // one lookup per SOURCE rather than one per pair
       return IntStream.range(0, n)
-          // Negated rather than written as `distances[j] < INF`, so the row set is the one the eager loop
-          // produced for every double a distance can hold - NaN included - without the reader having to first
-          // prove NaN unreachable here.
-          .filter(j -> j != i && !(distances[j] >= INF))
+          // Identical to the eager loop's `if (i == j || dist[i][j] >= INF) continue`, NaN included: a NaN
+          // distance would pass both forms of this test differently, but none can reach the matrix - every
+          // write to it above, the edge fill and the Floyd-Warshall relaxation alike, is guarded by `<`,
+          // which a NaN fails.
+          .filter(j -> j != i && distances[j] < INF)
           .mapToObj(j -> {
             final ResultInternal r = new ResultInternal();
             r.setProperty("source", source);

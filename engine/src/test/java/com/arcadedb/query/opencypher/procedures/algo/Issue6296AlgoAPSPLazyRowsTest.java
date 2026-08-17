@@ -20,8 +20,11 @@ package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -53,6 +56,14 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * Nothing required the rows to exist together: Floyd-Warshall completes the matrix before the first row is
  * emitted, so the rows are a pure projection of it. They are now produced lazily, which makes the row-side
  * footprint O(1) and puts the decision of how many to hold where it belongs - with the consumer.
+ * <p>
+ * The allocation assertions carry {@code @Tag("performance")} rather than {@code @Tag("benchmark")}, and that is
+ * deliberate: {@code benchmark} is one of the three lanes CI <em>excludes</em> from the normal build
+ * ({@code -DexcludedGroups=slow,benchmark,vector}), and a regression guard that never runs guards nothing. These
+ * are not throughput measurements - they read {@code ThreadMXBean}'s per-thread allocation counter, which no GC
+ * and no concurrent test can move - so they belong in the default lane, where {@code performance} leaves them.
+ * The tag is a label for the reader, matching {@code RidScoreMinHeapTest}; the partition CLAUDE.md describes is
+ * untouched by it.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -159,6 +170,60 @@ class Issue6296AlgoAPSPLazyRowsTest {
   }
 
   @Test
+  void theRowsAreTheSameWhenTheGraphIsCSRBacked() {
+    // The one thing making the rows lazy actually moves: `graph.getRID(i)` used to run inside execute() and
+    // now runs as the row is read. On the OLTP-backed GraphData that is `vertices.get(i).getIdentity()`, an
+    // in-memory field read that cannot care when it happens. On the CSR-backed one it goes through the
+    // GraphAnalyticalView's node mapping, which takes a database reference - so that is the path worth
+    // pinning, and it is the path the other tests here never take.
+    //
+    // Deferring it is safe because the stream is drained inside the same query execution that produced it
+    // (CallStep keeps the iterator for a read procedure and the pipeline pulls it to completion before the
+    // transaction is torn down), which is the contract every other lazily-returning algo.* procedure already
+    // relies on - algo.mst, algo.fastrp and the rest have streamed from IntStream since before this change.
+    final GraphAnalyticalView view = GraphAnalyticalView.builder(database)
+        .withName("apsp-view")
+        .withVertexTypes("Node")
+        .withEdgeTypes("LINK")
+        .build();
+    try {
+      database.begin();
+      try {
+        final BasicCommandContext context = new BasicCommandContext();
+        context.setDatabase(database);
+        final Stream<Result> rows = new AlgoAPSP().execute(new Object[0], null, context);
+
+        assertThat(context.getVariable(CommandContext.CSR_ACCELERATED_VAR))
+            .as("the view must actually be used, or this test pins the OLTP path a second time")
+            .isEqualTo(true);
+
+        // Same shape as the OLTP runs above: every ordered pair once, at its hop distance round the cycle.
+        final Set<String> pairs = new HashSet<>();
+        int fromFirstNode = 0;
+        for (final Iterator<Result> it = rows.iterator(); it.hasNext(); ) {
+          final Result row = it.next();
+          final String source = nameOf(row.getProperty("source"));
+          final String target = nameOf(row.getProperty("target"));
+          assertThat(pairs.add(source + "->" + target)).isTrue();
+          if ("N0".equals(source)) {
+            assertThat(((Number) row.getProperty("distance")).doubleValue())
+                .as("distance from N0 to " + target)
+                .isEqualTo(Integer.parseInt(target.substring(1)));
+            fromFirstNode++;
+          }
+        }
+
+        assertThat(pairs).hasSize(CYCLE_NODES * CYCLE_NODES - CYCLE_NODES);
+        assertThat(fromFirstNode).isEqualTo(CYCLE_NODES - 1);
+      } finally {
+        database.rollback();
+      }
+    } finally {
+      view.drop();
+    }
+  }
+
+  @Test
   @Tag("performance")
   void buildingTheStreamCostsTheMatrixRatherThanTheRows() {
     // The measurement the issue asks for, taken from the thread's own allocation counter so that neither a GC
@@ -201,6 +266,11 @@ class Issue6296AlgoAPSPLazyRowsTest {
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
     return new AlgoAPSP().execute(new Object[0], null, context);
+  }
+
+  /** The name of the vertex a `source`/`target` row property points at, whichever form the RID arrives in. */
+  private String nameOf(final Object rid) {
+    return ((RID) rid).asVertex().getString("name");
   }
 
   private static int drain(final Stream<Result> rows) {
