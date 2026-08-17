@@ -111,6 +111,19 @@ public final class HealthMonitor {
      */
     default void retryUnfilledSnapshotGap() {
     }
+
+    /**
+     * Re-verifies, against the leader, every database this node kept through the bootstrap
+     * "local is fresher, refuse to overwrite" guard (issue #6124), clearing the mark once the two
+     * copies match and otherwise re-raising an operator-visible alert. No-op when no database took that
+     * branch, on the leader, and between throttled attempts.
+     * <p>
+     * It needs its own hook for the same structural reason {@link #retryUnfilledSnapshotGap()} does: the
+     * node is not lagging and not diverged in the Raft sense - it applies every entry it is sent - so
+     * none of the lag- or divergence-driven checks can ever see it.
+     */
+    default void verifyBootstrapDivergence() {
+    }
   }
 
   // How long (as a multiple of the recovery duration) the follower must look healthy before a prior
@@ -219,6 +232,10 @@ public final class HealthMonitor {
     // Independent of the lag checks below, which are structurally blind to an unfilled snapshot gap
     // (issue #6111). Self-throttled by the target.
     target.retryUnfilledSnapshotGap();
+    // Likewise invisible to the lag and divergence checks below: a node the bootstrap overwrite guard
+    // left with its own copy applies every entry it is sent and reports perfect health (issue #6124).
+    // Self-throttled by the target, and free when no database took that branch.
+    target.verifyBootstrapDivergence();
     final LifeCycle.State state = target.getRaftLifeCycleState();
     if (state == LifeCycle.State.CLOSED || state == LifeCycle.State.EXCEPTION) {
       handleUnhealthyState(state);

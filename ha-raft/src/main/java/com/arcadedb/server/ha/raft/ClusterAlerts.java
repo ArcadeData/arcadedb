@@ -110,6 +110,7 @@ public class ClusterAlerts {
     if (stateMachine != null) {
       checkLeaderMissingDatabases(stateMachine, alerts, visibleDatabases);
       checkFailedAcquireDatabases(stateMachine, alerts, visibleDatabases);
+      checkBootstrapDivergedDatabases(stateMachine, alerts, visibleDatabases);
     }
     addLaggingFollowerAlert(followerSamples, alerts);
     return alerts;
@@ -222,6 +223,43 @@ public class ClusterAlerts {
             + "they may stay absent even after the leader's copy is healthy.")
         .put("recommendation", "Once the leader's copy is healthy, force a fresh download on this node "
             + "(POST /api/v1/cluster/resync/{database}). Check the logs for the underlying acquisition error.")
+        .put("details", new JSONObject().put("databases", names)));
+  }
+
+  /**
+   * Flags databases this node kept through the bootstrap "local is fresher, refuse to overwrite" guard
+   * (issue #6124). The refusal protects a genuinely fresher operator copy, but it leaves this node's
+   * file ids assigned by a history no other peer shares, and nothing reconciles that by itself - the
+   * only automatic consequence is a hard failure if a later replicated schema change happens to collide
+   * with one of those ids (issue #6118). Surfaced as an alert so the divergence is discoverable before
+   * that collision, rather than only in a SEVERE line emitted once at bootstrap.
+   */
+  static void checkBootstrapDivergedDatabases(final ArcadeStateMachine stateMachine, final JSONArray alerts,
+      final Set<String> visibleDatabases) {
+    addBootstrapDivergedAlert(visible(stateMachine.getBootstrapUnreconciledDatabases(), visibleDatabases), alerts);
+  }
+
+  /** Pure alert builder (package-private for unit testing): appends the bootstrap-divergence alert iff {@code diverged} is non-empty. */
+  static void addBootstrapDivergedAlert(final List<String> diverged, final JSONArray alerts) {
+    if (diverged == null || diverged.isEmpty())
+      return;
+
+    final JSONArray names = new JSONArray();
+    for (final String name : diverged)
+      names.put(name);
+
+    alerts.put(new JSONObject()
+        .put("id", "bootstrap-diverged-databases")
+        .put("severity", SEVERITY_CRITICAL)
+        .put("title", "Database(s) kept a local copy the cluster never adopted")
+        .put("message", "At first cluster formation this node held " + diverged.size() + " database(s) fresher than "
+            + "the cluster's chosen bootstrap baseline, so they were kept instead of being reinstalled from the "
+            + "leader. Their file ids were assigned by an independent history and are out of step with every other "
+            + "peer: a later replicated schema change that reuses one of them fails and forces a full resync of the "
+            + "database. The copies are otherwise intact - nothing has been lost.")
+        .put("recommendation", "Decide which copy the cluster should keep. To preserve this node's data, stop the "
+            + "cluster, copy its database directory to every peer and restart. To discard it and adopt the leader's "
+            + "copy, run POST /api/v1/cluster/resync/{database} on this node.")
         .put("details", new JSONObject().put("databases", names)));
   }
 
