@@ -2543,7 +2543,7 @@ alert on.
 
 [#6281](https://github.com/ArcadeData/arcadedb/issues/6281)
 
-### An index build now holds the asynchronous workers still, and asynchronously dispatched DDL runs instead of being refused
+### An index build now holds the asynchronous workers still, and asynchronously dispatched SQL DDL runs instead of being refused
 
 Three things changed here, two of which are worth checking against how you run builds.
 
@@ -2570,11 +2570,21 @@ that one. A statement that parses to DDL is now dispatched to a small JVM-wide p
 workers of any executor, so the barrier is satisfiable. Everything that is not DDL still runs on the workers
 exactly as before - that matters, because a worker owns a batch transaction and is the unit
 `ThreadBucketSelectionStrategy` pins a bucket to, so "as many workers as buckets" stays the way to keep
-concurrent asynchronous writers from contending. Two new settings size the pool:
-`arcadedb.asyncCommandPoolThreads` (0 = cores, min 2) and `arcadedb.asyncCommandQueueSize` (1024). When that
-queue fills, the statement runs on the submitting thread instead of being dropped, which for
-`awaitResponse=false` means the acknowledgement waits for the statement; the `pool=async_command`
-caller-runs gauge is where that shows up.
+concurrent asynchronous writers from contending.
+
+**This covers `sql` and `sqlscript` only.** The routing decides by PARSING the statement, which is cheap and
+exact for SQL and available for nothing else, so DDL-equivalent statements dispatched asynchronously in
+Cypher, Gremlin, GraphQL or the Mongo dialect keep the behaviour they have today: they run on a worker and are
+refused there by #6281's guard. That is a refusal, not the old hang, and the workaround is unchanged - send
+them with `awaitResponse=true`.
+
+Two new settings size the pool: `arcadedb.asyncCommandPoolThreads` (0 = cores, min 2) and
+`arcadedb.asyncCommandQueueSize` (1024). **Size them knowing what the fallback does**, because it is easy to
+miss until it happens under load: when the queue fills, the statement runs on the SUBMITTING thread rather
+than being dropped, and for `POST /command` that thread is an HTTP worker already inside the request's own
+transaction wrapper. So a saturated pool turns "fire this index build and don't wait" into an HTTP request
+that blocks for the whole build - correct, never lossy, and slow in a way the caller explicitly asked not to
+be. The `pool=async_command` caller-runs gauge counts exactly that, and is the number to alert on.
 
 **A callback that throws no longer reaches the executor-wide error handler.** An exception escaping the
 `onError` of an `async().command(...)` callback used to propagate into the worker loop, which reported it to
