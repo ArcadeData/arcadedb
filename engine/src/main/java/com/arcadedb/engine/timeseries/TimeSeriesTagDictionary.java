@@ -225,8 +225,19 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
     // whatever this run was configured with, not what the file on disk was written at.
     final ComponentFile existingFile = database.getFileManager().getFileByComponentName(name);
 
-    final TimeSeriesTagDictionary dictionary = existingFile instanceof PaginatedComponentFile pcf ?
-        new TimeSeriesTagDictionary(database, name, pcf) :
+    // "Registered but not paginated" is unreachable today - PaginatedComponentFile is the only ComponentFile the
+    // engine ever constructs - and the branch below is written so it STAYS that way loudly. Falling through to the
+    // create-fresh arm on a registered name would be the silent outcome: it takes a new file id, gets handed this
+    // very file back by name, and dies on the #6283 id guard several frames later with a message about ids that
+    // says nothing about the real cause. This whole change is about turning that class of mismatch into a
+    // statement, so the assumption is one here too rather than an instanceof quietly deciding it.
+    if (existingFile != null && !(existingFile instanceof PaginatedComponentFile))
+      throw new IllegalStateException(
+          "The file registered under component name '" + name + "' is a " + existingFile.getClass().getSimpleName()
+              + " ('" + existingFile.getFilePath() + "'), but a tag dictionary can only be built on a paginated file");
+
+    final TimeSeriesTagDictionary dictionary = existingFile != null ?
+        new TimeSeriesTagDictionary(database, name, (PaginatedComponentFile) existingFile) :
         new TimeSeriesTagDictionary(database, name, database.getDatabasePath() + "/" + name);
 
     // Registered BEFORE it is initialised, and it has to be: initHeaderPage() commits, and a commit
