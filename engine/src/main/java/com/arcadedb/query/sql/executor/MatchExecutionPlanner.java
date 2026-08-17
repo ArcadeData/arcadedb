@@ -44,6 +44,7 @@ import com.arcadedb.query.sql.parser.ProjectionItem;
 import com.arcadedb.query.sql.parser.Rid;
 import com.arcadedb.query.sql.parser.SelectStatement;
 import com.arcadedb.query.sql.parser.Skip;
+import com.arcadedb.query.sql.parser.Timeout;
 import com.arcadedb.query.sql.parser.Unwind;
 import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.DocumentType;
@@ -75,6 +76,7 @@ public class MatchExecutionPlanner {
   private final   OrderBy                orderBy;
   private final   Unwind                 unwind;
   protected final Limit                  limit;
+  protected final Timeout                timeout;
 
   //post-parsing
   private Pattern                  pattern;
@@ -95,6 +97,7 @@ public class MatchExecutionPlanner {
         .collect(Collectors.toList());
     this.limit = stm.getLimit() == null ? null : stm.getLimit().copy();
     this.skip = stm.getSkip() == null ? null : stm.getSkip().copy();
+    this.timeout = stm.getTimeout() == null ? null : stm.getTimeout().copy();
 
     this.returnElements = stm.returnsElements();
     this.returnPaths = stm.returnsPaths();
@@ -192,8 +195,24 @@ public class MatchExecutionPlanner {
       SelectExecutionPlanner.handleProjectionsBlock(result, info, context);
     }
 
+    handleTimeout(result, context);
+
     return result;
 
+  }
+
+  /**
+   * Chains the statement's own {@code TIMEOUT} clause, last so that it wraps everything the statement does.
+   * <p>
+   * MATCH accepted no such clause until issue #6304: the grammar had one for SELECT and UPDATE only, so bounding
+   * one expensive MATCH meant changing {@code arcadedb.command.timeout} database-wide. The field itself already
+   * existed on the shared statement base class, and {@code MatchStatement} was already setting it for the
+   * profiled read timeout - which nothing then read.
+   */
+  private void handleTimeout(final SelectExecutionPlan result, final CommandContext context) {
+    final TimeoutStep step = StatementTimeouts.stepFor(timeout, context);
+    if (step != null)
+      result.chain(step);
   }
 
   private void manageNotPatterns(final SelectExecutionPlan result, final Pattern pattern,

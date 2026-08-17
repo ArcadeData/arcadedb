@@ -2542,6 +2542,346 @@ the busiest single database's share, which is exactly what `pageFlushQueue` boun
 alert on.
 
 [#6281](https://github.com/ArcadeData/arcadedb/issues/6281)
+
+## One `TIMEOUT` clause, honoured inside the scan, on every statement that should accept one (#6304)
+
+Five findings turned up while fixing #6266 and are answered together here: they are unrelated to each other
+beyond having been found in the same neighbourhood.
+
+### A count push-down no longer drops a label the pattern wrote down
+
+`MATCH (p1)-[:KNOWS]->(p2), (p1:Person)<-[:AUTHORED]-(c:Comment)-[:MENTIONS]->(p2)` counted the comments
+whose author is *not* a Person as well, but only when a Graph Analytical View happened to cover the three
+edge types. The pair-join operator's CSR build paths read the arm's endpoint straight into the probe lookup
+and never applied the endpoint's bucket filter - the table of bucket ids that filter needs was built by the
+branch that owned the *other* arm - while the OLTP fallback applied it. Same query, two answers, decided by
+whether a view exists.
+
+Two more drops of the same family are closed with it. `buildWithViews`, the branch named in the issue, was
+handed the second arm's filter and ignored it. And the detector read node labels off the build pattern only:
+the two comma-separated patterns share their endpoint variables, so `(p1:Person)-[:KNOWS]->(p2)` constrains
+exactly the variable the other pattern's arm ends on, and that label was dropped on *both* execution paths -
+a wrong answer with or without a view.
+
+Where the two patterns label the same variable differently the filter is an intersection, which the operator
+carries no room for, so the push-down now declines and the ordinary pipeline answers instead. It declines the
+same way for `(a:A:B)` and `(a:A|B)`, which it used to read as `(a:A)` - a filter that is neither.
+
+### `TIMEOUT n RETURN` stops when it says it will, and returns what it has
+
+The clause promises the rows produced so far rather than an exception. It delivered neither half. Its
+deadline was deliberately left out of the in-loop guards, because a guard can only stop by throwing - so a
+filter that rejects every record still scanned to the end inside one `hasNext()`, which is precisely the
+granularity hole #6266 set out to close. And when rows *did* pass the filter, the step marked itself timed
+out and then went on returning every remaining row, so nothing was ever truncated.
+
+A guard that reaches a deadline pinned by a `RETURN` clause now raises a distinct
+`PartialResultTimeoutException`, which the step owning the clause converts into the end of its result set.
+Every other bound keeps raising a plain `TimeoutException`; the distinction is what stops a genuine
+`arcadedb.command.timeout` abort from being swallowed into a silently truncated answer. An outer `RETURN`
+clause propagates the same meaning into nested plans, so a subquery yields rather than raising too.
+
+**Behaviour change.** `SELECT ... TIMEOUT n RETURN` used to return the complete result set. It now returns a
+prefix of it. That is what the clause has always been documented to do, and `EXCEPTION` - the default when
+neither token is written - is unaffected.
+
+### A `TIMEOUT` clause no longer outlives the script line that wrote it
+
+Found while reviewing the above, and a regression #6291 shipped: every line of a SQL script is planned against
+the *same* command context, so the instant a `TIMEOUT` clause pins landed exactly where the following lines
+read it - and those have no timeout step of their own to catch anything. This failed on its second line:
+
+```sql
+SELECT FROM Node WHERE v = 1 TIMEOUT 50;
+SELECT FROM SomethingSlower;
+```
+
+with `the command exceeded the TIMEOUT clause of 50ms`, a bound belonging to a statement that had already
+finished. A clause is now scoped to its own line. What the line restores is the command's own
+`arcadedb.command.timeout` instant, so that bound stays in force across the whole script - the script is one
+command.
+
+### `SELECT ... TIMEOUT n` and `UPDATE ... TIMEOUT n` now mean the same thing
+
+They did not. `UPDATE` measured wall clock from the first pull; `SELECT` charged only the time spent inside
+the pipeline, so a client streaming a large result slowly was not billed for its own pauses while the
+identical number on an `UPDATE` was. Same syntax, two bounds, and nothing said which one a statement got.
+
+Both are wall clock now, which is what the word means everywhere else in the engine:
+`arcadedb.command.timeout`, the ceiling over every statement, has been wall clock since #6266, so the
+accumulating variant was the only bound in the engine that was not. The two steps are one.
+
+**Behaviour change.** A consumer that pauses between fetches of a `SELECT ... TIMEOUT n` is now charged for
+the pause. A client that reads a large result set slowly and relies on a clause to bound only server-side
+work should raise the value or drop the clause.
+
+`TIMEOUT 0` also means one thing now. It disabled the clause on `UPDATE` and expired it on the spot on
+`SELECT`; it disables it everywhere, which is what `0` means for `arcadedb.command.timeout` and
+`arcadedb.command.regexTimeout` and is the reading that cannot turn a working statement into a failing one.
+
+### SQL `MATCH` and `TRAVERSE` accept `TIMEOUT`
+
+`SELECT ... TIMEOUT 100` parsed and `MATCH {...} RETURN ... TIMEOUT 100` was a syntax error, so bounding one
+expensive `MATCH` meant changing a database-wide setting. Both statements now take the clause, with the same
+`EXCEPTION | RETURN` strategies and the same wall-clock meaning as everywhere else. The profiled read timeout
+a `MatchStatement` was already setting on itself - and which nothing then read - takes effect with it.
+
+### One regex budget per command, not one per feature and per scan worker
+
+`arcadedb.command.regexTimeout` bounds a regex against catastrophic backtracking. The deadline lived in the
+command context's opaque value cache under a key each call site chose for itself, which gave a query as many
+budgets as it used regex features - and, because a parallel bucket-scan worker gets a `copy()` of the context
+and that copy does not carry the cache, one more budget per worker. A type scanned across N buckets was
+bounded by `N x regexTimeout`.
+
+The deadline is now a field of the context, resolved once and pinned into the copy exactly as the command
+deadline is, so it is one budget for the whole command however the command is decomposed. Nothing to
+reconfigure; with the setting disabled the resolution still reads no clock at all.
+
+[#6304](https://github.com/ArcadeData/arcadedb/issues/6304)
+## A placeholder's content record can stop being a chunk chain, like every other record (#6286)
+
+#6178 gave a record that shrinks back inside the region its own slot owns a way out of being a chunk chain:
+the head chunk is rewritten as a plain record and the chain behind it is freed. One record shape was left
+out - the CONTENT record of a placeholder - and the reason was mechanical rather than principled. Such a
+record is recognised by the NEGATIVE size marker its slot carries, which is what tells a scan the slot holds
+somebody else's content rather than a document of its own; the collapse could only write a plain POSITIVE
+size, so collapsing one would have been #6196 all over again on the one record shape that had escaped it.
+
+The collapse now writes the sign the shape calls for. A content record that shrinks back inside its region
+becomes the ordinary negated-size record it would have been had it never outgrown its page, instead of
+keeping 13 bytes of chunk header for ever and routing every read and write through the chunk path. It is the
+same transition the head chunk of a record of its own already made, with its own slot kind
+(`SLOT_KIND_CHUNK_COLLAPSED_TO_PLACEHOLDER_CONTENT`) so the commit-time disjoint-slot merge replays it only
+onto a committed slot that still carries the marker the write started from - the same bytes behind the other
+marker being a different record is the whole reason the kinds exist.
+
+One case stays out of the merge rather than out of the collapse: a database written before #6196 holds a
+content head still wearing the ambiguous `FIRST_CHUNK`, which no marker can tell from a record's own. Such a
+head is collapsed too - reached through its pointer, the flag says what it is, and the negated marker the
+collapse writes ends the ambiguity for good - but the page is poisoned instead of tracked, because neither
+collapse kind names that starting marker. The transaction keeps its write and gives up only the merge, on a
+shape no current build produces.
+
+[#6286](https://github.com/ArcadeData/arcadedb/issues/6286)
+
+## `CHECK DATABASE` follows a placeholder pointer, and reclaims the chunks nothing points at (#6292, #6293, #6294)
+
+Three things the bucket checker could not say about a bucket, all found while building the #6196 fixtures.
+
+### A dangling placeholder pointer made `count(*)` and a scan disagree for good (#6292)
+
+`check()` classified a placeholder POINTER slot, counted it, and moved on - it never followed the pointer to
+ask whether anything was on the other end. So a pointer whose CONTENT record was gone stayed on its page for
+ever, and the two counts of one type disagreed permanently while the checker called the database clean:
+
+```
+select count(@rid) as c from P   -->  7      (a scan: the pointer resolves to nothing and is skipped)
+select count(*)    as c from P   -->  8      (the cached counter: a pointer slot is a record)
+check database                   -->  totalErrors: 0
+```
+
+The commonest way to produce one was `CHECK DATABASE FIX` itself: the broken-chain branch force-deletes a
+content record whose chain cannot be walked, and freed the content's slot only. Corruption and an
+interrupted repair reach the same state.
+
+Every pointer is now followed, and its target classified: a content record of either shape (a negated size,
+or the `FIRST_CHUNK_PLACEHOLDER_CONTENT` head #6196 added), the pre-#6196 ambiguous head, or nothing a
+pointer may lead to. The last is reported with both RIDs and, with `FIX`, the pointer is removed -
+reconciling `count(*)` with the scan. It costs nothing new: #6196 already paid one page fetch per pointer to
+read that marker, and only the branch that asks this question was missing. Two new report fields,
+`danglingPlaceholderPointers` and `danglingPlaceholderPointersFixed`, count them.
+
+The repair frees the pointer's SLOT and nothing else, where the ordinary delete would follow the pointer
+first. That distinction is load-bearing: a pointer can be dangling because it was CORRUPTED, in which case it
+now names whatever record happens to live at that position, and deleting that record is exactly the damage
+the pass exists to prevent.
+
+A pointer left dangling by a deletion the same run made is removed with it and not booked as a second error.
+The record had one defect, `FIX` removed it, and the pointer is the rest of that removal.
+
+### The FIX run described the database it found, not the one it left (#6293)
+
+A record deleted during the run was counted in `totalDeletedRecords` AND under the category tally it had held
+before, because the slot was classified first and repaired after:
+
+```json
+"totalDeletedRecords": 1, "deletedRecordsAfterFix": ["#1:5"],
+"totalMultiPageRecords": 1, "totalActiveRecords": 6, "totalAllocatedRecords": 11
+```
+
+A re-run reported `totalMultiPageRecords: 0` and `totalAllocatedRecords: 10`. One report described the same
+record twice, on exactly the numbers an operator diffs across runs to decide whether a `FIX` did anything.
+
+The obvious repair - decrement the category counter next to each `++totalDeletedRecords` - would have had
+four sites each remember which of five categories it had incremented, which is the same duplication one level
+down. The classification is a VALUE now: the slot walk decides which category the slot fell into, the
+counting happens once at the end of the per-slot block, and a slot the repair removed simply carries the
+deleted category instead. The per-page verbose tallies come from the same decision, so they no longer
+disagree with the totals about whether a multi-page record is also an active one.
+
+### Orphaned continuation chunks are reclaimed, and three comments stop promising something nothing did (#6294)
+
+Force-deleting a record with a broken chunk chain frees the HEAD slot only. Three places in the tree told the
+reader the rest would be "reclaimed by compaction or a database check". Neither ever did: `check()` counted a
+`NEXT_CHUNK` slot under `totalChunks` and moved on, and `compressPage` re-flows a page's LIVE slots - an
+orphaned chunk still has one, so it was re-flowed along with everything else rather than dropped. The leak
+was bounded per incident and permanent, surviving every repair short of an export and reimport.
+
+Reachability cannot be answered from a chunk's own slot - the same asymmetry that made #6196's content
+records need a marker - so it is answered from the other end. The chain walk `check()` already makes for
+every head now marks the chunks that head reaches, and a head the run repaired away marks nothing, which
+frees its chunks at the source as well. After the pass, every `NEXT_CHUNK` slot nothing marked is reported
+under `orphanedChunks` and, with `FIX`, freed and counted under `orphanedChunksReclaimed` - the shape
+`orphanedEdgeSegments` / `orphanedEdgeSegmentsReclaimed` already has, down to failing closed: an unmarked
+LIVE chunk deleted as an orphan is destroyed data, so ANY gap in the marking (a page the walk could not read,
+a chain walk stopped by an I/O fault, a slot that could not be classified) disables the sweep entirely rather
+than shrinking it.
+
+**An orphan is a COUNT, not an error and not a warning.** Nothing is corrupted by one: no record is wrong, no
+query is affected, no two counts disagree - the bucket is carrying dead space. That matches how
+`orphanedEdgeSegments` and `orphanedExternalRecords` are already reported, and the scale is what makes it
+matter rather than being a matter of taste. The first measurement of a real workload found **243821 orphaned
+chunks in a bucket of 1.5 million** (`CRUDTest.multiUpdatesOverlap`, 131072 records put through thirteen
+rounds of updates): a leak that has always been there, that nothing collected, and that one warning apiece
+would have reported as a quarter of a million strings.
+
+**The reclaim is bounded by memory, not by count.** The enclosing transaction holds a copy of every page it
+modifies, so a backlog spread thinly across pages costs pages x pageSize whatever the number of chunks is. A
+run frees what fits a 32 MB page budget, reports the rest through the gap between `orphanedChunks` and
+`orphanedChunksReclaimed`, and says so in the log; the next `FIX` continues. A bulk repair that converges is
+worth more than one that ends as the `OutOfMemoryError` of #4653.
+
+[#6292](https://github.com/ArcadeData/arcadedb/issues/6292)
+[#6293](https://github.com/ArcadeData/arcadedb/issues/6293)
+[#6294](https://github.com/ArcadeData/arcadedb/issues/6294)
+## An edge weight belongs to the edge it was read from, whichever backing answered (#6301)
+
+`algo.steinerTree` paired weights with neighbours **by iteration position**. The adjacency list was built with
+the `relTypes` filter applied and in the backing store's order; the weight array beside it was filled
+positionally from an *unfiltered* `getEdges(BOTH)` walk in OLTP order. Nothing reconciled the two, so
+`adjW[i][j]` was "the weight of the j-th edge I happened to see", not "the weight of the edge to `adj[i][j]`".
+That array is what Dijkstra runs on in step 1, so the **tree itself** moved, not only the `weight` column.
+
+Two shapes made it visible. An edge type the caller excluded still lent its weight to an included edge: three
+vertices on a `ROAD` path of weight 1 per hop plus one `NOISE` edge of weight 999 hanging off the first
+returned `weight: 999.0` and `totalWeight: 1000.0` for a tree that costs 2.0. And the same query answered
+differently depending on whether a Graph Analytical View happened to exist, because the CSR neighbour order
+need not match the OLTP one - a view is meant to be a transparent accelerator, and here its mere presence made
+the procedure prefer a 51.0 tree over the 2.0 one.
+
+The fix removes the second traversal rather than repairing it. `GraphData.weightedAdjacency(direction,
+weightProperty, relTypes)` produces the neighbour list and its weights from **one** walk of the same edges -
+from the view's columnar edge properties when it has them, from the edge records otherwise - so the pairing is
+correct by construction and the two backings return the same multiset of `(neighbour, weight)` pairs.
+
+Two more procedures were reading weights through the same broken helper and are fixed with it:
+
+- **`algo.apsp`** with no `relTypes` filter on a view that materialises edge properties produced an *empty*
+  weight row against a non-empty neighbour row, i.e. an `ArrayIndexOutOfBoundsException` for a query that
+  worked perfectly without the view. With several edge types it mismatched instead of failing, because the
+  adjacency is sorted across types and the weights were concatenated per type.
+- **`algo.bellmanford`** fell back to a **unit weight for every edge** whenever the graph was CSR-backed and
+  the view had no column for the requested property - silently ignoring `weightProperty` altogether, and only
+  when a view existed. It also now builds its edge list in parallel primitive arrays rather than a
+  `List<int[]>` and a `List<Double>`, which the O(V x E) relaxation loop reads up to `V - 1` times.
+
+**Two provider-contract changes come with it.** `GraphTraversalProvider.hasEdgeProperties()` now means "edge
+property columns are materialised **and** the positional mapping `getEdgeProperty` relies on is exact", and
+`GraphAnalyticalView` answers `false` while a delta overlay is active. The columns are aligned with the base
+CSR's forward edge slots, while `getNeighborIds` serves the overlay's view of the node - deletions dropped,
+additions merged in, the whole list re-sorted - so the n-th neighbour of that list is not the n-th edge of the
+column store. Callers (`algo.apsp`, `algo.bellmanford`, `algo.steinerTree`, `SQLFunctionAstar`,
+`SQLFunctionBellmanFord`, `algo.dijkstra.singleSource`) now read the edge records in that state, which is
+slower and exact, instead of a weight belonging to another edge. This is the same "say unknown rather than
+guess" convention `countEdgesBetween` and `getMeanEdgesPerConnectedPair` already use.
+
+The second is `edgeWeightsOf(nodeId, direction, propertyName, defaultWeight, edgeTypes...)`, which returns one
+node's neighbours and their weights together and is now **the only supported way to read an edge property
+positionally**. Pairing `getNeighborIds` with `getEdgeProperty` by hand is wrong in two ways that produce a wrong
+answer rather than an error: a multi-type neighbour list is merged and sorted across types while the property
+columns are per type, and `DIRECTION.BOTH` has no column at all - a provider resolves `OUT` and `IN` only, so a
+`BOTH` lookup returns `null` for every edge. `bellmanFord()`'s direction argument *defaults* to `BOTH`, so the
+plain three-argument `bellmanFord(src, dst, 'weight')` had been unit-weighting the entire graph the moment a
+view existed; `astar()` with `direction: 'BOTH'` priced every edge at 0.0, making all paths tie. Its companion
+`servesEdgeProperty(propertyName, edgeTypes...)` answers the gating question. `hasEdgeProperties()` answers only "are there edge property columns at all", so a view built
+with `.withEdgeProperties("distance")` answered yes to a call asking for `cost` - and since a missing column and
+an edge with no value both come back as `null`, the caller could not tell them apart and treated the entire graph
+as unweighted. That is the same wrong answer as a misaligned weight, reached from the other direction, and it
+silently inverted results: on a graph where `X-Y-Z` costs 2.0 and the direct `X-Z` hop costs 50.0, unit weights
+make the 50.0 hop win. `algo.apsp`, `algo.bellmanford`, `algo.steinerTree`, `algo.dijkstra.singleSource`,
+`SQLFunctionAstar` and `SQLFunctionBellmanFord` now all gate on it and fall back to the edge records otherwise.
+`SQLFunctionBellmanFord` additionally passed `null` as the edge type to `getEdgeProperty`, which can never
+resolve a column store, so its CSR path had been using a unit weight for every edge unconditionally.
+
+[#6301](https://github.com/ArcadeData/arcadedb/issues/6301)
+
+## The phase a graph-algorithm call spends its time in is now abortable too (#6295, #6302)
+
+#6216 and #6264 gave every iteration-shaped `algo.*` knob a checkpoint inside the loop it drives, on the
+principle that for time there is no honest ceiling to pick, so a long run should be **abortable** rather than
+forbidden. Both picked their procedures by asking "does it have an iteration knob?". Two blind spots follow
+from that question, and this release closes both.
+
+### The dominant phase is not always the loop the knob drives (#6295)
+
+`arcadedb.command.timeout` set to 1000 ms, on a 2000-node graph:
+`CALL algo.hashgnn({embeddingDimension: 4096, iterations: 1})` **ran for 112,988 ms and returned a result** -
+the deadline overshot by 113x and never observed. `algo.hashgnn`'s MinHash reduction runs *after* the
+`iterations` loop and costs `4 x embeddingDimension²` operations per node, and that bounded per-node figure is
+then multiplied by an unbounded node count. The lens missed it because `embeddingDimension` *has* a ceiling
+(#6065 capped it at 4096), which made it look handled.
+
+The question that finds this shape is **"which loop over the node count has no checkpoint"**, not "which knob
+has no cap". Asking it across the package also found the pre-loop initialisation of `algo.hashgnn`,
+`algo.fastrp` and `algo.graphsage`, and `algo.slpa`'s post-processing and its O(degree²) `mostFrequent`. All
+now carry a checkpoint.
+
+### A guard belongs wherever the work is unbounded, not only where a knob multiplies it (#6302)
+
+The four densest procedures in the package had no guard at all, and `algo.apsp` makes the case on its own: the
+#6263 working-memory budget caps its distance matrix at `arcadedb.cypher.algoMaxWorkingMemory`, whose 64 MB
+floor **admits n ≈ 2890**, and 2890³ is ~2.4e10 iterations of the Floyd-Warshall triple loop. That is minutes
+of CPU on one query thread during which `Thread.interrupt()`, `arcadedb.command.timeout` and the client
+cancelling all did nothing. The budget and the timeout are meant to be complementary halves of one guarantee,
+and the memory half was waving through a run the time half could not stop.
+
+A sweep over all 68 procedures asking "can one call of this run for minutes on an accepted input?" settled the
+rest in one pass. Every procedure whose dominant loop is superlinear in the graph is now abortable:
+`algo.apsp`, `algo.kShortestPaths`, `algo.steinerTree`, `algo.mst`, `algo.bellmanford`, `algo.betweenness`,
+`algo.closeness`, `algo.harmonic`, `algo.eccentricity`, `algo.maxFlow`, `algo.msa`, `algo.knn`,
+`algo.hierarchicalClustering`, `algo.clique`, `algo.allSimplePaths`, `algo.kTruss`, `algo.triangleCount`,
+`algo.localClusteringCoefficient`, `algo.densestSubgraph`, `algo.bipartiteMatching`, `algo.voteRank` and
+`algo.richClub`.
+
+Procedures that make a single O(V + E) pass are deliberately left alone: one pass costs what loading the graph
+and emitting the rows already cost, so a checkpoint inside it would bound nothing the surrounding pipeline does
+not. One gap is named rather than hidden: `algo.localClusteringCoefficient`'s CSR path hands the whole
+computation to a `GraphAlgorithms` kernel that counts triangles across a thread pool, and the `WorkCheckpoint`
+hook is specified to be called between iterations on the calling thread - covering that kernel is a change to
+how it partitions its work, not a checkpoint that can be dropped in.
+
+[#6295](https://github.com/ArcadeData/arcadedb/issues/6295)
+[#6302](https://github.com/ArcadeData/arcadedb/issues/6302)
+
+## `algo.mst`'s edge arrays are priced against the working-memory budget (#6300)
+
+#6263 reserved the dense working set of every `algo.*` procedure that builds one, choosing them by two
+criteria: sized by a knob, or quadratic in the node count. `algo.mst` is neither - it is linear in the **edge**
+count, three parallel arrays plus the index sort, 24 bytes per edge - which reads like the graph paying for
+itself. But linear in the edge count is not small: the edge count is the largest linear dimension a graph has,
+usually an order of magnitude above the node count, and at 100M edges that is ~2.4 GB requested with no check
+and no error naming what asked for it, i.e. exactly the `OutOfMemoryError` shape #6065, #6216 and #6263 exist
+to replace with a client error. "Linear" was never the criterion; the criterion is whether the caller can
+predict a ceiling.
+
+The reservation is made **as the counting pass runs** rather than once it has finished. Both refuse the same
+calls, but a check afterwards first pays in full for a traversal it will then throw away - the same argument
+that puts `algo.steinerTree`'s reservation ahead of its adjacency build. The new
+`MemoryBudget.capacityFor(bytesPerItem)` is what hands the walk its own stopping rule; the refusal itself still
+goes through `MemoryBudget.reserve`, so the message names the same component and the same setting either way.
+
+[#6300](https://github.com/ArcadeData/arcadedb/issues/6300)
 ## A super-node's read walk keeps its recency order for the whole walk, not just the first 1,024 entries (#6064)
 
 `arcadedb.graph.supernodeInterleaveRounds` (#6048) was a **cliff**. Up to `rounds × stripes` entries - 64 × 16 =
@@ -2790,3 +3130,61 @@ point; the change is mentioned because a deployment that watched only the execut
 that class of failure in the log instead.
 
 [#6303](https://github.com/ArcadeData/arcadedb/issues/6303)
+## An ambiguous HA endpoint is reported again when the collision changes, not once per node lifetime (#6297)
+
+The warning #6267 added for a withheld peer-to-peer endpoint - two peers resolving to one `host:port`, so
+the address identifies at most one of them and nothing can say which - was logged at most once per
+`RaftHAServer`, which in a server process means once for its lifetime. That is right up until the operator
+acts on it. They read the line, declare the two ports it named, and the *next* collision - a different pair,
+or a peer added at runtime onto an address already taken - is the one nobody is told about, because the latch
+is spent.
+
+The latch is now the rendered collision list itself. An unchanged verdict stays quiet however often the
+resync and verify paths ask, a changed one is reported whatever produced it, and a pass that finds no
+collision clears the memory, so a misconfiguration that is fixed and later reintroduced is announced rather
+than swallowed as "already reported". That last part needs the callers to hand over the *clean* views too,
+which is the half that was missing: both `getRoutingTable` and the per-peer accessor used to consult the
+warning only when the current view was already ambiguous, so the stored verdict outlived the collision it
+described. It covered HTTPS as well, since only the group-wide HTTP resolver was unconditional. The client
+routing-table warning now also names the peers that collided and the address they share, which its
+peer-to-peer twin already did. `httpAddressAmbiguous` on `GET /api/v1/cluster` is unchanged and remains the
+always-current view, recomputed per request.
+
+### `EXPLAIN` and `PROFILE` now name the RID push-down (#6279)
+
+`MATCH NODE` gained an `[id: <rid>]` marker alongside the existing `[index: ]`, `[partition: ]` and
+`[filter: ]`, so a plan says whether the `ID(x) = <literal|parameter>` equality was lifted out of the `WHERE`
+clause and into the node lookup at plan time:
+
+```
++ MATCH NODE (a) [id: #1:0]
++ MATCH NODE (b) [id: #4:0]
+```
+
+That is the optimization #3216 was closed on, and its resolution asks users to write the query so it fires -
+with parameters or literals rather than a value only known per row. Until now the plan was the one place that
+would not confirm it had. `EXPLAIN` answers without running the query; a push-down that can only be resolved
+per row (#3864) is named as `[id: per-row]` rather than valued.
+
+### The test suite
+
+The rest of this work is internal. A server test's teardown reset the configuration before the cleanup that
+resolves its paths from it, and because `SERVER_DATABASE_DIRECTORY` defaults to
+`${arcadedb.server.rootPath}/databases` over a root path that defaults to null - and an unresolvable variable
+resolves to the empty string rather than failing - the cleanup was asking to recursively delete `/databases0`
+while the test's own `./target/databases0` survived teardown untouched. The order is fixed and a guard now
+refuses a path that did not resolve, so a future reordering degrades to a logged no-op instead of a
+`deleteRecursively` at the filesystem root.
+
+Alongside it, the wall-clock pass of #6260 was extended to the `server` and `network` suites, and the
+`@Timeout` annotations in the engine suite were classified the same way: a bound that separates a bounded
+operation from an unbounded one is a tripwire and is sized clear of an honest budget plus a stop-the-world
+pause, while a bound that *is* the assertion - a laziness or complexity claim with no other practical
+expression - is measured on the stall-discounted clock instead. Two tests that reported coverage they did not
+have were repaired rather than deleted: one asserted only that two elapsed times were not negative, the other
+could not tell the count push-down from the full type scan it exists to replace.
+
+[#6297](https://github.com/ArcadeData/arcadedb/issues/6297)
+[#6280](https://github.com/ArcadeData/arcadedb/issues/6280)
+[#6279](https://github.com/ArcadeData/arcadedb/issues/6279)
+[#6270](https://github.com/ArcadeData/arcadedb/issues/6270)

@@ -138,6 +138,10 @@ public class AlgoFastRP extends AbstractAlgoProcedure {
     final double val = Math.sqrt(3.0);
     final double[][] embed = new double[n][dimensions];
     for (int i = 0; i < n; i++) {
+      // nodeCount x dimensions draws, before the first propagation round - so the checkpoint inside that round
+      // never sees this phase (issue #6295). `dimensions` has a ceiling, the node count has none, and a bounded
+      // per-node cost times an unbounded node count is still unbounded.
+      guard.checkPeriodically(i);
       for (int d = 0; d < dimensions; d++) {
         final int r = rng.nextInt(6);
         if (r == 0)

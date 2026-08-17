@@ -23,6 +23,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
 import java.util.BitSet;
@@ -86,6 +87,7 @@ public class AlgoHierarchicalClustering extends AbstractAlgoProcedure {
     final int numClusters = args.length > 1 && args[1] instanceof Number n ? extractInt(n, "numClusters") : 2;
 
     final Database db = context.getDatabase();
+    final WorkGuard guard = newWorkGuard(context);
 
     final GraphData graph = loadGraph(db, null, relTypes, context);
 
@@ -115,6 +117,9 @@ public class AlgoHierarchicalClustering extends AbstractAlgoProcedure {
 
     // Agglomerative: repeatedly merge until we have targetClusters
     while (currentClusters > targetClusters) {
+      // One merge per round and a full scan of the graph to choose it: O(V x (V + E)) bit-set intersections,
+      // sized by the graph and by a cluster target that defaults to 2 (issue #6302).
+      guard.check();
       // Find the two nodes (representing different clusters) with highest similarity
       // Similarity = common neighbors (Jaccard numerator) — use BitSet AND cardinality
       int bestU = -1;
@@ -122,6 +127,7 @@ public class AlgoHierarchicalClustering extends AbstractAlgoProcedure {
       int bestSim = -1;
 
       for (int u = 0; u < n; u++) {
+        guard.checkPeriodically(u);
         final int rootU = find(parent, u);
         for (final int v : adj[u]) {
           if (v <= u)

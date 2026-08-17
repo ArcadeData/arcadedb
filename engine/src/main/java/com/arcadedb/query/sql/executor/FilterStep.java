@@ -39,7 +39,7 @@ public class FilterStep extends AbstractExecutionStep {
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     final ExecutionStepInternal prevStep = checkForPrevious();
     // The step the timeout step cannot cover: a filter that rejects every record spends the whole scan inside
-    // one hasNext(), and the enclosing AccumulatingTimeoutStep is not re-entered until it returns (#6266).
+    // one hasNext(), and the enclosing TimeoutStep is not re-entered until it returns (#6266).
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
 
     return new ResultSet() {

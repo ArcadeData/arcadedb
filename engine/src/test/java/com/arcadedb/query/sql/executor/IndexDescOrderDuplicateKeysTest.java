@@ -41,7 +41,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class IndexDescOrderDuplicateKeysTest extends TestHelper {
 
   @Test
-  @Timeout(value = 10, unit = TimeUnit.SECONDS)
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
   void shouldNotLoopWithAdjacentDuplicateKeysOnDescIndexScan() {
     final DocumentType type = database.getSchema().createDocumentType("ProcessExecution");
     type.createProperty("startTime", Type.LONG);

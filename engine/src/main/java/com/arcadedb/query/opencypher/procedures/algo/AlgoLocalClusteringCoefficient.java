@@ -26,6 +26,7 @@ import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.Arrays;
 import java.util.List;
@@ -124,6 +125,7 @@ public class AlgoLocalClusteringCoefficient extends AbstractAlgoProcedure {
   }
 
   private Stream<Result> executeWithOLTP(final Database db, final String[] relTypes, final CommandContext context) {
+    final WorkGuard guard = newWorkGuard(context);
     final GraphData graph = loadGraph(db, null, relTypes, context);
 
     final int n = graph.nodeCount;
@@ -138,6 +140,15 @@ public class AlgoLocalClusteringCoefficient extends AbstractAlgoProcedure {
     // Count triangles using sorted-merge intersection — O(m * sqrt(m)) time, O(m) memory
     final long[] triangles = new long[n];
     for (int u = 0; u < n; u++) {
+      // One node intersects its neighbour list against each of its neighbours', which is O(degree²) on a
+      // supernode and O(m x sqrt(m)) over the graph - nothing but the graph sizes it (issue #6302).
+      //
+      // Only the OLTP path is covered here. The CSR path hands the whole computation to
+      // GraphAlgorithms#localClusteringCoefficient, which counts triangles across a thread pool, and the
+      // WorkCheckpoint hook #6264 introduced is specified to be called between iterations on the calling
+      // thread rather than from inside a parallel chunk - so covering that kernel is a change to how it
+      // partitions its work, not a checkpoint that can be dropped in here.
+      guard.check();
       final int[] neighborsU = adj[u];
       for (final int v : neighborsU) {
         // Count common neighbors of u and v via sorted merge

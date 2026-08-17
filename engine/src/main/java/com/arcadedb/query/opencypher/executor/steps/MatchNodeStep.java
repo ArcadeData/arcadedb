@@ -909,6 +909,16 @@ public class MatchNodeStep extends AbstractExecutionStep {
       builder.append(":").append(String.join("|", pattern.getLabels()));
     }
     builder.append(")");
+    // The ID push-down is the single most consequential thing this step can do - it turns a full type scan (and,
+    // when another MATCH NODE follows, the Cartesian product over it) into one lookupByRID - and until issue #6279
+    // it was the one optimisation the plan did not name, so nothing but a stopwatch could tell whether it fired.
+    // That is exactly what the resolution of issue #3216 asks a user to verify. Printed from the plan-time field
+    // rather than recorded during execution, so EXPLAIN answers it without running the query; the dynamic form
+    // (issue #3864) resolves per row and can only be named, not valued.
+    if (idFilter != null && !idFilter.isEmpty())
+      builder.append(" [id: ").append(idFilter).append("]");
+    else if (dynamicIdExpression != null)
+      builder.append(" [id: per-row]");
     if (usedIndexName != null)
       builder.append(" [index: ").append(usedIndexName).append("]");
     if (usedPartitionBucket != null)
