@@ -444,23 +444,21 @@ public class FileManager {
   }
 
   /**
-   * The by-ID mirror of {@link #getOrCreateFile(String, String, ComponentFile.MODE)}, and it carries the same hazard on
-   * the other key: an id that is ALREADY registered hands back whatever file was registered under it, so a caller
-   * asking for one file name can be given another and never know (#6314). #6283 closed the by-name half of this by
-   * having {@link PaginatedComponent} assert that the file it was handed carries the id it was built with; this is that
-   * guarantee for the id key, and it belongs here rather than in a caller, so that the second caller does not have to
-   * know to re-implement it.
+   * The by-<em>id</em> mirror of {@link #getOrCreateFile(String, String, ComponentFile.MODE)}, and it has the same
+   * hazard: it is keyed by the id alone, so an id that is already registered hands that file back whatever
+   * {@code filePath} the caller asked for, and the caller then goes on using a file that is not the one it named.
+   * The by-name half of that pair was closed at the component layer by issue #6283; this one is closed here
+   * (issue #6314), so the guarantee "the file you get back is the file you asked for" belongs to
+   * {@code FileManager} for both keys rather than to whichever caller remembered to check.
    * <p>
-   * A {@link SchemaException} deliberately, and deliberately the same type the one production caller
-   * ({@code ArcadeStateMachine.createNewFiles}, #6063) already throws for this on its own: an HA follower whose file-id
-   * space has diverged from the leader's must be quarantined and resynced from a snapshot, which is what that apply
-   * path does with this exception and would not do with another. That caller keeps its own check - it can say far more
-   * about WHY the ids diverged, and it must decide before the on-disk short-circuit below it - and this one is what
-   * every other caller gets for free.
+   * A caller that has to tell "already applied" apart from "diverged" still needs its own branch on the two, and
+   * the HA follower's {@code ArcadeStateMachine.createNewFiles} has one: a matching name is an idempotent replay
+   * it skips, a differing one is a file-id space that has diverged from the leader's, which it turns into the
+   * quarantine-and-resync path (issue #6063). This check therefore fires for nobody today; it is what makes the
+   * next caller not have to re-derive that reasoning. It throws the same {@link SchemaException} that caller does,
+   * so a caller that does reach it is classified exactly as it would have classified itself.
    *
-   * @param filePath path of the file the caller means. Only its NAME is compared: the same file is legitimately named
-   *                 through an absolute and a relative path by different callers, and the name is what carries the
-   *                 component identity ({@code name.fileId.pageSize.vVersion.ext}).
+   * @throws SchemaException when {@code fileId} is already registered under a different file name
    */
   public ComponentFile getOrCreateFile(final int fileId, final String filePath) throws IOException {
     ComponentFile file = fileIdMap.get(fileId);
@@ -473,25 +471,24 @@ public class FileManager {
         file = new PaginatedComponentFile(filePath, mode);
         registerFile(file);
         recordCreate(file);
-        return file;
-      }
+      } else
+        checkFileNameMatches(file, filePath);
 
-      return checkFileNameMatches(file, filePath);
+      return file;
     }
   }
 
   /**
-   * Answers {@code file} when it is the file {@code filePath} names, and throws when the id it was found under leads
-   * somewhere else (#6314). See {@link #getOrCreateFile(int, String)} for why the answer is an exception and not a
-   * second file.
+   * Asserts that an already-registered file is the one the caller named. The comparison is on the file name and
+   * not on the whole path: the id, page size, version and extension a component addresses its file through all
+   * live in that name, while the directory prefix is the database path both sides already share.
    */
-  private ComponentFile checkFileNameMatches(final ComponentFile file, final String filePath) {
+  private static ComponentFile checkFileNameMatches(final ComponentFile file, final String filePath) {
     final String requestedName = new File(filePath).getName();
     if (!file.getFileName().equals(requestedName))
       throw new SchemaException(
-          "File id " + file.getFileId() + " is registered as '" + file.getFileName() + "' but was requested as '"
-              + requestedName + "': the file id space has diverged");
-
+          "File id " + file.getFileId() + " is already registered as '" + file.getFileName() + "' but was requested as '"
+              + requestedName + "' ('" + filePath + "')");
     return file;
   }
 

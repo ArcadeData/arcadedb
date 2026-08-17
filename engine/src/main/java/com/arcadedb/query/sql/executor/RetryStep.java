@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
@@ -86,41 +87,113 @@ public class RetryStep extends AbstractExecutionStep {
           return result.syncPull(ctx, nRecords);
         }
         break;
-      } catch (final NeedRetryException | TimeoutException ex) {
-        // TimeoutException is also retried because the primary source under concurrent writes is
+      } catch (final TimeoutException ex) {
+        // A TimeoutException is retried because the primary source under concurrent writes is
         // TransactionManager's file-lock timeout during commit (see
         // TransactionManager.lockFilesInOrder). That contention is transient and almost always
         // clears after a short backoff, so retrying inside a COMMIT RETRY block is the right
-        // behavior. Query-level timeouts wrapped in RETRY will also retry, which is consistent
-        // with the user's explicit RETRY N directive.
-        try {
-          ctx.getDatabase().rollback();
-        } catch (Exception e) {
-          // IGNORE IT
-        }
+        // behavior. A TIMEOUT clause written inside the block is retried for the same reason: each
+        // attempt builds its own plan on a context of its own, so the clause starts its interval again.
+        // The command's own deadline is the one kind that cannot be cured by waiting, and it is
+        // already the exception the caller should see, so it propagates as it is.
+        //
+        // Propagating rather than wrapping does mean one narrow case reports the less useful of two true
+        // statements: a file-lock timeout raised at the very moment the command deadline also passes is
+        // reported as the lock, though it is the deadline that ended the loop. Wrapping unconditionally
+        // would fix the wording and break something worth more - a PartialResultTimeoutException that
+        // reached here would stop being one, turning a TIMEOUT n RETURN clause's documented
+        // return-what-you-have into a failure. The wording of a race loses to that.
+        //
+        // Note this leaves the block by a different door than running out of attempts does: it does not run
+        // the ELSE body and it does not consult ELSE FAIL. That is deliberate. The deadline says the command
+        // must stop, so an ELSE body - arbitrary statements, possibly writes, on a transaction that was just
+        // rolled back - is more work the operator asked us not to do; and returning the empty result set
+        // `ELSE ... AND CONTINUE` asks for would leave the caller unable to tell a block that legitimately
+        // produced nothing from one the deadline cut off, which is the silent failure issue #6322 named.
+        rollbackQuietly(ctx);
+        if (commandDeadlineReached(ctx))
+          throw ex;
 
-        if (attempt >= retries - 1) {
-          if (elseBody != null && elseBody.size() > 0) {
-            final ScriptExecutionPlan plan = initPlan(elseBody, ctx);
-            final ExecutionStepInternal result = plan.executeFull();
-            if (result != null) {
-              this.finalResult = result;
-              return result.syncPull(ctx, nRecords);
-            }
-          }
-          if (elseFail) {
-            throw ex;
-          } else {
-            return new InternalResultSet();
-          }
-        }
+        final ResultSet finished = giveUpOrBackOff(ctx, nRecords, attempt, ex);
+        if (finished != null)
+          return finished;
+      } catch (final NeedRetryException ex) {
+        // A write conflict clears on its own, so this is the retry the user asked for - unless the
+        // command's deadline has passed, in which case the remaining attempts cannot even start their
+        // work. The deadline, not the conflict, is what ended the block, and saying so is the whole
+        // point: the conflict alone would leave a COMMIT RETRY 10 that made one attempt unexplained.
+        rollbackQuietly(ctx);
+        if (commandDeadlineReached(ctx))
+          throw new TimeoutException(
+              "COMMIT RETRY gave up after " + (attempt + 1) + " of " + retries + " attempts: the command exceeded the "
+                  + ctx.getCommandDeadlineDescription(), ex);
 
-        delayBetweenRetries(attempt);
+        final ResultSet finished = giveUpOrBackOff(ctx, nRecords, attempt, ex);
+        if (finished != null)
+          return finished;
       }
     }
 
     finalResult = new EmptyStep(ctx);
     return finalResult.syncPull(ctx, nRecords);
+  }
+
+  /**
+   * Ends the attempt that just failed: either the block is out of attempts - in which case the {@code ELSE}
+   * body runs and {@code ELSE FAIL} decides between raising {@code ex} and answering an empty result set - or
+   * the backoff interval is slept and the loop goes round again.
+   *
+   * @return the result set the block finished with, or {@code null} when another attempt is due
+   */
+  private ResultSet giveUpOrBackOff(final CommandContext ctx, final int nRecords, final int attempt,
+      final ArcadeDBException ex) {
+    if (attempt >= retries - 1) {
+      if (elseBody != null && !elseBody.isEmpty()) {
+        final ScriptExecutionPlan plan = initPlan(elseBody, ctx);
+        final ExecutionStepInternal result = plan.executeFull();
+        if (result != null) {
+          this.finalResult = result;
+          return result.syncPull(ctx, nRecords);
+        }
+      }
+      if (elseFail)
+        throw ex;
+      return new InternalResultSet();
+    }
+
+    delayBetweenRetries(attempt);
+    return null;
+  }
+
+  /** Discards the failed attempt's transaction. A rollback that itself fails changes nothing the caller can act on. */
+  private static void rollbackQuietly(final CommandContext ctx) {
+    try {
+      ctx.getDatabase().rollback();
+    } catch (Exception e) {
+      // IGNORE IT
+    }
+  }
+
+  /**
+   * Whether the deadline every attempt of this block runs under has already passed. A retry is only a retry
+   * when its precondition can change: the command's deadline is one instant pinned for the whole statement
+   * (issue #6266) and every attempt this step starts inherits it, so once it has passed the block would spend
+   * its remaining budget, plus a backoff sleep between each pair of attempts, re-reaching a bound that expired
+   * before the first retry (issue #6322).
+   * <p>
+   * Read from the step's own context rather than from the attempt's: a {@code TIMEOUT} clause inside the body
+   * publishes on the child context {@link #initPlan} builds per attempt, so it does not answer here and stays
+   * retryable, while {@code arcadedb.command.timeout} and an enclosing {@code TIMEOUT} clause do.
+   * <p>
+   * Deliberately not consulting {@link CommandContext#isCommandDeadlinePartial()}, which everywhere else
+   * separates a hard bound from a {@code TIMEOUT n RETURN} that asks for the rows produced so far. A partial
+   * deadline cannot be the one in force here: it is published by {@link StatementTimeouts} onto the context of
+   * the statement carrying the clause, and a script line runs on a plan of its own, so it never reaches the
+   * script context this step is pulled with - verified by reading the deadline back inside a
+   * {@code COMMIT RETRY} body that follows a {@code SELECT ... TIMEOUT n RETURN} line in the same script.
+   */
+  private static boolean commandDeadlineReached(final CommandContext ctx) {
+    return ctx != null && System.currentTimeMillis() > ctx.getCommandDeadline();
   }
 
   public ScriptExecutionPlan initPlan(final List<Statement> body, final CommandContext ctx) {
