@@ -709,13 +709,22 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     // Counted at SUBMISSION, as scheduleTask counts a task the moment it reaches a queue, so the stat keeps meaning
     // "how many were accepted" rather than "how many have finished".
     counterScheduledTasks.incrementAndGet();
+
+    boolean handedOver = false;
     try {
       AsyncCommandPool.getInstance().getExecutorService().execute(() -> runCommand(task));
-    } catch (final RuntimeException e) {
-      // Nothing took the task (a shut-down pool rejects outright), so the count must not stay raised or a waiter
-      // would never be released.
-      commandCompleted();
-      throw e;
+      handedOver = true;
+    } finally {
+      // ONLY when the task provably never ran, which is why this is a flag and not a catch around the release.
+      // Today's rejection policy runs the command on the submitter rather than throwing, so `execute` returning
+      // normally covers the inline case too - and there runCommand has ALREADY released the count in its own
+      // finally, so releasing again here would drive it below zero and let every later waitCompletion() return
+      // while a command is still running. The flag is set after `execute` returns for exactly that reason: it
+      // distinguishes "the policy refused outright" (nothing ran, release) from "the policy ran it here" (it
+      // released itself). Unreachable while the policy is caller-runs; kept because the alternative to a correct
+      // backstop is a silent leak the day somebody makes it abort.
+      if (!handedOver)
+        commandCompleted();
     }
   }
 
@@ -787,6 +796,12 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     } finally {
       try {
         task.completed();
+      } catch (final Throwable e) {
+        // A completion notification that fails must not become the executor's problem: letting it out of here would
+        // propagate into the pool's rejection policy on the inline path, where submitCommand would then have to tell
+        // "the task never ran" from "the task ran and threw on its way out". Contained, so it cannot.
+        LogManager.instance()
+            .log(this, Level.WARNING, "Error on notifying the completion of asynchronous command %s", e, task);
       } finally {
         commandCompleted();
       }
@@ -1709,10 +1724,22 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
               + "' from one of its own worker threads: the park it schedules on every worker would include this one, "
               + "and only this thread drains its queue. Run the operation outside the asynchronous executor");
 
+    if (executorThreads == null || executorThreads.length == 0)
+      // NOTHING TO PARK, and the lock is deliberately NOT taken for it. Holding it here would make a nested
+      // quiescence short-circuit on hold count and hand back another no-op - so if workers came into existence in
+      // between (a concurrent setParallelLevel on a shut-down executor is the only way), the nested call would leave
+      // them running under a scan. Not locking makes that nested call a fresh outer one that parks them properly.
+      //
+      // The residual, named rather than papered over: workers created after this check are not parked by THIS
+      // quiescence either. Closing that needs the executor's creation gated on the quiescence, which is a lock on
+      // the async lifecycle path for a window an index build has to race a pool resize to reach - out of scope here,
+      // and the same window the barrier of #6281 has always had.
+      return new HeldQuiesce(null, false);
+
     quiesceLock.lock();
     if (quiesceLock.getHoldCount() > 1)
       // ALREADY QUIESCED BY THIS THREAD: the workers are parked, and re-parking them is what would hang.
-      return new HeldQuiesce(null);
+      return new HeldQuiesce(null, true);
 
     boolean handedOver = false;
     // Declared out here so the finally can release whatever DID park when the quiescence fails halfway - a worker
@@ -1722,8 +1749,10 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     try {
       final AsyncThread[] threads = executorThreads;
       if (threads == null || threads.length == 0) {
+        // Shut down between the check above and here: nothing to park, and the lock this holds is given back by the
+        // handle like any other.
         handedOver = true;
-        return new HeldQuiesce(null);
+        return new HeldQuiesce(null, true);
       }
 
       final CountDownLatch parked = new CountDownLatch(threads.length);
@@ -1752,7 +1781,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
             "Interrupted while quiescing the asynchronous executor of database '" + database.getName() + "'", e);
       }
 
-      final AsyncQuiesce held = new HeldQuiesce(release);
+      final AsyncQuiesce held = new HeldQuiesce(release, true);
       handedOver = true;
       return held;
 
@@ -1779,11 +1808,14 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
   /** The handle {@link #quiesceWorkers()} hands out: releases the parked workers and gives the lock back, once. */
   private final class HeldQuiesce implements AsyncQuiesce {
-    private final CountDownLatch  release;
-    private final AtomicBoolean   closed = new AtomicBoolean();
+    private final CountDownLatch release;
+    /** Whether this handle owns a hold of {@link #quiesceLock} - false only for the "there was nothing to park" one. */
+    private final boolean        locked;
+    private final AtomicBoolean  closed = new AtomicBoolean();
 
-    private HeldQuiesce(final CountDownLatch release) {
+    private HeldQuiesce(final CountDownLatch release, final boolean locked) {
       this.release = release;
+      this.locked = locked;
     }
 
     @Override
@@ -1794,7 +1826,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         if (release != null)
           release.countDown();
       } finally {
-        quiesceLock.unlock();
+        if (locked)
+          quiesceLock.unlock();
       }
     }
   }
