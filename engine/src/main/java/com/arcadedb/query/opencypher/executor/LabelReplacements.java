@@ -47,7 +47,9 @@ import java.util.Set;
  * (issues #6312 and #6313).
  * <p>
  * One instance is held per running {@code SET}/{@code REMOVE} step, so a node replaced while processing one row is
- * redirected to its live replacement on every later row, and the write becomes idempotent instead of fatal.
+ * redirected to its live replacement on every later row, and the write becomes idempotent instead of fatal. The
+ * edges re-attached on the way are tracked the same, lightweight ones included: they have no record to address, but
+ * their identity is the (type, out vertex, in vertex) triple, and that is what moved.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -221,9 +223,11 @@ public final class LabelReplacements {
 
   private void track(final Edge original, final Edge replacement) {
     final RID rid = original.getIdentity();
-    // A lightweight edge has no record of its own: its RID carries a negative position and stands for the pair of
-    // endpoints rather than for an address, so there is no identity to redirect from.
-    if (rid != null && rid.getBucketId() > -1 && rid.getPosition() > -1)
+    // A lightweight edge has no record and therefore no address, but it does have an identity: its
+    // {@link com.arcadedb.graph.LightEdgeRID} carries the (type, out vertex, in vertex) triple and hashes on it, so
+    // it keys this map exactly like the address of a heavy edge does - and the re-attached copy, hanging off the
+    // replacement vertex, is a different key rather than the same one.
+    if (rid != null && rid.getBucketId() > -1)
       edges.put(rid, replacement);
   }
 

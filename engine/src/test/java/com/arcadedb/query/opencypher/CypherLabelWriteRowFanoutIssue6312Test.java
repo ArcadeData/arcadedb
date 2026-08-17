@@ -149,6 +149,18 @@ class CypherLabelWriteRowFanoutIssue6312Test {
   }
 
   @Test
+  void aBoundLightweightEdgeFollowsTheEndpointThatMoved() {
+    database.getSchema().buildEdgeType().withName("Light").withLightweight(true).create();
+    cypher("CREATE (a:Keep:Drop {name:'a'})-[:Light]->(b {name:'b'})");
+
+    // A lightweight edge is stored inside its two vertices, so relabelling one endpoint re-creates it. The row
+    // still holding the original has to follow, or it answers with an endpoint that no longer exists.
+    assertThat(writingRows("MATCH (a:Drop)-[r:Light]->(b) REMOVE a:Drop RETURN startNode(r).name + '->' + endNode(r).name AS v"))
+        .containsExactly("a->b");
+    assertThat(rows("MATCH (n {name:'a'})-[:Light]->(m) RETURN m.name AS v")).containsExactly("b");
+  }
+
+  @Test
   void aCollectedListFollowsItsRelabelledMembers() {
     cypher("CREATE (c:Gone {name:'c'})-[:E2]->(d {name:'d'})");
 

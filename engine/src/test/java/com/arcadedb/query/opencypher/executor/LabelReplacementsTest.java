@@ -155,6 +155,30 @@ class LabelReplacementsTest {
   }
 
   @Test
+  void redirectRewritesALightweightEdgeOntoTheReplacement() {
+    database.transaction(() -> {
+      final LabelReplacements replacements = new LabelReplacements();
+      final MutableVertex start = database.newVertex("A").set("name", "start").save();
+      final MutableVertex end = database.newVertex("A").set("name", "end").save();
+      final Edge light = start.newEdge("Light", end);
+
+      final ResultInternal row = new ResultInternal();
+      row.setProperty("r", light);
+
+      final Vertex replacement = replacements.replace(start, "B");
+      replacements.redirect(row);
+
+      // A lightweight edge has no record to address, but its identity is the (type, out, in) triple - so the one
+      // hanging off the replacement is a different edge, and the row has to be pointed at it.
+      final Edge redirected = row.getProperty("r");
+      assertThat(redirected).isNotSameAs(light);
+      assertThat(redirected.getOut()).isEqualTo(replacement.getIdentity());
+      assertThat(redirected.getIn()).isEqualTo(end.getIdentity());
+      assertThat(light.getOut()).isNotEqualTo(replacement.getIdentity());
+    });
+  }
+
+  @Test
   void redirectLeavesARowWithNothingToRewriteUntouched() {
     database.transaction(() -> {
       final LabelReplacements replacements = new LabelReplacements();

@@ -2019,6 +2019,11 @@ public class CypherExecutionPlan {
             // is planned - which is what used to supply this clause's own variables - and a following WITH
             // clears it, so the join on a variable shared between two patterns of the SAME MATCH silently
             // degraded into a Cartesian product the moment a `WITH *` followed.
+            //
+            // The snapshot also carries this hop's own target and relationship names, added just above. That is
+            // deliberate and costs nothing: the check reads a name only when the row ALSO already holds a vertex
+            // under it, and a name this hop is about to bind for the first time is absent from the row. Excluding
+            // them would instead need the set rebuilt per hop in the opposite order, for no gain.
             final Set<String> targetIdentityVars = new HashSet<>(boundVariables);
             targetIdentityVars.addAll(matchVariables);
 
@@ -2611,8 +2616,8 @@ public class CypherExecutionPlan {
                   // Fixed-length relationship - pass path variable, target node pattern, and bound variables.
                   // #6311: the same snapshot rule as the ordered builder above - the hop identity-checks its
                   // target against what the row carries when it RUNS, so it gets the names bound before this
-                  // MATCH plus the ones this MATCH has bound so far, never the planner's live set (which is
-                  // filled at the end of the clause and emptied again by a following WITH).
+                  // MATCH plus the ones this MATCH has bound so far (this hop's own included, harmlessly - see
+                  // the note there), never the planner's live set, which a following WITH empties.
                   final Set<String> targetIdentityVars = new HashSet<>(legacyBoundVariables);
                   targetIdentityVars.addAll(matchVariables);
                   nextStep = new MatchRelationshipStep(currentSourceVar, relVar, targetVar, relPattern, pathVariable,
