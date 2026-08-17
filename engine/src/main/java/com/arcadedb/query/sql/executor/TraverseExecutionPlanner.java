@@ -79,9 +79,9 @@ public class TraverseExecutionPlanner {
     // Chained last so it wraps everything the statement does. TRAVERSE accepted no TIMEOUT clause until issue
     // #6304 - the grammar had one for SELECT and UPDATE only - so bounding one expensive traversal meant
     // changing arcadedb.command.timeout database-wide.
-    if (timeout != null && timeout.getVal().longValue() > 0) {
-      result.chain(new TimeoutStep(timeout, context));
-    }
+    final TimeoutStep timeoutStep = StatementTimeouts.stepFor(timeout, context);
+    if (timeoutStep != null)
+      result.chain(timeoutStep);
 
     return result;
   }

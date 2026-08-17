@@ -285,8 +285,7 @@ public class SelectExecutionPlanner {
 
       handleProjectionsBlock(selectExecutionPlan, info, context);
 
-      if (info.timeout != null)
-        selectExecutionPlan.chain(new TimeoutStep(info.timeout, context));
+      chainTimeout(selectExecutionPlan, info, context);
     }
 
     if (useCache && !context.isProfiling() && statement.executionPlanCanBeCached() && selectExecutionPlan.canBeCached()
@@ -343,8 +342,15 @@ public class SelectExecutionPlanner {
 
     handleProjectionsBlock(plan, info, context);
 
-    if (info.timeout != null)
-      plan.chain(new TimeoutStep(info.timeout, context));
+    chainTimeout(plan, info, context);
+  }
+
+  /** Chains the statement's own {@code TIMEOUT} clause, last, so that it wraps everything the statement does. */
+  private static void chainTimeout(final SelectExecutionPlan plan, final QueryPlanningInfo info,
+      final CommandContext context) {
+    final TimeoutStep step = StatementTimeouts.stepFor(info.timeout, context);
+    if (step != null)
+      plan.chain(step);
   }
 
   public static void handleProjectionsBlock(final SelectExecutionPlan result, final QueryPlanningInfo info,

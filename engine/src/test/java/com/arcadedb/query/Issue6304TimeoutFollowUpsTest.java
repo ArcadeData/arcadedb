@@ -229,6 +229,54 @@ class Issue6304TimeoutFollowUpsTest {
         .hasStackTraceContaining(GlobalConfiguration.COMMAND_TIMEOUT.getKey());
   }
 
+  @Test
+  void aClauseDoesNotOutliveTheScriptLineThatWroteIt() {
+    // Every line of a script is planned against the same CommandContext, so the instant a TIMEOUT clause pins
+    // lands exactly where the following lines read it - and those have no TimeoutStep of their own to catch
+    // anything. The second line below carries no clause and must not inherit the first line's.
+    TICKS.set(0);
+
+    assertThatCode(() -> drainScript(
+        "SELECT FROM Node WHERE v = 1 TIMEOUT 50;\nSELECT FROM Node WHERE tick6304(true) = true;\n"))
+        .as("a bound belonging to a statement that has already finished must not abort the next one")
+        .doesNotThrowAnyException();
+
+    assertThat(TICKS.get()).as("and the second line runs in full, rather than being cut short by it")
+        .isEqualTo(ROWS);
+  }
+
+  @Test
+  void aScriptLineIsStillBoundedByTheGlobalCeiling() {
+    // Restoring the line's snapshot must put back the command's own deadline, not clear it: the script is one
+    // command, and arcadedb.command.timeout bounds all of it.
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_TIMEOUT, 50L);
+
+    assertThatThrownBy(() -> drainScript(
+        "SELECT FROM Node WHERE v = 1 TIMEOUT 40;\nSELECT FROM Node WHERE tick6304(true) = true;\n"))
+        .as("the operator's ceiling survives the line that narrowed it for itself")
+        .hasStackTraceContaining(GlobalConfiguration.COMMAND_TIMEOUT.getKey());
+  }
+
+  @Test
+  void aRetryBlockDoesNotRetryAnExpiredReturnClause() {
+    // RETRY catches TimeoutException because the usual source is transient lock contention on commit. A deadline
+    // that has already passed is not transient, and a RETURN clause asks to yield rather than to fail: retried,
+    // it would roll back, spend the whole retry budget on attempts that expire on their first check, and hand
+    // back an empty result set instead of the rows the clause promised. The body of a RETRY block is a script of
+    // its own, so a clause on one of its lines is scoped the same way.
+    TICKS.set(0);
+
+    assertThatCode(() -> drainScript("BEGIN;\n"
+        + "SELECT FROM Node WHERE v = 1 TIMEOUT 50 RETURN;\n"
+        + "SELECT FROM Node WHERE tick6304(true) = true;\n"
+        + "COMMIT RETRY 10;\n"))
+        .doesNotThrowAnyException();
+
+    assertThat(TICKS.get())
+        .as("ten retries of an already-expired deadline would each re-scan; one pass is what this must cost")
+        .isEqualTo(ROWS);
+  }
+
   // ── Item 3: one meaning for the word ─────────────────────────────────────
 
   @Test
@@ -253,6 +301,23 @@ class Issue6304TimeoutFollowUpsTest {
   void bothStatementKindsRenderTheSameStep() {
     assertThat(explainOf("SELECT FROM Node WHERE v > 0 TIMEOUT 1234")).contains("+ TIMEOUT (1234ms)");
     assertThat(explainOf("UPDATE Node SET touched = true WHERE v < 0 TIMEOUT 1234")).contains("+ TIMEOUT (1234ms)");
+  }
+
+  @Test
+  void aZeroClauseDisablesTheBoundOnEveryStatementKind() {
+    // 0 disables, as it does for arcadedb.command.timeout and arcadedb.command.regexTimeout. SELECT used to be
+    // the exception - it chained the step for any clause at all, so its deadline landed in the past and the
+    // first pull failed - while UPDATE ... TIMEOUT 0 ran unbounded. One rule now, and it is the one that cannot
+    // turn a working statement into a failing one.
+    for (final String query : new String[] {
+        "SELECT FROM Node WHERE v = 1 TIMEOUT 0",
+        "MATCH {type: Node, as: a}-LINK->{as: b} RETURN a, b TIMEOUT 0",
+        "TRAVERSE out('LINK') FROM Node WHILE $depth < 2 TIMEOUT 0" })
+      assertThat(explainOf(query)).as(query).doesNotContain("+ TIMEOUT");
+
+    assertThatCode(() -> drainSql("SELECT FROM Node WHERE v = 1 TIMEOUT 0"))
+        .as("a clause that bounds nothing must not abort the statement it is written on")
+        .doesNotThrowAnyException();
   }
 
   // ── Item 4: MATCH and TRAVERSE accept the clause ─────────────────────────
@@ -336,6 +401,15 @@ class Issue6304TimeoutFollowUpsTest {
   private static List<Result> drainSql(final String query) {
     final List<Result> rows = new ArrayList<>();
     try (final ResultSet rs = database.query("sql", query)) {
+      while (rs.hasNext())
+        rows.add(rs.next());
+    }
+    return rows;
+  }
+
+  private static List<Result> drainScript(final String script) {
+    final List<Result> rows = new ArrayList<>();
+    try (final ResultSet rs = database.command("sqlscript", script)) {
       while (rs.hasNext())
         rows.add(rs.next());
     }

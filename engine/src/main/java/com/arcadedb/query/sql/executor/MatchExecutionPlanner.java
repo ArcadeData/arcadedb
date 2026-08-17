@@ -210,8 +210,9 @@ public class MatchExecutionPlanner {
    * profiled read timeout - which nothing then read.
    */
   private void handleTimeout(final SelectExecutionPlan result, final CommandContext context) {
-    if (timeout != null && timeout.getVal().longValue() > 0)
-      result.chain(new TimeoutStep(timeout, context));
+    final TimeoutStep step = StatementTimeouts.stepFor(timeout, context);
+    if (step != null)
+      result.chain(step);
   }
 
   private void manageNotPatterns(final SelectExecutionPlan result, final Pattern pattern,

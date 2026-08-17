@@ -37,6 +37,23 @@ final class StatementTimeouts {
   private StatementTimeouts() {
   }
 
+  /**
+   * The step that enforces {@code clause}, or {@code null} when the clause bounds nothing.
+   * <p>
+   * A value of {@code 0} disables the clause rather than expiring it on the spot, which is what {@code 0} means
+   * for every other timeout in the product - {@code arcadedb.command.timeout} and
+   * {@code arcadedb.command.regexTimeout} are both documented as "set to 0 to disable" - and which cannot turn a
+   * working statement into a failing one. SELECT used to be the exception: it chained the step for any clause at
+   * all, so {@code SELECT ... TIMEOUT 0} failed on its first pull while {@code UPDATE ... TIMEOUT 0} ran
+   * unbounded. Every statement kind goes through here now, so the four planners cannot drift apart again
+   * (issue #6304).
+   */
+  static TimeoutStep stepFor(final Timeout clause, final CommandContext context) {
+    if (clause == null || clause.getVal() == null || clause.getVal().longValue() <= 0)
+      return null;
+    return new TimeoutStep(clause, context);
+  }
+
   /** What to call this clause when a check aborts on it - the same name whichever check does the aborting. */
   static String describe(final Timeout clause) {
     return "TIMEOUT clause of " + clause.getVal() + "ms";

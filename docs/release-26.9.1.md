@@ -2585,6 +2585,22 @@ clause propagates the same meaning into nested plans, so a subquery yields rathe
 prefix of it. That is what the clause has always been documented to do, and `EXCEPTION` - the default when
 neither token is written - is unaffected.
 
+### A `TIMEOUT` clause no longer outlives the script line that wrote it
+
+Found while reviewing the above, and a regression #6291 shipped: every line of a SQL script is planned against
+the *same* command context, so the instant a `TIMEOUT` clause pins landed exactly where the following lines
+read it - and those have no timeout step of their own to catch anything. This failed on its second line:
+
+```sql
+SELECT FROM Node WHERE v = 1 TIMEOUT 50;
+SELECT FROM SomethingSlower;
+```
+
+with `the command exceeded the TIMEOUT clause of 50ms`, a bound belonging to a statement that had already
+finished. A clause is now scoped to its own line. What the line restores is the command's own
+`arcadedb.command.timeout` instant, so that bound stays in force across the whole script - the script is one
+command.
+
 ### `SELECT ... TIMEOUT n` and `UPDATE ... TIMEOUT n` now mean the same thing
 
 They did not. `UPDATE` measured wall clock from the first pull; `SELECT` charged only the time spent inside
@@ -2598,6 +2614,10 @@ accumulating variant was the only bound in the engine that was not. The two step
 **Behaviour change.** A consumer that pauses between fetches of a `SELECT ... TIMEOUT n` is now charged for
 the pause. A client that reads a large result set slowly and relies on a clause to bound only server-side
 work should raise the value or drop the clause.
+
+`TIMEOUT 0` also means one thing now. It disabled the clause on `UPDATE` and expired it on the spot on
+`SELECT`; it disables it everywhere, which is what `0` means for `arcadedb.command.timeout` and
+`arcadedb.command.regexTimeout` and is the reading that cannot turn a working statement into a failing one.
 
 ### SQL `MATCH` and `TRAVERSE` accept `TIMEOUT`
 
