@@ -19,6 +19,8 @@
 package com.arcadedb.postgres;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
+import com.arcadedb.function.java.JavaClassFunctionLibraryDefinition;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
@@ -46,6 +48,7 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.Random;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 
 import static com.arcadedb.schema.Property.CAT_PROPERTY;
@@ -1208,6 +1211,106 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
             DROP TYPE Hero6156 UNSAFE;
             """);
       }
+    }
+  }
+
+  /**
+   * Issue #6185: {@code LIMIT 0} is the other spelling of a schema probe - Tableau and several JDBC/BI tools send
+   * it instead of {@code WHERE 1=0} - but only the constant-false filter triggered the replay, so a probe over a
+   * row source the schema cannot describe (a graph function, a TRAVERSE, an expand()) came back with an empty
+   * RowDescription again. The two spellings are not answered the same way: {@code WHERE 1=0} has no purpose other
+   * than probing and is replayed first, while {@code LIMIT 0} is also how a client asks an expensive query for
+   * nothing at all, so it earns the replay - which evaluates the projection for real, once - only after the static
+   * resolution has failed.
+   */
+  @Test
+  void schemaProbeSpelledLimitZeroReturnsTheDescription() throws Exception {
+    final Database serverDatabase = getServerDatabase(0, getDatabaseName());
+    serverDatabase.getSchema().registerFunctionLibrary(new JavaClassFunctionLibraryDefinition("probe6185", ProbeCounter6185.class));
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        st.execute("""
+            {sqlscript}
+            CREATE VERTEX TYPE Hero6185 IF NOT EXISTS;
+            CREATE PROPERTY Hero6185.name IF NOT EXISTS STRING;
+            CREATE EDGE TYPE Appearance6185 IF NOT EXISTS;
+            CREATE PROPERTY Appearance6185.weight IF NOT EXISTS INTEGER;
+            INSERT INTO Hero6185 SET name = 'Napoleon';
+            INSERT INTO Hero6185 SET name = 'Myriel';
+            CREATE EDGE Appearance6185 FROM (SELECT FROM Hero6185 WHERE name = 'Napoleon')
+              TO (SELECT FROM Hero6185 WHERE name = 'Myriel') SET weight = 1;
+            """);
+      }
+
+      // The shape from the issue: a graph function as the row source, which nothing static can describe.
+      final String shortestPath = "shortestPath((SELECT FROM Hero6185 WHERE name = 'Napoleon'), "
+          + "(SELECT FROM Hero6185 WHERE name = 'Myriel'), 'BOTH', 'Appearance6185')";
+      assertProbedColumns(conn, "SELECT * FROM (SELECT expand(" + shortestPath + ")) SPARK_GEN_SUBQ_0 LIMIT 0", "name",
+          RID_PROPERTY, TYPE_PROPERTY, CAT_PROPERTY);
+      assertProbedColumns(conn, "SELECT * FROM (SELECT name, @rid AS rid FROM (SELECT expand(" + shortestPath
+          + "))) SPARK_GEN_SUBQ_0 LIMIT 0", "name", "rid");
+
+      // expand() throws the row away, so only the replay can tell what the query produces.
+      assertProbedColumns(conn, "SELECT * FROM (SELECT expand([1,2,3]) AS n) t LIMIT 0", "n");
+      // ... and the LIMIT 0 may sit on the subquery rather than on the statement the client sent.
+      assertProbedColumns(conn, "SELECT * FROM (SELECT expand([1,2,3]) AS n LIMIT 0) t", "n");
+
+      // A TRAVERSE row source, and the shapes the schema can describe, answer with LIMIT 0 as well.
+      assertProbedColumns(conn, "SELECT * FROM (SELECT FROM (TRAVERSE out('Appearance6185') FROM "
+              + "(SELECT FROM Hero6185 WHERE name = 'Napoleon') MAXDEPTH 2)) t LIMIT 0", "name", RID_PROPERTY, TYPE_PROPERTY,
+          CAT_PROPERTY);
+      assertProbedColumns(conn, "SELECT name FROM Hero6185 LIMIT 0", "name");
+      assertProbedColumns(conn, "SELECT * FROM (SELECT name FROM Hero6185) SPARK_GEN_SUBQ_0 LIMIT 0", "name");
+
+      // Only a literal LIMIT 0 marks a probe: a bound parameter belongs to one execution, so it is left alone and
+      // the query stays as undescribable as it was.
+      try (var st = conn.prepareStatement("SELECT * FROM (SELECT expand([1,2,3]) AS n) t LIMIT ?")) {
+        st.setInt(1, 0);
+        try (var rs = st.executeQuery()) {
+          assertThat(rs.getMetaData().getColumnCount()).isZero();
+        }
+      }
+
+      // The two spellings are ordered differently against the static resolution, and the projected function call
+      // counts how many times each of them evaluated the projection for real. LIMIT 0 over a row source the schema
+      // describes is answered without a replay ...
+      ProbeCounter6185.CALLS.set(0);
+      assertProbedColumns(conn, "SELECT `probe6185.tick`() AS n FROM Hero6185 LIMIT 0", "n");
+      assertThat(ProbeCounter6185.CALLS.get()).isZero();
+
+      // ... while the same query spelled WHERE 1=0 is replayed, which is the caveat documented on sampleProbeColumns.
+      assertProbedColumns(conn, "SELECT `probe6185.tick`() AS n FROM Hero6185 WHERE 1=0", "n");
+      assertThat(ProbeCounter6185.CALLS.get()).isEqualTo(1);
+
+      // Sanity check: the same queries without the probe still return their rows.
+      try (var st = conn.createStatement()) {
+        try (var rs = st.executeQuery("SELECT * FROM (SELECT expand([1,2,3]) AS n) t")) {
+          assertThat(rs.next()).isTrue();
+          assertThat(rs.getInt("n")).isEqualTo(1);
+        }
+      }
+
+      try (var st = conn.createStatement()) {
+        st.execute("""
+            {sqlscript}
+            DROP TYPE Appearance6185 UNSAFE;
+            DROP TYPE Hero6185 UNSAFE;
+            """);
+      }
+    } finally {
+      serverDatabase.getSchema().unregisterFunctionLibrary("probe6185");
+    }
+  }
+
+  /**
+   * Counts how many times a projected function was actually evaluated, which is how the LIMIT 0 test tells a
+   * schema probe answered statically from one answered by replaying the query.
+   */
+  public static class ProbeCounter6185 {
+    public static final AtomicInteger CALLS = new AtomicInteger();
+
+    public static int tick() {
+      return CALLS.incrementAndGet();
     }
   }
 

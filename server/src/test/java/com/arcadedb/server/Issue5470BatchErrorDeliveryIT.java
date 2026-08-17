@@ -20,6 +20,7 @@ package com.arcadedb.server;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -368,7 +369,7 @@ class Issue5470BatchErrorDeliveryIT extends BaseGraphServerTest {
         .POST(HttpRequest.BodyPublishers.ofInputStream(() -> body))
         .build();
 
-    final long start = System.currentTimeMillis();
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     try (final HttpClient client = HttpClient.newHttpClient()) {
       final HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
 
@@ -382,9 +383,9 @@ class Issue5470BatchErrorDeliveryIT extends BaseGraphServerTest {
       // the response to that; it cannot lose the fact that the load failed, and the reason is in the server log.
     }
 
-    assertThat(System.currentTimeMillis() - start)
-        .as("answered or reset, it must resolve at once rather than after the upload")
-        .isLessThan(PROMPT_ANSWER_MS);
+    // Answered or reset, it must resolve at once rather than after the upload.
+    stopwatch.assertGaveUpWithin(PROMPT_ANSWER_MS,
+        "an immediate answer from one that waits out the whole upload first");
   }
 
   /**
