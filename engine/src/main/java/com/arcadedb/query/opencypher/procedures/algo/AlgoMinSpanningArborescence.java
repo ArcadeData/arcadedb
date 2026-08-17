@@ -27,6 +27,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -95,6 +96,7 @@ public class AlgoMinSpanningArborescence extends AbstractAlgoProcedure {
     final String weightProperty = args.length > 2 ? extractString(args[2], "weightProperty") : null;
 
     final Database db = context.getDatabase();
+    final WorkGuard guard = newWorkGuard(context);
     final List<Vertex> vertices = new ArrayList<>();
     final Iterator<Vertex> it = getAllVertices(db, null);
     while (it.hasNext())
@@ -160,7 +162,7 @@ public class AlgoMinSpanningArborescence extends AbstractAlgoProcedure {
     }
 
     // Run Chu-Liu/Edmonds on node IDs 0..n-1, root = rootIdx
-    final int[] msaEdges = edmonds(n, rootIdx, eFrom, eTo, eW, ec);
+    final int[] msaEdges = edmonds(guard, n, rootIdx, eFrom, eTo, eW, ec);
     if (msaEdges == null)
       return Stream.empty();
 
@@ -194,8 +196,13 @@ public class AlgoMinSpanningArborescence extends AbstractAlgoProcedure {
    * @param eW         edge weight array
    * @param m          number of edges
    */
-  private static int[] edmonds(final int n, final int root,
+  private static int[] edmonds(final WorkGuard guard, final int n, final int root,
       final int[] eFrom, final int[] eTo, final double[] eW, final int m) {
+    // Contracting one cycle per level and re-running over every edge is O(V x E), with the graph alone sizing
+    // both factors: the same Kruskal/Borůvka-shaped family as algo.mst, and equally unabortable before issue
+    // #6302. One level is already a full pass over the edges, so the check is placed per level and per traced
+    // path rather than per edge.
+    guard.check();
     if (n == 1)
       return new int[0];
 
@@ -230,6 +237,7 @@ public class AlgoMinSpanningArborescence extends AbstractAlgoProcedure {
     final int[][] cycleNodes = new int[n][]; // cycleNodes[c] = nodes in cycle c
 
     for (int start = 0; start < n; start++) {
+      guard.checkPeriodically(start);
       if (start == root || color[start] == 2)
         continue;
 
@@ -323,7 +331,7 @@ public class AlgoMinSpanningArborescence extends AbstractAlgoProcedure {
     }
 
     // ── Step 5: recurse on contracted graph ─────────────────────────────────
-    final int[] subResult = edmonds(newN, newRoot, nFrom, nTo, nW, newM);
+    final int[] subResult = edmonds(guard, newN, newRoot, nFrom, nTo, nW, newM);
     if (subResult == null)
       return null;
 

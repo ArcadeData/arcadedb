@@ -24,6 +24,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -90,6 +91,7 @@ public class AlgoClique extends AbstractAlgoProcedure {
     final int minSize       = args.length > 1 ? extractInt((Number) args[1], "minSize") : 3;
 
     final Database db = context.getDatabase();
+    final WorkGuard guard = newWorkGuard(context);
 
     final GraphData graph = loadGraph(db, null, relTypes, context);
 
@@ -128,6 +130,10 @@ public class AlgoClique extends AbstractAlgoProcedure {
     stack.push(new StackFrame(initialR, initialP, initialX));
 
     while (!stack.isEmpty()) {
+      // Maximal-clique enumeration is exponential in the graph in the worst case, and neither `minSize` nor
+      // anything else bounds the search - minSize only filters what is reported (issue #6302). One frame costs
+      // at least a bit-set scan, so the check needs no throttle.
+      guard.check();
       final StackFrame frame = stack.peek();
 
       if (frame.P.isEmpty() && frame.X.isEmpty()) {

@@ -20,13 +20,11 @@ package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
-import com.arcadedb.exception.RecordNotFoundException;
-import com.arcadedb.graph.Edge;
-import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -106,6 +104,7 @@ public class AlgoBellmanFord extends AbstractAlgoProcedure {
 
     final Database db = context.getDatabase();
     final String[] relTypes = relType != null && !relType.isEmpty() ? new String[] { relType } : null;
+    final WorkGuard guard = newWorkGuard(context);
 
     final GraphData graph = loadGraph(db, null, relTypes, context);
     final int n = graph.nodeCount;
@@ -117,36 +116,34 @@ public class AlgoBellmanFord extends AbstractAlgoProcedure {
     if (startIdx < 0 || endIdx < 0)
       return Stream.empty();
 
-    // Build edge list: try CSR edge properties first, fall back to OLTP
-    final int[][] adj = graph.adjacency(Vertex.DIRECTION.OUT, relTypes);
-    final double[][] edgeWts = graph.edgeWeights(Vertex.DIRECTION.OUT, weightProperty, relTypes);
+    // Build the edge list. Neighbours and weights come out of one walk of the same edges - columnar when the
+    // view materialises the property, the edge records otherwise - so a weight always belongs to the edge it is
+    // written against. The form this replaced read the weights through a second, independently ordered
+    // traversal (issue #6301) and, worse, fell back to a unit weight for EVERY edge whenever the graph was
+    // CSR-backed without the property column: the same query answered `weightProperty` on OLTP and ignored it
+    // entirely once a Graph Analytical View existed.
+    final GraphData.WeightedAdjacency weighted = graph.weightedAdjacency(guard, Vertex.DIRECTION.OUT,
+        weightProperty != null && !weightProperty.isEmpty() ? weightProperty : null, relTypes);
+    final int[][] adj = weighted.neighbors();
+    final double[][] adjW = weighted.weights();
 
-    final List<int[]> edgeList = new ArrayList<>();
-    final List<Double> weightList = new ArrayList<>();
+    int edgeCount = 0;
+    for (int i = 0; i < n; i++)
+      edgeCount += adj[i].length;
 
-    if (edgeWts != null) {
-      // CSR path: edge weights from columnar storage
-      for (int i = 0; i < n; i++) {
-        for (int j = 0; j < adj[i].length; j++) {
-          edgeList.add(new int[] { i, adj[i][j] });
-          weightList.add(edgeWts[i][j]);
-        }
-      }
-    } else {
-      // OLTP path: extract weights from edges
-      for (int i = 0; i < n; i++) {
-        for (int j = 0; j < adj[i].length; j++) {
-          edgeList.add(new int[] { i, adj[i][j] });
-          // Need to get weight from OLTP edge — use default 1.0 when adj is CSR-backed
-          // and edge properties are not in CSR (the adjacency structure is still CSR-accelerated)
-          weightList.add(1.0);
-        }
-      }
-      // If graph is OLTP-backed, rebuild with actual weights from edges
-      if (!graph.isCSRBacked()) {
-        edgeList.clear();
-        weightList.clear();
-        buildEdgeListFromOLTP(graph, n, relTypes, weightProperty, edgeList, weightList);
+    // Parallel primitive arrays rather than a List<int[]> and a List<Double>: the relaxation below reads every
+    // edge up to n - 1 times, so this is the hottest loop in the procedure and the one place boxing is paid for
+    // over and over.
+    final int[] edgeFrom = new int[edgeCount];
+    final int[] edgeTo = new int[edgeCount];
+    final double[] edgeWeight = new double[edgeCount];
+    int e = 0;
+    for (int i = 0; i < n; i++) {
+      for (int j = 0; j < adj[i].length; j++) {
+        edgeFrom[e] = i;
+        edgeTo[e] = adj[i][j];
+        edgeWeight[e] = adjW[i][j];
+        e++;
       }
     }
 
@@ -159,13 +156,15 @@ public class AlgoBellmanFord extends AbstractAlgoProcedure {
     dist[startIdx] = 0.0;
 
     // Bellman-Ford relaxation: V-1 iterations
-    final int edgeCount = edgeList.size();
     for (int iter = 0; iter < n - 1; iter++) {
+      // n - 1 passes over every edge is O(V x E), and nothing about the call bounds either factor - the graph
+      // alone sizes both. The early exit below ends a converged run, not a long one.
+      guard.check();
       boolean anyRelaxed = false;
-      for (int e = 0; e < edgeCount; e++) {
-        final int u = edgeList.get(e)[0];
-        final int v = edgeList.get(e)[1];
-        final double w = weightList.get(e);
+      for (int k = 0; k < edgeCount; k++) {
+        final int u = edgeFrom[k];
+        final int v = edgeTo[k];
+        final double w = edgeWeight[k];
         if (dist[u] != Double.MAX_VALUE && dist[u] + w < dist[v]) {
           dist[v] = dist[u] + w;
           prev[v] = u;
@@ -176,12 +175,14 @@ public class AlgoBellmanFord extends AbstractAlgoProcedure {
         break;
     }
 
-    // Check for negative cycles reachable from start
+    // Check for negative cycles reachable from start: one more pass over every edge, guarded like the
+    // relaxation passes above rather than left as the one unabortable loop in the method.
     boolean negativeCycle = false;
-    for (int e = 0; e < edgeCount; e++) {
-      final int u = edgeList.get(e)[0];
-      final int v = edgeList.get(e)[1];
-      final double w = weightList.get(e);
+    guard.check();
+    for (int k = 0; k < edgeCount; k++) {
+      final int u = edgeFrom[k];
+      final int v = edgeTo[k];
+      final double w = edgeWeight[k];
       if (dist[u] != Double.MAX_VALUE && dist[u] + w < dist[v]) {
         negativeCycle = true;
         break;
@@ -229,32 +230,4 @@ public class AlgoBellmanFord extends AbstractAlgoProcedure {
     return Stream.of(result);
   }
 
-  private void buildEdgeListFromOLTP(final GraphData graph, final int n, final String[] relTypes,
-      final String weightProperty, final List<int[]> edgeList, final List<Double> weightList) {
-    for (int i = 0; i < n; i++) {
-      final Vertex v = graph.getVertex(i);
-      if (v == null)
-        continue;
-      final Iterable<Edge> edges = relTypes != null ?
-          v.getEdges(Vertex.DIRECTION.OUT, relTypes) :
-          v.getEdges(Vertex.DIRECTION.OUT);
-      for (final Edge edge : edges) {
-        try {
-          final int j = graph.indexOf(edge.getIn());
-          if (j < 0)
-            continue;
-          double w = 1.0;
-          if (weightProperty != null && !weightProperty.isEmpty()) {
-            final Object wObj = edge.get(weightProperty);
-            if (wObj instanceof Number num)
-              w = num.doubleValue();
-          }
-          edgeList.add(new int[] { i, j });
-          weightList.add(w);
-        } catch (final RecordNotFoundException e) {
-          GhostEdgeReporter.reportSkipped(e);
-        }
-      }
-    }
-  }
 }

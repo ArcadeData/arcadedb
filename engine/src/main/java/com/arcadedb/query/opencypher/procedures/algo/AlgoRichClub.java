@@ -23,6 +23,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -82,6 +83,7 @@ public class AlgoRichClub extends AbstractAlgoProcedure {
     final int minDegree = args.length > 1 && args[1] instanceof Number n ? extractInt(n, "minDegree") : 2;
 
     final Database db = context.getDatabase();
+    final WorkGuard guard = newWorkGuard(context);
 
     final GraphData graph = loadGraph(db, null, relTypes, context);
 
@@ -108,6 +110,9 @@ public class AlgoRichClub extends AbstractAlgoProcedure {
     final List<Result> results = new ArrayList<>(maxDegree - minDegree + 1);
 
     for (int k = minDegree; k <= maxDegree; k++) {
+      // One pass over every node and every edge per degree threshold, and the number of thresholds is the
+      // graph's maximum degree: O(maxDegree x (V + E)), sized entirely by the graph (issue #6302).
+      guard.check();
       // Build mask: nodes with degree > k
       final boolean[] inRichClub = new boolean[n];
       int nodeCount = 0;

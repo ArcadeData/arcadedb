@@ -1193,9 +1193,35 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   @Override
+  public String[] getMaterializedEdgeTypes() {
+    final Snapshot snap = this.snapshot;
+    return snap == null ? null : snap.csrPerType.keySet().toArray(new String[0]);
+  }
+
+  /**
+   * {@inheritDoc}
+   * <p>
+   * An active delta overlay makes the answer no rather than yes. The edge property columns are aligned with the
+   * base CSR's forward edge slots, while {@link #getNeighborIds} serves the overlay's view of the node: deleted
+   * edges dropped, added ones merged in, the whole list re-sorted. The n-th neighbour of that list is then not
+   * the n-th edge of the column store, and {@link #getEdgeProperty}'s positional contract - the reason a caller
+   * may ask by index at all - no longer holds. Reporting "no edge properties" sends the caller to the edge
+   * records, which are exact; reporting "yes" would hand it a weight belonging to some other edge. Same reading
+   * as {@link #getMeanEdgesPerConnectedPair}, which answers unknown for the same overlay.
+   */
+  @Override
   public boolean hasEdgeProperties() {
     final Snapshot snap = this.snapshot;
-    return snap != null && snap.edgeColumnStores != null && !snap.edgeColumnStores.isEmpty();
+    return snap != null && snap.edgeColumnStores != null && !snap.edgeColumnStores.isEmpty() && snap.overlay == null;
+  }
+
+  @Override
+  public boolean hasEdgeProperty(final String edgeType, final String propertyName) {
+    final Snapshot snap = this.snapshot;
+    if (snap == null || snap.edgeColumnStores == null || snap.overlay != null)
+      return false;
+    final ColumnStore edgeColStore = snap.edgeColumnStores.get(edgeType);
+    return edgeColStore != null && edgeColStore.getColumn(propertyName) != null;
   }
 
   @Override

@@ -145,6 +145,9 @@ public class AlgoGraphSAGE extends AbstractAlgoProcedure {
     final Random rng = seed >= 0 ? new Random(seed) : new Random();
     double[][] embed = new double[n][initDim];
     for (int i = 0; i < n; i++) {
+      // nodeCount x initDim Gaussian draws plus a normalisation each, and all of it before the first layer - so
+      // the checkpoint inside the layer loop never sees this phase (issue #6295).
+      guard.checkPeriodically(i);
       embed[i][0] = Math.log1p(degree[i]) / logMaxDeg; // structural feature
       for (int d = 1; d < initDim; d++)
         embed[i][d] = rng.nextGaussian() * 0.1;

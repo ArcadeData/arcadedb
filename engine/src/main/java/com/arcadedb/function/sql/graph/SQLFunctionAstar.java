@@ -28,6 +28,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.NodeEdgeWeights;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.function.sql.FunctionOptions;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -255,27 +256,26 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
 
     final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(
         ctx.getDatabase(), paramEdgeTypeNames);
-    if (provider != null && provider.hasEdgeProperties()) {
+    if (provider != null) {
       final int nodeId = provider.getNodeId(node.getIdentity());
-      if (nodeId >= 0) {
-        final int[] neighborIds = paramEdgeTypeNames != null && paramEdgeTypeNames.length > 0
-            ? provider.getNeighborIds(nodeId, paramDirection, paramEdgeTypeNames)
-            : provider.getNeighborIds(nodeId, paramDirection);
-        final String edgeType = paramEdgeTypeNames != null && paramEdgeTypeNames.length > 0 ? paramEdgeTypeNames[0] : null;
+      // edgeWeightsOf() answers null unless the provider can serve THIS property for EVERY type in play, and it
+      // is the only thing that pairs a CSR edge with its own weight correctly. Reading getNeighborIds and
+      // getEdgeProperty side by side here got it wrong twice over (issue #6301): the neighbour list is merged and
+      // sorted across types while the property column is per type, and a BOTH lookup has no column at all, so it
+      // answered null for every edge and quietly priced the whole neighbourhood at MIN - free.
+      final NodeEdgeWeights edges = nodeId >= 0 ?
+          provider.edgeWeightsOf(nodeId, paramDirection, paramWeightFieldName, MIN, paramEdgeTypeNames) : null;
+      if (edges != null) {
+        final int[] neighborIds = edges.neighbors();
+        final double[] weights = edges.weights();
         for (int i = 0; i < neighborIds.length; i++) {
           final RID neighborRid = provider.getRID(neighborIds[i]);
-          if (neighborRid != null) {
-            double weight = MIN;
-            if (edgeType != null) {
-              final Object wObj = provider.getEdgeProperty(nodeId, i, paramDirection, edgeType, paramWeightFieldName);
-              if (wObj instanceof Number num)
-                weight = num.doubleValue();
-            }
-            try {
-              result.put(neighborRid.asVertex(), weight);
-            } catch (final Exception e) {
-              // deleted vertex — skip
-            }
+          if (neighborRid == null)
+            continue;
+          try {
+            result.put(neighborRid.asVertex(), weights[i]);
+          } catch (final Exception e) {
+            // deleted vertex — skip
           }
         }
         return result;

@@ -20,13 +20,11 @@ package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
-import com.arcadedb.exception.RecordNotFoundException;
-import com.arcadedb.graph.Edge;
-import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.List;
 import java.util.function.Function;
@@ -47,7 +45,9 @@ import java.util.stream.Stream;
  * <p>
  * Note: this algorithm is O(V²) in memory and O(V³) in time. Only suitable for graphs
  * with up to a few thousand vertices - a bound the distance matrix's reservation through
- * {@link AbstractAlgoProcedure.MemoryBudget} now enforces rather than merely advises.
+ * {@link AbstractAlgoProcedure.MemoryBudget} now enforces rather than merely advises. The time half of that
+ * guarantee is a {@link WorkGuard} checkpoint inside the Floyd-Warshall loop: the budget's own floor admits about
+ * 2890 nodes, which is ~2.4e10 iterations, so a graph it accepts must at least be abortable (issue #6302).
  * </p>
  * <p>
  * The rows are produced lazily from the completed distance matrix, so the O(V²) figure above is the matrix and
@@ -104,6 +104,7 @@ public class AlgoAPSP extends AbstractAlgoProcedure {
     final String[] relTypes     = args.length > 1 ? extractRelTypes(args[1]) : null;
 
     final Database db = context.getDatabase();
+    final WorkGuard guard = newWorkGuard(context);
 
     final GraphData graph = loadGraph(db, null, relTypes, context);
     final int n = graph.nodeCount;
@@ -119,39 +120,43 @@ public class AlgoAPSP extends AbstractAlgoProcedure {
     // Allocate distance matrix: one large contiguous allocation is GC-friendly
     final double[][] dist = new double[n][n];
     for (int i = 0; i < n; i++) {
+      // One row is already O(n) writes, so the check costs nothing beside it and needs no throttle.
+      guard.check();
       for (int j = 0; j < n; j++)
         dist[i][j] = i == j ? 0.0 : INF;
     }
 
-    // Fill direct edges: try CSR edge properties first, fall back to OLTP
-    final int[][] adj = graph.adjacency(Vertex.DIRECTION.OUT, relTypes);
-    final double[][] edgeWts = weightProperty != null ? graph.edgeWeights(Vertex.DIRECTION.OUT, weightProperty, relTypes) : null;
-
-    if (edgeWts != null) {
-      // CSR path: edge weights from columnar storage
-      for (int i = 0; i < n; i++) {
-        for (int j = 0; j < adj[i].length; j++) {
-          final double w = edgeWts[i][j];
-          if (w < dist[i][adj[i][j]])
-            dist[i][adj[i][j]] = w;
-        }
+    // Fill direct edges. Neighbours and weights are built together - from the columnar edge properties when
+    // the view has them, from the edge records otherwise - so a weight always belongs to the neighbour it is
+    // written against, whatever the edge-type filter and whichever backing answered (issue #6301).
+    final GraphData.WeightedAdjacency weighted = graph.weightedAdjacency(guard, Vertex.DIRECTION.OUT, weightProperty,
+        relTypes);
+    final int[][] adj = weighted.neighbors();
+    final double[][] edgeWts = weighted.weights();
+    for (int i = 0; i < n; i++) {
+      guard.checkPeriodically(i);
+      for (int j = 0; j < adj[i].length; j++) {
+        final double w = edgeWts[i][j];
+        if (w < dist[i][adj[i][j]])
+          dist[i][adj[i][j]] = w;
       }
-    } else if (graph.isCSRBacked() && weightProperty == null) {
-      // CSR path: unweighted (unit weight)
-      for (int i = 0; i < n; i++) {
-        for (final int neighbor : adj[i]) {
-          if (1.0 < dist[i][neighbor])
-            dist[i][neighbor] = 1.0;
-        }
-      }
-    } else {
-      // OLTP path: extract weights from edges
-      fillDistanceMatrixFromOLTP(graph, n, dist, relTypes, weightProperty);
     }
 
-    // Floyd-Warshall
+    // Floyd-Warshall.
+    //
+    // The triple loop is O(V³) with no knob anywhere in it - the graph alone sizes it - and until issue #6302
+    // nothing inside it could end a run: not a thread interrupt, not arcadedb.command.timeout, not a client
+    // cancelling the query. The memory budget above caps the matrix at arcadedb.cypher.algoMaxWorkingMemory,
+    // whose 64 MB floor admits n ≈ 2890, and 2890³ is ~2.4e10 iterations - minutes of CPU on one query thread,
+    // on an input the budget explicitly accepts. The two halves of the guarantee have to agree: a call the
+    // budget refuses fails immediately, so a call it admits must at least be abortable.
+    //
+    // The checkpoint sits on the `i` loop rather than the `k` loop: `k` runs only V times while its body is
+    // O(V²), so a check per `k` leaves abort latency quadratic. One `i` iteration is O(V) writes, which is
+    // already more than a flag test, so it needs no throttle either.
     for (int k = 0; k < n; k++) {
       for (int i = 0; i < n; i++) {
+        guard.check();
         if (dist[i][k] >= INF)
           continue;  // Skip unreachable intermediate
         for (int j = 0; j < n; j++) {
@@ -194,32 +199,4 @@ public class AlgoAPSP extends AbstractAlgoProcedure {
     }).flatMap(Function.identity());
   }
 
-  private void fillDistanceMatrixFromOLTP(final GraphData graph, final int n, final double[][] dist,
-      final String[] relTypes, final String weightProperty) {
-    for (int i = 0; i < n; i++) {
-      final Vertex v = graph.getVertex(i);
-      if (v == null)
-        continue;
-      final Iterable<Edge> edges = relTypes != null && relTypes.length > 0 ?
-          v.getEdges(Vertex.DIRECTION.OUT, relTypes) :
-          v.getEdges(Vertex.DIRECTION.OUT);
-      for (final Edge e : edges) {
-        try {
-          final int j = graph.indexOf(e.getIn());
-          if (j < 0)
-            continue;
-          final double w;
-          if (weightProperty != null) {
-            final Object wObj = e.get(weightProperty);
-            w = wObj instanceof Number num ? num.doubleValue() : 1.0;
-          } else
-            w = 1.0;
-          if (w < dist[i][j])
-            dist[i][j] = w;
-        } catch (final RecordNotFoundException rnf) {  // 'rnf' not 'e' here: 'e' is the Edge loop variable in this scope
-          GhostEdgeReporter.reportSkipped(rnf);
-        }
-      }
-    }
-  }
 }

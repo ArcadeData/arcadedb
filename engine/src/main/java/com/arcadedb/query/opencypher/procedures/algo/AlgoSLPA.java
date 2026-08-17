@@ -137,6 +137,9 @@ public class AlgoSLPA extends AbstractAlgoProcedure {
 
     // Each node starts with a unique label equal to its index
     for (int i = 0; i < n; i++) {
+      // Allocating and zeroing nodeCount x (iterations + 1) ints is the same product the budget prices, and it
+      // happens before the first propagation round - so it needs its own checkpoint (issue #6295).
+      guard.checkPeriodically(i);
       memory[i] = new int[(int) rowCapacity];
       memory[i][0] = i;
       memorySize[i] = 1;
@@ -175,18 +178,26 @@ public class AlgoSLPA extends AbstractAlgoProcedure {
         }
 
         // Listener adds the most-frequent heard label to its memory
-        final int mostFreq = mostFrequent(heard, heardCount, rng);
+        final int mostFreq = mostFrequent(heard, heardCount, rng, guard);
         memory[listener][memorySize[listener]++] = mostFreq;
       }
     }
 
     // Post-processing: keep only labels with relative frequency >= threshold
     // Pre-compute communities for all nodes (pure int/map work, no vertex loading)
+    //
+    // Outside the propagation rounds, so the checkpoint inside them never sees this: nodeCount x (iterations + 1)
+    // boxed map merges, which is the same product the label memory is priced on. The budget bounds the heap that
+    // product costs and says nothing about the time, so at a raised arcadedb.cypher.algoMaxWorkingMemory this
+    // grows without any checkpoint behind it (issue #6295). The counter spans both loops for the same reason it
+    // does in algo.hashgnn: a per-node check is too coarse when one node remembers a million labels.
     @SuppressWarnings("unchecked")
     final List<Long>[] allCommunities = new List[n];
+    int postStep = 0;
     for (int i = 0; i < n; i++) {
       final Map<Integer, Integer> freq = new HashMap<>();
       for (int j = 0; j < memorySize[i]; j++) {
+        guard.checkPeriodically(postStep++);
         final int label = memory[i][j];
         freq.merge(label, 1, Integer::sum);
       }
@@ -209,12 +220,20 @@ public class AlgoSLPA extends AbstractAlgoProcedure {
     });
   }
 
-  /** Returns the most-frequent element in arr[0..len), breaking ties randomly. */
-  private int mostFrequent(final int[] arr, final int len, final Random rng) {
+  /**
+   * Returns the most-frequent element in arr[0..len), breaking ties randomly.
+   * <p>
+   * The scan is O(len²) in the listener's degree, so one supernode's turn is a whole quadratic pass between two
+   * of the caller's per-node checkpoints - 4e8 comparisons at degree 20 000. The guard comes in with the array
+   * for that reason (issue #6295): the checkpoint on the outer scan bounds the abort latency by 1024 x len
+   * rather than by len², and costs one flag test per candidate where each candidate already costs a full pass.
+   */
+  private int mostFrequent(final int[] arr, final int len, final Random rng, final WorkGuard guard) {
     // Frequency map using arrays (avoid HashMap allocation for small len)
     int bestLabel = arr[0], bestCount = 0;
     // Simple O(len^2) scan — len = number of neighbours, typically small
     for (int i = 0; i < len; i++) {
+      guard.checkPeriodically(i);
       int count = 0;
       for (int j = 0; j < len; j++)
         if (arr[j] == arr[i]) count++;

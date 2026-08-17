@@ -133,6 +133,9 @@ public class AlgoHashGNN extends AbstractAlgoProcedure {
     // Initialise: each node gets ~12.5% sparse random binary feature vector
     final boolean[][] features = new boolean[n][numFeatures];
     for (int i = 0; i < n; i++) {
+      // Rejection sampling over numFeatures bits, once per node. Bounded per node, unbounded over the graph -
+      // and it runs BEFORE the message-passing loop, so the checkpoint inside that loop never sees it.
+      guard.checkPeriodically(i);
       // Use per-node deterministic seed for reproducible initialisation
       final Random nodeRng = seed >= 0 ? new Random(seed + i * 1_000_003L) :
           new Random(graph.getRID(i).hashCode() * 1_000_003L + i);
@@ -179,10 +182,27 @@ public class AlgoHashGNN extends AbstractAlgoProcedure {
       }
     }
 
-    // Compute MinHash signature → float embedding
+    // Compute MinHash signature → float embedding.
+    //
+    // This phase, not the loop `iterations` drives, is where an algo.hashgnn call actually spends its time, and
+    // until issue #6295 it was the one phase no checkpoint reached. Per node it costs embeddingDimension x
+    // numFeatures = 4 x embeddingDimension² operations - 6.7e7 at the 4096 cap - and that bounded per-node figure
+    // is then multiplied by an unbounded node count. Measured: 113 seconds against a 1000 ms
+    // arcadedb.command.timeout on 2000 nodes, and the call RETURNED rather than aborting.
+    //
+    // The lens that missed it looked for knobs with no ceiling; embeddingDimension has one (#6065), which is
+    // exactly why it looked handled. The question that finds it is "which loop over the node count has no
+    // checkpoint", and the phases after the knob-driven loop are where to ask it.
+    //
+    // The counter spans both loops rather than sitting on either: on a wide embedding one node is already 6.7e7
+    // operations, so a per-node checkpoint would be too coarse, and on a narrow one (embeddingDimension 1, 64
+    // features) a per-dimension clock read would cost more than the work it guards. One check per 1024
+    // (node, dimension) pairs is bounded by numFeatures x 1024 operations either way.
     final double[][] embeddings = new double[n][embDim];
+    int reductionStep = 0;
     for (int i = 0; i < n; i++) {
       for (int d = 0; d < embDim; d++) {
+        guard.checkPeriodically(reductionStep++);
         int minHash = Integer.MAX_VALUE;
         final int a = hashA[d], b = hashB[d];
         for (int f = 0; f < numFeatures; f++) {

@@ -26,6 +26,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -99,6 +100,7 @@ public class AlgoBetweenness extends AbstractAlgoProcedure {
     final boolean normalized = config == null || !Boolean.FALSE.equals(config.get("normalized"));
 
     final Database db = context.getDatabase();
+    final WorkGuard guard = newWorkGuard(context);
     final List<Vertex> vertices = new ArrayList<>();
     final Iterator<Vertex> vertIter = getAllVertices(db, null);
     while (vertIter.hasNext())
@@ -113,8 +115,12 @@ public class AlgoBetweenness extends AbstractAlgoProcedure {
 
     final double[] betweenness = new double[n];
 
-    // Brandes algorithm
+    // Brandes algorithm.
+    //
+    // A forward BFS and a backward accumulation per source node, so O(V x E) sized by nothing but the graph
+    // (issue #6302). The inner checkpoints keep the abort latency below one whole source's pass.
     for (int s = 0; s < n; s++) {
+      guard.check();
       final Vertex source = vertices.get(s);
 
       final Deque<Integer> stack = new ArrayDeque<>();
@@ -132,7 +138,9 @@ public class AlgoBetweenness extends AbstractAlgoProcedure {
       final Queue<Integer> queue = new LinkedList<>();
       queue.add(s);
 
+      int visited = 0;
       while (!queue.isEmpty()) {
+        guard.checkPeriodically(visited++);
         final int v = queue.poll();
         stack.push(v);
 
@@ -162,7 +170,9 @@ public class AlgoBetweenness extends AbstractAlgoProcedure {
 
       // Back-propagation
       final double[] delta = new double[n];
+      int accumulated = 0;
       while (!stack.isEmpty()) {
+        guard.checkPeriodically(accumulated++);
         final int w = stack.pop();
         for (final int v : predecessors.get(w)) {
           delta[v] += (sigma[v] / sigma[w]) * (1.0 + delta[w]);

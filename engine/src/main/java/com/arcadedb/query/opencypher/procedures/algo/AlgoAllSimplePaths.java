@@ -26,6 +26,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.utility.NumberUtils;
 
 import java.util.ArrayList;
@@ -115,7 +116,8 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
     currentPath.add(startNode);
     visited.add(startNode.getIdentity());
 
-    findPaths(startNode, endNode, relTypes, skipRelTypes, skipVertexTypes, maxDepth, currentPath, visited, allPaths, context);
+    findPaths(startNode, endNode, relTypes, skipRelTypes, skipVertexTypes, maxDepth, currentPath, visited, allPaths,
+        context, newWorkGuard(context));
 
     return allPaths.stream().map(pathElements -> {
       final List<Object> nodes = new ArrayList<>();
@@ -161,7 +163,12 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
   private void findPaths(final Vertex current, final Vertex target, final String[] relTypes,
                          final Set<String> skipRelTypes, final Set<String> skipVertexTypes, final int remainingDepth,
                          final List<Object> currentPath, final Set<RID> visited,
-                         final List<List<Object>> allPaths, final CommandContext context) {
+                         final List<List<Object>> allPaths, final CommandContext context, final WorkGuard guard) {
+
+    // Enumerating simple paths is exponential in the graph: `maxDepth` bounds the LENGTH of a path, not how many
+    // of them there are, and a dense graph of even modest depth has more than can be counted. One call expands a
+    // vertex, which is more than a flag test costs (issue #6302).
+    guard.check();
 
     if (current.getIdentity().equals(target.getIdentity())) {
       allPaths.add(new ArrayList<>(currentPath));
@@ -196,7 +203,8 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
           // try-finally so the path/visited bookkeeping is unwound even if the recursion throws,
           // leaving no dirty state for the rest of this branch.
           try {
-            findPaths(neighbor, target, relTypes, skipRelTypes, skipVertexTypes, remainingDepth - 1, currentPath, visited, allPaths, context);
+            findPaths(neighbor, target, relTypes, skipRelTypes, skipVertexTypes, remainingDepth - 1, currentPath, visited, allPaths,
+                context, guard);
           } finally {
             currentPath.remove(currentPath.size() - 1);
             currentPath.remove(currentPath.size() - 1);
@@ -234,7 +242,8 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
           // try-finally so the path/visited bookkeeping is unwound even if the recursion throws,
           // leaving no dirty state for the rest of this branch.
           try {
-            findPaths(neighbor, target, relTypes, skipRelTypes, skipVertexTypes, remainingDepth - 1, currentPath, visited, allPaths, context);
+            findPaths(neighbor, target, relTypes, skipRelTypes, skipVertexTypes, remainingDepth - 1, currentPath, visited, allPaths,
+                context, guard);
           } finally {
             currentPath.remove(currentPath.size() - 1);
             currentPath.remove(currentPath.size() - 1);

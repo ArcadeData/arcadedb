@@ -23,6 +23,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.Arrays;
 import java.util.List;
@@ -84,6 +85,7 @@ public class AlgoClosenessCentrality extends AbstractAlgoProcedure {
     final boolean normalized = args.length > 2 ? Boolean.parseBoolean(args[2].toString()) : true;
 
     final Database db = context.getDatabase();
+    final WorkGuard guard = newWorkGuard(context);
 
     final GraphData graph = loadGraph(db, null, relTypes, context);
 
@@ -99,6 +101,10 @@ public class AlgoClosenessCentrality extends AbstractAlgoProcedure {
     final double[] scores = new double[n];
 
     for (int src = 0; src < n; src++) {
+      // One BFS per source is O(V + E), and it runs once per node: O(V x (V + E)) sized by nothing but the
+      // graph (issue #6302). The inner checkpoint is what keeps the abort latency below a whole traversal on a
+      // graph where one BFS is itself long.
+      guard.check();
       Arrays.fill(dist, -1);
       dist[src] = 0;
       int head = 0, tail = 0;
@@ -107,6 +113,7 @@ public class AlgoClosenessCentrality extends AbstractAlgoProcedure {
       int reachable = 0;
 
       while (head < tail) {
+        guard.checkPeriodically(head);
         final int u = queue[head++];
         final int[] neighbors = adj[u];
         for (int k = 0; k < neighbors.length; k++) {

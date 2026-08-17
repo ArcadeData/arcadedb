@@ -23,6 +23,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
 import java.util.BitSet;
@@ -95,6 +96,7 @@ public class AlgoKNN extends AbstractAlgoProcedure {
     final Vertex.DIRECTION dir = args.length > 2 ? parseDirection(extractString(args[2], "direction")) : Vertex.DIRECTION.BOTH;
 
     final Database db = context.getDatabase();
+    final WorkGuard guard = newWorkGuard(context);
 
     final GraphData graph = loadGraph(db, null, relTypes, context);
 
@@ -119,6 +121,10 @@ public class AlgoKNN extends AbstractAlgoProcedure {
     final List<Result> results = new ArrayList<>();
 
     for (int u = 0; u < n; u++) {
+      // Every node is compared against every other, so this is O(V²) bit-set intersections with nothing but the
+      // graph to size it (issue #6302). One u is already a full pass over the other n - 1 nodes, which is more
+      // than enough to swallow an unthrottled check.
+      guard.check();
       if (adj[u].length == 0)
         continue;
 

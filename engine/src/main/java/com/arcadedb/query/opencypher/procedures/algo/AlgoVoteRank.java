@@ -23,6 +23,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.utility.NumberUtils;
 
 import java.util.ArrayList;
@@ -83,6 +84,7 @@ public class AlgoVoteRank extends AbstractAlgoProcedure {
     final int topK          = args.length > 1 ? NumberUtils.saturateToInt((Number) args[1]) : Integer.MAX_VALUE;
 
     final Database db = context.getDatabase();
+    final WorkGuard guard = newWorkGuard(context);
 
     final GraphData graph = loadGraph(db, null, relTypes, context);
 
@@ -112,6 +114,9 @@ public class AlgoVoteRank extends AbstractAlgoProcedure {
     int electedCount = 0;
 
     while (electedCount < limit) {
+      // One election per round, each a full scan of the nodes plus a two-hop walk from the winner: O(topK x
+      // (V + E)), and topK defaults to "every node" (issue #6302).
+      guard.check();
       // Find node with highest vote score among non-elected
       int best = -1;
       double bestScore = -1.0;

@@ -23,6 +23,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.Arrays;
 import java.util.List;
@@ -83,6 +84,7 @@ public class AlgoEccentricity extends AbstractAlgoProcedure {
     final Vertex.DIRECTION dir = args.length > 1 ? parseDirection(extractString(args[1], "direction")) : Vertex.DIRECTION.BOTH;
 
     final Database db = context.getDatabase();
+    final WorkGuard guard = newWorkGuard(context);
 
     final GraphData graph = loadGraph(db, null, relTypes, context);
 
@@ -97,6 +99,10 @@ public class AlgoEccentricity extends AbstractAlgoProcedure {
     final int[] dist = new int[n];
 
     for (int src = 0; src < n; src++) {
+      // One BFS per source is O(V + E), and it runs once per node: O(V x (V + E)) sized by nothing but the
+      // graph (issue #6302). The inner checkpoint is what keeps the abort latency below a whole traversal on a
+      // graph where one BFS is itself long.
+      guard.check();
       Arrays.fill(dist, -1);
       dist[src] = 0;
       int head = 0, tail = 0;
@@ -104,6 +110,7 @@ public class AlgoEccentricity extends AbstractAlgoProcedure {
       int maxDist = 0;
 
       while (head < tail) {
+        guard.checkPeriodically(head);
         final int u = queue[head++];
         for (final int v : adj[u]) {
           if (dist[v] == -1) {
