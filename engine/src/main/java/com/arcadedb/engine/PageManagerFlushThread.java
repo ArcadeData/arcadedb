@@ -34,6 +34,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
@@ -48,7 +49,38 @@ import java.util.logging.Level;
  */
 public class PageManagerFlushThread extends Thread {
   private final        PageManager                                              pageManager;
-  public final         ArrayBlockingQueue<PagesToFlush>                         queue;
+  /**
+   * The single ordering queue of the flush pipeline, and deliberately NOT the thing that bounds it (issue #6281).
+   * <p>
+   * It used to be an {@code ArrayBlockingQueue} sized to {@code arcadedb.pageFlushQueue}, which made that setting a
+   * JVM-WIDE ceiling: one database's write burst filled it and the committers of every other database in the process
+   * then queued behind a disk they have nothing to do with. #6259 took that wait out of the page-manager lock, so the
+   * stall stopped being global-with-a-lock-held, but the coupling itself survived - an idle database still had to wait
+   * for a busy one's backlog to drain before it could publish a page.
+   * <p>
+   * The bound now lives entirely in {@link #slotsInUse}, per database, so the physical occupancy here is the SUM of
+   * the per-database bounds and the queue itself needs no capacity of its own. Keeping one queue rather than one per
+   * database is what preserves global FIFO order across databases for free: a per-database queue would need the flush
+   * thread to choose between them on every poll, which is a fairness policy - and a starvation risk - that this
+   * design simply does not have.
+   * <p>
+   * <b>The stated cost:</b> the worst-case occupancy is now {@code pageFlushQueue x open databases} batches rather
+   * than {@code pageFlushQueue}, and a batch holds deep copies of its pages (see {@link CachedPage}), so they are real
+   * heap. That is inherent to bounding per database - a per-database queue multiplies by exactly the same factor - and
+   * the number being multiplied was never a byte bound to begin with: one batch is one transaction's dirty pages, so
+   * 512 of them was already anywhere between 512 pages and half a million. A process running many databases that
+   * writes hard on all of them at once should lower {@code arcadedb.pageFlushQueue} accordingly; the bound that IS
+   * expressed in bytes, and the one to reach for when heap is the concern, is
+   * {@code arcadedb.flushSuspendMaxDeferredRAM}.
+   * <p>
+   * <b>Package-private, where it used to be public.</b> While the queue carried the capacity a direct
+   * {@code queue.offer} was merely impolite; now that admission is the only bound and {@link #offerBatch} is the one
+   * place a slot is charged, a direct offer silently bypasses the accounting - which is exactly what several
+   * white-box tests were doing before this issue swept them. Narrowing the field makes that a compile error outside
+   * this package instead of a discipline to remember. Nothing outside needed it: {@code PageManager} is in this
+   * package too, and the depth reaches operators through {@code PPageManagerStats}.
+   */
+  final                LinkedBlockingQueue<PagesToFlush>                        queue               = new LinkedBlockingQueue<>();
   private final        String                                                   logContext;
   private volatile     boolean                                                  running             = true;
   // Per-database suspension REFCOUNT (issue #5068): flushing is suspended while the count is > 0. Backup,
@@ -77,6 +109,10 @@ public class PageManagerFlushThread extends Thread {
   private final static long                                                     DEFERRED_BACKLOG_WAIT_POLL_MILLIS = 100;
   /** How long a committer may be held by the deferred-backlog cap before saying so, once, at WARNING. */
   private final static long                                                     DEFERRED_BACKLOG_WARN_MILLIS      = 10_000;
+  /** Default of {@link #queueSlotWaitPollMillis}. */
+  private final static long                                                     DEFAULT_QUEUE_SLOT_WAIT_POLL_MILLIS = 100;
+  /** How long a committer may be held waiting for a flush-queue slot before saying so, once, at WARNING. */
+  private final static long                                                     QUEUE_SLOT_WARN_MILLIS              = 10_000;
   /**
    * Fallback wake-up interval of {@link #waitAllPagesOfDatabaseAreFlushed(Database)}, per instance so the
    * regression test of issue #6199 can stretch it far enough to prove the wait is released by the drain
@@ -86,6 +122,16 @@ public class PageManagerFlushThread extends Thread {
    * bounds how often the no-progress timeout below is re-evaluated, and how long a lost notification would cost.
    */
   long                                                                          flushWaitPollMillis = DEFAULT_FLUSH_WAIT_POLL_MILLIS;
+  /**
+   * Fallback wake-up interval of {@link #reserveQueueSlot}. Every slot the flush thread frees is signalled, so this
+   * only bounds how often a parked committer re-reads the one condition that is NOT signalled - the shutdown flag -
+   * and how long a lost notification would cost.
+   * <p>
+   * Per instance, not static, for the same reason {@link #flushWaitPollMillis} is: the regression test of #6259
+   * stretches it far enough to prove the wait is released by the poll's signal rather than by the interval elapsing,
+   * and a static would leak that value into every other test class sharing the JVM.
+   */
+  long                                                                          queueSlotWaitPollMillis = DEFAULT_QUEUE_SLOT_WAIT_POLL_MILLIS;
   // Package-private so the white-box regression test for issue #5068 can fabricate an in-flight batch and
   // deterministically exercise an interrupt during waitForCurrentFlushToComplete.
   final                AtomicReference<PagesToFlush>                            nextPagesToFlush    = new AtomicReference<>();
@@ -117,6 +163,66 @@ public class PageManagerFlushThread extends Thread {
    * {@link #awaitDeferredBacklogUnderCap}. {@code 0} disables the cap (unbounded, pre-#4728 behavior).
    */
   private final        long                                   maxDeferredRAM;
+
+  /**
+   * How many batches ONE database may have in the flush pipeline at once - the ceiling
+   * {@link #reserveQueueSlot(BasicDatabase)} enforces, per database since #6281 and JVM-wide before it.
+   */
+  private final        int                                    queueCapacity;
+
+  /**
+   * Pipeline slots each database is using: reserved by a committer that has not enqueued yet, or occupied by a batch
+   * of that database sitting in {@link #queue}. One number for both halves, and the ONLY bound on the pipeline
+   * (issues #6259 and #6281).
+   * <p>
+   * <b>Reserving is what lets {@code PageManager.publishPages} wait for room BEFORE taking the JVM-wide page-manager
+   * lock</b> and still find that room when it enqueues one line later, inside it (#6259). Admission is granted only
+   * while a database's count is below {@link #queueCapacity}, so the holder of a reservation is guaranteed a slot and
+   * its {@code offer} inside the lock cannot block.
+   * <p>
+   * <b>And keying it by database is what stops one database's backlog from being another's problem</b> (#6281). The
+   * count is bumped at reservation and dropped only when the batch LEAVES the queue, so a reservation and the batch it
+   * becomes are one continuous occupancy rather than two counters that have to agree.
+   * <p>
+   * This replaces {@code queue.size() + reservations} against a physically bounded queue. That form read the truth off
+   * the queue by construction, which is a property worth naming since it is the one given up here: an
+   * {@code ArrayBlockingQueue} cannot say how many of its elements belong to database D, so per-database admission has
+   * to be counted by hand. It is kept honest by routing EVERY enqueue through {@link #offerBatch} and every poll
+   * through the single decrement in {@link #flushPagesFromQueueToDisk}, and by asserting the count never goes
+   * negative - a drift the other way (a leaked slot) is what {@code noPathLeavesAReservationBehind} exists to catch.
+   * <p>
+   * Package-private so the regression tests of #6259 and #6281 can assert the one thing inspection cannot: that every
+   * path out of a publication gives its slot back. A leaked one is invisible and permanent - it shrinks that
+   * database's pipeline for as long as it stays open.
+   */
+  final ConcurrentHashMap<BasicDatabase, AtomicInteger> slotsInUse = new ConcurrentHashMap<>();
+
+  /**
+   * How many callers are parked in {@link #reserveQueueSlot(BasicDatabase)}. Read (not taken) by the flush thread on
+   * every poll, so the common case - nobody waiting, no database anywhere near its bound - costs one volatile read per
+   * batch instead of a monitor. Same shape as the drain signal of #6199.
+   */
+  private final        AtomicInteger                          queueSlotWaiters  = new AtomicInteger();
+
+  /**
+   * Monitor the callers of {@link #reserveQueueSlot(BasicDatabase)} park on; notified whenever a batch leaves
+   * {@link #queue}.
+   * <p>
+   * ONE monitor for every database, not one per database, even though admission is per-database since #6281: a woken
+   * committer re-reads its OWN database's count and parks again if the freed slot was not for it. The alternative - a
+   * monitor per database - would spare those spurious wake-ups at the cost of a map lookup on the poll path, which
+   * runs per batch, to save work on the wait path, which by construction only runs when a database is already at its
+   * bound and therefore already slower than everything else. Same trade, and the same "the herd is bounded by
+   * construction" argument, as {@link #deferredRAMLock}.
+   */
+  private final        Object                                 queueSlotLock     = new Object();
+
+  /**
+   * How many times a caller had to WAIT for a flush-queue slot rather than being admitted straight away. Exposed
+   * (package-private) because that is the difference between the two shapes of this backpressure the regression test
+   * of #6259 has to tell apart: waiting outside the page-manager lock, or blocking inside it.
+   */
+  final                AtomicLong                             queueSlotWaits    = new AtomicLong();
 
   /**
    * Per-database count of pages that LEFT the flush pipeline: the progress signal for
@@ -175,6 +281,22 @@ public class PageManagerFlushThread extends Thread {
   public static class PagesToFlush {
     public final BasicDatabase     database;
     public final List<MutablePage> pages;
+    /**
+     * The very counter of {@link #slotsInUse} this batch's slot was taken from, captured when the batch entered the
+     * queue and used to give that slot back when it leaves (issue #6281 review, round 9).
+     * <p>
+     * A reference and not a second map lookup, because the lookup would not be asking the same question by then.
+     * {@code LocalDatabase} defines equality by DATABASE PATH, not by instance, so a batch of a database that has
+     * since been closed resolves - through its stale {@code database} field - to whatever entry is keyed at that
+     * path NOW. A database dropped and recreated at the same path (a restore, a re-provision, any number of tests)
+     * would therefore have the NEW instance's budget decremented for a batch that was never charged against it:
+     * assertion failure in the test lanes, and silent admission drift with assertions off. Holding the counter
+     * removes the question - the release goes to the number the charge came from, whatever the map says later.
+     * <p>
+     * Plain field, no volatile: it is written before {@code queue.offer} and read after {@code queue.poll}, and a
+     * {@link BlockingQueue} establishes happens-before between the two.
+     */
+    private AtomicInteger slotCharged;
 
     public PagesToFlush(final List<MutablePage> pages) {
       // removeAllPagesOfDatabase()/removePagesOfFileFromBatch() mutate this list (clear()/it.remove()) when a
@@ -219,32 +341,275 @@ public class PageManagerFlushThread extends Thread {
     setDaemon(true);
     this.pageManager = pageManager;
     this.logContext = LogManager.instance().getContext();
-    this.queue = new ArrayBlockingQueue<>(configuration.getValueAsInteger(GlobalConfiguration.PAGE_FLUSH_QUEUE));
+    // Clamped, where `new ArrayBlockingQueue(queueCapacity)` used to throw IllegalArgumentException on a
+    // non-positive setting. Deliberate rather than an oversight: with admission as the only bound, a capacity of 0
+    // would refuse EVERY publication for ever - an unrecoverable hang instead of a startup failure - and the queue no
+    // longer takes a capacity argument that would reject it on the way in. One is the smallest budget that still
+    // makes progress. See the PAGE_FLUSH_QUEUE javadoc.
+    this.queueCapacity = Math.max(1, configuration.getValueAsInteger(GlobalConfiguration.PAGE_FLUSH_QUEUE));
     final long maxDeferredMB = configuration.getValueAsLong(GlobalConfiguration.FLUSH_SUSPEND_MAX_DEFERRED_RAM);
     this.maxDeferredRAM = maxDeferredMB > 0 ? maxDeferredMB * 1024 * 1024 : 0;
   }
 
+  /**
+   * Enqueues a batch for the flush thread, reserving its queue slot HERE - which is why this overload exists and why
+   * the engine's own callers do not use it: they reserve before taking the page-manager lock (issue #6259).
+   */
   public void scheduleFlushOfPages(final List<MutablePage> pages) throws InterruptedException {
-    if (pages.isEmpty())
-      // AVOID INSERTING AN EMPTY LIST BECAUSE IS USED TO SHUTDOWN THE THREAD
-      return;
+    scheduleFlushOfPages(pages, null);
+  }
 
-    // Index pages BEFORE enqueueing so that getCachedPageFromMutablePageInQueue()
-    // can find them even if the queue.offer() hasn't completed yet.
-    pageIndex.putAll(pages);
-
-    // TRY TO INSERT THE PAGE IN THE QUEUE UNTIL THE THREAD IS STILL RUNNING
-    while (running) {
-      if (queue.offer(new PagesToFlush(pages), 1, TimeUnit.SECONDS))
+  /**
+   * @param slotReservedFor the database whose pipeline slot the caller already holds from
+   *                        {@link #reserveQueueSlot(BasicDatabase)} - which it must have taken BEFORE the page-manager
+   *                        lock (issue #6259). This method disposes of it either way, so a slot is handed over here
+   *                        exactly once and never leaks. Naming the database rather than passing a bare {@code true}
+   *                        is what lets an empty batch - which has no pages and therefore no database of its own -
+   *                        still give the slot back to the right budget (issue #6281). {@code null} means the caller
+   *                        holds nothing and the reservation is taken inline instead, in which case the wait is served
+   *                        wherever the caller happens to be: <b>never call this form while holding the page-manager
+   *                        lock</b>.
+   */
+  void scheduleFlushOfPages(final List<MutablePage> pages, final BasicDatabase slotReservedFor) throws InterruptedException {
+    BasicDatabase slotHeldFor = slotReservedFor;
+    boolean enqueued = false;
+    try {
+      if (pages.isEmpty())
+        // AVOID INSERTING AN EMPTY LIST BECAUSE IS USED TO SHUTDOWN THE THREAD
         return;
+
+      final BasicDatabase database = pages.getFirst().pageId.getDatabase();
+      assert slotReservedFor == null || slotReservedFor.equals(database) :
+          "a slot reserved for database '" + slotReservedFor.getName() + "' cannot pay for a batch of '"
+              + database.getName() + "'";
+
+      if (slotHeldFor == null) {
+        if (!reserveQueueSlot(database)) {
+          // SHUTTING DOWN: same outcome as the enqueue below giving up, and for the same reason.
+          logFailedEnqueue(pages);
+          return;
+        }
+        slotHeldFor = database;
+      }
+
+      // Index pages BEFORE enqueueing so that getCachedPageFromMutablePageInQueue()
+      // can find them even if the queue.offer() hasn't completed yet.
+      pageIndex.putAll(pages);
+
+      if (running) {
+        // The queue carries no capacity of its own since #6281 - admission is the bound - so this cannot block and
+        // cannot fail. The `running` check is all that is left of the old retry loop, and it is the only thing it ever
+        // really did: refuse to enqueue into a pipeline that is shutting down.
+        offerBatch(new PagesToFlush(pages), true);
+        enqueued = true;
+        return;
+      }
+
+      // Failed to enqueue (shutdown in progress) — remove from index
+      pageIndex.removeAll(pages);
+      logFailedEnqueue(pages);
+    } finally {
+      if (slotHeldFor != null && !enqueued)
+        // Nothing took the slot, so it goes straight back. When the batch DID take it the slot stays occupied until
+        // the flush thread polls it: since #6281 a reservation and the batch it becomes are one occupancy, not two.
+        releaseQueueReservation(slotHeldFor);
     }
+  }
 
-    // Failed to enqueue (shutdown in progress) — remove from index
-    pageIndex.removeAll(pages);
+  /** The per-database bound admission enforces: {@code arcadedb.pageFlushQueue}. Package-private for the tests. */
+  int getQueueCapacity() {
+    return queueCapacity;
+  }
 
+  /**
+   * The one door into {@link #queue}, and therefore the one place the per-database occupancy of {@link #slotsInUse}
+   * is charged (issue #6281). A batch that reached the queue by any other route would be polled - and its slot
+   * released - without ever having been charged for one, which is the one way the count can go negative.
+   * <p>
+   * Package-private rather than private because the white-box tests of the suspend/interrupt paths fabricate batches
+   * and put them in the pipeline directly: they must go through here for the same reason.
+   *
+   * @param slotHeld {@code true} when the caller already holds the slot this batch is about to occupy - every engine
+   *                 path does, having reserved it before the page-manager lock - so ownership simply carries over.
+   *                 {@code false} charges one here instead, for a caller that never reserved.
+   */
+  void offerBatch(final PagesToFlush batch, final boolean slotHeld) {
+    if (batch.database != null) {
+      // Resolved ONCE, here, and carried by the batch from now on - see PagesToFlush.slotCharged for why the release
+      // side must not ask the map again. Safe to resolve here and not at reservation time: the two happen within one
+      // publication of a database that is by definition still open, so this is the same counter the reservation
+      // incremented; what is not safe is resolving it after the batch has sat in the queue across a close.
+      batch.slotCharged = slotsInUse.computeIfAbsent(batch.database, k -> new AtomicInteger());
+      if (!slotHeld)
+        batch.slotCharged.incrementAndGet();
+    }
+    // The queue is unbounded (the bound is admission), so this never blocks and never returns false.
+    queue.offer(batch);
+  }
+
+  private void logFailedEnqueue(final List<MutablePage> pages) {
     LogManager.instance()
         .log(this, Level.SEVERE, "Error on flushing pages %s during shutdown of the database (running=%s queue=%d)", pages, running,
             queue.size());
+  }
+
+  /**
+   * Admission control on the flush pipeline: the reason a backlog no longer stalls the whole JVM (issue #6259), and
+   * since #6281 the reason it no longer reaches past the database it belongs to.
+   * <p>
+   * {@code PageManager.publishPages} holds the JVM-wide page-manager lock across BOTH halves of publication - the
+   * page write and the flush enqueue - because the snapshot t0 barrier (#6075/#6125) rests on exactly that: it takes
+   * the same lock so that from there on no committer can put a page on disk OR into the flush pipeline. The enqueue
+   * therefore has to stay inside the lock, which leaves only one place for the WAIT to go: ahead of it. Before #6259,
+   * a committer that found the queue full parked in {@code queue.offer} <i>holding a lock every committer of every
+   * database in the process needs</i>, so one database's write burst against a slow volume serialized the commits of
+   * unrelated databases on idle ones.
+   * <p>
+   * That fix moved the wait, and this one removes it for everybody it was never meant for. The queue filling is
+   * backpressure and is meant to hold the writers it belongs to - but {@code arcadedb.pageFlushQueue} was one JVM-wide
+   * number, so the writers it held were every database's. The budget is now per database: a burst on A consumes A's
+   * slots and B is admitted straight through, whatever A's disk is doing. Same distinction, and the third instance of
+   * the same fix, as #6200 drew for the deferred-RAM cap and #6259 for the position of this wait.
+   * <p>
+   * <b>This must be called BEFORE the page-manager lock is taken</b>, and it must hold nothing the flush thread
+   * needs: it holds only {@link #queueSlotLock}, which the flush thread takes solely to notify (never to write), and
+   * the slot it waits for is freed by the poll itself, before any page is written. So a wedged disk delays this wait
+   * by at most the batch already being written, never indefinitely.
+   *
+   * @param database the database the batch belongs to, whose budget the slot comes out of. {@code null} - which only
+   *                 the shutdown sentinel is - is admitted unconditionally: it carries no pages and belongs to no
+   *                 budget.
+   *
+   * @return {@code true} when a slot was reserved, and the caller must hand it to
+   *     {@link #scheduleFlushOfPages(List, BasicDatabase)} or give it back with
+   *     {@link #releaseQueueReservation(BasicDatabase)}; {@code false} when the flush thread is shutting down and
+   *     nothing more will be enqueued.
+   */
+  boolean reserveQueueSlot(final BasicDatabase database) throws InterruptedException {
+    if (tryReserveQueueSlot(database))
+      // THE COMMON CASE: THE DATABASE IS UNDER ITS BOUND, AND THE PUBLICATION PATH PAYS ONE CAS FOR IT
+      return true;
+
+    final long beginTime = System.currentTimeMillis();
+    boolean reported = false;
+    queueSlotWaits.incrementAndGet();
+    queueSlotWaiters.incrementAndGet();
+    try {
+      while (running) {
+        synchronized (queueSlotLock) {
+          if (tryReserveQueueSlot(database))
+            return true;
+          queueSlotLock.wait(queueSlotWaitPollMillis);
+        }
+
+        // Reported from OUTSIDE the monitor: a log write is a file write, and holding this monitor across it would
+        // make the flush thread's own signal queue behind it. Once per held committer, not once per round.
+        if (!reported && System.currentTimeMillis() - beginTime > QUEUE_SLOT_WARN_MILLIS) {
+          reported = true;
+          LogManager.instance().log(this, Level.WARNING,
+              "Commits on database '%s' have been throttled for %d ms waiting for room in its page-flush queue: the disk is not keeping up with the write rate, or flushing is suspended. The database holds %d of the %d batches allowed by '%s' (%d in the shared pipeline across all databases)",
+              null, database != null ? database.getName() : "?", System.currentTimeMillis() - beginTime,
+              slotsUsedBy(database), queueCapacity, GlobalConfiguration.PAGE_FLUSH_QUEUE.getKey(), queue.size());
+        }
+      }
+      // SHUTTING DOWN. Deliberately no last-minute retry for a slot: the enqueue this reservation is for is itself
+      // gated on `running`, so a slot handed out now would be released unused one line later - and the batch is
+      // recovered from the WAL either way, its entry never having been acked.
+      return false;
+    } finally {
+      queueSlotWaiters.decrementAndGet();
+    }
+  }
+
+  /**
+   * Non-blocking half of {@link #reserveQueueSlot(BasicDatabase)}: takes a slot only while THIS database is provably
+   * under its bound.
+   */
+  boolean tryReserveQueueSlot(final BasicDatabase database) {
+    if (database == null)
+      // The shutdown sentinel. It occupies no budget, so there is nothing to take and nothing to give back.
+      return true;
+
+    final AtomicInteger slots = slotsInUse.computeIfAbsent(database, k -> new AtomicInteger());
+    while (true) {
+      final int used = slots.get();
+      if (used >= queueCapacity)
+        return false;
+      if (slots.compareAndSet(used, used + 1))
+        return true;
+    }
+  }
+
+  /**
+   * Gives a reserved slot back to a database's budget, for a publication that never reached an enqueue.
+   * <p>
+   * There is deliberately no "the batch took it" form: when the batch IS enqueued the slot stays occupied - ownership
+   * passes to the batch until the flush thread polls it (see {@link #releaseSlotOfPolledBatch}) - so there is nothing
+   * to give back and nobody to wake, which is what keeps the normal publication path from touching
+   * {@link #queueSlotLock} at all.
+   */
+  void releaseQueueReservation(final BasicDatabase database) {
+    if (database == null)
+      return;
+
+    final AtomicInteger slots = slotsInUse.get(database);
+    if (slots == null)
+      // The database was closed or dropped under us: removeAllPagesOfDatabase forgot its budget, and a budget that
+      // no longer exists cannot be over-drawn.
+      return;
+
+    final int remaining = slots.decrementAndGet();
+    // A count below zero means a slot was released twice, and unlike a leak it fails OPEN: admission would then hand
+    // out more slots than the budget has, putting the enqueue it exists to protect back inside the page-manager lock.
+    // Asserted rather than clamped - a clamp would hide it, and the test lanes run with -ea, which is where such a bug
+    // gets written (same reasoning as the single-database batch assert in PagesToFlush).
+    assert remaining >= 0 : "flush-queue slots of database '" + database.getName() + "' went negative (" + remaining + ")";
+    signalQueueSlotAvailable();
+  }
+
+  /**
+   * Releases the slot a batch occupied from the moment it was reserved to the moment it left {@link #queue}, giving
+   * it back to the exact counter it was taken from rather than to whatever {@link #slotsInUse} holds for that path
+   * now (see {@link PagesToFlush#slotCharged}).
+   */
+  private void releaseSlotOfPolledBatch(final PagesToFlush batch) {
+    final AtomicInteger slots = batch.slotCharged;
+    if (slots == null)
+      // The shutdown sentinel, or a batch that reached the queue without going through offerBatch: neither was
+      // charged, so neither has anything to give back.
+      return;
+    final int remaining = slots.decrementAndGet();
+    assert remaining >= 0 : "flush-queue slots of database '" + (batch.database != null ? batch.database.getName() : "?")
+        + "' went negative (" + remaining + ")";
+  }
+
+  /**
+   * The busiest database's slot count: what {@code arcadedb.pageFlushQueue} bounds, and therefore the number an
+   * operator can still compare against that setting now that {@code pageFlushQueueLength} is a sum across databases
+   * (issue #6281). O(open databases), read once per stats scrape and never on a write path.
+   */
+  int maxSlotsUsedByAnyDatabase() {
+    int max = 0;
+    for (final AtomicInteger slots : slotsInUse.values())
+      max = Math.max(max, slots.get());
+    return max;
+  }
+
+  /** How many pipeline slots a database is currently using (reserved or queued). Package-private for the tests. */
+  int slotsUsedBy(final BasicDatabase database) {
+    if (database == null)
+      return 0;
+    final AtomicInteger slots = slotsInUse.get(database);
+    return slots != null ? slots.get() : 0;
+  }
+
+  /** Wakes the callers parked in {@link #reserveQueueSlot(BasicDatabase)}, if any: on the flush path, usually none. */
+  private void signalQueueSlotAvailable() {
+    if (queueSlotWaiters.get() == 0)
+      return;
+    synchronized (queueSlotLock) {
+      queueSlotLock.notifyAll();
+    }
   }
 
   @Override
@@ -342,6 +707,14 @@ public class PageManagerFlushThread extends Thread {
     final PagesToFlush pagesToFlush = queue.poll(timeout, TimeUnit.MILLISECONDS);
 
     if (pagesToFlush != null) {
+      // A slot of THIS batch's database is free again (issue #6281): give it back and admit a committer waiting for
+      // one (issue #6259). Both happen HERE, before the batch is written, because the slot IS free from here - the
+      // batch has left the queue - and the point of the whole mechanism is that a slow write delays the writes, not
+      // the admission of the next committer. The signal reads one volatile when nobody is waiting, which is the
+      // normal state of a pipeline no database has filled.
+      releaseSlotOfPolledBatch(pagesToFlush);
+      signalQueueSlotAvailable();
+
       // Publish the entry immediately after polling so that getCachedPageFromMutablePageInQueue()
       // can find pages that are no longer in the queue but not yet flushed to disk.  This
       // minimizes the window where a page is invisible to getMostRecentVersionOfPage().
@@ -735,23 +1108,32 @@ public class PageManagerFlushThread extends Thread {
       // Phase 3b: re-enqueue the detached batches into the main queue so the background thread picks them up.
       // They are appended to the tail of the queue, so if any post-unsuspend commits have already been
       // enqueued they will be flushed first. WAL-based recovery guarantees correctness even if the flush order
-      // differs from commit order. This blocking re-enqueue is deliberately done OUTSIDE the lock: queue.offer
-      // can block when the queue is full, and the only consumer that drains the queue (the flush thread) needs
-      // the same per-database lock to make progress, so holding it across the offer would deadlock.
+      // differs from commit order. The reservation below can WAIT (this database is at its bound), and that wait is
+      // deliberately done OUTSIDE the lock: the only consumer that frees a slot is the flush thread, which needs the
+      // same per-database lock to make progress, so holding it across the wait would deadlock.
       if (newDeferred != null) {
         for (final PagesToFlush batch : newDeferred) {
           // The batch moves back to the main queue and leaves the deferred backlog accounting (issue #4728).
           addDeferredRAM(database, -batchRAM(batch));
-          while (running) {
-            try {
-              if (queue.offer(batch, 1, TimeUnit.SECONDS))
-                break;
-              LogManager.instance().log(this, Level.WARNING,
-                  "Page flush queue is full while re-enqueueing deferred batch for database '%s'; retrying", database.getName());
-            } catch (final InterruptedException e) {
-              Thread.currentThread().interrupt();
+          // Re-entering the pipeline goes through the same admission control as any other enqueue (#6259): the batch
+          // gave its slot back when the flush thread polled it, and a resume can carry thousands of them, so without
+          // a reservation this loop could exhaust the database's budget under a committer that is holding one -
+          // putting that committer's offer back inside the page-manager lock, which is the whole bug.
+          boolean reserved = false;
+          boolean enqueued = false;
+          try {
+            reserved = reserveQueueSlot(database);
+            if (!reserved || !running)
+              // SHUTTING DOWN: the remaining batches stay unwritten and are recovered from the WAL, as before.
               break;
-            }
+            offerBatch(batch, true);
+            enqueued = true;
+          } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            break;
+          } finally {
+            if (reserved && !enqueued)
+              releaseQueueReservation(database);
           }
         }
       }
@@ -801,7 +1183,14 @@ public class PageManagerFlushThread extends Thread {
     // Release any committer parked on the deferred-backlog cap: its database may still be suspended, and the
     // backlog is only relieved by a resume that shutdown is not going to wait for (issue #6200).
     signalDeferredRAM();
-    queue.offer(SHUTDOWN_THREAD);
+    // And any committer waiting for a flush-queue slot, for the same reason: what it is waiting for is this thread
+    // polling, and this thread is on its way out (issue #6259).
+    signalQueueSlotAvailable();
+    // The sentinel belongs to no database, so it draws on no database's budget and can never be refused (issue
+    // #6281): before that, a queue filled by one database could swallow it, and the exit then had to wait for the
+    // run loop to notice `running` on its own. It carries no pages, so admitting it costs nothing it could starve
+    // anyone of.
+    offerBatch(SHUTDOWN_THREAD, true);
     join();
   }
 
@@ -1046,12 +1435,19 @@ public class PageManagerFlushThread extends Thread {
 
   public void removeAllPagesOfDatabase(final Database database) {
     for (final PagesToFlush pagesToFlush : queue.stream().toList())
-      if (database.equals(pagesToFlush.database))
+      if (database.equals(pagesToFlush.database)) {
         synchronized (pagesToFlush.pages) {
           for (final MutablePage page : pagesToFlush.pages)
             pageIndex.remove(page.getPageId());
           pagesToFlush.pages.clear();
         }
+        // And take the emptied wrapper OUT of the queue rather than leaving it to be polled and skipped. It carries
+        // no pages any more, so the poll would do nothing but release its slot - and by then this database's budget
+        // is gone and, since databases compare by PATH, a database reopened at the same path in the meantime would
+        // be the one that resolved. Removing it here is what makes that window not exist rather than merely
+        // survivable (issue #6281 review, round 9; the slot it held goes with the budget dropped below).
+        queue.remove(pagesToFlush);
+      }
 
     // Also clean index entries for pages currently being flushed, and forget the database's pending count with them
     pageIndex.removeAllOfDatabase(database);
@@ -1077,6 +1473,17 @@ public class PageManagerFlushThread extends Thread {
     suspendLocks.remove(database);
     replayDrainLocks.remove(database);
     flushedPagesPerDatabase.remove(database);
+    // Its pipeline budget goes with the rest of its bookkeeping (#6281). Batches of this database may still be in the
+    // queue - emptied above, but still there - and will be polled after this: releaseSlotOfPolledBatch finds no entry
+    // and does nothing, which is the right answer for a budget that no longer exists. Dropping it here is what keeps
+    // the closed Database instance from being pinned as a map key for the flush thread's lifetime.
+    //
+    // Safe to drop rather than zero because nothing re-enters it for THIS database: every caller reaches here from
+    // LocalDatabase.close() (the drop path and the final purge alike) or from the test-only kill simulation, and
+    // close() has already set open=false, which is what PageManager.flushPage and the publication path check. A live
+    // database never passes through here, so a later computeIfAbsent cannot mint a fresh budget that disagrees with
+    // batches still physically in the queue (review of #6281, round 5).
+    slotsInUse.remove(database);
 
     // Deliberately outside that monitor: batchRAM takes each batch's own monitor, and the one nesting this class
     // allows is suspendLock BEFORE batch.pages (what the defer path does). These batches are already detached, so
@@ -1155,10 +1562,11 @@ public class PageManagerFlushThread extends Thread {
       final MutablePage indexed = pageIndex.remove(pageId);
       final List<MutablePage> detached = new ArrayList<>(1);
 
-      // Iterated directly rather than through a snapshot: ArrayBlockingQueue's iterator is weakly consistent and
+      // Iterated directly rather than through a snapshot: LinkedBlockingQueue's iterator is weakly consistent and
       // never throws ConcurrentModificationException, and this runs per replayed page, so the copy would be pure
-      // overhead. The walk is bounded by the flush queue depth (arcadedb.pageFlushQueue) plus the deferred backlog,
-      // which is itself capped by arcadedb.flushSuspendMaxDeferredRAM.
+      // overhead. The walk is bounded by the pipeline depth - since #6281 that is arcadedb.pageFlushQueue times the
+      // number of OPEN DATABASES, the queue itself no longer carrying a capacity - plus the deferred backlog, which
+      // is itself capped by arcadedb.flushSuspendMaxDeferredRAM.
       for (final PagesToFlush batch : queue)
         removePagesOfPageIdFromBatch(batch, pageId, detached);
 

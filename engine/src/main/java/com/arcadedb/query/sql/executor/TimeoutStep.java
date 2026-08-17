@@ -37,12 +37,18 @@ public class TimeoutStep extends AbstractExecutionStep {
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     if (this.expiryTime == null) {
-      this.expiryTime = System.currentTimeMillis() + timeout.getVal().longValue();
+      final long ceiling = StatementTimeouts.ceilingOf(context);
+      this.expiryTime = StatementTimeouts.deadlineIn(timeout.getVal().longValue());
+      // "do it more granular" is what publishing the instant achieves without moving this step: the guards in
+      // the scan, filter and expansion loops read the deadline off the context, so a statement whose own TIMEOUT
+      // clause is the only bound in force is now observed inside those loops rather than only between two
+      // batches (issue #6266). This step's own bound is unchanged - it was already wall-clock from here.
+      StatementTimeouts.publish(context, timeout, expiryTime, ceiling);
     }
     if (System.currentTimeMillis() > expiryTime) {
       return fail();
     }
-    return getPrev().syncPull(context, nRecords);//TODO do it more granular
+    return getPrev().syncPull(context, nRecords);
   }
 
   private ResultSet fail() {

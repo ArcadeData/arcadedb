@@ -26,6 +26,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.exception.BrokenChunkChainException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -147,12 +148,13 @@ public class EdgeLinkedList {
         if (previousRID == null || previousRID.equals(current.getIdentity()))
           return head;
         current = loadChunkForWrite(previousRID);
-      } catch (final ConcurrentModificationException | SerializationException | NegativeArraySizeException
-                     | BufferUnderflowException | IndexOutOfBoundsException | IllegalArgumentException
-                     | ClassCastException | SchemaException e) {
-        // "This chunk cannot be read", in the two shapes the chain can produce it: loadChunkForWrite maps a
-        // vanished record to a retryable conflict, and a corrupted body fails to decode. Both stop the pinning
-        // here and are re-raised by the collection walk. Anything else - an I/O fault surfacing as
+      } catch (final ConcurrentModificationException | BrokenChunkChainException | SerializationException
+                     | NegativeArraySizeException | BufferUnderflowException | IndexOutOfBoundsException
+                     | IllegalArgumentException | ClassCastException | SchemaException e) {
+        // "This chunk cannot be read", in the shapes the chain can produce it: loadChunkForWrite maps a vanished
+        // record to a retryable conflict, a segment too big for its page whose chunk chain is structurally broken
+        // now says so outright (#6258), and a corrupted body fails to decode. All stop the pinning here and are
+        // re-raised by the collection walk. Anything else - an I/O fault surfacing as a plain
         // DatabaseOperationException - is not a broken chain and must not be mistaken for one, because the
         // collection walk might then read a chunk this pass failed to pin.
         return head;
@@ -264,6 +266,27 @@ public class EdgeLinkedList {
     return null;
   }
 
+
+  /**
+   * The chains a NEIGHBOUR-keyed probe has to consult to answer about {@code neighbour}, in the order
+   * {@link #containsVertex} consults them. A classic list is one chain: itself.
+   * <p>
+   * Exists so {@link AdjacencyProbeCache} can memoise the WALK of each chain (issue #6062) while leaving the
+   * SELECTION here, where the striped override keeps its own semantics - only the stripes that can hold the
+   * neighbour, and strict about a head it cannot resolve. A cache that picked the chains itself, or that indexed
+   * the whole list, would answer "not connected" where {@link StripedEdgeList} promises a retryable conflict.
+   */
+  List<EdgeLinkedList> chainsForNeighbourProbe(final RID neighbour) {
+    return List.of(this);
+  }
+
+  /**
+   * The head segment of THIS chain, or null when the object is a directory of chains rather than one chain (a
+   * {@link StripedEdgeList}). It is the identity {@link AdjacencyProbeCache} keys a chain image by.
+   */
+  RID getChainHeadRID() {
+    return lastSegment != null ? lastSegment.getIdentity() : null;
+  }
 
   public boolean containsVertex(final RID rid, final int[] edgeBucketFilter) {
     EdgeSegment current = lastSegment;

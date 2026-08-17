@@ -4356,6 +4356,16 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       throw new CommandSQLParsingException("Failed to build TIMEOUT clause: " + e.getMessage(), e);
     }
 
+    // The grammar accepts TIMEOUT <n> (EXCEPTION | RETURN), and the executor has always honoured RETURN by
+    // returning the rows produced so far instead of raising - but the strategy token was never read here, so
+    // every clause arrived with a null strategy and behaved as EXCEPTION. Reading it makes both branches of
+    // TimeoutStep.fail()/AccumulatingTimeoutStep.fail() reachable, and lets StatementTimeouts leave a RETURN
+    // clause out of the in-loop guards, which can only raise (issue #6266).
+    if (ctx.RETURN() != null)
+      timeout.setFailureStrategy(Timeout.RETURN);
+    else if (ctx.EXCEPTION() != null)
+      timeout.setFailureStrategy(Timeout.EXCEPTION);
+
     return timeout;
   }
 

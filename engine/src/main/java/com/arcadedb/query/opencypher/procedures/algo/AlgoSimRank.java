@@ -23,7 +23,9 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Stream;
 
@@ -85,9 +87,10 @@ public class AlgoSimRank extends AbstractAlgoProcedure {
     final Vertex nodeB       = extractVertex(args[1], "nodeB");
     final String[] relTypes  = args.length > 2 ? extractRelTypes(args[2]) : null;
     final double decayFactor = args.length > 3 ? ((Number) args[3]).doubleValue() : 0.8;
-    final int maxIterations  = args.length > 4 ? extractInt((Number) args[4], "maxIterations") : 5;
+    final int maxIterations  = args.length > 4 ? extractInt((Number) args[4], "maxIterations", 1) : 5;
 
     final Database db = context.getDatabase();
+    final WorkGuard guard = newWorkGuard(context);
 
     final GraphData graph = loadGraph(db, null, relTypes, context);
 
@@ -109,6 +112,14 @@ public class AlgoSimRank extends AbstractAlgoProcedure {
       return Stream.of(r);
     }
 
+    // Two nodeCount x nodeCount matrices, for a question about exactly two nodes: the similarity of one pair is
+    // defined recursively over every pair, so the whole matrix is the working set. 1.6 GB at 10 000 nodes with
+    // no knob involved. The node count is all the estimate needs, so the reservation comes before the adjacency
+    // lists are materialised: a graph too large for SimRank is then a client error naming the node count and
+    // the budget, rather than an OutOfMemoryError paid for after an O(edges) build.
+    newMemoryBudget(db).reserve(saturatingProduct(2L, matrixBytes(n, n, DOUBLE_BYTES)), "the similarity matrices",
+        "2 matrices of " + n + " x " + n + " nodes");
+
     // Build IN adjacency list (who points to whom)
     final int[][] adjIn = graph.adjacency(Vertex.DIRECTION.IN, relTypes);
 
@@ -119,11 +130,20 @@ public class AlgoSimRank extends AbstractAlgoProcedure {
       sim[i][i] = 1.0;
 
     for (int iter2 = 0; iter2 < maxIterations; iter2++) {
-      for (int i = 0; i < n; i++)
-        for (int j = 0; j < n; j++)
-          newSim[i][j] = i == j ? 1.0 : 0.0;
+      // maxIterations is a caller-supplied knob and this kernel has no convergence test at all, so it always runs
+      // the full count: the guard is the only thing that can end a run the caller no longer wants.
+      guard.check();
+      for (int i = 0; i < n; i++) {
+        guard.checkPeriodically(i);
+        Arrays.fill(newSim[i], 0.0);
+        newSim[i][i] = 1.0;
+      }
 
       for (int u = 0; u < n; u++) {
+        // Unthrottled, unlike the per-node checkpoints elsewhere in this package: the loop it guards is
+        // O(n^2 x deg^2), so n flag tests are at worst a 1/n fraction of it however sparse the graph is, while
+        // throttling to one test every 1024 nodes would leave the abort latency proportional to n itself.
+        guard.check();
         for (int v = u + 1; v < n; v++) {
           final int[] inU = adjIn[u];
           final int[] inV = adjIn[v];

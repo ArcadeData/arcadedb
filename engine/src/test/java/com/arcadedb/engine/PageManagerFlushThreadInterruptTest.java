@@ -61,7 +61,7 @@ class PageManagerFlushThreadInterruptTest extends TestHelper {
     final PageId pageId = new PageId(db, fileId, pageNum);
     final MutablePage page = new MutablePage(pageId, pageSize, new byte[pageSize], 0, 0);
     flush.pageIndex.put(page);
-    flush.queue.offer(new PagesToFlush(List.of(page)));
+    flush.offerBatch(new PagesToFlush(List.of(page)), false);
 
     // Occupy the page's I/O slot so the flush thread spins inside concurrentPageAccess (where the interrupt
     // check lives) until the slot is released, making the interrupt timing deterministic. NOTE: pendingFlushPages
@@ -123,7 +123,7 @@ class PageManagerFlushThreadInterruptTest extends TestHelper {
     final MutablePage freePage = new MutablePage(freePageId, pageSize, new byte[pageSize], 0, 0);
     flush.pageIndex.put(blockedPage);
     flush.pageIndex.put(freePage);
-    flush.queue.offer(new PagesToFlush(List.of(blockedPage, freePage)));
+    flush.offerBatch(new PagesToFlush(List.of(blockedPage, freePage)), false);
 
     final Field pendingField = PageManager.class.getDeclaredField("pendingFlushPages");
     pendingField.setAccessible(true);
@@ -185,7 +185,7 @@ class PageManagerFlushThreadInterruptTest extends TestHelper {
     final PageId pageId = new PageId(db, fileId, pageNum);
     final MutablePage page = new MutablePage(pageId, pageSize, new byte[pageSize], 0, 0);
     flush.pageIndex.put(page);
-    flush.queue.offer(new PagesToFlush(List.of(page)));
+    flush.offerBatch(new PagesToFlush(List.of(page)), false);
 
     // Drive the (unstarted) flush thread by hand: with the database suspended, the batch is deferred.
     flush.flushPagesFromQueueToDisk(null, 100L);

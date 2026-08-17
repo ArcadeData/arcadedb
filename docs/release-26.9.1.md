@@ -2192,7 +2192,7 @@ dimensions. `algo.randomWalk` had the one-dimensional version: `new int[steps + 
 `Integer.MIN_VALUE` at `steps = 2147483647`.
 
 Both are now estimated in saturating `long` arithmetic and checked **before** anything is allocated, against
-a new `arcadedb.cypher.algoMaxWalkMemory` budget that auto-scales with the JVM max heap (one eighth of it,
+a new `arcadedb.cypher.algoMaxWorkingMemory` budget that auto-scales with the JVM max heap (one eighth of it,
 never below 64MB) and can be raised or switched off (negative = no limit). This follows the house pattern
 of `arcadedb.queryMaxHeapElementsAllowedPerOp` and `arcadedb.queryMaxRangeSize` rather than inventing a
 per-knob constant: the error names the knobs that produced the estimate and the setting to raise, and
@@ -2235,6 +2235,445 @@ nameless `NegativeArraySizeException`.
 
 [#6216](https://github.com/ArcadeData/arcadedb/issues/6216)
 
+## A peer address that identifies nobody says so, instead of waiting for an operation to refuse (#6267)
+
+Five follow-ups from #6221 / #6226. Four are visible to an operator; the rest are test hygiene.
+
+**A withheld peer-to-peer endpoint is now reported.** `getUnambiguousPeerHttpAddress` and its HTTPS twin refuse
+an address two peers both resolve to by returning `null` (#6202), and every caller then decided for itself
+whether to say anything - so the refusal was visible only where one happened to log it, and invisible everywhere
+else. Neither existing warning covered it: the derive warnings fire whenever an address is derived **at all**,
+which is also what a perfectly healthy homogeneous Kubernetes StatefulSet does, so they cannot distinguish
+"deriving, and fine" from "deriving, and two peers just collapsed onto one address". There is now a one-time
+WARNING per protocol - modelled on the `warnAmbiguousRouting` of #6183, but for the peer-to-peer endpoints rather
+than the client routing tables - naming the peers that could not be told apart, the address they share, and the
+`host:{raft:..,http:..}` field to declare in `arcadedb.ha.serverList`. HTTP and HTTPS have separate latches: a
+cluster that declares distinct `http` ports and shares an `https` one must still hear about the second.
+
+**Observable change in `GET /api/v1/cluster`.** Each peer entry now carries `httpAddress` and, only when it is
+not the peer's alone, `httpAddressAmbiguous: true`. Before this, the status endpoint and the Studio HA panel
+displayed a plausible address for every peer with nothing to say that it named none of them, and an operator
+found out when a snapshot resync or a cluster verify refused to dial. A correctly declared cluster carries
+neither field's flag, so nothing changes for one. Studio renders the flag as a warning line on the node's card.
+
+**The presence matrix dialled the address nothing had checked.** `GET /api/v1/cluster?presence=true` asks every
+peer which databases it holds and attributes the answer to that peer - the same unattended dial the verify
+endpoint was making before #6221, with the same failure: on a cluster whose peers collapse onto one derived
+address, every peer was queried on the leader's own endpoint and reported the leader's database list as its own,
+so the matrix showed every database present on every node. It resolves through `PeerDialAddress` now, so a peer
+it cannot identify is reported in `unreachable` - with the reason logged - rather than answered for by whoever
+picked up.
+
+`RaftClusterStatusExporter.exportClusterStatus()`, a second cluster-status JSON builder that nothing has called,
+was removed rather than taught about any of this: the live endpoint is `GetClusterHandler`, and an unreachable
+second view of one cluster is how two views drift apart.
+
+**Test-only, in the HA lane.** `BaseRaftHATest.RESYNC_RETRY_TIMEOUT_MS` drops from 120 s to 30 s. #6226 added an
+instrument rather than guessing, and it has now reported: across nine full `ha-integration-tests` runs (235 tests
+each) not one wait exceeded the 10 s report threshold, and the slowest of the ten classes that use those helpers
+took 53 s wall-clock for the whole class, cluster startup and teardown included. 30 s is what the rest of that
+class already treats as long enough for a cluster to do anything it is going to do - `waitForReplicationIsCompleted`,
+`waitAllReplicasAreConnected` and the leader-election wait all use it - so the one budget with no measurement
+behind it was also the only one four times larger than its siblings. The report threshold drops to 5 s with it, to
+keep the same resolution for the next cut. `DynamicMembershipTest` no longer leaves its own teardown holding a
+peer it evicted to a replica's contract: the base class now waits for, and compares, exactly the servers
+`getServerToCheck()` names, which turned a 30 s-per-evicted-server timeout and a `DatabaseAreNotIdentical` charged
+to `endTest` into neither. Seven `await().until(() -> findLeaderIndex() >= 0)` wrappers that #6226 made redundant
+are gone, and three copies of "only the servers still running" collapse into one helper.
+
+[#6267](https://github.com/ArcadeData/arcadedb/issues/6267)
+## The same iteration-knob guard, applied to the fourteen `algo.*` procedures #6216 left out of scope (#6264)
+
+[#6216](https://github.com/ArcadeData/arcadedb/issues/6216) established what an iteration-shaped knob needs -
+a domain minimum rejected by name, and a checkpoint inside the loop it drives - and gave both to the three
+procedures its parent review had named. Fourteen more carried the identical defect, untouched:
+`algo.pageRank`, `algo.personalizedPageRank`, `algo.articleRank`, `algo.eigenvector`, `algo.hits`,
+`algo.katz`, `algo.louvain`, `algo.leiden`, `algo.labelPropagation`, `algo.slpa`, `algo.simRank`,
+`algo.fastrp`, `algo.hashgnn` and `algo.graphsage`. Every one extracted its knob with a plain
+`extractInt(n, "maxIterations")`, and none contained a single checkpoint.
+
+So `CALL algo.pageRank({maxIterations: 0})` returned the *uniform initial rank vector* as though it were a
+PageRank result, `algo.louvain` returned every node in its own community, and `algo.fastrp` the untouched
+random projection, and `algo.graphsage` the untouched random-Gaussian initial features presented as trained
+embeddings. The silent half is the more serious one: an un-iterated centrality is not obviously wrong to a
+caller, unlike an exception. All fourteen now reject a value below 1 with a message naming the procedure, the
+parameter and the value.
+
+For time there is still no honest ceiling to pick, so a large value is not forbidden but made abortable. Each
+iteration loop calls the shared `WorkGuard`, which observes a thread interrupt and the
+`arcadedb.command.timeout` deadline; a per-node checkpoint inside each pass bounds the abort latency below a
+whole sweep of the graph, throttled to once every 1024 nodes where a node's own work is small and unthrottled
+where it is already O(n). Six of the fourteen have no convergence test at all - the CSR PageRank kernel,
+`algo.simRank`, `algo.fastrp`, `algo.hashgnn`, `algo.graphsage` and `algo.slpa` - so the knob alone decided
+when they stopped and nothing could end the run early.
+
+Two of them hand the work to `GraphAlgorithms`, which lives below the query layer and knew nothing about
+deadlines. Rather than couple the OLAP kernels to the query engine, `GraphAlgorithms.pageRank` and
+`GraphAlgorithms.labelPropagation` gained an overload taking a `WorkCheckpoint`, a one-method interface in
+`com.arcadedb.graph.olap` that the procedures satisfy with a method reference to their own guard. Existing
+callers are unchanged and get a checkpoint that never aborts.
+
+`algo.slpa` needed one thing more. Alone among the fourteen its `iterations` buys heap as well as time: every
+node keeps a label-memory row of `iterations + 1` ints, so `{iterations: 1000000}` on a 10k-node graph asks
+for 40 GB, and at `Integer.MAX_VALUE` the `iterations + 1` wrapped to `Integer.MIN_VALUE` and died as a bare
+`NegativeArraySizeException` naming nothing. The footprint is now estimated in saturating `long` arithmetic
+and checked against the same budget the walk buffers use, before the first row is allocated. (That budget is
+renamed `arcadedb.cypher.algoMaxWorkingMemory` by #6263 below, which landed after this one and generalised it
+from walk buffers to the whole working set of a call; the label memory is priced through it unchanged.)
+
+[#6264](https://github.com/ArcadeData/arcadedb/issues/6264)
+
+## A placeholder whose content had to spill into chunks is no longer returned twice by a scan (#6196)
+
+`SELECT FROM Doc` could return the same record twice, under two different RIDs, and `count(@rid)` counted it
+twice with it. One record shape reached it: a **placeholder** whose CONTENT record was too large for any page to
+hold whole.
+
+A record that outgrows its own page normally becomes a chunk chain in place. When its slot is too small even for
+the 14 bytes a chunk header needs - since #6149 the only remaining case, and it takes a page with a free tail of
+exactly zero - the slot becomes a 9-byte POINTER instead and the content moves to a record of its own on another
+page. Such a content record is not a document; it is reachable only through the pointer, and every reader that
+walks a page knows to skip it because its slot carries its size **negated**. That is the entire mechanism, and it
+is the one thing a content record bigger than a page cannot have: it has no size in its slot at all, because it is
+a chain. `writeMultiPageRecord` stamped the plain `FIRST_CHUNK` marker of an ordinary multi-page record on its
+head, and at that moment the information that the slot belonged to somebody else was gone - there was nowhere
+else it was written down.
+
+So the bytes were handed out twice: once through the pointer, under the RID the application knows, and once as a
+document in their own right under the head chunk's RID. `check()` had the mirror of the same confusion, counting
+the record under `totalMultiPageRecords` and never under `totalSurrogateRecords`.
+
+The head chunk of a content record now carries a marker of its own, `FIRST_CHUNK_PLACEHOLDER_CONTENT` (-4), in the
+one value the marker namespace still had free between `NEXT_CHUNK` (-3) and the negated sizes (< -5). It costs
+nothing in the stored format - one zigzag byte, exactly like the markers either side of it - and it restores the
+rule the negated size marker always expressed: a scan, a `count()` and an existence check hand out records, and
+this is not one, while everything that walks or rewrites the CHAIN treats the two heads identically.
+
+**Databases written before this** still hold the ambiguous shape, and no reader can tell it from an ordinary
+multi-page record - only the pointer that leads to it can. Rather than have every reader tolerate the ambiguity
+for ever, `CHECK DATABASE` now follows each placeholder pointer, reports a content record still stored the old way as an error naming its RID, and
+`CHECK DATABASE FIX` repairs it by rewriting that one marker. It is a repair and never a deletion: not a byte of
+the record, its chunk header or its chain is touched.
+
+**Run that FIX before writing through a full scan of such a database.** Until it has run, the content record is
+still handed out under a RID of its own, and that RID looks like any other: an application that scans a type and
+updates or deletes what comes back can reach the content record directly, where nothing can tell it apart from a
+record and the write lands on content the placeholder pointer still references. This is the behaviour every
+release before this one already had - the marker is what closes it, and `CHECK DATABASE FIX` is what applies the
+marker to data written earlier. A read-only scan of an unrepaired database merely returns the record twice; a
+read-modify-write over one is worth the FIX first.
+
+Following the pointers costs `CHECK DATABASE` one page fetch per placeholder POINTER - every one of them, not only
+the chunked case it is looking for, because the marker on the other end is the only thing that tells the two apart.
+A pre-#6149 bucket dense with placeholders therefore pays one extra fetch each, of pages the same pass reads
+anyway, on an operation that already reads every page of the bucket and walks the full chunk chain of every
+multi-page record.
+
+One reporting detail to expect on an unrepaired database: only the TOTALS `CHECK DATABASE` returns are
+reconciled, because a content record can sit on a page the walk has already left behind and reconciling as it
+went would make the answer depend on the order the allocator happened to place the pages in. The per-page
+tallies printed by a verbose run are not, so for such a record a page's own `multiPageRecords` count disagrees
+with the top-level `totalSurrogateRecords` it was moved to. That is deliberate: a physical-layout log describes
+the page as the walk found it. Both agree again once the FIX has run.
+
+[#6196](https://github.com/ArcadeData/arcadedb/issues/6196)
+
+## The whole working set of a graph-algorithm call is budgeted, not just its walk buffers (#6263)
+
+Follow-up to #6216, which introduced a heap budget for the random-walk buffers of `algo.node2vec` and
+`algo.randomWalk`, and to #6065, which capped every embedding-dimension knob at 4096. Between them they left
+the *largest* allocation of these procedures outside every budget: the matrices themselves.
+
+A dimension cap bounds one embedding **row** at 32 KB and says nothing about a `nodeCount x dimension`
+**matrix**. At `algo.node2vec`'s default `embeddingDimension: 128` the two Skip-gram matrices cost about 2080
+bytes per node - 208 MB at 100 000 nodes, 2.1 GB at a million, 21 GB at ten million - which is the same order
+as the walk matrix on the same call, at ~3560 bytes per node, that #6216 already refused up front. One
+allocation was budgeted and the other, sitting beside it in the same method, was not. `algo.fastrp` made the
+gap plainest: it has no walk buffer at all, so no budget of any kind applied to it, and its two
+`nodeCount x dimensions` matrices had no ceiling whatsoever. The failure mode was an `OutOfMemoryError` rather
+than the client error naming a parameter that #6065 and #6216 both exist to produce - and an
+`OutOfMemoryError` on a shared server takes down work that had nothing to do with the query that caused it.
+
+`arcadedb.cypher.algoMaxWalkMemory` is therefore renamed **`arcadedb.cypher.algoMaxWorkingMemory`**. The key
+was introduced in this same unreleased version, so no deprecated alias is carried: the concept it implements -
+estimate the footprint in saturating `long` arithmetic, reject as a client error before allocating, auto-scale
+the default with the JVM heap - was never walk-specific, only its name was. Everything else about it is
+unchanged: default `max(64MB, maxHeap/8)`, negative means no limit, and the error is an
+`IllegalArgumentException`, so over HTTP it is a 400 rather than a 500.
+
+Reservations now **accumulate over the call** rather than being checked one allocation at a time. That is what
+the question "how much heap may this call take?" actually asks, and a single call routinely holds several of
+these at once: `algo.node2vec` keeps its walk matrix alive while it trains over two embedding matrices, so
+pricing each separately would let a call exceed the budget by however many components it happens to have. The
+error names the component that broke the budget, the counts that sized it, and what the call had already
+reserved:
+
+```
+algo.node2vec(): the embedding matrices would need 8448 bytes (2 matrices of 4 nodes x embeddingDimension=128),
+on top of the 14240 bytes this call already reserved, more than the 20000 bytes allowed.
+Set arcadedb.cypher.algoMaxWorkingMemory to raise the limit
+```
+
+Priced against the budget, all before anything is allocated:
+
+| procedure | working set |
+|---|---|
+| `algo.node2vec` | walk matrix + 2 x `nodeCount x embeddingDimension` |
+| `algo.fastrp` | 2 x `nodeCount x dimensions` |
+| `algo.hashgnn` | 2 x `nodeCount x 4 x embeddingDimension` feature matrices + 1 x `nodeCount x embeddingDimension` |
+| `algo.graphsage` | 2 x `nodeCount x embeddingDimension` + the layer's `embeddingDimension x 2 x initDim` projection |
+| `algo.apsp` | `nodeCount x nodeCount` distance matrix |
+| `algo.simRank` | 2 x `nodeCount x nodeCount` similarity matrices |
+| `algo.maxFlow` | `nodeCount x nodeCount` capacity + residual matrices |
+| `algo.kShortestPaths` | `nodeCount x nodeCount` weight matrix + removed-edge mask |
+| `algo.steinerTree` | `terminals x nodeCount` Dijkstra tables + four arrays of one entry per terminal pair |
+| `algo.randomWalk` | walk buffer (unchanged from #6216) |
+| `algo.slpa` | `nodeCount x (iterations + 1)` label memory (from #6264, repriced through the same budget) |
+
+The last four are the reason the rename is worth doing rather than adding a second walk-shaped key. Their
+matrices are sized by the graph alone, with no knob involved anywhere: `algo.simRank(a, b)` answers a question
+about exactly two nodes and allocates two full `nodeCount x nodeCount` matrices to do it, because the
+similarity of one pair is defined recursively over every pair - 1.6 GB at 10 000 nodes. `algo.apsp` already
+documented itself as suitable "up to a few thousand vertices", which was advice rather than a bound. These
+algorithms are cubic or worse in time, so the memory bound bites at roughly the scale where the runtime is
+already impractical; what changes is that the refusal now names the node count and the setting instead of
+arriving as an `OutOfMemoryError` several minutes in.
+
+`algo.hashgnn` turned up one thing worth stating separately: its **feature** matrices, not its embedding
+matrix, are the larger pair. They are four times as wide as the embedding, so even stored as `boolean` they
+cost half a byte per dimension per node against the embedding's eight - which is why they are priced by name
+rather than folded into an "embedding matrices" figure that would understate the call by a factor of two.
+
+`algo.steinerTree` carried the same defect in both of its forms, and is the only knob in the package a caller
+supplies as *data* rather than as a number: `terminalNodes` is a list, so nothing validates its length - not
+even the node count, since repeating the same vertex is accepted. Its length sizes a `terminals x nodeCount`
+pair of Dijkstra tables, and then `t * (t - 1) / 2` terminal pairs across four parallel arrays. That
+expression was evaluated in `int`, and the division by 2 happens *after* the product, so it wrapped at 46342
+terminals - the result fitting an `int` never saved it - and `new int[pairCount]` died as a bare
+`NegativeArraySizeException: -1073716337`, naming nothing. The count is now computed in `long`, priced (the
+real figure at that length is 1073767311 pairs, about 43 GB), and refused past `Integer.MAX_VALUE` entries
+whatever the heap setting says. The pair arrays include an `Integer[]` index array sorted through a
+`Comparator`, which costs 24 bytes an entry against the 4 of the `int` it carries; it is priced at what it
+actually costs rather than at what a primitive array would.
+
+[#6263](https://github.com/ArcadeData/arcadedb/issues/6263)
+
+## An index build waits for the async batch, not just for its tasks (#6281)
+
+`CREATE INDEX` builds by scanning the buckets, so everything the asynchronous executor was asked to write has
+to be committed before the scan starts. The guard that was supposed to ensure that read the wrong predicate:
+
+```java
+while (database.isAsyncProcessing())
+  database.async().waitCompletion();
+```
+
+`isAsyncProcessing()` answers about *tasks* - queued or executing. An async worker opens a transaction when it
+starts and keeps it open across up to `arcadedb.asyncTxBatchSize` (10240) tasks, so a worker whose queue has
+drained is still holding every record of the current batch **uncommitted**. On the runs where that predicate
+happened to answer `false` - which is a matter of thread scheduling, not of load - the guard was skipped
+entirely: the index was built by scanning a bucket that did not contain those records, and they committed
+afterwards with no entry ever added for them. The result was an index that is empty, readable, and reported
+healthy by `CHECK DATABASE`, while `SELECT ... WHERE id = ?` silently answered nothing for records that were
+there. Reproduced with 200 asynchronously inserted records: 0 index entries, 0 rows returned.
+
+The barrier is now unconditional. `waitCompletion()` is the only operation that closes the open batch - it
+enqueues a marker *behind* everything already submitted on every worker, and that marker commits - so there is
+no cheap predicate to test first, and testing one is what let the barrier be skipped. `isAsyncProcessing()` is
+deliberately left answering about tasks: broadening it to "a transaction is open" would make it permanently
+true for as long as the workers live. The same barrier now precedes `REBUILD INDEX`, whose scan sees the same
+partial view. The rebuild proper does not lose index entries there - those records apply their own staged
+entries when they commit - so what it gains is the misplaced-record detection of #832 and the reported totals
+being about all of the data. `REBUILD INDEX ... WITH statsOnly = true` was worse off and is the reason the
+barrier sits ahead of that branch rather than after it: it recomputes the BM25 corpus counters by scanning the
+type and then *overwrites* the counters with what the scan found, so run against an open batch it wrote "0
+documents" over counters the records had already bumped. A type holding 200 documents was left scoring every
+BM25 query against a corpus of zero, and unlike the index-entry case that did not heal itself.
+
+**One refusal is new.** `CREATE INDEX`, a manual index create and `REBUILD INDEX` now raise a
+`NeedRetryException` when they run on one of the async executor's own worker threads - a command dispatched
+over HTTP with `awaitResponse=false`, for instance. The barrier cannot be satisfied from inside the thing it
+waits for: it enqueues a marker on every worker including the caller's own, and the only consumer of a
+worker's queue is that worker, so it would park for ever. `REBUILD INDEX` has refused this since #2097 and
+keeps its own message; what is new is that `CREATE INDEX` and the manual index builder refuse it too, where
+before they hung. Run the command synchronously instead.
+
+`ACIDTransactionTest.indexCreationWhileAsyncMustFail`, which existed to cover exactly this, had been vacuous
+for years: it expected a `NeedRetryException` from a creation that has drained the executor rather than
+refusing since long before this release, so its `catch` never fired and its only assertion was the record
+count - which an empty index satisfies just as well as a complete one. It now asserts the index.
+
+### The page-flush queue is bounded per database, not per JVM
+
+**Behaviour change worth checking if you run many databases in one JVM with a non-default
+`arcadedb.pageFlushQueue`.** That setting was a single JVM-wide queue capacity. #6259 moved the wait for room
+in it out of the page-manager lock, so a full queue stopped freezing every committer in the process - but the
+coupling itself survived: one database's write burst against a slow volume still consumed the admission budget
+of every other database, so a committer on an idle database on an idle volume waited for a disk it has nothing
+to do with.
+
+The budget is now per database, held as one count per database that covers a slot from the moment a committer
+reserves it to the moment the flush thread polls the batch it became. The shared queue keeps global FIFO order
+and carries no capacity of its own - one queue rather than one per database is what avoids having to invent a
+fairness policy for a flush thread choosing between queues on every poll.
+
+The trade-off, stated because it changes the shape of a memory ceiling: worst-case flush-pipeline occupancy is
+now `pageFlushQueue x open databases` batches rather than a flat `pageFlushQueue`. That is inherent to bounding
+per database, and the number being multiplied was never a byte bound to begin with - one batch is one
+transaction's dirty pages - but a deployment that sized `pageFlushQueue` against total heap should re-check it.
+The bound that *is* expressed in bytes remains `arcadedb.flushSuspendMaxDeferredRAM`. A `pageFlushQueue` of 0
+or less, which used to fail at startup on `ArrayBlockingQueue`'s constructor, is now raised to 1: with
+admission as the only bound, a budget of 0 would refuse every publication for ever.
+
+One consequence worth knowing about if you run many databases that saturate their budgets at the same time:
+the committers waiting for room all park on a single shared monitor, so every batch the flush thread polls
+wakes all of them and each re-checks its own database's count before parking again. That is a deliberate
+trade - a monitor per database would move a map lookup onto the poll path, which runs per batch, to save work
+on the wait path, which only runs for a database already at its bound - and it is the same shape as the
+existing deferred-RAM cap. It is a different failure mode from the old single-queue design, though, so it is
+named here rather than left to be discovered.
+
+**One published metric changed scale with it.** `pageFlushQueueLength` used to top out at `pageFlushQueue`,
+because the queue's capacity was that setting - so `pageFlushQueueLength >= pageFlushQueue` was a natural
+"the pipeline is full" alert. It is now a sum across every open database and can run to
+`pageFlushQueue x open databases`, which makes that comparison meaningless. The signal it used to carry is
+published alongside it as `pageFlushQueueMaxPerDatabase` (and as `flushQueueMaxPerDb` in the profiler dump):
+the busiest single database's share, which is exactly what `pageFlushQueue` bounds, so that is the one to
+alert on.
+
+[#6281](https://github.com/ArcadeData/arcadedb/issues/6281)
+## A super-node's read walk keeps its recency order for the whole walk, not just the first 1,024 entries (#6064)
+
+`arcadedb.graph.supernodeInterleaveRounds` (#6048) was a **cliff**. Up to `rounds × stripes` entries - 64 × 16 =
+1,024 by default - a promoted super-node's read walk took one entry per stripe chain per turn, which is what
+puts an edge of recency rank `r` back at a position of order `r` (#6044). The very next entry froze the
+rotation: the chain holding the turn was drained to exhaustion, then the next, then the next. Past 1,024 the
+returned position stopped having any relation to recency, and the error grew with the vertex's DEGREE again -
+the exact failure #6044 fixed, pushed past a constant.
+
+A query with a small `LIMIT` never reaches the cliff. A query with a **large but still bounded** one - an
+export, a batch job, paginated admin tooling, `MATCH (h)-[:LINK]->(x) RETURN x LIMIT 5000` - fell off it
+silently: it asked for a bounded result, got one, and the newest edges it expected near the front were spread
+across the whole list. The only lever was raising `supernodeInterleaveRounds` for every unbounded read in the
+database too, which is precisely the full-walk locality cost #6048 removed.
+
+The rotation now **widens** instead of stopping. Past `rounds × stripes` entries it keeps turning, but takes
+`rounds` entries from each chain per turn instead of one, doubling that batch on every completed round. Both
+properties hold at once:
+
+- **Locality** (what #6048 was about): the chain switches over a walk of `D` entries drop from `D` to about
+  `stripes × log D`, and once the batch outgrows a chunk every visit is a sequential run through one chain, so
+  the resident-page pressure the interleaving costs decays instead of persisting. Counted against the previous
+  degrade on a 1,000,000-edge walk at the defaults, that is ~1,184 chain switches against ~1,040 - 0.1% of the
+  entries walked, either way.
+- **Rank fidelity** (what #6064 is about): an entry at depth `d` in its chain is emitted no later than the end
+  of the batch that reaches depth `d`, which is at most twice `d`, so its position stays within a constant
+  factor of its true rank for the WHOLE walk. Measured on a 3,000-edge super-node at 16 stripes and 4 rounds
+  (a 64-entry threshold, deliberately small to put most of the walk past it), the worst position/rank ratio is
+  2.4; before, rank 40 came back at position 2,386, a ratio of 58.
+
+No new setting, and nothing has to be told what the query's `LIMIT` was - which is the alternative this
+replaces, and it would have meant threading a "how many do you actually need" hint from every query engine's
+execution plan down into `EdgeLinkedList`, across an iterator API that has no concept of one.
+`supernodeInterleaveRounds` keeps its meaning (how long the walk stays at one entry per turn) and its `0`
+still disables interleaving entirely, giving immediate concatenation in the pre-#6044 order. Read-side only:
+no on-disk format change, no migration.
+
+[#6064](https://github.com/ArcadeData/arcadedb/issues/6064)
+## A schema probe spelled `LIMIT 0` gets a RowDescription over a row source the schema cannot describe (#6185)
+
+`SELECT expand(shortestPath(#1:0, #1:5)) LIMIT 0` is a schema probe, and #6172 had already made a probe
+describable no matter how its rows are computed: when the statement returns nothing, the Postgres wire protocol
+replays it without the clause that empties it and reads the columns off the first row, which is the only way to
+name the columns of a row source that is not a schema type - a graph function, a `TRAVERSE`, a `MATCH`, a constant
+table. The trigger for that replay looked only at the `WHERE` clause, so a client that spells the probe `LIMIT 0` -
+Tableau and several JDBC/BI tools do - was answered with an empty RowDescription again, exactly as before the fix.
+
+The trigger is now "the statement is empty by construction", the same question the SQL planner asks in #6174 when
+it folds the fetch away, and it is read at every level of the query, so `LIMIT 0` on the probed subquery counts as
+well as `LIMIT 0` on the statement the client sent. Only a literal `LIMIT 0` qualifies (`Limit.isAlwaysEmpty()`): a
+bound `LIMIT ?` belongs to one execution, and the replay must not be triggered by a value the next execution can
+change.
+
+The two spellings are deliberately not answered in the same order, because they do not carry the same intent. The
+replay evaluates the query's projection for real, once, on one row - the caveat that has been documented on
+`sampleProbeColumns` since #6172 - so a projected function with a side effect runs once per probe that takes that
+path. `WHERE 1=0` has no purpose other than probing, so it is replayed first, as it always was. `LIMIT 0` is also
+how a client asks an expensive query for nothing at all, so it is replayed only after the static resolution of the
+row source has come back with nothing: a `LIMIT 0` over a shape the schema can describe is answered from the
+schema, without evaluating anything, and only the shapes that cannot be answered any other way are replayed.
+
+[#6185](https://github.com/ArcadeData/arcadedb/issues/6185)
+## An always-true filter is dropped at plan time instead of being evaluated once per record (#6184)
+
+The mirror of #6174. That issue taught the planner to recognise a filter that is false for every record; a filter
+that is *true* for every record was still built as a filter step and evaluated per record, so `SELECT FROM C` and
+`SELECT FROM C WHERE 1=1` - the same query, written twice - produced two different plans:
+
+```
+SELECT FROM C                    -> + FETCH FROM TYPE C
+                                      + FETCH FROM BUCKET 1 (C_0) ASC
+
+SELECT FROM C WHERE 1=1          -> + FETCH FROM TYPE C WITH FILTER
+                                      + SCAN WITH FILTER BUCKET 1 (C_0)
+                                        1 = 1
+```
+
+The second paid a predicate evaluation per record, and lost the plain bucket fetch, to learn something the
+statement had already said.
+
+Nothing was stuck for want of a rule. `BooleanExpression.isAlwaysTrue()` had existed all along and was overridden
+by `AndBlock`, `OrBlock`, `ParenthesisBlock` and `NotBlock` - but **no leaf could implement it**, because the
+signature took no `CommandContext` and folding a comparison needs one to reach `operator.execute(...)`. So
+`BinaryCondition` never overrode it and the recursion always bottomed out at `false`: the method had no consumer
+outside the AST's own recursion, and `NOT (1=1)` was not folded as always-*false* either, even though
+`NotBlock.isAlwaysFalse` delegates to exactly this method for its negated branch.
+
+`isAlwaysTrue` now takes a `CommandContext`, the shape `isAlwaysFalse` got when it was introduced. The no-argument
+form is gone rather than kept alongside it - it had no caller outside the four AST classes that recursed into it,
+so two forms would only have been two things to keep consistent. `BinaryCondition` folds both verdicts through one
+private helper under the same restriction: **both** operands must be `Expression.isLiteral()`, which excludes a
+bound parameter (the plan outlives the execution that bound it) and a function call (nothing on `SQLFunction` marks
+a function as pure). `WHERE ? = 1` and `WHERE uuid() IS NOT NULL` are therefore still planned as scans, as they
+must be.
+
+The planner drops the where clause in `init()`, before the clauses are rearranged into index searches, so
+everything downstream sees the statement it would have seen without a `WHERE` at all: the projected properties
+computed for column pushdown, the choice between `FetchFromTypeWithFilterStep` and `FetchFromTypeExecutionStep`,
+and the hardwired `count(*)` plan. `NOT (1=0)` folds to always-true and `NOT (1=1)` to the always-false
+`EMPTY RESULT` of #6174, both for free through the existing `NotBlock` delegation.
+
+Dropping a filter is a wider step than folding one to an empty result: an always-false fold can only be wrong by
+returning too few rows, while dropping an always-true filter changes which fetch step is chosen. The regression
+test therefore compares the folded plan against the plan of the same statement written without its `WHERE` - step
+class by step class, so the fetch step and the bucket steps under it both have to agree - and then compares the
+records returned, their order, and the `readRecord` count.
+
+One place the filter survives the whole-clause fold is behind an index. `WHERE 1=1 AND indexedProperty = 'x'` is not
+true for every record, so the clause stays - and then the index search takes the second term as its key and hands the
+`1=1` back as a *residual condition*, which was chained as a `FILTER ITEMS WHERE` step and evaluated once per index
+entry. A residual that is true for every record is now recognised as no filter at all, on both the single-index and
+the parallel-index paths, so the plan is the one the same statement without the constant term would have got. The
+index itself was never at risk: it was selected before and after, the residual only rode along behind it.
+
+One `OrBlock` detail changed with it: an empty disjunction used to answer `isAlwaysTrue()` with `true`. It now
+answers `false`, matching what `isAlwaysFalse` has always answered for the same block. Neither verdict reads it as
+the neutral element, even though that reading (an `OR` with no alternatives is `FALSE`) is available: the parser
+cannot produce an empty `OrBlock`, both answers are load-bearing - one drops the filter, the other replaces the plan
+with an empty source - and deducing either for a block that can only arrive by accident would trade correctness for
+an optimisation nothing can trigger. An empty `AndBlock`, by contrast, is exactly what a filter with no terms left
+looks like, so it does answer `isAlwaysTrue`, and that is what lets an emptied residual condition drop its step.
+
+**API note for code that extends the SQL parser**: `BooleanExpression.isAlwaysTrue()` is replaced by
+`isAlwaysTrue(CommandContext)` rather than kept alongside it, so an out-of-tree subclass that overrode the no-argument
+form no longer overrides anything. This is a compile error against the new signature and a silently inert override
+only if the subclass keeps the old method as an unrelated one; nothing inside ArcadeDB called the no-argument form
+outside the four AST classes that recursed into it.
+
+The value here is smaller than #6174's: nothing sends `WHERE 1=1` as a probe the way Spark sends `WHERE 1=0`, so
+this is symmetry and a small constant per record rather than a full scan avoided.
+
+[#6184](https://github.com/ArcadeData/arcadedb/issues/6184)
 ## The HTTP query endpoints now have a hard row ceiling a caller cannot widen (#5719)
 
 **Breaking change.** `arcadedb.server.httpQueryMaxResultRows` is a new server setting, defaulting to

@@ -28,6 +28,7 @@ import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.List;
 
@@ -58,11 +59,12 @@ public final class CSRCountStep extends AbstractExecutionStep {
       if (provider != null && op.requiresFullVertexCoverage() && !provider.coversVertexType(null))
         provider = null;
 
+      final WorkGuard guard = WorkGuard.forCommandDeadline(context);
       final long count;
       if (provider != null)
-        count = op.execute(provider, db);
+        count = op.execute(provider, db, guard);
       else
-        count = op.executeOLTP(db);
+        count = op.executeOLTP(db, guard);
 
       if (context.isProfiling()) {
         cost = System.nanoTime() - begin;

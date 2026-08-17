@@ -23,6 +23,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
 
 import java.util.Collection;
@@ -202,17 +203,16 @@ class SQLMethodAdditionalCoverageTest extends TestHelper {
         database.command("sql", "INSERT INTO NormalizeMultiRow SET name = '" + pathological + "'");
     });
 
-    final long begin = System.currentTimeMillis();
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     assertThatThrownBy(() -> {
       final ResultSet rs = database.query("sql", "SELECT name.normalize('NFC', '(.*a){20}$') AS r FROM NormalizeMultiRow");
       while (rs.hasNext())
         rs.next();
     }).isInstanceOf(TimeoutException.class);
-    final long elapsedMillis = System.currentTimeMillis() - begin;
 
     // 10 independent 200ms-per-row budgets would take >= 2000ms; a shared deadline keeps the whole query close
     // to the single configured 200ms bound instead.
-    assertThat(elapsedMillis).isLessThan(1000);
+    stopwatch.assertStayedUnder(1000, "one 200ms budget shared by the whole query, not one per row");
   }
 
   @Test

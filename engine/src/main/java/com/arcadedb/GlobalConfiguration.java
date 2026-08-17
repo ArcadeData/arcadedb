@@ -468,7 +468,35 @@ public enum GlobalConfiguration {
       spanning several pages). Leave headroom when picking a value close to the replicated-entry limit.""",
       Integer.class, 256),
 
-  PAGE_FLUSH_QUEUE("arcadedb.pageFlushQueue", SCOPE.DATABASE, "Size of the asynchronous page flush queue", Integer.class, 512),
+  CHECK_DATABASE_ADJACENCY_CACHE_ENTRIES("arcadedb.checkDatabaseAdjacencyCacheEntries", SCOPE.DATABASE,
+      """
+      Maximum number of adjacency-list entries CHECK DATABASE keeps materialised while answering its back-reference \
+      probes (issue #6062). The check asks, once per edge, whether the NEIGHBOUR's edge list names that edge \
+      (checkEdges) and whether the far vertex of every adjacency entry points back (checkVertices). Both questions \
+      are a linear walk of the neighbour's chunk chain, and nothing used to be remembered between two probes of the \
+      same list, so a hub of degree D was walked D times by each of them: O(D²) on exactly the vertex the check \
+      exists to survive, with every walk risking a page read once the graph exceeds the page cache. A 657GB database \
+      with hubs in the hundreds of thousands of edges measured 80 hours for one CHECK DATABASE FIX. With the cache, \
+      the first probe of a list materialises it into primitive hash sets and every later probe of it is a hash \
+      lookup, so a pass walks each list once instead of once per incident edge. Counted in ENTRIES rather than in \
+      lists because that is what the memory is proportional to and because one super-node can be larger than every \
+      other list in the database put together; the least-recently-probed list is evicted when the budget is \
+      exceeded, so hubs - the lists that pay for themselves - are the ones that stay. A single list larger than the \
+      whole budget is never cached and is answered by the original walk. At the default of 1 million entries the \
+      footprint is roughly 20MB. 0 disables the cache and restores the pre-#6062 probe, which is the escape hatch \
+      if the memory is unwelcome on a small heap; the check reports what the setting bought under the \
+      adjacencyProbes / adjacencyProbeListWalks / adjacencyEntriesScanned keys.""",
+      Integer.class, 1_000_000),
+
+  PAGE_FLUSH_QUEUE("arcadedb.pageFlushQueue", SCOPE.DATABASE,
+      """
+      Maximum number of page batches EACH database may have waiting in the asynchronous flush pipeline. A committer of \
+      a database that has reached it waits - before taking the page-manager lock, never inside it - until one of that \
+      database's own batches is written; the committers of every other database are admitted straight through. This \
+      was a single JVM-wide bound before issue #6281, which is what let one database's write burst against a slow \
+      volume throttle the commits of unrelated databases on idle ones. Values below 1 are raised to 1: this is now \
+      the only bound on the pipeline, so a budget of 0 would refuse every publication for ever.\
+      """, Integer.class, 512),
 
   FLUSH_SUSPEND_MAX_DEFERRED_RAM("arcadedb.flushSuspendMaxDeferredRAM", SCOPE.DATABASE,
       """
@@ -557,7 +585,7 @@ public enum GlobalConfiguration {
       Long.class, 16L * 1024 * 1024),
 
   GRAPH_SUPERNODE_THRESHOLD("arcadedb.graph.supernodeThreshold", SCOPE.DATABASE,
-      "Approximate number of edges (per vertex, per direction) after which the vertex's edge list is promoted to the striped super-node layout, spreading further appends over multiple files so concurrent insertions on the same hot vertex do not contend. FORWARD-INCOMPATIBLE ON FIRST USE: promotion writes a new record type (the stripe directory), so once any vertex promotes, the database can no longer be opened by releases older than 26.8.1; promotion is one-way. This ordering guarantee applies only to the OLTP edge-list read walks (edgeIterator/vertexIterator/ridIterator): iteration order on promoted vertices is APPROXIMATELY newest-first instead of exactly newest-first, the stripe chains are interleaved so the newest edge is always within the first 'supernodeStripes' entries and an edge of recency rank r is returned at a position of order r, but only the order WITHIN a stripe is exact - an application needing an exact order must sort or use an index. That rank-fidelity itself only holds for the first 'supernodeInterleaveRounds x supernodeStripes' entries of a read; past that, the walk falls back to concatenating whatever is left of each chain (see GRAPH_SUPERNODE_INTERLEAVE_ROUNDS). It does NOT hold for a query the planner routes through a GraphAnalyticalView (e.g. GAVExpandAll): a view returns neighbours ordered by internal dense node ID, which carries no relationship to recency. 0 disables promotion entirely (databases stay fully readable by older versions)",
+      "Approximate number of edges (per vertex, per direction) after which the vertex's edge list is promoted to the striped super-node layout, spreading further appends over multiple files so concurrent insertions on the same hot vertex do not contend. FORWARD-INCOMPATIBLE ON FIRST USE: promotion writes a new record type (the stripe directory), so once any vertex promotes, the database can no longer be opened by releases older than 26.8.1; promotion is one-way. This ordering guarantee applies only to the OLTP edge-list read walks (edgeIterator/vertexIterator/ridIterator): iteration order on promoted vertices is APPROXIMATELY newest-first instead of exactly newest-first, the stripe chains are interleaved so the newest edge is always within the first 'supernodeStripes' entries and an edge of recency rank r is returned at a position of order r, but only the order WITHIN a stripe is exact - an application needing an exact order must sort or use an index. That rank-fidelity holds for the whole read: the first 'supernodeInterleaveRounds x supernodeStripes' entries are taken one per stripe per turn and past that the rotation widens into geometrically growing batches, which costs the position of an entry a bounded factor rather than the relation to its rank (see GRAPH_SUPERNODE_INTERLEAVE_ROUNDS). It does NOT hold for a query the planner routes through a GraphAnalyticalView (e.g. GAVExpandAll): a view returns neighbours ordered by internal dense node ID, which carries no relationship to recency. 0 disables promotion entirely (databases stay fully readable by older versions)",
       Integer.class, 4096),
 
   GRAPH_EDGE_LIST_INITIAL_CHUNK_SIZE("arcadedb.graph.edgeListInitialChunkSize", SCOPE.DATABASE,
@@ -569,7 +597,7 @@ public enum GlobalConfiguration {
       Integer.class, 16),
 
   GRAPH_SUPERNODE_INTERLEAVE_ROUNDS("arcadedb.graph.supernodeInterleaveRounds", SCOPE.DATABASE,
-      "Number of round-robin ROUNDS (one entry taken from every stripe chain per round) a super-node read walk (edgeIterator/vertexIterator/ridIterator) keeps interleaved before degrading the rest of the walk to plain concatenation of whatever is left in each chain. The interleaved (approximately newest-first) order only helps a caller reading a bounded prefix - paging, a query with a small LIMIT; a caller still reading past 'rounds x supernodeStripes' entries is doing a full walk, where the order is not going to be consulted and the interleaving's resident chunk page per stripe (as opposed to one, for a single cursor draining a chain at a time) is a pure locality cost paid for nothing (#6048). The degrade point scales with the live stripe count of the generation being walked, not with the vertex's total degree, so the extra cost a full walk pays for the ordered prefix is bounded regardless of how large the super-node grows. 0 disables interleaving entirely (immediate concatenation, the pre-#6044 order); a negative value behaves the same as 0 rather than being rejected",
+      "Number of round-robin ROUNDS (one entry taken from every stripe chain per round) a super-node read walk (edgeIterator/vertexIterator/ridIterator) keeps at one entry per turn before WIDENING the rotation. Taking one entry per turn reconstructs the approximately newest-first order but keeps a resident chunk page per stripe and hops between files on every entry, which a caller reading a bounded prefix (paging, a query with a small LIMIT) never notices and a full walk pays for its whole degree (#6048). Past 'rounds x supernodeStripes' entries of a generation the walk therefore keeps rotating but takes 'rounds' entries from each chain per turn, doubling that batch on every completed round: the chain switches over a walk of D entries drop from D to about supernodeStripes x log(D), and each visit becomes a sequential run through a chain once the batch outgrows a chunk, while an edge of recency rank r still comes back at a position of order r for the WHOLE walk instead of only for the first 'rounds x supernodeStripes' entries (#6064) - so a large-but-bounded LIMIT keeps the ordering in proportion to what it asked for without the threshold having to be raised globally. The widening point scales with the live stripe count of the generation being walked, not with the vertex's total degree, so the extra cost a full walk pays for the ordered prefix is bounded regardless of how large the super-node grows. 0 disables interleaving entirely (immediate concatenation, the pre-#6044 order); a negative value behaves the same as 0 rather than being rejected",
       Integer.class, 64),
 
   BACKUP_ENABLED("arcadedb.backup.enabled", SCOPE.DATABASE,
@@ -704,7 +732,19 @@ public enum GlobalConfiguration {
       Integer.class, 16, integerRangeAsStrings(1, 31)),
 
   // COMMAND
-  COMMAND_TIMEOUT("arcadedb.command.timeout", SCOPE.DATABASE, "Default timeout for commands (in ms)", Long.class, 0),
+  COMMAND_TIMEOUT("arcadedb.command.timeout", SCOPE.DATABASE, """
+      Maximum time in ms a single command may run before being aborted with a TimeoutException. The deadline is \
+      taken once, when execution starts, and is shared by everything the statement does - a CALL subquery, a \
+      correlated COUNT { }, a UNION branch and a CALL algo.* procedure all run against the same instant rather than \
+      each starting a fresh budget. It is checked inside the scan, expansion and filter loops, so a statement that \
+      produces no row for minutes is bounded too, not only one that streams rows. Covers SQL and openCypher, \
+      including SELECT/UPDATE/DELETE/MATCH/TRAVERSE and the openCypher algo.* procedures. A per-statement SQL \
+      TIMEOUT clause is enforced alongside it and the earlier of the two wins, so a statement may ask for less \
+      time than this setting allows but not for more. Gremlin and the other polyglot scripting \
+      engines are NOT covered - they have their own arcadedb.polyglotCommand.timeout - and neither is regular \
+      expression backtracking, which arcadedb.command.regexTimeout bounds separately. Set to 0 (the default) to \
+      disable.""",
+      Long.class, 0),
 
   COMMAND_REGEX_TIMEOUT("arcadedb.command.regexTimeout", SCOPE.DATABASE, """
       Maximum time in ms a single regular expression evaluation may run before being aborted (an entire scan, for a \
@@ -813,21 +853,29 @@ public enum GlobalConfiguration {
       where the stack is at risk. Raise it only if a legitimate, deeply-nested or very long generated query needs it.""",
       Integer.class, 200),
 
-  CYPHER_ALGO_MAX_WALK_MEMORY("arcadedb.cypher.algoMaxWalkMemory", SCOPE.DATABASE,
+  CYPHER_ALGO_MAX_WORKING_MEMORY("arcadedb.cypher.algoMaxWorkingMemory", SCOPE.DATABASE,
       """
-      Maximum heap, in bytes, that a single call to an OpenCypher random-walk algorithm procedure may reserve for \
-      its walk buffers: algo.node2vec materialises walksPerNode x nodeCount walks of walkLength steps each, and \
-      algo.randomWalk a single walk of steps entries. Those knobs have no graph-derived ceiling to clamp against - \
-      unlike a top-k bound, which is capped by the node count - so a large but perfectly in-range int would \
-      otherwise reach the allocator unchecked, or wrap the int product on the way there and surface as a \
-      NegativeArraySizeException from inside the walk generator. The estimate is computed in saturating long \
-      arithmetic and checked BEFORE anything is allocated: a call over the budget is rejected as a client error \
-      naming the knobs that produced the estimate and this setting. Negative number means no limit. When left at \
-      the default it auto-scales with the JVM max heap (one eighth of it, never below 64MB), so the walk buffers \
-      of a legitimate large run stay a fraction of the heap they share with the rest of the query.""",
+      Maximum heap, in bytes, that a single call to an OpenCypher algorithm procedure may reserve for the dense \
+      working set it builds beside the graph: the random-walk buffers of algo.node2vec (walksPerNode x nodeCount \
+      walks of walkLength steps) and algo.randomWalk (a single walk of steps entries), algo.slpa's label memory \
+      (one row of iterations entries per node), the nodeCount x dimension embedding matrices of algo.node2vec, \
+      algo.fastrp, algo.hashgnn and algo.graphsage, the nodeCount x nodeCount matrices of algo.apsp, \
+      algo.simRank, algo.maxFlow and algo.kShortestPaths, and the terminals x nodeCount tables and \
+      terminal-pair arrays of algo.steinerTree. None of these has a graph-derived ceiling to clamp against - \
+      unlike a top-k bound, which is capped by the node count - so a large but perfectly in-range int, a \
+      terminal list of any length, or simply a large graph, would otherwise reach the allocator unchecked, or \
+      wrap the int product on the way there and surface as a NegativeArraySizeException from inside the \
+      algorithm. Every estimate is computed in saturating long arithmetic and reserved BEFORE anything is \
+      allocated, and reservations accumulate over the call, so what is bounded is the working set of the whole \
+      call rather than one allocation of it: a call over the budget is rejected as a client error naming the \
+      component and the knobs that produced the estimate, together with this setting. Negative number means no \
+      limit. When left at the default it auto-scales with the JVM max heap (one eighth of it, never below 64MB), \
+      so the working set of a legitimate large run stays a fraction of the heap it shares with the rest of the \
+      query.""",
       Long.class, 64 * 1024 * 1024L, null, value -> {
         // Auto-scale the default with the JVM max heap: one eighth of it, never below the 64MB floor so that a
-        // typical run (a few million walk entries) keeps working on small footprints.
+        // typical run (a few million walk entries, or a mid-sized graph at the default embedding dimension)
+        // keeps working on small footprints.
         final long maxHeap = Runtime.getRuntime().maxMemory();
         if (maxHeap == Long.MAX_VALUE)
           // Heap is unbounded (no -Xmx): keep the conservative floor rather than an effectively unlimited cap.
