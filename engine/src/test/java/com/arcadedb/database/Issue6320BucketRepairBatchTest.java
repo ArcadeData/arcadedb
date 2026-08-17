@@ -33,6 +33,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * #6320 - what one run of {@code CHECK DATABASE FIX} on a bucket may hold in memory.
@@ -52,7 +53,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue6320BucketRepairBatchTest extends BucketPageLayoutTestSupport {
-  private static final String TYPE    = "Damaged";
+  private static final String TYPE      = "Damaged";
+  /** A type the repair never touches, so the caller's own work sits on pages of its own. */
+  private static final String BYSTANDER = "Bystander";
   /** Enough broken records, spread over enough pages, that a small page budget really is crossed several times. */
   private static final int    RECORDS = 24;
   /** {@code LocalBucket.FIRST_CHUNK} (-2), as the single zigzag byte it is stored as. */
@@ -124,6 +127,64 @@ class Issue6320BucketRepairBatchTest extends BucketPageLayoutTestSupport {
           .as("and must still see what it had not committed").isEqualTo("u");
     } finally {
       database.rollback();
+    }
+  }
+
+  /**
+   * The failure path, and the reason the run tracks whether it still OWNS a transaction rather than asking
+   * {@code database.isTransactionActive()} (PR review on #6320).
+   * <p>
+   * {@code LocalDatabase.commit()} pops the transaction context in a {@code finally}, whether or not the write
+   * succeeded, so a batch commit that throws leaves this run holding nothing - and what is on the thread from that
+   * moment is the CALLER's transaction, which through HTTP is always there. A cleanup that asked "is a transaction
+   * active?" would answer yes and roll THAT one back: the other buckets a {@code CHECK DATABASE FIX} had already
+   * repaired into it, and whatever else the caller was holding.
+   * <p>
+   * The failure simulated is the one batching exists to survive in the first place, taken from
+   * {@code CheckDatabaseRepairBatchFailureTest}: a commit rejected from inside the WAL-write callback.
+   */
+  @Test
+  void aFailedBatchCommitLeavesTheCallersTransactionAlone() {
+    brokenChunkChains();
+
+    // A type of its own for the caller's work, so its pages cannot overlap the ones the repair rewrites and the
+    // assertion below is about transaction ownership and nothing else.
+    database.transaction(() -> database.getSchema().createDocumentType(BYSTANDER, 1));
+
+    GlobalConfiguration.CHECK_DATABASE_REPAIR_BATCH_PAGES.setValue(1);
+
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final AtomicInteger commits = new AtomicInteger();
+    // Fails the SECOND batch commit, so the run has genuinely committed one batch before it breaks.
+    final Callable<Void> failSecondCommit = () -> {
+      if (commits.incrementAndGet() == 2)
+        throw new IllegalStateException("simulated replicated-entry rejection");
+      return null;
+    };
+
+    database.begin();
+    try {
+      final RID callersOwn = database.newDocument(BYSTANDER).set("payload", "caller").save().getIdentity();
+
+      db.registerCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, failSecondCommit);
+      try {
+        assertThatThrownBy(() -> bucketOf(TYPE).check(0, true))
+            .as("a batch that cannot commit must reach the caller, not be reported as a completed repair")
+            .isInstanceOf(Exception.class);
+      } finally {
+        db.unregisterCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, failSecondCommit);
+      }
+
+      assertThat(commits.get()).as("the failure must have happened mid-repair, not before it started")
+          .isGreaterThanOrEqualTo(2);
+
+      assertThat(database.isTransactionActive())
+          .as("the caller's transaction must survive a repair that failed inside a transaction of its own").isTrue();
+      assertThat(callersOwn.asDocument(true).getString("payload"))
+          .as("with the work it was holding still in it").isEqualTo("caller");
+    } finally {
+      if (database.isTransactionActive())
+        database.rollback();
     }
   }
 
