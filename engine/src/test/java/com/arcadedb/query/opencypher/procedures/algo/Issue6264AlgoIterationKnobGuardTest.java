@@ -46,8 +46,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.within;
 
 /**
- * Regression tests for issue #6264 - the iteration-shaped knob of the thirteen {@code algo.*} procedures that
- * #6216 left out of scope.
+ * Regression tests for issue #6264 - the iteration-shaped knob of the fourteen {@code algo.*} procedures that
+ * #6216 left out of scope. The issue named thirteen; {@code algo.graphsage}'s {@code layers} is a fourteenth with
+ * exactly the same shape, found in review.
  * <p>
  * #6216 established that such a knob needs two things, and gave both to {@code algo.node2vec},
  * {@code algo.maxKCut} and {@code algo.influenceMaximization} only:
@@ -59,9 +60,9 @@ import static org.assertj.core.api.Assertions.within;
  *       is not obviously wrong to a caller, unlike an exception, which is what makes the silent half the more
  *       serious one;</li>
  *   <li><b>a checkpoint inside the loop the knob drives,</b> so a large value is abortable by thread interrupt and
- *       by {@code arcadedb.command.timeout} rather than forbidden by a guessed cap. Four of the thirteen -
- *       pageRank on CSR, simRank, fastRP, hashGNN, slpa - have no convergence test at all, so the knob alone
- *       decided when they stopped.</li>
+ *       by {@code arcadedb.command.timeout} rather than forbidden by a guessed cap. Six of the fourteen -
+ *       pageRank on CSR, simRank, fastRP, hashGNN, graphSAGE and slpa - have no convergence test at all, so the
+ *       knob alone decided when they stopped.</li>
  * </ul>
  * SLPA's {@code iterations} additionally buys heap rather than only time (one row of {@code iterations + 1} ints
  * per node), so it is priced against the same budget the walk buffers use.
@@ -101,10 +102,10 @@ class Issue6264AlgoIterationKnobGuardTest {
       database.drop();
   }
 
-  // ── The parameter domains: thirteen knobs, one minimum ───────────────────
+  // ── The parameter domains: fourteen knobs, one minimum ──────────────────
 
   /**
-   * Every one of the thirteen extracted its knob with a plain {@code extractInt(n, name)} - no minimum - so a
+   * Every one of the fourteen extracted its knob with a plain {@code extractInt(n, name)} - no minimum - so a
    * non-positive value was absorbed in silence and came back as a result. The value is the trip count of a loop:
    * zero trips is not a cheaper answer, it is the initial state of the algorithm returned as its output.
    */
@@ -122,7 +123,8 @@ class Issue6264AlgoIterationKnobGuardTest {
       "algo.simRank              | maxIterations | MATCH (a:Node {name: 'A'}), (b:Node {name: 'C'}) CALL algo.simRank(a, b, 'LINK', 0.8, 0) YIELD similarity RETURN similarity",
       "algo.slpa                 | iterations    | CALL algo.slpa({iterations: 0}) YIELD node RETURN node",
       "algo.fastrp               | iterations    | CALL algo.fastrp({dimensions: 8, iterations: 0}) YIELD node RETURN node",
-      "algo.hashgnn              | iterations    | CALL algo.hashgnn({embeddingDimension: 8, iterations: 0}) YIELD node RETURN node" })
+      "algo.hashgnn              | iterations    | CALL algo.hashgnn({embeddingDimension: 8, iterations: 0}) YIELD node RETURN node",
+      "algo.graphsage            | layers        | CALL algo.graphsage({embeddingDimension: 8, layers: 0}) YIELD node RETURN node" })
   void everyIterationKnobRejectsZero(final String procedure, final String knob, final String query) {
     assertThatThrownBy(() -> drain(query))
         .as("%s must refuse %s 0 by name instead of returning its own initial state as a result", procedure, knob)
@@ -162,7 +164,8 @@ class Issue6264AlgoIterationKnobGuardTest {
       "algo.simRank              | 1 | MATCH (a:Node {name: 'A'}), (b:Node {name: 'C'}) CALL algo.simRank(a, b, 'LINK', 0.8, 1) YIELD similarity RETURN similarity",
       "algo.slpa                 | 4 | CALL algo.slpa({iterations: 1, seed: 1}) YIELD node RETURN node",
       "algo.fastrp               | 4 | CALL algo.fastrp({dimensions: 8, iterations: 1, seed: 1}) YIELD node RETURN node",
-      "algo.hashgnn              | 4 | CALL algo.hashgnn({embeddingDimension: 8, iterations: 1, seed: 1}) YIELD node RETURN node" })
+      "algo.hashgnn              | 4 | CALL algo.hashgnn({embeddingDimension: 8, iterations: 1, seed: 1}) YIELD node RETURN node",
+      "algo.graphsage            | 4 | CALL algo.graphsage({embeddingDimension: 8, layers: 1, seed: 1}) YIELD node RETURN node" })
   void everyIterationKnobAcceptsItsMinimum(final String procedure, final int expectedRows, final String query) {
     assertThat(drain(query)).as("%s must still run at the smallest legal setting", procedure).hasSize(expectedRows);
   }
@@ -170,7 +173,7 @@ class Issue6264AlgoIterationKnobGuardTest {
   // ── Cooperative abort: the checkpoint inside the loop ────────────────────
 
   /**
-   * The interrupt half of the guard, on all thirteen. This is the deterministic one: the flag is armed before the
+   * The interrupt half of the guard, on all fourteen. This is the deterministic one: the flag is armed before the
    * call, so the very first checkpoint the procedure reaches has to observe it, whatever the machine's speed.
    * <p>
    * The assertion is on the guard's own message rather than merely "something was thrown", because only
@@ -193,7 +196,8 @@ class Issue6264AlgoIterationKnobGuardTest {
       "algo.simRank              | MATCH (a:Node {name: 'A'}), (b:Node {name: 'C'}) CALL algo.simRank(a, b, 'LINK', 0.8, 2000000000) YIELD similarity RETURN similarity",
       "algo.slpa                 | CALL algo.slpa({iterations: 1000000, seed: 1}) YIELD node RETURN node",
       "algo.fastrp               | CALL algo.fastrp({dimensions: 8, iterations: 2000000000, seed: 1}) YIELD node RETURN node",
-      "algo.hashgnn              | CALL algo.hashgnn({embeddingDimension: 8, iterations: 2000000000, seed: 1}) YIELD node RETURN node" })
+      "algo.hashgnn              | CALL algo.hashgnn({embeddingDimension: 8, iterations: 2000000000, seed: 1}) YIELD node RETURN node",
+      "algo.graphsage            | CALL algo.graphsage({embeddingDimension: 8, layers: 2000000000, seed: 1}) YIELD node RETURN node" })
   void everyIterationLoopAbortsOnInterrupt(final String procedure, final String query) {
     Thread.currentThread().interrupt();
     try {
@@ -212,10 +216,10 @@ class Issue6264AlgoIterationKnobGuardTest {
    * The deadline half of the guard: {@code arcadedb.command.timeout}, which before #6216 only the SQL SELECT
    * planner honoured.
    * <p>
-   * The list is eleven of the thirteen rather than all: {@code algo.louvain} and {@code algo.leiden} both stop as
+   * The list is twelve of the fourteen rather than all: {@code algo.louvain} and {@code algo.leiden} both stop as
    * soon as no node changes community, and on this four-node cycle they settle in a handful of microseconds, so a
    * deadline test on them would assert nothing about a run that is over before the clock is read. Their checkpoint
-   * is the same {@code WorkGuard.check()} call the other eleven use - it observes the deadline and the interrupt
+   * is the same {@code WorkGuard.check()} call the other twelve use - it observes the deadline and the interrupt
    * in one place - and it is covered above.
    */
   @Timeout(120)
@@ -231,7 +235,8 @@ class Issue6264AlgoIterationKnobGuardTest {
       "algo.simRank              | MATCH (a:Node {name: 'A'}), (b:Node {name: 'C'}) CALL algo.simRank(a, b, 'LINK', 0.8, 2000000000) YIELD similarity RETURN similarity",
       "algo.slpa                 | CALL algo.slpa({iterations: 1000000, seed: 1}) YIELD node RETURN node",
       "algo.fastrp               | CALL algo.fastrp({dimensions: 8, iterations: 2000000000, seed: 1}) YIELD node RETURN node",
-      "algo.hashgnn              | CALL algo.hashgnn({embeddingDimension: 8, iterations: 2000000000, seed: 1}) YIELD node RETURN node" })
+      "algo.hashgnn              | CALL algo.hashgnn({embeddingDimension: 8, iterations: 2000000000, seed: 1}) YIELD node RETURN node",
+      "algo.graphsage            | CALL algo.graphsage({embeddingDimension: 8, layers: 2000000000, seed: 1}) YIELD node RETURN node" })
   void everyIterationLoopHonoursTheCommandTimeout(final String procedure, final String query) {
     database.getConfiguration().setValue(GlobalConfiguration.COMMAND_TIMEOUT, 1L);
 
@@ -373,7 +378,7 @@ class Issue6264AlgoIterationKnobGuardTest {
   // ── SLPA: an iteration knob that buys heap as well as time ───────────────
 
   /**
-   * Alone among the thirteen, SLPA's {@code iterations} sizes an allocation: every node keeps a label-memory row
+   * Alone among the fourteen, SLPA's {@code iterations} sizes an allocation: every node keeps a label-memory row
    * of {@code iterations + 1} ints, so the matrix is {@code nodeCount x (iterations + 1)} and a value that merely
    * looks large reaches the allocator with nothing between it and the heap.
    */
