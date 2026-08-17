@@ -392,13 +392,13 @@ class Issue6264AlgoIterationKnobGuardTest {
     // The budget is set rather than left at its default because the default auto-scales with the JVM heap: on a
     // large-heap runner a value big enough to exceed it would be one this test then has to allocate to prove
     // nothing. 4 nodes x 1000001 ints is 16 MB against a 1 MB budget, and neither is ever reserved.
-    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WALK_MEMORY, 1024L * 1024L);
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1024L * 1024L);
 
     assertThatThrownBy(() -> drain("CALL algo.slpa({iterations: 1000000}) YIELD node RETURN node"))
         .as("a label memory over the budget must be refused before the first row is allocated")
         .hasStackTraceContaining("label memory")
         .hasStackTraceContaining("iterations=1000000 over 4 nodes")
-        .hasStackTraceContaining(GlobalConfiguration.CYPHER_ALGO_MAX_WALK_MEMORY.getKey());
+        .hasStackTraceContaining(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getKey());
   }
 
   @Test
@@ -406,7 +406,7 @@ class Issue6264AlgoIterationKnobGuardTest {
     // The budget is what normally catches an oversized matrix, but it explicitly accepts "negative = no limit",
     // and `iterations + 1` at Integer.MAX_VALUE wrapped to Integer.MIN_VALUE: a bare NegativeArraySizeException
     // naming nothing. The capacity is computed in long and refused on its own account.
-    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WALK_MEMORY, -1L);
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, -1L);
 
     assertThatThrownBy(() -> drain("CALL algo.slpa({iterations: 2147483647}) YIELD node RETURN node"))
         .hasStackTraceContaining("2147483648 label entries per node, more than the 2147483647 a Java array can hold");
@@ -415,7 +415,7 @@ class Issue6264AlgoIterationKnobGuardTest {
   @Test
   void slpaRunsWhenTheLabelMemoryFitsTheBudget() {
     // Over-reach guard: the same shape of call, under the budget, must be untouched by the check.
-    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WALK_MEMORY, 1024L * 1024L);
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1024L * 1024L);
 
     assertThat(drain("CALL algo.slpa({iterations: 50, seed: 3}) YIELD node, communities RETURN node, communities"))
         .hasSize(4);
