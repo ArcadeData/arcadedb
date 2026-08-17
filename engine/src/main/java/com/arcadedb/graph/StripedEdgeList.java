@@ -67,10 +67,10 @@ import java.util.logging.Level;
  *     its own chain and the rotation emits every chain's head in the first turn;</li>
  * <li><b>APPROXIMATELY</b> newest-first globally, with the deviation of an edge's returned position from its true
  *     recency rank {@code r} bounded by a small multiple of {@code r} - independent of the vertex degree - for
- *     the first {@link com.arcadedb.GlobalConfiguration#GRAPH_SUPERNODE_INTERLEAVE_ROUNDS} rounds of a
- *     generation's rotation. Past that (#6048), the walk degrades to plain concatenation of what is left in each
- *     chain, on the reasoning that a caller still reading at that point is doing a full walk rather than paging,
- *     so the order stops being useful and the locality of one cursor draining a chain at a time is worth more.</li>
+ *     the WHOLE walk. The first {@link com.arcadedb.GlobalConfiguration#GRAPH_SUPERNODE_INTERLEAVE_ROUNDS}
+ *     rounds of a generation's rotation take one entry per chain per turn; past that the rotation WIDENS (#6048,
+ *     #6064), taking a geometrically growing batch from each chain per turn instead, which recovers the locality
+ *     of a full walk without giving the rank up.</li>
  * </ul>
  * It is NOT an ordering guarantee: an application that needs an exact order must sort, or read through an index
  * on a timestamp property. That was true of the classic layout too - reverse-insertion order was never part of
@@ -506,14 +506,23 @@ public class StripedEdgeList extends EdgeLinkedList {
    * <p>
    * A generation contributing a single chain is passed through unwrapped: the rotation would be a no-op and the
    * plain chain iterator keeps its identity (e.g. {@code ResettableIterator} specialisations) and its locality.
-   * <h2>Degrading to concatenation on a full walk (#6048)</h2>
-   * Interleaving keeps {@code size} chunk pages resident and hops between {@code size} files every {@code size}
-   * entries - a locality cost that a paged read (small LIMIT) never notices but a full walk pays for the whole
-   * degree, for an ordering it never consults. {@link GlobalConfiguration#GRAPH_SUPERNODE_INTERLEAVE_ROUNDS}
-   * bounds that cost: past {@code rounds x size} entries of a generation, {@link InterleavedIterator} degrades
-   * to draining the remaining chains one at a time (see its Javadoc), so the extra locality cost a full walk
-   * pays for the ordered prefix is a fixed amount independent of how large the super-node has grown, while a
-   * paged read within the threshold keeps the full rank-fidelity #6044 restored.
+   * <h2>Widening the rotation on a long walk (#6048, #6064)</h2>
+   * Taking one entry per chain per turn keeps {@code size} chunk pages resident and hops between {@code size}
+   * files every {@code size} entries - a locality cost that a paged read (small LIMIT) never notices but a full
+   * walk pays for the whole degree, for an ordering it never consults.
+   * {@link GlobalConfiguration#GRAPH_SUPERNODE_INTERLEAVE_ROUNDS} bounds that cost: past {@code rounds x size}
+   * entries of a generation, {@link InterleavedIterator} keeps rotating but takes {@code rounds} entries per
+   * chain per turn and doubles that on every completed round, so the chain switches over a walk of {@code D}
+   * entries fall from {@code D} to {@code O(size x log D)} and every visit becomes a sequential run once the
+   * batch outgrows a chunk.
+   * <p>
+   * #6064: the batch WIDENS rather than the rotation stopping, because stopping it made the threshold a cliff
+   * for a caller whose LIMIT was bounded but larger than {@code rounds x size} - past the cliff an edge came
+   * back at a position with no relation to its recency at all, and the only lever was raising the threshold for
+   * every unbounded read in the database too. Doubling the batch instead keeps an entry at depth {@code d}
+   * emitted no later than the end of the batch that reaches depth {@code d}, i.e. at a position of order
+   * {@code d x size}, for the whole walk: every bounded read gets rank fidelity in proportion to what it asked
+   * for, without anyone having to tell the edge list what the query's LIMIT was.
    */
   private <T> Iterator<T> interleaved(final ChainIteratorFactory<T> factory) {
     final MultiIterator<T> iterator = new MultiIterator<>();
@@ -538,7 +547,11 @@ public class StripedEdgeList extends EdgeLinkedList {
         cursors[i] = factory.create(chains.get(i));
       // 'rounds' is a long so the product cannot overflow (both factors are Integer-config-sized, size in
       // particular bounded by GRAPH_SUPERNODE_STRIPES): no need to special-case a "never degrade" sentinel.
-      iterator.addIterator(new InterleavedIterator<>(cursors, rounds * size));
+      // Past the threshold the rotation WIDENS rather than stopping (#6064): the first wide visit takes as many
+      // entries per chain as the rotation already took rounds - a continuous step up from one per turn - and
+      // doubles per round from there. 'rounds' <= 0 keeps its documented meaning of "interleaving off": the
+      // Long.MAX_VALUE batch never rotates again, which is plain concatenation from the very first entry.
+      iterator.addIterator(new InterleavedIterator<>(cursors, rounds * size, rounds > 0 ? rounds : Long.MAX_VALUE));
     }
     return iterator;
   }
