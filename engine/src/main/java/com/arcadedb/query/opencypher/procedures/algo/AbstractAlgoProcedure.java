@@ -274,6 +274,17 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   protected static final long DOUBLE_BYTES = 8L;
 
   /**
+   * Heap cost of one entry of an {@code Integer[]}: the 8-byte reference the array holds plus the 16-byte boxed
+   * object it points at. Three times the cost of the {@code int} it carries, which is why an index array sorted
+   * through a {@code Comparator} - the only reason these arrays are boxed at all - is priced separately rather
+   * than folded into a primitive figure that would understate it.
+   * <p>
+   * Like {@link #MATRIX_ROW_OVERHEAD_BYTES} this is a heuristic for a budget check: below 128 the JVM hands out
+   * cached {@code Integer} instances and the true cost is the reference alone.
+   */
+  protected static final long BOXED_INTEGER_BYTES = 24L;
+
+  /**
    * Estimated heap footprint of a {@code new T[rows][columns]} of an element type {@code elementBytes} wide,
    * row headers included, in saturating {@code long} arithmetic.
    */

@@ -2283,6 +2283,7 @@ Priced against the budget, all before anything is allocated:
 | `algo.simRank` | 2 x `nodeCount x nodeCount` similarity matrices |
 | `algo.maxFlow` | `nodeCount x nodeCount` capacity + residual matrices |
 | `algo.kShortestPaths` | `nodeCount x nodeCount` weight matrix + removed-edge mask |
+| `algo.steinerTree` | `terminals x nodeCount` Dijkstra tables + four arrays of one entry per terminal pair |
 | `algo.randomWalk` | walk buffer (unchanged from #6216) |
 
 The last four are the reason the rename is worth doing rather than adding a second walk-shaped key. Their
@@ -2298,5 +2299,17 @@ arriving as an `OutOfMemoryError` several minutes in.
 matrix, are the larger pair. They are four times as wide as the embedding, so even stored as `boolean` they
 cost half a byte per dimension per node against the embedding's eight - which is why they are priced by name
 rather than folded into an "embedding matrices" figure that would understate the call by a factor of two.
+
+`algo.steinerTree` carried the same defect in both of its forms, and is the only knob in the package a caller
+supplies as *data* rather than as a number: `terminalNodes` is a list, so nothing validates its length - not
+even the node count, since repeating the same vertex is accepted. Its length sizes a `terminals x nodeCount`
+pair of Dijkstra tables, and then `t * (t - 1) / 2` terminal pairs across four parallel arrays. That
+expression was evaluated in `int`, and the division by 2 happens *after* the product, so it wrapped at 46342
+terminals - the result fitting an `int` never saved it - and `new int[pairCount]` died as a bare
+`NegativeArraySizeException: -1073716337`, naming nothing. The count is now computed in `long`, priced (the
+real figure at that length is 1073767311 pairs, about 43 GB), and refused past `Integer.MAX_VALUE` entries
+whatever the heap setting says. The pair arrays include an `Integer[]` index array sorted through a
+`Comparator`, which costs 24 bytes an entry against the 4 of the `int` it carries; it is priced at what it
+actually costs rather than at what a primitive array would.
 
 [#6263](https://github.com/ArcadeData/arcadedb/issues/6263)

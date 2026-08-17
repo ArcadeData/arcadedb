@@ -245,6 +245,58 @@ class Issue6263AlgoWorkingMemoryBudgetTest {
         .hasStackTraceContaining(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getKey());
   }
 
+  // ── The one knob supplied as data rather than as a number ────────────────
+
+  @Test
+  void steinerTreeRejectsDijkstraTablesLargerThanTheBudget() {
+    // `terminalNodes` is a list, so unlike every other knob in the package it has no numeric form to validate:
+    // its length sizes a terminals x nodeCount pair of tables, and nothing bounds it - not even the node count,
+    // since repeating the same vertex is accepted. Two terminals over 4 nodes are 128 + 96 bytes.
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 100L);
+
+    assertThatThrownBy(() -> drain("""
+        MATCH (a:Node {name: 'A'}), (c:Node {name: 'C'}) \
+        CALL algo.steinerTree([a, c]) YIELD weight \
+        RETURN weight"""))
+        .hasStackTraceContaining("the per-terminal Dijkstra tables would need 224 bytes (2 terminals x 4 nodes)")
+        .hasStackTraceContaining(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getKey());
+  }
+
+  @Test
+  void steinerTreeRejectsATerminalListWhosePairCountWrapsInt() {
+    // 46342 terminals is the first length at which `t * (t - 1)` wraps int. The wrap is NOT avoided by the
+    // result fitting an int - the division by 2 happens after the product - so the old expression came back
+    // negative and `new int[pairCount]` died as a bare NegativeArraySizeException naming nothing. In long the
+    // count is 1073767311 pairs, ~43 GB across the four parallel arrays, which the DEFAULT budget refuses:
+    // this is the one case where the two defects are the same defect, and quoting the true pair count in the
+    // message is what proves the arithmetic no longer wraps.
+    assertThatThrownBy(() -> drain("""
+        UNWIND range(1, 46342) AS i \
+        MATCH (a:Node {name: 'A'}) \
+        WITH collect(a) AS terminals \
+        CALL algo.steinerTree(terminals) YIELD weight \
+        RETURN weight"""))
+        .as("the terminal-pair count must be computed in long and priced, not wrapped into the allocator")
+        .hasStackTraceContaining("the terminal-pair arrays would need")
+        .hasStackTraceContaining("1073767311 pairs over 46342 terminals")
+        .hasStackTraceContaining(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getKey());
+  }
+
+  @Test
+  void steinerTreeRejectsMoreTerminalPairsThanAJavaArrayCanHoldEvenWithTheBudgetDisabled() {
+    // The budget is what normally catches an oversized terminal list, but past 65536 terminals the pair count
+    // exceeds Integer.MAX_VALUE and no heap setting makes those array entries legal.
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, -1L);
+
+    assertThatThrownBy(() -> drain("""
+        UNWIND range(1, 70000) AS i \
+        MATCH (a:Node {name: 'A'}) \
+        WITH collect(a) AS terminals \
+        CALL algo.steinerTree(terminals) YIELD weight \
+        RETURN weight"""))
+        .hasStackTraceContaining("70000 terminalNodes make 2449965000 terminal pairs, more than the 2147483647");
+  }
+
   // ── Nothing legitimate got refused ───────────────────────────────────────
 
   @Test
@@ -273,6 +325,10 @@ class Issue6263AlgoWorkingMemoryBudgetTest {
         MATCH (a:Node {name: 'A'}) \
         CALL algo.randomWalk(a, 10) YIELD steps \
         RETURN steps""")).hasSize(1);
+    assertThat(drain("""
+        MATCH (a:Node {name: 'A'}), (c:Node {name: 'C'}) \
+        CALL algo.steinerTree([a, c]) YIELD weight \
+        RETURN weight""")).isNotEmpty();
   }
 
   // ── Helpers ──────────────────────────────────────────────────────────────
