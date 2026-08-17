@@ -154,9 +154,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private final    AtomicBoolean           httpFallbackWarned = new AtomicBoolean(false);
   // Logged at most once: notes that peer HTTPS endpoints are derived from this node's local HTTPS port.
   private final    AtomicBoolean           httpsFallbackWarned = new AtomicBoolean(false);
-  // Logged at most once per protocol: warns that a peer-to-peer endpoint was WITHHELD because two peers
-  // resolved to it. Distinct from the two latches above, which fire whenever an address is derived at all -
-  // which a healthy homogeneous StatefulSet also does (issue #6267).
+  // Logged at most once per protocol, per node (these are this server's latches, like every other one here -
+  // a test that builds several RaftHAServer instances gets a fresh pair each time): warns that a peer-to-peer
+  // endpoint was WITHHELD because two peers resolved to it. Distinct from the two latches above, which fire
+  // whenever an address is derived at all - which a healthy homogeneous StatefulSet also does (issue #6267).
   private final    AtomicBoolean           httpAmbiguityWarned = new AtomicBoolean(false);
   private final    AtomicBoolean           httpsAmbiguityWarned = new AtomicBoolean(false);
   // Client-reachable Bolt endpoints (optional object-form 'bolt' field in HA_SERVER_LIST). Advertised
@@ -2034,8 +2035,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * routing tables of issue #6183, not about the peer-to-peer endpoints a resync and a cluster verify dial.
    * <p>
    * Once per protocol rather than once per attempt: the resync and verify paths ask on every attempt, and a
-   * misconfiguration that does not change between attempts should not be re-reported on each one. The latch is
-   * per JVM and never rearms, the same convention {@link #deriveHttpAddressWithWarning} and
+   * misconfiguration that does not change between attempts should not be re-reported on each one. The latch
+   * lives on this node - one per {@code RaftHAServer}, which in a server process means once for its lifetime -
+   * and never rearms, the same convention {@link #deriveHttpAddressWithWarning} and
    * {@link #warnAmbiguousRouting} follow, so a membership change that makes a <em>different</em> pair of peers
    * collide is not logged again - the line names the peers that tripped it first, and a reader chasing a
    * cluster they know is misconfigured should read {@code httpAddressAmbiguous} from {@code GET

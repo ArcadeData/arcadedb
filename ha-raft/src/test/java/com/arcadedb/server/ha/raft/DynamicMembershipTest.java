@@ -151,6 +151,12 @@ class DynamicMembershipTest extends BaseRaftHATest {
    * Removes a peer from the group and records that it is no longer a replica. Recorded only once the removal
    * has returned: a refused removal leaves the peer a member, and excluding it from the teardown check would
    * hide exactly the divergence the refusal exists to prevent.
+   * <p>
+   * Returning is also enough to make what follows deterministic rather than a race: {@code removePeer} drives
+   * Ratis's blocking {@code admin().setConfiguration(...)} and returns only on a successful reply, so the new
+   * configuration is committed by then. A write issued after this call cannot still reach the evicted peer,
+   * and the {@code getLivePeers()} assertions the methods above make immediately afterwards read committed
+   * membership rather than a request in flight.
    */
   private void evict(final RaftHAServer raftServer, final int serverIndex, final boolean force) {
     if (force)
