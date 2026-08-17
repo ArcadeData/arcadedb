@@ -468,6 +468,26 @@ public enum GlobalConfiguration {
       spanning several pages). Leave headroom when picking a value close to the replicated-entry limit.""",
       Integer.class, 256),
 
+  CHECK_DATABASE_ADJACENCY_CACHE_ENTRIES("arcadedb.checkDatabaseAdjacencyCacheEntries", SCOPE.DATABASE,
+      """
+      Maximum number of adjacency-list entries CHECK DATABASE keeps materialised while answering its back-reference \
+      probes (issue #6062). The check asks, once per edge, whether the NEIGHBOUR's edge list names that edge \
+      (checkEdges) and whether the far vertex of every adjacency entry points back (checkVertices). Both questions \
+      are a linear walk of the neighbour's chunk chain, and nothing used to be remembered between two probes of the \
+      same list, so a hub of degree D was walked D times by each of them: O(D²) on exactly the vertex the check \
+      exists to survive, with every walk risking a page read once the graph exceeds the page cache. A 657GB database \
+      with hubs in the hundreds of thousands of edges measured 80 hours for one CHECK DATABASE FIX. With the cache, \
+      the first probe of a list materialises it into primitive hash sets and every later probe of it is a hash \
+      lookup, so a pass walks each list once instead of once per incident edge. Counted in ENTRIES rather than in \
+      lists because that is what the memory is proportional to and because one super-node can be larger than every \
+      other list in the database put together; the least-recently-probed list is evicted when the budget is \
+      exceeded, so hubs - the lists that pay for themselves - are the ones that stay. A single list larger than the \
+      whole budget is never cached and is answered by the original walk. At the default of 1 million entries the \
+      footprint is roughly 20MB. 0 disables the cache and restores the pre-#6062 probe, which is the escape hatch \
+      if the memory is unwelcome on a small heap; the check reports what the setting bought under the \
+      adjacencyProbes / adjacencyProbeListWalks / adjacencyEntriesScanned keys.""",
+      Integer.class, 1_000_000),
+
   PAGE_FLUSH_QUEUE("arcadedb.pageFlushQueue", SCOPE.DATABASE,
       """
       Maximum number of page batches EACH database may have waiting in the asynchronous flush pipeline. A committer of \

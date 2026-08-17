@@ -170,6 +170,17 @@ public class DatabaseChecker {
     result.put("edgesMissingOutReference", 0L);
     result.put("edgesMissingInReference", 0L);
     result.put("unreachableEdgeRecordsFound", new LinkedHashSet<RID>());
+    // Issue #6062: what the back-reference probes cost, seeded so a run always answers "why was this slow" rather
+    // than answering it only when a graph pass happened to run. adjacencyProbes is how many times the check asked an
+    // endpoint whether its adjacency list references an edge - structurally two per edge, per pass;
+    // adjacencyProbeListWalks is how many walks of a list answering them took, which used to be one per probe and
+    // now grows with the number of DISTINCT lists; adjacencyEntriesScanned is the entries those walks visited, the
+    // number that was quadratic in a super-node's degree. adjacencyProbeListWalks at or above adjacencyProbes on a
+    // graph with hubs means the cache is not engaging - the budget may be below the hub's degree, see
+    // arcadedb.checkDatabaseAdjacencyCacheEntries.
+    result.put("adjacencyProbes", 0L);
+    result.put("adjacencyProbeListWalks", 0L);
+    result.put("adjacencyEntriesScanned", 0L);
     result.put("warnings", new LinkedHashSet<>());
     // Issue #6143: files this node holds that no schema component claims. Report-only, always present so a clean
     // run says "none" rather than saying nothing, and empty under a RECORD scope, which cannot answer the question.

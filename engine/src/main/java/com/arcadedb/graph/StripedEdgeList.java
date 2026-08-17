@@ -426,6 +426,16 @@ public class StripedEdgeList extends EdgeLinkedList {
     return false;
   }
 
+  /**
+   * The same chains {@link #containsVertex} reads, handed out so {@link AdjacencyProbeCache} can memoise the walk of
+   * each one without taking over the selection (issue #6062). STRICT, like every neighbour-keyed read here: a stripe
+   * head that cannot be resolved becomes a retryable conflict rather than a chain silently missing from the answer.
+   */
+  @Override
+  List<EdgeLinkedList> chainsForNeighbourProbe(final RID neighbour) {
+    return chainsForNeighbour(neighbour);
+  }
+
   @Override
   public long count(final String... edgeTypes) {
     long total = 0;
