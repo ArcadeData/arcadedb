@@ -2234,3 +2234,57 @@ purpose ("more seeds than nodes" reads as "as many as exist" and is clamped to t
 nameless `NegativeArraySizeException`.
 
 [#6216](https://github.com/ArcadeData/arcadedb/issues/6216)
+## A placeholder whose content had to spill into chunks is no longer returned twice by a scan (#6196)
+
+`SELECT FROM Doc` could return the same record twice, under two different RIDs, and `count(@rid)` counted it
+twice with it. One record shape reached it: a **placeholder** whose CONTENT record was too large for any page to
+hold whole.
+
+A record that outgrows its own page normally becomes a chunk chain in place. When its slot is too small even for
+the 14 bytes a chunk header needs - since #6149 the only remaining case, and it takes a page with a free tail of
+exactly zero - the slot becomes a 9-byte POINTER instead and the content moves to a record of its own on another
+page. Such a content record is not a document; it is reachable only through the pointer, and every reader that
+walks a page knows to skip it because its slot carries its size **negated**. That is the entire mechanism, and it
+is the one thing a content record bigger than a page cannot have: it has no size in its slot at all, because it is
+a chain. `writeMultiPageRecord` stamped the plain `FIRST_CHUNK` marker of an ordinary multi-page record on its
+head, and at that moment the information that the slot belonged to somebody else was gone - there was nowhere
+else it was written down.
+
+So the bytes were handed out twice: once through the pointer, under the RID the application knows, and once as a
+document in their own right under the head chunk's RID. `check()` had the mirror of the same confusion, counting
+the record under `totalMultiPageRecords` and never under `totalSurrogateRecords`.
+
+The head chunk of a content record now carries a marker of its own, `FIRST_CHUNK_PLACEHOLDER_CONTENT` (-4), in the
+one value the marker namespace still had free between `NEXT_CHUNK` (-3) and the negated sizes (< -5). It costs
+nothing in the stored format - one zigzag byte, exactly like the markers either side of it - and it restores the
+rule the negated size marker always expressed: a scan, a `count()` and an existence check hand out records, and
+this is not one, while everything that walks or rewrites the CHAIN treats the two heads identically.
+
+**Databases written before this** still hold the ambiguous shape, and no reader can tell it from an ordinary
+multi-page record - only the pointer that leads to it can. Rather than have every reader tolerate the ambiguity
+for ever, `CHECK DATABASE` now follows each placeholder pointer, reports a content record still stored the old way as an error naming its RID, and
+`CHECK DATABASE FIX` repairs it by rewriting that one marker. It is a repair and never a deletion: not a byte of
+the record, its chunk header or its chain is touched.
+
+**Run that FIX before writing through a full scan of such a database.** Until it has run, the content record is
+still handed out under a RID of its own, and that RID looks like any other: an application that scans a type and
+updates or deletes what comes back can reach the content record directly, where nothing can tell it apart from a
+record and the write lands on content the placeholder pointer still references. This is the behaviour every
+release before this one already had - the marker is what closes it, and `CHECK DATABASE FIX` is what applies the
+marker to data written earlier. A read-only scan of an unrepaired database merely returns the record twice; a
+read-modify-write over one is worth the FIX first.
+
+Following the pointers costs `CHECK DATABASE` one page fetch per placeholder POINTER - every one of them, not only
+the chunked case it is looking for, because the marker on the other end is the only thing that tells the two apart.
+A pre-#6149 bucket dense with placeholders therefore pays one extra fetch each, of pages the same pass reads
+anyway, on an operation that already reads every page of the bucket and walks the full chunk chain of every
+multi-page record.
+
+One reporting detail to expect on an unrepaired database: only the TOTALS `CHECK DATABASE` returns are
+reconciled, because a content record can sit on a page the walk has already left behind and reconciling as it
+went would make the answer depend on the order the allocator happened to place the pages in. The per-page
+tallies printed by a verbose run are not, so for such a record a page's own `multiPageRecords` count disagrees
+with the top-level `totalSurrogateRecords` it was moved to. That is deliberate: a physical-layout log describes
+the page as the walk found it. Both agree again once the FIX has run.
+
+[#6196](https://github.com/ArcadeData/arcadedb/issues/6196)

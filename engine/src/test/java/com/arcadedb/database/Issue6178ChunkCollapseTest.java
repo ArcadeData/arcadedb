@@ -201,6 +201,10 @@ class Issue6178ChunkCollapseTest extends BucketPageLayoutTestSupport {
    * identified by the NEGATIVE size marker a plain collapse would replace with a positive one - and a positive size
    * marker is exactly what tells {@code scan()} that a slot holds a document of its own, so collapsing it would make
    * the placeholder's content appear a second time, as a record in its own right.
+   * <p>
+   * Since #6196 the head chunk of such a record carries {@code FIRST_CHUNK_PLACEHOLDER_CONTENT}, so the chain shape is
+   * no longer ambiguous; what is still missing is a collapse that writes the negated size marker back (#6286), which
+   * is why the guard stays.
    */
   @Test
   void aPlaceholderContentStoredAsAChainIsNeverCollapsed() {
@@ -220,20 +224,20 @@ class Issue6178ChunkCollapseTest extends BucketPageLayoutTestSupport {
     Map<String, Object> layout = bucketStats("Surrogate");
     assertThat((Long) layout.get("totalPlaceholderRecords")).as("the fixture must really be a placeholder: " + layout)
         .isEqualTo(1L);
-    // Two chains: the record that sealed page 0 when it spilled, and the placeholder's content record - which is what
-    // makes this fixture the one this test needs, and not merely a placeholder with a plain content record.
+    // The placeholder's content is a chain of its own - which is what makes this fixture the one this test needs, and
+    // not merely a placeholder with a plain content record. Since #6196 that chain is counted as the SURROGATE it is,
+    // next to the one multi-page record the bucket really has: the record that sealed page 0 when it spilled.
+    assertThat((Long) layout.get("totalSurrogateRecords"))
+        .as("the placeholder's content must itself have spilled into a chain: " + layout).isEqualTo(1L);
     assertThat((Long) layout.get("totalMultiPageRecords"))
-        .as("the placeholder's content must itself have spilled into a chain: " + layout).isEqualTo(2L);
+        .as("and it is not a multi-page record of its own: " + layout).isEqualTo(1L);
 
     final long recordsBefore = countRecords("Surrogate");
-    // NOT one: a scan already hands this content out TWICE on unmodified main - once through the pointer, once as
-    // the chunk head in its own right, because createRecordInternal writes FIRST_CHUNK where it would have written
-    // the negative size marker that hides a content record. Filed separately as #6196 and deliberately not fixed
-    // here; asserted as it IS so that this test says what it measures, and so that fixing it turns this line red
-    // rather than leaving it quietly wrong.
+    // Exactly one since #6196 gave the head chunk of a content record a marker of its own: before that,
+    // createRecordInternal wrote FIRST_CHUNK where the negative size marker that hides a content record belonged, and
+    // a scan handed these bytes out twice - once through the pointer, once as a document in their own right.
     final long copiesBefore = countRecordsHolding("Surrogate", huge);
-    assertThat(copiesBefore).as("pre-existing #6196: a chunked placeholder content is scanned as a record of its own")
-        .isEqualTo(2L);
+    assertThat(copiesBefore).as("a chunked placeholder content is scanned once, through its pointer").isEqualTo(1L);
 
     // Back to a handful of bytes: the content record's own chain shrinks, and stays a chain.
     database.transaction(() -> placeholder[0].asDocument(true).modify().set("v", "p").save());
@@ -243,9 +247,9 @@ class Issue6178ChunkCollapseTest extends BucketPageLayoutTestSupport {
         .isEqualTo(1L);
     assertThat(countRecords("Surrogate")).as("and the collapse must not have added a record of its own")
         .isEqualTo(recordsBefore);
-    // What the guard is worth, stated against the shape above: the content is no MORE visible than it already was.
-    // Collapsing it would have given the content record a plain positive size marker, which is precisely what makes
-    // a slot a document in its own right - the same duplication as #6196, on a record that had escaped it.
+    // What the guard is worth: collapsing would have given the content record a plain POSITIVE size marker, which is
+    // precisely what makes a slot a document in its own right - the duplication #6196 removed, reintroduced on the one
+    // record shape that reaches this branch with the marker that hides it out of reach.
     assertThat(countRecordsHolding("Surrogate", "p")).as("the collapse must not multiply the placeholder's content")
         .isEqualTo(copiesBefore);
 

@@ -105,6 +105,15 @@ public class TransactionContext implements Transaction {
    * which its writer poisons.
    */
   public static final byte SLOT_KIND_CHUNK_COLLAPSED_TO_RECORD = 4;
+  /**
+   * {@code SLOT_KIND_FIRST_CHUNK} for the CONTENT record of a placeholder that no page could host whole, whose head
+   * chunk carries {@code LocalBucket.FIRST_CHUNK_PLACEHOLDER_CONTENT} rather than {@code FIRST_CHUNK} (#6196).
+   * Everything the replay does is the same - the images are the chunk header plus its content, the footprint is fixed
+   * for the life of the record, the rest of the chain is poisoned by its writer - and only the marker it expects to
+   * still find on the committed page differs. That is exactly what a kind of its own is for: the same bytes behind a
+   * different marker are a different record, and a slot that changed from one to the other under us is a conflict.
+   */
+  public static final byte SLOT_KIND_FIRST_CHUNK_PLACEHOLDER_CONTENT = 5;
 
   private final DatabaseInternal                     database;
   private final Map<Integer, Integer>                newPageCounters       = new ConcurrentHashMap<>();
