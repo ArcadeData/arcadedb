@@ -86,6 +86,9 @@ public abstract class PaginatedComponent extends Component {
     // A caller that legitimately has to build on an already-registered file resolves it FIRST through
     // FileManager.getFileByComponentName() and constructs on that file's real id, as
     // TimeSeriesTagDictionary.openOrCreate() does.
+    // The id newFileId() reserved for a construction that ends here is abandoned: nothing fills that slot and
+    // nothing reclaims it. Deliberate - this is a programming error on a path that no legitimate caller takes,
+    // and one leaked slot in the file table costs far less than a reclaim protocol racing concurrent creations.
     if (file.getFileId() != fileId)
       throw new IllegalStateException(
           "Component '" + name + "' was built on file id " + fileId + " but the file registered under that name has id "
