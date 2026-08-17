@@ -184,6 +184,53 @@ class Issue6189ReclaimUnreferencedFilesTest extends TestHelper {
     assertThat(fileManager.existsFile(fileId)).isFalse();
   }
 
+  /**
+   * The race a reviewer of #6189 flagged: {@code UnreferencedFiles.scan} reads live, unlocked registries, and the
+   * {@code NO_SCHEMA_COMPONENT} shape it proves is also what a legitimate, still-in-progress instalment sequence
+   * looks like before it publishes. If a schema component attaches to a file's id AFTER it was found but BEFORE
+   * {@code reclaimUnreferencedFiles} gets to it, deleting it would strand a live component. Reproduced
+   * deterministically - no real concurrency needed - by handing the package-private reclaim step a finding for a
+   * file id that has, by the time it runs, gained a real schema component: exactly what a scan-then-act gap
+   * without a re-check would miss.
+   */
+  @Test
+  void reclaimSkipsAFileASchemaComponentClaimedAfterTheScan() {
+    // A real schema component now sitting at some file id - stands in for the schema reload that races the reclaim.
+    final String bucketName = "issue6189_raced_bucket";
+    database.getSchema().createBucket(bucketName);
+    final int fileId = database.getSchema().getBucketByName(bucketName).getFileId();
+    final String fileName = db().getFileManager().getFile(fileId).getFileName();
+
+    try {
+      // Seeds `result` with every key check() initializes, exactly as a real run would - the seam this test uses
+      // does not re-derive that setup, only the one step under test.
+      final DatabaseChecker checker = new DatabaseChecker(db()).setFix(true).setReclaimUnreferencedFiles(true)
+          .setVerboseLevel(0);
+      final Map<String, Object> result = checker.check();
+
+      // A finding claiming NO_SCHEMA_COMPONENT for a file id that, right now, IS claimed - the stale snapshot the
+      // race produces. UnreferencedFile's canonical constructor is public precisely so this is constructible.
+      final UnreferencedFiles.UnreferencedFile staleFinding = new UnreferencedFiles.UnreferencedFile(fileId,
+          fileName, UnreferencedFiles.Kind.NO_SCHEMA_COMPONENT, "the file exists on this node but no schema "
+          + "component was ever built for it");
+
+      checker.reclaimUnreferencedFiles(List.of(staleFinding));
+
+      assertThat((Collection<String>) result.get("reclaimedUnreferencedFiles"))
+          .as("a file a schema component now claims must never be deleted, whatever an earlier scan said")
+          .noneMatch(s -> s.contains(fileName));
+      assertThat((Collection<String>) result.get("warnings"))
+          .as("the skip must be visible, not silent")
+          .anyMatch(w -> w.contains(fileName) && w.contains("no longer safe"));
+      assertThat(db().getFileManager().existsFile(fileId))
+          .as("the live bucket's file must survive").isTrue();
+      assertThat(database.getSchema().getBucketByName(bucketName).getFileId())
+          .as("and the schema's own view of it must be unaffected").isEqualTo(fileId);
+    } finally {
+      database.getSchema().dropBucket(bucketName);
+    }
+  }
+
   /** The scan/reclaim read and write the file manager and the schema registries, both on the internal interface. */
   private DatabaseInternal db() {
     return (DatabaseInternal) database;
