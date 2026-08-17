@@ -29,7 +29,6 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -151,11 +150,9 @@ public class AlgoMST extends AbstractAlgoProcedure {
       }
     }
 
-    // Sort edge indices by weight (Integer[] boxing, one allocation O(E))
-    final Integer[] sortIdx = new Integer[ec];
-    for (int i = 0; i < ec; i++)
-      sortIdx[i] = i;
-    Arrays.sort(sortIdx, (a, b) -> Double.compare(ew[a], ew[b]));
+    // Sort edge indices by weight, over primitive indices: one int[] of order plus one of merge scratch,
+    // against the 24 bytes per edge an Integer[] cost (issue #6289).
+    final int[] sortIdx = sortedIndexesByWeight(ew, ec);
 
     // Union-Find with path compression + union by rank
     final int[] parent = new int[n];
