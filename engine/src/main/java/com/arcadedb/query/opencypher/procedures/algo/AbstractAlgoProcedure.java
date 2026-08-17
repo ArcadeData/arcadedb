@@ -22,9 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
-import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.GraphTraversalProvider;
@@ -33,6 +31,7 @@ import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.utility.NumberUtils;
 
 import java.util.ArrayList;
@@ -440,77 +439,16 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   }
 
   /**
-   * Cooperative abort check for the CPU-bound loops of the algorithm procedures.
+   * Creates a {@link WorkGuard} sharing this command's {@link GlobalConfiguration#COMMAND_TIMEOUT} deadline.
    * <p>
-   * The knobs that drive those loops ({@code iterations}, {@code restarts}, {@code simulations},
-   * {@code walksPerNode}, ...) multiply time rather than a single allocation, and for time there is no honest
-   * ceiling to pick: how long a run may legitimately take is a property of the graph, the hardware and the
-   * caller's patience, not of the parameter. So a large value is not forbidden, it is made abortable - by
-   * interrupting the query thread, and by the {@code arcadedb.command.timeout} deadline, which until now only
-   * the SQL SELECT planner honoured.
-   * <p>
-   * The interrupt flag is CLEARED rather than restored, matching {@code ShortestPathStep} and
-   * {@code SQLFunctionShortestPath}: the exception aborts the whole call, and leaving the flag set would poison
-   * the next task to run on a pooled query thread. The clock is read only when a deadline is actually
-   * configured, so the default (timeout disabled) costs one flag test per iteration and no syscall.
-   */
-  protected final class WorkGuard {
-    /**
-     * Iterations between two checks in {@link #checkPeriodically(int)}. One less than a power of two so the
-     * throttle is a single AND, and small enough that the work between two checks stays well under a
-     * millisecond for any realistic inner-loop body.
-     */
-    private static final int CHECK_INTERVAL_MASK = 1023;
-
-    private final long timeoutMillis;
-    private final long deadline;
-
-    private WorkGuard(final long timeoutMillis) {
-      this.timeoutMillis = timeoutMillis;
-      this.deadline = timeoutMillis > 0 ? System.currentTimeMillis() + timeoutMillis : Long.MAX_VALUE;
-    }
-
-    /**
-     * Aborts the call if the query thread was interrupted or the command deadline has passed. Call from a
-     * loop whose single iteration already costs enough to swallow a flag test.
-     */
-    public void check() {
-      if (Thread.interrupted())
-        throw new CommandExecutionException(getName() + "() has been interrupted");
-      if (deadline < Long.MAX_VALUE && System.currentTimeMillis() > deadline)
-        throw new TimeoutException(getName() + "() exceeded the " + GlobalConfiguration.COMMAND_TIMEOUT.getKey()
-            + " of " + timeoutMillis + "ms");
-    }
-
-    /**
-     * {@link #check()} throttled for a hot inner loop whose single iteration is too small to justify a flag
-     * test of its own. Checking only at the enclosing loop leaves abort latency proportional to the inner
-     * loop's length, which is exactly what these knobs make unbounded - node2vec's context window may span a
-     * whole walk, so one walk alone is O(walkLength&sup2;). Testing every 1024 iterations instead bounds the
-     * latency by a fixed amount of work at the cost of one AND and one branch per iteration.
-     * <p>
-     * "Every 1024" describes a counter that keeps climbing. The counter belongs to the caller, so a loop whose
-     * counter <em>restarts</em> - the negative-sampling loop runs {@code ns} from 0 again for every
-     * (position, context) pair - also tests on its first iteration every time round. That is deliberate rather
-     * than a redundancy to remove: it costs one flag test per restart, and it is what keeps a small
-     * {@code negSamples} responsive, since the enclosing context checkpoint fires only about once every 1024
-     * positions when the window is narrow.
-     *
-     * @param iterationCounter the caller's loop counter; its absolute value does not matter, only that it
-     *                         advances by one per iteration
-     */
-    public void checkPeriodically(final int iterationCounter) {
-      if ((iterationCounter & CHECK_INTERVAL_MASK) == 0)
-        check();
-    }
-  }
-
-  /**
-   * Creates a {@link WorkGuard} whose deadline starts now and honours
-   * {@link GlobalConfiguration#COMMAND_TIMEOUT}.
+   * The knobs that drive the CPU-bound loops of the algorithm procedures ({@code iterations}, {@code restarts},
+   * {@code simulations}, {@code walksPerNode}, ...) multiply time rather than a single allocation, and for time
+   * there is no honest ceiling to pick: how long a run may legitimately take is a property of the graph, the
+   * hardware and the caller's patience, not of the parameter. So a large value is not forbidden, it is made
+   * abortable.
    */
   protected WorkGuard newWorkGuard(final CommandContext context) {
-    return new WorkGuard(context.getDatabase().getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT));
+    return WorkGuard.forCommand(context, getName() + "()");
   }
 
   /** @see GraphEngine#getAllVertices(Database, String[]) */

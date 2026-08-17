@@ -26,6 +26,7 @@ import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -85,12 +86,16 @@ public class EagerDistinctCollectOptionalMatchStep extends AbstractExecutionStep
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     final boolean hasInput = prev != null;
     final List<Result> results = new ArrayList<>();
+    // This step materializes everything before yielding a row, so nothing downstream can notice a deadline
+    // on its behalf: the check belongs in the collection loops themselves (issue #6266).
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
 
     if (hasInput) {
       // Pull all input rows
       final ResultSet prevResults = prev.syncPull(context, Integer.MAX_VALUE);
 
       while (prevResults.hasNext()) {
+        guard.check();
         final Result inputRow = prevResults.next();
         final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
@@ -110,6 +115,7 @@ public class EagerDistinctCollectOptionalMatchStep extends AbstractExecutionStep
           // Execute the match chain and collect distinct values
           final ResultSet matchResults = matchChainStart.syncPull(context, Integer.MAX_VALUE);
           while (matchResults.hasNext()) {
+            guard.check();
             final Result matchResult = matchResults.next();
 
             // Add each variable's value to its distinct set
@@ -178,6 +184,7 @@ public class EagerDistinctCollectOptionalMatchStep extends AbstractExecutionStep
       final ResultSet matchResults = matchChainStart.syncPull(context, Integer.MAX_VALUE);
 
       while (matchResults.hasNext()) {
+        guard.check();
         final Result matchResult = matchResults.next();
         for (final String varName : collectDistinctVariables) {
           final Object value = matchResult.getProperty(varName);

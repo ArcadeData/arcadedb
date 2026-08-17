@@ -46,6 +46,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.VertexType;
@@ -183,6 +184,9 @@ public class MatchNodeStep extends AbstractExecutionStep {
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     final boolean hasInput = prev != null;
+    // A scan whose filters reject every record spends the whole scan inside a single hasNext(), so the command
+    // deadline has to be tested inside the scan loop rather than between two batches (issue #6266).
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
 
     return new ResultSet() {
       private       ResultSet              prevResults        = null;
@@ -227,6 +231,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
           // Process input results and add our matched nodes
           while (buffer.size() < n) {
+            guard.check();
             // If we've exhausted nodes for current input, get next input
             if (iterator == null || !iterator.hasNext()) {
               if (!prevResults.hasNext()) {
@@ -302,6 +307,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
           // Fetch up to n vertices
           while (buffer.size() < n && iterator.hasNext()) {
+            guard.check();
             final long begin = context.isProfiling() ? System.nanoTime() : 0;
             try {
               if (context.isProfiling())

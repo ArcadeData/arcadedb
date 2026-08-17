@@ -31,6 +31,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -74,6 +75,9 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
 
   @Override
   public ResultSet execute(final CommandContext context, final int nRecords) {
+    // Bounds this operator's row loop by the command deadline - see WorkGuard for why between-batches is
+    // not enough (issue #6266).
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     final ResultSet inputResults = child.execute(context, nRecords);
 
     return new ResultSet() {
@@ -103,6 +107,7 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
         bufferIndex = 0;
 
         while (buffer.size() < n && inputResults.hasNext()) {
+          guard.check();
           final Result inputResult = inputResults.next();
 
           final Vertex sourceVertex = inputResult.getProperty(sourceVariable);

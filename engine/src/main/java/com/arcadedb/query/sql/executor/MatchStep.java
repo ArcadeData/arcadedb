@@ -49,6 +49,10 @@ public class MatchStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    // Built once per batch like the sibling steps, not once per row: fetchNext() runs for every row emitted,
+    // and with a deadline configured forCommandDeadline() allocates.
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+
     return new ResultSet() {
       int localCount = 0;
 
@@ -58,7 +62,7 @@ public class MatchStep extends AbstractExecutionStep {
           return false;
         }
         if (nextResult == null) {
-          fetchNext(context, nRecords);
+          fetchNext(context, nRecords, guard);
         }
         return nextResult != null;
       }
@@ -69,13 +73,13 @@ public class MatchStep extends AbstractExecutionStep {
           throw new NoSuchElementException();
         }
         if (nextResult == null) {
-          fetchNext(context, nRecords);
+          fetchNext(context, nRecords, guard);
         }
         if (nextResult == null) {
           throw new NoSuchElementException();
         }
         final Result result = nextResult;
-        fetchNext(context, nRecords);
+        fetchNext(context, nRecords, guard);
         localCount++;
         context.setVariable("matched", result);
         return result;
@@ -84,9 +88,14 @@ public class MatchStep extends AbstractExecutionStep {
     };
   }
 
-  private void fetchNext(final CommandContext context, final int nRecords) {
+  /**
+   * @param guard a pattern edge that matches nothing walks the whole upstream inside a single call, so the
+   *              command deadline is tested per candidate rather than per emitted row (issue #6266)
+   */
+  private void fetchNext(final CommandContext context, final int nRecords, final WorkGuard guard) {
     nextResult = null;
     while (true) {
+      guard.check();
       if (traverser != null && traverser.hasNext(context)) {
         nextResult = traverser.next(context);
         break;
@@ -105,6 +114,7 @@ public class MatchStep extends AbstractExecutionStep {
 
       boolean found = false;
       while (traverser.hasNext(context)) {
+        guard.check();
         nextResult = traverser.next(context);
         if (nextResult != null) {
           found = true;

@@ -24,6 +24,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.IntHashSet;
@@ -89,7 +90,7 @@ public final class PairHashJoinOp implements CountOp {
 
   @Override
   @SuppressWarnings("unchecked")
-  public long execute(final GraphTraversalProvider provider, final Database db) {
+  public long execute(final GraphTraversalProvider provider, final Database db, final WorkGuard guard) {
     final int nodeCount = provider.getNodeCount();
 
     // Pre-compute intermediate label bucket sets ONCE (not per vertex!)
@@ -131,22 +132,25 @@ public final class PairHashJoinOp implements CountOp {
       int[] bucketIds = null;
       if (arm2Buckets != null) {
         bucketIds = new int[nodeCount];
-        for (int v = 0; v < nodeCount; v++)
+        for (int v = 0; v < nodeCount; v++) {
+          guard.checkPeriodically(v);
           bucketIds[v] = provider.getRID(v).getBucketId();
+        }
       }
 
       if (allArm2Views) {
-        return buildAndProbeInline(arm1View, arm2Views, arm2Buckets, probeView, nodeCount, bucketIds);
+        return buildAndProbeInline(arm1View, arm2Views, arm2Buckets, probeView, nodeCount, bucketIds, guard);
       }
     }
 
     // FALLBACK: HashMap build + probe (for cases without full NeighborView coverage)
     if (arm1View != null && arm2View != null) {
-      buildWithViews(arm1View, arm2View, arm2Buckets, pairCounts, nodeCount, provider);
+      buildWithViews(arm1View, arm2View, arm2Buckets, pairCounts, nodeCount, guard);
     } else if (arm1View != null) {
-      buildWithArm1View(arm1View, provider, arm2Buckets, pairCounts, nodeCount);
+      buildWithArm1View(arm1View, provider, arm2Buckets, pairCounts, nodeCount, guard);
     } else {
       for (int startId = 0; startId < nodeCount; startId++) {
+        guard.check();
         final int[] ep1Ids = CSRCountUtils.walkArm(provider, startId, arm1EdgeTypes, arm1Directions, arm1Buckets);
         if (ep1Ids.length == 0)
           continue;
@@ -163,11 +167,14 @@ public final class PairHashJoinOp implements CountOp {
     long total = 0;
     if (probeViewFallback != null) {
       final int[] probeNbrs = probeViewFallback.neighbors();
-      for (int p1 = 0; p1 < nodeCount; p1++)
+      for (int p1 = 0; p1 < nodeCount; p1++) {
+        guard.checkPeriodically(p1);
         for (int j = probeViewFallback.offset(p1), end = probeViewFallback.offsetEnd(p1); j < end; j++)
           total += pairCounts.get(CSRCountUtils.packPair(p1, probeNbrs[j]), 0);
+      }
     } else {
       for (int p1 = 0; p1 < nodeCount; p1++) {
+        guard.checkPeriodically(p1);
         final int[] neighbors = provider.getNeighborIds(p1, probeDirection, probeEdgeType);
         for (final int p2 : neighbors)
           total += pairCounts.get(CSRCountUtils.packPair(p1, p2), 0);
@@ -177,10 +184,11 @@ public final class PairHashJoinOp implements CountOp {
   }
 
   @Override
-  public long executeOLTP(final Database db) {
+  public long executeOLTP(final Database db, final WorkGuard guard) {
     final HashMap<String, Long> pairCounts = new HashMap<>();
 
     for (final Iterator<? extends Identifiable> it = CSRCountUtils.iterateAnchors(db, buildStartLabel); it.hasNext(); ) {
+      guard.check();
       final Vertex start = it.next().asVertex();
       final List<RID> ep1List = walkArmOLTP(db, start, arm1EdgeTypes, arm1Directions, arm1IntermediateLabels);
       final List<RID> ep2List = walkArmOLTP(db, start, arm2EdgeTypes, arm2Directions, arm2IntermediateLabels);
@@ -194,6 +202,7 @@ public final class PairHashJoinOp implements CountOp {
       if (!(dt instanceof VertexType))
         continue;
       for (final Iterator<? extends Identifiable> it = db.iterateType(dt.getName(), false); it.hasNext(); ) {
+        guard.check();
         final Vertex p1 = it.next().asVertex();
         for (final RID p2Rid : p1.getConnectedVertexRIDs(probeDirection, probeEdgeType)) {
           final Long cnt = pairCounts.get(p1.getIdentity() + "|" + p2Rid);
@@ -239,7 +248,7 @@ public final class PairHashJoinOp implements CountOp {
    */
   private long buildAndProbeInline(final NeighborView arm1View, final NeighborView[] arm2Views,
       final IntHashSet[] arm2Buckets, final NeighborView probeView,
-      final int nodeCount, final int[] bucketIds) {
+      final int nodeCount, final int[] bucketIds, final WorkGuard guard) {
     final int[] arm1Nbrs = arm1View.neighbors();
     final int[] probeNbrs = probeView.neighbors();
     long total = 0;
@@ -252,6 +261,8 @@ public final class PairHashJoinOp implements CountOp {
       final IntHashSet arm2Filter1 = arm2Buckets != null ? arm2Buckets[1] : null;
 
       for (int startId = 0; startId < nodeCount; startId++) {
+        // The build node's own cost is O(arm1 x arm2 x log d), so a per-anchor check is what bounds it.
+        guard.check();
         final int a1Start = arm1View.offset(startId);
         final int a1End = arm1View.offsetEnd(startId);
         if (a1Start == a1End) continue;
@@ -289,6 +300,7 @@ public final class PairHashJoinOp implements CountOp {
 
     // GENERAL PATH: allocate arm2 endpoints array per build node
     for (int startId = 0; startId < nodeCount; startId++) {
+      guard.check();
       final int a1Start = arm1View.offset(startId);
       final int a1End = arm1View.offsetEnd(startId);
       if (a1Start == a1End) continue;
@@ -318,10 +330,11 @@ public final class PairHashJoinOp implements CountOp {
    */
   private void buildWithViews(final NeighborView arm1View, final NeighborView arm2View,
       final IntHashSet[] arm2Buckets, final LongLongHashMap pairCounts,
-      final int nodeCount, final GraphTraversalProvider provider) {
+      final int nodeCount, final WorkGuard guard) {
     final int[] arm1Nbrs = arm1View.neighbors();
     final int[] arm2Nbrs = arm2View.neighbors();
     for (int startId = 0; startId < nodeCount; startId++) {
+      guard.check();
       final int a1Start = arm1View.offset(startId);
       final int a1End = arm1View.offsetEnd(startId);
       if (a1Start == a1End) continue;
@@ -342,7 +355,7 @@ public final class PairHashJoinOp implements CountOp {
    */
   private void buildWithArm1View(final NeighborView arm1View, final GraphTraversalProvider provider,
       final IntHashSet[] arm2Buckets, final LongLongHashMap pairCounts,
-      final int nodeCount) {
+      final int nodeCount, final WorkGuard guard) {
     final int[] arm1Nbrs = arm1View.neighbors();
 
     // Pre-fetch NeighborViews for arm2 hops
@@ -357,11 +370,14 @@ public final class PairHashJoinOp implements CountOp {
     int[] bucketIds = null;
     if (arm2Buckets != null && allArm2Views) {
       bucketIds = new int[nodeCount];
-      for (int v = 0; v < nodeCount; v++)
+      for (int v = 0; v < nodeCount; v++) {
+        guard.checkPeriodically(v);
         bucketIds[v] = provider.getRID(v).getBucketId();
+      }
     }
 
     for (int startId = 0; startId < nodeCount; startId++) {
+      guard.check();
       final int a1Start = arm1View.offset(startId);
       final int a1End = arm1View.offsetEnd(startId);
       if (a1Start == a1End) continue;

@@ -25,6 +25,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.Schema;
 
 import java.util.HashMap;
@@ -83,13 +84,13 @@ public final class DegreeProductOp implements CountOp {
   }
 
   @Override
-  public long execute(final GraphTraversalProvider provider, final Database db) {
+  public long execute(final GraphTraversalProvider provider, final Database db, final WorkGuard guard) {
     // With no mandatory arm there is no degree filter to exclude non-central-type nodes from the
     // provider's node domain, and zero-degree central nodes must still contribute 1 row each
     // (OPTIONAL MATCH preserves the left-hand row). The CSR scan cannot distinguish the two
     // cases, so fall back to the OLTP path which iterates the central type. See issue #5094.
     if (!hasMandatoryArm())
-      return executeOLTP(db);
+      return executeOLTP(db, guard);
 
     final int nodeCount = provider.getNodeCount();
 
@@ -113,10 +114,10 @@ public final class DegreeProductOp implements CountOp {
     }
 
     if (allSingleHopViews)
-      return executeFastScan(armViews, nodeCount);
+      return executeFastScan(armViews, nodeCount, guard);
 
     // Slow path: per-node CSR lookup (fallback for multi-hop arms or missing views)
-    return executePerNode(provider, db, nodeCount);
+    return executePerNode(provider, db, nodeCount, guard);
   }
 
   /**
@@ -126,7 +127,7 @@ public final class DegreeProductOp implements CountOp {
    * For Q4/Q7 with ~5M CSR nodes and 4 arms: ~40M array reads at ~1ns = ~40ms.
    * Compared to per-node countEdges: ~20M method calls at ~150ns = ~3s (75x slower).
    */
-  private long executeFastScan(final NeighborView[] armViews, final int nodeCount) {
+  private long executeFastScan(final NeighborView[] armViews, final int nodeCount, final WorkGuard guard) {
     // Reorder: check mandatory arms first for early exit, optional arms last
     final int[] mandatoryIdx = new int[arms.length];
     final int[] optionalIdx = new int[arms.length];
@@ -140,6 +141,7 @@ public final class DegreeProductOp implements CountOp {
 
     long total = 0;
     for (int v = 0; v < nodeCount; v++) {
+      guard.checkPeriodically(v);
       // Mandatory arms: skip if any degree is 0
       long product = 1;
       boolean skip = false;
@@ -173,7 +175,7 @@ public final class DegreeProductOp implements CountOp {
    * Per-node countEdges: 20M method calls × 150ns ≈ 3s.
    */
   private long executePerNode(final GraphTraversalProvider provider, final Database db,
-      final int nodeCount) {
+      final int nodeCount, final WorkGuard guard) {
     // Pre-compute degree arrays: one int[] per arm, indexed by nodeId
     final int[][] armDegrees = new int[arms.length][];
     for (int a = 0; a < arms.length; a++) {
@@ -182,8 +184,10 @@ public final class DegreeProductOp implements CountOp {
         // Bulk degree computation — single pass over CSR offset arrays
         provider.getDegrees(degrees, arms[a].directions[0], arms[a].edgeTypes[0]);
       } else {
-        for (int v = 0; v < nodeCount; v++)
+        for (int v = 0; v < nodeCount; v++) {
+          guard.checkPeriodically(v);
           degrees[v] = CSRCountUtils.walkArm(provider, v, arms[a].edgeTypes, arms[a].directions).length;
+        }
       }
       armDegrees[a] = degrees;
     }
@@ -202,6 +206,7 @@ public final class DegreeProductOp implements CountOp {
     // Tight scan loop: pure array arithmetic, no method calls
     long total = 0;
     for (int v = 0; v < nodeCount; v++) {
+      guard.checkPeriodically(v);
       long product = 1;
       boolean skip = false;
       for (int i = 0; i < mandatoryCount; i++) {
@@ -222,7 +227,7 @@ public final class DegreeProductOp implements CountOp {
   }
 
   @Override
-  public long executeOLTP(final Database db) {
+  public long executeOLTP(final Database db, final WorkGuard guard) {
     // Build degree maps by iterating edge types instead of vertex edge lists.
     // This is O(total_edges_across_all_arms) instead of O(messages × arms × avg_edges_per_list).
     // For Q4: ~13M edge iterations vs 3.8M × 4 edge-list scans × ~10 edges = 152M reads.
@@ -236,10 +241,10 @@ public final class DegreeProductOp implements CountOp {
       if (arm.edgeTypes.length != 1) { allSingleHop = false; break; }
 
     if (allSingleHop)
-      return executeOLTPDegreeMap(db);
+      return executeOLTPDegreeMap(db, guard);
 
     // Fallback for multi-hop arms
-    return executeOLTPPerVertex(db);
+    return executeOLTPPerVertex(db, guard);
   }
 
   /**
@@ -247,7 +252,7 @@ public final class DegreeProductOp implements CountOp {
    * Each edge type is iterated once. The degree product is computed on the intersection.
    */
   @SuppressWarnings("unchecked")
-  private long executeOLTPDegreeMap(final Database db) {
+  private long executeOLTPDegreeMap(final Database db, final WorkGuard guard) {
     final HashMap<RID, int[]> degreesPerVertex = new HashMap<>();
 
     // For each arm, iterate all edges of that type and count per central vertex
@@ -265,7 +270,9 @@ public final class DegreeProductOp implements CountOp {
       if (!db.getSchema().existsType(edgeType))
         continue;
 
+      int edgesSeen = 0;
       for (final Iterator<? extends Identifiable> it = db.iterateType(edgeType, true); it.hasNext(); ) {
+        guard.checkPeriodically(edgesSeen++);
         final Edge edge = it.next().asEdge();
         // The central vertex is the vertex on the "source" side of the arm direction:
         // If arm direction is OUT, the central vertex is the OUT vertex of the edge.
@@ -292,7 +299,9 @@ public final class DegreeProductOp implements CountOp {
     final Schema schema = db.getSchema();
     long total = 0;
     long centralSeen = 0;
+    int vertexSeen = 0;
     for (final Map.Entry<RID, int[]> entry : degreesPerVertex.entrySet()) {
+      guard.checkPeriodically(vertexSeen++);
       if (!schema.getTypeByBucketId(entry.getKey().getBucketId()).instanceOf(centralLabel))
         continue;
       centralSeen++;
@@ -342,9 +351,10 @@ public final class DegreeProductOp implements CountOp {
   /**
    * Fallback for multi-hop arms: per-vertex iteration.
    */
-  private long executeOLTPPerVertex(final Database db) {
+  private long executeOLTPPerVertex(final Database db, final WorkGuard guard) {
     long total = 0;
     for (final Iterator<? extends Identifiable> it = db.iterateType(centralLabel, true); it.hasNext(); ) {
+      guard.check();
       final Vertex v = it.next().asVertex();
       long product = 1;
       for (final Arm arm : arms) {

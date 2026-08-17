@@ -31,6 +31,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
@@ -96,6 +97,9 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
 
   @Override
   public ResultSet execute(final CommandContext context, final int nRecords) {
+    // Bounds this operator's row loop by the command deadline - see WorkGuard for why between-batches is
+    // not enough (issue #6266).
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     return new ResultSet() {
       private IndexCursor cursor = null;
       private final List<Result> buffer = new ArrayList<>();
@@ -213,6 +217,7 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
 
         // Fetch up to n matching vertices
         while (buffer.size() < n && cursor.hasNext()) {
+          guard.check();
           final Identifiable identifiable = cursor.next();
 
           // Load the actual record from the identifiable (may be RID)

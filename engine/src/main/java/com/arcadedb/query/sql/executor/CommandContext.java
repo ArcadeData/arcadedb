@@ -95,6 +95,50 @@ public interface CommandContext {
     return getOrComputeRegexDeadline(cacheKey, GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(getDatabase()));
   }
 
+  /**
+   * Returns {@code arcadedb.command.timeout} in milliseconds for this context's database, or {@code 0} when the
+   * setting is disabled. Resolved once and remembered, so the hot paths that build a {@link WorkGuard} per
+   * batch do not re-read the configuration.
+   */
+  long getCommandTimeout();
+
+  /**
+   * Returns the absolute epoch-millis instant past which this command must stop, or {@link Long#MAX_VALUE} when
+   * {@code arcadedb.command.timeout} is disabled.
+   * <p>
+   * The deadline is computed on first use and then fixed for the lifetime of the context, and a context without
+   * one of its own inherits its parent's. That is what makes the setting mean "no command runs longer than X"
+   * rather than "no single step runs longer than X": a subquery, a {@code CALL} into a procedure or a per-row
+   * expansion that builds its own guard all land on the same instant instead of each starting a fresh budget
+   * (issue #6266).
+   */
+  long getCommandDeadline();
+
+  /**
+   * Names the bound {@link #getCommandDeadline()} currently expresses, for the abort message - e.g.
+   * {@code "arcadedb.command.timeout of 30000ms"} or {@code "TIMEOUT clause of 50ms"}. Read only on the failure
+   * path, so it costs nothing while the command is running.
+   */
+  String getCommandDeadlineDescription();
+
+  /**
+   * Pins this context's deadline to an already-computed instant, overriding whatever it would have resolved to,
+   * and says what to call that bound when a check aborts on it.
+   * <p>
+   * Two callers need this. A nested plan runs with a context of its own and pins the outer command's instant, so
+   * that nesting cannot buy extra budget. A SQL {@code TIMEOUT} clause is resolved by the planner rather than
+   * from the configuration, so the statement's own bound has to be published here or the in-loop guards - which
+   * read the deadline off this context - would never see it (issue #6266).
+   * <p>
+   * Every value is honoured, including {@code 0} - which pins a deadline already in the past, so the next check
+   * aborts - and {@link Long#MAX_VALUE}, which lifts the bound entirely. The one exception is
+   * {@link Long#MIN_VALUE}, which the implementation reserves as its "not resolved yet" marker and will
+   * therefore re-resolve rather than pin. Nothing can produce it - an epoch-millis instant that far in the past
+   * has no meaning and no arithmetic here reaches it - so it is named only so the next reader does not have to
+   * rediscover it.
+   */
+  void setCommandDeadline(long deadlineEpochMillis, String description);
+
   CommandContext incrementVariable(String getNeighbors);
 
   Map<String, Object> getVariables();

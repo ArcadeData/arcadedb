@@ -24,6 +24,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 
 import com.arcadedb.utility.IntHashSet;
@@ -86,9 +87,9 @@ public final class PropagateChainOp implements CountOp {
   }
 
   @Override
-  public long execute(final GraphTraversalProvider provider, final Database db) {
+  public long execute(final GraphTraversalProvider provider, final Database db, final WorkGuard guard) {
     if (anchorRid != null)
-      return executeFromSeededAnchor(provider, db);
+      return executeFromSeededAnchor(provider, db, guard);
 
     final int nodeCount = provider.getNodeCount();
     final int hops = edgeTypes.length;
@@ -109,14 +110,14 @@ public final class PropagateChainOp implements CountOp {
     if (inequalityIdxA >= 0 && inequalityIdxB >= 0
         && Math.min(inequalityIdxA, inequalityIdxB) == 0
         && hops <= 2)
-      return executePerSourceInequality(provider, nodeCount, validBuckets);
+      return executePerSourceInequality(provider, nodeCount, validBuckets, guard);
 
     // Standard dense array propagation for chains without inequality
     // (or with inequality source not at position 0)
 
     // Pre-compute bucket IDs once for all filtering operations. A pattern that labels no position needs none of
     // them, and the scan costs one getRID per node.
-    final int[] bucketIds = anyLabelled(validBuckets) ? precomputeBucketIds(provider, nodeCount) : null;
+    final int[] bucketIds = anyLabelled(validBuckets) ? precomputeBucketIds(provider, nodeCount, guard) : null;
 
     // Initialize anchor counts via bucket filtering (avoids OLTP iterateType). An unlabelled anchor accepts every
     // vertex, which is the whole node domain (issue #5757).
@@ -125,22 +126,29 @@ public final class PropagateChainOp implements CountOp {
     if (anchorBuckets == null)
       Arrays.fill(current, 1L);
     else {
-      for (int v = 0; v < nodeCount; v++)
+      for (int v = 0; v < nodeCount; v++) {
+        guard.checkPeriodically(v);
         if (anchorBuckets.contains(bucketIds[v]))
           current[v] = 1;
+      }
     }
 
     for (int hop = 0; hop < hops; hop++) {
+      // One hop is a full O(V + E) pass, so a per-hop check is the natural granularity here - the pass itself is
+      // sequential array arithmetic that a per-element check would only slow down (issue #6266).
+      guard.check();
       current = CSRCountUtils.propagateOneHop(provider, current, directions[hop], edgeTypes[hop]);
       CSRCountUtils.filterByBuckets(bucketIds, current, validBuckets[hop + 1]);
     }
 
     long total = 0;
-    for (int v = 0; v < nodeCount; v++)
+    for (int v = 0; v < nodeCount; v++) {
+      guard.checkPeriodically(v);
       total += current[v];
+    }
 
     if (inequalityIdxA >= 0 && inequalityIdxB >= 0)
-      total -= countSelfLoopPaths(provider, validBuckets);
+      total -= countSelfLoopPaths(provider, validBuckets, guard);
 
     return total;
   }
@@ -164,7 +172,7 @@ public final class PropagateChainOp implements CountOp {
    * A label written on the seeded position filters the bound vertex rather than naming a set to enumerate:
    * {@code COUNT { (n:Q)-[:LINKS]->(:Q) }} under an {@code n} of another label is 0, not the count over {@code Q}.
    */
-  private long executeFromSeededAnchor(final GraphTraversalProvider provider, final Database db) {
+  private long executeFromSeededAnchor(final GraphTraversalProvider provider, final Database db, final WorkGuard guard) {
     if (!anchorMatchesLabel(db, nodeLabels[0], anchorRid.getBucketId()))
       return 0;
 
@@ -180,6 +188,7 @@ public final class PropagateChainOp implements CountOp {
 
     int[] frontier = new int[] { anchorId };
     for (int h = 0; h < hops - 1; h++) {
+      guard.check();
       frontier = expandFrontier(provider, frontier, provider.getNeighborView(directions[h], edgeTypes[h]), h,
           validBuckets[h + 1]);
       if (frontier.length == 0)
@@ -240,7 +249,7 @@ public final class PropagateChainOp implements CountOp {
    * For Q6 (10K persons × ~1.7K frontier nodes each): ~17M CSR ops (comparable to dense + self-loop).
    */
   private long executePerSourceInequality(final GraphTraversalProvider provider,
-      final int nodeCount, final IntHashSet[] validBuckets) {
+      final int nodeCount, final IntHashSet[] validBuckets, final WorkGuard guard) {
     final int idxB = Math.max(inequalityIdxA, inequalityIdxB);
 
     // Pre-fetch NeighborViews for hops up to the inequality target
@@ -250,7 +259,7 @@ public final class PropagateChainOp implements CountOp {
 
     // Pre-compute bucket IDs for all nodes — eliminates per-node getRID calls during
     // frontier type filtering. One-time O(nodeCount) cost, amortized across all sources.
-    final int[] bucketIds = anyLabelled(validBuckets) ? precomputeBucketIds(provider, nodeCount) : null;
+    final int[] bucketIds = anyLabelled(validBuckets) ? precomputeBucketIds(provider, nodeCount, guard) : null;
 
     // Identify anchor nodes via bucket filtering (avoids db.iterateType OLTP reads). null accepts every vertex,
     // empty accepts none (issue #5757).
@@ -261,6 +270,7 @@ public final class PropagateChainOp implements CountOp {
     long totalCount = 0;
 
     for (int srcId = 0; srcId < nodeCount; srcId++) {
+      guard.check();
       if (anchorBuckets != null && !anchorBuckets.contains(bucketIds[srcId]))
         continue;
 
@@ -300,7 +310,7 @@ public final class PropagateChainOp implements CountOp {
   }
 
   private long countSelfLoopPaths(final GraphTraversalProvider provider,
-      final IntHashSet[] validBuckets) {
+      final IntHashSet[] validBuckets, final WorkGuard guard) {
     final int nodeCount = provider.getNodeCount();
     final int idxA = Math.min(inequalityIdxA, inequalityIdxB);
     final int idxB = Math.max(inequalityIdxA, inequalityIdxB);
@@ -311,7 +321,7 @@ public final class PropagateChainOp implements CountOp {
     // and compute |E0_reverse_nbrs(m) ∩ E2_nbrs(c)| for each middle edge (m,c).
     // For Q5: 2.6M REPLY_OF edges × ~2 merge ops = ~5M ops (vs 16K × 300 = ~14M per-anchor).
     if (subChainLength == 3 && idxA == 0 && idxB == edgeTypes.length) {
-      return countSelfLoop3HopEdgeScan(provider, nodeCount, validBuckets);
+      return countSelfLoop3HopEdgeScan(provider, nodeCount, validBuckets, guard);
     }
 
     // GENERAL PATH: per-anchor expansion
@@ -327,9 +337,10 @@ public final class PropagateChainOp implements CountOp {
     final IntHashSet anchorBuckets = validBuckets[idxA];
     if (anchorBuckets != null && anchorBuckets.isEmpty())
       return 0;
-    final int[] anchorBucketIds = anchorBuckets == null ? null : precomputeBucketIds(provider, nodeCount);
+    final int[] anchorBucketIds = anchorBuckets == null ? null : precomputeBucketIds(provider, nodeCount, guard);
 
     for (int vId = 0; vId < nodeCount; vId++) {
+      guard.check();
       if (anchorBuckets != null && !anchorBuckets.contains(anchorBucketIds[vId]))
         continue;
 
@@ -379,7 +390,7 @@ public final class PropagateChainOp implements CountOp {
    * Avg ~2 merge comparisons per edge → ~5M ops total at ~3-5ns = ~15-25ms.
    */
   private long countSelfLoop3HopEdgeScan(final GraphTraversalProvider provider,
-      final int nodeCount, final IntHashSet[] validBuckets) {
+      final int nodeCount, final IntHashSet[] validBuckets, final WorkGuard guard) {
     // E0: edge from pos0 to pos1, direction directions[0]
     // E1: edge from pos1 to pos2, direction directions[1] (middle, iterated)
     // E2: edge from pos2 to pos3, direction directions[2]
@@ -395,7 +406,7 @@ public final class PropagateChainOp implements CountOp {
 
     if (viewA == null || viewE1 == null || viewC == null) {
       // Fallback: can't get NeighborViews, use per-anchor approach
-      return countSelfLoopPerAnchorFallback(provider, nodeCount, validBuckets);
+      return countSelfLoopPerAnchorFallback(provider, nodeCount, validBuckets, guard);
     }
 
     final int[] aNbrs = viewA.neighbors();
@@ -409,12 +420,13 @@ public final class PropagateChainOp implements CountOp {
     if ((pos1Buckets != null && pos1Buckets.isEmpty()) || (pos2Buckets != null && pos2Buckets.isEmpty()))
       return 0;
     final int[] bucketIds = (pos1Buckets != null || pos2Buckets != null)
-        ? precomputeBucketIds(provider, nodeCount) : null;
+        ? precomputeBucketIds(provider, nodeCount, guard) : null;
 
     long selfLoop = 0;
 
     // Scan all E1 edges by iterating pos1 nodes
     for (int b = 0; b < nodeCount; b++) {
+      guard.check();
       // Check pos1 type filter
       if (pos1Buckets != null && !pos1Buckets.contains(bucketIds[b]))
         continue;
@@ -474,7 +486,7 @@ public final class PropagateChainOp implements CountOp {
    * Fallback per-anchor self-loop when NeighborViews are unavailable.
    */
   private long countSelfLoopPerAnchorFallback(final GraphTraversalProvider provider,
-      final int nodeCount, final IntHashSet[] validBuckets) {
+      final int nodeCount, final IntHashSet[] validBuckets, final WorkGuard guard) {
     // Reuse existing per-anchor expansion logic
     final int subChainLength = Math.max(inequalityIdxA, inequalityIdxB);
     final NeighborView[] subViews = new NeighborView[subChainLength];
@@ -484,10 +496,11 @@ public final class PropagateChainOp implements CountOp {
     final IntHashSet anchorBuckets = validBuckets[0];
     if (anchorBuckets != null && anchorBuckets.isEmpty())
       return 0;
-    final int[] bucketIds = anchorBuckets == null ? null : precomputeBucketIds(provider, nodeCount);
+    final int[] bucketIds = anchorBuckets == null ? null : precomputeBucketIds(provider, nodeCount, guard);
 
     long selfLoopTotal = 0;
     for (int vId = 0; vId < nodeCount; vId++) {
+      guard.check();
       if (anchorBuckets != null && !anchorBuckets.contains(bucketIds[vId]))
         continue;
       selfLoopTotal += countLoopsFromNode(provider, vId, subViews, 0, subChainLength, validBuckets);
@@ -651,15 +664,18 @@ public final class PropagateChainOp implements CountOp {
    * Pre-computes bucket IDs for all CSR nodes. One-time O(nodeCount) cost via bulk
    * getDegrees-style scan, amortized across all per-source expansions.
    */
-  private static int[] precomputeBucketIds(final GraphTraversalProvider provider, final int nodeCount) {
+  private static int[] precomputeBucketIds(final GraphTraversalProvider provider, final int nodeCount,
+      final WorkGuard guard) {
     final int[] bucketIds = new int[nodeCount];
-    for (int v = 0; v < nodeCount; v++)
+    for (int v = 0; v < nodeCount; v++) {
+      guard.checkPeriodically(v);
       bucketIds[v] = provider.getRID(v).getBucketId();
+    }
     return bucketIds;
   }
 
   @Override
-  public long executeOLTP(final Database db) {
+  public long executeOLTP(final Database db, final WorkGuard guard) {
     // Try to find a GAV provider for accelerated neighbor lookups even in the OLTP path. One that holds a subset of
     // the vertex types cannot serve: it answers for the vertices it maps with the adjacency it holds, which is
     // missing every edge that leaves the view (issue #5757).
@@ -677,16 +693,20 @@ public final class PropagateChainOp implements CountOp {
         return 0;
       current.put(anchorRid, 1L);
     } else {
-      for (final Iterator<? extends Identifiable> it = CSRCountUtils.iterateAnchors(db, nodeLabels[0]); it.hasNext(); )
+      for (final Iterator<? extends Identifiable> it = CSRCountUtils.iterateAnchors(db, nodeLabels[0]); it.hasNext(); ) {
+        guard.check();
         current.put(it.next().getIdentity(), 1L);
+      }
     }
 
     for (int hop = 0; hop < edgeTypes.length; hop++) {
+      guard.check();
       final IntHashSet targetBuckets = CSRCountUtils.buildValidBuckets(db, nodeLabels[hop + 1]);
 
       final RidLongHashMap next = new RidLongHashMap();
       final int h = hop;
       current.forEach((bucketId, offset, pathCount) -> {
+        guard.check();
         final RID rid = db.newRID(bucketId, offset);
         expandNeighbors(db, provider, rid, directions[h], edgeTypes[h], targetBuckets,
             neighborRid -> next.add(neighborRid, pathCount));
@@ -699,7 +719,7 @@ public final class PropagateChainOp implements CountOp {
 
     // Subtract self-loop paths for inequality
     if (inequalityIdxA >= 0 && inequalityIdxB >= 0)
-      total[0] -= countSelfLoopPathsOLTP(db, provider);
+      total[0] -= countSelfLoopPathsOLTP(db, provider, guard);
 
     return total[0];
   }
@@ -734,7 +754,8 @@ public final class PropagateChainOp implements CountOp {
     }
   }
 
-  private long countSelfLoopPathsOLTP(final Database db, final GraphTraversalProvider provider) {
+  private long countSelfLoopPathsOLTP(final Database db, final GraphTraversalProvider provider,
+      final WorkGuard guard) {
     final int idxA = Math.min(inequalityIdxA, inequalityIdxB);
     final int idxB = Math.max(inequalityIdxA, inequalityIdxB);
     final int subLength = idxB - idxA;
@@ -747,6 +768,7 @@ public final class PropagateChainOp implements CountOp {
     long selfLoopTotal = 0;
 
     for (final Iterator<? extends Identifiable> it = CSRCountUtils.iterateAnchors(db, nodeLabels[idxA]); it.hasNext(); ) {
+      guard.check();
       final Vertex anchor = it.next().asVertex();
       final RID anchorRid = anchor.getIdentity();
 

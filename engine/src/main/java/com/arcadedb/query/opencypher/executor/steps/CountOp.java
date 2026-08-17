@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 /**
  * Interface for count-push-down operators used by {@link CSRCountStep}.
@@ -29,13 +30,20 @@ import com.arcadedb.graph.GraphTraversalProvider;
 public interface CountOp {
   /**
    * Executes the count using the CSR/GAV provider.
+   *
+   * @param guard bounds the walk by the command deadline. A push-down replaces a materializing pipeline with an
+   *              array pass and is normally orders of magnitude faster, but "faster" is not "bounded": the pass is
+   *              still O(V + E) per hop, and the triangle and pair-join shapes are superlinear in the degree, so a
+   *              large enough graph outruns any deadline (issue #6266).
    */
-  long execute(GraphTraversalProvider provider, Database db);
+  long execute(GraphTraversalProvider provider, Database db, WorkGuard guard);
 
   /**
    * OLTP fallback when no CSR provider is available.
+   *
+   * @param guard see {@link #execute(GraphTraversalProvider, Database, WorkGuard)}
    */
-  long executeOLTP(Database db);
+  long executeOLTP(Database db, WorkGuard guard);
 
   /**
    * Returns all edge types needed by this operator (for provider lookup).

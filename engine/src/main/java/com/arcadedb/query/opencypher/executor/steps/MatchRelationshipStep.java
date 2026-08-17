@@ -41,6 +41,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import com.arcadedb.graph.EdgeIdentitySet;
 
@@ -204,6 +205,9 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     checkForPrevious("MatchRelationshipStep requires a previous step");
+    // A supernode expansion can produce millions of edges inside a single hasNext(): the command deadline is
+    // tested per edge rather than between two batches (issue #6266).
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
 
     return new ResultSet() {
       private ResultSet prevResults = null;
@@ -251,6 +255,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
         bufferIndex = 0;
 
         while (buffer.size() < n) {
+          guard.check();
           // Process using GAV reference path, fast path, or standard path
           if (currentGavNeighborIds != null && currentGavNeighborIdx < currentGavNeighborIds.length) {
             processGavReferencePath(n);
@@ -365,6 +370,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
       private void processGavReferencePath(final int n) {
         final Database db = context.getDatabase();
         while (currentGavNeighborIdx < currentGavNeighborIds.length && buffer.size() < n) {
+          guard.check();
           final long begin = context.isProfiling() ? System.nanoTime() : 0;
           try {
             if (context.isProfiling())
@@ -419,6 +425,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
 
       private void processFastPath(final int n) {
         while (currentVertices.hasNext() && buffer.size() < n) {
+          guard.check();
           final long begin = context.isProfiling() ? System.nanoTime() : 0;
           try {
             if (context.isProfiling())
@@ -496,6 +503,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
           boundRelationshipEdge = null;
 
         while (currentEdges.hasNext() && buffer.size() < n) {
+          guard.check();
           final long begin = context.isProfiling() ? System.nanoTime() : 0;
           try {
             if (context.isProfiling())

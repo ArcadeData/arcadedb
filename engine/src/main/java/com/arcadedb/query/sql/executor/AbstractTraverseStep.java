@@ -102,7 +102,12 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
     if (this.entryPoints == null)
       this.entryPoints = new ArrayDeque<>();
 
+    // A WHILE clause that keeps expanding without emitting anything spends the whole traversal inside this one
+    // call, so the command deadline is tested per expansion round rather than per returned row (issue #6266).
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+
     while (this.results.isEmpty()) {
+      guard.check();
       if (this.entryPoints.isEmpty())
         fetchNextEntryPoints(context, nRecords);
 

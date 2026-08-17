@@ -24,6 +24,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.VertexType;
 
@@ -70,6 +71,9 @@ public class NodeByLabelDisjunctionScan extends AbstractPhysicalOperator {
 
   @Override
   public ResultSet execute(final CommandContext context, final int nRecords) {
+    // Bounds this operator's row loop by the command deadline - see WorkGuard for why between-batches is
+    // not enough (issue #6266).
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     return new ResultSet() {
       private Iterator<Identifiable> currentIterator = null;
       private Iterator<Iterator<Identifiable>> typeIteratorCursor = null;
@@ -102,6 +106,7 @@ public class NodeByLabelDisjunctionScan extends AbstractPhysicalOperator {
           typeIteratorCursor = buildMatchingIterators(context).iterator();
 
         while (buffer.size() < n) {
+          guard.check();
           if (currentIterator == null || !currentIterator.hasNext()) {
             if (!typeIteratorCursor.hasNext()) {
               finished = true;
@@ -110,6 +115,7 @@ public class NodeByLabelDisjunctionScan extends AbstractPhysicalOperator {
             currentIterator = typeIteratorCursor.next();
           }
           while (buffer.size() < n && currentIterator.hasNext()) {
+            guard.check();
             final Identifiable identifiable = currentIterator.next();
             final Vertex vertex = identifiable.asVertex();
             final ResultInternal result = new ResultInternal();

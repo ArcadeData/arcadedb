@@ -33,6 +33,11 @@ public class AccumulatingTimeoutStep extends AbstractExecutionStep {
   private final long    timeoutMillis;
 
   private AtomicLong totalTime = new AtomicLong(0);
+  /**
+   * The deadline in force before this step narrowed it, captured on the first pull of an execution.
+   * {@link Long#MIN_VALUE} means "not captured yet" - a value no deadline can take.
+   */
+  private long deadlineCeiling = Long.MIN_VALUE;
 
   public AccumulatingTimeoutStep(final Timeout timeout, final CommandContext context) {
     super(context);
@@ -42,6 +47,15 @@ public class AccumulatingTimeoutStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws CommandExecutionException {
+    if (deadlineCeiling == Long.MIN_VALUE)
+      deadlineCeiling = StatementTimeouts.ceilingOf(context);
+
+    // Republished on every batch rather than pinned once, so the in-loop guards inherit this step's accounting
+    // rather than a plain wall-clock bound: what this step charges against the clause is the time spent inside
+    // the pipeline, so a consumer that pauses between two batches is not charged for the pause, and neither is
+    // the scan the guards protect (issue #6266).
+    StatementTimeouts.publish(context, timeout,
+        StatementTimeouts.deadlineIn(timeoutMillis - totalTime.get() / 1_000_000), deadlineCeiling);
 
     final ResultSet internal = getPrev().syncPull(context, nRecords);
 
@@ -110,6 +124,7 @@ public class AccumulatingTimeoutStep extends AbstractExecutionStep {
   @Override
   public void reset() {
     this.totalTime = new AtomicLong(0);
+    this.deadlineCeiling = Long.MIN_VALUE;
   }
 
   @Override
