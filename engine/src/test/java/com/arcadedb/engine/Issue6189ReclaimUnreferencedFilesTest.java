@@ -231,6 +231,45 @@ class Issue6189ReclaimUnreferencedFilesTest extends TestHelper {
     }
   }
 
+  /**
+   * A second reviewer note on #6189: {@code FileManager.dropFile} silently no-ops when the file id no longer
+   * resolves, so without its own check the reclaim step would still count - and log - a no-op drop as a genuine
+   * reclaim. Reproduced the same way as the schema race above: hand the package-private step a finding for a file
+   * id that is already gone by the time it runs.
+   */
+  @Test
+  void reclaimSkipsAFileAlreadyGoneWithoutCountingIt() throws Exception {
+    // Seeds `result` with every key check() initializes, on a healthy database - BEFORE the raceable file below
+    // exists, so this call's own real scan/reclaim cannot touch it and this test stays a check on the package-
+    // private step alone, not a second exercise of the whole check() pipeline.
+    final DatabaseChecker checker = new DatabaseChecker(db()).setFix(true).setReclaimUnreferencedFiles(true)
+        .setVerboseLevel(0);
+    final Map<String, Object> result = checker.check();
+
+    final FileManager fileManager = db().getFileManager();
+    final int fileId = fileManager.newFileId();
+    final String fileName = "already_gone." + fileId + ".65536.v1." + LocalBucket.BUCKET_EXT;
+    fileManager.getOrCreateFile(fileId, database.getDatabasePath() + File.separator + fileName);
+
+    // Gone before the reclaim step ever sees it - stands in for a concurrent reclaim, or any other drop, winning
+    // the race. The finding itself is stale in exactly the way #6189's first review round already covers for the
+    // schema side; this covers the file-manager side.
+    fileManager.dropFile(fileId);
+
+    final UnreferencedFiles.UnreferencedFile staleFinding = new UnreferencedFiles.UnreferencedFile(fileId, fileName,
+        UnreferencedFiles.Kind.NO_SCHEMA_COMPONENT, "the file exists on this node but no schema component was ever "
+        + "built for it");
+
+    checker.reclaimUnreferencedFiles(List.of(staleFinding));
+
+    assertThat((Collection<String>) result.get("reclaimedUnreferencedFiles"))
+        .as("nothing was actually deleted by this call, so it must not be counted as reclaimed")
+        .noneMatch(s -> s.contains(fileName));
+    assertThat((Collection<String>) result.get("warnings"))
+        .as("an already-gone file is not a problem worth warning about, unlike the schema-race case above")
+        .noneMatch(w -> w.contains(fileName));
+  }
+
   /** The scan/reclaim read and write the file manager and the schema registries, both on the internal interface. */
   private DatabaseInternal db() {
     return (DatabaseInternal) database;

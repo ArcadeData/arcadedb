@@ -1228,6 +1228,14 @@ public class DatabaseChecker {
         continue;
       }
 
+      if (!database.getFileManager().existsFile(file.fileId()))
+        // Already gone by the time this file's turn came up - e.g. a second RECLAIM run in flight at once, or the
+        // file was dropped some other way. FileManager.dropFile() itself would silently no-op here (it only acts
+        // when the id still resolves), so without this check the loop below would still count it as reclaimed and
+        // log it as such. The end state this call wants - the file gone - already holds, so this is a silent skip
+        // rather than a warning: nothing went wrong, there is simply nothing left for THIS call to do.
+        continue;
+
       try {
         database.getFileManager().dropFile(file.fileId());
         reclaimed.add(file.toString());
