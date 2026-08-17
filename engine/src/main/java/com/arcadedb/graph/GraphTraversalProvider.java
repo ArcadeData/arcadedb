@@ -157,11 +157,73 @@ public interface GraphTraversalProvider {
   }
 
   /**
-   * Returns true if this provider has edge property columns materialized.
-   * When true, {@link #getEdgeProperty} can be used to retrieve edge properties from CSR storage.
+   * Returns the edge types this provider actually holds, or {@code null} when it cannot enumerate them.
+   * <p>
+   * {@link #getEdgeProperty} is addressed per edge type, so a caller that was given no type filter but needs
+   * edge properties has to ask which types exist rather than pass "all types" down. A provider that answers
+   * {@code null} simply cannot serve such a caller, which then falls back to reading the edge records.
+   */
+  default String[] getMaterializedEdgeTypes() {
+    return null;
+  }
+
+  /**
+   * Returns true if this provider has edge property columns materialized <em>and</em> the positional mapping
+   * {@link #getEdgeProperty} relies on is exact.
+   * <p>
+   * The second half is what makes the answer usable. {@code getEdgeProperty} addresses an edge by its position
+   * in the node's neighbour list for a direction, so it means something only while that position identifies the
+   * same edge {@link #getNeighborIds} reports there. A provider whose neighbour lists no longer line up with its
+   * property columns - because pending changes are served from a side structure, say - must answer {@code false}
+   * rather than hand back a weight belonging to another edge. The caller holds the edge records and can always
+   * read the property itself; a plausible wrong number is the one outcome it cannot recover from. Same
+   * "say unknown rather than guess" convention as {@link #countEdgesBetween} and
+   * {@link #getMeanEdgesPerConnectedPair}.
    */
   default boolean hasEdgeProperties() {
     return false;
+  }
+
+  /**
+   * Returns true if this provider can serve {@code propertyName} for {@code edgeType} through
+   * {@link #getEdgeProperty}.
+   * <p>
+   * {@link #hasEdgeProperties()} answers the coarser question - are there edge property columns at all - and a
+   * caller that asks only that one gets {@code null} back from every {@link #getEdgeProperty} call when the view
+   * happens to materialise a <em>different</em> property than the one requested. Since a {@code null} property
+   * value is also the ordinary way of saying "this edge has no value", the caller cannot tell the two apart and
+   * silently treats the whole graph as unweighted. That is the same failure as reading a weight that belongs to
+   * another edge, arrived at from the other direction, so the question a weighted algorithm has to ask is this
+   * one: can you serve <em>this</em> property?
+   *
+   * @param edgeType     the edge type name
+   * @param propertyName the property the caller intends to read
+   */
+  default boolean hasEdgeProperty(final String edgeType, final String propertyName) {
+    return false;
+  }
+
+  /**
+   * Returns true if this provider can serve {@code propertyName} for every one of {@code edgeTypes} - or, when
+   * none are given, for every type it materialises.
+   * <p>
+   * The question a weighted algorithm actually has to ask, and the reason it is answered here rather than
+   * open-coded per caller: "all types" has to be resolved against what the provider holds before the per-type
+   * check means anything, and a caller that resolves it differently gets a different answer to the same
+   * question. Answers {@code false} for a provider that cannot enumerate its types, since it then cannot
+   * promise anything about the ones it was not told about.
+   *
+   * @param propertyName the property the caller intends to read
+   * @param edgeTypes    the types in play, empty or null for every materialised one
+   */
+  default boolean servesEdgeProperty(final String propertyName, final String... edgeTypes) {
+    final String[] types = edgeTypes != null && edgeTypes.length > 0 ? edgeTypes : getMaterializedEdgeTypes();
+    if (types == null || types.length == 0)
+      return false;
+    for (final String type : types)
+      if (!hasEdgeProperty(type, propertyName))
+        return false;
+    return true;
   }
 
   /**
@@ -181,6 +243,66 @@ public interface GraphTraversalProvider {
   default Object getEdgeProperty(final int nodeId, final int neighborIndex,
       final Vertex.DIRECTION direction, final String edgeType, final String propertyName) {
     return null;
+  }
+
+  /**
+   * Returns one node's neighbours together with the edge-property value of each edge reaching them, or
+   * {@code null} when this provider cannot serve {@code propertyName} for every type in play.
+   * <p>
+   * <b>This is the only correct way to read an edge property positionally, and the reason it lives here rather
+   * than in each caller.</b> {@link #getEdgeProperty} is addressed by (type, direction, position), and two things
+   * break a caller that pairs it with {@link #getNeighborIds} by hand:
+   * <ul>
+   *   <li>a multi-type neighbour list is <em>merged and sorted</em> across types, so position {@code j} in it is
+   *       not position {@code j} in any one type's column - the weight lands on another edge, or on none;</li>
+   *   <li>{@link Vertex.DIRECTION#BOTH} has no column of its own at all. A provider resolves {@code OUT} and
+   *       {@code IN}, so a {@code BOTH} lookup answers {@code null} for every edge and the caller silently reads
+   *       the whole neighbourhood at its default weight.</li>
+   * </ul>
+   * Both are handled here once: the walk takes one slice per (type, direction) pair, each of which <em>is</em>
+   * positional, and concatenates them.
+   *
+   * @param nodeId        the node whose edges to read
+   * @param direction     traversal direction; {@code BOTH} walks the outgoing and incoming slices in turn
+   * @param propertyName  the edge property to read
+   * @param defaultWeight value for an edge carrying no numeric value for that property
+   * @param edgeTypes     the types in play, empty or null for every materialised one
+   */
+  default NodeEdgeWeights edgeWeightsOf(final int nodeId, final Vertex.DIRECTION direction,
+      final String propertyName, final double defaultWeight, final String... edgeTypes) {
+    if (!servesEdgeProperty(propertyName, edgeTypes))
+      return null;
+
+    final String[] types = edgeTypes != null && edgeTypes.length > 0 ? edgeTypes : getMaterializedEdgeTypes();
+    final Vertex.DIRECTION[] directions = direction == Vertex.DIRECTION.BOTH ?
+        new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN } :
+        new Vertex.DIRECTION[] { direction };
+
+    final int[][] slices = new int[types.length * directions.length][];
+    int degree = 0;
+    int s = 0;
+    for (final String type : types)
+      for (final Vertex.DIRECTION d : directions) {
+        final int[] slice = getNeighborIds(nodeId, d, type);
+        slices[s++] = slice;
+        degree += slice.length;
+      }
+
+    final int[] neighbors = new int[degree];
+    final double[] weights = new double[degree];
+    int pos = 0;
+    s = 0;
+    for (final String type : types)
+      for (final Vertex.DIRECTION d : directions) {
+        final int[] slice = slices[s++];
+        for (int j = 0; j < slice.length; j++) {
+          neighbors[pos] = slice[j];
+          final Object value = getEdgeProperty(nodeId, j, d, type, propertyName);
+          weights[pos] = value instanceof Number num ? num.doubleValue() : defaultWeight;
+          pos++;
+        }
+      }
+    return new NodeEdgeWeights(neighbors, weights);
   }
 
   /**

@@ -2542,6 +2542,134 @@ the busiest single database's share, which is exactly what `pageFlushQueue` boun
 alert on.
 
 [#6281](https://github.com/ArcadeData/arcadedb/issues/6281)
+
+## An edge weight belongs to the edge it was read from, whichever backing answered (#6301)
+
+`algo.steinerTree` paired weights with neighbours **by iteration position**. The adjacency list was built with
+the `relTypes` filter applied and in the backing store's order; the weight array beside it was filled
+positionally from an *unfiltered* `getEdges(BOTH)` walk in OLTP order. Nothing reconciled the two, so
+`adjW[i][j]` was "the weight of the j-th edge I happened to see", not "the weight of the edge to `adj[i][j]`".
+That array is what Dijkstra runs on in step 1, so the **tree itself** moved, not only the `weight` column.
+
+Two shapes made it visible. An edge type the caller excluded still lent its weight to an included edge: three
+vertices on a `ROAD` path of weight 1 per hop plus one `NOISE` edge of weight 999 hanging off the first
+returned `weight: 999.0` and `totalWeight: 1000.0` for a tree that costs 2.0. And the same query answered
+differently depending on whether a Graph Analytical View happened to exist, because the CSR neighbour order
+need not match the OLTP one - a view is meant to be a transparent accelerator, and here its mere presence made
+the procedure prefer a 51.0 tree over the 2.0 one.
+
+The fix removes the second traversal rather than repairing it. `GraphData.weightedAdjacency(direction,
+weightProperty, relTypes)` produces the neighbour list and its weights from **one** walk of the same edges -
+from the view's columnar edge properties when it has them, from the edge records otherwise - so the pairing is
+correct by construction and the two backings return the same multiset of `(neighbour, weight)` pairs.
+
+Two more procedures were reading weights through the same broken helper and are fixed with it:
+
+- **`algo.apsp`** with no `relTypes` filter on a view that materialises edge properties produced an *empty*
+  weight row against a non-empty neighbour row, i.e. an `ArrayIndexOutOfBoundsException` for a query that
+  worked perfectly without the view. With several edge types it mismatched instead of failing, because the
+  adjacency is sorted across types and the weights were concatenated per type.
+- **`algo.bellmanford`** fell back to a **unit weight for every edge** whenever the graph was CSR-backed and
+  the view had no column for the requested property - silently ignoring `weightProperty` altogether, and only
+  when a view existed. It also now builds its edge list in parallel primitive arrays rather than a
+  `List<int[]>` and a `List<Double>`, which the O(V x E) relaxation loop reads up to `V - 1` times.
+
+**Two provider-contract changes come with it.** `GraphTraversalProvider.hasEdgeProperties()` now means "edge
+property columns are materialised **and** the positional mapping `getEdgeProperty` relies on is exact", and
+`GraphAnalyticalView` answers `false` while a delta overlay is active. The columns are aligned with the base
+CSR's forward edge slots, while `getNeighborIds` serves the overlay's view of the node - deletions dropped,
+additions merged in, the whole list re-sorted - so the n-th neighbour of that list is not the n-th edge of the
+column store. Callers (`algo.apsp`, `algo.bellmanford`, `algo.steinerTree`, `SQLFunctionAstar`,
+`SQLFunctionBellmanFord`, `algo.dijkstra.singleSource`) now read the edge records in that state, which is
+slower and exact, instead of a weight belonging to another edge. This is the same "say unknown rather than
+guess" convention `countEdgesBetween` and `getMeanEdgesPerConnectedPair` already use.
+
+The second is `edgeWeightsOf(nodeId, direction, propertyName, defaultWeight, edgeTypes...)`, which returns one
+node's neighbours and their weights together and is now **the only supported way to read an edge property
+positionally**. Pairing `getNeighborIds` with `getEdgeProperty` by hand is wrong in two ways that produce a wrong
+answer rather than an error: a multi-type neighbour list is merged and sorted across types while the property
+columns are per type, and `DIRECTION.BOTH` has no column at all - a provider resolves `OUT` and `IN` only, so a
+`BOTH` lookup returns `null` for every edge. `bellmanFord()`'s direction argument *defaults* to `BOTH`, so the
+plain three-argument `bellmanFord(src, dst, 'weight')` had been unit-weighting the entire graph the moment a
+view existed; `astar()` with `direction: 'BOTH'` priced every edge at 0.0, making all paths tie. Its companion
+`servesEdgeProperty(propertyName, edgeTypes...)` answers the gating question. `hasEdgeProperties()` answers only "are there edge property columns at all", so a view built
+with `.withEdgeProperties("distance")` answered yes to a call asking for `cost` - and since a missing column and
+an edge with no value both come back as `null`, the caller could not tell them apart and treated the entire graph
+as unweighted. That is the same wrong answer as a misaligned weight, reached from the other direction, and it
+silently inverted results: on a graph where `X-Y-Z` costs 2.0 and the direct `X-Z` hop costs 50.0, unit weights
+make the 50.0 hop win. `algo.apsp`, `algo.bellmanford`, `algo.steinerTree`, `algo.dijkstra.singleSource`,
+`SQLFunctionAstar` and `SQLFunctionBellmanFord` now all gate on it and fall back to the edge records otherwise.
+`SQLFunctionBellmanFord` additionally passed `null` as the edge type to `getEdgeProperty`, which can never
+resolve a column store, so its CSR path had been using a unit weight for every edge unconditionally.
+
+[#6301](https://github.com/ArcadeData/arcadedb/issues/6301)
+
+## The phase a graph-algorithm call spends its time in is now abortable too (#6295, #6302)
+
+#6216 and #6264 gave every iteration-shaped `algo.*` knob a checkpoint inside the loop it drives, on the
+principle that for time there is no honest ceiling to pick, so a long run should be **abortable** rather than
+forbidden. Both picked their procedures by asking "does it have an iteration knob?". Two blind spots follow
+from that question, and this release closes both.
+
+### The dominant phase is not always the loop the knob drives (#6295)
+
+`arcadedb.command.timeout` set to 1000 ms, on a 2000-node graph:
+`CALL algo.hashgnn({embeddingDimension: 4096, iterations: 1})` **ran for 112,988 ms and returned a result** -
+the deadline overshot by 113x and never observed. `algo.hashgnn`'s MinHash reduction runs *after* the
+`iterations` loop and costs `4 x embeddingDimension²` operations per node, and that bounded per-node figure is
+then multiplied by an unbounded node count. The lens missed it because `embeddingDimension` *has* a ceiling
+(#6065 capped it at 4096), which made it look handled.
+
+The question that finds this shape is **"which loop over the node count has no checkpoint"**, not "which knob
+has no cap". Asking it across the package also found the pre-loop initialisation of `algo.hashgnn`,
+`algo.fastrp` and `algo.graphsage`, and `algo.slpa`'s post-processing and its O(degree²) `mostFrequent`. All
+now carry a checkpoint.
+
+### A guard belongs wherever the work is unbounded, not only where a knob multiplies it (#6302)
+
+The four densest procedures in the package had no guard at all, and `algo.apsp` makes the case on its own: the
+#6263 working-memory budget caps its distance matrix at `arcadedb.cypher.algoMaxWorkingMemory`, whose 64 MB
+floor **admits n ≈ 2890**, and 2890³ is ~2.4e10 iterations of the Floyd-Warshall triple loop. That is minutes
+of CPU on one query thread during which `Thread.interrupt()`, `arcadedb.command.timeout` and the client
+cancelling all did nothing. The budget and the timeout are meant to be complementary halves of one guarantee,
+and the memory half was waving through a run the time half could not stop.
+
+A sweep over all 68 procedures asking "can one call of this run for minutes on an accepted input?" settled the
+rest in one pass. Every procedure whose dominant loop is superlinear in the graph is now abortable:
+`algo.apsp`, `algo.kShortestPaths`, `algo.steinerTree`, `algo.mst`, `algo.bellmanford`, `algo.betweenness`,
+`algo.closeness`, `algo.harmonic`, `algo.eccentricity`, `algo.maxFlow`, `algo.msa`, `algo.knn`,
+`algo.hierarchicalClustering`, `algo.clique`, `algo.allSimplePaths`, `algo.kTruss`, `algo.triangleCount`,
+`algo.localClusteringCoefficient`, `algo.densestSubgraph`, `algo.bipartiteMatching`, `algo.voteRank` and
+`algo.richClub`.
+
+Procedures that make a single O(V + E) pass are deliberately left alone: one pass costs what loading the graph
+and emitting the rows already cost, so a checkpoint inside it would bound nothing the surrounding pipeline does
+not. One gap is named rather than hidden: `algo.localClusteringCoefficient`'s CSR path hands the whole
+computation to a `GraphAlgorithms` kernel that counts triangles across a thread pool, and the `WorkCheckpoint`
+hook is specified to be called between iterations on the calling thread - covering that kernel is a change to
+how it partitions its work, not a checkpoint that can be dropped in.
+
+[#6295](https://github.com/ArcadeData/arcadedb/issues/6295)
+[#6302](https://github.com/ArcadeData/arcadedb/issues/6302)
+
+## `algo.mst`'s edge arrays are priced against the working-memory budget (#6300)
+
+#6263 reserved the dense working set of every `algo.*` procedure that builds one, choosing them by two
+criteria: sized by a knob, or quadratic in the node count. `algo.mst` is neither - it is linear in the **edge**
+count, three parallel arrays plus the index sort, 24 bytes per edge - which reads like the graph paying for
+itself. But linear in the edge count is not small: the edge count is the largest linear dimension a graph has,
+usually an order of magnitude above the node count, and at 100M edges that is ~2.4 GB requested with no check
+and no error naming what asked for it, i.e. exactly the `OutOfMemoryError` shape #6065, #6216 and #6263 exist
+to replace with a client error. "Linear" was never the criterion; the criterion is whether the caller can
+predict a ceiling.
+
+The reservation is made **as the counting pass runs** rather than once it has finished. Both refuse the same
+calls, but a check afterwards first pays in full for a traversal it will then throw away - the same argument
+that puts `algo.steinerTree`'s reservation ahead of its adjacency build. The new
+`MemoryBudget.capacityFor(bytesPerItem)` is what hands the walk its own stopping rule; the refusal itself still
+goes through `MemoryBudget.reserve`, so the message names the same component and the same setting either way.
+
+[#6300](https://github.com/ArcadeData/arcadedb/issues/6300)
 ## A super-node's read walk keeps its recency order for the whole walk, not just the first 1,024 entries (#6064)
 
 `arcadedb.graph.supernodeInterleaveRounds` (#6048) was a **cliff**. Up to `rounds × stripes` entries - 64 × 16 =

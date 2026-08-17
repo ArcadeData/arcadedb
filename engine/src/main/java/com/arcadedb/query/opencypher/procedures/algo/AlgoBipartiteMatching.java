@@ -23,6 +23,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -89,6 +90,7 @@ public class AlgoBipartiteMatching extends AbstractAlgoProcedure {
     final String[] relTypes = args.length > 0 ? extractRelTypes(args[0]) : null;
 
     final Database db = context.getDatabase();
+    final WorkGuard guard = newWorkGuard(context);
 
     final GraphData graph = loadGraph(db, null, relTypes, context);
 
@@ -105,6 +107,7 @@ public class AlgoBipartiteMatching extends AbstractAlgoProcedure {
     final int[] bfsQ = new int[n];
 
     for (int root = 0; root < n && bipartite; root++) {
+      guard.checkPeriodically(root);
       if (color[root] != -1)
         continue;
       color[root] = 0;
@@ -152,6 +155,9 @@ public class AlgoBipartiteMatching extends AbstractAlgoProcedure {
 
     int matching = 0;
     while (hopcroftBFS(pairU, pairV, dist, L, leftGlobal, rightOf, adj)) {
+      // One phase per round, each a BFS plus a DFS over every edge: O(E x sqrt(V)) sized by the graph alone
+      // (issue #6302). A phase is already a whole traversal, so the check needs no throttle.
+      guard.check();
       for (int u = 1; u <= L; u++) {
         if (pairU[u] == NIL && hopcroftDFS(u, pairU, pairV, dist, leftGlobal, rightOf, adj))
           matching++;
