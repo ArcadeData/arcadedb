@@ -231,6 +231,41 @@ class Issue6196PlaceholderContentChainTest extends BucketPageLayoutTestSupport {
         .isZero();
   }
 
+  /**
+   * The repair rests on the engine's own invariant - a placeholder pointer leads to the content record written for it
+   * and nothing else - and a corrupted pointer breaks it. The one form of that which can be RECOGNISED is two pointers
+   * leading to the same slot, which a healthy bucket cannot produce: FIX must then report and leave the marker alone,
+   * because the marker is unrecoverable information (it says whose the record is) and nothing here knows which of the
+   * two pointers is the lie.
+   */
+  @Test
+  void aContentHeadTwoPointersLeadToIsReportedAndLeftAlone() {
+    final RID placeholder = placeholderWithChainedContent();
+    final RID content = contentRidOf(placeholder);
+
+    writeMarkerByteAt(content, FIRST_CHUNK_MARKER);
+    // A second pointer to the same content, over a record that has room for one: a corrupted pointer, in the one shape
+    // that can be told apart from a healthy one.
+    final RID hijacked = new RID(placeholder.getBucketId(), placeholder.getPosition() + 1);
+    database.transaction(() -> onSlot(hijacked, page -> {
+      final int recordOffset = recordOffsetOf(page, hijacked);
+      page.writeByte(recordOffset, PLACEHOLDER_POINTER_MARKER);
+      page.writeLong(recordOffset + 1, content.getPosition());
+      return 0L;
+    }));
+
+    final Result fixed = checkDatabaseRow(true);
+    assertThat(warningsOf(fixed).toString()).as("the refusal must name the record and the reason: " + fixed.toJSON())
+        .contains(content.toString()).contains("more than one placeholder pointer");
+    assertThat(markerByteAt(content)).as("and the marker must be exactly as it was found").isEqualTo(FIRST_CHUNK_MARKER);
+    assertThat((Collection<?>) fixed.getProperty("deletedRecordsAfterFix"))
+        .as("nothing is deleted either: " + fixed.toJSON()).isEmpty();
+
+    // The corruption this test fabricated is deliberately NOT repairable - that is the whole point - so the type goes
+    // with the test rather than being left for the integrity check every test ends with.
+    database.transaction(() -> database.getSchema().dropType(TYPE));
+  }
+
   /** Points the head chunk of {@code rid} at a page far past the end of the bucket, which breaks its chain. */
   private void breakChainAt(final RID rid) {
     database.transaction(() -> onSlot(rid, page -> {

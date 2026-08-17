@@ -1041,6 +1041,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // reconciled and repaired after the pass, which is what makes the answer independent of whether the content
     // record happens to live on a page this walk has already been through.
     final LongHashSet legacyContentHeads = new LongHashSet();
+    /**
+     * Of those, the ones MORE THAN ONE pointer leads to. The repair rests on the engine's own invariant - a placeholder
+     * pointer references the content record written for it and nothing else - and this is the one way that invariant
+     * can be caught failing without knowing what the bytes were meant to say: a content record belongs to exactly one
+     * pointer, so a second one leading to the same slot is proof that a pointer is corrupted, and no reading of it
+     * tells which. Refused rather than repaired, because the shape the repair would write is unrecoverable
+     * information: it says whose the record is (code review on #6287).
+     */
+    final LongHashSet ambiguousHeadsWithSeveralPointers = new LongHashSet();
 
     String warning = null;
 
@@ -1097,8 +1106,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                 // is the whole of the bug. Never throws - a pointer that leads nowhere is a different problem, already
                 // reported by the CHECK DATABASE pass that follows the links.
                 final long contentPosition = page.readLong((int) (recordPositionInPage + recordSize[1]));
-                if (isLegacyAmbiguousContentHead(totalPages, contentPosition))
-                  legacyContentHeads.add(contentPosition);
+                if (isLegacyAmbiguousContentHead(totalPages, contentPosition) && !legacyContentHeads.add(contentPosition))
+                  // A SECOND pointer to the same content record: one of them is corrupted, and this is the only way to
+                  // know it without knowing what the bytes meant. See the field's javadoc.
+                  ambiguousHeadsWithSeveralPointers.add(contentPosition);
 
                 recordSize[0] = MINIMUM_RECORD_SIZE;
               } else if (isChunkHead(recordSize[0])) {
@@ -1228,6 +1239,20 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // legacy shape - a set that is empty on every database this build wrote (code review on #6287).
         if (!isLegacyAmbiguousContentHead(totalPages, contentPosition))
           continue;
+
+        if (ambiguousHeadsWithSeveralPointers.contains(contentPosition)) {
+          // Reported, never repaired: the counters are left saying multi-page record, which is what the slot itself
+          // still says, because with two pointers leading here nothing in the bucket knows which of them is the lie.
+          ++totalErrors;
+          warning = ("placeholder content record %s is stored as an ambiguous chunk chain (#6196) and is referenced by "
+                  + "more than one placeholder pointer: one of those pointers is corrupted, so the marker is left as it "
+                  + "is - repair the pointers first").formatted(contentRID);
+          warnings.add(warning);
+          if (verboseLevel > 0)
+            LogManager.instance().log(this, Level.SEVERE, "- " + warning);
+          warning = null;
+          continue;
+        }
 
         --totalMultiPageRecords;
         ++totalSurrogateRecords;
@@ -1380,6 +1405,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * that record from scans - but such a database is already handing that record's bytes out through the placeholder,
    * and unlike the force-delete {@code check(fix)} performs on a broken chain, this is reversible: not one byte of the
    * record, its chunk header or its chain is touched, so rewriting the marker back restores it exactly.
+   * <p>
+   * The one form of that corruption which can be RECOGNISED rather than merely tolerated - two pointers leading to the
+   * same slot, which a healthy bucket cannot produce - is refused by the caller before it gets here, and reported
+   * instead. See {@code ambiguousHeadsWithSeveralPointers} in {@link #check}.
    *
    * @return true when the marker was rewritten.
    *
