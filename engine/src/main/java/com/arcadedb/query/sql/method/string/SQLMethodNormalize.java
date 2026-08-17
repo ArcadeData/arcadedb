@@ -37,10 +37,6 @@ public class SQLMethodNormalize extends AbstractSQLMethod {
 
   public static final String NAME = "normalize";
 
-  // context.getCachedValue()/setCachedValue() key for the shared deadline - see execute() for why this needs to
-  // be shared, not recomputed per call.
-  private static final String DEADLINE_CACHE_KEY = "__NORMALIZE_DEADLINE__";
-
   public SQLMethodNormalize() {
     super(NAME, 0, 2);
   }
@@ -63,13 +59,13 @@ public class SQLMethodNormalize extends AbstractSQLMethod {
         // pattern matched against many rows could cost up to rowCount * regexTimeout overall). context is null
         // in some direct/unit-test invocations of this method (see SQLMethodNormalizeTest);
         // GlobalConfiguration.getValueAsLong(Database) falls back to the compiled-in default in that case, and
-        // the deadline is simply not shared across calls when there's no context to cache it on. A
+        // the deadline is simply not shared across calls when there's no context to carry it. A
         // TimeoutException from the bound propagates as-is rather than being rewrapped (unlike TextRegexReplace,
         // which rewraps to preserve its own pre-existing IllegalArgumentException contract for regex failures) -
         // this method had no such prior contract, and TimeoutException is the shape
         // MatchesCondition/RegexExpression/LIKE/full-text/PromQL all surface too.
         final long regexDeadline = context != null ?
-            context.getOrComputeRegexDeadline(DEADLINE_CACHE_KEY) :
+            context.getRegexDeadline() :
             TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(null));
         return TimeBoundRegex.replaceAllUntil(Pattern.compile(FileUtils.getStringContent(params[1].toString())), normalized, "", regexDeadline);
       }

@@ -753,10 +753,12 @@ public enum GlobalConfiguration {
       matchers, and schema-level REGEXP property validation. java.util.regex backtracking does not poll interrupts or \
       deadlines, so a pathological pattern (catastrophic backtracking) keeps its worker thread busy regardless of \
       arcadedb.command.timeout; this dedicated bound protects against that even when arcadedb.command.timeout is disabled \
-      (0), which is the default. MATCHES/=~ share one deadline across an entire query execution (not per row), and \
-      full-text/PromQL/REGEXP-validation share one deadline across an entire scan (not per item) - a large, legitimately \
-      slow (non-catastrophic) operation can hit this bound too, so raise it for workloads that need more than 1s. Set to \
-      0 to disable (not recommended).""",
+      (0), which is the default. Every entry point reached through a command context - MATCHES, =~, PromQL's matchers \
+      and the text.regexReplace()/.normalize() functions - shares ONE deadline for the whole command: not one per row, \
+      not one per function, and not one per worker of a parallel type scan. Full-text search and REGEXP property \
+      validation run outside a command context and share one deadline across an entire scan (not per item). A large, \
+      legitimately slow (non-catastrophic) operation can hit this bound too, so raise it for workloads that need more \
+      than 1s. Set to 0 to disable (not recommended).""",
       Long.class, 1000),
 
   COMMAND_WARNINGS_EVERY("arcadedb.command.warningsEvery", SCOPE.JVM,

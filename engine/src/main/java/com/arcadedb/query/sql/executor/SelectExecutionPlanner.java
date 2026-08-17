@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
@@ -76,7 +75,6 @@ import com.arcadedb.query.sql.parser.SuffixIdentifier;
 import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.query.sql.parser.TraverseStatement;
 import com.arcadedb.query.sql.parser.SubQueryCollector;
-import com.arcadedb.query.sql.parser.Timeout;
 import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.engine.timeseries.AggregationType;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
@@ -147,11 +145,13 @@ public class SelectExecutionPlanner {
     info.unwind = this.statement.getUnwind() == null ? null : this.statement.getUnwind().copy();
     info.skip = this.statement.getSkip();
     info.limit = this.statement.getLimit();
+    // Only the statement's own clause. SELECT used to synthesize a Timeout out of arcadedb.command.timeout when
+    // the statement carried none, which was how the setting reached SELECT at all before #6266 - and it made
+    // SELECT the odd one out in three ways: MATCH, TRAVERSE and UPDATE synthesize nothing, so EXPLAIN showed a
+    // "+ TIMEOUT" step for one statement kind and not the others under the same setting; and when the bound
+    // fired, the message named it a "TIMEOUT clause" on a statement whose author wrote no clause. The setting is
+    // now carried by the command deadline, which every guard reads and no statement kind can miss (issue #6304).
     info.timeout = this.statement.getTimeout() == null ? null : this.statement.getTimeout().copy();
-    if (info.timeout == null && context.getDatabase().getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT) > 0) {
-      info.timeout = new Timeout();
-      info.timeout.setValue(context.getDatabase().getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT));
-    }
 
     // A filter that keeps every record (WHERE 1=1, WHERE true) says nothing the statement did not already say, so it
     // is dropped here rather than pushed into the fetch: everything downstream - the projected properties computed
@@ -294,8 +294,7 @@ public class SelectExecutionPlanner {
 
       handleProjectionsBlock(selectExecutionPlan, info, context);
 
-      if (info.timeout != null)
-        selectExecutionPlan.chain(new AccumulatingTimeoutStep(info.timeout, context));
+      chainTimeout(selectExecutionPlan, info, context);
     }
 
     if (useCache && !context.isProfiling() && statement.executionPlanCanBeCached() && selectExecutionPlan.canBeCached()
@@ -352,8 +351,15 @@ public class SelectExecutionPlanner {
 
     handleProjectionsBlock(plan, info, context);
 
-    if (info.timeout != null)
-      plan.chain(new AccumulatingTimeoutStep(info.timeout, context));
+    chainTimeout(plan, info, context);
+  }
+
+  /** Chains the statement's own {@code TIMEOUT} clause, last, so that it wraps everything the statement does. */
+  private static void chainTimeout(final SelectExecutionPlan plan, final QueryPlanningInfo info,
+      final CommandContext context) {
+    final TimeoutStep step = StatementTimeouts.stepFor(info.timeout, context);
+    if (step != null)
+      plan.chain(step);
   }
 
   public static void handleProjectionsBlock(final SelectExecutionPlan result, final QueryPlanningInfo info,
