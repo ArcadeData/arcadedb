@@ -58,12 +58,20 @@ class Issue6297TeardownPathResolutionTest {
     assertThat(TestServerHelper.isResolvedTestPath("./target/databases0" + File.separator)).isTrue();
     assertThat(TestServerHelper.isResolvedTestPath("target/databases")).isTrue();
     assertThat(TestServerHelper.isResolvedTestPath(tempDir.resolve("databases").toString())).isTrue();
+    assertThat(TestServerHelper.isResolvedTestPath(tempDir.resolve("databases") + "0" + File.separator)).isTrue();
 
     assertThat(TestServerHelper.isResolvedTestPath(null)).isFalse();
     assertThat(TestServerHelper.isResolvedTestPath("")).isFalse();
     assertThat(TestServerHelper.isResolvedTestPath("   ")).isFalse();
     assertThat(TestServerHelper.isResolvedTestPath("/")).isFalse();
     assertThat(TestServerHelper.isResolvedTestPath("/databases")).isFalse();
+
+    // The suffix is appended before the check, not after it, so these are the strings actually asked about: a
+    // folder the collapsed placeholder named stays refused once the per-server digit and separator are on it, and
+    // a root path that itself collapsed to "/" is refused for its replication folder too.
+    assertThat(TestServerHelper.isResolvedTestPath("/databases" + 0 + File.separator)).isFalse();
+    assertThat(TestServerHelper.isResolvedTestPath("/" + File.separator + "replication")).isFalse();
+    assertThat(TestServerHelper.isResolvedTestPath("./target" + File.separator + "replication")).isTrue();
   }
 
   /**

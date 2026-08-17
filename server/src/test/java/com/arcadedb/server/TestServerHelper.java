@@ -179,19 +179,25 @@ public final class TestServerHelper {
   }
 
   /**
-   * Recursively deletes {@code prefix + suffix}, unless the prefix did not resolve to anything a test could have
-   * written to - in which case it logs and does nothing. See {@link #deleteDatabaseFolders(int)} for why a prefix
-   * arrives unresolved at all.
+   * Recursively deletes {@code prefix + suffix}, unless that did not resolve to anything a test could have written
+   * to - in which case it logs and does nothing. See {@link #deleteDatabaseFolders(int)} for why a prefix arrives
+   * unresolved at all.
+   * <p>
+   * The whole concatenation is what gets checked, not the prefix alone: the two arguments are what a caller
+   * composes, so validating one of them would leave the verdict depending on an assumption about the other
+   * (today: that appending a digit and a separator can neither make a relative path absolute nor change its
+   * segment count). Checking what is actually about to be deleted has no such precondition to preserve.
    */
   private static void deleteResolvedFolder(final String prefix, final String suffix) {
-    if (!isResolvedTestPath(prefix)) {
+    final String folder = prefix + suffix;
+    if (!isResolvedTestPath(folder)) {
       LogManager.instance().log(TestServerHelper.class, Level.SEVERE,
           "Refusing to delete '%s': the configured path did not resolve, so this is not a test folder. The test "
               + "configuration was reset before the cleanup that reads it (issue #6297); nothing was deleted, and the "
-              + "folders this call was meant to remove are still on disk.", prefix + suffix);
+              + "folders this call was meant to remove are still on disk.", folder);
       return;
     }
-    FileUtils.deleteRecursively(new File(prefix + suffix));
+    FileUtils.deleteRecursively(new File(folder));
   }
 
   /**
