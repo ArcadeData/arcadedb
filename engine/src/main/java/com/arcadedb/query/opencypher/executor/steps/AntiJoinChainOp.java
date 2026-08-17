@@ -489,7 +489,7 @@ public final class AntiJoinChainOp implements CountOp {
         }
       }
       if (!reused)
-        hopMaps[h] = buildNeighborRIDMap(guard, db, nodeLabels[h], edgeTypes[h], directions[h], validBuckets[h + 1]);
+        hopMaps[h] = buildNeighborRIDMap(db, nodeLabels[h], edgeTypes[h], directions[h], validBuckets[h + 1], guard);
     }
 
     // Build anti-join neighbor map (reuse hop map if parameters match)
@@ -497,8 +497,8 @@ public final class AntiJoinChainOp implements CountOp {
     if (anchorIsSource && checkPos > 0 && antiJoinEdgeType.equals(edgeTypes[0]) && antiJoinDirection == directions[0])
       antiJoinMap = hopMaps[0];
     else if (anchorIsSource)
-      antiJoinMap = buildNeighborRIDMap(guard, db, anchorLabel, antiJoinEdgeType, antiJoinDirection,
-          validBuckets[antiJoinTargetIdx]);
+      antiJoinMap = buildNeighborRIDMap(db, anchorLabel, antiJoinEdgeType, antiJoinDirection,
+          validBuckets[antiJoinTargetIdx], guard);
     else
       antiJoinMap = null;
 
@@ -506,7 +506,7 @@ public final class AntiJoinChainOp implements CountOp {
     // tailCount[rid] = product of countEdges for hops checkPos..end.
     final Map<RID, Long> tailCounts;
     if (checkPos < hops)
-      tailCounts = buildTailCounts(guard, db, nodeLabels[checkPos], checkPos);
+      tailCounts = buildTailCounts(db, nodeLabels[checkPos], checkPos, guard);
     else
       tailCounts = Collections.emptyMap();
 
@@ -579,8 +579,9 @@ public final class AntiJoinChainOp implements CountOp {
    * Builds a map: vertex RID → RID[] of neighbors for the given edge type and direction.
    * Uses the RID-only iterator to avoid loading neighbor vertex records from disk.
    */
-  private Map<RID, RID[]> buildNeighborRIDMap(final WorkGuard guard, final Database db, final String sourceLabel,
-      final String edgeType, final Vertex.DIRECTION direction, final IntHashSet targetBuckets) {
+  private Map<RID, RID[]> buildNeighborRIDMap(final Database db, final String sourceLabel,
+      final String edgeType, final Vertex.DIRECTION direction, final IntHashSet targetBuckets,
+      final WorkGuard guard) {
     final Map<RID, RID[]> map = new HashMap<>();
     if (sourceLabel == null || !db.getSchema().existsType(sourceLabel))
       return map;
@@ -622,8 +623,8 @@ public final class AntiJoinChainOp implements CountOp {
   /**
    * Pre-computes the tail count (product of edge degrees for remaining hops) for each vertex.
    */
-  private Map<RID, Long> buildTailCounts(final WorkGuard guard, final Database db, final String sourceLabel,
-      final int fromHop) {
+  private Map<RID, Long> buildTailCounts(final Database db, final String sourceLabel, final int fromHop,
+      final WorkGuard guard) {
     final Map<RID, Long> counts = new HashMap<>();
     if (sourceLabel == null || !db.getSchema().existsType(sourceLabel))
       return counts;
