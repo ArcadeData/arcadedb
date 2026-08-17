@@ -19,17 +19,12 @@
 package com.arcadedb.database;
 
 import com.arcadedb.engine.LocalBucket;
-import com.arcadedb.engine.MutablePage;
-import com.arcadedb.engine.PageId;
-import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
 import java.util.Collection;
-import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -204,31 +199,53 @@ class Issue6196PlaceholderContentChainTest extends BucketPageLayoutTestSupport {
   }
 
   /**
-   * The compound legacy shape: a content record still wearing the ambiguous marker whose chain is ALSO broken. Two
-   * independent defects on one record, and CHECK DATABASE FIX must book it once - the broken chain is what it can act
-   * on, so the record is force-deleted, and the ambiguity reconciliation must then leave alone a slot that is no
-   * longer there rather than report a second error and a repair that could not have happened.
+   * The compound legacy shape: a content record still wearing the ambiguous marker whose chain is ALSO broken. The
+   * ambiguity itself must be booked ONCE - the broken chain is what FIX can act on, so the record is force-deleted,
+   * and the ambiguity reconciliation must then leave alone a slot that is no longer there rather than report a second
+   * error and a repair that could not have happened.
+   * <p>
+   * What the run also reports is everything the corruption really cost, which is more than the one head slot: the
+   * placeholder POINTER that led to the record is removed with it (#6292 - left behind, it is a slot every scan skips
+   * and {@code count(*)} counts, for good), and the continuation chunks the overwritten pointer had already cut the
+   * chain off from are reclaimed (#6294 - nothing collected them before, whatever the comments promised). Those three
+   * chunks were leaked the moment the pointer was corrupted, before this run started, so they are errors of the
+   * database and not of the repair; the pointer is not, because the record it referenced is one this very run removed.
    */
   @Test
   void aLegacyContentHeadWithABrokenChainIsReportedOnce() {
-    final RID content = contentRidOf(placeholderWithChainedContent());
+    final RID placeholder = placeholderWithChainedContent();
+    final RID content = contentRidOf(placeholder);
 
     writeMarkerByteAt(content, FIRST_CHUNK_MARKER);
+    final long chunksBefore = (Long) bucketStats(TYPE).get("totalChunks");
     breakChainAt(content);
 
     final Result fixed = checkDatabaseRow(true);
-    assertThat(numberProperty(fixed, "totalErrors"))
-        .as("one record, one defect it can act on, one error: " + fixed.toJSON()).isEqualTo(1L);
-    assertThat(warningsOf(fixed).toString()).as("and the broken chain is what it names: " + fixed.toJSON())
-        .contains("broken multi-page chunk chain").doesNotContain("could not be repaired");
-    assertThat((Collection<?>) fixed.getProperty("deletedRecordsAfterFix"))
-        .as("the record a broken chain costs is the one that is deleted: " + fixed.toJSON())
-        .hasToString("[" + content + "]");
+    assertThat(warningsOf(fixed).toString()).as("the broken chain is what it names: " + fixed.toJSON())
+        .contains("broken multi-page chunk chain").doesNotContain("could not be repaired")
+        .doesNotContain("ambiguous chunk chain");
+    assertThat((Collection<Object>) fixed.<Collection<Object>>getProperty("deletedRecordsAfterFix"))
+        .as("the head slot and the pointer that was the record's identity: " + fixed.toJSON())
+        .containsExactlyInAnyOrder(content, placeholder);
+    assertThat(numberProperty(fixed, "danglingPlaceholderPointersFixed"))
+        .as("the pointer is removed with the content it can no longer reach: " + fixed.toJSON()).isEqualTo(1L);
 
-    // Nothing ambiguous is left for a second run to find: the slot the pointer led to is gone.
+    // The chunks the corrupted pointer had cut off: leaked before this run, and reclaimed by it.
+    final long orphanedChunks = numberProperty(fixed, "orphanedChunks");
+    assertThat(orphanedChunks).as("the cut-off chunks must be found: " + fixed.toJSON()).isPositive();
+    assertThat(numberProperty(fixed, "orphanedChunksReclaimed")).as("and reclaimed: " + fixed.toJSON())
+        .isEqualTo(orphanedChunks);
+    assertThat(numberProperty(fixed, "totalErrors"))
+        .as("one broken chain plus the chunks it had already leaked: " + fixed.toJSON()).isEqualTo(1L + orphanedChunks);
+
+    // Nothing is left for a second run to find: not the slot the pointer led to, not the pointer, not the chunks.
     final Result again = checkDatabaseRow(false);
     assertThat(numberProperty(again, "totalErrors")).as("and the database checks out afterwards: " + again.toJSON())
         .isZero();
+    assertThat(numberProperty(again, "totalChunks")).as("with the leaked chunks really gone: " + again.toJSON())
+        .isLessThan(chunksBefore);
+    assertThat(numberProperty(again, "totalPlaceholderRecords"))
+        .as("and no pointer aimed at nothing: " + again.toJSON()).isZero();
   }
 
   /**
@@ -399,64 +416,12 @@ class Issue6196PlaceholderContentChainTest extends BucketPageLayoutTestSupport {
     }));
   }
 
-  private int recordOffsetOf(final MutablePage page, final RID rid) {
-    final int slot = (int) (rid.getPosition() % bucketOf(TYPE).getMaxRecordsInPage());
-    // PAGE_RECORD_TABLE_OFFSET == PAGE_RECORD_COUNT_IN_PAGE_OFFSET(0) + SHORT_SERIALIZED_SIZE; one uint per slot.
-    return (int) page.readUnsignedInt(Binary.SHORT_SERIALIZED_SIZE + slot * Binary.INT_SERIALIZED_SIZE);
-  }
-
-  /** Runs {@code body} on the page holding {@code rid}, taken for modification so a write lands in the transaction. */
-  private long onSlot(final RID rid, final PageAccess body) {
-    final DatabaseInternal db = (DatabaseInternal) database;
-    final int pageSize = ((PaginatedComponentFile) db.getFileManager().getFile(rid.getBucketId())).getPageSize();
-    final int pageNumber = (int) (rid.getPosition() / bucketOf(TYPE).getMaxRecordsInPage());
-    try {
-      return body.apply(db.getTransaction().getPageToModify(new PageId(db, rid.getBucketId(), pageNumber), pageSize, false));
-    } catch (final Exception e) {
-      throw new RuntimeException(e);
-    }
-  }
-
-  @FunctionalInterface
-  private interface PageAccess {
-    long apply(MutablePage page) throws Exception;
-  }
-
-  private Result checkDatabaseRow(final boolean fix) {
-    try (final ResultSet rs = database.command("sql", fix ? "check database fix" : "check database")) {
-      return rs.next();
-    }
-  }
-
-  /** {@code CHECK DATABASE} folds the per-bucket warning lists into a set, so this reads it as the collection it is. */
-  private static Collection<?> warningsOf(final Result row) {
-    final Object warnings = row.getProperty("warnings");
-    return warnings == null ? List.of() : (Collection<?>) warnings;
-  }
-
-  /**
-   * Records a full SCAN returns. {@code count(@rid)} and not {@code count(*)}: the latter answers from the bucket's
-   * cached counter without scanning a page, so it could not see the difference this test is about.
-   */
+  /** The two shared counts, bound to this class's single type. */
   private long countRecords() {
-    final long[] total = new long[1];
-    database.transaction(() -> {
-      try (final ResultSet rs = database.query("SQL", "select count(@rid) as c from " + TYPE)) {
-        total[0] = ((Number) rs.next().getProperty("c")).longValue();
-      }
-    });
-    return total[0];
+    return countRecords(TYPE);
   }
 
-  /** Records a scan returns holding exactly {@code value} - the count that notices a content record handed out twice. */
   private long countRecordsHolding(final String value) {
-    final long[] total = new long[1];
-    database.transaction(() -> {
-      try (final ResultSet rs = database.query("SQL", "select count(@rid) as c from " + TYPE + " where v = :v",
-          Map.of("v", value))) {
-        total[0] = ((Number) rs.next().getProperty("c")).longValue();
-      }
-    });
-    return total[0];
+    return countRecordsHolding(TYPE, value);
   }
 }
