@@ -178,10 +178,12 @@ class BrokenMultiPageRecordDeleteTest extends TestHelper {
 
   @Test
   void directSqlDeleteRemovesBrokenMultiPageRecordWithIndex() {
-    // With an index the broken chain surfaces during index-key extraction (loadMultiPageRecord -> CME); the tolerant
-    // catch must confirm the break with the structural probe and force both the index-cleanup skip and the physical
-    // removal, when the operator has opted into DELETE_TOLERATE_BROKEN_CHAIN (disabled by default). Mirrors the
-    // client's Chat[sourceRID] scenario.
+    // With an index the broken chain surfaces during index-key extraction (loadMultiPageRecord -> since #6258 a
+    // BrokenChunkChainException raised on the FIRST attempt, where it used to be a ConcurrentModificationException
+    // once the retries were spent); the tolerant catch must force both the index-cleanup skip and the physical
+    // removal, when the operator has opted into DELETE_TOLERATE_BROKEN_CHAIN (disabled by default). The confirmation
+    // no longer happens here either - loadMultiPageRecord proves the break itself, so this path no longer runs a
+    // structural walk of its own to tell corruption from contention. Mirrors the client's Chat[sourceRID] scenario.
     // createBrokenMultiPageVertex reopens the database internally, which replaces database.getConfiguration() with
     // a fresh instance - so the opt-in must be set AFTER, not before.
     final RID broken = createBrokenMultiPageVertex(true);
