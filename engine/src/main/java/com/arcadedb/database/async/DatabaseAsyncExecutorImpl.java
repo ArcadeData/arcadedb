@@ -45,6 +45,7 @@ import com.arcadedb.query.sql.parser.DDLStatement;
 import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.query.sql.parser.StatementCache;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.utility.StringUtils;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.LocalTimeSeriesType;
@@ -637,10 +638,18 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    */
   private boolean requiresOffWorkerExecution(final DatabaseAsyncCommand task) {
     try {
+      if (!mayContainDDL(task.command))
+        // NEITHER LANGUAGE CAN BE DDL WITHOUT ONE OF THE VERBS, so the common case - an ordinary write or read
+        // command - is classified without parsing anything on the submitting thread. It matters for `sql` too, not
+        // just for scripts: the statement cache makes the parse free only once it is WARM, and a first dispatch of a
+        // fresh statement would otherwise pay a full parse before the task is even queued, which is the one thing a
+        // caller passing awaitResponse=false asked not to wait for.
+        return false;
+
       if (SQLQueryEngine.ENGINE_NAME.equalsIgnoreCase(task.language))
         return database.getStatementCache().get(task.command) instanceof DDLStatement;
 
-      if (SQLScriptQueryEngine.ENGINE_NAME.equalsIgnoreCase(task.language) && mayContainDDL(task.command)) {
+      if (SQLScriptQueryEngine.ENGINE_NAME.equalsIgnoreCase(task.language)) {
         for (final Statement statement : SQLScriptQueryEngine.parseScript(task.command, database))
           if (statement instanceof DDLStatement)
             return true;
@@ -668,16 +677,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    */
   static boolean mayContainDDL(final String script) {
     for (final String keyword : DDL_LEADING_KEYWORDS)
-      if (containsIgnoreCase(script, keyword))
-        return true;
-    return false;
-  }
-
-  /** {@code String.contains} without allocating a lower-cased copy of a script on the submitting thread. */
-  private static boolean containsIgnoreCase(final String text, final String keyword) {
-    final int last = text.length() - keyword.length();
-    for (int i = 0; i <= last; i++)
-      if (text.regionMatches(true, i, keyword, 0, keyword.length()))
+      if (StringUtils.containsIgnoreCase(script, keyword))
         return true;
     return false;
   }
@@ -705,6 +705,13 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    * has to keep meaning what it meant.
    */
   private void submitCommand(final DatabaseAsyncCommand task) {
+    // The same liveness refusal every other async task gets, which only scheduleTask used to give: this branch does
+    // not go through it, so without this a DDL statement dispatched while the database is closing would be handed to
+    // a JVM-wide pool and run against a half-closed database instead of failing synchronously here.
+    if (executorThreads == null)
+      throw new DatabaseOperationException(
+          "Async executor has been shut down; cannot schedule asynchronous task " + task);
+
     commandsInFlight.incrementAndGet();
     // Counted at SUBMISSION, as scheduleTask counts a task the moment it reaches a queue, so the stat keeps meaning
     // "how many were accepted" rather than "how many have finished".

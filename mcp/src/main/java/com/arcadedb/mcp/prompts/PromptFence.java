@@ -18,6 +18,7 @@
  */
 package com.arcadedb.mcp.prompts;
 
+import com.arcadedb.utility.StringUtils;
 import java.security.SecureRandom;
 
 /**
@@ -46,27 +47,15 @@ final class PromptFence {
    * Empty when the value contains no closing tag, in any case, in which case the delimiters stay constant.
    */
   static String suffixFor(final String tag, final String value) {
-    if (!containsIgnoreCase(value, "</" + tag))
+    if (!StringUtils.containsIgnoreCase(value, "</" + tag))
       return "";
 
     String suffix;
     do {
       suffix = "_%016x".formatted(RANDOM.nextLong());
-    } while (containsIgnoreCase(value, suffix));
+    } while (StringUtils.containsIgnoreCase(value, suffix));
 
     return suffix;
   }
 
-  /**
-   * Scans in place rather than lower-casing the value, which for a document-sized argument would copy the whole
-   * string to answer a question about a needle a dozen characters long.
-   */
-  private static boolean containsIgnoreCase(final String haystack, final String needle) {
-    final int last = haystack.length() - needle.length();
-    for (int i = 0; i <= last; i++)
-      if (haystack.regionMatches(true, i, needle, 0, needle.length()))
-        return true;
-
-    return false;
-  }
 }

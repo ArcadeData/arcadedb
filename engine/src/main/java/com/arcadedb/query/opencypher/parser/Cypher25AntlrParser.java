@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.parser;
 
+import com.arcadedb.utility.StringUtils;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
@@ -209,7 +210,7 @@ public class Cypher25AntlrParser {
   private static void checkDeprecatedSyntax(final String query, final CommonTokenStream tokens) {
     // Allocation-free pre-filter: neither deprecated form is possible without a '{' or the word PERIODIC,
     // so the token walk is skipped for the vast majority of queries.
-    if (query.indexOf('{') < 0 && !containsIgnoreCase(query, "PERIODIC"))
+    if (query.indexOf('{') < 0 && !StringUtils.containsIgnoreCase(query, "PERIODIC"))
       return;
 
     tokens.fill(); // the parser reuses this same fully-buffered stream
@@ -241,12 +242,4 @@ public class Cypher25AntlrParser {
     }
   }
 
-  // Allocation-free case-insensitive substring search (avoids String.toUpperCase() on the parse hot path).
-  private static boolean containsIgnoreCase(final String s, final String sub) {
-    final int max = s.length() - sub.length();
-    for (int i = 0; i <= max; i++)
-      if (s.regionMatches(true, i, sub, 0, sub.length()))
-        return true;
-    return false;
-  }
 }

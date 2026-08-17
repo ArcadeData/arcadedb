@@ -52,6 +52,20 @@ class AsyncDDLKeywordCoverageTest {
     assertThat(ddlStatements).as("the parser package must yield its DDL statements, or this test proves nothing")
         .hasSizeGreaterThan(20);
 
+    // The check below reads the verb off the CLASS NAME, so the naming convention it rests on is itself part of what
+    // has to hold: a future DDL statement named some other way would sail past the verb check while still being
+    // missed by mayContainDDL at runtime. Asserted first, so that failure is loud rather than absent.
+    final List<String> misnamed = new ArrayList<>();
+    for (final Class<?> ddl : ddlStatements)
+      if (!ddl.getSimpleName().endsWith("Statement"))
+        misnamed.add(ddl.getSimpleName());
+
+    assertThat(misnamed).as(
+            "this test derives a statement's verb from its class name, so every DDLStatement has to keep the "
+                + "<Verb><Noun>Statement convention - one that does not would pass the verb check below while still "
+                + "being invisible to mayContainDDL")
+        .isEmpty();
+
     final List<String> uncovered = new ArrayList<>();
     for (final Class<?> ddl : ddlStatements) {
       // Every one is named <Verb>...Statement, and the verb is the word the statement starts with.

@@ -18,9 +18,14 @@
  */
 package com.arcadedb.database.async;
 
+import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -42,7 +47,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class AsyncCommandPoolCallerRunsTest {
+class AsyncCommandPoolCallerRunsTest extends TestHelper {
   private static final int QUEUE_CAPACITY = 8;
   private static final int POOL_THREADS   = 4;
 
@@ -114,5 +119,78 @@ class AsyncCommandPoolCallerRunsTest {
     }, QUEUE_CAPACITY, POOL_THREADS)).isInstanceOf(IllegalStateException.class);
 
     assertThat(AsyncCommandPool.isPoolThread()).isFalse();
+  }
+
+  /**
+   * <b>The transaction-ownership property the caller-runs path rests on.</b> On the pool a failing command must
+   * PROPAGATE rather than roll back, because the active transaction may not be its own: under the fallback the
+   * statement runs on the submitting thread, which for {@code POST /command} is an HTTP worker already inside its
+   * request's transaction. Rolling that back would end the request's transaction from underneath the handler that
+   * owns it - after a 202 has very likely already gone out.
+   * <p>
+   * Driven at the task itself, with a live ambient transaction, because that is where the decision is: {@code async}
+   * is what tells the task which of its two homes it is in, and {@code null} is the pool. The runner is then the one
+   * place that knows whether the transaction is its own, and the only one that may discard it.
+   */
+  @Test
+  @Timeout(120)
+  void aFailingCommandOnThePoolPathLeavesTheCallersTransactionAlone() {
+    database.transaction(() -> database.getSchema().createDocumentType("V", 1));
+
+    final AtomicBoolean reported = new AtomicBoolean();
+    final DatabaseAsyncCommand task = new DatabaseAsyncCommand(database.getConfiguration(), false, "sql",
+        "CREATE PROPERTY NoSuchTypeHere.id INTEGER", (Object[]) null, new AsyncResultsetCallback() {
+      @Override
+      public void onComplete(final ResultSet rs) {
+      }
+
+      @Override
+      public void onError(final Exception exception) {
+        reported.set(true);
+      }
+    });
+
+    database.begin();
+    try {
+      // The evidence: a rollback of the caller's transaction would take this with it.
+      database.newDocument("V").save();
+
+      assertThatThrownBy(() -> task.execute(null, (DatabaseInternal) database)).as(
+          "on the pool the failure belongs to the runner, which is the only one that knows whose transaction is open")
+          .isInstanceOf(Exception.class);
+
+      assertThat(reported).as("...and the task does not report it either: reporting twice is how one failure becomes "
+          + "two, and the runner reports through the same callback").isFalse();
+      assertThat(database.isTransactionActive()).as(
+          "a statement that failed inline must not end the transaction it was run inside").isTrue();
+      assertThat(database.countType("V", false)).as("...nor discard what that transaction had already written")
+          .isEqualTo(1);
+    } finally {
+      if (database.isTransactionActive())
+        database.commit();
+    }
+
+    assertThat(database.countType("V", false)).isEqualTo(1);
+  }
+
+  /** And the submitter is still told: the runner delivers through the same callback the task would have used. */
+  @Test
+  @Timeout(120)
+  void aFailingDispatchedDDLStillReachesTheSubmittersCallback() throws Exception {
+    final CountDownLatch reported = new CountDownLatch(1);
+    database.async().command("sql", "CREATE PROPERTY NoSuchTypeHere.id INTEGER", new AsyncResultsetCallback() {
+      @Override
+      public void onComplete(final ResultSet rs) {
+      }
+
+      @Override
+      public void onError(final Exception exception) {
+        reported.countDown();
+      }
+    });
+
+    assertThat(reported.await(60, TimeUnit.SECONDS)).as(
+        "moving the rollback to the runner must not move the report with it").isTrue();
+    database.async().waitCompletion();
   }
 }

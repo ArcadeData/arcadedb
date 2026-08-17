@@ -309,7 +309,7 @@ function displayMetrics() {
   // queries.split, which explain its per-query decision to parallelise or not (#4085).
   var ex = serverData.metrics.executors || {};
   var executorRowLabels = { "query": "Query Parallelism", "sparse_vector": "Sparse Vector Scoring",
-      "parallel_scan": "Parallel Scan Producers" };
+      "parallel_scan": "Parallel Scan Producers", "async_command": "Async DDL Commands" };
   var executorPoolNames = Object.keys(ex).sort();
   var executorsHtml = "";
   for (var i = 0; i < executorPoolNames.length; i++) {

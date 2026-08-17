@@ -79,18 +79,23 @@ public class DatabaseAsyncCommand implements DatabaseAsyncTask {
   }
 
   /**
-   * Runs the command, notifies {@code onComplete}, and CONTAINS its own failure - reporting it through
-   * {@code onError} and rolling back what it dirtied.
+   * Runs the command and notifies {@code onComplete}. What happens to a FAILURE depends on which of this task's two
+   * homes it is running in, and {@code async} is what says which (issue #6303).
    * <p>
-   * Kept here rather than lifted into the caller when issue #6303 gave this task a second home: it now runs either
-   * on an async worker (everything that is not DDL) or on {@link AsyncCommandPool} (the DDL that cannot), and only
-   * this method is common to both. On the worker, the run loop's own catch reports to the EXECUTOR-wide error
-   * callback and never to this command's, so lifting the reporting out would have silently stopped delivering
-   * {@code onError} to the submitter of every non-DDL command.
+   * <b>On a worker</b> ({@code async != null}) the failure is contained here: rolled back and reported to this
+   * command's own {@code onError}. It has to be, and this is not merely where it has always been - the worker's run
+   * loop catch reports to the EXECUTOR-wide callback and never to this command's, so letting the exception out would
+   * silently stop delivering {@code onError} to the submitter of every non-DDL command. The rollback is right there
+   * too: the active transaction is the worker's SHARED batch, and a failed write must not contaminate the tasks
+   * batched with it. An idempotent query dirties nothing and must not roll back a batch it merely read from.
    * <p>
-   * The rollback is likewise right on both paths, for slightly different reasons: on a worker it keeps a failed
-   * write from contaminating the SHARED batch transaction it was executed in, and on the pool it discards the
-   * command's own. An idempotent query dirties nothing and must not roll back a batch it merely read from.
+   * <b>On {@link AsyncCommandPool}</b> ({@code async == null}) it PROPAGATES, because here this task does not know
+   * whose transaction is active. Under the pool's caller-runs fallback the command executes on the submitting
+   * thread, which for {@code POST /command} is an HTTP worker already inside its request's own transaction - and
+   * rolling that back would end the request's transaction from underneath the handler that owns it, after a 202 has
+   * very likely already gone out. {@code DatabaseAsyncExecutorImpl.runCommand} is the one place that knows whether
+   * the transaction is its own, so it is the one place that may discard it; it reports through the same
+   * {@link #notifyError} either way, so nothing changes for the submitter.
    */
   @Override
   public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
@@ -115,6 +120,10 @@ public class DatabaseAsyncCommand implements DatabaseAsyncTask {
         userCallback.onComplete(resultset);
 
     } catch (final Exception e) {
+      if (async == null)
+        // ON THE POOL: the transaction may not be ours - see the method javadoc. Hand it to the runner, which knows.
+        throw e;
+
       if (!idempotent && database.isTransactionActive()) {
         try {
           database.rollback();
