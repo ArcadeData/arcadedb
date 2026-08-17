@@ -95,6 +95,13 @@ public class RetryStep extends AbstractExecutionStep {
         // attempt builds its own plan on a context of its own, so the clause starts its interval again.
         // The command's own deadline is the one kind that cannot be cured by waiting, and it is
         // already the exception the caller should see, so it propagates as it is.
+        //
+        // Propagating rather than wrapping does mean one narrow case reports the less useful of two true
+        // statements: a file-lock timeout raised at the very moment the command deadline also passes is
+        // reported as the lock, though it is the deadline that ended the loop. Wrapping unconditionally
+        // would fix the wording and break something worth more - a PartialResultTimeoutException that
+        // reached here would stop being one, turning a TIMEOUT n RETURN clause's documented
+        // return-what-you-have into a failure. The wording of a race loses to that.
         rollbackQuietly(ctx);
         if (commandDeadlineReached(ctx))
           throw ex;

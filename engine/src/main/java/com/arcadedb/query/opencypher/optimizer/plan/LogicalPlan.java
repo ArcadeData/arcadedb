@@ -231,6 +231,14 @@ public class LogicalPlan {
     } else if (existing.getLabels().isEmpty()) {
       labels = occurrence.getLabels();
       disjunction = occurrence.isLabelDisjunction();
+    } else if (existing.isLabelDisjunction() == occurrence.isLabelDisjunction()
+        && existing.getLabels().equals(occurrence.getLabels())) {
+      // The same constraint written twice - `(a:A|B)-[:R]->(b), (a:A|B)-[:S]->(c)` - intersects with itself,
+      // so there is nothing to fold in and nothing about it a single node cannot express. Taking the union
+      // below would reach the same list, but would also record the variable as a mixed disjunction and
+      // decline a query the operators can perfectly well run.
+      labels = existing.getLabels();
+      disjunction = existing.isLabelDisjunction();
     } else {
       final List<String> union = new ArrayList<>(existing.getLabels());
       for (final String label : occurrence.getLabels())

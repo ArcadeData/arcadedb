@@ -165,6 +165,25 @@ class CypherMultiPatternSharedLabelIssue6322Test extends TestHelper {
     assertThat(rowCountOf(pattern + " RETURN c")).isEqualTo(1);
   }
 
+  /**
+   * And so is the same <em>disjunction</em> written twice: it intersects with itself, so the merge has nothing
+   * to fold in and the result is a shape one node can still express. Taking the union blindly would reach the
+   * same list of labels and then decline a query the operators can perfectly well run.
+   */
+  @Test
+  void theSameDisjunctionOnBothPatternsIsStillOneConstraint() {
+    final String pattern =
+        "MATCH (p1:Person|Bot)-[:KNOWS]->(p2:Person), (p1:Person|Bot)<-[:AUTHORED]-(c:Comment)-[:MENTIONS]->(p2)";
+    assertThat(rowCountOf(pattern + " RETURN c")).isEqualTo(2);
+
+    // Widening one of the two IS a new constraint - (A|B) AND (A|B|C) is (A|B), not the union - so that one
+    // still declines rather than being flattened into a disjunction over all three.
+    final String widened =
+        "MATCH (p1:Person|Bot)-[:KNOWS]->(p2:Person), (p1:Person|Bot|Comment)<-[:AUTHORED]-(c:Comment)-[:MENTIONS]->(p2)";
+    assertThat(explainOf(widened + " RETURN c")).contains("Traditional Execution");
+    assertThat(rowCountOf(widened + " RETURN c")).isEqualTo(2);
+  }
+
   // ===================================================================================================
   // inline property maps, dropped from a later occurrence by the same rule
   // ===================================================================================================
