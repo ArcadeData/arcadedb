@@ -2192,7 +2192,7 @@ dimensions. `algo.randomWalk` had the one-dimensional version: `new int[steps + 
 `Integer.MIN_VALUE` at `steps = 2147483647`.
 
 Both are now estimated in saturating `long` arithmetic and checked **before** anything is allocated, against
-a new `arcadedb.cypher.algoMaxWalkMemory` budget that auto-scales with the JVM max heap (one eighth of it,
+a new `arcadedb.cypher.algoMaxWorkingMemory` budget that auto-scales with the JVM max heap (one eighth of it,
 never below 64MB) and can be raised or switched off (negative = no limit). This follows the house pattern
 of `arcadedb.queryMaxHeapElementsAllowedPerOp` and `arcadedb.queryMaxRangeSize` rather than inventing a
 per-knob constant: the error names the knobs that produced the estimate and the setting to raise, and
@@ -2234,3 +2234,69 @@ purpose ("more seeds than nodes" reads as "as many as exist" and is clamped to t
 nameless `NegativeArraySizeException`.
 
 [#6216](https://github.com/ArcadeData/arcadedb/issues/6216)
+
+## The whole working set of a graph-algorithm call is budgeted, not just its walk buffers (#6263)
+
+Follow-up to #6216, which introduced a heap budget for the random-walk buffers of `algo.node2vec` and
+`algo.randomWalk`, and to #6065, which capped every embedding-dimension knob at 4096. Between them they left
+the *largest* allocation of these procedures outside every budget: the matrices themselves.
+
+A dimension cap bounds one embedding **row** at 32 KB and says nothing about a `nodeCount x dimension`
+**matrix**. At `algo.node2vec`'s default `embeddingDimension: 128` the two Skip-gram matrices cost about 2080
+bytes per node - 208 MB at 100 000 nodes, 2.1 GB at a million, 21 GB at ten million - which is the same order
+as the walk matrix on the same call, at ~3560 bytes per node, that #6216 already refused up front. One
+allocation was budgeted and the other, sitting beside it in the same method, was not. `algo.fastrp` made the
+gap plainest: it has no walk buffer at all, so no budget of any kind applied to it, and its two
+`nodeCount x dimensions` matrices had no ceiling whatsoever. The failure mode was an `OutOfMemoryError` rather
+than the client error naming a parameter that #6065 and #6216 both exist to produce - and an
+`OutOfMemoryError` on a shared server takes down work that had nothing to do with the query that caused it.
+
+`arcadedb.cypher.algoMaxWalkMemory` is therefore renamed **`arcadedb.cypher.algoMaxWorkingMemory`**. The key
+was introduced in this same unreleased version, so no deprecated alias is carried: the concept it implements -
+estimate the footprint in saturating `long` arithmetic, reject as a client error before allocating, auto-scale
+the default with the JVM heap - was never walk-specific, only its name was. Everything else about it is
+unchanged: default `max(64MB, maxHeap/8)`, negative means no limit, and the error is an
+`IllegalArgumentException`, so over HTTP it is a 400 rather than a 500.
+
+Reservations now **accumulate over the call** rather than being checked one allocation at a time. That is what
+the question "how much heap may this call take?" actually asks, and a single call routinely holds several of
+these at once: `algo.node2vec` keeps its walk matrix alive while it trains over two embedding matrices, so
+pricing each separately would let a call exceed the budget by however many components it happens to have. The
+error names the component that broke the budget, the counts that sized it, and what the call had already
+reserved:
+
+```
+algo.node2vec(): the embedding matrices would need 8448 bytes (2 matrices of 4 nodes x embeddingDimension=128),
+on top of the 14240 bytes this call already reserved, more than the 20000 bytes allowed.
+Set arcadedb.cypher.algoMaxWorkingMemory to raise the limit
+```
+
+Priced against the budget, all before anything is allocated:
+
+| procedure | working set |
+|---|---|
+| `algo.node2vec` | walk matrix + 2 x `nodeCount x embeddingDimension` |
+| `algo.fastrp` | 2 x `nodeCount x dimensions` |
+| `algo.hashgnn` | 2 x `nodeCount x 4·embeddingDimension` feature matrices + 1 x `nodeCount x embeddingDimension` |
+| `algo.graphsage` | 2 x `nodeCount x embeddingDimension` + the layer's `embeddingDimension x 2·initDim` projection |
+| `algo.apsp` | `nodeCount x nodeCount` distance matrix |
+| `algo.simRank` | 2 x `nodeCount x nodeCount` similarity matrices |
+| `algo.maxFlow` | `nodeCount x nodeCount` capacity + residual matrices |
+| `algo.kShortestPaths` | `nodeCount x nodeCount` weight matrix + removed-edge mask |
+| `algo.randomWalk` | walk buffer (unchanged from #6216) |
+
+The last four are the reason the rename is worth doing rather than adding a second walk-shaped key. Their
+matrices are sized by the graph alone, with no knob involved anywhere: `algo.simRank(a, b)` answers a question
+about exactly two nodes and allocates two full `nodeCount x nodeCount` matrices to do it, because the
+similarity of one pair is defined recursively over every pair - 1.6 GB at 10 000 nodes. `algo.apsp` already
+documented itself as suitable "up to a few thousand vertices", which was advice rather than a bound. These
+algorithms are cubic or worse in time, so the memory bound bites at roughly the scale where the runtime is
+already impractical; what changes is that the refusal now names the node count and the setting instead of
+arriving as an `OutOfMemoryError` several minutes in.
+
+`algo.hashgnn` turned up one thing worth stating separately: its **feature** matrices, not its embedding
+matrix, are the larger pair. They are four times as wide as the embedding, so even stored as `boolean` they
+cost half a byte per dimension per node against the embedding's eight - which is why they are priced by name
+rather than folded into an "embedding matrices" figure that would understate the call by a factor of two.
+
+[#6263](https://github.com/ArcadeData/arcadedb/issues/6263)

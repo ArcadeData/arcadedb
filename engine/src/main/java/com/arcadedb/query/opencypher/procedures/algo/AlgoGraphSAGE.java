@@ -59,6 +59,12 @@ import java.util.stream.Stream;
  * </pre>
  * </p>
  *
+ * <p>The working set is two {@code nodeCount x embeddingDimension} feature matrices - the one a layer reads
+ * and the one it writes - plus that layer's projection matrix. Their footprint is estimated in {@code long}
+ * arithmetic and reserved against {@link com.arcadedb.GlobalConfiguration#CYPHER_ALGO_MAX_WORKING_MEMORY}
+ * before the first is allocated, so a graph too large for the dimension asked for is rejected as a client error
+ * naming the knob rather than surfacing as an {@code OutOfMemoryError}.</p>
+ *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class AlgoGraphSAGE extends AbstractAlgoProcedure {
@@ -119,6 +125,19 @@ public class AlgoGraphSAGE extends AbstractAlgoProcedure {
 
     // Initial node features: [log-normalised degree, Gaussian noise × (inDim-1)]
     final int initDim = Math.max(outDim, 16);
+
+    // Peak working set: the feature matrix a layer reads, the one it writes, and that layer's projection.
+    // Neither `layers` nor the matrices it walks through raise the peak - each layer drops the matrix it read -
+    // so the estimate is per-layer rather than per-run. initDim >= outDim, so the widest projection is the one
+    // of the first layer, whose concatenation is 2 x initDim wide.
+    final MemoryBudget memory = newMemoryBudget(db);
+    memory.reserve(matrixBytes(n, initDim, DOUBLE_BYTES), "the node feature matrix",
+        n + " nodes x " + initDim + " initial features");
+    if (layers > 0)
+      memory.reserve(saturatingSum(matrixBytes(n, outDim, DOUBLE_BYTES), matrixBytes(outDim, 2L * initDim, DOUBLE_BYTES)),
+          "the layer matrices", n + " nodes x embeddingDimension=" + outDim + " plus a projection of "
+              + outDim + " x " + (2L * initDim));
+
     final Random rng = seed >= 0 ? new Random(seed) : new Random();
     double[][] embed = new double[n][initDim];
     for (int i = 0; i < n; i++) {

@@ -112,6 +112,13 @@ public class AlgoSimRank extends AbstractAlgoProcedure {
     // Build IN adjacency list (who points to whom)
     final int[][] adjIn = graph.adjacency(Vertex.DIRECTION.IN, relTypes);
 
+    // Two nodeCount x nodeCount matrices, for a question about exactly two nodes: the similarity of one pair is
+    // defined recursively over every pair, so the whole matrix is the working set. 1.6 GB at 10 000 nodes with
+    // no knob involved. Reserved before either is allocated so that a graph too large for SimRank is a client
+    // error naming the node count and the budget, rather than an OutOfMemoryError.
+    newMemoryBudget(db).reserve(saturatingProduct(2L, matrixBytes(n, n, DOUBLE_BYTES)), "the similarity matrices",
+        "2 matrices of " + n + " x " + n + " nodes");
+
     // Initialize sim matrix: sim[i][i] = 1.0, all others = 0.0
     double[][] sim    = new double[n][n];
     double[][] newSim = new double[n][n];

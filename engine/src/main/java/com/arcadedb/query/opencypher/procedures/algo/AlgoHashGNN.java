@@ -58,6 +58,12 @@ import java.util.stream.Stream;
  * </pre>
  * </p>
  *
+ * <p>The working set is two {@code nodeCount x (4 x embeddingDimension)} feature matrices plus one
+ * {@code nodeCount x embeddingDimension} embedding matrix. All three footprints are estimated in {@code long}
+ * arithmetic and reserved against {@link com.arcadedb.GlobalConfiguration#CYPHER_ALGO_MAX_WORKING_MEMORY}
+ * before the first is allocated, so a graph too large for the dimension asked for is rejected as a client error
+ * naming the knob rather than surfacing as an {@code OutOfMemoryError}.</p>
+ *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class AlgoHashGNN extends AbstractAlgoProcedure {
@@ -110,6 +116,17 @@ public class AlgoHashGNN extends AbstractAlgoProcedure {
     // Use 4× over-parameterised bit space for good hash quality
     final int numFeatures = Math.max(embDim * 4, 64);
     final Random rng = seed >= 0 ? new Random(seed) : new Random();
+
+    // Three nodeCount-scaled matrices live at once here, and the two feature matrices - not the embedding one -
+    // are the larger pair: they are four times as wide as the embedding, so even as booleans they cost half a
+    // byte per embedding dimension per node against the embedding's eight. The embeddingDimension cap bounds a
+    // row, not a matrix; at the default of 128 the three together cost about 2 KB per node. All reserved before
+    // the first one is allocated.
+    final MemoryBudget memory = newMemoryBudget(db);
+    memory.reserve(saturatingProduct(2L, matrixBytes(n, numFeatures, BOOLEAN_BYTES)), "the feature matrices",
+        "2 matrices of " + n + " nodes x " + numFeatures + " features (embeddingDimension=" + embDim + " x 4)");
+    memory.reserve(matrixBytes(n, embDim, DOUBLE_BYTES), "the embedding matrix",
+        n + " nodes x embeddingDimension=" + embDim);
 
     // Initialise: each node gets ~12.5% sparse random binary feature vector
     final boolean[][] features = new boolean[n][numFeatures];

@@ -62,6 +62,12 @@ import java.util.stream.Stream;
  * </pre>
  * </p>
  *
+ * <p>The working set is two {@code nodeCount x dimensions} matrices. Their footprint is estimated in
+ * {@code long} arithmetic and reserved against
+ * {@link com.arcadedb.GlobalConfiguration#CYPHER_ALGO_MAX_WORKING_MEMORY} before either is allocated, so a
+ * graph too large for the dimension asked for is rejected as a client error naming the knob rather than
+ * surfacing as an {@code OutOfMemoryError}.</p>
+ *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class AlgoFastRP extends AbstractAlgoProcedure {
@@ -112,6 +118,14 @@ public class AlgoFastRP extends AbstractAlgoProcedure {
     if (n == 0)
       return Stream.empty();
     final int[][] adj = graph.adjacency(dir, relTypes);
+
+    // The two nodeCount x dimensions matrices below are the whole working set of this procedure, and the only
+    // allocation of any size it makes: it has no walk buffer, so nothing else would ever price them. `dimensions`
+    // is capped at MAX_EMBEDDING_DIMENSION, which bounds one embedding ROW at 32 KB and says nothing about the
+    // matrix - at the default of 128 the pair costs about 2 KB per node, 2 GB at a million nodes. Reserved before
+    // either is allocated so an oversized run is a client error naming the knob, not an OutOfMemoryError.
+    newMemoryBudget(db).reserve(saturatingProduct(2L, matrixBytes(n, dimensions, DOUBLE_BYTES)),
+        "the embedding matrices", "2 matrices of " + n + " nodes x dimensions=" + dimensions);
 
     final int[] degree = new int[n];
     for (int i = 0; i < n; i++)

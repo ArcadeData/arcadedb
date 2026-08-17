@@ -110,6 +110,14 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
     if (startIdx == null || endIdx == null)
       return Stream.empty();
 
+    // Yen's algorithm is dense here: a nodeCount x nodeCount weight matrix for the whole run, plus one
+    // nodeCount x nodeCount removed-edge mask per spur node. 800 MB and 100 MB respectively at 10 000 nodes,
+    // with no knob involved. Reserved before the first is allocated so that a graph too large for the dense
+    // formulation is a client error naming the node count and the budget, rather than an OutOfMemoryError.
+    // Only one mask is ever live, so the peak is priced once rather than per spur node.
+    newMemoryBudget(db).reserve(saturatingSum(matrixBytes(n, n, DOUBLE_BYTES), matrixBytes(n, n, BOOLEAN_BYTES)),
+        "the weight matrix and the removed-edge mask", "2 matrices of " + n + " x " + n + " nodes");
+
     // Build weighted adjacency matrix (OUT direction)
     final double[][] weightMatrix = new double[n][n];
     for (double[] row : weightMatrix)

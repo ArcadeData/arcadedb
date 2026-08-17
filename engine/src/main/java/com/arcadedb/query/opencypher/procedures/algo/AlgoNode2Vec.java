@@ -65,11 +65,13 @@ import java.util.stream.Stream;
  * </pre>
  * </p>
  *
- * <p>The walk matrix is {@code walksPerNode x nodeCount} walks of {@code walkLength} steps. Its footprint is
- * estimated in {@code long} arithmetic and checked against
- * {@link com.arcadedb.GlobalConfiguration#CYPHER_ALGO_MAX_WALK_MEMORY} before anything is allocated, so a
- * large but in-range knob is rejected by name rather than wrapping the product or exhausting the heap. The
- * training loops honour thread interruption and {@code arcadedb.command.timeout}.</p>
+ * <p>The call holds two dense structures: a walk matrix of {@code walksPerNode x nodeCount} walks of
+ * {@code walkLength} steps, and the two {@code nodeCount x embeddingDimension} matrices of the Skip-gram model.
+ * Both footprints are estimated in {@code long} arithmetic and reserved against
+ * {@link com.arcadedb.GlobalConfiguration#CYPHER_ALGO_MAX_WORKING_MEMORY} before anything is allocated, so a
+ * large but in-range knob, or a graph too large for the dimension asked for, is rejected by name rather than
+ * wrapping the product or exhausting the heap. The training loops honour thread interruption and
+ * {@code arcadedb.command.timeout}.</p>
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -131,6 +133,7 @@ public class AlgoNode2Vec extends AbstractAlgoProcedure {
 
     final Random rng = seed >= 0 ? new Random(seed) : new Random();
     final WorkGuard guard = newWorkGuard(context);
+    final MemoryBudget memory = newMemoryBudget(db);
 
     // A context window wider than the walk already spans the whole walk, so clamping it changes no result.
     // Without the clamp `pos + window` wraps int for a large windowSize, leaving winEnd below winStart: the
@@ -145,9 +148,16 @@ public class AlgoNode2Vec extends AbstractAlgoProcedure {
     // walk matrix with a negative or (for an exact multiple of 2^32) far too small a value.
     final long totalWalksAsLong = saturatingProduct(n, walksPerNode);
     // Per walk: one matrix row of walkLength ints, plus one entry of the walkOrder shuffle array.
-    final long bytesPerWalk = WALK_ROW_OVERHEAD_BYTES + WALK_ENTRY_BYTES + WALK_ENTRY_BYTES * walkLen;
-    checkWalkBudget(db, saturatingProduct(totalWalksAsLong, bytesPerWalk),
+    final long bytesPerWalk = MATRIX_ROW_OVERHEAD_BYTES + INT_BYTES + INT_BYTES * walkLen;
+    memory.reserve(saturatingProduct(totalWalksAsLong, bytesPerWalk), "the random walk buffer",
         "walksPerNode=" + walksPerNode + " x walkLength=" + walkLen + " over " + n + " nodes");
+    // The two nodeCount x embeddingDimension matrices of phase 2 are reserved here, before phase 1 allocates
+    // anything, because both stay alive to the end of the call alongside the walk matrix and because a run
+    // that cannot afford them should not first spend minutes generating walks. The dimension cap bounds one
+    // embedding ROW at 32 KB and says nothing about the matrix, which at the default dimension of 128 costs
+    // about 2 KB per node - the same order as the walk buffer priced above.
+    memory.reserve(saturatingProduct(2L, matrixBytes(n, dim, DOUBLE_BYTES)), "the embedding matrices",
+        "2 matrices of " + n + " nodes x embeddingDimension=" + dim);
     if (totalWalksAsLong > Integer.MAX_VALUE)
       throw new IllegalArgumentException(getName() + "(): walksPerNode=" + walksPerNode + " over " + n + " nodes needs "
           + totalWalksAsLong + " walks, more than the " + Integer.MAX_VALUE + " entries a Java array can hold");
@@ -182,7 +192,7 @@ public class AlgoNode2Vec extends AbstractAlgoProcedure {
     }
 
     // ── Phase 2: Skip-gram with negative sampling ──────────────────────────
-    // W: input embeddings, WCtx: context embeddings
+    // W: input embeddings, WCtx: context embeddings. Both were reserved before phase 1 started.
     final double[][] W = new double[n][dim];
     final double[][] WCtx = new double[n][dim];
     // Xavier initialisation for W.
