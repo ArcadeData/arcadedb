@@ -2542,6 +2542,68 @@ the busiest single database's share, which is exactly what `pageFlushQueue` boun
 alert on.
 
 [#6281](https://github.com/ArcadeData/arcadedb/issues/6281)
+## A super-node's read walk keeps its recency order for the whole walk, not just the first 1,024 entries (#6064)
+
+`arcadedb.graph.supernodeInterleaveRounds` (#6048) was a **cliff**. Up to `rounds × stripes` entries - 64 × 16 =
+1,024 by default - a promoted super-node's read walk took one entry per stripe chain per turn, which is what
+puts an edge of recency rank `r` back at a position of order `r` (#6044). The very next entry froze the
+rotation: the chain holding the turn was drained to exhaustion, then the next, then the next. Past 1,024 the
+returned position stopped having any relation to recency, and the error grew with the vertex's DEGREE again -
+the exact failure #6044 fixed, pushed past a constant.
+
+A query with a small `LIMIT` never reaches the cliff. A query with a **large but still bounded** one - an
+export, a batch job, paginated admin tooling, `MATCH (h)-[:LINK]->(x) RETURN x LIMIT 5000` - fell off it
+silently: it asked for a bounded result, got one, and the newest edges it expected near the front were spread
+across the whole list. The only lever was raising `supernodeInterleaveRounds` for every unbounded read in the
+database too, which is precisely the full-walk locality cost #6048 removed.
+
+The rotation now **widens** instead of stopping. Past `rounds × stripes` entries it keeps turning, but takes
+`rounds` entries from each chain per turn instead of one, doubling that batch on every completed round. Both
+properties hold at once:
+
+- **Locality** (what #6048 was about): the chain switches over a walk of `D` entries drop from `D` to about
+  `stripes × log D`, and once the batch outgrows a chunk every visit is a sequential run through one chain, so
+  the resident-page pressure the interleaving costs decays instead of persisting. Counted against the previous
+  degrade on a 1,000,000-edge walk at the defaults, that is ~1,184 chain switches against ~1,040 - 0.1% of the
+  entries walked, either way.
+- **Rank fidelity** (what #6064 is about): an entry at depth `d` in its chain is emitted no later than the end
+  of the batch that reaches depth `d`, which is at most twice `d`, so its position stays within a constant
+  factor of its true rank for the WHOLE walk. Measured on a 3,000-edge super-node at 16 stripes and 4 rounds
+  (a 64-entry threshold, deliberately small to put most of the walk past it), the worst position/rank ratio is
+  2.4; before, rank 40 came back at position 2,386, a ratio of 58.
+
+No new setting, and nothing has to be told what the query's `LIMIT` was - which is the alternative this
+replaces, and it would have meant threading a "how many do you actually need" hint from every query engine's
+execution plan down into `EdgeLinkedList`, across an iterator API that has no concept of one.
+`supernodeInterleaveRounds` keeps its meaning (how long the walk stays at one entry per turn) and its `0`
+still disables interleaving entirely, giving immediate concatenation in the pre-#6044 order. Read-side only:
+no on-disk format change, no migration.
+
+[#6064](https://github.com/ArcadeData/arcadedb/issues/6064)
+## A schema probe spelled `LIMIT 0` gets a RowDescription over a row source the schema cannot describe (#6185)
+
+`SELECT expand(shortestPath(#1:0, #1:5)) LIMIT 0` is a schema probe, and #6172 had already made a probe
+describable no matter how its rows are computed: when the statement returns nothing, the Postgres wire protocol
+replays it without the clause that empties it and reads the columns off the first row, which is the only way to
+name the columns of a row source that is not a schema type - a graph function, a `TRAVERSE`, a `MATCH`, a constant
+table. The trigger for that replay looked only at the `WHERE` clause, so a client that spells the probe `LIMIT 0` -
+Tableau and several JDBC/BI tools do - was answered with an empty RowDescription again, exactly as before the fix.
+
+The trigger is now "the statement is empty by construction", the same question the SQL planner asks in #6174 when
+it folds the fetch away, and it is read at every level of the query, so `LIMIT 0` on the probed subquery counts as
+well as `LIMIT 0` on the statement the client sent. Only a literal `LIMIT 0` qualifies (`Limit.isAlwaysEmpty()`): a
+bound `LIMIT ?` belongs to one execution, and the replay must not be triggered by a value the next execution can
+change.
+
+The two spellings are deliberately not answered in the same order, because they do not carry the same intent. The
+replay evaluates the query's projection for real, once, on one row - the caveat that has been documented on
+`sampleProbeColumns` since #6172 - so a projected function with a side effect runs once per probe that takes that
+path. `WHERE 1=0` has no purpose other than probing, so it is replayed first, as it always was. `LIMIT 0` is also
+how a client asks an expensive query for nothing at all, so it is replayed only after the static resolution of the
+row source has come back with nothing: a `LIMIT 0` over a shape the schema can describe is answered from the
+schema, without evaluating anything, and only the shapes that cannot be answered any other way are replayed.
+
+[#6185](https://github.com/ArcadeData/arcadedb/issues/6185)
 ## An always-true filter is dropped at plan time instead of being evaluated once per record (#6184)
 
 The mirror of #6174. That issue taught the planner to recognise a filter that is false for every record; a filter
