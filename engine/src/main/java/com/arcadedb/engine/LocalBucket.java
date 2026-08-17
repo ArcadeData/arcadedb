@@ -2670,8 +2670,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // the zero-free-tail page #6149 left as the last fallback. Making the collapse write a negated size marker
         // instead is a follow-up (#6286), not a correctness matter.
         //
-        // Asked of BOTH the flag and the marker on purpose: the flag answers for a database written before #6196,
-        // whose content head still carries the ambiguous FIRST_CHUNK and must not be collapsed either.
+        // The FLAG is what carries this, and it has to be: a database written before #6196 holds a content head still
+        // wearing the ambiguous FIRST_CHUNK, which the marker cannot tell from a record's own. The marker test next to
+        // it is redundant - the throw at the top of this branch means placeholderContentHead can only be true here
+        // when updatePlaceholderContent is too - and is kept so this line states its own precondition instead of
+        // borrowing one from thirty lines up.
         if (!updatePlaceholderContent && !placeholderContentHead//
                 && collapseChunkChainToRecord(rid, buffer, page, pageId, positionInPage, recordPositionInPage, chunkHeaderPos,
                 chunkRegionEnd, chunkBaseImage, slotTx)) {
