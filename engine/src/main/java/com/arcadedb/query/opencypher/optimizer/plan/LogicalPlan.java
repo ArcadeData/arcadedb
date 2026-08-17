@@ -232,7 +232,7 @@ public class LogicalPlan {
       labels = occurrence.getLabels();
       disjunction = occurrence.isLabelDisjunction();
     } else if (existing.isLabelDisjunction() == occurrence.isLabelDisjunction()
-        && existing.getLabels().equals(occurrence.getLabels())) {
+        && sameLabelSet(existing.getLabels(), occurrence.getLabels())) {
       // The same constraint written twice - `(a:A|B)-[:R]->(b), (a:A|B)-[:S]->(c)` - intersects with itself,
       // so there is nothing to fold in and nothing about it a single node cannot express. Taking the union
       // below would reach the same list, but would also record the variable as a mixed disjunction and
@@ -272,6 +272,21 @@ public class LogicalPlan {
       return existing;
 
     return new LogicalNode(variable, labels, properties, disjunction);
+  }
+
+  /**
+   * Whether two label lists name the same set. Order is not a constraint a pattern expresses -
+   * {@code (a:A|B)} and {@code (a:B|A)} are one disjunction, {@code (a:A:B)} and {@code (a:B:A)} one
+   * conjunction - so mutual containment rather than {@link List#equals}, which would miss the no-op and
+   * decline a query for the order its two occurrences happened to be written in.
+   * <p>
+   * Mutual containment rather than a size check plus one direction, because a label repeated inside one
+   * list ({@code (a:A:A)}) would let {@code [A, B]} and {@code [A, A]} pass as the same set and drop
+   * {@code B}. Both lists are a handful of entries, so the quadratic scan is cheaper than the sets that
+   * would replace it.
+   */
+  private static boolean sameLabelSet(final List<String> first, final List<String> second) {
+    return first.containsAll(second) && second.containsAll(first);
   }
 
   /**

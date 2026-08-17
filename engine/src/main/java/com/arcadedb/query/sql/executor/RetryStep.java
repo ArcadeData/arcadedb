@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
@@ -145,7 +146,7 @@ public class RetryStep extends AbstractExecutionStep {
    * @return the result set the block finished with, or {@code null} when another attempt is due
    */
   private ResultSet giveUpOrBackOff(final CommandContext ctx, final int nRecords, final int attempt,
-      final RuntimeException ex) {
+      final ArcadeDBException ex) {
     if (attempt >= retries - 1) {
       if (elseBody != null && !elseBody.isEmpty()) {
         final ScriptExecutionPlan plan = initPlan(elseBody, ctx);

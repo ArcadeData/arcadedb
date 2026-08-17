@@ -184,6 +184,20 @@ class CypherMultiPatternSharedLabelIssue6322Test extends TestHelper {
     assertThat(rowCountOf(widened + " RETURN c")).isEqualTo(2);
   }
 
+  /**
+   * The order the alternatives are written in is not a constraint the pattern expresses, so
+   * {@code (p1:Person|Bot)} and {@code (p1:Bot|Person)} are one disjunction and the merge is still a no-op.
+   * Comparing the two lists for equality rather than as sets would decline the query for its spelling.
+   */
+  @Test
+  void theSameDisjunctionWrittenInEitherOrderIsStillOneConstraint() {
+    final String pattern =
+        "MATCH (p1:Person|Bot)-[:KNOWS]->(p2:Person), (p1:Bot|Person)<-[:AUTHORED]-(c:Comment)-[:MENTIONS]->(p2)";
+    assertThat(rowCountOf(pattern + " RETURN c")).isEqualTo(2);
+    assertThat(rowCountOf(pattern + " RETURN c")).isEqualTo(rowCountOf(
+        "MATCH (p1:Person|Bot)-[:KNOWS]->(p2:Person), (p1:Person|Bot)<-[:AUTHORED]-(c:Comment)-[:MENTIONS]->(p2) RETURN c"));
+  }
+
   // ===================================================================================================
   // inline property maps, dropped from a later occurrence by the same rule
   // ===================================================================================================
