@@ -7360,6 +7360,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       stmt.deleteOrphans = true;
     }
 
+    // Parse RECLAIM UNREFERENCED FILES flag (#6189): opt-in reclaim of files no schema component was ever built
+    // for. RECLAIM alone identifies the clause - it is the only place the token appears in this statement.
+    if (checkCtx.RECLAIM() != null) {
+      stmt.reclaimUnreferencedFiles = true;
+    }
+
     // Parse COMPRESS flag
     if (checkCtx.COMPRESS() != null) {
       stmt.compress = true;
