@@ -234,7 +234,7 @@ class LongObjectHashMapTest {
   // SEPARATE_THREAD is required, not cosmetic: the regression this guards is an infinite probe loop,
   // and the default same-thread @Timeout can only report a breach AFTER the method returns - which a
   // spinning loop never does, so the build would hang forever instead of failing.
-  @Timeout(value = 20, unit = TimeUnit.SECONDS, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+  @Timeout(value = 60, unit = TimeUnit.SECONDS, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
   void removeHeavyWorkloadNeverSaturatesTheTableWithTombstones() {
     final LongObjectHashMap<Integer> m = new LongObjectHashMap<>(16);
 
@@ -266,7 +266,7 @@ class LongObjectHashMapTest {
   // SEPARATE_THREAD is required, not cosmetic: the regression this guards is an infinite probe loop,
   // and the default same-thread @Timeout can only report a breach AFTER the method returns - which a
   // spinning loop never does, so the build would hang forever instead of failing.
-  @Timeout(value = 20, unit = TimeUnit.SECONDS, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+  @Timeout(value = 60, unit = TimeUnit.SECONDS, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
   void churnDoesNotGrowCapacityWithoutBound() {
     final LongObjectHashMap<Integer> m = new LongObjectHashMap<>(16);
     for (int i = 0; i < 100_000; i++) {

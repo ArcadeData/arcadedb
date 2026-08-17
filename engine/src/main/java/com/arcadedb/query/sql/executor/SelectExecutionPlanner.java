@@ -153,6 +153,15 @@ public class SelectExecutionPlanner {
       info.timeout.setValue(context.getDatabase().getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT));
     }
 
+    // A filter that keeps every record (WHERE 1=1, WHERE true) says nothing the statement did not already say, so it
+    // is dropped here rather than pushed into the fetch: everything downstream - the projected properties computed
+    // just below, the choice between FetchFromTypeWithFilterStep and FetchFromTypeExecutionStep, the hardwired
+    // count(*) plan - then sees the statement it would have seen without a WHERE at all. Decided off the clauses as
+    // the statement wrote them, before optimizeQuery() rearranges them into index searches, and only for
+    // literal-only comparisons, so the verdict holds for every execution that reuses the cached plan.
+    if (info.whereClause != null && info.whereClause.isAlwaysTrue(context))
+      info.whereClause = null;
+
     info.projectedProperties = computeProjectedProperties(info);
   }
 
@@ -3498,7 +3507,7 @@ public class SelectExecutionPlanner {
       if (orderAsc != null && info.orderBy != null && fullySorted(info.orderBy, (AndBlock) desc.keyCondition, desc.getIndex()))
         info.orderApplied = true;
 
-        if (desc.getRemainingCondition() != null && !desc.getRemainingCondition().isEmpty()) {
+        if (needsFilterStep(desc.getRemainingCondition(), context)) {
         if (info.perRecordLetClause != null
             && refersToLet(Collections.singletonList(desc.getRemainingCondition()))) {
           SelectExecutionPlan stubPlan = new SelectExecutionPlan(context,
@@ -3624,12 +3633,22 @@ public class SelectExecutionPlanner {
       if (desc.requiresMultipleIndexLookups()) {
         subPlan.chain(new DistinctExecutionStep(context));
       }
-      if (desc.remainingCondition != null && !desc.remainingCondition.isEmpty()) {
+      if (needsFilterStep(desc.remainingCondition, context)) {
         subPlan.chain(new FilterStep(createWhereFrom(desc.remainingCondition), context));
       }
       subPlans.add(subPlan);
     }
     return new ParallelExecStep(subPlans, context);
+  }
+
+  /**
+   * Whether what an index search left behind still has to be evaluated per record. A residual that is empty, or true
+   * for every record, is no filter at all: {@code WHERE 1=1 AND indexedProperty = 'x'} hands the second term to the
+   * index and leaves the first behind, and evaluating it would cost the index plan the very step the whole where
+   * clause is spared in {@link #init(CommandContext)}.
+   */
+  private static boolean needsFilterStep(final BooleanExpression remainingCondition, final CommandContext context) {
+    return remainingCondition != null && !remainingCondition.isEmpty() && !remainingCondition.isAlwaysTrue(context);
   }
 
   private WhereClause createWhereFrom(final BooleanExpression remainingCondition) {

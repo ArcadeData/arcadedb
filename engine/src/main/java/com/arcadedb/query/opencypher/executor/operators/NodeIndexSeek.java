@@ -29,6 +29,7 @@ import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.VertexType;
 
@@ -90,6 +91,9 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
 
   @Override
   public ResultSet execute(final CommandContext context, final int nRecords) {
+    // Bounds this operator's row loop by the command deadline - see WorkGuard for why between-batches is
+    // not enough (issue #6266).
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     return new ResultSet() {
       private TypeIndex index = null;
       private List<Object[]> seekKeys = null; // one key per value to seek (IN-list expands to N keys)
@@ -215,6 +219,7 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
         }
 
         while (buffer.size() < n) {
+          guard.check();
           // Advance to the next seek value when the current cursor is exhausted.
           if (cursor == null || !cursor.hasNext()) {
             if (cursor != null) {

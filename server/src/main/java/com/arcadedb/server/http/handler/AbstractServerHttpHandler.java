@@ -36,6 +36,7 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.HttpSessionException;
 import com.arcadedb.server.http.HttpSessionManager;
 import com.arcadedb.server.http.IdempotencyCache;
+import com.arcadedb.server.http.ResultSetTooLargeException;
 import com.arcadedb.server.security.ApiTokenConfiguration;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -135,9 +136,50 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * Maximum number of rows an endpoint serializes into a single response when the caller states no limit of its
    * own. A non-positive value means unlimited. Shared by every row-returning endpoint so one setting governs
    * them all (issue #5711).
+   * <p>
+   * Bounded by the hard ceiling, so a default configured above it (or left unlimited while the ceiling is not)
+   * is lowered rather than refused. Without that clamp a deployment whose two settings disagree would answer a
+   * caller that stated <i>nothing</i> with a 413: the cap it never asked for would exceed the ceiling, and the
+   * refusal is meant for a caller that asked to go past it, never for one served by the default. What a
+   * no-limit caller gets instead is the ordinary truncation it has always got, at the lower of the two values,
+   * reported as usual with {@code truncated} (issue #5719).
    */
   protected int getDefaultRowLimit() {
-    return httpServer.getServer().getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_QUERY_DEFAULT_LIMIT);
+    return applyMaxResultRows(
+        httpServer.getServer().getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_QUERY_DEFAULT_LIMIT),
+        getMaxResultRows());
+  }
+
+  /**
+   * Hard ceiling on the number of rows a single response may carry, whatever the caller asked for. A
+   * non-positive value means unlimited (issue #5719).
+   */
+  protected int getMaxResultRows() {
+    return httpServer.getServer().getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_QUERY_MAX_RESULT_ROWS);
+  }
+
+  /**
+   * Lowers a row cap to the hard ceiling, so no caller can widen a single response past it: the value stated by
+   * the caller (or by the query, or by the configured default) wins while it stays at or below the ceiling, and
+   * an explicitly unlimited cap - {@code <= 0} - is bounded by it like any other. Returns the cap unchanged when
+   * the ceiling is disabled, which is exactly what makes {@code applied != stated} the test for "the ceiling is
+   * the one deciding here" that the callers use to answer 413 instead of reporting an ordinary truncation.
+   */
+  protected static int applyMaxResultRows(final int limit, final int maxResultRows) {
+    if (maxResultRows <= 0)
+      return limit;
+    return limit <= 0 || limit > maxResultRows ? maxResultRows : limit;
+  }
+
+  /**
+   * Refusal of a response the hard ceiling would not let through, worded identically on every endpoint that
+   * enforces it. Names the setting so an operator reading only the error body knows which knob decided.
+   */
+  protected static ResultSetTooLargeException resultSetTooLarge(final int maxResultRows) {
+    return new ResultSetTooLargeException(
+        "The result exceeds the maximum of " + maxResultRows + " rows a single HTTP response may carry ("
+            + GlobalConfiguration.SERVER_HTTP_QUERY_MAX_RESULT_ROWS.getKey()
+            + "): narrow the query, page it with a smaller 'limit', or raise the setting", maxResultRows);
   }
 
   /**
@@ -552,6 +594,23 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on command execution (%s): %s",
               SecurityException.class.getSimpleName(), security.getMessage());
       sendErrorResponse(exchange, 403, "Security error", security, null);
+      return;
+    }
+
+    // 413 Content Too Large: the response the caller asked for exceeds the hard row ceiling
+    // (arcadedb.server.httpQueryMaxResultRows). Independent of every other arm - nothing extends it and it
+    // extends nothing but ServerException - so its position here is only for readability. A 4xx and not a 5xx:
+    // the request is answerable, just not as written, and the caller fixes it by narrowing or paging the query
+    // (issue #5719).
+    final ResultSetTooLargeException tooLarge = firstOf(e, cause, ResultSetTooLargeException.class);
+    if (tooLarge != null) {
+      logUserError(tooLarge);
+      // The setting goes in the label and the ceiling in exceptionArgs, both of which survive production mode:
+      // 'detail' - where the full sentence lives - is concealed there, and a caller that cannot see WHICH knob
+      // refused it, or WHAT number to stay under, has been told nothing it can act on.
+      sendErrorResponse(exchange, 413,
+          "Result set too large for a single response (" + GlobalConfiguration.SERVER_HTTP_QUERY_MAX_RESULT_ROWS.getKey()
+              + ")", tooLarge, String.valueOf(tooLarge.getMaxResultRows()));
       return;
     }
 

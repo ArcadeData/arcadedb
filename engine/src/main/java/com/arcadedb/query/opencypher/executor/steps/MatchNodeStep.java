@@ -46,6 +46,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.VertexType;
@@ -183,6 +184,9 @@ public class MatchNodeStep extends AbstractExecutionStep {
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     final boolean hasInput = prev != null;
+    // A scan whose filters reject every record spends the whole scan inside a single hasNext(), so the command
+    // deadline has to be tested inside the scan loop rather than between two batches (issue #6266).
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
 
     return new ResultSet() {
       private       ResultSet              prevResults        = null;
@@ -227,6 +231,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
           // Process input results and add our matched nodes
           while (buffer.size() < n) {
+            guard.check();
             // If we've exhausted nodes for current input, get next input
             if (iterator == null || !iterator.hasNext()) {
               if (!prevResults.hasNext()) {
@@ -302,6 +307,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
           // Fetch up to n vertices
           while (buffer.size() < n && iterator.hasNext()) {
+            guard.check();
             final long begin = context.isProfiling() ? System.nanoTime() : 0;
             try {
               if (context.isProfiling())
@@ -903,6 +909,16 @@ public class MatchNodeStep extends AbstractExecutionStep {
       builder.append(":").append(String.join("|", pattern.getLabels()));
     }
     builder.append(")");
+    // The ID push-down is the single most consequential thing this step can do - it turns a full type scan (and,
+    // when another MATCH NODE follows, the Cartesian product over it) into one lookupByRID - and until issue #6279
+    // it was the one optimisation the plan did not name, so nothing but a stopwatch could tell whether it fired.
+    // That is exactly what the resolution of issue #3216 asks a user to verify. Printed from the plan-time field
+    // rather than recorded during execution, so EXPLAIN answers it without running the query; the dynamic form
+    // (issue #3864) resolves per row and can only be named, not valued.
+    if (idFilter != null && !idFilter.isEmpty())
+      builder.append(" [id: ").append(idFilter).append("]");
+    else if (dynamicIdExpression != null)
+      builder.append(" [id: per-row]");
     if (usedIndexName != null)
       builder.append(" [index: ").append(usedIndexName).append("]");
     if (usedPartitionBucket != null)

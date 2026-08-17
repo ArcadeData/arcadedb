@@ -37,6 +37,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.function.sql.graph.SQLFunctionShortestPath;
 
 import java.util.ArrayDeque;
@@ -92,6 +93,9 @@ public class ShortestPathStep extends AbstractExecutionStep {
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     checkForPrevious("ShortestPathStep requires a previous step");
+    // The command deadline is tested per input row: a per-layer check alone leaves the whole BFS of one row
+    // unbounded (issue #6266).
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
 
     return new ResultSet() {
       private ResultSet prevResults = null;
@@ -127,6 +131,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
         bufferIndex = 0;
 
         while (buffer.size() < n) {
+          guard.check();
           if (prevResults == null) {
             prevResults = prev.syncPull(context, nRecords);
           }
@@ -331,9 +336,12 @@ public class ShortestPathStep extends AbstractExecutionStep {
     int currentDepth = 0;
     int foundDepth = -1;
 
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+
     while (!currentLayer.isEmpty()) {
       if (Thread.interrupted())
         throw new CommandExecutionException("The allShortestPaths() function has been interrupted");
+      guard.check();
 
       // Stop expanding once we've completed the layer where target was first discovered: any further hop
       // would only produce strictly longer (non co-shortest) paths.

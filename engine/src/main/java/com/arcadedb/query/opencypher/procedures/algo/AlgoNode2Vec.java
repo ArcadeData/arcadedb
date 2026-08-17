@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.procedures.algo;
 import com.arcadedb.database.Database;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 

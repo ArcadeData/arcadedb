@@ -26,6 +26,7 @@ import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.olap.GraphAlgorithms;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.RidHashSet;
@@ -69,13 +70,13 @@ public final class PartitionedTriangleOp implements CountOp {
   }
 
   @Override
-  public long execute(final GraphTraversalProvider provider, final Database db) {
+  public long execute(final GraphTraversalProvider provider, final Database db, final WorkGuard guard) {
     final int nodeCount = provider.getNodeCount();
-    final int[] personPartition = buildPartitionMapping(provider, nodeCount);
+    final int[] personPartition = buildPartitionMapping(provider, nodeCount, guard);
 
     final NeighborView knowsView = provider.getNeighborView(Vertex.DIRECTION.BOTH, triangleEdgeType);
     if (knowsView == null)
-      return countTrianglesPerNode(provider, personPartition, nodeCount);
+      return countTrianglesPerNode(provider, personPartition, nodeCount, guard);
 
     final int[] nbrs = knowsView.neighbors();
 
@@ -83,7 +84,7 @@ public final class PartitionedTriangleOp implements CountOp {
     final long[] partialCounts = new long[threadCount];
 
     if (nodeCount < 1000) {
-      partialCounts[0] = countRange(knowsView, nbrs, personPartition, 0, nodeCount);
+      partialCounts[0] = countRange(knowsView, nbrs, personPartition, 0, nodeCount, guard);
     } else {
       final ExecutorService executor = QueryEngineManager.getInstance().getExecutorService();
       final Future<?>[] futures = new Future<?>[threadCount - 1];
@@ -96,7 +97,7 @@ public final class PartitionedTriangleOp implements CountOp {
           break;
         final int threadIdx = t;
         futures[launched++] = executor.submit(() ->
-            partialCounts[threadIdx] = countRange(knowsView, nbrs, personPartition, start, end));
+            partialCounts[threadIdx] = countRange(knowsView, nbrs, personPartition, start, end, guard));
       }
       // #4952: the calling thread runs chunk 0 itself (same discipline as GraphAlgorithms.parallelForRange)
       // instead of submitting ALL chunks and blocking. Submitting everything meant that, when this operator
@@ -108,7 +109,7 @@ public final class PartitionedTriangleOp implements CountOp {
       // into partialCounts (and holding pool threads) behind the caller's back.
       boolean chunk0Completed = false;
       try {
-        partialCounts[0] = countRange(knowsView, nbrs, personPartition, 0, Math.min(chunkSize, nodeCount));
+        partialCounts[0] = countRange(knowsView, nbrs, personPartition, 0, Math.min(chunkSize, nodeCount), guard);
         chunk0Completed = true;
       } finally {
         // #4951: awaitFutures throws on interrupt (cancelling the outstanding chunks) instead of returning,
@@ -132,9 +133,12 @@ public final class PartitionedTriangleOp implements CountOp {
   }
 
   private static long countRange(final NeighborView knowsView, final int[] nbrs,
-      final int[] personPartition, final int start, final int end) {
+      final int[] personPartition, final int start, final int end, final WorkGuard guard) {
     long count = 0;
     for (int u = start; u < end; u++) {
+      // Triangle counting is superlinear in the degree, so the per-anchor check is what bounds the whole
+      // range: one high-degree anchor already costs O(d^2) intersections (issue #6266).
+      guard.check();
       final int country = personPartition[u];
       if (country < 0)
         continue;
@@ -168,7 +172,8 @@ public final class PartitionedTriangleOp implements CountOp {
     return count;
   }
 
-  private int[] buildPartitionMapping(final GraphTraversalProvider provider, final int nodeCount) {
+  private int[] buildPartitionMapping(final GraphTraversalProvider provider, final int nodeCount,
+      final WorkGuard guard) {
     final int[] partition = new int[nodeCount];
     Arrays.fill(partition, -1);
 
@@ -185,6 +190,7 @@ public final class PartitionedTriangleOp implements CountOp {
     final int[] firstNbrs = firstView.neighbors();
 
     for (int p = 0; p < nodeCount; p++) {
+      guard.checkPeriodically(p);
       final int fStart = firstView.offset(p);
       final int fEnd = firstView.offsetEnd(p);
       if (fStart == fEnd)
@@ -208,9 +214,10 @@ public final class PartitionedTriangleOp implements CountOp {
   }
 
   private long countTrianglesPerNode(final GraphTraversalProvider provider,
-      final int[] personPartition, final int nodeCount) {
+      final int[] personPartition, final int nodeCount, final WorkGuard guard) {
     long total = 0;
     for (int u = 0; u < nodeCount; u++) {
+      guard.check();
       final int country = personPartition[u];
       if (country < 0)
         continue;
@@ -238,13 +245,14 @@ public final class PartitionedTriangleOp implements CountOp {
   }
 
   @Override
-  public long executeOLTP(final Database db) {
+  public long executeOLTP(final Database db, final WorkGuard guard) {
     final HashMap<RID, RID> personToPartition = new HashMap<>();
 
     for (final DocumentType dt : db.getSchema().getTypes()) {
       if (!(dt instanceof VertexType))
         continue;
       for (final Iterator<? extends Identifiable> it = db.iterateType(dt.getName(), false); it.hasNext(); ) {
+        guard.check();
         final Vertex v = it.next().asVertex();
         Vertex cursor = v;
         boolean valid = true;
@@ -266,6 +274,7 @@ public final class PartitionedTriangleOp implements CountOp {
 
     long total = 0;
     for (final Map.Entry<RID, RID> entry : personToPartition.entrySet()) {
+      guard.check();
       final RID uRid = entry.getKey();
       final RID uCountry = entry.getValue();
 

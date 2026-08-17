@@ -30,6 +30,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.utility.LongLongHashMap;
 
 import com.arcadedb.query.QueryEngineManager;
@@ -133,6 +134,9 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
 
   @Override
   public ResultSet execute(final CommandContext context, final int nRecords) {
+    // Built once on the calling thread and handed to the workers: reading the deadline from the shared context
+    // inside each chunk would have every worker race to publish the same lazily-computed value (issue #6266).
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     final ResultSet inputResults = child.execute(context, nRecords);
     final Database db = context.getDatabase();
     final int chainLength = hopDirections.length;
@@ -149,6 +153,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     int[] sourceNodeIdsBuf = new int[1024];
     int sourceCount = 0;
     while (inputResults.hasNext()) {
+      guard.check();
       final Result inputResult = inputResults.next();
       final Object sourceObj = inputResult.getProperty(sourceVariable);
       final int nodeId;
@@ -175,7 +180,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     // If fused aggregation is enabled, use the parallel aggregating path
     if (groupKeyVariables != null)
       return executeWithFusedAggregation(sourceNodeIds, totalSources, parallelism, chunkSize,
-          hopViews, chainLength, db, context);
+          hopViews, chainLength, db, context, guard);
 
     // Parallel DFS: each thread processes a chunk of source vertices with its own stack
     @SuppressWarnings("unchecked")
@@ -185,7 +190,8 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     if (totalSources < 8192) {
       // Below threshold: single-threaded
       threadResults[0] = new ArrayList<>();
-      traverseChunk(sourceNodeIds, 0, totalSources, hopViews, chainLength, outputNames, db, context, threadResults[0]);
+      traverseChunk(sourceNodeIds, 0, totalSources, hopViews, chainLength, outputNames, db, context, guard,
+          threadResults[0]);
       threadCount = 1;
     } else {
       // Parallel execution using shared query worker pool
@@ -200,7 +206,8 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
         threadResults[t] = new ArrayList<>();
         final int threadIdx = t;
         futures[t] = executor.submit(() ->
-            traverseChunk(sourceNodeIds, start, end, hopViews, chainLength, outputNames, db, context, threadResults[threadIdx]));
+            traverseChunk(sourceNodeIds, start, end, hopViews, chainLength, outputNames, db, context, guard,
+                threadResults[threadIdx]));
         launched++;
       }
       // #4951: awaitFutures throws on interrupt (cancelling the outstanding chunks) instead of returning,
@@ -241,7 +248,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
    */
   private ResultSet executeWithFusedAggregation(final int[] sourceNodeIds, final int totalSources,
       final int parallelism, final int chunkSize, final NeighborView[] hopViews,
-      final int chainLength, final Database db, final CommandContext context) {
+      final int chainLength, final Database db, final CommandContext context, final WorkGuard guard) {
 
     // Resolve which nodeId slot each group key variable maps to:
     // sourceVariable = slot 0, hopTargetVariables[i] = slot i+1
@@ -265,7 +272,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     if (totalSources < 8192) {
       // Single-threaded
       threadMaps[0] = new LongLongHashMap();
-      aggregateChunk(sourceNodeIds, 0, totalSources, hopViews, chainLength, groupKeySlots, db, context, threadMaps[0]);
+      aggregateChunk(sourceNodeIds, 0, totalSources, hopViews, chainLength, groupKeySlots, db, context, guard, threadMaps[0]);
     } else {
       // Parallel using shared query worker pool
       final ExecutorService executor = QueryEngineManager.getInstance().getExecutorService();
@@ -279,7 +286,8 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
         threadMaps[t] = new LongLongHashMap();
         final int threadIdx = t;
         futures[t] = executor.submit(() ->
-            aggregateChunk(sourceNodeIds, start, end, hopViews, chainLength, groupKeySlots, db, context, threadMaps[threadIdx]));
+            aggregateChunk(sourceNodeIds, start, end, hopViews, chainLength, groupKeySlots, db, context, guard,
+                threadMaps[threadIdx]));
         launched++;
       }
       // #4951: awaitFutures throws on interrupt (cancelling the outstanding chunks) instead of returning,
@@ -324,7 +332,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
    */
   private void aggregateChunk(final int[] sourceNodeIds, final int start, final int end,
       final NeighborView[] hopViews, final int chainLength, final int[] groupKeySlots,
-      final Database db, final CommandContext context, final LongLongHashMap counts) {
+      final Database db, final CommandContext context, final WorkGuard guard, final LongLongHashMap counts) {
 
     final int[] stackNodeId = new int[chainLength + 1];
     final int[] stackCursor = new int[chainLength];
@@ -345,13 +353,20 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
       filterResult = null;
     }
 
+    // One supernode's DFS can dwarf the whole chunk, so the per-source check alone would leave the abort
+    // latency proportional to the largest fan-out. The counter climbs across sources on purpose: throttling
+    // per DFS step is what bounds the latency by a fixed amount of work instead (issue #6266).
+    int steps = 0;
+
     for (int s = start; s < end; s++) {
+      guard.check();
       final int sourceNodeId = sourceNodeIds[s];
       stackNodeId[0] = sourceNodeId;
       initHop(hopViews, fallbackNeighbors, stackCursor, stackEnd, 0, sourceNodeId);
       int depth = 0;
 
       while (depth >= 0) {
+        guard.checkPeriodically(++steps);
         if (stackCursor[depth] >= stackEnd[depth]) {
           depth--;
           if (depth >= 0)
@@ -416,7 +431,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
    */
   private void traverseChunk(final int[] sourceNodeIds, final int start, final int end,
       final NeighborView[] hopViews, final int chainLength, final String[] outputNames,
-      final Database db, final CommandContext context, final List<Result> output) {
+      final Database db, final CommandContext context, final WorkGuard guard, final List<Result> output) {
 
     // Per-thread DFS stack (allocated once, reused across all sources in this chunk)
     final int[] stackNodeId = new int[chainLength + 1];
@@ -424,13 +439,19 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     final int[] stackEnd = new int[chainLength];
     final int[][] fallbackNeighbors = new int[chainLength][];
 
+    // See aggregateChunk: the counter climbs across sources so that one supernode's DFS cannot outrun the
+    // deadline between two per-source checks (issue #6266).
+    int steps = 0;
+
     for (int s = start; s < end; s++) {
+      guard.check();
       final int sourceNodeId = sourceNodeIds[s];
       stackNodeId[0] = sourceNodeId;
       initHop(hopViews, fallbackNeighbors, stackCursor, stackEnd, 0, sourceNodeId);
       int depth = 0;
 
       while (depth >= 0) {
+        guard.checkPeriodically(++steps);
         if (stackCursor[depth] >= stackEnd[depth]) {
           depth--;
           if (depth >= 0)
