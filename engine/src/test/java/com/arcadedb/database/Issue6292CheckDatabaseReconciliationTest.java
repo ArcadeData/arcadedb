@@ -150,6 +150,46 @@ class Issue6292CheckDatabaseReconciliationTest extends BucketPageLayoutTestSuppo
   }
 
   /**
+   * The boundary of the marker namespace, on the one path where getting it wrong deletes a live record.
+   * <p>
+   * A content record stores its size NEGATED, and {@code RECORD_PLACEHOLDER_CONTENT} (-5) is where the sizes stop and
+   * the markers begin. Every classification site excludes it with a strict {@code <}, so a content record of exactly
+   * {@code MINIMUM_RECORD_SIZE} bytes would be read as something that is not content at all - and since #6292 that
+   * answer is acted on: {@code FIX} would free the pointer to a record that is still there.
+   * <p>
+   * Measured, not assumed: the smallest document this serializer produces is 6 bytes, so the boundary value is not
+   * reachable today, and the padding now pushes a content body past it in any case. This shrinks a placeholder's
+   * content as far as a document can go - every property removed - and asserts the pointer survives it. Should a
+   * future serializer shave those bytes, this fails here rather than in somebody's database (PR review on #6299).
+   */
+  @Test
+  void theSmallestPossibleContentRecordIsNotCalledDangling() {
+    final RID placeholder = placeholderWithPlainContent();
+    final long recordsBefore = countRecords(TYPE);
+
+    database.transaction(() -> {
+      final MutableDocument doc = placeholder.asDocument(true).modify();
+      doc.remove("v");
+      doc.save();
+    });
+
+    final Result row = checkDatabaseRow(true);
+    assertThat(numberProperty(row, "danglingPlaceholderPointers"))
+        .as("a content record at the smallest size a document has is still content: " + row.toJSON()).isZero();
+    assertThat(numberProperty(row, "totalErrors")).as(row.toJSON().toString()).isZero();
+    assertThat(numberProperty(row, "totalSurrogateRecords"))
+        .as("and it is still counted as the surrogate it is: " + row.toJSON()).isEqualTo(1L);
+
+    assertThat(countRecords(TYPE)).as("the record is still there, and exactly once").isEqualTo(recordsBefore);
+    assertThat(countRecordsFromCounter(TYPE)).as("with both counts still agreeing").isEqualTo(recordsBefore);
+    database.transaction(
+        () -> assertThat(placeholder.asDocument(true).getString("v")).as("and still readable through its pointer")
+            .isNull());
+
+    checkDatabase();
+  }
+
+  /**
    * #6294: the chunks a broken chain cuts off are reclaimed, and until #6294 nothing ever collected them - not
    * compaction, which re-flows a page's LIVE slots and an orphaned chunk still has one, and not this checker, which
    * counted a NEXT_CHUNK slot and moved on.

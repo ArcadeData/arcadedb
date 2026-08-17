@@ -1784,7 +1784,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final long marker = contentPage.readNumberAndSize(recordPositionInPage)[0];
       if (marker == FIRST_CHUNK)
         return PlaceholderTarget.LEGACY_AMBIGUOUS;
-      if (marker == FIRST_CHUNK_PLACEHOLDER_CONTENT || marker < RECORD_PLACEHOLDER_CONTENT)
+      // <= and not the < every other classification site uses, and deliberately so: this is the ONE site whose answer
+      // costs a record. RECORD_PLACEHOLDER_CONTENT (-5) is the boundary the class doc draws between the sizes and the
+      // markers, and it is the one value on it - a content record of exactly MINIMUM_RECORD_SIZE bytes. Nothing else
+      // in the engine writes -5 (the markers stop at -4 and a plain size is positive), so a slot holding it can only
+      // be somebody's content, and calling it DANGLING here would have FIX delete a live pointer. Measured: the
+      // smallest document this serializer produces is 6 bytes, so the value is not reachable today and
+      // createRecordInternal/updateRecordInternal now pad content past it - this is the third guard, on the only path
+      // where being wrong is unrecoverable (PR review).
+      if (marker == FIRST_CHUNK_PLACEHOLDER_CONTENT || marker <= RECORD_PLACEHOLDER_CONTENT)
         return PlaceholderTarget.CONTENT;
       return PlaceholderTarget.DANGLING;
     } catch (final Exception e) {
@@ -1976,8 +1984,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private RID createRecordInternal(final Record record, final boolean isPlaceHolder, final boolean discardRecordAfter) {
     final Binary buffer = database.getSerializer().serialize(database, record);
 
-    // RECORD SIZE CANNOT BE < 13 BYTES IN CASE OF UPDATE AND PLACEHOLDER, 5 BYTES IS THE SPACE REQUIRED TO HOST THE PLACEHOLDER. FILL THE DIFFERENCE WITH BLANK (0)
-    while (buffer.size() < MINIMUM_RECORD_SIZE) {
+    // A CONTENT record stores its size NEGATED, so its body may not be short enough to write a marker: not < 5 (which
+    // would write a -1..-4 the marker namespace owns) and not exactly 5 either (which would write the -5 BOUNDARY that
+    // every reader excludes with a strict `<`). A record of its own has no such constraint - its size is positive -
+    // but it is padded to the same floor, as it always has been. Fill the difference with blanks, which the
+    // deserializer stops before: it reads the property count, not the slot length.
+    while (buffer.size() < MINIMUM_RECORD_SIZE || (isPlaceHolder && buffer.size() == MINIMUM_RECORD_SIZE)) {
       buffer.append((byte) 0);
     }
 
@@ -2928,11 +2940,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     final Binary buffer = database.getSerializer().serialize(database, record);
 
     // A CONTENT record stores its size NEGATED, so a body shorter than MINIMUM_RECORD_SIZE would write a -1..-4 that
-    // the marker namespace already owns (see that constant): pad it exactly as createRecordInternal pads the record it
-    // creates behind a new pointer. It matters on every write that gives such a slot its size back - the in-place
-    // overwrite far below, and since #6286 the collapse of a content chain into this very shape.
+    // the marker namespace already owns, and one of exactly MINIMUM_RECORD_SIZE would write the -5 BOUNDARY every
+    // reader excludes with a strict `<` (see that constant). Pad past both, exactly as createRecordInternal pads the
+    // record it creates behind a new pointer. It matters on every write that gives such a slot its size back - the
+    // in-place overwrite far below, and since #6286 the collapse of a content chain into this very shape.
     if (updatePlaceholderContent)
-      while (buffer.size() < MINIMUM_RECORD_SIZE)
+      while (buffer.size() <= MINIMUM_RECORD_SIZE)
         buffer.append((byte) 0);
 
     final int pageId = (int) (rid.getPosition() / maxRecordsInPage);
