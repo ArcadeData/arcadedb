@@ -255,6 +255,14 @@ public class LogicalPlan {
       properties = union;
     }
 
+    // The common repeat adds nothing - `(a)-[:R]->(b), (a)-[:S]->(c)` writes `a` twice and the second
+    // occurrence is bare - so the node the plan already holds is returned rather than an identical
+    // copy of it. Reference comparison, because every branch above either reuses one of the two lists
+    // as-is or builds a new one.
+    if (labels == existing.getLabels() && properties == existing.getProperties()
+        && disjunction == existing.isLabelDisjunction())
+      return existing;
+
     return new LogicalNode(variable, labels, properties, disjunction);
   }
 
