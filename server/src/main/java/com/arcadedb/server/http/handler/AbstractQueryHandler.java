@@ -82,8 +82,12 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
    * more row, so a result whose size happens to match the cap exactly is not reported as truncated. For the
    * row-oriented serializers ({@code record}, {@code studio} and the default one) the flag is exact and
    * {@code returned} never exceeds the cap. For the {@code graph} serializer the cap counts graph elements
-   * rather than rows: {@code returned} can exceed the cap, because the row that reaches it is expanded whole,
-   * and a last row whose expansion was cut mid-way is not reported when no further row is pending.
+   * rather than rows, so {@code returned} can exceed the cap by up to the expansion of the element that
+   * reached it (an edge brings its two endpoints).
+   * <p>
+   * A row whose own expansion the cap cut short is reported too, since #5719: the result set cannot show it -
+   * everything a row refers to is expanded while that row is the current one - so the flag is raised by the
+   * expansion itself rather than by probing what is left to read.
    */
   public record SerializationOutcome(int returned, boolean truncated) {
     static final SerializationOutcome EMPTY = new SerializationOutcome(0, false);
@@ -217,6 +221,42 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
   }
 
   /**
+   * Serializes a result set under the cap the caller is entitled to, and refuses the response outright when the
+   * hard ceiling {@code arcadedb.server.httpQueryMaxResultRows} is what stopped it (issue #5719).
+   * <p>
+   * Two caps, two different answers, and the difference is who asked for it. {@code statedLimit} is what the
+   * request, the query's own LIMIT or the configured default asked for: reaching it is an ordinary truncation,
+   * reported with {@code truncated} and left to the client. The ceiling is what the operator asked for, on
+   * behalf of every other tenant of the server: reaching it means the response the caller wanted cannot be
+   * produced at all, and answering a truncated one instead would re-introduce the silent short answer issue
+   * #5711 removed - for the callers that state a limit of their own, who are exactly the ones the default cap
+   * no longer protects against.
+   * <p>
+   * The ceiling therefore never shows up in a successful response: a 200 either carries everything within
+   * {@code statedLimit} or was cut by {@code statedLimit} itself, which is why the caller reports
+   * {@code statedLimit} back as the effective {@code limit} of the response. A caller that stated nothing can
+   * never reach the refusal at all, because {@link #getDefaultRowLimit()} is already bounded by the ceiling and
+   * so cannot produce a {@code statedLimit} above it.
+   * <p>
+   * One inexactness remains for the {@code graph} and {@code studio} serializers, where the cap counts graph
+   * elements rather than rows: the element that reaches it is emitted whole, and an edge brings its two
+   * endpoints, so a response can carry up to two elements more than the ceiling. It is bounded overshoot, not
+   * unbounded: since #5719 the cap is tested inside a row's expansion as well as around it, so a single row
+   * referring to arbitrarily many elements through one collection property - what {@code SELECT collect(...)}
+   * produces - is cut at the cap like any other, and the cut is reported (see {@link #analyzeResultContent}).
+   */
+  protected SerializationOutcome serializeResultSetBounded(final Database database, final String serializer,
+      final int statedLimit, final int maxResultRows, final JSONObject response, final ResultSet qResult,
+      final boolean includeTypeHints) {
+    final int limit = applyMaxResultRows(statedLimit, maxResultRows);
+    final SerializationOutcome outcome = serializeResultSet(database, serializer, limit, response, qResult,
+        includeTypeHints);
+    if (limit != statedLimit && outcome.truncated())
+      throw resultSetTooLarge(maxResultRows);
+    return outcome;
+  }
+
+  /**
    * @param includeTypeHints whether to emit the per-column {@code @props} type hint on non-element result rows
    *                         (issue #5812). Off by default on the HTTP surface: only a caller that must rebuild
    *                         the exact Java type of a projection/aggregate column - today the RemoteDatabase Java
@@ -243,6 +283,11 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       final JSONArray vertices = new JSONArray();
       final JSONArray edges = new JSONArray();
 
+      // Set when the cap cut the expansion of one row's own references short. Kept separately from the
+      // result-set probe below, which cannot see it: the expansion happens entirely while its row is the
+      // current one, so nothing is left behind in the result set to give it away.
+      boolean expansionCut = false;
+
       while (qResult.hasNext()) {
         final Result row = qResult.next();
 
@@ -254,9 +299,9 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
           final Edge e = row.getEdge().get();
           if (includedEdges.add(e.getIdentity()))
             edges.put(serializerImpl.serializeGraphElement(e));
-        } else {
-          analyzeResultContent(database, serializerImpl, includedVertices, includedEdges, vertices, edges, row, limit);
-        }
+        } else if (analyzeResultContent(database, serializerImpl, includedVertices, includedEdges, vertices, edges, row,
+            limit))
+          expansionCut = true;
 
         if (limit > 0 && vertices.length() + edges.length() >= limit)
           break;
@@ -264,7 +309,8 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
 
       response.put("result", new JSONObject().put("vertices", vertices).put("edges", edges));
       final int serializedElements = vertices.length() + edges.length();
-      return new SerializationOutcome(serializedElements, isTruncated(qResult, limit, serializedElements));
+      return new SerializationOutcome(serializedElements,
+          expansionCut || isTruncated(qResult, limit, serializedElements));
     }
 
     case "studio": {
@@ -280,6 +326,8 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       final JSONArray vertices = new JSONArray();
       final JSONArray edges = new JSONArray();
       final JSONArray records = new JSONArray();
+      // See the 'graph' branch above: an expansion the cap cut short is invisible to the result-set probe.
+      boolean expansionCut = false;
 
       while (qResult.hasNext()) {
         final Result row = qResult.next();
@@ -308,9 +356,9 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
                 LogManager.instance().log(this, Level.SEVERE, "Record %s not found during serialization", ex.getRID());
               }
             }
-          } else {
-            analyzeResultContent(database, serializerImpl, includedVertices, includedEdges, vertices, edges, row, limit);
-          }
+          } else if (analyzeResultContent(database, serializerImpl, includedVertices, includedEdges, vertices, edges, row,
+              limit))
+            expansionCut = true;
         } catch (Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on serializing element (error=%s)", e.getMessage());
         }
@@ -321,7 +369,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
 
       // Probed before the edge-completion pass below, which does not consume the result set but must not be
       // allowed to hide whether rows were left behind.
-      final boolean truncated = isTruncated(qResult, limit, records.length());
+      final boolean truncated = expansionCut || isTruncated(qResult, limit, records.length());
 
       // FILTER OUT NOT CONNECTED EDGES
       for (final Identifiable entry : includedVertices) {
@@ -406,7 +454,17 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     return limit > 0 && serialized >= limit && qResult.hasNext();
   }
 
-  protected void analyzeResultContent(final Database database, final JsonGraphSerializer serializerImpl,
+  /**
+   * Expands the graph elements a non-element row refers to into {@code vertices}/{@code edges}, stopping at the
+   * element cap.
+   *
+   * @return {@code true} when the cap stopped the expansion with content still unexpanded, i.e. the response is
+   * short of what the row referred to. The callers fold it into {@code truncated}, which is what keeps a cut
+   * expansion reportable (issue #5711) and refusable against the hard ceiling (issue #5719): the row-level
+   * probe cannot see it, because everything a row refers to is expanded while that row is the current one and
+   * nothing is left behind in the result set for {@link #isTruncated} to find.
+   */
+  protected boolean analyzeResultContent(final Database database, final JsonGraphSerializer serializerImpl,
       final Set<RID> includedVertices, final Set<RID> includedEdges, final JSONArray vertices, final JSONArray edges,
       final Result row, final int limit) {
     for (final String prop : row.getPropertyNames()) {
@@ -416,20 +474,27 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
           continue;
 
         if (limit > 0 && vertices.length() + edges.length() >= limit)
-          break;
+          return true;
 
         if (RID_PROPERTY.equals(prop) && RID.is(value)) {
-          analyzePropertyValue(database, serializerImpl, includedVertices, includedEdges, vertices, edges,
-              database.newRID(value.toString()), limit);
-        } else
-          analyzePropertyValue(database, serializerImpl, includedVertices, includedEdges, vertices, edges, value, limit);
+          if (analyzePropertyValue(database, serializerImpl, includedVertices, includedEdges, vertices, edges,
+              database.newRID(value.toString()), limit))
+            return true;
+        } else if (analyzePropertyValue(database, serializerImpl, includedVertices, includedEdges, vertices, edges, value,
+            limit))
+          return true;
       } catch (Exception e) {
         LogManager.instance().log(this, Level.SEVERE, "Error on serializing collection element (error=%s)", e.getMessage());
       }
     }
+    return false;
   }
 
-  protected void analyzePropertyValue(final Database database, final JsonGraphSerializer serializerImpl,
+  /**
+   * @return {@code true} when the cap stopped the expansion of this value with content still unexpanded. See
+   * {@link #analyzeResultContent}.
+   */
+  protected boolean analyzePropertyValue(final Database database, final JsonGraphSerializer serializerImpl,
       final Set<RID> includedVertices, final Set<RID> includedEdges, final JSONArray vertices, final JSONArray edges,
       final Object value, final int limit) {
     if (value instanceof Identifiable identifiable) {
@@ -465,16 +530,26 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
         }
       }
     } else if (value instanceof Result result) {
-      analyzeResultContent(database, serializerImpl, includedVertices, includedEdges, vertices, edges, result, limit);
+      return analyzeResultContent(database, serializerImpl, includedVertices, includedEdges, vertices, edges, result, limit);
     } else if (value instanceof Collection<?> collection) {
       for (final Iterator<?> it = collection.iterator(); it.hasNext(); ) {
+        // The cap is tested INSIDE the collection, not only between rows and between properties. One row can
+        // refer to arbitrarily many graph elements through a single property - `SELECT collect(...)` returns
+        // exactly one row whose value is the whole set - and a check that runs only outside this loop lets that
+        // one row expand whole, past the cap, with nothing left in the result set to make the overshoot
+        // detectable (issue #5719).
+        if (limit > 0 && vertices.length() + edges.length() >= limit)
+          return true;
         try {
-          analyzePropertyValue(database, serializerImpl, includedVertices, includedEdges, vertices, edges, it.next(), limit);
+          if (analyzePropertyValue(database, serializerImpl, includedVertices, includedEdges, vertices, edges, it.next(),
+              limit))
+            return true;
         } catch (Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on serializing collection element (error=%s)", e.getMessage());
         }
       }
     }
+    return false;
   }
 
   protected Object mapParams(Map<String, Object> paramMap) {

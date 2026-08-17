@@ -2542,3 +2542,196 @@ the busiest single database's share, which is exactly what `pageFlushQueue` boun
 alert on.
 
 [#6281](https://github.com/ArcadeData/arcadedb/issues/6281)
+## A super-node's read walk keeps its recency order for the whole walk, not just the first 1,024 entries (#6064)
+
+`arcadedb.graph.supernodeInterleaveRounds` (#6048) was a **cliff**. Up to `rounds × stripes` entries - 64 × 16 =
+1,024 by default - a promoted super-node's read walk took one entry per stripe chain per turn, which is what
+puts an edge of recency rank `r` back at a position of order `r` (#6044). The very next entry froze the
+rotation: the chain holding the turn was drained to exhaustion, then the next, then the next. Past 1,024 the
+returned position stopped having any relation to recency, and the error grew with the vertex's DEGREE again -
+the exact failure #6044 fixed, pushed past a constant.
+
+A query with a small `LIMIT` never reaches the cliff. A query with a **large but still bounded** one - an
+export, a batch job, paginated admin tooling, `MATCH (h)-[:LINK]->(x) RETURN x LIMIT 5000` - fell off it
+silently: it asked for a bounded result, got one, and the newest edges it expected near the front were spread
+across the whole list. The only lever was raising `supernodeInterleaveRounds` for every unbounded read in the
+database too, which is precisely the full-walk locality cost #6048 removed.
+
+The rotation now **widens** instead of stopping. Past `rounds × stripes` entries it keeps turning, but takes
+`rounds` entries from each chain per turn instead of one, doubling that batch on every completed round. Both
+properties hold at once:
+
+- **Locality** (what #6048 was about): the chain switches over a walk of `D` entries drop from `D` to about
+  `stripes × log D`, and once the batch outgrows a chunk every visit is a sequential run through one chain, so
+  the resident-page pressure the interleaving costs decays instead of persisting. Counted against the previous
+  degrade on a 1,000,000-edge walk at the defaults, that is ~1,184 chain switches against ~1,040 - 0.1% of the
+  entries walked, either way.
+- **Rank fidelity** (what #6064 is about): an entry at depth `d` in its chain is emitted no later than the end
+  of the batch that reaches depth `d`, which is at most twice `d`, so its position stays within a constant
+  factor of its true rank for the WHOLE walk. Measured on a 3,000-edge super-node at 16 stripes and 4 rounds
+  (a 64-entry threshold, deliberately small to put most of the walk past it), the worst position/rank ratio is
+  2.4; before, rank 40 came back at position 2,386, a ratio of 58.
+
+No new setting, and nothing has to be told what the query's `LIMIT` was - which is the alternative this
+replaces, and it would have meant threading a "how many do you actually need" hint from every query engine's
+execution plan down into `EdgeLinkedList`, across an iterator API that has no concept of one.
+`supernodeInterleaveRounds` keeps its meaning (how long the walk stays at one entry per turn) and its `0`
+still disables interleaving entirely, giving immediate concatenation in the pre-#6044 order. Read-side only:
+no on-disk format change, no migration.
+
+[#6064](https://github.com/ArcadeData/arcadedb/issues/6064)
+## A schema probe spelled `LIMIT 0` gets a RowDescription over a row source the schema cannot describe (#6185)
+
+`SELECT expand(shortestPath(#1:0, #1:5)) LIMIT 0` is a schema probe, and #6172 had already made a probe
+describable no matter how its rows are computed: when the statement returns nothing, the Postgres wire protocol
+replays it without the clause that empties it and reads the columns off the first row, which is the only way to
+name the columns of a row source that is not a schema type - a graph function, a `TRAVERSE`, a `MATCH`, a constant
+table. The trigger for that replay looked only at the `WHERE` clause, so a client that spells the probe `LIMIT 0` -
+Tableau and several JDBC/BI tools do - was answered with an empty RowDescription again, exactly as before the fix.
+
+The trigger is now "the statement is empty by construction", the same question the SQL planner asks in #6174 when
+it folds the fetch away, and it is read at every level of the query, so `LIMIT 0` on the probed subquery counts as
+well as `LIMIT 0` on the statement the client sent. Only a literal `LIMIT 0` qualifies (`Limit.isAlwaysEmpty()`): a
+bound `LIMIT ?` belongs to one execution, and the replay must not be triggered by a value the next execution can
+change.
+
+The two spellings are deliberately not answered in the same order, because they do not carry the same intent. The
+replay evaluates the query's projection for real, once, on one row - the caveat that has been documented on
+`sampleProbeColumns` since #6172 - so a projected function with a side effect runs once per probe that takes that
+path. `WHERE 1=0` has no purpose other than probing, so it is replayed first, as it always was. `LIMIT 0` is also
+how a client asks an expensive query for nothing at all, so it is replayed only after the static resolution of the
+row source has come back with nothing: a `LIMIT 0` over a shape the schema can describe is answered from the
+schema, without evaluating anything, and only the shapes that cannot be answered any other way are replayed.
+
+[#6185](https://github.com/ArcadeData/arcadedb/issues/6185)
+## An always-true filter is dropped at plan time instead of being evaluated once per record (#6184)
+
+The mirror of #6174. That issue taught the planner to recognise a filter that is false for every record; a filter
+that is *true* for every record was still built as a filter step and evaluated per record, so `SELECT FROM C` and
+`SELECT FROM C WHERE 1=1` - the same query, written twice - produced two different plans:
+
+```
+SELECT FROM C                    -> + FETCH FROM TYPE C
+                                      + FETCH FROM BUCKET 1 (C_0) ASC
+
+SELECT FROM C WHERE 1=1          -> + FETCH FROM TYPE C WITH FILTER
+                                      + SCAN WITH FILTER BUCKET 1 (C_0)
+                                        1 = 1
+```
+
+The second paid a predicate evaluation per record, and lost the plain bucket fetch, to learn something the
+statement had already said.
+
+Nothing was stuck for want of a rule. `BooleanExpression.isAlwaysTrue()` had existed all along and was overridden
+by `AndBlock`, `OrBlock`, `ParenthesisBlock` and `NotBlock` - but **no leaf could implement it**, because the
+signature took no `CommandContext` and folding a comparison needs one to reach `operator.execute(...)`. So
+`BinaryCondition` never overrode it and the recursion always bottomed out at `false`: the method had no consumer
+outside the AST's own recursion, and `NOT (1=1)` was not folded as always-*false* either, even though
+`NotBlock.isAlwaysFalse` delegates to exactly this method for its negated branch.
+
+`isAlwaysTrue` now takes a `CommandContext`, the shape `isAlwaysFalse` got when it was introduced. The no-argument
+form is gone rather than kept alongside it - it had no caller outside the four AST classes that recursed into it,
+so two forms would only have been two things to keep consistent. `BinaryCondition` folds both verdicts through one
+private helper under the same restriction: **both** operands must be `Expression.isLiteral()`, which excludes a
+bound parameter (the plan outlives the execution that bound it) and a function call (nothing on `SQLFunction` marks
+a function as pure). `WHERE ? = 1` and `WHERE uuid() IS NOT NULL` are therefore still planned as scans, as they
+must be.
+
+The planner drops the where clause in `init()`, before the clauses are rearranged into index searches, so
+everything downstream sees the statement it would have seen without a `WHERE` at all: the projected properties
+computed for column pushdown, the choice between `FetchFromTypeWithFilterStep` and `FetchFromTypeExecutionStep`,
+and the hardwired `count(*)` plan. `NOT (1=0)` folds to always-true and `NOT (1=1)` to the always-false
+`EMPTY RESULT` of #6174, both for free through the existing `NotBlock` delegation.
+
+Dropping a filter is a wider step than folding one to an empty result: an always-false fold can only be wrong by
+returning too few rows, while dropping an always-true filter changes which fetch step is chosen. The regression
+test therefore compares the folded plan against the plan of the same statement written without its `WHERE` - step
+class by step class, so the fetch step and the bucket steps under it both have to agree - and then compares the
+records returned, their order, and the `readRecord` count.
+
+One place the filter survives the whole-clause fold is behind an index. `WHERE 1=1 AND indexedProperty = 'x'` is not
+true for every record, so the clause stays - and then the index search takes the second term as its key and hands the
+`1=1` back as a *residual condition*, which was chained as a `FILTER ITEMS WHERE` step and evaluated once per index
+entry. A residual that is true for every record is now recognised as no filter at all, on both the single-index and
+the parallel-index paths, so the plan is the one the same statement without the constant term would have got. The
+index itself was never at risk: it was selected before and after, the residual only rode along behind it.
+
+One `OrBlock` detail changed with it: an empty disjunction used to answer `isAlwaysTrue()` with `true`. It now
+answers `false`, matching what `isAlwaysFalse` has always answered for the same block. Neither verdict reads it as
+the neutral element, even though that reading (an `OR` with no alternatives is `FALSE`) is available: the parser
+cannot produce an empty `OrBlock`, both answers are load-bearing - one drops the filter, the other replaces the plan
+with an empty source - and deducing either for a block that can only arrive by accident would trade correctness for
+an optimisation nothing can trigger. An empty `AndBlock`, by contrast, is exactly what a filter with no terms left
+looks like, so it does answer `isAlwaysTrue`, and that is what lets an emptied residual condition drop its step.
+
+**API note for code that extends the SQL parser**: `BooleanExpression.isAlwaysTrue()` is replaced by
+`isAlwaysTrue(CommandContext)` rather than kept alongside it, so an out-of-tree subclass that overrode the no-argument
+form no longer overrides anything. This is a compile error against the new signature and a silently inert override
+only if the subclass keeps the old method as an unrelated one; nothing inside ArcadeDB called the no-argument form
+outside the four AST classes that recursed into it.
+
+The value here is smaller than #6174's: nothing sends `WHERE 1=1` as a probe the way Spark sends `WHERE 1=0`, so
+this is symmetry and a small constant per record rather than a full scan avoided.
+
+[#6184](https://github.com/ArcadeData/arcadedb/issues/6184)
+## The HTTP query endpoints now have a hard row ceiling a caller cannot widen (#5719)
+
+**Breaking change.** `arcadedb.server.httpQueryMaxResultRows` is a new server setting, defaulting to
+**1,000,000**, that bounds the number of rows a single HTTP query or command response materializes. A
+deployment that relies on an HTTP caller pulling an unbounded result in one response - typically by sending
+`"limit": -1` - has to raise it or set it to `-1` to keep that working.
+
+The ceiling closes the gap that #5716 left open. `arcadedb.server.httpQueryDefaultLimit` (default 20,000)
+caps only the callers that state no limit of their own: since #5716 a request carrying a `limit` field, and a
+query carrying its own `LIMIT`, are both honored as written, because a response silently cut below what the
+caller asked for is exactly the defect #5711 fixed. The consequence is that an authenticated caller writing
+`SELECT FROM HugeType LIMIT 100000000` - or an application that builds `LIMIT n` from user input - could make
+the server serialize an arbitrarily large result into one JSON document. No privilege boundary moved (`limit:
+-1` was always available to the same actor), but the bar to reaching it accidentally dropped, and in a
+multi-tenant deployment the implicit 20,000 cap had been doing real protective work.
+
+The new setting is the HTTP twin of `arcadedb.server.grpcQueryMaxResultRows` and behaves the same way. A
+stated cap at or below the ceiling is the caller's own bound and is honored silently, truncation reported with
+`truncated` exactly as before. A larger one - or an unlimited `-1`/`0` - cannot widen the response past the
+ceiling, and a result that would exceed it **fails with HTTP 413 naming the setting** instead of being
+truncated: a truncated response indistinguishable from a complete one is what #5711 removed, and
+re-introducing it for the callers #5716 protects would only have moved it. The refusal is raised from inside
+the handler, so an auto-committed write command whose result nobody will ever see is rolled back rather than
+committed behind an error status.
+
+A finite default was chosen over a disabled one because every other resource ceiling the server ships -
+`httpBodyContentMaxSize`, `grpcQueryMaxResultRows`, `grpcStreamMaxMaterializedRows` - is finite by default, and
+a ceiling an operator has to discover before it protects anything protects nobody. At 1,000,000 it sits 50x
+above the default page cap, so a realistic paging or export client never meets it.
+
+The two settings cannot be configured into disagreeing. `httpQueryDefaultLimit` is itself lowered to the
+ceiling when it is configured above it (or left unlimited while the ceiling is not), so a caller that states
+no limit at all is never refused - it gets the ordinary reported truncation it has always got, at the lower of
+the two values. The refusal is for a caller that asked to go past the ceiling, never for one served by the
+default.
+
+Two things the ceiling deliberately does not bound, both worth knowing before sizing it. It bounds the size of
+a response, not the peak cost of refusing one: the rows are serialized up to the ceiling before the result
+turns out to exceed it, and the work is then thrown away, so a client that routinely brushes the ceiling
+produces real garbage rather than merely a smaller payload - the same trade the gRPC path makes, and the price
+of never truncating silently. And it bounds the response, not the work a command does to produce it: a write
+that returns its rows (`UPDATE ... RETURN AFTER`) applies to every matching record before the response is
+built, and is then rolled back with the refusal, so the ceiling is not a guard against write amplification.
+
+Two paths that used to escape any bound are bounded at the fetch rather than at serialization: the `LIMIT` the
+POST endpoints push down into a command that states none is now capped by the ceiling (an unlimited `limit`
+used to push nothing down at all), and `profileExecution: detailed`, which drains the whole result set into
+memory before serializing it, drains at most one row past the cap the response will honor. The TimeSeries
+query endpoint enforces the ceiling on both of its shapes - the raw rows, and the buckets of an `aggregation`
+request, which reads no `limit` at all and so had the ceiling as its only possible bound - but only over the
+response it builds: `TimeSeriesEngine.query()` materializes the whole requested range before any limit is
+known, so bounding that fetch needs an engine-level change and is left as follow-up work.
+
+On the status code: 413 is conventionally about an oversized *request* body, and no standard code says "the
+response you asked for is too large to send". 413 is the closest fit and keeps the refusal in the 4xx range,
+where it belongs - the request is answerable, just not as written - but a client that maps status codes
+mechanically should note that the fix is to narrow or page the query, not to shrink the request body. The
+error body distinguishes the two: this refusal names `arcadedb.server.httpQueryMaxResultRows` in its `error`
+field and carries the ceiling in `exceptionArgs`, in every server mode.
+
+[#5719](https://github.com/ArcadeData/arcadedb/issues/5719)
