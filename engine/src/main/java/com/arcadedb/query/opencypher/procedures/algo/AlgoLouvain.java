@@ -98,12 +98,13 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
 
     final Map<String, Object> config = args.length > 0 ? extractMap(args[0], "config") : null;
     final int maxIterations = config != null && config.get("maxIterations") instanceof Number n ?
-        extractInt(n, "maxIterations") : 10;
+        extractInt(n, "maxIterations", 1) : 10;
     final double tolerance = config != null && config.get("tolerance") instanceof Number n ?
         n.doubleValue() : 0.0001;
     final String weightProperty = config != null ? (String) config.get("weightProperty") : null;
 
     final Database db = context.getDatabase();
+    final WorkGuard guard = newWorkGuard(context);
     final List<Vertex> vertices = new ArrayList<>();
     final Iterator<Vertex> vertIter = getAllVertices(db, null);
     while (vertIter.hasNext())
@@ -147,9 +148,15 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
 
     // Phase 1: Modularity optimization
     for (int iter = 0; iter < maxIterations; iter++) {
+      // maxIterations is a caller-supplied knob and the "nothing moved" break only fires if the graph settles, so
+      // the outer loop carries the checkpoint. One iteration walks every edge, plus a modularity pass.
+      guard.check();
       boolean changed = false;
 
       for (int i = 0; i < n; i++) {
+        // One node is already O(deg x n) - getCommunityDegree() scans every node once per candidate community -
+        // so the per-node checkpoint is unthrottled: 1024 of these would be 1024 whole-graph scans of latency.
+        guard.check();
         final Vertex v = vertices.get(i);
         final int currentCommunity = community[i];
 

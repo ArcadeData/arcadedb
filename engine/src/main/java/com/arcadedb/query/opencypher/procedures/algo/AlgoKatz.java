@@ -85,10 +85,11 @@ public class AlgoKatz extends AbstractAlgoProcedure {
 
     final String[] relTypes    = args.length > 0 ? extractRelTypes(args[0]) : null;
     final double alpha         = args.length > 1 ? ((Number) args[1]).doubleValue() : 0.005;
-    final int maxIterations    = args.length > 2 ? extractInt((Number) args[2], "maxIterations") : 100;
+    final int maxIterations    = args.length > 2 ? extractInt((Number) args[2], "maxIterations", 1) : 100;
     final double tolerance     = args.length > 3 ? ((Number) args[3]).doubleValue() : 1e-6;
 
     final Database db = context.getDatabase();
+    final WorkGuard guard = newWorkGuard(context);
 
     final GraphData graph = loadGraph(db, null, relTypes, context);
 
@@ -104,8 +105,13 @@ public class AlgoKatz extends AbstractAlgoProcedure {
     Arrays.fill(scores, 1.0);
 
     for (int iter2 = 0; iter2 < maxIterations; iter2++) {
+      // maxIterations is a caller-supplied knob and the tolerance break only fires if the graph converges, so the
+      // outer loop carries the checkpoint. One iteration is O(n + m), which swallows a flag test whole.
+      guard.check();
       // newScores[i] = alpha * sum_{j in inNeighbors(i)} scores[j] + 1
       for (int i = 0; i < n; i++) {
+        // A single iteration walks the whole graph, so on a large one the checkpoint belongs inside the pass too.
+        guard.checkPeriodically(i);
         double sum = 0.0;
         for (final int j : adjIn[i])
           sum += scores[j];

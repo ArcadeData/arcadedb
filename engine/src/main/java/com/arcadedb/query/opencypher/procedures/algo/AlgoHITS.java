@@ -80,10 +80,11 @@ public class AlgoHITS extends AbstractAlgoProcedure {
     validateArgs(args);
 
     final String[] relTypes    = args.length > 0 ? extractRelTypes(args[0]) : null;
-    final int maxIterations    = args.length > 1 ? extractInt((Number) args[1], "maxIterations") : 20;
+    final int maxIterations    = args.length > 1 ? extractInt((Number) args[1], "maxIterations", 1) : 20;
     final double tolerance     = args.length > 2 ? ((Number) args[2]).doubleValue() : 1e-6;
 
     final Database db = context.getDatabase();
+    final WorkGuard guard = newWorkGuard(context);
 
     final GraphData graph = loadGraph(db, null, relTypes, context);
 
@@ -105,8 +106,13 @@ public class AlgoHITS extends AbstractAlgoProcedure {
     }
 
     for (int iter2 = 0; iter2 < maxIterations; iter2++) {
+      // maxIterations is a caller-supplied knob and the tolerance break only fires if the graph converges, so the
+      // outer loop carries the checkpoint. One iteration is O(n + m), which swallows a flag test whole.
+      guard.check();
       // Update auth[v] = sum of hub[u] for all in-neighbors u of v
       for (int v = 0; v < n; v++) {
+        // A single iteration walks the whole graph, so on a large one the checkpoint belongs inside the pass too.
+        guard.checkPeriodically(v);
         double sum = 0.0;
         for (final int u : adjIn[v])
           sum += hub[u];
@@ -115,6 +121,7 @@ public class AlgoHITS extends AbstractAlgoProcedure {
 
       // Update hub[v] = sum of auth[w] for all out-neighbors w of v
       for (int v = 0; v < n; v++) {
+        guard.checkPeriodically(v);
         double sum = 0.0;
         for (final int w : adjOut[v])
           sum += newAuth[w];

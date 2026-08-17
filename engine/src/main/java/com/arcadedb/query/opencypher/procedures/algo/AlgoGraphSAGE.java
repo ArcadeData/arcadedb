@@ -95,12 +95,13 @@ public class AlgoGraphSAGE extends AbstractAlgoProcedure {
 
     final Map<String, Object> config = args.length > 0 ? extractMap(args[0], "config") : null;
     final int outDim = config != null && config.get("embeddingDimension") instanceof Number n ? extractEmbeddingDimension(n, "embeddingDimension") : 64;
-    final int layers = config != null && config.get("layers") instanceof Number n ? extractInt(n, "layers") : 2;
+    final int layers = config != null && config.get("layers") instanceof Number n ? extractInt(n, "layers", 1) : 2;
     final long seed = config != null && config.get("seed") instanceof Number n ? n.longValue() : -1L;
     final String[] relTypes = config != null ? extractRelTypes(config.get("relTypes")) : null;
     final Vertex.DIRECTION dir = parseDirection(config != null ? (String) config.get("direction") : null);
 
     final Database db = context.getDatabase();
+    final WorkGuard guard = newWorkGuard(context);
     final GraphData graph = loadGraph(db, null, relTypes, context);
 
     final int n = graph.nodeCount;
@@ -132,6 +133,11 @@ public class AlgoGraphSAGE extends AbstractAlgoProcedure {
 
     // Layer-wise aggregation
     for (int layer = 0; layer < layers; layer++) {
+      // layers is a caller-supplied knob and this kernel has no convergence test at all, so it always runs the full
+      // count: the guard is the only thing that can end a run the caller no longer wants. The Xavier initialisation
+      // below carries no checkpoint of its own because both its bounds are embedding dimensions, capped at
+      // MAX_EMBEDDING_DIMENSION - it is bounded work whatever the caller asks for, unlike the per-node loop.
+      guard.check();
       // Random projection: (2*curDim) → outDim with Xavier initialisation
       final int concatDim = curDim * 2;
       final double projScale = Math.sqrt(2.0 / (concatDim + outDim));
@@ -145,6 +151,8 @@ public class AlgoGraphSAGE extends AbstractAlgoProcedure {
       final double[] concat = new double[concatDim];
 
       for (int i = 0; i < n; i++) {
+        // A single layer walks the whole graph, so on a large one the checkpoint belongs inside the layer too.
+        guard.checkPeriodically(i);
         // Mean aggregation over neighbours
         final int deg = degree[i];
         Arrays.fill(agg, 0.0);

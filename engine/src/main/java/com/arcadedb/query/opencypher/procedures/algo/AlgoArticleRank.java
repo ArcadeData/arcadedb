@@ -104,25 +104,26 @@ public class AlgoArticleRank extends AbstractAlgoProcedure {
     final double dampingFactor = config != null && config.get("dampingFactor") instanceof Number num ?
         num.doubleValue() : 0.85;
     final int maxIterations = config != null && config.get("maxIterations") instanceof Number num ?
-        extractInt(num, "maxIterations") : 20;
+        extractInt(num, "maxIterations", 1) : 20;
     final double tolerance = config != null && config.get("tolerance") instanceof Number num ?
         num.doubleValue() : 0.0001;
 
     final Database db = context.getDatabase();
+    final WorkGuard guard = newWorkGuard(context);
 
     // Try CSR-accelerated path
     final GraphTraversalProvider provider = findProvider(db, null);
     if (provider != null) {
       context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
-      return executeWithCSR(provider, dampingFactor, maxIterations, tolerance);
+      return executeWithCSR(provider, dampingFactor, maxIterations, tolerance, guard);
     }
 
     // Fall back to OLTP path
-    return executeWithOLTP(db, dampingFactor, maxIterations, tolerance);
+    return executeWithOLTP(db, dampingFactor, maxIterations, tolerance, guard);
   }
 
   private Stream<Result> executeWithCSR(final GraphTraversalProvider provider,
-      final double dampingFactor, final int maxIterations, final double tolerance) {
+      final double dampingFactor, final int maxIterations, final double tolerance, final WorkGuard guard) {
     final int n = provider.getNodeCount();
     if (n == 0)
       return Stream.empty();
@@ -151,6 +152,9 @@ public class AlgoArticleRank extends AbstractAlgoProcedure {
       scores[i] = initialScore;
 
     for (int iter = 0; iter < maxIterations; iter++) {
+      // maxIterations is a caller-supplied knob and the tolerance break only fires if the graph converges, so the
+      // outer loop carries the checkpoint. One iteration is O(n + m), which swallows a flag test whole.
+      guard.check();
       final double[] newScores = new double[n];
       double dangling = 0.0;
 
@@ -162,6 +166,8 @@ public class AlgoArticleRank extends AbstractAlgoProcedure {
 
       if (hasView) {
         for (int i = 0; i < n; i++) {
+          // A single iteration walks the whole graph, so on a large one the checkpoint belongs inside the pass too.
+          guard.checkPeriodically(i);
           final int start = outView.offset(i);
           final int end = outView.offsetEnd(i);
           if (start == end)
@@ -172,6 +178,8 @@ public class AlgoArticleRank extends AbstractAlgoProcedure {
         }
       } else {
         for (int i = 0; i < n; i++) {
+          // The fallback branch of the same pass - the checkpoint belongs in whichever one runs.
+          guard.checkPeriodically(i);
           final int[] neighbors = outNeighborsFallback[i];
           if (neighbors.length == 0)
             continue;
@@ -202,7 +210,7 @@ public class AlgoArticleRank extends AbstractAlgoProcedure {
   }
 
   private Stream<Result> executeWithOLTP(final Database db, final double dampingFactor,
-      final int maxIterations, final double tolerance) {
+      final int maxIterations, final double tolerance, final WorkGuard guard) {
     final List<Vertex> vertices = new ArrayList<>();
     final Iterator<Vertex> iter = getAllVertices(db, null);
     while (iter.hasNext())
@@ -227,6 +235,9 @@ public class AlgoArticleRank extends AbstractAlgoProcedure {
       scores[i] = initialScore;
 
     for (int iter2 = 0; iter2 < maxIterations; iter2++) {
+      // Same knob and same checkpoint as the CSR path above: the tolerance break only fires if the graph
+      // converges, so maxIterations is what ends the run and the guard is what can abort it.
+      guard.check();
       final double[] newScores = new double[n];
       double dangling = 0.0;
       for (int i = 0; i < n; i++)
@@ -234,6 +245,8 @@ public class AlgoArticleRank extends AbstractAlgoProcedure {
           dangling += scores[i];
 
       for (int i = 0; i < n; i++) {
+        // A single iteration walks the whole graph, so on a large one the checkpoint belongs inside the pass too.
+        guard.checkPeriodically(i);
         final Vertex v = vertices.get(i);
         final double denom = outDegrees[i] + avgOutDeg;
         for (final Edge edge : v.getEdges(Vertex.DIRECTION.OUT)) {

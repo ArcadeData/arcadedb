@@ -94,12 +94,13 @@ public class AlgoHashGNN extends AbstractAlgoProcedure {
 
     final Map<String, Object> config = args.length > 0 ? extractMap(args[0], "config") : null;
     final int embDim = config != null && config.get("embeddingDimension") instanceof Number n ? extractEmbeddingDimension(n, "embeddingDimension") : 128;
-    final int iterations = config != null && config.get("iterations") instanceof Number n ? extractInt(n, "iterations") : 4;
+    final int iterations = config != null && config.get("iterations") instanceof Number n ? extractInt(n, "iterations", 1) : 4;
     final long seed = config != null && config.get("seed") instanceof Number n ? n.longValue() : -1L;
     final String[] relTypes = config != null ? extractRelTypes(config.get("relTypes")) : null;
     final Vertex.DIRECTION dir = parseDirection(config != null ? (String) config.get("direction") : null);
 
     final Database db = context.getDatabase();
+    final WorkGuard guard = newWorkGuard(context);
     final GraphData graph = loadGraph(db, null, relTypes, context);
 
     final int n = graph.nodeCount;
@@ -141,7 +142,12 @@ public class AlgoHashGNN extends AbstractAlgoProcedure {
     // Iterative message passing: OR-combine neighbour features, then MinHash-reduce
     final boolean[][] newFeatures = new boolean[n][numFeatures];
     for (int iter = 0; iter < iterations; iter++) {
+      // iterations is a caller-supplied knob and this kernel has no convergence test at all, so it always runs the
+      // full count: the guard is the only thing that can end a run the caller no longer wants.
+      guard.check();
       for (int i = 0; i < n; i++) {
+        // A single message-passing round walks the whole graph, so on a large one the checkpoint belongs inside it.
+        guard.checkPeriodically(i);
         System.arraycopy(features[i], 0, newFeatures[i], 0, numFeatures);
         for (final int j : adj[i]) {
           for (int f = 0; f < numFeatures; f++)
@@ -149,8 +155,10 @@ public class AlgoHashGNN extends AbstractAlgoProcedure {
         }
       }
       // Swap
-      for (int i = 0; i < n; i++)
+      for (int i = 0; i < n; i++) {
+        guard.checkPeriodically(i);
         System.arraycopy(newFeatures[i], 0, features[i], 0, numFeatures);
+      }
     }
 
     // Compute MinHash signature → float embedding

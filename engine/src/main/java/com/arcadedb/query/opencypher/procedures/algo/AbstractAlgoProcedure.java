@@ -255,9 +255,9 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   // ── Work bounds ──────────────────────────────────────────────────────────
 
   /**
-   * Heap cost of one row of a walk matrix on top of its payload: 16-byte array header, 4-byte length, 4 bytes of
-   * padding and the 8-byte reference the enclosing array holds. Walk rows are typically short, so this overhead
-   * is a real part of the footprint rather than a rounding error.
+   * Heap cost of one row of a per-node {@code int} matrix on top of its payload: 16-byte array header, 4-byte
+   * length, 4 bytes of padding and the 8-byte reference the enclosing array holds. Such rows are typically short,
+   * so this overhead is a real part of the footprint rather than a rounding error.
    * <p>
    * A heuristic for a budget check, not a guarantee: the true figure moves with the JVM's object layout
    * (compressed oops on or off, alignment). It does not need to be exact - it only has to keep the estimate in
@@ -271,22 +271,39 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   /**
    * Rejects, before a single byte is allocated, a random-walk buffer whose estimated heap footprint exceeds
    * {@link GlobalConfiguration#CYPHER_ALGO_MAX_WALK_MEMORY}.
-   * <p>
-   * The knobs that size these buffers ({@code walksPerNode}, {@code walkLength}, {@code steps}) have no
-   * graph-derived ceiling to clamp against, so they are bounded here by the resource they actually consume
-   * rather than by a guessed per-knob maximum: the budget scales with the JVM heap and is tunable, and the
-   * estimate is computed in saturating {@code long} arithmetic, so a product that would wrap {@code int} is
-   * caught here instead of surfacing as a {@code NegativeArraySizeException} from inside the walk generator.
    *
    * @param db             database whose configuration carries the budget
    * @param estimatedBytes estimated footprint, computed with {@link #saturatingProduct(long, long)}
    * @param detail         breakdown of the knobs that produced the estimate, for the error message
+   *
+   * @see #checkBufferBudget(Database, long, String, String)
    */
   protected void checkWalkBudget(final Database db, final long estimatedBytes, final String detail) {
+    checkBufferBudget(db, estimatedBytes, "random walk buffer", detail);
+  }
+
+  /**
+   * Rejects, before a single byte is allocated, a per-node buffer whose estimated heap footprint exceeds
+   * {@link GlobalConfiguration#CYPHER_ALGO_MAX_WALK_MEMORY}.
+   * <p>
+   * The knobs that size these buffers ({@code walksPerNode}, {@code walkLength}, {@code steps}, SLPA's
+   * {@code iterations}) have no graph-derived ceiling to clamp against, so they are bounded here by the resource
+   * they actually consume rather than by a guessed per-knob maximum: the budget scales with the JVM heap and is
+   * tunable, and the estimate is computed in saturating {@code long} arithmetic, so a product that would wrap
+   * {@code int} is caught here instead of surfacing as a {@code NegativeArraySizeException} from inside the
+   * allocator.
+   *
+   * @param db             database whose configuration carries the budget
+   * @param estimatedBytes estimated footprint, computed with {@link #saturatingProduct(long, long)}
+   * @param what           name of the buffer, for the error message ("random walk buffer", ...)
+   * @param detail         breakdown of the knobs that produced the estimate, for the error message
+   */
+  protected void checkBufferBudget(final Database db, final long estimatedBytes, final String what,
+      final String detail) {
     final long budget = db.getConfiguration().getValueAsLong(GlobalConfiguration.CYPHER_ALGO_MAX_WALK_MEMORY);
     if (budget < 0 || estimatedBytes <= budget)
       return;
-    throw new IllegalArgumentException(getName() + "(): the random walk buffer would need "
+    throw new IllegalArgumentException(getName() + "(): the " + what + " would need "
         + (estimatedBytes == Long.MAX_VALUE ? "over " + Long.MAX_VALUE : Long.toString(estimatedBytes)) + " bytes ("
         + detail + "), more than the " + budget + " bytes allowed. Set "
         + GlobalConfiguration.CYPHER_ALGO_MAX_WALK_MEMORY.getKey() + " to raise the limit");
@@ -296,6 +313,24 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   protected static long saturatingProduct(final long a, final long b) {
     try {
       return Math.multiplyExact(a, b);
+    } catch (final ArithmeticException e) {
+      return Long.MAX_VALUE;
+    }
+  }
+
+  /**
+   * Adds two non-negative longs, saturating at {@link Long#MAX_VALUE} instead of wrapping.
+   * <p>
+   * The companion to {@link #saturatingProduct(long, long)}, and required wherever a footprint estimate mixes the
+   * two: a saturated product plus a per-row overhead wraps to a large <em>negative</em> number, and a negative
+   * estimate passes {@link #checkBufferBudget} unconditionally - the budget check would be silently disabled by
+   * exactly the input it exists to refuse. No current caller can reach that (every estimate here is bounded by an
+   * {@code int}-sized count), so this closes the shape rather than an instance.
+   * </p>
+   */
+  protected static long saturatingSum(final long a, final long b) {
+    try {
+      return Math.addExact(a, b);
     } catch (final ArithmeticException e) {
       return Long.MAX_VALUE;
     }

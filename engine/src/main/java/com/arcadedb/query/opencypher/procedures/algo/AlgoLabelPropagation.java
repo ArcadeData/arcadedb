@@ -100,29 +100,33 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
 
     final Map<String, Object> config = args.length > 0 ? extractMap(args[0], "config") : null;
     final int maxIterations = config != null && config.get("maxIterations") instanceof Number n ?
-        extractInt(n, "maxIterations") : 10;
+        extractInt(n, "maxIterations", 1) : 10;
 
     final Database db = context.getDatabase();
+    final WorkGuard guard = newWorkGuard(context);
 
     // Try CSR-accelerated path: delegate to native label propagation on CSR arrays
     final GraphTraversalProvider provider = findProvider(db, null);
     if (provider instanceof GraphAnalyticalView gav) {
       context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
-      return executeWithCSR(context, gav, maxIterations);
+      return executeWithCSR(context, gav, maxIterations, guard);
     }
 
     // Fall back to OLTP path
     final String directionStr = config != null && config.get("direction") instanceof String s ? s : "BOTH";
     final Vertex.DIRECTION direction = parseDirection(directionStr);
-    return executeWithOLTP(db, maxIterations, direction);
+    return executeWithOLTP(db, maxIterations, direction, guard);
   }
 
-  private Stream<Result> executeWithCSR(final CommandContext context, final GraphAnalyticalView gav, final int maxIterations) {
+  private Stream<Result> executeWithCSR(final CommandContext context, final GraphAnalyticalView gav,
+      final int maxIterations, final WorkGuard guard) {
     final int n = gav.getNodeCount();
     if (n == 0)
       return Stream.empty();
 
-    final int[] labels = GraphAlgorithms.labelPropagation(gav, maxIterations);
+    // The kernel's "nothing moved" break only fires if the labelling settles - a graph that oscillates between two
+    // labellings never converges - so maxIterations is what ends the run, and the guard is what can abort it.
+    final int[] labels = GraphAlgorithms.labelPropagation(gav, maxIterations, guard::check);
     context.setVariable(CommandContext.RESULT_COUNT_HINT_VAR, (long) n);
 
     return IntStream.range(0, n).mapToObj(i -> {
@@ -134,7 +138,7 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
   }
 
   private Stream<Result> executeWithOLTP(final Database db, final int maxIterations,
-      final Vertex.DIRECTION direction) {
+      final Vertex.DIRECTION direction, final WorkGuard guard) {
     final List<Vertex> vertices = new ArrayList<>();
     final Iterator<Vertex> vertIter = getAllVertices(db, null);
     while (vertIter.hasNext())
@@ -155,10 +159,15 @@ public class AlgoLabelPropagation extends AbstractAlgoProcedure {
 
     // Synchronous label propagation: compute all new labels, then apply
     for (int iter = 0; iter < maxIterations; iter++) {
+      // maxIterations is a caller-supplied knob and the "nothing moved" break only fires if the labelling settles,
+      // so the outer loop carries the checkpoint. One iteration is O(n + m), which swallows a flag test whole.
+      guard.check();
       final int[] newLabel = new int[n];
       boolean changed = false;
 
       for (int i = 0; i < n; i++) {
+        // A single iteration walks the whole graph, so on a large one the checkpoint belongs inside the pass too.
+        guard.checkPeriodically(i);
         final int[] neighbors = adj[i];
         if (neighbors.length == 0) {
           newLabel[i] = label[i];

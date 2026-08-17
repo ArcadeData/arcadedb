@@ -815,15 +815,16 @@ public enum GlobalConfiguration {
 
   CYPHER_ALGO_MAX_WALK_MEMORY("arcadedb.cypher.algoMaxWalkMemory", SCOPE.DATABASE,
       """
-      Maximum heap, in bytes, that a single call to an OpenCypher random-walk algorithm procedure may reserve for \
-      its walk buffers: algo.node2vec materialises walksPerNode x nodeCount walks of walkLength steps each, and \
-      algo.randomWalk a single walk of steps entries. Those knobs have no graph-derived ceiling to clamp against - \
+      Maximum heap, in bytes, that a single call to an OpenCypher algorithm procedure may reserve for the per-node \
+      int buffers one of its knobs sizes: algo.node2vec materialises walksPerNode x nodeCount walks of walkLength \
+      steps each, algo.randomWalk a single walk of steps entries, and algo.slpa one label-memory row of iterations \
+      entries per node. Those knobs have no graph-derived ceiling to clamp against - \
       unlike a top-k bound, which is capped by the node count - so a large but perfectly in-range int would \
       otherwise reach the allocator unchecked, or wrap the int product on the way there and surface as a \
-      NegativeArraySizeException from inside the walk generator. The estimate is computed in saturating long \
+      NegativeArraySizeException from inside the algorithm. The estimate is computed in saturating long \
       arithmetic and checked BEFORE anything is allocated: a call over the budget is rejected as a client error \
       naming the knobs that produced the estimate and this setting. Negative number means no limit. When left at \
-      the default it auto-scales with the JVM max heap (one eighth of it, never below 64MB), so the walk buffers \
+      the default it auto-scales with the JVM max heap (one eighth of it, never below 64MB), so the buffers \
       of a legitimate large run stay a fraction of the heap they share with the rest of the query.""",
       Long.class, 64 * 1024 * 1024L, null, value -> {
         // Auto-scale the default with the JVM max heap: one eighth of it, never below the 64MB floor so that a
