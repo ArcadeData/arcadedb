@@ -443,20 +443,75 @@ class BootstrapElection {
         || statusCode == 429 || statusCode >= 500;
   }
 
-  private CompletableFuture<ProbeOutcome> queryPeer(final RaftPeerId peerId,
-      final String httpAddr, final Set<String> dbFilter, final long attemptTimeoutMs) {
-    final String url = "http://" + httpAddr + "/api/v1/cluster/bootstrap-state";
+  /**
+   * Builds the authenticated {@code POST /api/v1/cluster/bootstrap-state} request for {@code httpAddr}.
+   * Shared by the election's async fan-out and the synchronous single-peer probe
+   * {@link #fetchBootstrapState}, so both reach the endpoint with the same credentials (issue #6124).
+   */
+  static HttpRequest bootstrapStateRequest(final String httpAddr, final String clusterToken, final long timeoutMs) {
     final HttpRequest.Builder builder = HttpRequest.newBuilder()
-        .uri(URI.create(url))
-        .timeout(Duration.ofMillis(attemptTimeoutMs))
+        .uri(URI.create("http://" + httpAddr + "/api/v1/cluster/bootstrap-state"))
+        .timeout(Duration.ofMillis(timeoutMs))
         .header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString("{}"));
-    final String token = haServer.getClusterToken();
-    if (token != null && !token.isBlank())
-      builder.header("X-ArcadeDB-Cluster-Token", token);
+    if (clusterToken != null && !clusterToken.isBlank())
+      builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
     builder.header("X-ArcadeDB-Forwarded-User", "root");
+    return builder.build();
+  }
 
-    return HTTP.sendAsync(builder.build(), HttpResponse.BodyHandlers.ofString())
+  /**
+   * Parses a {@code /bootstrap-state} response body into the reported {@code (fingerprint, lastTxId)}
+   * per database, restricted to {@code dbFilter}. Throws on a malformed body; callers decide whether
+   * that is retryable.
+   */
+  static Map<String, ArcadeStateMachine.BootstrapBaseline> parseBootstrapState(final String body,
+      final Set<String> dbFilter) {
+    final JSONObject json = new JSONObject(body);
+    final JSONArray dbs = json.getJSONArray("databases");
+    final Map<String, ArcadeStateMachine.BootstrapBaseline> result = new HashMap<>();
+    for (int i = 0; i < dbs.length(); i++) {
+      final JSONObject db = dbs.getJSONObject(i);
+      final String name = db.getString("name");
+      if (dbFilter != null && !dbFilter.contains(name))
+        continue;
+      result.put(name, new ArcadeStateMachine.BootstrapBaseline(db.getString("fingerprint"), db.getLong("lastTxId")));
+    }
+    return result;
+  }
+
+  /**
+   * Synchronous single-peer {@code /bootstrap-state} probe (issue #6124), used to re-verify a database
+   * that the bootstrap overwrite guard left diverged against the current leader. Returns {@code null}
+   * on any failure (unreachable peer, non-200, malformed body) - the caller retries on a later health
+   * tick rather than drawing a conclusion from a failed probe.
+   */
+  static Map<String, ArcadeStateMachine.BootstrapBaseline> fetchBootstrapState(final String httpAddr,
+      final String clusterToken, final Set<String> dbFilter, final long timeoutMs) {
+    try {
+      final HttpResponse<String> response = HTTP.send(bootstrapStateRequest(httpAddr, clusterToken, timeoutMs),
+          HttpResponse.BodyHandlers.ofString());
+      if (response.statusCode() != 200) {
+        LogManager.instance().log(BootstrapElection.class, Level.INFO,
+            "bootstrap-state probe of %s answered HTTP %d", httpAddr, response.statusCode());
+        return null;
+      }
+      return parseBootstrapState(response.body(), dbFilter);
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return null;
+    } catch (final Exception e) {
+      LogManager.instance().log(BootstrapElection.class, Level.INFO,
+          "bootstrap-state probe of %s failed: %s", httpAddr, e.getMessage());
+      return null;
+    }
+  }
+
+  private CompletableFuture<ProbeOutcome> queryPeer(final RaftPeerId peerId,
+      final String httpAddr, final Set<String> dbFilter, final long attemptTimeoutMs) {
+    final HttpRequest request = bootstrapStateRequest(httpAddr, haServer.getClusterToken(), attemptTimeoutMs);
+
+    return HTTP.sendAsync(request, HttpResponse.BodyHandlers.ofString())
         .thenApply(resp -> {
           final int status = resp.statusCode();
           if (status != 200) {
@@ -469,17 +524,11 @@ class BootstrapElection {
             return retryable ? ProbeOutcome.retryable("HTTP " + status) : ProbeOutcome.fatal("HTTP " + status);
           }
           try {
-            final JSONObject json = new JSONObject(resp.body());
-            final JSONArray dbs = json.getJSONArray("databases");
             final Map<String, PeerState> result = new HashMap<>();
-            for (int i = 0; i < dbs.length(); i++) {
-              final JSONObject db = dbs.getJSONObject(i);
-              final String name = db.getString("name");
-              if (!dbFilter.contains(name))
-                continue;
-              result.put(name, new PeerState(peerId, name, db.getString("fingerprint"),
-                  db.getLong("lastTxId")));
-            }
+            for (final Map.Entry<String, ArcadeStateMachine.BootstrapBaseline> e :
+                parseBootstrapState(resp.body(), dbFilter).entrySet())
+              result.put(e.getKey(), new PeerState(peerId, e.getKey(), e.getValue().fingerprint(),
+                  e.getValue().lastTxId()));
             return ProbeOutcome.ok(result);
           } catch (final Exception e) {
             LogManager.instance().log(this, Level.WARNING,
@@ -668,7 +717,12 @@ class BootstrapElection {
     return null;
   }
 
-  private static String abbreviate(final String fingerprint) {
+  /**
+   * Shortens a 64-char fingerprint for logging. Package-private so the post-bootstrap divergence
+   * verification in {@link ArcadeStateMachine} reports fingerprints in the same shape the bootstrap
+   * election does (issue #6124).
+   */
+  static String abbreviate(final String fingerprint) {
     if (fingerprint == null || fingerprint.length() <= 16)
       return String.valueOf(fingerprint);
     return fingerprint.substring(0, 8) + "..." + fingerprint.substring(fingerprint.length() - 8);
