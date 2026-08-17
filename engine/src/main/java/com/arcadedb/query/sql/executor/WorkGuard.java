@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 
@@ -57,16 +56,16 @@ public final class WorkGuard {
    * fresh object so that guarding a hot loop costs nothing at all when the operator is disabled, which is the
    * case for every query on a server that has not set {@code arcadedb.command.timeout}.
    */
-  private static final WorkGuard UNBOUNDED = new WorkGuard("the command", 0L, Long.MAX_VALUE, false);
+  private static final WorkGuard UNBOUNDED = new WorkGuard("the command", null, Long.MAX_VALUE, false);
 
-  private final String  what;
-  private final long    timeoutMillis;
-  private final long    deadline;
-  private final boolean interruptible;
+  private final String        what;
+  private final CommandContext context;
+  private final long          deadline;
+  private final boolean       interruptible;
 
-  private WorkGuard(final String what, final long timeoutMillis, final long deadline, final boolean interruptible) {
+  private WorkGuard(final String what, final CommandContext context, final long deadline, final boolean interruptible) {
     this.what = what;
-    this.timeoutMillis = timeoutMillis;
+    this.context = context;
     this.deadline = deadline;
     this.interruptible = interruptible;
   }
@@ -83,9 +82,9 @@ public final class WorkGuard {
     // No shared instance here even when nothing is configured: the guard still tests the interrupt flag, and
     // it has to name the caller when it aborts.
     if (context == null)
-      return new WorkGuard(what, 0L, Long.MAX_VALUE, true);
+      return new WorkGuard(what, null, Long.MAX_VALUE, true);
 
-    return new WorkGuard(what, context.getCommandTimeout(), context.getCommandDeadline(), true);
+    return new WorkGuard(what, context, context.getCommandDeadline(), true);
   }
 
   /**
@@ -101,7 +100,7 @@ public final class WorkGuard {
     if (deadline == Long.MAX_VALUE)
       return UNBOUNDED;
 
-    return new WorkGuard("the command", context.getCommandTimeout(), deadline, false);
+    return new WorkGuard("the command", context, deadline, false);
   }
 
   /**
@@ -112,8 +111,9 @@ public final class WorkGuard {
     if (interruptible && Thread.interrupted())
       throw new CommandExecutionException(what + " has been interrupted");
     if (deadline < Long.MAX_VALUE && System.currentTimeMillis() > deadline)
-      throw new TimeoutException(
-          what + " exceeded the " + GlobalConfiguration.COMMAND_TIMEOUT.getKey() + " of " + timeoutMillis + "ms");
+      // The bound is named by the context rather than assumed to be the setting: a SQL TIMEOUT clause pins its
+      // own deadline here too, and reporting the configuration's value for it would be a lie.
+      throw new TimeoutException(what + " exceeded the " + context.getCommandDeadlineDescription());
   }
 
   /**

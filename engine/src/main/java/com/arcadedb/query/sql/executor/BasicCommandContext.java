@@ -59,6 +59,8 @@ public class BasicCommandContext implements CommandContext {
   protected volatile long                 commandTimeout          = UNRESOLVED;
   /** Absolute epoch-millis deadline. See {@link #getCommandDeadline()}. */
   protected volatile long                 commandDeadline         = UNRESOLVED;
+  /** What to call the bound above when a check aborts on it. See {@link #getCommandDeadlineDescription()}. */
+  protected volatile String               commandDeadlineDescription;
 
   @Override
   public Object getVariablePath(final String name) {
@@ -295,8 +297,22 @@ public class BasicCommandContext implements CommandContext {
   }
 
   @Override
-  public void setCommandDeadline(final long deadlineEpochMillis) {
+  public String getCommandDeadlineDescription() {
+    if (commandDeadlineDescription == null) {
+      if (parent != null)
+        commandDeadlineDescription = parent.getCommandDeadlineDescription();
+      else
+        // Built here rather than at resolution time: the description is read only when a check aborts, so a
+        // command that finishes never pays for the string.
+        commandDeadlineDescription = GlobalConfiguration.COMMAND_TIMEOUT.getKey() + " of " + getCommandTimeout() + "ms";
+    }
+    return commandDeadlineDescription;
+  }
+
+  @Override
+  public void setCommandDeadline(final long deadlineEpochMillis, final String description) {
     this.commandDeadline = deadlineEpochMillis;
+    this.commandDeadlineDescription = description;
   }
 
   @Override
@@ -460,6 +476,7 @@ public class BasicCommandContext implements CommandContext {
     // itself and a type scanned across N buckets would get N budgets (issue #6266).
     copy.commandTimeout = getCommandTimeout();
     copy.commandDeadline = getCommandDeadline();
+    copy.commandDeadlineDescription = commandDeadlineDescription;
     // Share the same statistics accumulator so mutations performed through the copied context
     // aggregate into one place instead of silently vanishing.
     copy.statistics = statistics;

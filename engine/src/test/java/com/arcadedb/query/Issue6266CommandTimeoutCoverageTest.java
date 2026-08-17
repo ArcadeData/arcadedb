@@ -201,6 +201,54 @@ class Issue6266CommandTimeoutCoverageTest {
         .hasStackTraceContaining(GlobalConfiguration.COMMAND_TIMEOUT.getKey());
   }
 
+  // ── The per-statement TIMEOUT clause ─────────────────────────────────────
+
+  @Test
+  void anExplicitSelectTimeoutClauseReachesTheInLoopChecks() {
+    // The clause is the more common way to bound one query, and it is resolved by the planner rather than from
+    // the configuration - so the guards, which read the deadline off the CommandContext, were blind to it. With
+    // the global setting left disabled this is exactly the scenario the PR fixes, expressed the other way round.
+    assertThatThrownBy(() -> drainSql(
+        "SELECT FROM Node WHERE out('LINK').out('LINK').out('LINK').out('LINK').out('LINK').size() > 1000000 "
+            + "TIMEOUT 50"))
+        .as("a statement's own TIMEOUT must bound the scan loop, not only the gap between two batches")
+        .hasStackTraceContaining("TIMEOUT clause of 50ms");
+  }
+
+  @Test
+  void anExplicitUpdateTimeoutClauseReachesTheInLoopChecks() {
+    assertThatThrownBy(() -> database.transaction(() -> database.command("sql",
+        "UPDATE Node SET touched = true WHERE out('LINK').out('LINK').out('LINK').out('LINK').out('LINK')"
+            + ".size() > 1000000 TIMEOUT 50")))
+        .as("UPDATE ... TIMEOUT relies on the same filter loop and must be bounded by it too")
+        .isInstanceOf(TimeoutException.class);
+  }
+
+  @Test
+  void theReturnFailureStrategyStillReturnsRatherThanThrowing() {
+    // TIMEOUT n RETURN asks for the rows produced so far instead of an exception. An in-loop guard only knows
+    // how to throw, so the deadline is deliberately not pinned for that strategy - otherwise widening the
+    // enforcement would silently convert a documented "return what you have" into a failure.
+    assertThatCode(() -> drainSql(
+        "SELECT FROM Node WHERE out('LINK').out('LINK').out('LINK').out('LINK').out('LINK').size() > 1000000 "
+            + "TIMEOUT 50 RETURN"))
+        .as("RETURN means return, at whatever granularity the deadline is observed")
+        .doesNotThrowAnyException();
+  }
+
+  @Test
+  void theGlobalCeilingStillAppliesUnderALooserStatementClause() {
+    // A statement cannot lift the operator's safety net by asking for more time than the operator allows: the
+    // two bounds are both in force and the earlier one wins.
+    setTimeout(50);
+
+    assertThatThrownBy(() -> drainSql(
+        "SELECT FROM Node WHERE out('LINK').out('LINK').out('LINK').out('LINK').out('LINK').size() > 1000000 "
+            + "TIMEOUT 3600000"))
+        .as("the global deadline is a ceiling, not a default the statement may raise")
+        .hasStackTraceContaining(GlobalConfiguration.COMMAND_TIMEOUT.getKey());
+  }
+
   // ── The default, and the shape of the bound ──────────────────────────────
 
   @Test
@@ -262,14 +310,14 @@ class Issue6266CommandTimeoutCoverageTest {
     database.getConfiguration().setValue(GlobalConfiguration.COMMAND_TIMEOUT, 60_000L);
 
     final CommandContext expired = new BasicCommandContext().setDatabase(database);
-    expired.setCommandDeadline(0L);
+    expired.setCommandDeadline(0L, "a pinned deadline of 0ms");
     assertThat(expired.getCommandDeadline()).as("a pinned deadline in the past stays in the past").isZero();
     assertThatThrownBy(() -> WorkGuard.forCommandDeadline(expired).check())
         .isInstanceOf(TimeoutException.class)
-        .hasMessageContaining(GlobalConfiguration.COMMAND_TIMEOUT.getKey());
+        .hasMessageContaining("a pinned deadline of 0ms");
 
     final CommandContext lifted = new BasicCommandContext().setDatabase(database);
-    lifted.setCommandDeadline(Long.MAX_VALUE);
+    lifted.setCommandDeadline(Long.MAX_VALUE, "no bound");
     assertThatCode(() -> WorkGuard.forCommandDeadline(lifted).check())
         .as("and a pinned MAX_VALUE lifts the bound even though the setting is on")
         .doesNotThrowAnyException();

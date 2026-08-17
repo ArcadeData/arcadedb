@@ -115,13 +115,25 @@ public interface CommandContext {
   long getCommandDeadline();
 
   /**
-   * Pins this context's deadline to an already-computed instant, overriding whatever it would have resolved to.
-   * Used where a nested plan runs with a context of its own but must share the outer command's budget.
+   * Names the bound {@link #getCommandDeadline()} currently expresses, for the abort message - e.g.
+   * {@code "arcadedb.command.timeout of 30000ms"} or {@code "TIMEOUT clause of 50ms"}. Read only on the failure
+   * path, so it costs nothing while the command is running.
+   */
+  String getCommandDeadlineDescription();
+
+  /**
+   * Pins this context's deadline to an already-computed instant, overriding whatever it would have resolved to,
+   * and says what to call that bound when a check aborts on it.
+   * <p>
+   * Two callers need this. A nested plan runs with a context of its own and pins the outer command's instant, so
+   * that nesting cannot buy extra budget. A SQL {@code TIMEOUT} clause is resolved by the planner rather than
+   * from the configuration, so the statement's own bound has to be published here or the in-loop guards - which
+   * read the deadline off this context - would never see it (issue #6266).
    * <p>
    * Every value is honoured, including {@code 0} - which pins a deadline already in the past, so the next check
    * aborts - and {@link Long#MAX_VALUE}, which lifts the bound entirely.
    */
-  void setCommandDeadline(long deadlineEpochMillis);
+  void setCommandDeadline(long deadlineEpochMillis, String description);
 
   CommandContext incrementVariable(String getNeighbors);
 

@@ -710,8 +710,9 @@ public enum GlobalConfiguration {
       correlated COUNT { }, a UNION branch and a CALL algo.* procedure all run against the same instant rather than \
       each starting a fresh budget. It is checked inside the scan, expansion and filter loops, so a statement that \
       produces no row for minutes is bounded too, not only one that streams rows. Covers SQL and openCypher, \
-      including SELECT/UPDATE/DELETE/MATCH/TRAVERSE and the openCypher algo.* procedures; a per-statement SQL \
-      TIMEOUT clause overrides it for the statement that carries one. Gremlin and the other polyglot scripting \
+      including SELECT/UPDATE/DELETE/MATCH/TRAVERSE and the openCypher algo.* procedures. A per-statement SQL \
+      TIMEOUT clause is enforced alongside it and the earlier of the two wins, so a statement may ask for less \
+      time than this setting allows but not for more. Gremlin and the other polyglot scripting \
       engines are NOT covered - they have their own arcadedb.polyglotCommand.timeout - and neither is regular \
       expression backtracking, which arcadedb.command.regexTimeout bounds separately. Set to 0 (the default) to \
       disable.""",

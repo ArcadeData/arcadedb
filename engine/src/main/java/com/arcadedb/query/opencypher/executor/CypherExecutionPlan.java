@@ -342,7 +342,7 @@ public class CypherExecutionPlan {
    */
   private static void inheritCommandDeadline(final BasicCommandContext context, final CommandContext outerContext) {
     if (outerContext != null)
-      context.setCommandDeadline(outerContext.getCommandDeadline());
+      context.setCommandDeadline(outerContext.getCommandDeadline(), outerContext.getCommandDeadlineDescription());
   }
 
   private boolean canUseOptimizedPhysicalPlan() {
