@@ -28,6 +28,7 @@ import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponent;
+import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.Type;
@@ -146,12 +147,16 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
   /**
    * Factory handler for loading an existing .tstd file during schema load. The in-RAM mapping is
    * rebuilt later by {@link #load()}, once the component is registered and the file id resolves.
+   * <p>
+   * The page size, version and mode {@code ComponentFactory} recovered from the file name are passed straight
+   * through (issue #6314); see {@link TimeSeriesBucket.PaginatedComponentFactoryHandler} for why re-deriving the
+   * page size from the live configuration instead is a silent misread rather than an exception.
    */
   public static class PaginatedComponentFactoryHandler implements ComponentFactory.PaginatedComponentFactoryHandler {
     @Override
     public PaginatedComponent createOnLoad(final DatabaseInternal database, final String name, final String filePath,
         final int id, final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
-      return new TimeSeriesTagDictionary(database, name, filePath, id);
+      return new TimeSeriesTagDictionary(database, name, filePath, id, mode, pageSize, version);
     }
   }
 
@@ -168,13 +173,23 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
   }
 
   /**
-   * Opens an existing tag dictionary.
+   * Opens an existing tag dictionary on the id, page size and version its own file name carries (issue #6314).
    */
-  public TimeSeriesTagDictionary(final DatabaseInternal database, final String name, final String filePath, final int id)
-      throws IOException {
-    super(database, name, filePath, id, ComponentFile.MODE.READ_WRITE,
-        database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE), CURRENT_VERSION);
+  public TimeSeriesTagDictionary(final DatabaseInternal database, final String name, final String filePath, final int id,
+      final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
+    super(database, name, filePath, id, mode, pageSize, version);
     this.maxSize = database.getConfiguration().getValueAsInteger(GlobalConfiguration.TIMESERIES_TAG_DICTIONARY_MAX_SIZE);
+  }
+
+  /**
+   * Opens a second view over a file that is ALREADY registered with the file manager, taking the id, the page size
+   * and the version from that file rather than re-deriving any of them (issue #6314). Every one of the three is a
+   * property of the file and of nothing else, so this is the only form a caller in that position should need.
+   */
+  public TimeSeriesTagDictionary(final DatabaseInternal database, final String name, final PaginatedComponentFile file)
+      throws IOException {
+    this(database, name, file.getFilePath(), file.getFileId(), ComponentFile.MODE.READ_WRITE, file.getPageSize(),
+        file.getVersion());
   }
 
   /**
@@ -202,14 +217,27 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
       return dictionary;
     }
 
-    // A file already registered under this component name is what this dictionary must be BUILT ON, id and
-    // all. The id-allocating constructor would take a fresh file id from the manager and then be handed
-    // this very file anyway - getOrCreateFile() is keyed by the component name - leaving the component
-    // addressing pages of an id that is not the file it holds, which is unusable in either direction.
+    // A file already registered under this component name is what this dictionary must be BUILT ON, id, page size
+    // and version and all. The id-allocating constructor would take a fresh file id from the manager and then be
+    // handed this very file anyway - getOrCreateFile() is keyed by the component name - leaving the component
+    // addressing pages of an id that is not the file it holds, which is unusable in either direction. The page
+    // size has to come from the same place for the same reason (issue #6314): the live bucketDefaultPageSize is
+    // whatever this run was configured with, not what the file on disk was written at.
     final ComponentFile existingFile = database.getFileManager().getFileByComponentName(name);
 
+    // "Registered but not paginated" is unreachable today - PaginatedComponentFile is the only ComponentFile the
+    // engine ever constructs - and the branch below is written so it STAYS that way loudly. Falling through to the
+    // create-fresh arm on a registered name would be the silent outcome: it takes a new file id, gets handed this
+    // very file back by name, and dies on the #6283 id guard several frames later with a message about ids that
+    // says nothing about the real cause. This whole change is about turning that class of mismatch into a
+    // statement, so the assumption is one here too rather than an instanceof quietly deciding it.
+    if (existingFile != null && !(existingFile instanceof PaginatedComponentFile))
+      throw new IllegalStateException(
+          "The file registered under component name '" + name + "' is a " + existingFile.getClass().getSimpleName()
+              + " ('" + existingFile.getFilePath() + "'), but a tag dictionary can only be built on a paginated file");
+
     final TimeSeriesTagDictionary dictionary = existingFile != null ?
-        new TimeSeriesTagDictionary(database, name, existingFile.getFilePath(), existingFile.getFileId()) :
+        new TimeSeriesTagDictionary(database, name, (PaginatedComponentFile) existingFile) :
         new TimeSeriesTagDictionary(database, name, database.getDatabasePath() + "/" + name);
 
     // Registered BEFORE it is initialised, and it has to be: initHeaderPage() commits, and a commit
