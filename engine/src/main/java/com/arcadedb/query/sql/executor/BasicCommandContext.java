@@ -48,10 +48,17 @@ public class BasicCommandContext implements CommandContext {
   protected          ContextConfiguration configuration           = new ContextConfiguration();
   protected final    Set<String>          declaredScriptVariables = new HashSet<>();
   protected          boolean              profiling               = false;
-  /** {@code arcadedb.command.timeout} in ms, {@code -1} until resolved. See {@link #getCommandTimeout()}. */
-  protected volatile long                 commandTimeout          = -1L;
-  /** Absolute deadline, {@code 0} until computed. See {@link #getCommandDeadline()}. */
-  protected volatile long                 commandDeadline         = 0L;
+  /**
+   * {@link Long#MIN_VALUE} means "not resolved yet" for the two fields below. A sentinel outside the value
+   * domain rather than a plausible one, so that no legitimate value can be mistaken for "unresolved": a pinned
+   * deadline of {@code 0} means "already expired", which a caller may well want and which a {@code 0} sentinel
+   * would have silently discarded on the next read.
+   */
+  private static final long               UNRESOLVED              = Long.MIN_VALUE;
+  /** {@code arcadedb.command.timeout} in ms. See {@link #getCommandTimeout()}. */
+  protected volatile long                 commandTimeout          = UNRESOLVED;
+  /** Absolute epoch-millis deadline. See {@link #getCommandDeadline()}. */
+  protected volatile long                 commandDeadline         = UNRESOLVED;
 
   @Override
   public Object getVariablePath(final String name) {
@@ -261,7 +268,7 @@ public class BasicCommandContext implements CommandContext {
 
   @Override
   public long getCommandTimeout() {
-    if (commandTimeout < 0) {
+    if (commandTimeout == UNRESOLVED) {
       if (parent != null)
         commandTimeout = parent.getCommandTimeout();
       else {
@@ -274,7 +281,7 @@ public class BasicCommandContext implements CommandContext {
 
   @Override
   public long getCommandDeadline() {
-    if (commandDeadline == 0L) {
+    if (commandDeadline == UNRESOLVED) {
       if (parent != null)
         commandDeadline = parent.getCommandDeadline();
       else {

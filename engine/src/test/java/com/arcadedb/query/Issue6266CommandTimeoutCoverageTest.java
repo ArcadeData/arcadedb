@@ -21,11 +21,13 @@ package com.arcadedb.query;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -250,6 +252,27 @@ class Issue6266CommandTimeoutCoverageTest {
     child.setParent(context);
     assertThat(child.getCommandDeadline()).as("a child context inherits rather than starting afresh")
         .isEqualTo(deadline);
+  }
+
+  @Test
+  void aPinnedDeadlineIsHonouredWhateverItsValue() {
+    // The "not resolved yet" marker sits outside the value domain rather than on a plausible instant, so no
+    // value a caller pins can be mistaken for it. 0 is the one that matters: it means "already expired", and a
+    // 0-as-unresolved marker would have discarded it and re-resolved from the configuration on the next read.
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_TIMEOUT, 60_000L);
+
+    final CommandContext expired = new BasicCommandContext().setDatabase(database);
+    expired.setCommandDeadline(0L);
+    assertThat(expired.getCommandDeadline()).as("a pinned deadline in the past stays in the past").isZero();
+    assertThatThrownBy(() -> WorkGuard.forCommandDeadline(expired).check())
+        .isInstanceOf(TimeoutException.class)
+        .hasMessageContaining(GlobalConfiguration.COMMAND_TIMEOUT.getKey());
+
+    final CommandContext lifted = new BasicCommandContext().setDatabase(database);
+    lifted.setCommandDeadline(Long.MAX_VALUE);
+    assertThatCode(() -> WorkGuard.forCommandDeadline(lifted).check())
+        .as("and a pinned MAX_VALUE lifts the bound even though the setting is on")
+        .doesNotThrowAnyException();
   }
 
   @Test

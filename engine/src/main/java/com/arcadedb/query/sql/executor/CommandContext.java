@@ -115,8 +115,11 @@ public interface CommandContext {
   long getCommandDeadline();
 
   /**
-   * Pins this context's deadline to an already-computed instant. Used where a nested plan runs with a context
-   * of its own but must share the outer command's budget.
+   * Pins this context's deadline to an already-computed instant, overriding whatever it would have resolved to.
+   * Used where a nested plan runs with a context of its own but must share the outer command's budget.
+   * <p>
+   * Every value is honoured, including {@code 0} - which pins a deadline already in the past, so the next check
+   * aborts - and {@link Long#MAX_VALUE}, which lifts the bound entirely.
    */
   void setCommandDeadline(long deadlineEpochMillis);
 
