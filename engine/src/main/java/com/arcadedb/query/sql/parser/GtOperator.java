@@ -55,7 +55,18 @@ public class GtOperator extends SimpleNode implements BinaryCompareOperator {
     // real RID), and BinaryComparator.compareTo() falls through to that Comparable#compareTo(). Rejecting the
     // pair up front - as this operator alone among Lt/Ge/Le used to - silently turned "@rid > :p" into "always
     // false" whenever the parameter carried a RID's string form rather than a RID/Identifiable instance.
-    return BinaryComparator.compareTo(left, right) > 0;
+    try {
+      return BinaryComparator.compareTo(left, right) > 0;
+    } catch (final IllegalArgumentException | IndexOutOfBoundsException e) {
+      // right reached here as a bare String because Type.convertOrNull() above only recognizes an exact
+      // RID.class target and silently leaves a DatabaseRID-typed left uncoerced (#6188 review follow-up).
+      // RID#compareTo(Object) then tries to parse it as "#bucket:position" itself, and a string that isn't
+      // RID-shaped throws - IllegalArgumentException/NumberFormatException for a missing "#" or non-numeric
+      // parts, IndexOutOfBoundsException for a missing ":" separator. Same "no defined ordering" contract as
+      // the conversion-failure case just above (#5900): report "not greater" instead of letting whichever
+      // parse failure the malformed input happens to trigger escape mid-scan.
+      return false;
+    }
   }
 
   @Override

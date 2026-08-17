@@ -144,4 +144,19 @@ class Issue6188RidRangeBoundParameterTest extends TestHelper {
     assertThat(visited).as("cursor paging with a bound, string-spelled RID must not stop after the first page")
         .containsExactlyElementsOf(allRidsAscending);
   }
+
+  @Test
+  void malformedRidStringParameterIsSafelyIncomparableRatherThanThrowing() {
+    // Review follow-up on #6188: a right-hand String that isn't RID-shaped reaches RID#compareTo(Object), which
+    // parses it as "#bucket:position" and throws IllegalArgumentException/NumberFormatException for anything
+    // that doesn't fit. All four range operators must report "not comparable" (false) rather than let that parse
+    // failure escape mid-scan - the same "no defined ordering" contract this file already applies to a numeric
+    // conversion failure (#5900).
+    for (final String malformed : List.of("not-a-rid", "1:2", "#1", "#abc:def")) {
+      assertThat(count("SELECT count() as c FROM Doc WHERE @rid > :p", malformed)).as("> %s", malformed).isEqualTo(0);
+      assertThat(count("SELECT count() as c FROM Doc WHERE @rid >= :p", malformed)).as(">= %s", malformed).isEqualTo(0);
+      assertThat(count("SELECT count() as c FROM Doc WHERE @rid < :p", malformed)).as("< %s", malformed).isEqualTo(0);
+      assertThat(count("SELECT count() as c FROM Doc WHERE @rid <= :p", malformed)).as("<= %s", malformed).isEqualTo(0);
+    }
+  }
 }
