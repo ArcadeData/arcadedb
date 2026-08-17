@@ -25,6 +25,7 @@ import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.LongRangeList;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -68,7 +69,7 @@ class CypherRangeHeapExhaustionTest {
 
   /** The reported PoC: it must fail fast instead of filling the heap. */
   @Test
-  @Timeout(value = 30, unit = TimeUnit.SECONDS)
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
   void reportedPocIsRejectedWithoutExhaustingHeap() {
     final Throwable thrown = catchThrowable(() -> consume("RETURN range(0, 9999999999) AS v"));
     assertThat(thrown).isNotNull();
@@ -78,7 +79,7 @@ class CypherRangeHeapExhaustionTest {
   }
 
   @Test
-  @Timeout(value = 30, unit = TimeUnit.SECONDS)
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
   void oversizedRangeIsRejectedInsideUnwindToo() {
     final Throwable thrown = catchThrowable(() -> consume("UNWIND range(0, 9999999999) AS i RETURN count(i) AS c"));
     assertThat(thrown).isNotNull();
@@ -99,15 +100,24 @@ class CypherRangeHeapExhaustionTest {
 
   /**
    * With the limit disabled the range stays usable but must remain lazy: a billion elements would need tens of
-   * GB if materialised, so answering within the timeout is the proof that nothing is copied.
+   * GB if materialised, so answering quickly is the proof that nothing is copied.
+   * <p>
+   * Asserted on the stall-discounted clock rather than by the {@code @Timeout} (issue #6270), so the bound can
+   * stay tight without becoming a coin flip on a stop-the-world pause. The annotation behind it is the hang
+   * detector: a materialised range does not answer late, it does not answer.
    */
   @Test
-  @Timeout(value = 30, unit = TimeUnit.SECONDS)
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
   void hugeRangeIsLazyWhenTheLimitIsDisabled() {
     database.getConfiguration().setValue(GlobalConfiguration.QUERY_MAX_RANGE_SIZE, -1L);
+
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
+
     assertThat(single("RETURN size(range(0, 999999999)) AS r")).isEqualTo(1_000_000_000L);
     assertThat(single("RETURN range(0, 999999999)[123456789] AS r")).isEqualTo(123_456_789L);
     assertThat(single("RETURN 999999998 IN range(0, 999999999) AS r")).isEqualTo(true);
+
+    stopwatch.assertStayedUnder(10_000L, "three constant-cost reads of a lazy range, not a billion-element copy");
   }
 
   /** A range within the limit is not copied into an ArrayList any more. */

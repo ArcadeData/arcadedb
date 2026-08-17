@@ -129,6 +129,20 @@ class StallAwareStopwatchTest {
         .isTrue();
   }
 
+  /**
+   * Issue #6270: the sampler must not be named like engine machinery. The leak detectors that hunt for engine
+   * background threads scan by these prefixes, and this thread is a test utility - it escapes them today only
+   * because they skip daemons first, which one edit (a shutdown path making it non-daemon) would undo.
+   */
+  @Test
+  void theSamplerIsNamedOutsideTheEnginesThreadNamespace() {
+    assertThat(JvmStallMonitor.THREAD_NAME)
+        .as("a leak detector scanning for engine threads must not collect the stall sampler")
+        .doesNotStartWith("ArcadeDB")
+        .doesNotStartWith("AsyncExecutor-")
+        .doesNotStartWith("arcadedb-");
+  }
+
   /** Burns wall-clock time without parking, so the window is real for both the stopwatch and the sampler. */
   private static void busyElapse(final long millis) {
     final long untilNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(millis);

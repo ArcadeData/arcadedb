@@ -42,6 +42,16 @@
             <scope>compile</scope>
         </dependency>
 
+        <!-- StallAwareStopwatch / JvmStallMonitor: wall-clock bounds in this module's tests discount the JVM-wide
+             stall observed inside the measured window (issues #6260, #6270). Test scope only. -->
+        <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-engine</artifactId>
+            <version>${project.parent.version}</version>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+
         <dependency>
             <groupId>org.mockito</groupId>
             <artifactId>mockito-core</artifactId>

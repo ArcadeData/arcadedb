@@ -235,24 +235,30 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
         LogManager.instance().log(this, Level.INFO, "END OF THE TEST: Check DBS are identical...");
         checkDatabasesAreIdentical();
       } finally {
-        GlobalConfiguration.resetAll();
+        // Issue #6297: the cleanup runs BEFORE resetAll(), not after. Every path it deletes is resolved from the
+        // live configuration at call time, and SERVER_DATABASE_DIRECTORY is '${arcadedb.server.rootPath}/databases'
+        // over a root path that defaults to null - so a reset first left this deleting '/databases0' while
+        // './target/databases0' (and the .raft-storage under it) survived the teardown that was supposed to remove
+        // it. The reset only has to leave the JVM clean for the next class, which the finally below still does.
+        try {
+          LogManager.instance().log(this, Level.FINE, "TEST: Stopping servers...");
+          stopServers();
 
-        LogManager.instance().log(this, Level.FINE, "TEST: Stopping servers...");
-        stopServers();
+          LogManager.instance().log(this, Level.FINE, "END OF THE TEST: Cleaning test %s...", getClass().getName());
+          if (dropDatabasesAtTheEnd())
+            deleteDatabaseFolders();
 
-        LogManager.instance().log(this, Level.FINE, "END OF THE TEST: Cleaning test %s...", getClass().getName());
-        if (dropDatabasesAtTheEnd())
-          deleteDatabaseFolders();
+          checkArcadeIsTotallyDown();
 
-        checkArcadeIsTotallyDown();
-
-        GlobalConfiguration.TEST.setValue(false);
-        GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(null);
+          TestServerHelper.checkActiveDatabases(dropDatabasesAtTheEnd());
+          TestServerHelper.deleteDatabaseFolders(getServerCount());
+        } finally {
+          GlobalConfiguration.resetAll();
+          GlobalConfiguration.TEST.setValue(false);
+          GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(null);
+        }
       }
     }
-
-    TestServerHelper.checkActiveDatabases(dropDatabasesAtTheEnd());
-    TestServerHelper.deleteDatabaseFolders(getServerCount());
   }
 
   protected Database getDatabase(final int serverId) {

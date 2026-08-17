@@ -63,6 +63,16 @@
       <version>${project.parent.version}</version>
       <scope>compile</scope>
     </dependency>
+    <!-- StallAwareStopwatch / JvmStallMonitor: the wall-clock bounds in this module's tests are measured with the
+         JVM-wide stall inside the window discounted, so a stop-the-world pause late in a shared-fork run cannot
+         trip them (issues #6260, #6270). Test scope only. -->
+    <dependency>
+      <groupId>com.arcadedb</groupId>
+      <artifactId>arcadedb-engine</artifactId>
+      <version>${project.parent.version}</version>
+      <type>test-jar</type>
+      <scope>test</scope>
+    </dependency>
     <dependency>
       <groupId>io.undertow</groupId>
       <artifactId>undertow-core</artifactId>
