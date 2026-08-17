@@ -119,6 +119,26 @@ class CypherMultiPatternSharedLabelIssue6322Test extends TestHelper {
         .isEqualTo(1);
   }
 
+  /**
+   * The merged-label gate declines a plan in which any pattern node has no label, and that branch must stay
+   * unreachable rather than becoming a new restriction: an unlabelled expansion target is refused one gate
+   * earlier, by {@code CypherExecutionPlanner.shouldUseOptimizer}, and has been since long before this fix.
+   * Verified against the pre-fix tree, where these four queries pick exactly the same two paths.
+   * <p>
+   * The test is here so that a future change admitting unlabelled nodes at the planner gate trips over the
+   * optimizer's own check instead of silently routing those queries to the ordinary pipeline, which would
+   * cost only speed and so would never show up as a failing assertion anywhere else.
+   */
+  @Test
+  void anUnlabelledNodeIsRefusedByThePlannerGateRatherThanByTheMergedLabelCheck() {
+    assertThat(explainOf("MATCH (a:Person)-[:KNOWS]->(b) RETURN b.k")).contains("Traditional Execution");
+    assertThat(explainOf("MATCH (a:Person)-[:KNOWS]->() RETURN a.k")).contains("Traditional Execution");
+    assertThat(explainOf("MATCH (a)-[:KNOWS]->(b:Person) RETURN b.k")).contains("Traditional Execution");
+
+    // And the fully-labelled shape the optimizer does claim is still claimed by it.
+    assertThat(explainOf("MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN b.k")).contains("Cost-Based Query Optimizer");
+  }
+
   /** The merged label is the one the anchor scan uses, rather than the "no labels" composite name. */
   @Test
   void theMergedLabelReachesTheAnchorScan() {
