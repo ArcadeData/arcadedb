@@ -156,6 +156,55 @@ class Issue6303AsyncDispatchedDDLTest extends TestHelper {
   }
 
   /**
+   * A script routes as a whole, on whether ANY statement in it is DDL - so an `INSERT` sharing a script with a
+   * `CREATE INDEX` goes off the workers with it. That is the only arrangement that works: the statements share one
+   * transaction and one thread, so the script cannot be half here and half there, and it is the DDL half that
+   * dictates where both can run.
+   * <p>
+   * Note what this deliberately does NOT assert. The index ends up with no entry for the record the same script
+   * inserted, because both run in one transaction and the record is therefore uncommitted - and so invisible to the
+   * build's scan - at the moment the index is created, having been saved before the index existed to stage an entry
+   * for. That is how the engine answers this script SYNCHRONOUSLY too (measured: `records=1 entries=0` for the same
+   * text inside one explicit transaction), so it is neither introduced nor worsened here and is out of this issue's
+   * scope; asserting an entry would be asserting a fix this PR does not make. What matters for the routing is
+   * pinned: the script ran off the workers, and both of its statements ran.
+   */
+  @Test
+  @Timeout(180)
+  void aScriptMixingDDLAndWritesRunsOffTheWorkersAsAWhole() throws Exception {
+    database.transaction(() -> database.getSchema().createDocumentType("V", 1).createProperty("id", Type.INTEGER));
+
+    final CountDownLatch done = new CountDownLatch(1);
+    final AtomicReference<String> ranOn = new AtomicReference<>();
+    final AtomicReference<Exception> failure = new AtomicReference<>();
+    database.async().command("sqlscript", "INSERT INTO V SET id = 7; CREATE INDEX ON V (id) UNIQUE;",
+        new AsyncResultsetCallback() {
+          @Override
+          public void onComplete(final ResultSet rs) {
+            ranOn.set(Thread.currentThread().getName());
+            done.countDown();
+          }
+
+          @Override
+          public void onError(final Exception exception) {
+            failure.compareAndSet(null, exception);
+            done.countDown();
+          }
+        });
+
+    assertThat(done.await(120, TimeUnit.SECONDS)).isTrue();
+    assertThat(failure.get()).as("the barrier the CREATE INDEX needs must be satisfiable where the script ran").isNull();
+    assertThat(ranOn.get()).as("a script carrying DDL goes to the pool whole, insert included")
+        .startsWith("ArcadeDB-AsyncCommand-");
+
+    database.async().waitCompletion();
+
+    assertThat(database.countType("V", false)).as("and the non-DDL half of the script still did its work")
+        .isEqualTo(1);
+    assertThat(database.getSchema().getIndexByName("V[id]")).as("as did the DDL half").isNotNull();
+  }
+
+  /**
    * The other half of the routing, and the half that is easy to break by widening the fix: everything that is NOT
    * DDL keeps running on the workers. A worker owns a batch transaction and is the unit
    * {@code ThreadBucketSelectionStrategy} pins a bucket to, so "as many workers as buckets" is a documented way to

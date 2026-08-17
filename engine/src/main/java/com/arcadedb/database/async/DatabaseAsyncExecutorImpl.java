@@ -43,6 +43,7 @@ import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.SQLScriptQueryEngine;
 import com.arcadedb.query.sql.parser.DDLStatement;
 import com.arcadedb.query.sql.parser.Statement;
+import com.arcadedb.query.sql.parser.StatementCache;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -124,6 +125,14 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    * builds on one database rather than deadlocking them.
    */
   private final ReentrantLock quiesceLock = new ReentrantLock();
+
+  /**
+   * The verbs every {@code DDLStatement} of the SQL grammar begins with, used by {@link #mayContainDDL} to answer
+   * "this script has no DDL in it" without parsing. Kept in step with the grammar by
+   * {@code AsyncDDLKeywordCoverageTest}.
+   */
+  private static final String[] DDL_LEADING_KEYWORDS = { "CREATE", "DROP", "ALTER", "REBUILD", "TRUNCATE", "REFRESH",
+      "COMPACT" };
 
   // SPECIAL TASKS
   public final static DatabaseAsyncTask FORCE_EXIT = new DatabaseAsyncTask() {
@@ -609,22 +618,29 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   /**
    * Whether a dispatched command is DDL, and therefore has to run off the workers.
    * <p>
-   * Answered by PARSING, not by matching text: the statement cache makes the {@code sql} case a lookup the execution
-   * is about to do anyway, and a script is parsed once for a command nobody is waiting on. Only SQL is classified,
-   * because only SQL can be classified cheaply and correctly - a command in another language keeps the behaviour it
-   * has always had, including the #6281 refusal if it turns out to need the barrier, which is the honest outcome
-   * rather than a guess made from a keyword.
+   * The DECISION is always a parse, never a text match - a keyword can appear in a string literal, and routing a
+   * write command off the workers costs the bucket pinning that keeps concurrent writers apart. Only SQL is
+   * classified, because only SQL can be classified cheaply and correctly; a command in another language keeps the
+   * behaviour it has always had, including the #6281 refusal if it turns out to need the barrier, which is an honest
+   * refusal rather than a guess made from a keyword.
    * <p>
    * A statement that does not parse is NOT routed anywhere new: it goes to a worker and fails there, reported through
    * the caller's {@code onError} exactly as before. Classification must never be the thing that changes how an error
    * is delivered.
+   * <p>
+   * <b>What it costs, and why the two languages differ.</b> For {@code sql} the parse is a {@link StatementCache}
+   * lookup that execution is about to repeat with the same key, so classification is free. For {@code sqlscript}
+   * there is no such cache - {@code SQLScriptQueryEngine.parseScript} parses every time and execution parses again -
+   * so classifying by parsing alone would make every dispatched script, DDL or not, pay two full parses on the
+   * submitting thread. Hence {@link #mayContainDDL}: a script that does not so much as mention a DDL verb cannot
+   * contain a DDL statement, and is answered without parsing at all.
    */
   private boolean requiresOffWorkerExecution(final DatabaseAsyncCommand task) {
     try {
       if (SQLQueryEngine.ENGINE_NAME.equalsIgnoreCase(task.language))
         return database.getStatementCache().get(task.command) instanceof DDLStatement;
 
-      if (SQLScriptQueryEngine.ENGINE_NAME.equalsIgnoreCase(task.language)) {
+      if (SQLScriptQueryEngine.ENGINE_NAME.equalsIgnoreCase(task.language) && mayContainDDL(task.command)) {
         for (final Statement statement : SQLScriptQueryEngine.parseScript(task.command, database))
           if (statement instanceof DDLStatement)
             return true;
@@ -633,6 +649,36 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       LogManager.instance()
           .log(this, Level.FINE, "Cannot classify asynchronous command %s: scheduling it on a worker", e, task);
     }
+    return false;
+  }
+
+  /**
+   * The cheap half of the script classification: {@code false} means the text cannot contain a DDL statement, so the
+   * parse that would prove it is skipped.
+   * <p>
+   * Sound because it is used ONLY as a negative filter. Every {@code DDLStatement} in the grammar begins with one of
+   * these verbs, so a script containing none of them has no DDL in it and the answer is exact. A false positive - the
+   * word inside a string literal or an identifier - costs nothing but the parse that was being paid unconditionally
+   * before, and the parse then gives the right answer anyway.
+   * <p>
+   * <b>The list has to keep up with the grammar</b>, and {@code AsyncDDLKeywordCoverageTest} is what makes that
+   * automatic: it walks every {@code DDLStatement} subclass on the classpath and fails if one begins with a verb that
+   * is not here. A miss would not corrupt anything - the statement would go to a worker and be refused there by
+   * #6281's guard - but it would quietly take back the operation this routing exists to give.
+   */
+  static boolean mayContainDDL(final String script) {
+    for (final String keyword : DDL_LEADING_KEYWORDS)
+      if (containsIgnoreCase(script, keyword))
+        return true;
+    return false;
+  }
+
+  /** {@code String.contains} without allocating a lower-cased copy of a script on the submitting thread. */
+  private static boolean containsIgnoreCase(final String text, final String keyword) {
+    final int last = text.length() - keyword.length();
+    for (int i = 0; i <= last; i++)
+      if (text.regionMatches(true, i, keyword, 0, keyword.length()))
+        return true;
     return false;
   }
 
@@ -703,6 +749,10 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       // Whether the transaction is OURS. On the caller-runs path it may well not be, and then there is nothing to
       // commit and nothing to roll back: the command is part of the submitter's transaction and its owner decides
       // its fate.
+      //
+      // Note the rollback below keys on THIS and not on task.idempotent, unlike the one inside the task - which
+      // would be wrong for a query sharing a worker's batch, and cannot arise here: only command() reaches this
+      // method (query() goes straight to a worker), so a task that gets this far is never idempotent.
       final boolean ownTransaction = task.requiresActiveTx() && !database.isTransactionActive();
       try {
         try {

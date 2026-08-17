@@ -113,10 +113,17 @@ public final class AsyncCommandPool {
   private final AtomicLong         lastSaturationWarnMs = new AtomicLong(0L);
 
   /**
-   * Initialization-on-demand holder: the pool allocates its threads only when something first asks for it, so a JVM
-   * that never dispatches DDL asynchronously pays nothing for this class. Declared BELOW the fields rather than at
-   * the top where the idiom is usually written, because PMD's {@code FieldDeclarationsShouldBeAtStartOfClass} counts
-   * a nested class as the end of the field section and would report every field above as misplaced.
+   * Initialization-on-demand holder: the pool allocates its threads only when something first asks for it.
+   * <p>
+   * That laziness is real for an embedded or CLI JVM and NOT for a server, where {@code PoolMetrics.bindTo} asks for
+   * the instance at startup to register its gauges - so a server builds the pool whether or not a single statement is
+   * ever dispatched to it. Same as {@code SparseVectorScoringPool} and {@code ParallelScanProducerPool}, and the
+   * price of the gauges being there before the first saturation rather than after it; said out loud because "pays
+   * nothing until used" would otherwise read as true of the deployment where it is not.
+   * <p>
+   * Declared BELOW the fields rather than at the top where the idiom is usually written, because PMD's
+   * {@code FieldDeclarationsShouldBeAtStartOfClass} counts a nested class as the end of the field section and would
+   * report every field above as misplaced.
    */
   private static final class Holder {
     static final AsyncCommandPool INSTANCE = new AsyncCommandPool();
