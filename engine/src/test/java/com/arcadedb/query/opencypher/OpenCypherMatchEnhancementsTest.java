@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
@@ -27,7 +28,6 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -907,11 +907,26 @@ public class OpenCypherMatchEnhancementsTest {
     }
   }
 
-  // Issue #3216: benchmark comparing single MATCH (a),(b) WHERE id-pair vs split MATCH clauses; expected to favour split form.
+  /**
+   * Issue #3216: the two ways of binding a pair of nodes by RID must both resolve each node with a direct
+   * {@code lookupByRID} and never scan.
+   * <p>
+   * This test used to time the two forms against each other and assert nothing but that neither elapsed time was
+   * negative (issue #6279). Both halves of that were wrong. The comparison it claimed to make is no longer true -
+   * {@code CypherExecutionPlan.extractIdFilter} lifts an {@code ID(x) = <literal|parameter>} equality out of the
+   * WHERE clause and into the {@code MatchNodeStep} at plan time, which is the fix #3216 was closed on, and it
+   * applies to the single-MATCH form exactly as it does to the split one. And a relative comparison of two
+   * wall-clock measurements is the assertion shape that flakes on a stop-the-world pause, which is why it was
+   * commented out rather than fixed (issue #6260).
+   * <p>
+   * What is asserted instead is the structural property the whole issue is about, visible in the plan and immune
+   * to the machine it runs on: every {@code MATCH NODE} names the RID it was given. The third query is the control
+   * that keeps this honest - the same pattern with a property equality the push-down cannot serve does build the
+   * Cartesian product, and its plan does not carry the marker.
+   */
   @Test
-  @Tag("benchmark")
-  void issue3216_performanceComparisonMatchStrategies() {
-    final Database db = new DatabaseFactory("./target/databases/issue-3216-perf-compare").create();
+  void issue3216_idFilterPushedDownForBothMatchStrategies() {
+    final Database db = new DatabaseFactory("./target/databases/issue-3216-id-pushdown").create();
     try {
       db.getSchema().createVertexType("CHUNK_3216");
       db.getSchema().createVertexType("DOCUMENT_3216");
@@ -919,38 +934,46 @@ public class OpenCypherMatchEnhancementsTest {
       db.getSchema().createEdgeType("in_3216");
 
       final String[] ids = createIssue3216Fixture(db);
-      final String sourceId = ids[0];
-      final String targetId = ids[1];
+      final Map<String, Object> params = Map.of("sourceId", ids[0], "targetId", ids[1]);
 
-      // Method 1: Single MATCH with Cartesian product
-      final long startTime1 = System.currentTimeMillis();
-      db.transaction(() -> {
-        final ResultSet rs = db.query("opencypher",
-            "MATCH (a),(b) WHERE ID(a) = $sourceId and ID(b) = $targetId RETURN a, b",
-            Map.of("sourceId", sourceId, "targetId", targetId));
-        assertThat(rs.hasNext()).isTrue();
-        rs.next();
-      });
-      final long duration1 = System.currentTimeMillis() - startTime1;
+      // Single MATCH with a comma-separated pattern: without the push-down this is a Cartesian product over every
+      // vertex in the database, filtered afterwards.
+      final String singleMatch = "MATCH (a),(b) WHERE ID(a) = $sourceId and ID(b) = $targetId RETURN a, b";
+      // Split MATCH clauses: the form the issue recommends.
+      final String splitMatch = "MATCH (a) WHERE ID(a) = $sourceId MATCH (b) WHERE ID(b) = $targetId RETURN a, b";
 
-      // Method 2: Separate MATCH clauses (should be faster)
-      final long startTime2 = System.currentTimeMillis();
-      db.transaction(() -> {
-        final ResultSet rs = db.query("opencypher",
-            "MATCH (a) WHERE ID(a) = $sourceId MATCH (b) WHERE ID(b) = $targetId RETURN a, b",
-            Map.of("sourceId", sourceId, "targetId", targetId));
-        assertThat(rs.hasNext()).isTrue();
-        rs.next();
-      });
-      final long duration2 = System.currentTimeMillis() - startTime2;
+      for (final String query : new String[] { singleMatch, splitMatch }) {
+        db.transaction(() -> {
+          try (final ResultSet rs = db.query("opencypher", query, params)) {
+            assertThat(rs.hasNext()).isTrue();
+            final Result row = rs.next();
+            assertThat(row.<Identifiable>getProperty("a").getIdentity().toString()).isEqualTo(ids[0]);
+            assertThat(row.<Identifiable>getProperty("b").getIdentity().toString()).isEqualTo(ids[1]);
+            assertThat(rs.hasNext()).isFalse();
+          }
+        });
 
-      // Method 2 should be significantly faster
-      // (commenting out the assertion for now since we're diagnosing the issue)
-      // assertThat(duration2).isLessThan(duration1);
-      assertThat(duration1).isGreaterThanOrEqualTo(0L);
-      assertThat(duration2).isGreaterThanOrEqualTo(0L);
+        final String plan = profiledPlan(db, query, params);
+        assertThat(plan).as("plan of: %s", query).contains("MATCH NODE (a) [id: " + ids[0] + "]");
+        assertThat(plan).as("plan of: %s", query).contains("MATCH NODE (b) [id: " + ids[1] + "]");
+      }
+
+      // Control: a predicate the push-down cannot lift leaves the pattern as the Cartesian product it always was,
+      // so the marker asserted above discriminates rather than being printed unconditionally.
+      final String noPushDown = "MATCH (a),(b) WHERE a.name = 'chunk1' and b.name = 'doc1' RETURN a, b";
+      assertThat(profiledPlan(db, noPushDown, Map.of())).doesNotContain("[id: ");
     } finally {
       db.drop();
+    }
+  }
+
+  /** The plan openCypher actually ran for {@code query}, drained so every step reports. */
+  private static String profiledPlan(final Database db, final String query, final Map<String, Object> params) {
+    try (final ResultSet rs = db.query("opencypher", "PROFILE " + query, params)) {
+      while (rs.hasNext())
+        rs.next();
+      assertThat(rs.getExecutionPlan()).as("PROFILE returned no plan for: %s", query).isPresent();
+      return rs.getExecutionPlan().get().prettyPrint(0, 2);
     }
   }
 

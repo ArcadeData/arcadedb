@@ -32,6 +32,7 @@ import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.Pair;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -1067,15 +1068,14 @@ class RemoteHttpComponentTest {
       try {
         final HttpRequest request = c.createRequestBuilder("GET", c.getUrl("server")).GET().build();
 
-        final long start = System.nanoTime();
+        final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
         assertThatThrownBy(() -> c.sendWithWatchdog(request, 200))
             .isInstanceOf(java.io.IOException.class)
             .hasMessageContaining("watchdog timeout after 200ms");
-        final long elapsedMs = (System.nanoTime() - start) / 1_000_000L;
 
         // Bounded by the explicit 200ms watchdog window (generous margin for scheduling jitter),
         // nowhere near the pre-fix 1000x scaling (which would have meant no timeout at all here).
-        assertThat(elapsedMs).isLessThan(5_000L);
+        stopwatch.assertGaveUpWithin(5_000L, "the explicit 200ms watchdog from the 1000x-scaled one that never fires");
       } finally {
         c.close();
       }

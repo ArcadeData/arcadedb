@@ -69,8 +69,18 @@ final class JvmStallMonitor {
    */
   static final long TOLERANCE_NANOS = TimeUnit.MILLISECONDS.toNanos(10);
 
-  /** Name of the sampler thread, so a test can confirm it is running. */
-  static final String THREAD_NAME = "arcadedb-test-stall-monitor";
+  /**
+   * Name of the sampler thread, so a test can confirm it is running.
+   * <p>
+   * Deliberately outside the engine's own thread namespace (issue #6270): the leak detectors that hunt for engine
+   * background threads scan by name prefix - {@code DatabaseLifecycleBackgroundThreadsTest} collects anything
+   * starting with {@code ArcadeDB}, {@code AsyncExecutor-} or {@code arcadedb-} - and this sampler is a test
+   * utility, not engine machinery. It escapes those scans today only because they skip daemons first, which makes
+   * the safety an accident of one line elsewhere: the obvious future change here is a shutdown path (see the class
+   * comment), and any change that makes the sampler non-daemon would turn a leak detector red pointing at issue
+   * #5418 and the embedder's JVM lifetime, which has nothing to do with either.
+   */
+  static final String THREAD_NAME = "test-jvm-stall-monitor";
 
   private static final AtomicLong ACCUMULATED_STALL_NANOS = new AtomicLong();
 

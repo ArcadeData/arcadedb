@@ -71,16 +71,26 @@ class LongRangeListTest {
 
   /**
    * A billion-element range must cost nothing: it is only start, step and size. Building the same list eagerly
-   * would need tens of GB of heap, so completing within the timeout is the proof that nothing is materialised.
+   * would need tens of GB of heap, so returning quickly is the proof that nothing is materialised.
+   * <p>
+   * That claim is asserted on the stall-discounted clock rather than by the {@code @Timeout} (issue #6270): every
+   * operation here is O(1) arithmetic, so the honest budget is microseconds and a 5 s discounted bound is three
+   * orders of magnitude tighter than the 10 s annotation it replaces - while being immune to the stop-the-world
+   * pause that made that annotation a coin flip late in a shared-JVM run. The annotation stays behind it as the
+   * hang detector, because a materialised range does not merely take longer, it never finishes.
    */
   @Test
-  @Timeout(value = 10, unit = TimeUnit.SECONDS)
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
   void hugeRangeIsFreeOfHeap() {
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
+
     final LongRangeList list = new LongRangeList(0L, 1L, 1_000_000_000);
     assertThat(list.size()).isEqualTo(1_000_000_000);
     assertThat(list.get(999_999_999)).isEqualTo(999_999_999L);
     assertThat(list.contains(123_456_789L)).isTrue();
     assertThat(list.indexOf(123_456_789L)).isEqualTo(123_456_789);
+
+    stopwatch.assertStayedUnder(5_000L, "a constant-cost lazy range, not a materialised billion-element list");
   }
 
   @Test

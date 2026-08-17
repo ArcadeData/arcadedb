@@ -45,6 +45,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  * by {@code LockManagerTest}; this class focuses on the new fairness guarantee and the races a
  * fair-hand-off design must get right (no starvation, no lost lock on grant-vs-timeout, no lost
  * lock on grant-vs-interrupt, cross-thread unlock, infinite-wait).
+ * <p>
+ * The {@code @Timeout} annotations here are hang detectors, sized from each method's own internal budgets plus
+ * room for a stop-the-world pause (issue #6270). The stress methods already give themselves up to 45 s
+ * ({@code done.await(45, SECONDS)}) or 25 s (250 rounds x 100 ms) of honest work, so the previous 30 s and 60 s
+ * values sat below - or barely above - the honest budget once a ~30 s stall is added, and a red run would have
+ * said nothing about the lock manager. Nothing here asserts a latency: what these methods prove is FIFO order,
+ * mutual exclusion and no lost locks, all of them structural.
  */
 class LockManagerFairnessTest {
 
@@ -86,7 +93,7 @@ class LockManagerFairnessTest {
    * each is allowed to fully park before the next starts, so the enqueue order is deterministic.
    */
   @Test
-  @Timeout(30)
+  @Timeout(90)
   void waitersAcquireInFifoOrder() throws Exception {
     final String resource = "fifo";
     final int n = 8;
@@ -127,7 +134,7 @@ class LockManagerFairnessTest {
    * is skipped during hand-off.
    */
   @Test
-  @Timeout(30)
+  @Timeout(90)
   void timedOutWaiterIsSkippedAndQueueSurvives() throws Exception {
     final String resource = "skip";
     lockManager.tryLock(resource, "holder", 0);
@@ -160,7 +167,7 @@ class LockManagerFairnessTest {
    * some workers would lose the wake-up race repeatedly and return NO.
    */
   @Test
-  @Timeout(60)
+  @Timeout(120)
   @Tag("slow")
   void noStarvationUnderHeavyContention() throws Exception {
     final String resource = "hot";
@@ -221,14 +228,14 @@ class LockManagerFairnessTest {
    * re-acquirable, proving the lock was never lost.
    */
   @Test
-  @Timeout(60)
+  @Timeout(120)
   @Tag("slow")
   void grantRacingTimeoutNeverLeaksTheLock() throws Exception {
     final String resource = "race";
     final int rounds = 250;
     // A wider absolute window (100ms vs a few ms) makes scheduling jitter a smaller fraction of the
     // timing, so the grant-vs-timeout race is hit far more often than with a tiny budget - exercising the
-    // interesting grant-just-before-deadline path on healthy machines while staying inside @Timeout(60).
+    // interesting grant-just-before-deadline path on healthy machines while staying inside @Timeout(120).
     final long waiterTimeoutMs = 100;
 
     for (int r = 0; r < rounds; r++) {
@@ -266,7 +273,7 @@ class LockManagerFairnessTest {
    * queue consistent so a subsequent waiter still acquires the lock on release.
    */
   @Test
-  @Timeout(30)
+  @Timeout(90)
   void interruptWhileWaitingReturnsNoAndPreservesFlag() throws Exception {
     final String resource = "interrupt";
     lockManager.tryLock(resource, "holder", 0);
@@ -298,7 +305,7 @@ class LockManagerFairnessTest {
 
   /** Ownership is by requester, not thread: a lock taken on one thread can be released on another. */
   @Test
-  @Timeout(30)
+  @Timeout(90)
   void crossThreadUnlockByRequester() throws Exception {
     final String resource = "session";
     final String session = "session-42";
@@ -324,7 +331,7 @@ class LockManagerFairnessTest {
 
   /** {@code timeout <= 0} waits indefinitely (used by index compaction) and acquires once released. */
   @Test
-  @Timeout(30)
+  @Timeout(90)
   void infiniteWaitAcquiresOnRelease() throws Exception {
     final String resource = "infinite";
     lockManager.tryLock(resource, "holder", 0);
@@ -345,7 +352,7 @@ class LockManagerFairnessTest {
 
   /** The owner re-locking returns ALREADY_ACQUIRED even with waiters queued, and does not enqueue. */
   @Test
-  @Timeout(30)
+  @Timeout(90)
   void reentrantAcquireWithWaitersQueued() throws Exception {
     final String resource = "reentrant";
     lockManager.tryLock(resource, "owner", 0);
@@ -366,7 +373,7 @@ class LockManagerFairnessTest {
 
   /** close() must wake queued waiters; they return NO promptly. */
   @Test
-  @Timeout(30)
+  @Timeout(90)
   void closeWakesWaitersWithNo() throws Exception {
     final String resource = "closing";
     lockManager.tryLock(resource, "holder", 0);
@@ -387,7 +394,7 @@ class LockManagerFairnessTest {
    * per resource across many concurrent rounds.
    */
   @Test
-  @Timeout(60)
+  @Timeout(120)
   @Tag("slow")
   void multiResourceStressNoDeadlockNoLeak() throws Exception {
     final String a = "A";

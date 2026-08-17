@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server;
 
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CountDownLatch;
@@ -69,14 +70,12 @@ class Issue5418ShutdownHookDeadlockTest {
     assertThat(held.await(10, TimeUnit.SECONDS)).as("the holder must acquire the lock first").isTrue();
 
     try {
-      final long startedAt = System.nanoTime();
+      final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
       final boolean acquired = ArcadeDBServer.awaitLifecycleLock(lock, 300);
-      final long elapsedMs = (System.nanoTime() - startedAt) / 1_000_000;
 
       assertThat(acquired).as("the lock is held elsewhere, so the hook must NOT acquire it").isFalse();
       // The point of the fix: it returns. Before it, this call was an unbounded park and the JVM hung.
-      assertThat(elapsedMs).as("the hook must give up near its deadline, not wait forever")
-          .isLessThan(10_000L);
+      stopwatch.assertGaveUpWithin(10_000L, "a 300ms bounded acquisition from the unbounded park that hung the JVM");
     } finally {
       release.countDown();
       holder.join(10_000);

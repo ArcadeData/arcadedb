@@ -25,6 +25,7 @@ import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.LongRangeList;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -68,7 +69,7 @@ class CypherRangeHeapExhaustionTest {
 
   /** The reported PoC: it must fail fast instead of filling the heap. */
   @Test
-  @Timeout(value = 30, unit = TimeUnit.SECONDS)
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
   void reportedPocIsRejectedWithoutExhaustingHeap() {
     final Throwable thrown = catchThrowable(() -> consume("RETURN range(0, 9999999999) AS v"));
     assertThat(thrown).isNotNull();
@@ -78,7 +79,7 @@ class CypherRangeHeapExhaustionTest {
   }
 
   @Test
-  @Timeout(value = 30, unit = TimeUnit.SECONDS)
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
   void oversizedRangeIsRejectedInsideUnwindToo() {
     final Throwable thrown = catchThrowable(() -> consume("UNWIND range(0, 9999999999) AS i RETURN count(i) AS c"));
     assertThat(thrown).isNotNull();
@@ -99,14 +100,30 @@ class CypherRangeHeapExhaustionTest {
 
   /**
    * With the limit disabled the range stays usable but must remain lazy: a billion elements would need tens of
-   * GB if materialised, so answering within the timeout is the proof that nothing is copied.
+   * GB if materialised, so answering quickly is the proof that nothing is copied.
+   * <p>
+   * Only the two reads that are genuinely constant-cost are inside the measured window (issue #6270). {@code size()}
+   * and indexing are answered from start, step and size alone, so they are what a materialised list could not serve
+   * cheaply, and measuring them on the stall-discounted clock makes the bound both tight and immune to a
+   * stop-the-world pause.
+   * <p>
+   * {@code IN} is deliberately OUTSIDE it. {@code InExpression.evaluateTernary} walks the list element by element -
+   * it has to, for Cypher's three-valued logic: a {@code null} anywhere in the list turns a non-match into
+   * {@code null} rather than {@code false}, which {@code List.contains} cannot report - so it is O(n) whether the
+   * range is lazy or not, and its cost says nothing about laziness. Measured: 3 s locally and 20 s on a CI runner
+   * for an element near the end of the range, against 8 ms and 1 ms for the two reads above; a bound around it was
+   * asserting the walk, not the claim. The {@code @Timeout} is what bounds it, as a hang detector.
    */
   @Test
-  @Timeout(value = 30, unit = TimeUnit.SECONDS)
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
   void hugeRangeIsLazyWhenTheLimitIsDisabled() {
     database.getConfiguration().setValue(GlobalConfiguration.QUERY_MAX_RANGE_SIZE, -1L);
+
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     assertThat(single("RETURN size(range(0, 999999999)) AS r")).isEqualTo(1_000_000_000L);
     assertThat(single("RETURN range(0, 999999999)[123456789] AS r")).isEqualTo(123_456_789L);
+    stopwatch.assertStayedUnder(5_000L, "two constant-cost reads of a lazy range, not a billion-element copy");
+
     assertThat(single("RETURN 999999998 IN range(0, 999999999) AS r")).isEqualTo(true);
   }
 

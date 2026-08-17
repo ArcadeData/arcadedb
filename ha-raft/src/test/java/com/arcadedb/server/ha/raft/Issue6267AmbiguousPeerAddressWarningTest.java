@@ -87,8 +87,9 @@ class Issue6267AmbiguousPeerAddressWarningTest {
 
   /**
    * A cluster with two <em>independent</em> collisions gets both named in the one line it is allowed. Reporting
-   * only the collision the caller happened to ask about would send an operator to declare two ports and leave
-   * the other pair withheld with the log now permanently silent, since the latch does not rearm.
+   * only the collision the caller happened to ask about would send an operator to declare two ports and leave the
+   * other pair withheld and unmentioned - and since the memory is keyed on the line itself (issue #6297), a
+   * partial line would also make the remaining collision look like something already reported.
    */
   @Test
   void oneWarningNamesEveryCollisionItFound() {

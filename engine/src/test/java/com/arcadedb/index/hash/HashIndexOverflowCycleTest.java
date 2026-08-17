@@ -88,7 +88,7 @@ class HashIndexOverflowCycleTest extends TestHelper {
   }
 
   @Test
-  @Timeout(value = 30, unit = TimeUnit.SECONDS)
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
   void cyclicOverflowChainFailsLoudlyOnLookupInsteadOfSpinning() {
     injectSelfReferentialOverflowChain();
     reopenDatabase();
@@ -106,7 +106,7 @@ class HashIndexOverflowCycleTest extends TestHelper {
   }
 
   @Test
-  @Timeout(value = 30, unit = TimeUnit.SECONDS)
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
   void cyclicOverflowChainFailsLoudlyOnUniqueCheckDuringInsert() {
     // Mirrors the customer's stack: the spin was reached via checkUniqueIndexKeys while committing a new vertex.
     injectSelfReferentialOverflowChain();

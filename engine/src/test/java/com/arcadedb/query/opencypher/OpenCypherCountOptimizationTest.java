@@ -36,6 +36,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class OpenCypherCountOptimizationTest {
+  /**
+   * The marker {@code TypeCountStep.prettyPrint} emits. Asserting on it is what stops the push-down regressing
+   * silently: a full type scan returns the same count, just slower, so the result assertions alone cannot tell the
+   * two paths apart (issue #6280). The negative cases matter as much as the positive ones - they are what keeps the
+   * push-down from firing where it is not valid.
+   */
+  private static final String TYPE_COUNT_PUSH_DOWN = "TYPE COUNT OPTIMIZATION ";
+
   private Database database;
 
   @BeforeEach
@@ -70,13 +78,7 @@ class OpenCypherCountOptimizationTest {
     assertThat(result.hasNext()).isFalse();
     result.close();
 
-    // TODO: Verify optimization is being used by checking EXPLAIN output
-    // EXPLAIN integration needs to be added separately
-    // final ResultSet explainResult = database.query("opencypher", "EXPLAIN " + query);
-    // assertThat(explainResult.hasNext()).isTrue();
-    // final String plan = explainResult.next().<String>getProperty("plan");
-    // assertThat(plan).contains("TYPE COUNT OPTIMIZATION");
-    // explainResult.close();
+    assertThat(planOf(query)).contains(TYPE_COUNT_PUSH_DOWN + "(Account)");
   }
 
   @Test
@@ -100,6 +102,10 @@ class OpenCypherCountOptimizationTest {
     assertThat(result2.hasNext()).isTrue();
     assertThat(result2.next().<Long>getProperty("cnt")).isEqualTo(50L);
     result2.close();
+
+    // The alias is what the push-down has to carry through; both forms must still take it.
+    assertThat(planOf(query1)).contains(TYPE_COUNT_PUSH_DOWN + "(Person)");
+    assertThat(planOf(query2)).contains(TYPE_COUNT_PUSH_DOWN + "(Person)");
   }
 
   @Test
@@ -115,6 +121,8 @@ class OpenCypherCountOptimizationTest {
     assertThat(result.hasNext()).isTrue();
     assertThat(result.next().<Long>getProperty("count")).isEqualTo(0L);
     result.close();
+
+    assertThat(planOf(query)).contains(TYPE_COUNT_PUSH_DOWN + "(EmptyType)");
   }
 
   @Test
@@ -137,13 +145,7 @@ class OpenCypherCountOptimizationTest {
     assertThat(count).isLessThan(100L); // Some records filtered out
     result.close();
 
-    // TODO: Verify optimization is NOT being used
-    // EXPLAIN integration needs to be added separately
-    // final ResultSet explainResult = database.query("opencypher", "EXPLAIN " + query);
-    // assertThat(explainResult.hasNext()).isTrue();
-    // final String plan = explainResult.next().<String>getProperty("plan");
-    // assertThat(plan).doesNotContain("TYPE COUNT OPTIMIZATION");
-    // explainResult.close();
+    assertThat(planOf(query)).doesNotContain(TYPE_COUNT_PUSH_DOWN);
   }
 
   @Test
@@ -162,13 +164,7 @@ class OpenCypherCountOptimizationTest {
     assertThat(result.hasNext()).isTrue();
     result.close();
 
-    // TODO: Verify optimization is NOT being used
-    // EXPLAIN integration needs to be added separately
-    // final ResultSet explainResult = database.query("opencypher", "EXPLAIN " + query);
-    // assertThat(explainResult.hasNext()).isTrue();
-    // final String plan = explainResult.next().<String>getProperty("plan");
-    // assertThat(plan).doesNotContain("TYPE COUNT OPTIMIZATION");
-    // explainResult.close();
+    assertThat(planOf(query)).doesNotContain(TYPE_COUNT_PUSH_DOWN);
   }
 
   @Test
@@ -194,6 +190,10 @@ class OpenCypherCountOptimizationTest {
     assertThat(result.hasNext()).isTrue();
     assertThat(result.next().<Long>getProperty("count")).isEqualTo(50L);
     result.close();
+
+    // The push-down has to count the whole hierarchy, so it must be the polymorphic counter it delegates to and
+    // not a per-bucket one: the 50 above is what says it counted right, this is what says it counted at all.
+    assertThat(planOf(query)).contains(TYPE_COUNT_PUSH_DOWN + "(Animal)");
   }
 
   @Test
@@ -311,6 +311,18 @@ class OpenCypherCountOptimizationTest {
         rs.next();
       final String plan = rs.getExecutionPlan().get().prettyPrint(0, 2);
       assertThat(plan).contains("COUNT EDGES RETURN");
+    }
+  }
+
+  /**
+   * The plan openCypher would run for {@code query}, obtained with {@code EXPLAIN} rather than {@code PROFILE}
+   * because it must not execute: the negative cases here describe the full scan the push-down was refused for, and
+   * running one to find out it ran is the cost the assertion exists to detect.
+   */
+  private String planOf(final String query) {
+    try (final ResultSet rs = database.query("opencypher", "EXPLAIN " + query)) {
+      assertThat(rs.getExecutionPlan()).as("EXPLAIN returned no plan for: %s", query).isPresent();
+      return rs.getExecutionPlan().get().prettyPrint(0, 2);
     }
   }
 }

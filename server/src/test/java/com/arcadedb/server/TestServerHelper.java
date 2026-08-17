@@ -30,6 +30,8 @@ import com.arcadedb.utility.CallableParameterNoReturn;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.File;
+import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
 import java.util.Collection;
 import java.util.logging.Level;
 
@@ -147,12 +149,73 @@ public final class TestServerHelper {
     assertThat(activeDatabases.isEmpty()).as("Found active databases: " + activeDatabases).isTrue();
   }
 
+  /**
+   * Deletes the folders a server test writes into: the shared {@code ./target/databases}, the per-server
+   * {@code <databaseDirectory>N} for {@code N < totalServers}, and the replication directory under the server root.
+   * <p>
+   * Every path is resolved <b>at call time</b> from the live configuration, so the caller must not have reset it yet.
+   * That is not a style point (issue #6297): {@link GlobalConfiguration#SERVER_DATABASE_DIRECTORY} defaults to
+   * {@code ${arcadedb.server.rootPath}/databases} while {@code SERVER_ROOT_PATH} defaults to {@code null}, and
+   * {@code getValueAsString()} resolves an unknown variable to the empty string instead of failing - so after a
+   * {@code resetAll()} the whole prefix collapses and this method is asked to recursively delete {@code /databases},
+   * {@code /databases0} ... {@code /databasesN}. Those are absolute root-level paths no test ever named, the test's
+   * own {@code ./target/databasesN} survives teardown untouched, and a data volume mounted at {@code /databases0}
+   * would be inside the blast radius. {@link #deleteResolvedFolder} refuses exactly that shape, so a future
+   * reordering degrades to a logged no-op rather than to a recursive delete at the filesystem root.
+   */
   public static void deleteDatabaseFolders(final int totalServers) {
     FileUtils.deleteRecursively(new File("./target/databases/"));
     FileUtils.deleteRecursively(new File("./target/config/"));
-    FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + File.separator));
+
+    final String databaseDirectory = GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString();
+    deleteResolvedFolder(databaseDirectory, File.separator);
     for (int i = 0; i < totalServers; ++i)
-      FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + i + File.separator));
-    FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString() + File.separator + "replication"));
+      deleteResolvedFolder(databaseDirectory, i + File.separator);
+
+    final String rootPath = GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString();
+    // Unset by default, and the concatenation below would turn that into the literal folder "null/replication".
+    if (rootPath != null)
+      deleteResolvedFolder(rootPath, File.separator + "replication");
+  }
+
+  /**
+   * Recursively deletes {@code prefix + suffix}, unless that did not resolve to anything a test could have written
+   * to - in which case it logs and does nothing. See {@link #deleteDatabaseFolders(int)} for why a prefix arrives
+   * unresolved at all.
+   * <p>
+   * The whole concatenation is what gets checked, not the prefix alone: the two arguments are what a caller
+   * composes, so validating one of them would leave the verdict depending on an assumption about the other
+   * (today: that appending a digit and a separator can neither make a relative path absolute nor change its
+   * segment count). Checking what is actually about to be deleted has no such precondition to preserve.
+   */
+  private static void deleteResolvedFolder(final String prefix, final String suffix) {
+    final String folder = prefix + suffix;
+    if (!isResolvedTestPath(folder)) {
+      LogManager.instance().log(TestServerHelper.class, Level.SEVERE,
+          "Refusing to delete '%s': the configured path did not resolve, so this is not a test folder. The test "
+              + "configuration was reset before the cleanup that reads it (issue #6297); nothing was deleted, and the "
+              + "folders this call was meant to remove are still on disk.", folder);
+      return;
+    }
+    FileUtils.deleteRecursively(new File(folder));
+  }
+
+  /**
+   * Whether {@code path} can be a folder a test wrote into. Relative paths always can - every server test configures
+   * {@code ./target/databasesN} - and so can an absolute path with more than one element, which is what a
+   * {@code @TempDir} under the system temp directory looks like. What cannot is a blank path or an absolute one
+   * naming a single root-level folder: no test writes to {@code /databases0}, and that is precisely what an
+   * unresolved {@code ${arcadedb.server.rootPath}} placeholder collapses to. Package-private for testing.
+   */
+  static boolean isResolvedTestPath(final String path) {
+    if (path == null || path.isBlank())
+      return false;
+    try {
+      final Path normalized = Path.of(path).normalize();
+      return !normalized.isAbsolute() || normalized.getNameCount() > 1;
+    } catch (final InvalidPathException e) {
+      // Not a path this platform can even name, so certainly not a folder a test created.
+      return false;
+    }
   }
 }

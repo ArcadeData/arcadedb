@@ -234,24 +234,39 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
         LogManager.instance().log(this, Level.INFO, "END OF THE TEST: Check DBS are identical...");
         checkDatabasesAreIdentical();
       } finally {
-        GlobalConfiguration.resetAll();
+        // Issue #6297: the cleanup runs BEFORE resetAll(), not after. Every path it deletes is resolved from the
+        // live configuration at call time, and SERVER_DATABASE_DIRECTORY is '${arcadedb.server.rootPath}/databases'
+        // over a root path that defaults to null - so a reset first left this deleting '/databases0' while
+        // './target/databases0' (and the .raft-storage under it) survived the teardown that was supposed to remove
+        // it. The reset only has to leave the JVM clean for the next class, which the finally below still does.
+        try {
+          LogManager.instance().log(this, Level.FINE, "TEST: Stopping servers...");
+          stopServers();
 
-        LogManager.instance().log(this, Level.FINE, "TEST: Stopping servers...");
-        stopServers();
+          LogManager.instance().log(this, Level.FINE, "END OF THE TEST: Cleaning test %s...", getClass().getName());
+          if (dropDatabasesAtTheEnd())
+            // Ends in exactly the two TestServerHelper calls below - the overrides that exist
+            // (BaseRaftHATest, RaftStorageDirectoryIT) add to it through super, they do not replace it - so
+            // repeating them afterwards only re-walked folders that were already gone. The other branch has to
+            // make them itself: the folders are removed whether or not the databases were dropped, and it cannot
+            // reach them through deleteDatabaseFolders() because that drops the databases first, which is exactly
+            // what a class returning false asked not to happen. So an override of deleteDatabaseFolders() runs
+            // only on this branch - fine today (the one class returning false, ServerReadOnlyDatabasesIT, does not
+            // override it, and the two that do inherit true), and the thing to know before adding a third.
+            deleteDatabaseFolders();
+          else {
+            TestServerHelper.checkActiveDatabases(false);
+            TestServerHelper.deleteDatabaseFolders(getServerCount());
+          }
 
-        LogManager.instance().log(this, Level.FINE, "END OF THE TEST: Cleaning test %s...", getClass().getName());
-        if (dropDatabasesAtTheEnd())
-          deleteDatabaseFolders();
-
-        checkArcadeIsTotallyDown();
-
-        GlobalConfiguration.TEST.setValue(false);
-        GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(null);
+          checkArcadeIsTotallyDown();
+        } finally {
+          GlobalConfiguration.resetAll();
+          GlobalConfiguration.TEST.setValue(false);
+          GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(null);
+        }
       }
     }
-
-    TestServerHelper.checkActiveDatabases(dropDatabasesAtTheEnd());
-    TestServerHelper.deleteDatabaseFolders(getServerCount());
   }
 
   protected Database getDatabase(final int serverId) {
