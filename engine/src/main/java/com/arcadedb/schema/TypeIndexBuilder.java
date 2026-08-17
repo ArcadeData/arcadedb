@@ -193,10 +193,17 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       throw new DatabaseMetadataException(
           "Cannot create index on type '" + metadata.typeName + "' because indexType was not specified");
 
-    // Wait for any running async tasks (e.g., compaction) to complete before creating new index
-    // This prevents NeedRetryException when creating multiple indexes sequentially on large datasets
-    while (database.isAsyncProcessing())
-      database.async().waitCompletion();
+    // The index is built by SCANNING the buckets, so everything the async executor has been asked to write has to be
+    // committed first, or the build simply does not see it and the records end up with no entry at all - a silent
+    // wrong answer on every lookup, not a slow one (issue #6281).
+    //
+    // This used to be `while (database.isAsyncProcessing()) waitCompletion()`, which is not the same barrier: that
+    // predicate reports queued and executing TASKS, while a worker holds ONE transaction open across up to
+    // ASYNC_TX_BATCH_SIZE (10240 by default) of them. An executor whose queues happen to be drained at the instant of
+    // the check therefore answers "idle" while still sitting on thousands of uncommitted records, and the guard was
+    // then skipped entirely. It also prevents the NeedRetryException a running compaction used to raise when several
+    // indexes are created in a row on a large dataset, which is what the guard was originally added for.
+    database.waitForAsyncCompletion();
 
     // Carry the user-supplied TypeIndex name (set via {@link #withIndexName}) onto the
     // IndexMetadata so it propagates to each per-bucket index and ultimately to

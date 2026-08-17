@@ -468,7 +468,15 @@ public enum GlobalConfiguration {
       spanning several pages). Leave headroom when picking a value close to the replicated-entry limit.""",
       Integer.class, 256),
 
-  PAGE_FLUSH_QUEUE("arcadedb.pageFlushQueue", SCOPE.DATABASE, "Size of the asynchronous page flush queue", Integer.class, 512),
+  PAGE_FLUSH_QUEUE("arcadedb.pageFlushQueue", SCOPE.DATABASE,
+      """
+      Maximum number of page batches EACH database may have waiting in the asynchronous flush pipeline. A committer of \
+      a database that has reached it waits - before taking the page-manager lock, never inside it - until one of that \
+      database's own batches is written; the committers of every other database are admitted straight through. This \
+      was a single JVM-wide bound before issue #6281, which is what let one database's write burst against a slow \
+      volume throttle the commits of unrelated databases on idle ones. Values below 1 are raised to 1: this is now \
+      the only bound on the pipeline, so a budget of 0 would refuse every publication for ever.\
+      """, Integer.class, 512),
 
   FLUSH_SUSPEND_MAX_DEFERRED_RAM("arcadedb.flushSuspendMaxDeferredRAM", SCOPE.DATABASE,
       """

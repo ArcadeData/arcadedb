@@ -1340,6 +1340,31 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     return (value & 0x7fffffff) % threads.length;
   }
 
+  /**
+   * Whether the calling thread is one of THIS executor's own workers.
+   * <p>
+   * The question {@link #waitCompletion()} cannot survive being asked from inside the executor: it enqueues a marker
+   * on every worker - the caller's own included - and then blocks until each one has run, and the only consumer of a
+   * worker's queue is that worker. A worker that calls it parks on a marker nobody can ever dequeue, and is lost for
+   * the life of the process (issue #6281 review). Same test as {@code offerWaiting}'s: the owner check matters
+   * because a second database's workers are threads of the same class but not of this executor.
+   */
+  public boolean isCurrentThreadOneOfMyWorkers() {
+    return Thread.currentThread() instanceof AsyncThread worker && worker.getOwner() == this;
+  }
+
+  /**
+   * Whether any worker still has a TASK queued or in execution.
+   * <p>
+   * <b>Not a durability predicate, and never usable as one</b> (issue #6281): a worker opens a transaction when it
+   * starts and keeps it open across up to {@link GlobalConfiguration#ASYNC_TX_BATCH_SIZE} tasks, so {@code false} here
+   * means only that the tasks have RUN - their records can still be sitting uncommitted in that batch, invisible to
+   * every reader. A caller that needs to read what the async side wrote must use
+   * {@link com.arcadedb.database.DatabaseInternal#waitForAsyncCompletion()}, which enqueues a marker behind everything
+   * already submitted and commits the batch. Deliberately left answering about tasks only: broadening it to "a
+   * transaction is open" would make it permanently true for as long as the workers are alive, which is no answer at
+   * all.
+   */
   @Override
   public boolean isProcessing() {
     final AsyncThread[] threads = executorThreads;

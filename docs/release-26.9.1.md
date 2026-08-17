@@ -2457,3 +2457,88 @@ whatever the heap setting says. The pair arrays include an `Integer[]` index arr
 actually costs rather than at what a primitive array would.
 
 [#6263](https://github.com/ArcadeData/arcadedb/issues/6263)
+
+## An index build waits for the async batch, not just for its tasks (#6281)
+
+`CREATE INDEX` builds by scanning the buckets, so everything the asynchronous executor was asked to write has
+to be committed before the scan starts. The guard that was supposed to ensure that read the wrong predicate:
+
+```java
+while (database.isAsyncProcessing())
+  database.async().waitCompletion();
+```
+
+`isAsyncProcessing()` answers about *tasks* - queued or executing. An async worker opens a transaction when it
+starts and keeps it open across up to `arcadedb.asyncTxBatchSize` (10240) tasks, so a worker whose queue has
+drained is still holding every record of the current batch **uncommitted**. On the runs where that predicate
+happened to answer `false` - which is a matter of thread scheduling, not of load - the guard was skipped
+entirely: the index was built by scanning a bucket that did not contain those records, and they committed
+afterwards with no entry ever added for them. The result was an index that is empty, readable, and reported
+healthy by `CHECK DATABASE`, while `SELECT ... WHERE id = ?` silently answered nothing for records that were
+there. Reproduced with 200 asynchronously inserted records: 0 index entries, 0 rows returned.
+
+The barrier is now unconditional. `waitCompletion()` is the only operation that closes the open batch - it
+enqueues a marker *behind* everything already submitted on every worker, and that marker commits - so there is
+no cheap predicate to test first, and testing one is what let the barrier be skipped. `isAsyncProcessing()` is
+deliberately left answering about tasks: broadening it to "a transaction is open" would make it permanently
+true for as long as the workers live. The same barrier now precedes `REBUILD INDEX`, whose scan sees the same
+partial view. The rebuild proper does not lose index entries there - those records apply their own staged
+entries when they commit - so what it gains is the misplaced-record detection of #832 and the reported totals
+being about all of the data. `REBUILD INDEX ... WITH statsOnly = true` was worse off and is the reason the
+barrier sits ahead of that branch rather than after it: it recomputes the BM25 corpus counters by scanning the
+type and then *overwrites* the counters with what the scan found, so run against an open batch it wrote "0
+documents" over counters the records had already bumped. A type holding 200 documents was left scoring every
+BM25 query against a corpus of zero, and unlike the index-entry case that did not heal itself.
+
+**One refusal is new.** `CREATE INDEX`, a manual index create and `REBUILD INDEX` now raise a
+`NeedRetryException` when they run on one of the async executor's own worker threads - a command dispatched
+over HTTP with `awaitResponse=false`, for instance. The barrier cannot be satisfied from inside the thing it
+waits for: it enqueues a marker on every worker including the caller's own, and the only consumer of a
+worker's queue is that worker, so it would park for ever. `REBUILD INDEX` has refused this since #2097 and
+keeps its own message; what is new is that `CREATE INDEX` and the manual index builder refuse it too, where
+before they hung. Run the command synchronously instead.
+
+`ACIDTransactionTest.indexCreationWhileAsyncMustFail`, which existed to cover exactly this, had been vacuous
+for years: it expected a `NeedRetryException` from a creation that has drained the executor rather than
+refusing since long before this release, so its `catch` never fired and its only assertion was the record
+count - which an empty index satisfies just as well as a complete one. It now asserts the index.
+
+### The page-flush queue is bounded per database, not per JVM
+
+**Behaviour change worth checking if you run many databases in one JVM with a non-default
+`arcadedb.pageFlushQueue`.** That setting was a single JVM-wide queue capacity. #6259 moved the wait for room
+in it out of the page-manager lock, so a full queue stopped freezing every committer in the process - but the
+coupling itself survived: one database's write burst against a slow volume still consumed the admission budget
+of every other database, so a committer on an idle database on an idle volume waited for a disk it has nothing
+to do with.
+
+The budget is now per database, held as one count per database that covers a slot from the moment a committer
+reserves it to the moment the flush thread polls the batch it became. The shared queue keeps global FIFO order
+and carries no capacity of its own - one queue rather than one per database is what avoids having to invent a
+fairness policy for a flush thread choosing between queues on every poll.
+
+The trade-off, stated because it changes the shape of a memory ceiling: worst-case flush-pipeline occupancy is
+now `pageFlushQueue x open databases` batches rather than a flat `pageFlushQueue`. That is inherent to bounding
+per database, and the number being multiplied was never a byte bound to begin with - one batch is one
+transaction's dirty pages - but a deployment that sized `pageFlushQueue` against total heap should re-check it.
+The bound that *is* expressed in bytes remains `arcadedb.flushSuspendMaxDeferredRAM`. A `pageFlushQueue` of 0
+or less, which used to fail at startup on `ArrayBlockingQueue`'s constructor, is now raised to 1: with
+admission as the only bound, a budget of 0 would refuse every publication for ever.
+
+One consequence worth knowing about if you run many databases that saturate their budgets at the same time:
+the committers waiting for room all park on a single shared monitor, so every batch the flush thread polls
+wakes all of them and each re-checks its own database's count before parking again. That is a deliberate
+trade - a monitor per database would move a map lookup onto the poll path, which runs per batch, to save work
+on the wait path, which only runs for a database already at its bound - and it is the same shape as the
+existing deferred-RAM cap. It is a different failure mode from the old single-queue design, though, so it is
+named here rather than left to be discovered.
+
+**One published metric changed scale with it.** `pageFlushQueueLength` used to top out at `pageFlushQueue`,
+because the queue's capacity was that setting - so `pageFlushQueueLength >= pageFlushQueue` was a natural
+"the pipeline is full" alert. It is now a sum across every open database and can run to
+`pageFlushQueue x open databases`, which makes that comparison meaningless. The signal it used to carry is
+published alongside it as `pageFlushQueueMaxPerDatabase` (and as `flushQueueMaxPerDb` in the profiler dump):
+the busiest single database's share, which is exactly what `pageFlushQueue` bounds, so that is the one to
+alert on.
+
+[#6281](https://github.com/ArcadeData/arcadedb/issues/6281)
