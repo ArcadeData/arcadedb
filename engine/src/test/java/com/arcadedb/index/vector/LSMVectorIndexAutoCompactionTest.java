@@ -60,6 +60,19 @@ class LSMVectorIndexAutoCompactionTest extends TestHelper {
   // this test is about, instead of passing because the file was too small to bother with.
   private static final int PAGE_SIZE  = 16 * 1024;
 
+  /**
+   * The workload is built in two halves, and the split is the point (#6258, item 4). Growing the file and waiting
+   * for the trigger used to be the same loop, which made the two race: compaction runs on the async executor, so a
+   * cycle whose commit scheduled one could see it finish before the loop next sampled {@code getTotalPages()}. The
+   * loop then exited with the peak still unmeasured and the test failed its own PRECONDITION - "the workload must
+   * first grow the file well past the live set" - which says nothing about the subject and everything about how busy
+   * the machine was. Relaxing that threshold would have been the wrong repair: a test that cannot establish its
+   * precondition under load is one that quietly stops testing whenever the machine is busy.
+   * <p>
+   * So the garbage is built with the scheduler off, where growth is deterministic and the peak can be measured
+   * exactly, and only then is the scheduler let back in for one more cycle of the very same workload. That is still
+   * an index compacting itself with nobody typing COMPACT INDEX, which is what this test is for.
+   */
   @Test
   void anUpdateHeavyIndexCompactsItselfWithoutAnExplicitCommand() {
     createSchema();
@@ -69,16 +82,27 @@ class LSMVectorIndexAutoCompactionTest extends TestHelper {
     final int fileIdBefore = index.getFileId();
 
     // Re-embed everything a few times: each cycle appends a vector and a tombstone per vertex, so the file grows
-    // well past what the live set needs and the automatic trigger has to fire.
-    int pagesPeak = index.getTotalPages();
-    for (int cycle = 1; cycle <= CYCLES && index.getFileId() == fileIdBefore; cycle++) {
-      updateAllVertices(cycle);
-      pagesPeak = Math.max(pagesPeak, index.getTotalPages());
+    // well past what the live set needs.
+    final int pagesPeak;
+    GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE.setValue(0);
+    try {
+      for (int cycle = 1; cycle <= CYCLES; cycle++)
+        updateAllVertices(cycle);
       awaitCompactionIdle();
+      pagesPeak = index.getTotalPages();
+    } finally {
+      GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE.reset();
     }
 
+    assertThat(index.getFileId()).as("precondition: nothing may compact while the scheduler is off")
+        .isEqualTo(fileIdBefore);
     assertThat(pagesPeak).as("the workload must first grow the file well past the live set, or nothing is tested")
         .isGreaterThan(3 * index.estimatePagesForLiveSetForTest());
+
+    // The scheduler is back: one more cycle of the same workload, and the index must reclaim on its own.
+    updateAllVertices(CYCLES + 1);
+    awaitCompactionIdle();
+
     assertThat(index.getFileId())
         .as("the index must have compacted itself: the data file should have been swapped (peak was %d pages)",
             pagesPeak)

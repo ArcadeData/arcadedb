@@ -30,6 +30,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.RecordInternal;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.exception.BrokenChunkChainException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
@@ -1251,6 +1252,8 @@ public class GraphEngine {
 
         iterator = edges.edgeIteratorForRemoval();
       }
+    } catch (final BrokenChunkChainException e) {
+      tolerateBrokenChunkChainEdgeList(e, vertex, direction, force);
     } catch (final NeedRetryException e) {
       tolerateUnreadableEdgeList(e, vertex, direction, force);
     } catch (final SerializationException | NegativeArraySizeException | BufferUnderflowException
@@ -1276,6 +1279,9 @@ public class GraphEngine {
             .log(this, Level.FINE, "Error on deleting %s edge connected to vertex %s (record not found)", direction,
                 vertex.getIdentity());
         continue;
+      } catch (final BrokenChunkChainException e) {
+        tolerateBrokenChunkChainEdgeList(e, vertex, direction, force);
+        break;
       } catch (final NeedRetryException e) {
         tolerateUnreadableEdgeList(e, vertex, direction, force);
         break;
@@ -1322,6 +1328,28 @@ public class GraphEngine {
         .log(this, Level.WARNING, """
                 Cannot read the %s edge list of vertex %s while force-deleting it: its edges survive, %s""", e,
             direction, vertex.getIdentity(), danglingRepairAdvice());
+  }
+
+  /**
+   * The record whose edge list this is could not be assembled because its chunk chain is structurally BROKEN
+   * (#6258): a continuation pointer into nowhere, a slot that no longer holds a chunk, a chain that loops.
+   * <p>
+   * Force-gated exactly like {@link #tolerateUnreadableEdgeList}, which is where this landed until the loader
+   * stopped reporting a broken chain as a retryable conflict, and the gate still belongs here for the same reason
+   * it belongs there: the caller that meets this shape is {@code LocalDatabase.deleteRecordNoLock}, which raises
+   * its force flag for a confirmed broken chain and comes straight back. What changed is only the honesty of the
+   * failure when force is off - it no longer advertises a retry that cannot help, so the message is the repair.
+   * Not folded into {@link #tolerateUndecodableEdgeList}: that one is tolerated WITHOUT force, and it is tolerated
+   * there because a corrupt BUFFER reaches the delete with the flag down. A broken chain does not.
+   */
+  private void tolerateBrokenChunkChainEdgeList(final BrokenChunkChainException e, final VertexInternal vertex,
+      final Vertex.DIRECTION direction, final boolean force) {
+    if (!force)
+      throw e;
+    LogManager.instance()
+        .log(this, Level.WARNING, """
+                Cannot read the %s edge list of vertex %s while force-deleting it (broken chunk chain): its edges \
+                survive, %s""", e, direction, vertex.getIdentity(), danglingRepairAdvice());
   }
 
   /**
@@ -1376,6 +1404,17 @@ public class GraphEngine {
       ((DatabaseInternal) edge.getDatabase()).deleteEdgeSkippingEndpoint(edge, vertex.getIdentity());
     } catch (final RecordNotFoundException e) {
       // ALREADY DELETED, IGNORE IT
+    } catch (final BrokenChunkChainException e) {
+      // The NEIGHBOUR's record (or a chunk of its list) is corrupted rather than merely busy (#6258). Same
+      // force gate as the retryable arm below, which is where this landed before the loader could tell the two
+      // apart; the advice names the repair rather than a retry.
+      if (!force)
+        throw e;
+      LogManager.instance()
+          .log(this, Level.WARNING, """
+                  Cannot disconnect edge %s from the vertex at its other end while force-deleting vertex %s \
+                  (broken chunk chain): the reference survives, %s""", e, edge.getIdentity(), vertex.getIdentity(),
+              danglingRepairAdvice());
     } catch (final NeedRetryException e) {
       // THE EDGE LIST OF THE VERTEX AT THE OTHER END IS NOT READABLE (SEE getEdgeHeadChunkForWrite). #5764: the
       // list that needs rebuilding belongs to the NEIGHBOUR, not to the vertex being deleted, so that is the RID

@@ -1073,10 +1073,16 @@ public class PageManager extends LockContext {
   }
 
   /**
-   * Counts a chunk-chain read ATTEMPT thrown away because the record itself changed under it, or because the chain
-   * could not be walked (see {@link #incrementChunkChainReadRevalidations()} for the case that no longer counts as
-   * one). The last attempt of a read that gives up contributes here too, right before it raises
-   * {@link ConcurrentModificationException}, so this is "restarts", not "failed reads".
+   * Counts a chunk-chain read ATTEMPT thrown away because the record itself changed under it (see
+   * {@link #incrementChunkChainReadRevalidations()} for the case that no longer counts as one). The last attempt of a
+   * read that gives up contributes here too, right before it raises {@link ConcurrentModificationException}, so this
+   * is "restarts", not "failed reads".
+   * <p>
+   * CONTENTION, and nothing else, since #6258: a chain that could not be WALKED used to be counted here as well and
+   * retried like a busy record, which made this counter mean two unrelated things at once and put a corrupted record
+   * on the contention chart. Such a chain now raises {@code BrokenChunkChainException} where it is found and
+   * contributes nothing here. Restarts also stop as soon as another attempt provably cannot read anything else, so a
+   * rise here is writers meeting readers rather than a budget being spent on a verdict already settled.
    */
   public void incrementChunkChainReadRetries() {
     totalChunkChainReadRetries.incrementAndGet();
