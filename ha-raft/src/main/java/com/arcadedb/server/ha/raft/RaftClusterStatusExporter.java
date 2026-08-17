@@ -19,9 +19,6 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.log.LogManager;
-import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.serializer.json.JSONArray;
-import com.arcadedb.serializer.json.JSONObject;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 

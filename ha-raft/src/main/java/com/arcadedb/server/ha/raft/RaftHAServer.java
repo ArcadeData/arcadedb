@@ -78,6 +78,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.SortedMap;
+import java.util.TreeMap;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
@@ -1966,16 +1967,13 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
     final Map<String, int[]> claims = claimsByAddress(addresses, fromConfig, resolved);
     final Map<RaftPeerId, PeerHttpEndpoint> endpoints = new LinkedHashMap<>(resolved * 2);
-    String ambiguous = null;
-    for (int i = 0; i < resolved; i++) {
-      final boolean shared = !identifiesOnePeer(claims.get(addresses[i]), fromConfig[i]);
-      if (shared)
-        ambiguous = addresses[i];
-      endpoints.put(owners[i], new PeerHttpEndpoint(addresses[i], shared));
-    }
+    for (int i = 0; i < resolved; i++)
+      endpoints.put(owners[i], new PeerHttpEndpoint(addresses[i],
+          !identifiesOnePeer(claims.get(addresses[i]), fromConfig[i])));
 
-    if (ambiguous != null)
-      warnAmbiguousPeerAddress(false, ambiguous, addresses, owners, resolved);
+    // No-op unless something is actually ambiguous, and then it names every collision this pass found - which
+    // is more than a per-peer caller can see, since that one asks about one address at a time.
+    warnAmbiguousPeerAddress(false, addresses, fromConfig, owners, resolved, claims);
 
     return endpoints;
   }
@@ -2019,7 +2017,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (identifiesOnePeer(claims.get(address), fromConfig[0]))
       return address;
 
-    warnAmbiguousPeerAddress(https, address, addresses, owners, resolved);
+    warnAmbiguousPeerAddress(https, addresses, fromConfig, owners, resolved, claims);
     return null;
   }
 
@@ -2042,28 +2040,45 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * collide is not logged again - the line names the peers that tripped it first, and a reader chasing a
    * cluster they know is misconfigured should read {@code httpAddressAmbiguous} from {@code GET
    * /api/v1/cluster}, which is recomputed per request and always current, rather than the log.
+   * <p>
+   * Since the one line is all an operator gets, it names <em>every</em> collision this pass found, not just the
+   * one the caller asked about: a cluster can have two independent colliding pairs, and reporting one of them
+   * would send the operator to declare two ports and leave the other pair withheld with the log now silent. The
+   * latch is taken only once there is something to say, so a pass that finds nothing does not spend it.
    */
-  private void warnAmbiguousPeerAddress(final boolean https, final String address, final String[] addresses,
-      final RaftPeerId[] owners, final int count) {
-    if (!(https ? httpsAmbiguityWarned : httpAmbiguityWarned).compareAndSet(false, true))
+  private void warnAmbiguousPeerAddress(final boolean https, final String[] addresses, final boolean[] fromConfig,
+      final RaftPeerId[] owners, final int count, final Map<String, int[]> claims) {
+    // address -> the peers whose endpoint it fails to identify. A peer that DECLARED an address others merely
+    // derive to keeps it (declared beats derived), so it is not among them and must not be named as withheld.
+    // Sorted, by address and then by peer, because the group arrives in whatever order Ratis holds it: the
+    // operator gets the same line for the same misconfiguration whichever node logs it.
+    final Map<String, List<String>> withheld = new TreeMap<>();
+    for (int i = 0; i < count; i++) {
+      if (identifiesOnePeer(claims.get(addresses[i]), fromConfig[i]))
+        continue;
+      withheld.computeIfAbsent(addresses[i], a -> new ArrayList<>()).add(owners[i].toString());
+    }
+
+    if (withheld.isEmpty() || !(https ? httpsAmbiguityWarned : httpAmbiguityWarned).compareAndSet(false, true))
       return;
 
-    final StringBuilder shared = new StringBuilder();
-    for (int i = 0; i < count; i++)
-      if (address.equals(addresses[i])) {
-        if (!shared.isEmpty())
-          shared.append(", ");
-        shared.append(owners[i]);
-      }
+    final StringBuilder collisions = new StringBuilder();
+    for (final Map.Entry<String, List<String>> collision : withheld.entrySet()) {
+      Collections.sort(collision.getValue());
+      if (!collisions.isEmpty())
+        collisions.append("; ");
+      collisions.append(String.join(", ", collision.getValue())).append(" -> ").append(collision.getKey());
+    }
 
     final String protocol = https ? "HTTPS" : "HTTP";
     final String field = https ? "https" : "http";
     LogManager.instance().log(this, Level.WARNING,
-        "HA %s peer endpoints are ambiguous: peers %s all resolve to %s, which two listening sockets cannot both own. "
-            + "Their %s endpoint is withheld rather than guessed, so a snapshot resync and a cluster verify refuse to "
-            + "dial them and report them unverified instead of answering for the wrong node. Declare each node's %s port "
-            + "explicitly with the 'host:{raft:..,%s:..}' object syntax in %s.",
-        protocol, shared, address, protocol, protocol, field, GlobalConfiguration.HA_SERVER_LIST.getKey());
+        "HA %s peer endpoints are ambiguous: %s. Two listening sockets cannot both own one address, so it identifies "
+            + "at most one of the peers that resolve to it and nothing can say which. Their %s endpoint is withheld "
+            + "rather than guessed, so a snapshot resync and a cluster verify refuse to dial them and report them "
+            + "unverified instead of answering for the wrong node. Declare each node's %s port explicitly with the "
+            + "'host:{raft:..,%s:..}' object syntax in %s.",
+        protocol, collisions, protocol, protocol, field, GlobalConfiguration.HA_SERVER_LIST.getKey());
   }
 
   /** Tells the operator, once per protocol, that peers shared an address and what to write to fix it. */

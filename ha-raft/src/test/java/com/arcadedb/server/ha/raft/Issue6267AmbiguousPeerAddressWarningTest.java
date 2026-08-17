@@ -85,6 +85,27 @@ class Issue6267AmbiguousPeerAddressWarningTest {
         .isEqualTo(1);
   }
 
+  /**
+   * A cluster with two <em>independent</em> collisions gets both named in the one line it is allowed. Reporting
+   * only the collision the caller happened to ask about would send an operator to declare two ports and leave
+   * the other pair withheld with the log now permanently silent, since the latch does not rearm.
+   */
+  @Test
+  void oneWarningNamesEveryCollisionItFound() {
+    final RaftHAServer raft = newDetachedServer(
+        "localhost:2434:2480,localhost:2435:2490,localhost:2436:2490,localhost:2437:2491,localhost:2438:2491");
+
+    final Map<RaftPeerId, RaftHAServer.PeerHttpEndpoint> endpoints = raft.getPeerHttpEndpoints();
+
+    assertThat(endpoints.values().stream().filter(RaftHAServer.PeerHttpEndpoint::ambiguous))
+        .as("both pairs are withheld; this node's own address is its alone")
+        .hasSize(4);
+    assertThat(log.countFormattedContaining(AMBIGUOUS_HTTP,
+        "localhost_2435, localhost_2436 -> localhost:2490", "localhost_2437, localhost_2438 -> localhost:2491"))
+        .as("one line, both collisions")
+        .isEqualTo(1);
+  }
+
   /** The address every peer owns is handed out, and nothing is logged: a correct cluster stays quiet. */
   @Test
   void anUnambiguousClusterIsNotWarnedAbout() {
