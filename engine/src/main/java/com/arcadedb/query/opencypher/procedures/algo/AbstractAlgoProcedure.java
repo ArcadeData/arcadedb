@@ -252,47 +252,185 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   // ── Work bounds ──────────────────────────────────────────────────────────
 
   /**
-   * Heap cost of one row of a walk matrix on top of its payload: 16-byte array header, 4-byte length, 4 bytes of
-   * padding and the 8-byte reference the enclosing array holds. Walk rows are typically short, so this overhead
-   * is a real part of the footprint rather than a rounding error.
+   * Heap cost of one row of a two-dimensional array on top of its payload: 16-byte array header, 4-byte length,
+   * 4 bytes of padding and the 8-byte reference the enclosing array holds. Rows are often short - a walk of a
+   * few steps, a label memory of a few iterations, an embedding of a few dozen doubles - so this overhead is a
+   * real part of the footprint rather than a rounding error.
    * <p>
    * A heuristic for a budget check, not a guarantee: the true figure moves with the JVM's object layout
    * (compressed oops on or off, alignment). It does not need to be exact - it only has to keep the estimate in
    * the right order of magnitude - so there is nothing to "correct" here short of measuring a specific JVM.
    */
-  protected static final long WALK_ROW_OVERHEAD_BYTES = 32L;
+  protected static final long MATRIX_ROW_OVERHEAD_BYTES = 32L;
 
-  /** Heap cost of one entry of a walk buffer, which is an {@code int}. */
-  protected static final long WALK_ENTRY_BYTES = 4L;
+  /** Heap cost of one {@code boolean} array element, which the JVM stores as a byte. */
+  protected static final long BOOLEAN_BYTES = 1L;
+
+  /** Heap cost of one {@code int} array element, the entry type of the walk buffers and of SLPA's label memory. */
+  protected static final long INT_BYTES = 4L;
+
+  /** Heap cost of one {@code double} array element, the entry type of every embedding and distance matrix. */
+  protected static final long DOUBLE_BYTES = 8L;
 
   /**
-   * Rejects, before a single byte is allocated, a random-walk buffer whose estimated heap footprint exceeds
-   * {@link GlobalConfiguration#CYPHER_ALGO_MAX_WALK_MEMORY}.
-   * <p>
-   * The knobs that size these buffers ({@code walksPerNode}, {@code walkLength}, {@code steps}) have no
-   * graph-derived ceiling to clamp against, so they are bounded here by the resource they actually consume
-   * rather than by a guessed per-knob maximum: the budget scales with the JVM heap and is tunable, and the
-   * estimate is computed in saturating {@code long} arithmetic, so a product that would wrap {@code int} is
-   * caught here instead of surfacing as a {@code NegativeArraySizeException} from inside the walk generator.
-   *
-   * @param db             database whose configuration carries the budget
-   * @param estimatedBytes estimated footprint, computed with {@link #saturatingProduct(long, long)}
-   * @param detail         breakdown of the knobs that produced the estimate, for the error message
+   * Estimated heap footprint of a {@code new T[rows][columns]} of an element type {@code elementBytes} wide,
+   * row headers included, in saturating {@code long} arithmetic.
    */
-  protected void checkWalkBudget(final Database db, final long estimatedBytes, final String detail) {
-    final long budget = db.getConfiguration().getValueAsLong(GlobalConfiguration.CYPHER_ALGO_MAX_WALK_MEMORY);
-    if (budget < 0 || estimatedBytes <= budget)
-      return;
-    throw new IllegalArgumentException(getName() + "(): the random walk buffer would need "
-        + (estimatedBytes == Long.MAX_VALUE ? "over " + Long.MAX_VALUE : Long.toString(estimatedBytes)) + " bytes ("
-        + detail + "), more than the " + budget + " bytes allowed. Set "
-        + GlobalConfiguration.CYPHER_ALGO_MAX_WALK_MEMORY.getKey() + " to raise the limit");
+  protected static long matrixBytes(final long rows, final long columns, final long elementBytes) {
+    return saturatingProduct(rows, saturatingSum(MATRIX_ROW_OVERHEAD_BYTES, saturatingProduct(columns, elementBytes)));
+  }
+
+  /**
+   * The heap an algorithm call is allowed to spend on the dense working set it builds beside the graph, as a
+   * running total: walk buffers, {@code nodeCount x dimension} embedding matrices, {@code nodeCount x nodeCount}
+   * distance/similarity/capacity matrices.
+   * <p>
+   * These allocations have no graph-derived ceiling to clamp against - an embedding dimension multiplies the
+   * per-node cost however small the graph is, and a square matrix grows with the graph however modest the knobs
+   * are - so they are bounded by the resource they actually consume rather than by a guessed per-knob maximum:
+   * {@link GlobalConfiguration#CYPHER_ALGO_MAX_WORKING_MEMORY} scales with the JVM heap and is tunable, and
+   * every estimate is computed in saturating {@code long} arithmetic, so a product that would wrap {@code int}
+   * is caught here instead of surfacing as a {@code NegativeArraySizeException} from inside the algorithm.
+   * <p>
+   * The total accumulates because the budget answers one question - how much heap may this call take? - and a
+   * single call routinely holds several of these at once: node2vec keeps its walk matrix alive while training
+   * over two embedding matrices, and pricing each separately would let a call exceed the budget by however many
+   * components it happens to have. A reservation is never released: the unit being bounded is the call, and
+   * every component priced here lives to the end of it.
+   */
+  protected final class MemoryBudget {
+    private final long limit;
+    private       long reserved;
+
+    private MemoryBudget(final long limit) {
+      this.limit = limit;
+    }
+
+    /**
+     * Adds {@code estimatedBytes} to this call's working set and rejects the call, before a single byte is
+     * allocated, if the running total no longer fits the budget.
+     *
+     * @param estimatedBytes estimated footprint, computed with {@link #matrixBytes(long, long, long)} or
+     *                       {@link #saturatingProduct(long, long)}
+     * @param component      what is about to be allocated, e.g. "the embedding matrices"
+     * @param detail         breakdown of the knobs and counts that produced the estimate, for the error message
+     */
+    public void reserve(final long estimatedBytes, final String component, final String detail) {
+      if (limit < 0)
+        // Negative means no limit: skip the bookkeeping too, so a disabled budget costs nothing.
+        return;
+      // Committed only once granted. A refused reservation was never granted, so recording it would make
+      // `reserved` describe heap nobody is holding - and every later message quoting "the N bytes this call
+      // already reserved" would quote a figure that includes an allocation the call was refused. No current
+      // caller survives a refusal to observe that, since the exception aborts the call; this keeps the
+      // invariant true for the one that eventually does.
+      final long total = saturatingSum(reserved, estimatedBytes);
+      if (total <= limit) {
+        reserved = total;
+        return;
+      }
+      throw new IllegalArgumentException(getName() + "(): " + component + " would need " + describe(estimatedBytes)
+          + " bytes (" + detail + ")"
+          + (reserved > 0 ? ", on top of the " + reserved + " bytes this call already reserved" : "")
+          + ", more than the " + limit + " bytes allowed. Set "
+          + GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getKey() + " to raise the limit");
+    }
+
+    /**
+     * A saturated estimate is reported as "over Long.MAX_VALUE" rather than as the ceiling itself: the figure
+     * is no longer representable, and quoting it as if it were exact would misstate by an unknown amount.
+     */
+    private static String describe(final long estimatedBytes) {
+      return estimatedBytes == Long.MAX_VALUE ? "over " + Long.MAX_VALUE : Long.toString(estimatedBytes);
+    }
+  }
+
+  /**
+   * Returns {@code 0 .. count - 1} ordered by ascending {@code weights[i]}, without boxing an index.
+   * <p>
+   * Kruskal's is the reason this exists: both places that run it - {@code algo.mst} over the edge count and
+   * {@code algo.steinerTree} over the {@code t(t-1)/2} terminal pairs - need the edge indices in weight order,
+   * and the only ready-made way to sort an index array by an external key is
+   * {@code Arrays.sort(Integer[], Comparator)}. That costs 24 bytes per entry where the {@code int} it carries
+   * occupies 4, plus a comparator call and two unboxings per comparison, and {@code algo.steinerTree}'s entry
+   * count is quadratic in a terminal list the caller supplies: ~2M entries and ~48 MB of boxed
+   * {@code Integer} at 2000 terminals. Here it is 8 bytes per entry - the index array and the merge scratch -
+   * and a primitive comparison.
+   * </p>
+   * <p>
+   * A bottom-up merge sort rather than a quicksort, for two reasons that both matter on this path: the keys are
+   * user data, and a quicksort on an adversarially ordered key array degrades to O(n²) on inputs a caller
+   * chooses; and merging is stable, so equal weights keep index order exactly as the {@code TimSort} behind
+   * {@code Arrays.sort(Integer[], ...)} did. {@link Double#compare} is the comparison, so {@code NaN} and
+   * {@code -0.0} order exactly as they did through the comparator.
+   * </p>
+   *
+   * @param weights key per index; only the first {@code count} entries are read
+   * @param count   number of indices to order
+   */
+  protected static int[] sortedIndexesByWeight(final double[] weights, final int count) {
+    final int[] index = new int[count];
+    for (int i = 0; i < count; i++)
+      index[i] = i;
+    if (count < 2)
+      return index;
+
+    final int[] scratch = new int[count];
+    int[] from = index;
+    int[] to = scratch;
+    // Widths are stepped in long: at a count near Integer.MAX_VALUE the last doubling and the run bounds it
+    // produces overflow int, and a negative bound silently skips the merge instead of failing.
+    for (long width = 1; width < count; width <<= 1) {
+      for (long lo = 0; lo < count; lo += width << 1) {
+        final int left = (int) lo;
+        final int mid = (int) Math.min(lo + width, count);
+        final int end = (int) Math.min(lo + (width << 1), count);
+        int a = left, b = mid, out = left;
+        while (a < mid && b < end)
+          // Take the left run unless the right one is strictly smaller: that is what makes the sort stable.
+          to[out++] = Double.compare(weights[from[b]], weights[from[a]]) < 0 ? from[b++] : from[a++];
+        while (a < mid)
+          to[out++] = from[a++];
+        while (b < end)
+          to[out++] = from[b++];
+      }
+      final int[] swap = from;
+      from = to;
+      to = swap;
+    }
+    return from;
+  }
+
+  /**
+   * Creates the {@link MemoryBudget} of one algorithm call, carrying
+   * {@link GlobalConfiguration#CYPHER_ALGO_MAX_WORKING_MEMORY}.
+   */
+  protected MemoryBudget newMemoryBudget(final Database db) {
+    return new MemoryBudget(db.getConfiguration().getValueAsLong(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY));
   }
 
   /** Multiplies two non-negative longs, saturating at {@link Long#MAX_VALUE} instead of wrapping. */
   protected static long saturatingProduct(final long a, final long b) {
     try {
       return Math.multiplyExact(a, b);
+    } catch (final ArithmeticException e) {
+      return Long.MAX_VALUE;
+    }
+  }
+
+  /**
+   * Adds two non-negative longs, saturating at {@link Long#MAX_VALUE} instead of wrapping.
+   * <p>
+   * The companion to {@link #saturatingProduct(long, long)}, and required wherever a footprint estimate mixes the
+   * two: a saturated product plus a per-row overhead wraps to a large <em>negative</em> number, and a negative
+   * estimate passes {@link MemoryBudget#reserve} unconditionally - the budget check would be silently disabled by
+   * exactly the input it exists to refuse. No current caller can reach that (every estimate here is bounded by an
+   * {@code int}-sized count), so this closes the shape rather than an instance.
+   * </p>
+   */
+  protected static long saturatingSum(final long a, final long b) {
+    try {
+      return Math.addExact(a, b);
     } catch (final ArithmeticException e) {
       return Long.MAX_VALUE;
     }

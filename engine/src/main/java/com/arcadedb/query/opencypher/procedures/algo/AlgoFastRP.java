@@ -23,6 +23,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.List;
 import java.util.Map;
@@ -62,6 +63,9 @@ import java.util.stream.Stream;
  * </pre>
  * </p>
  *
+ * <p>Working set: two {@code nodeCount x dimensions} matrices, reserved through
+ * {@link AbstractAlgoProcedure.MemoryBudget} before either is allocated.</p>
+ *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class AlgoFastRP extends AbstractAlgoProcedure {
@@ -98,7 +102,7 @@ public class AlgoFastRP extends AbstractAlgoProcedure {
 
     final Map<String, Object> config = args.length > 0 ? extractMap(args[0], "config") : null;
     final int dimensions = config != null && config.get("dimensions") instanceof Number n ? extractEmbeddingDimension(n, "dimensions") : 128;
-    final int iterations = config != null && config.get("iterations") instanceof Number n ? extractInt(n, "iterations") : 4;
+    final int iterations = config != null && config.get("iterations") instanceof Number n ? extractInt(n, "iterations", 1) : 4;
     final double normStrength = config != null && config.get("normalization") instanceof Number n ? n.doubleValue() : 0.0;
     final double selfInfluence = config != null && config.get("selfInfluence") instanceof Number n ? n.doubleValue() : 0.0;
     final long seed = config != null && config.get("seed") instanceof Number n ? n.longValue() : -1L;
@@ -106,11 +110,22 @@ public class AlgoFastRP extends AbstractAlgoProcedure {
     final Vertex.DIRECTION dir = parseDirection(config != null ? (String) config.get("direction") : null);
 
     final Database db = context.getDatabase();
+    final WorkGuard guard = newWorkGuard(context);
     final GraphData graph = loadGraph(db, null, relTypes, context);
 
     final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
+
+    // The two nodeCount x dimensions matrices below are the whole working set of this procedure, and the only
+    // allocation of any size it makes: it has no walk buffer, so nothing else would ever price them. `dimensions`
+    // is capped at MAX_EMBEDDING_DIMENSION, which bounds one embedding ROW at 32 KB and says nothing about the
+    // matrix - at the default of 128 the pair costs about 2 KB per node, 2 GB at a million nodes. The node count
+    // and the knob are all the estimate needs, so the reservation comes before the adjacency lists are
+    // materialised: a call that cannot afford its matrices should not first pay the O(edges) build.
+    newMemoryBudget(db).reserve(saturatingProduct(2L, matrixBytes(n, dimensions, DOUBLE_BYTES)),
+        "the embedding matrices", "2 matrices of " + n + " nodes x dimensions=" + dimensions);
+
     final int[][] adj = graph.adjacency(dir, relTypes);
 
     final int[] degree = new int[n];
@@ -137,7 +152,12 @@ public class AlgoFastRP extends AbstractAlgoProcedure {
     // Iterative neighbourhood propagation
     final double[][] newEmbed = new double[n][dimensions];
     for (int iter = 0; iter < iterations; iter++) {
+      // iterations is a caller-supplied knob and this kernel has no convergence test at all, so it always runs the
+      // full count: the guard is the only thing that can end a run the caller no longer wants.
+      guard.check();
       for (int i = 0; i < n; i++) {
+        // A single propagation walks the whole graph, so on a large one the checkpoint belongs inside it too.
+        guard.checkPeriodically(i);
         final int deg = degree[i];
         // Self contribution
         for (int d = 0; d < dimensions; d++)
@@ -159,8 +179,10 @@ public class AlgoFastRP extends AbstractAlgoProcedure {
         normalizeL2(newEmbed[i]);
       }
       // Swap buffers
-      for (int i = 0; i < n; i++)
+      for (int i = 0; i < n; i++) {
+        guard.checkPeriodically(i);
         System.arraycopy(newEmbed[i], 0, embed[i], 0, dimensions);
+      }
     }
 
     return IntStream.range(0, n).mapToObj(i -> {
