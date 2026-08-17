@@ -339,10 +339,14 @@ public class CypherExecutionPlan {
    * Makes a nested plan share the enclosing command's deadline instead of starting a fresh budget from now.
    * Without this a statement could buy itself unlimited time by nesting: every {@code CALL { }} body, every
    * correlated {@code COUNT { }} probe and every UNION branch runs on a context of its own (issue #6266).
+   * <p>
+   * What reaching the deadline means travels with it: an outer {@code TIMEOUT n RETURN} must end the nested
+   * plan's rows too, not abort it with the exception the clause promised not to raise (issue #6304).
    */
   private static void inheritCommandDeadline(final BasicCommandContext context, final CommandContext outerContext) {
     if (outerContext != null)
-      context.setCommandDeadline(outerContext.getCommandDeadline(), outerContext.getCommandDeadlineDescription());
+      context.setCommandDeadline(outerContext.getCommandDeadline(), outerContext.getCommandDeadlineDescription(),
+          outerContext.isCommandDeadlinePartial());
   }
 
   private boolean canUseOptimizedPhysicalPlan() {
@@ -5104,15 +5108,23 @@ public class CypherExecutionPlan {
         : probeDir == Direction.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.BOTH;
 
     // Get the two shared endpoint variables from probe pattern
-    final String probeVar1 = probePattern.getFirstNode().getVariable();
-    final String probeVar2 = probePattern.getLastNode().getVariable();
+    final NodePattern probeNode1 = probePattern.getFirstNode();
+    final NodePattern probeNode2 = probePattern.getLastNode();
+    final String probeVar1 = probeNode1.getVariable();
+    final String probeVar2 = probeNode2.getVariable();
     if (probeVar1 == null || probeVar2 == null)
       return null;
+    if (!hasPushDownRepresentableLabel(probeNode1) || !hasPushDownRepresentableLabel(probeNode2))
+      return null;
+
+    // The two patterns name the same two variables, so a label written on the probe side constrains the arm
+    // that ends there just as one written on the build side does. Reading only the build side dropped it
+    // silently, on the CSR path and the OLTP one alike (issue #6304).
+    final String probeLabel1 = probeNode1.hasLabels() ? probeNode1.getLabels().get(0) : null;
+    final String probeLabel2 = probeNode2.hasLabels() ? probeNode2.getLabels().get(0) : null;
 
     // Build pattern: extract chain and find which hops reach the shared endpoints
     final int buildHops = buildPattern.getRelationshipCount();
-    final String[] buildEdgeTypes = new String[buildHops];
-    final Vertex.DIRECTION[] buildDirections = new Vertex.DIRECTION[buildHops];
 
     // Find the build chain's start node (a non-shared variable, e.g., "c" in Q2)
     // The shared variables (probeVar1, probeVar2) should appear as targets of hops
@@ -5139,6 +5151,8 @@ public class CypherExecutionPlan {
 
     // Determine the build chain start label
     final NodePattern startNode = buildPattern.getNode(startNodeIdx);
+    if (!hasPushDownRepresentableLabel(startNode))
+      return null;
     final String buildStartLabel = startNode.hasLabels() ? startNode.getLabels().get(0) : null;
     if (buildStartLabel == null)
       return null;
@@ -5161,6 +5175,8 @@ public class CypherExecutionPlan {
       bwdDir.add(d == Direction.OUT ? Vertex.DIRECTION.OUT
           : d == Direction.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.BOTH);
       final NodePattern targetNode = buildPattern.getNode(i);
+      if (!hasPushDownRepresentableLabel(targetNode))
+        return null;
       bwdLabels.add(targetNode.hasLabels() ? targetNode.getLabels().get(0) : null);
       final String nodeVar = targetNode.getVariable();
       if (nodeVar != null && (nodeVar.equals(probeVar1) || nodeVar.equals(probeVar2))) {
@@ -5184,6 +5200,8 @@ public class CypherExecutionPlan {
       fwdDir.add(d == Direction.OUT ? Vertex.DIRECTION.OUT
           : d == Direction.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.BOTH);
       final NodePattern targetNode = buildPattern.getNode(i + 1);
+      if (!hasPushDownRepresentableLabel(targetNode))
+        return null;
       fwdLabels.add(targetNode.hasLabels() ? targetNode.getLabels().get(0) : null);
       final String nodeVar = targetNode.getVariable();
       if (nodeVar != null && (nodeVar.equals(probeVar1) || nodeVar.equals(probeVar2))) {
@@ -5216,8 +5234,37 @@ public class CypherExecutionPlan {
       arm2Labels = bwdLabels.toArray(new String[0]);
     }
 
+    // Each arm's last hop lands on a shared variable, which is the one the probe pattern may also have
+    // labelled. Both labels are in force, and the operator carries one per hop: when the two disagree the
+    // filter is their intersection, which one name cannot express, so the push-down declines and the ordinary
+    // pipeline - which evaluates both - answers instead.
+    if (labelsConflict(arm1Labels[arm1Labels.length - 1], probeLabel1)
+        || labelsConflict(arm2Labels[arm2Labels.length - 1], probeLabel2))
+      return null;
+    if (probeLabel1 != null)
+      arm1Labels[arm1Labels.length - 1] = probeLabel1;
+    if (probeLabel2 != null)
+      arm2Labels[arm2Labels.length - 1] = probeLabel2;
+
     return new PairHashJoinOp(buildStartLabel, arm1ET, arm1Dir, arm1Labels,
         arm2ET, arm2Dir, arm2Labels, probeEdgeType, probeDirection);
+  }
+
+  /**
+   * Whether a count push-down can express this node's labels as the single name it keys a bucket set on.
+   * <p>
+   * {@code (a:A:B)} keeps only what carries both and {@code (a:A|B)} keeps what carries either; taking the first
+   * of the list turns each of them into {@code (a:A)}, which is neither. An operator built on that filter counts
+   * a set the pattern did not describe, so the detector declines and leaves the query to the ordinary pipeline
+   * (issue #6304).
+   */
+  private static boolean hasPushDownRepresentableLabel(final NodePattern node) {
+    return !node.hasLabels() || (node.getLabels().size() == 1 && !node.isLabelDisjunction());
+  }
+
+  /** Whether two labels written on the same variable name different types, which no single label can stand for. */
+  private static boolean labelsConflict(final String a, final String b) {
+    return a != null && b != null && !a.equals(b);
   }
 
   /**

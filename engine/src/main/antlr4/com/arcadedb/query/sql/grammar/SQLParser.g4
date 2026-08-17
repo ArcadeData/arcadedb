@@ -218,7 +218,7 @@ selectStatement
 /**
  * TRAVERSE statement
  * TRAVERSE [fields] FROM target [MAXDEPTH n] [WHILE condition]
- * [LIMIT n] [STRATEGY strategy]
+ * [LIMIT n] [STRATEGY strategy] [TIMEOUT n]
  */
 traverseStatement
     : TRAVERSE (traverseProjectionItem (COMMA traverseProjectionItem)*)?
@@ -227,12 +227,13 @@ traverseStatement
       (WHILE whereClause)?
       limit?
       (STRATEGY (DEPTH_FIRST | BREADTH_FIRST))?
+      timeout?
     ;
 
 /**
  * MATCH statement
  * MATCH pattern [, pattern]* RETURN [DISTINCT] items
- * [GROUP BY] [ORDER BY] [UNWIND] [SKIP_KW] [LIMIT]
+ * [GROUP BY] [ORDER BY] [UNWIND] [SKIP_KW] [LIMIT] [TIMEOUT n]
  */
 matchStatement
     : MATCH matchExpression (COMMA (NOT? matchExpression))*
@@ -242,6 +243,7 @@ matchStatement
       unwind?
       skip?
       limit?
+      timeout?
     ;
 
 matchReturnItem

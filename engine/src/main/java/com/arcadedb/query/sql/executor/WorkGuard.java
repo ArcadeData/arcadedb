@@ -19,17 +19,17 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.PartialResultTimeoutException;
 import com.arcadedb.exception.TimeoutException;
 
 /**
  * Cooperative abort check for a loop whose length is a property of the data rather than of the statement.
  * <p>
  * The point of a guard rather than a step is granularity. A checkpoint placed <em>between</em> two batches of
- * rows - which is all {@code TimeoutStep} and {@code AccumulatingTimeoutStep} can be - bounds nothing when the
- * unbounded work happens inside one batch: a filter that scans a hundred million records before yielding its
- * first row spends the whole scan inside a single {@code hasNext()}, and the enclosing step is not re-entered
- * until that call returns. A guard put in the scan loop itself is inside the unbounded thing (issues #6216,
- * #6266).
+ * rows - which is all {@code TimeoutStep} can be - bounds nothing when the unbounded work happens inside one
+ * batch: a filter that scans a hundred million records before yielding its first row spends the whole scan
+ * inside a single {@code hasNext()}, and the enclosing step is not re-entered until that call returns. A guard
+ * put in the scan loop itself is inside the unbounded thing (issues #6216, #6266).
  * <p>
  * The deadline is read once from the {@link CommandContext} and then only compared, so nesting cannot extend
  * the budget: a subquery, a procedure call or a per-row expansion all share the command's single deadline. The
@@ -56,18 +56,26 @@ public final class WorkGuard {
    * fresh object so that guarding a hot loop costs nothing at all when the operator is disabled, which is the
    * case for every query on a server that has not set {@code arcadedb.command.timeout}.
    */
-  private static final WorkGuard UNBOUNDED = new WorkGuard("the command", null, Long.MAX_VALUE, false);
+  private static final WorkGuard UNBOUNDED = new WorkGuard("the command", null, Long.MAX_VALUE, false, false);
 
-  private final String        what;
+  private final String         what;
   private final CommandContext context;
-  private final long          deadline;
-  private final boolean       interruptible;
+  private final long           deadline;
+  private final boolean        interruptible;
+  /**
+   * Whether reaching {@link #deadline} means "yield what you have" rather than "fail" - a SQL
+   * {@code TIMEOUT n RETURN} clause. Read once with the deadline rather than on every check, because the two are
+   * one fact about the bound and a check is a field load and a comparison.
+   */
+  private final boolean        yieldPartialResults;
 
-  private WorkGuard(final String what, final CommandContext context, final long deadline, final boolean interruptible) {
+  private WorkGuard(final String what, final CommandContext context, final long deadline, final boolean interruptible,
+      final boolean yieldPartialResults) {
     this.what = what;
     this.context = context;
     this.deadline = deadline;
     this.interruptible = interruptible;
+    this.yieldPartialResults = yieldPartialResults;
   }
 
   /**
@@ -82,9 +90,9 @@ public final class WorkGuard {
     // No shared instance here even when nothing is configured: the guard still tests the interrupt flag, and
     // it has to name the caller when it aborts.
     if (context == null)
-      return new WorkGuard(what, null, Long.MAX_VALUE, true);
+      return new WorkGuard(what, null, Long.MAX_VALUE, true, false);
 
-    return new WorkGuard(what, context, context.getCommandDeadline(), true);
+    return new WorkGuard(what, context, context.getCommandDeadline(), true, context.isCommandDeadlinePartial());
   }
 
   /**
@@ -100,7 +108,7 @@ public final class WorkGuard {
     if (deadline == Long.MAX_VALUE)
       return UNBOUNDED;
 
-    return new WorkGuard("the command", context, deadline, false);
+    return new WorkGuard("the command", context, deadline, false, context.isCommandDeadlinePartial());
   }
 
   /**
@@ -110,10 +118,15 @@ public final class WorkGuard {
   public void check() {
     if (interruptible && Thread.interrupted())
       throw new CommandExecutionException(what + " has been interrupted");
-    if (deadline < Long.MAX_VALUE && System.currentTimeMillis() > deadline)
+    if (deadline < Long.MAX_VALUE && System.currentTimeMillis() > deadline) {
       // The bound is named by the context rather than assumed to be the setting: a SQL TIMEOUT clause pins its
       // own deadline here too, and reporting the configuration's value for it would be a lie.
-      throw new TimeoutException(what + " exceeded the " + context.getCommandDeadlineDescription());
+      final String message = what + " exceeded the " + context.getCommandDeadlineDescription();
+      // A RETURN-strategy clause asked for the rows produced so far. The guard still has to stop by throwing -
+      // it sits inside the loop - but it throws something the owning step recognizes as a request to end the
+      // result set rather than to fail (issue #6304).
+      throw yieldPartialResults ? new PartialResultTimeoutException(message) : new TimeoutException(message);
+    }
   }
 
   /**

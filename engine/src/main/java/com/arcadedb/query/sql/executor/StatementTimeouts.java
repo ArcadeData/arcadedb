@@ -26,10 +26,10 @@ import com.arcadedb.query.sql.parser.Timeout;
  * <p>
  * Without this the two mechanisms never met. {@code arcadedb.command.timeout} is resolved from the
  * configuration by the context; a {@code TIMEOUT} clause is resolved by the planner and known only to
- * {@link TimeoutStep}/{@link AccumulatingTimeoutStep}. So {@code SELECT ... TIMEOUT 100} on a server that
- * leaves the global setting at its default of 0 - the common case, since a clause is how one query is normally
- * bounded - reproduced exactly the bug issue #6266 is about: a filter that rejects every record scans to the
- * end inside one {@code hasNext()}, and the step that owns the clause is not re-entered until it returns.
+ * {@link TimeoutStep}. So {@code SELECT ... TIMEOUT 100} on a server that leaves the global setting at its
+ * default of 0 - the common case, since a clause is how one query is normally bounded - reproduced exactly the
+ * bug issue #6266 is about: a filter that rejects every record scans to the end inside one {@code hasNext()},
+ * and the step that owns the clause is not re-entered until it returns.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -37,13 +37,9 @@ final class StatementTimeouts {
   private StatementTimeouts() {
   }
 
-  /**
-   * The deadline in force before any clause narrows it, to be captured once per execution and passed back to
-   * {@link #publish}. Captured rather than re-read because {@link AccumulatingTimeoutStep} republishes on every
-   * batch: re-reading would compare the clause against the instant the clause itself pinned last time.
-   */
-  static long ceilingOf(final CommandContext context) {
-    return context == null ? Long.MAX_VALUE : context.getCommandDeadline();
+  /** What to call this clause when a check aborts on it - the same name whichever check does the aborting. */
+  static String describe(final Timeout clause) {
+    return "TIMEOUT clause of " + clause.getVal() + "ms";
   }
 
   /**
@@ -59,30 +55,32 @@ final class StatementTimeouts {
   }
 
   /**
-   * Pins {@code clauseDeadline} on the context, unless {@code ceiling} - the command's own bound - is already
-   * the earlier of the two.
+   * Pins {@code clauseDeadline} on the context, unless the command's own bound is already the earlier of the two.
    * <p>
    * The earlier wins because both are in force: an operator's {@code arcadedb.command.timeout} is a ceiling over
    * every statement, and one asking for more time than the ceiling allows does not get it. The coarse steps
    * never applied that - a clause simply replaced the global default at planning time - and applying it here is
    * the conservative direction, since a statement can still ask for less.
    * <p>
-   * Nothing is published for the {@code RETURN} failure strategy. That clause asks for the rows produced so far
-   * rather than an exception, and a guard in a scan loop knows only how to throw; widening the enforcement must
-   * not quietly turn a documented "return what you have" into a failure.
+   * A {@code RETURN} clause is published too, but marked as one that yields rather than fails. It asks for the
+   * rows produced so far instead of an exception, and a guard in a scan loop knows only how to throw - so the
+   * guard throws {@link com.arcadedb.exception.PartialResultTimeoutException} for such a bound and
+   * {@link TimeoutStep} converts it into the end of its result set. Leaving the clause unpublished instead, as
+   * this did at first, was the safe reading of "must not turn a documented return-what-you-have into a failure",
+   * but it left that one clause shape with only the between-batches granularity issue #6266 was about (#6304).
    *
    * @param clauseDeadline absolute epoch-millis instant the clause expires at
-   * @param ceiling        the value {@link #ceilingOf} returned at the start of this execution
    */
-  static void publish(final CommandContext context, final Timeout clause, final long clauseDeadline,
-      final long ceiling) {
-    if (context == null || Timeout.RETURN.equals(clause.getFailureStrategy()))
+  static void publish(final CommandContext context, final Timeout clause, final long clauseDeadline) {
+    if (context == null)
       return;
 
-    if (ceiling <= clauseDeadline)
-      // The command's own bound is the stricter one, and it already carries its own description.
+    if (context.getCommandDeadline() <= clauseDeadline)
+      // The command's own bound is the stricter one, and it already carries its own description. Note this also
+      // keeps a RETURN clause from softening a stricter bound in force around it: the ceiling stays as it is,
+      // including what reaching it means.
       return;
 
-    context.setCommandDeadline(clauseDeadline, "TIMEOUT clause of " + clause.getVal() + "ms");
+    context.setCommandDeadline(clauseDeadline, describe(clause), Timeout.RETURN.equals(clause.getFailureStrategy()));
   }
 }
