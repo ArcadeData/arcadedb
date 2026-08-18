@@ -117,8 +117,9 @@ public final class Labels {
    * extending a composite reported the composite's synthetic name instead of the two labels it encodes.
    * <p>
    * A composite name never leaves this method: it is an encoding of the labels below it, so the walk goes through it
-   * to its supertypes rather than reporting it. A type that merely happens to be <i>named</i> like a composite but
-   * declares no supertype is a type somebody created, and keeps its name.
+   * to its supertypes rather than reporting it. Which types those are is decided structurally, by
+   * {@link #isLabelComposite} - a type somebody created whose name merely contains the separator keeps its name and
+   * is a label like any other.
    *
    * @param vertex the vertex to get labels from
    *
@@ -147,23 +148,21 @@ public final class Labels {
 
     final Set<String> labels = new TreeSet<>();
     collectLabels(type, labels);
-    return labels.isEmpty() ? List.of() : new ArrayList<>(labels);
+    return new ArrayList<>(labels);
   }
 
   /**
    * Adds {@code type}'s label to {@code out} unless the type is a synthetic composite, then recurses into its
-   * supertypes. A composite with no supertypes is a user type that happens to carry the separator in its name, not
-   * an encoding, so it contributes its name like any other.
+   * supertypes.
    * <p>
    * The base vertex name is filtered at the entry point only, never here: {@code V} is a perfectly ordinary label
    * that a query may write - the openCypher TCK does, in {@code (b:U:V:W:X:Y:Z)} - and a supertype called {@code V}
    * is one a node genuinely answers to.
    */
   private static void collectLabels(final DocumentType type, final Set<String> out) {
-    final String typeName = type.getName();
     final List<DocumentType> superTypes = type.getSuperTypes();
-    if (!isCompositeTypeName(typeName) || superTypes.isEmpty())
-      out.add(typeName);
+    if (!isLabelComposite(type, superTypes))
+      out.add(type.getName());
     for (int i = 0; i < superTypes.size(); i++)
       collectLabels(superTypes.get(i), out);
   }
@@ -177,7 +176,7 @@ public final class Labels {
    * {@code Extra~Manager} extending both - the vertex stays a {@code Manager} and therefore stays an {@code Employee}
    * too. Deriving the composite from the full label set instead would have built {@code Employee~Extra} and dropped
    * the subtype, which is what issue #6363 reports. For a composite the answer is the labels it encodes, reached
-   * through its supertypes exactly as before.
+   * through its supertypes exactly as before, and a type that only looks like one by name keeps its name.
    *
    * @param vertex the vertex about to be relabelled
    *
@@ -189,12 +188,12 @@ public final class Labels {
 
     if (isBaseVertexTypeName(typeName))
       return List.of();
-    if (!isCompositeTypeName(typeName) || type.getSuperTypes().isEmpty())
+    if (!isLabelComposite(type, type.getSuperTypes()))
       return List.of(typeName);
 
     final Set<String> labels = new TreeSet<>();
     collectOwnLabels(type, labels);
-    return labels.isEmpty() ? List.of() : new ArrayList<>(labels);
+    return new ArrayList<>(labels);
   }
 
   /**
@@ -202,14 +201,38 @@ public final class Labels {
    * its ancestors are reached from it and do not have to be listed alongside it.
    */
   private static void collectOwnLabels(final DocumentType type, final Set<String> out) {
-    final String typeName = type.getName();
     final List<DocumentType> superTypes = type.getSuperTypes();
-    if (!isCompositeTypeName(typeName) || superTypes.isEmpty()) {
-      out.add(typeName);
+    if (!isLabelComposite(type, superTypes)) {
+      out.add(type.getName());
       return;
     }
     for (int i = 0; i < superTypes.size(); i++)
       collectOwnLabels(superTypes.get(i), out);
+  }
+
+  /**
+   * Whether a type is one this class built to carry several labels, as opposed to a type somebody created whose name
+   * merely contains the separator.
+   * <p>
+   * Asked structurally rather than by name: a composite's name is exactly the deduplicated, sorted, separator-joined
+   * names of its own supertypes, which is what {@link #ensureCompositeType} writes and what nothing else produces.
+   * The name alone cannot answer it - {@code isCompositeTypeName} is a heuristic, and under it a user type called
+   * {@code a~b} that extends anything would have had its own name dropped from both the label list and, worse, from
+   * the set a relabelling rebuilds the type out of.
+   *
+   * @param type       the type to classify
+   * @param superTypes {@code type}'s direct supertypes, passed in because every caller already has them
+   *
+   * @return true when the type is a label composite and its name is therefore an encoding, not a label
+   */
+  private static boolean isLabelComposite(final DocumentType type, final List<DocumentType> superTypes) {
+    // A composite always encodes at least two labels: one label is the type itself, never a composite.
+    if (superTypes.size() < 2 || !isCompositeTypeName(type.getName()))
+      return false;
+    final List<String> superTypeNames = new ArrayList<>(superTypes.size());
+    for (int i = 0; i < superTypes.size(); i++)
+      superTypeNames.add(superTypes.get(i).getName());
+    return type.getName().equals(getCompositeTypeName(superTypeNames));
   }
 
   /**

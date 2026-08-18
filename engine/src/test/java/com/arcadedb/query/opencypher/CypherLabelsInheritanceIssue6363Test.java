@@ -176,6 +176,22 @@ class CypherLabelsInheritanceIssue6363Test {
   }
 
   @Test
+  void aUserTypeWhoseNameMerelyContainsTheSeparatorKeepsIt() {
+    // Whether a type is a composite is decided structurally - its name is exactly the sorted, joined names of its
+    // own supertypes - and not by looking for a tilde. Under the name heuristic alone, a type somebody created and
+    // called 'a~b' would have lost its own name from labels() AND from the set a relabelling rebuilds it out of,
+    // which would have moved the vertex out of it on the next SET.
+    database.command("sql", "CREATE VERTEX TYPE `a~b` EXTENDS Employee");
+    database.transaction(() -> database.command("sql", "INSERT INTO `a~b` SET k = 'x1'"));
+
+    assertThat(labels("MATCH (n {k:'x1'}) RETURN labels(n) AS l")).containsExactly("Employee", "a~b");
+
+    database.transaction(() -> database.command("opencypher", "MATCH (n {k:'x1'}) SET n:Extra"));
+    assertThat(count("MATCH (n:`a~b`) RETURN count(n) AS c")).isEqualTo(1);
+    assertThat(labels("MATCH (n {k:'x1'}) RETURN labels(n) AS l")).containsExactly("Employee", "Extra", "a~b");
+  }
+
+  @Test
   void anUnlabelledVertexStillReportsNoLabels() {
     database.transaction(() -> database.command("opencypher", "CREATE ({k:'u1'})"));
     assertThat(labels("MATCH (n {k:'u1'}) RETURN labels(n) AS l")).isEmpty();

@@ -38,8 +38,13 @@ is measured against: **`L IN labels(n)` and `n:L` answer the same question**, be
 
 Two names are special and only one of them is filtered here:
 
-- a **composite** name (`A~B`) is an encoding, so the walk goes *through* it to the labels it encodes. A
-  type merely *named* with a `~` but declaring no supertype is a type somebody created and keeps its name.
+- a **composite** name (`A~B`) is an encoding, so the walk goes *through* it to the labels it encodes. Which
+  types those are is decided **structurally**, not by looking for a `~`: a composite's name is exactly the
+  deduplicated, sorted, separator-joined names of its own supertypes, which is what `ensureCompositeType`
+  writes and what nothing else produces. A type somebody created and called `a~b` keeps its name and is a
+  label like any other - under the name heuristic alone it would have lost its own name from `labels()` and,
+  worse, from the set a relabelling rebuilds its type out of, so the next `SET` would have moved the vertex
+  out of it.
 - `V`/`Vertex` is the type a node lands in when it carries no label at all, so a node whose **own** type is
   `V` reports an empty list. A *supertype* called `V` is not filtered: `V` is an ordinary label a query may
   write, and the openCypher TCK does write it (`CREATE (b:U:V:W:X:Y:Z)`).
@@ -106,7 +111,7 @@ collapses to `getTypeOrNull(x) instanceof Y`.
 
 - `CypherLabelsInheritanceIssue6363Test` - the read side under inheritance and under a type extending a
   composite, `SET`/`REMOVE` on a subtype vertex asserted through `MATCH` and not only through `labels()`,
-  the refused inherited removal, the `V`-as-a-label case, and the plain composite, which must keep behaving
-  exactly as it did
+  the refused inherited removal, the `V`-as-a-label and `a~b`-as-a-type-name cases, and the plain composite,
+  which must keep behaving exactly as it did
 - `CypherDisjunctionCardinalityIssue6363Test` - the summed estimate pinned through `EXPLAIN`, and
   `getTypeOrNull` on a present and an absent type
