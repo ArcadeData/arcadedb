@@ -712,7 +712,8 @@ public class TimeSeriesEngine implements AutoCloseable {
    * reports both: a caller reading a sample total of zero on a type that holds millions could not otherwise tell
    * "checked and clean" from "not looked at", which is the state this whole pass exists to end.
    */
-  public record IntegrityReport(List<String> problems, int shards, long samples, long sealedBlocks) {
+  public record IntegrityReport(List<String> problems, List<String> repairs, int shards, long samples,
+                                long sealedBlocks) {
   }
 
   /**
@@ -732,25 +733,42 @@ public class TimeSeriesEngine implements AutoCloseable {
    * <p>
    * Each line names the shard it came from, since a type has as many of each file as it has shards and an operator
    * acting on a finding needs to know which one to act on.
+   * <p>
+   * The two knobs in {@link TimeSeriesIntegrity.Options} are {@code DEEP}, which decodes every sealed block rather
+   * than only verifying its CRC, and {@code FIX}, which repairs derived bookkeeping and never a sample. Both are
+   * documented where they are decided: {@code DatabaseChecker.setDeep} and {@code DatabaseChecker.checkTimeSeries}.
    */
-  public IntegrityReport checkIntegrity() throws IOException {
+  public IntegrityReport checkIntegrity(final TimeSeriesIntegrity.Options options) throws IOException {
     final List<String> problems = new ArrayList<>();
+    final List<String> repairs = new ArrayList<>();
     long samples = 0;
     long sealedBlocks = 0;
 
     for (final TimeSeriesShard shard : shards) {
-      final TimeSeriesShard.IntegrityReport report = shard.checkIntegrity();
+      final TimeSeriesShard.IntegrityReport report = shard.checkIntegrity(options);
       for (final String problem : report.problems())
         problems.add("shard " + shard.getShardIndex() + " " + problem);
+      for (final String repair : report.repairs())
+        repairs.add("shard " + shard.getShardIndex() + " " + repair);
       samples += report.samples();
       sealedBlocks += report.sealedBlocks();
     }
 
     if (tagDictionary != null)
+      // Report-only, with no FIX arm of its own: the dictionary's entry count is derived the same way the other
+      // counters are, but an id it can no longer resolve is a TAG value that no longer exists anywhere, and there
+      // is nothing to recompute it from - the mutable rows hold the id, not the string.
       for (final String problem : tagDictionary.checkIntegrity())
         problems.add("tag dictionary: " + problem);
 
-    return new IntegrityReport(problems, shardCount, samples, sealedBlocks);
+    return new IntegrityReport(problems, repairs, shardCount, samples, sealedBlocks);
+  }
+
+  /**
+   * Report-only overload - the shape this had before #6360.
+   */
+  public IntegrityReport checkIntegrity() throws IOException {
+    return checkIntegrity(TimeSeriesIntegrity.Options.REPORT_ONLY);
   }
 
   public int getShardCount() {

@@ -1109,6 +1109,9 @@ checkDatabaseStatement
       // Issue #6189: opt-in reclaim of files this node holds that no schema component was ever built for.
       // Deliberately its own clause too - see DatabaseChecker.setReclaimUnreferencedFiles.
       (RECLAIM UNREFERENCED FILES)?
+      // Issue #6360: the tier of checking that DECODES the data instead of reconciling what describes it. See
+      // DatabaseChecker.setDeep.
+      (DEEP)?
       (COMPRESS)?
     ;
 
@@ -1709,6 +1712,7 @@ identifier
     | RECLAIM
     | UNREFERENCED
     | FILES
+    | DEEP
     | FORCE
     | OPTIMIZE
     | INVERSE
