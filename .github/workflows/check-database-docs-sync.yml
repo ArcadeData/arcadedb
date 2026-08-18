@@ -1,0 +1,73 @@
+#
+# Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+# SPDX-License-Identifier: Apache-2.0
+#
+
+# Issue #6406 item 2: RECORD (#5680), DELETE ORPHANS (#6090) and RECLAIM UNREFERENCED FILES
+# (#6189) each added a clause to CHECK DATABASE's grammar without a matching edit to its
+# documented syntax in arcadedb-docs - three separate PRs missing the same line, because nothing
+# checked. This job is what checks, every time the grammar rule that can drift changes.
+#
+# It always diffs against arcadedb-docs' CURRENT default branch, so if a grammar change and its
+# doc update are sequenced as two separate PRs (grammar landing first), the grammar PR's run of
+# this job is red until the docs PR merges - that is the check doing its job, not a bug: the two
+# really are out of sync at that point, and this job exists to say so rather than let it pass
+# silently. Land the doc update first, or accept the red job until it does; workflow_dispatch
+# below re-runs the check on demand once arcadedb-docs catches up.
+name: CHECK DATABASE docs sync
+
+on:
+  pull_request:
+    paths:
+      - 'engine/src/main/antlr4/com/arcadedb/query/sql/grammar/SQLParser.g4'
+      - '.github/scripts/check-database-docs-sync.py'
+      - '.github/workflows/check-database-docs-sync.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'engine/src/main/antlr4/com/arcadedb/query/sql/grammar/SQLParser.g4'
+  workflow_dispatch:
+    # Allow manual trigger, e.g. to re-check after an arcadedb-docs-only edit.
+
+permissions:
+  contents: read
+
+jobs:
+  check-sync:
+    name: Check CHECK DATABASE grammar/docs sync
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout arcadedb
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: arcadedb
+
+      # Read-only, public repo, no credentials needed - this job only ever reads
+      # sql-database-admin.adoc from arcadedb-docs' default branch, it never writes to it.
+      - name: Checkout arcadedb-docs
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ArcadeData/arcadedb-docs
+          path: arcadedb-docs
+
+      - name: Compare the grammar's CHECK DATABASE clauses against the documented syntax
+        run: |
+          arcadedb/.github/scripts/check-database-docs-sync.py \
+            arcadedb/engine/src/main/antlr4/com/arcadedb/query/sql/grammar/SQLParser.g4 \
+            arcadedb-docs/src/main/asciidoc/reference/sql/sql-database-admin.adoc
