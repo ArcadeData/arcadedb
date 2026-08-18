@@ -235,4 +235,20 @@ class Issue6389FunctionArgumentTest extends TestHelper {
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("numeric");
   }
+
+  /**
+   * The decimal fallback must not hand an unbounded literal to BigDecimal: a character index is ten digits and a
+   * sign, so a literal orders of magnitude longer is refused by length rather than parsed to find out.
+   */
+  @Test
+  void stringIndexMethodsRefuseAnAbsurdlyLongLiteral() {
+    final String huge = "9".repeat(100_000);
+    assertThatThrownBy(() -> database.query("sql", "SELECT 'abcdef'.substring('" + huge + "') AS a").next())
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("limit");
+    // A long-but-plausible literal still saturates rather than being refused.
+    try (final ResultSet rs = database.query("sql", "SELECT 'abcdef'.substring('00000000000000000002.5') AS a")) {
+      assertThat(rs.next().<String>getProperty("a")).isEqualTo("cdef");
+    }
+  }
 }
