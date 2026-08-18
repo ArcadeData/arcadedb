@@ -1649,17 +1649,21 @@ public class CypherExecutionPlan {
    * variable shared with a following MATCH stopped being recognised as already bound - and a shared variable
    * that is not recognised is a Cartesian product rather than a join. A {@code WITH *, expr AS alias} both
    * forwards and adds.
+   * <p>
+   * The star is recognised by {@link ReturnClause.ReturnItem#isStar()}, not by the projected name being {@code *}:
+   * a user can write a variable called {@code `*`}, and {@code WITH n AS `*`} is an ordinary projection that resets
+   * the scope to that one name, not a star that forwards it (issue #6334).
    */
   private static void applyProjectionToScope(final List<ReturnClause.ReturnItem> items, final Set<String> scope) {
     boolean forwardsAll = false;
     final List<String> projected = new ArrayList<>(items.size());
     for (final ReturnClause.ReturnItem item : items) {
-      final String alias = item.getAlias();
-      final String name = alias != null ? alias : item.getExpression().getText();
-      if ("*".equals(name))
+      if (item.isStar())
         forwardsAll = true;
-      else
-        projected.add(name);
+      else {
+        final String alias = item.getAlias();
+        projected.add(alias != null ? alias : item.getExpression().getText());
+      }
     }
     if (!forwardsAll)
       scope.clear();
@@ -3972,7 +3976,7 @@ public class CypherExecutionPlan {
     // Collect projected variable names from WITH items
     final Set<String> projectedVars = new LinkedHashSet<>();
     for (final ReturnClause.ReturnItem item : withClause.getItems()) {
-      if ("*".equals(item.getOutputName()))
+      if (item.isStar())
         return currentStep; // WITH * keeps everything
       projectedVars.add(item.getOutputName());
     }

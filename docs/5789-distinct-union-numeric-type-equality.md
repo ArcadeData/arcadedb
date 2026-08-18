@@ -49,6 +49,10 @@ from the planner. Left unchanged since no test can exercise it and touching unre
 risk without verifiable benefit; flagged here in case a future planner change wires it up, since it
 would need the same fix.
 
+**Update (#6336):** the class was deleted. It had been dead since the commit that introduced it - the
+`collect(DISTINCT ...)` optimization it was written for landed through `CypherFunctionFactory` and
+`AggregationStep` instead - so there is no longer a second copy of this pattern to keep in step.
+
 ## Tests
 
 New file: `engine/src/test/java/com/arcadedb/query/opencypher/Issue5789NumericDistinctEqualityTest.java`
@@ -83,5 +87,5 @@ to the four call sites touched, all scoped to the Cypher engine's optimizer exec
 
 ## Recommendations
 
-- If `EagerDistinctCollectOptionalMatchStep` is ever wired into the planner, apply the same
-  `DistinctNumberWrapper` fix there before it becomes reachable.
+- `EagerDistinctCollectOptionalMatchStep` was deleted by #6336 (dead since it was written), so the
+  second copy of this pattern no longer exists.

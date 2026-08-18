@@ -275,13 +275,14 @@ public class CypherSemanticValidator {
 
     for (final ReturnClause.ReturnItem item : withClause.getItems()) {
       final Expression expr = item.getExpression();
-      if (expr instanceof StarExpression
-          || (expr instanceof VariableExpression variable && "*".equals(variable.getVariableName()))) {
+      if (item.isStar()) {
         star = true;
         continue;
       }
+      // A projection whose output is literally named "*" (WITH n AS `*`) is an ordinary projection carrying an
+      // unusual name, not the star: it must be carried like any other (issue #6334).
       final String outputName = item.getOutputName();
-      if (outputName == null || "*".equals(outputName))
+      if (outputName == null)
         continue;
 
       final VarType projected = projectedVarType(expr, scope);
@@ -568,9 +569,7 @@ public class CypherSemanticValidator {
           // Check for WITH * — passes all variables through
           boolean hasWildcard = false;
           for (final ReturnClause.ReturnItem item : withClause.getItems()) {
-            if (item.getExpression() instanceof StarExpression ||
-                (item.getExpression() instanceof VariableExpression &&
-                    "*".equals(((VariableExpression) item.getExpression()).getVariableName()))) {
+            if (item.isStar()) {
               hasWildcard = true;
               break;
             }
@@ -580,9 +579,7 @@ public class CypherSemanticValidator {
             // First validate all extra item expressions against the incoming scope (no scope
             // mutation during validation — aliases must not be visible to sibling expressions).
             for (final ReturnClause.ReturnItem item : withClause.getItems()) {
-              if (item.getExpression() instanceof StarExpression ||
-                  (item.getExpression() instanceof VariableExpression &&
-                      "*".equals(((VariableExpression) item.getExpression()).getVariableName())))
+              if (item.isStar())
                 continue;
               checkExpressionScope(item.getExpression(), scope);
             }
@@ -779,8 +776,7 @@ public class CypherSemanticValidator {
     final Set<String> imported = new HashSet<>();
     for (final ReturnClause.ReturnItem item : withClause.getItems()) {
       final Expression expr = item.getExpression();
-      if (expr instanceof StarExpression ||
-          (expr instanceof VariableExpression && "*".equals(((VariableExpression) expr).getVariableName())))
+      if (item.isStar())
         return new HashSet<>(outerScope);
       final String name = item.getAlias() != null ?
           item.getAlias() :
@@ -1796,14 +1792,8 @@ public class CypherSemanticValidator {
     if (statement.getReturnClause() == null)
       return;
     for (final ReturnClause.ReturnItem item : statement.getReturnClause().getReturnItems())
-      if (isStarItem(item) && !statementDeclaresAnyVariable(statement))
+      if (item.isStar() && !statementDeclaresAnyVariable(statement))
         throw new CommandParsingException("NoVariablesInScope: RETURN * is not allowed when there are no variables in scope");
-  }
-
-  private static boolean isStarItem(final ReturnClause.ReturnItem item) {
-    return item.getExpression() instanceof StarExpression ||
-        (item.getExpression() instanceof VariableExpression &&
-            "*".equals(((VariableExpression) item.getExpression()).getVariableName()));
   }
 
   /**
@@ -1858,7 +1848,7 @@ public class CypherSemanticValidator {
       case WITH -> {
         final WithClause withClause = entry.getTypedClause();
         for (final ReturnClause.ReturnItem item : withClause.getItems())
-          if (!isStarItem(item) && item.getOutputName() != null && !"*".equals(item.getOutputName()))
+          if (!item.isStar() && item.getOutputName() != null)
             return true;
       }
       case UNWIND -> {
