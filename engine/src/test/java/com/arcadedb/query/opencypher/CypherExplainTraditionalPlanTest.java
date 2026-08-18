@@ -256,11 +256,16 @@ class CypherExplainTraditionalPlanTest {
     assertThat(plan).containsAnyOf("Using Count Push-Down", "Using Cost-Based Query Optimizer");
   }
 
-  /** The step lines of a plan, with the timings PROFILE appends to each of them removed. */
+  /**
+   * The step lines of a plan, with the timings PROFILE appends to each of them removed. The pattern matches the
+   * shape {@code AbstractExecutionStep} actually appends - a duration in μs, optionally followed by a row count -
+   * rather than any parenthesis that starts with a digit, so a step whose own text ends in one keeps taking part
+   * in the comparison.
+   */
   private static List<String> stepLines(final String plan) {
     final List<String> lines = new ArrayList<>();
     for (final String line : stepLinesRaw(plan))
-      lines.add(line.replaceAll("\\s*\\(\\d.*$", ""));
+      lines.add(line.replaceAll("\\s*\\([\\d,.]+\\s*[μµ]s(, [\\d,.]+ rows)?\\)$", ""));
     return lines;
   }
 
