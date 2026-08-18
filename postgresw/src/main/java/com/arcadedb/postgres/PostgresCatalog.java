@@ -85,6 +85,18 @@ public class PostgresCatalog {
   /** The OID of the bootstrap superuser in a stock PostgreSQL, used for every "owner" column. */
   private static final int OWNER_OID      = 10;
 
+  /** A catalog query whose shape this class will not answer. The caller sends an empty result set. */
+  public static final Answer DECLINED = new Answer(new LinkedHashMap<>(), null);
+
+  /**
+   * The emulated relations and the columns each one has. A column outside its relation's set makes the query
+   * unanswerable; a column inside it that this catalog does not model answers NULL, which is what PostgreSQL
+   * answers for most of them anyway.
+   */
+  private static final Map<String, Set<String>> RELATIONS = new HashMap<>();
+  /** Which family a relation puts the query in. Relations that only decorate a row are absent. */
+  private static final Map<String, Family>      FAMILIES  = new HashMap<>();
+
   /**
    * The answer to a catalog query: the columns to announce, in the order the client projected them, and the
    * rows to send. {@link #DECLINED} is the third possible outcome, distinct from both "not a catalog query"
@@ -100,22 +112,10 @@ public class PostgresCatalog {
     }
   }
 
-  /** A catalog query whose shape this class will not answer. The caller sends an empty result set. */
-  public static final Answer DECLINED = new Answer(new LinkedHashMap<>(), null);
-
   /** The families of rows a catalog query can be about. */
   private enum Family {
     SCHEMAS, TABLES, COLUMNS, DATABASES, ROLES, PRIVILEGES, CHARACTER_SETS, COLLATIONS, VIEWS
   }
-
-  /**
-   * The emulated relations and the columns each one has. A column outside its relation's set makes the query
-   * unanswerable; a column inside it that this catalog does not model answers NULL, which is what PostgreSQL
-   * answers for most of them anyway.
-   */
-  private static final Map<String, Set<String>> RELATIONS = new HashMap<>();
-  /** Which family a relation puts the query in. Relations that only decorate a row are absent. */
-  private static final Map<String, Family>      FAMILIES  = new HashMap<>();
 
   private static void relation(final String name, final Family family, final String... columns) {
     RELATIONS.put(name, new LinkedHashSet<>(List.of(columns)));

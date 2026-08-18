@@ -55,6 +55,9 @@ abstract class PostgresCatalogExpression {
     }
   };
 
+  /** Distinguishes "this is not one of the scalar functions" from a scalar function that answered UNKNOWN. */
+  private static final Object NOT_A_SCALAR_FUNCTION = new Object();
+
   /** Supplies the column values of the row being evaluated, and the session values around it. */
   interface Resolver {
     /**
@@ -227,9 +230,6 @@ abstract class PostgresCatalogExpression {
       return resolver.window(this);
     }
   }
-
-  /** Distinguishes "this is not one of the scalar functions" from a scalar function that answered UNKNOWN. */
-  private static final Object NOT_A_SCALAR_FUNCTION = new Object();
 
   private static Object scalarFunction(final String name, final List<Object> values) {
     switch (name) {
@@ -653,64 +653,57 @@ abstract class PostgresCatalogExpression {
         if (token.isKeyword("IS")) {
           ++position;
           final boolean negated = skipKeyword("NOT");
-          if (!skipKeyword("NULL")) {
+          if (!skipKeyword("NULL"))
             // IS TRUE / IS DISTINCT FROM and friends are outside the slice.
             return null;
-          }
           left = new IsNull(left, negated);
-          continue;
-        }
+        } else {
+          final boolean negated = token.isKeyword("NOT") && lookaheadIsKeyword(1, "IN", "LIKE", "ILIKE");
+          if (negated)
+            ++position;
 
-        final boolean negated = token.isKeyword("NOT") && lookaheadIsKeyword(1, "IN", "LIKE", "ILIKE");
-        if (negated)
-          ++position;
+          final PostgresCatalogToken next = peek();
+          if (next == null)
+            return negated ? null : left;
 
-        final PostgresCatalogToken next = peek();
-        if (next == null)
-          return negated ? null : left;
-
-        if (next.isKeyword("IN")) {
-          ++position;
-          if (!skipSymbol("("))
-            return null;
-          final List<PostgresCatalogExpression> candidates = new ArrayList<>();
-          do {
-            final PostgresCatalogExpression candidate = parseExpression();
-            if (candidate == null)
+          if (next.isKeyword("IN")) {
+            ++position;
+            if (!skipSymbol("("))
               return null;
-            candidates.add(candidate);
-          } while (skipSymbol(","));
-          if (!skipSymbol(")"))
+            final List<PostgresCatalogExpression> candidates = new ArrayList<>();
+            do {
+              final PostgresCatalogExpression candidate = parseExpression();
+              if (candidate == null)
+                return null;
+              candidates.add(candidate);
+            } while (skipSymbol(","));
+            if (!skipSymbol(")"))
+              return null;
+            left = new In(left, candidates, negated);
+          } else if (next.isKeyword("LIKE") || next.isKeyword("ILIKE")) {
+            ++position;
+            final PostgresCatalogExpression right = parseConcat();
+            if (right == null)
+              return null;
+            left = new Binary((negated ? "NOT " : "") + next.text.toUpperCase(Locale.ENGLISH), left, right);
+          } else if (negated)
             return null;
-          left = new In(left, candidates, negated);
-          continue;
+          else if (isComparisonOperator(next)) {
+            ++position;
+            final PostgresCatalogExpression right = parseConcat();
+            if (right == null)
+              return null;
+            left = new Binary(next.text, left, right);
+          } else
+            return left;
         }
-
-        if (next.isKeyword("LIKE") || next.isKeyword("ILIKE")) {
-          ++position;
-          final PostgresCatalogExpression right = parseConcat();
-          if (right == null)
-            return null;
-          left = new Binary((negated ? "NOT " : "") + next.text.toUpperCase(Locale.ENGLISH), left, right);
-          continue;
-        }
-
-        if (negated)
-          return null;
-
-        if (next.isSymbol("=") || next.isSymbol("<>") || next.isSymbol("!=") || next.isSymbol("<") || next.isSymbol(">")
-            || next.isSymbol("<=") || next.isSymbol(">=") || next.isSymbol("~") || next.isSymbol("!~")
-            || next.isSymbol("~*") || next.isSymbol("!~*")) {
-          ++position;
-          final PostgresCatalogExpression right = parseConcat();
-          if (right == null)
-            return null;
-          left = new Binary(next.text, left, right);
-          continue;
-        }
-
-        return left;
       }
+    }
+
+    private static boolean isComparisonOperator(final PostgresCatalogToken token) {
+      return token.isSymbol("=") || token.isSymbol("<>") || token.isSymbol("!=") || token.isSymbol("<")
+          || token.isSymbol(">") || token.isSymbol("<=") || token.isSymbol(">=") || token.isSymbol("~")
+          || token.isSymbol("!~") || token.isSymbol("~*") || token.isSymbol("!~*");
     }
 
     private boolean lookaheadIsKeyword(final int offset, final String... keywords) {
@@ -790,25 +783,22 @@ abstract class PostgresCatalogExpression {
         return null;
 
       while (true) {
-        if (peek() != null && peek().isSymbol("::")) {
+        final PostgresCatalogToken token = peek();
+
+        if (token != null && token.isSymbol("::")) {
           // A cast never changes what a catalog query means here: 'pg_class'::regclass is the name, and
           // int4/text casts are there for PostgreSQL's type resolution, which this evaluator does not have.
           ++position;
           if (!skipCastType())
             return null;
-          continue;
-        }
-
-        if (peek() != null && peek().isSymbol("[")) {
+        } else if (token != null && token.isSymbol("[")) {
           ++position;
           final PostgresCatalogExpression index = parseExpression();
           if (index == null || !skipSymbol("]"))
             return null;
           operand = new Subscript(operand, index);
-          continue;
-        }
-
-        return operand;
+        } else
+          return operand;
       }
     }
 
