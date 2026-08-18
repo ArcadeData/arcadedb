@@ -292,6 +292,53 @@ class ConsoleTest {
   }
 
   /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/6392: SET used to split the argument on every '=', so a value that
+   * contains one (a connection string, a base64 padding, a date pattern) was rejected as a syntax error. It is the same rule
+   * already fixed for the `-D<key>=<value>` arguments in #5928.
+   */
+  @Test
+  void setKeepsAValueContainingTheSeparator() throws Exception {
+    try {
+      assertThat(console.parse("set " + GlobalConfiguration.SERVER_BACKUP_DIRECTORY.getKey() + " = ./target/backups?a=b")).isTrue();
+      assertThat(GlobalConfiguration.SERVER_BACKUP_DIRECTORY.getValueAsString()).isEqualTo("./target/backups?a=b");
+    } finally {
+      GlobalConfiguration.SERVER_BACKUP_DIRECTORY.reset();
+    }
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/6392: an empty value dropped the trailing token, leaving a single part
+   * that was rejected instead of clearing the setting.
+   */
+  @Test
+  void setAcceptsAnEmptyValue() throws Exception {
+    try {
+      assertThat(console.parse("set " + GlobalConfiguration.SERVER_BACKUP_DIRECTORY.getKey() + " =")).isTrue();
+      assertThat(GlobalConfiguration.SERVER_BACKUP_DIRECTORY.getValueAsString()).isEmpty();
+    } finally {
+      GlobalConfiguration.SERVER_BACKUP_DIRECTORY.reset();
+    }
+  }
+
+  @Test
+  void setStillWorksWithAPlainValue() throws Exception {
+    assertThatCode(() -> console.parse("set limit = 7")).doesNotThrowAnyException();
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/6392: what is still malformed must stay malformed.
+   */
+  @Test
+  void setWithoutTheSeparatorIsRejected() {
+    assertThatThrownBy(() -> console.parse("set limit")).isInstanceOf(ConsoleException.class);
+  }
+
+  @Test
+  void setWithoutAKeyIsRejected() {
+    assertThatThrownBy(() -> console.parse("set = 7")).isInstanceOf(ConsoleException.class);
+  }
+
+  /**
    * Issue https://github.com/ArcadeData/arcadedb/issues/5927
    */
   @Test
