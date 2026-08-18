@@ -20,6 +20,7 @@ package com.arcadedb.index;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -27,6 +28,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for issue #6359, item 1: linking a super type propagates its indexes over buckets that ALREADY hold
@@ -153,6 +155,71 @@ class Issue6359SuperTypeIndexPropagationTest extends TestHelper {
       v.save();
     });
     assertThat(index.get(new Object[] { 7 }).hasNext()).isTrue();
+  }
+
+  /**
+   * The other side of seeing the caller's pending writes: a UNIQUE super-type index propagated over records that
+   * already conflict now REFUSES, where the separate-transaction build silently produced an index missing one of
+   * them. The refusal has to reach the caller, and to leave nothing behind.
+   * <p>
+   * Two cleanups are needed for that, and neither can hang off the transaction's error callback - a
+   * {@code DuplicatedKeyException} raised inside a JOINED transaction is rethrown immediately by
+   * {@code LocalDatabase.transaction} (issue #661 - retrying would roll back a transaction it does not own), so the
+   * callback never runs. The half-built COMPONENTS are already committed and attached to the super type's
+   * {@code TypeIndex} by then, and leaving them would answer the lookup from an index that was never populated. And
+   * the in-memory LINK has to go back as well: the transaction retries a duplicate once (#4959), and on that retry
+   * this method would find the super type already in place, return early without propagating anything, and let the
+   * transaction COMMIT - handing back a linked super type whose index holds no entry for a single one of the
+   * subtype's records, which is this issue's own defect reached through the retry rather than through the scan.
+   */
+  @Test
+  @Timeout(60)
+  void aPropagationThatHitsADuplicateRefusesAndLeavesNeitherIndexNorLinkBehind() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Super", 1).createProperty("id", Type.INTEGER);
+      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Super", "id");
+      database.getSchema().createDocumentType("Sub", 1);
+    });
+
+    final int subBucketId = database.getSchema().getType("Sub").getBuckets(false).getFirst().getFileId();
+
+    assertThatThrownBy(() -> database.transaction(() -> {
+      for (int i = 0; i < 2; i++) {
+        final MutableDocument v = database.newDocument("Sub");
+        v.set("id", 5);
+        v.save();
+      }
+      database.getSchema().getType("Sub").addSuperType("Super");
+    })).as("the duplicate reaches the caller instead of being swallowed by the retry")
+        .isInstanceOf(DuplicatedKeyException.class);
+
+    assertThat(database.getSchema().getType("Sub").getSuperTypes())
+        .as("a propagation that failed leaves the type as unlinked as it found it").isEmpty();
+    assertThat(database.countType("Sub", false)).as("and the caller's records went with its rollback").isZero();
+
+    // Asked of the SUPER TYPE's index, which is the one a propagated sub-index attaches to: a half-built sub-index
+    // left registered on it would answer `Super[id]` lookups over Sub's bucket with nothing.
+    final TypeIndex propagated = (TypeIndex) database.getSchema().getIndexByName("Super[id]");
+    for (final IndexInternal sub : propagated.getIndexesOnBuckets())
+      assertThat(sub.getAssociatedBucketId()).as("no sub-index survives on the bucket the failed build scanned")
+          .isNotEqualTo(subBucketId);
+
+    // And the index is still the working index of its own type afterwards.
+    database.transaction(() -> {
+      final MutableDocument v = database.newDocument("Super");
+      v.set("id", 9);
+      v.save();
+    });
+    assertThat(propagated.get(new Object[] { 9 }).hasNext()).isTrue();
+
+    // The link can still be made, once the conflict is gone: the refusal took nothing away permanently.
+    database.transaction(() -> {
+      final MutableDocument v = database.newDocument("Sub");
+      v.set("id", 11);
+      v.save();
+      database.getSchema().getType("Sub").addSuperType("Super");
+    });
+    assertThat(propagated.get(new Object[] { 11 }).hasNext()).isTrue();
   }
 
   /**

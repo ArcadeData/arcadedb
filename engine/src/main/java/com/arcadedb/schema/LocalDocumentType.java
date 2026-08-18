@@ -1928,6 +1928,21 @@ public class LocalDocumentType implements DocumentType {
     }
   }
 
+  /**
+   * Undoes the in-memory linkage {@link #addSuperType(DocumentType, boolean)} applies before it propagates the super
+   * type's indexes, so a propagation that fails leaves the type exactly as unlinked as it found it and the next
+   * attempt is a real attempt rather than an early return.
+   *
+   * @param linkedBuckets   the very lists handed to {@code updatePolymorphicBucketsCache} on the way in - the caches
+   *                        are replaced rather than mutated, so removing anything else would not be symmetric
+   */
+  private void unlinkSuperType(final LocalDocumentType superType, final List<Bucket> linkedBuckets,
+      final List<Integer> linkedBucketIds) {
+    superTypes.remove(superType);
+    superType.subTypes.remove(this);
+    superType.updatePolymorphicBucketsCache(false, linkedBuckets, linkedBucketIds);
+  }
+
   DocumentType addSuperType(final DocumentType superType, final boolean createIndexes) {
     checkForSchemaMutation();
     if (this.equals(superType))
@@ -1952,8 +1967,11 @@ public class LocalDocumentType implements DocumentType {
       superTypes.add(embeddedSuperType);
       embeddedSuperType.subTypes.add(this);
 
-      // UPDATE THE LIST OF POLYMORPHIC BUCKETS TREE
-      embeddedSuperType.updatePolymorphicBucketsCache(true, cachedPolymorphicBuckets, cachedPolymorphicBucketIds);
+      // UPDATE THE LIST OF POLYMORPHIC BUCKETS TREE. The lists are captured because the fields are REPLACED rather
+      // than mutated, and unlinkSuperType has to hand back exactly what was handed over.
+      final List<Bucket>  linkedBuckets   = cachedPolymorphicBuckets;
+      final List<Integer> linkedBucketIds = cachedPolymorphicBucketIds;
+      embeddedSuperType.updatePolymorphicBucketsCache(true, linkedBuckets, linkedBucketIds);
 
       // IF THE NEWLY-LINKED SUPERTYPE HAS ANY EXTERNAL PROPERTY (OWN OR INHERITED), THIS SUBTYPE MUST OWN PAIRED
       // EXTERNAL BUCKETS FOR ITS OWN PRIMARY BUCKETS, BECAUSE RECORDS OF THIS SUBTYPE LIVE IN THIS SUBTYPE'S BUCKETS.
@@ -2047,7 +2065,22 @@ public class LocalDocumentType implements DocumentType {
                 IndexBuilder.dropPartiallyBuiltIndex(schema, created);
               throw e;
             }
-        } catch (final IndexException e) {
+        } catch (final RuntimeException e) {
+          // THE LINK GOES BACK TOO, not only the half-built indexes, and this is what makes the refusal reach the
+          // caller at all. LocalDatabase.transaction retries a DuplicatedKeyException once (#4959); on that retry
+          // this method would find the super type ALREADY in superTypes, return early without propagating anything,
+          // and let the transaction COMMIT - leaving the caller with a linked super type whose index holds no entry
+          // for a single one of the subtype's records. That is the exact defect this issue is about, reached through
+          // the retry instead of through the scan.
+          //
+          // The paired external buckets that ensureExternalBucketsRecursive may have created are deliberately left:
+          // they are additive, idempotent and reused by the next attempt.
+          unlinkSuperType(embeddedSuperType, linkedBuckets, linkedBucketIds);
+
+          // Every failure shape, not only IndexException. The build joins the caller's transaction now, so it can
+          // fail with a DuplicatedKeyException raised on the caller's own pending writes or with a NeedRetryException
+          // - neither of which is an IndexException, and both of which used to reach the caller with no line saying
+          // which super type's propagation they came out of.
           LogManager.instance()
               .log(this, Level.WARNING, "Error on creating implicit indexes from super type '" + superType.getName() + "'", e);
           throw e;
