@@ -158,7 +158,7 @@ public class BoltStructureMapper {
     final long id = ridToId(rid);
     final String elementId = rid.toString();
 
-    // Get all labels (supertypes for composite types)
+    // Every label the node answers to: its own type and its ancestors', minus the synthetic composite names
     final List<String> labels = Labels.getLabels(vertex);
 
     // Get properties

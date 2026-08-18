@@ -20,9 +20,6 @@ package com.arcadedb.query.opencypher.rewriter;
 
 import com.arcadedb.query.opencypher.ast.*;
 
-import java.util.ArrayList;
-import java.util.List;
-
 /**
  * Folds constant expressions into literal values at rewrite time.
  * Reduces runtime computation for expressions with all-constant operands.
@@ -105,64 +102,17 @@ public class ConstantFolder extends ExpressionRewriter {
   }
 
   /**
-   * Fold constant arithmetic operations.
+   * Fold a constant arithmetic operation.
+   * <p>
+   * The semantics are not decided here: they are the ones {@link ArithmeticExpression#apply} applies at execution
+   * time, and folding an expression must not change what it means. This method used to carry its own copy of them
+   * - null handling, list and string concatenation, numeric promotion, the double switch - which made three
+   * places where a fix could land on two of them (issue #6354). What belongs here is only the folder's contract:
+   * the caller keeps the expression unfolded when this returns {@code null} or throws, so an operation that fails
+   * fails at execution time, where the query text is available to report it against.
    */
   private Object foldArithmetic(final Object left, final Object right, final ArithmeticExpression.Operator op) {
-    // GQL / Cypher 25 concatenation operator || (strict typing, no implicit coercion, issue #5298).
-    // A type mismatch throws here and is swallowed by the caller, deferring the error to execution time.
-    if (op == ArithmeticExpression.Operator.CONCAT)
-      return ArithmeticExpression.concatenate(left, right);
-
-    // List concatenation/append (must be checked before string concatenation)
-    if (op == ArithmeticExpression.Operator.ADD) {
-      if (left instanceof List && right instanceof List) {
-        final List<Object> combined = new ArrayList<>((List<?>) left);
-        combined.addAll((List<?>) right);
-        return combined;
-      }
-      if (left instanceof List) {
-        final List<Object> appended = new ArrayList<>((List<?>) left);
-        appended.add(right);
-        return appended;
-      }
-      if (right instanceof List) {
-        final List<Object> prepended = new ArrayList<>();
-        prepended.add(left);
-        prepended.addAll((List<?>) right);
-        return prepended;
-      }
-    }
-
-    // String concatenation
-    if (op == ArithmeticExpression.Operator.ADD && (left instanceof String || right instanceof String))
-      return left.toString() + right.toString();
-
-    // Numeric operations
-    if (!(left instanceof Number) || !(right instanceof Number))
-      return null;
-
-    final Number leftNum = (Number) left;
-    final Number rightNum = (Number) right;
-
-    // Determine if we can use integers
-    final boolean useInteger = isInteger(leftNum) && isInteger(rightNum) && op != ArithmeticExpression.Operator.POWER;
-
-    if (useInteger)
-      return ArithmeticExpression.integerArithmetic(op, leftNum.longValue(), rightNum.longValue());
-
-    // Use double for division, power, and mixed types
-    final double l = leftNum.doubleValue();
-    final double r = rightNum.doubleValue();
-
-    return switch (op) {
-      case ADD -> l + r;
-      case SUBTRACT -> l - r;
-      case MULTIPLY -> l * r;
-      case DIVIDE -> l / r;
-      case MODULO -> r != 0 ? l % r : Double.NaN;
-      case POWER -> Math.pow(l, r);
-      case CONCAT -> throw new IllegalStateException("CONCAT is handled before numeric arithmetic");
-    };
+    return ArithmeticExpression.apply(op, left, right);
   }
 
   /**
@@ -221,9 +171,5 @@ public class ConstantFolder extends ExpressionRewriter {
       return !left.equals(right);
 
     return null;
-  }
-
-  private boolean isInteger(final Number num) {
-    return num instanceof Integer || num instanceof Long || num instanceof Short || num instanceof Byte;
   }
 }

@@ -127,10 +127,18 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   /** Boundary between the size of a placeholder content record (stored negated, so &lt; -5) and the markers above it. */
   private static final   long                      RECORD_PLACEHOLDER_CONTENT       = MINIMUM_RECORD_SIZE * -1L;
   /**
-   * Bytes a slot needs to host the HEAD chunk of a multi-page record: the {@link #FIRST_CHUNK} marker (budgeted at
-   * 2 bytes), the chunk size and the pointer to the next chunk, plus at least one byte of content. A slot that
-   * cannot reach it is the only case left where a record that outgrows its page still spills into a placeholder
-   * instead of a chunk chain (#6149).
+   * Bytes a chunk's marker is BUDGETED at when room for the chunk is being asked for, as opposed to the bytes it
+   * really took, which {@code writeNumber} reports once the marker is written. Two rather than one because the budget
+   * has to hold for every marker a chunk can wear, and over-budgeting by a byte only ever leaves a chunk one byte of
+   * content short - it can never make a request smaller than the write that follows it.
+   */
+  private static final   int                       CHUNK_MARKER_BUDGET              = 2;
+  /**
+   * Bytes a slot needs to host the HEAD chunk of a multi-page record: the {@link #FIRST_CHUNK} marker (at
+   * {@link #CHUNK_MARKER_BUDGET}), the chunk size and the pointer to the next chunk, plus at least one byte of
+   * content. That is {@link #chunkFootprint} of an empty chunk, which is what makes this the same arithmetic every
+   * writer and every page walk uses. A slot that cannot reach it is the only case left where a record that outgrows
+   * its page still spills into a placeholder instead of a chunk chain (#6149).
    * <p>
    * <b>The 2 budgeted for the marker is deliberately more than the 1 byte {@code writeNumber} really spends on
    * {@link #FIRST_CHUNK}, and that does not put this constant at odds with the {@code Binary.getNumberSpace} the
@@ -141,7 +149,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * body being the chunk image those very bytes produced. Raising the budget only makes the head chunk carry one
    * more byte of content; it can never make the two sides disagree.
    */
-  private static final   int                       MINIMUM_SPACE_FOR_FIRST_CHUNK    = 2 + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE;
+  private static final   int                       MINIMUM_SPACE_FOR_FIRST_CHUNK    = chunkFootprint(CHUNK_MARKER_BUDGET, 0);
   /**
    * No fingerprint could be taken of the part of a record that lives off its own page: see
    * {@link #offPageContentFingerprint(RID, BasePage, boolean)}.
@@ -2373,7 +2381,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     else if (isChunkHead(lastRecordSize[0]) || lastRecordSize[0] == NEXT_CHUNK) {
       // CHUNK (of a record, or of a placeholder's content - the footprint is the same either way)
       final int chunkSize = page.readInt((int) (lastRecordPositionInPage + lastRecordSize[1]));
-      return lastRecordPositionInPage + (int) lastRecordSize[1] + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE + chunkSize;
+      return lastRecordPositionInPage + chunkFootprint((int) lastRecordSize[1], chunkSize);
     } else
       // PLACEHOLDER CONTENT, CONSIDER THE RECORD SIZE (CONVERTED FROM NEGATIVE NUMBER) + VARINT SIZE
       return lastRecordPositionInPage + (int) (-1 * lastRecordSize[0]) + (int) lastRecordSize[1];
@@ -2866,11 +2874,20 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE, 0);
 
       if (reuseSpaceMode.ordinal() >= REUSE_SPACE_MODE.HIGH.ordinal()) {
-        // UPDATE THE STATISTICS
+        // #6358: the free tail is MEASURED here, on the page the slot has just been freed on, and reported as the
+        // measurement it is - the delta convention of updatePageStatistics carries an absolute value as
+        // (theSpaceThereIs, 0). Subtracting the record's footprint from it, as this did, is the same double count
+        // #6339 removed from the ordinary delete: the measurement already accounts for whatever the free released,
+        // because it walks the page AFTER the slot was zeroed. On a record freed in the MIDDLE of its page the tail
+        // does not move at all, so the subtraction was pure loss and could take the number below zero.
+        //
+        // Kept rather than left to the compressPage the commit runs on this page a moment later (which measures the
+        // same thing), because the walk is already done here and dropping the call would also drop the
+        // changesFromLastStats increment that schedules the next full statistics gather.
         final PageAnalysis pageAnalysis = new PageAnalysis(page);
         pageAnalysis.totalRecordsInPage = recordCountInPage;
         getFreeSpaceInPage(pageAnalysis);
-        updatePageStatistics(pageNumber, pageAnalysis.spaceAvailableInCurrentPage, (int) ((committedSize + rs[1]) * -1));
+        updatePageStatistics(pageNumber, pageAnalysis.spaceAvailableInCurrentPage, 0);
       } else
         changesFromLastStats.incrementAndGet();
 
@@ -4031,7 +4048,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           size = LONG_SERIALIZED_SIZE + (int) recordSize[1];
         else if (isChunkHead(recordSize[0]) || recordSize[0] == NEXT_CHUNK) {
           final int chunkSize = page.readInt(recordPositionInPage + (int) recordSize[1]);
-          size = chunkSize + (int) recordSize[1] + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE; // LONG = nextChunkPointer
+          size = chunkFootprint((int) recordSize[1], chunkSize);
         } else if (recordSize[0] < RECORD_PLACEHOLDER_CONTENT)
           // PLACEHOLDER CONTENT, CONSIDER THE RECORD SIZE (CONVERTED FROM NEGATIVE NUMBER) + VARINT SIZE
           size = (int) (-1 * recordSize[0]) + (int) recordSize[1];
@@ -4587,7 +4604,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       MutablePage nextPage = null;
       int recordIdInPage = 0;
 
-      final int spaceNeededForChunk = bufferSize + 2 + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE;
+      final int spaceNeededForChunk = chunkFootprint(CHUNK_MARKER_BUDGET, bufferSize);
 
       final PageAnalysis pageAnalysis = findAvailableSpace(currentPage.pageId.getPageNumber(), spaceNeededForChunk, txPageCounter,
               true, headChunkPageToAvoid);
@@ -4639,10 +4656,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
               (long) nextPage.getPageId().getPageNumber() * maxRecordsInPage + recordIdInPage,
               currentPage == firstPage ? firstChunkCoverage : 0);
 
-      int spaceAvailableInCurrentPage = nextPage.getMaxContentSize() - newPosition;
+      // The free tail this chunk is about to bite into, measured against the page's maximum content size - the same
+      // base every other accounting in this class uses (#6358).
+      final int freeSpaceBeforeChunk = nextPage.getMaxContentSize() - newPosition;
 
       final int chunkMarkerSize = nextPage.writeNumber(newPosition, NEXT_CHUNK);
-      spaceAvailableInCurrentPage -= chunkMarkerSize;
+      final int spaceAvailableInCurrentPage = freeSpaceBeforeChunk - chunkMarkerSize;
 
       // WRITE CHUNK SIZE
       chunkSize = spaceAvailableInCurrentPage - INT_SERIALIZED_SIZE - LONG_SERIALIZED_SIZE;
@@ -4666,12 +4685,36 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       nextPage.writeByteArray(newPosition, content, contentOffset, chunkSize);
 
-      updatePageStatistics(nextPage.pageId.getPageNumber(), spaceAvailableInCurrentPage, -chunkSize);
+      updatePageStatistics(nextPage.pageId.getPageNumber(), freeSpaceBeforeChunk,
+              -chunkFootprint(chunkMarkerSize, chunkSize));
 
       bufferSize -= chunkSize;
       contentOffset += chunkSize;
       currentPage = nextPage;
     }
+  }
+
+  /**
+   * How many bytes a chunk occupies on the page that holds it: its marker, the {@code INT} declaring the content
+   * size, the {@code LONG} pointing at the next chunk, and the content itself. The ONE derivation, called by all three
+   * readers of a page's layout ({@link #contentEndOffset}, {@link #getOrderedRecordsInPage} - and therefore by the
+   * commit-time measurement of {@link #accountCompressedPage}, which sums what the latter returned - and
+   * {@link #getPageOccupiedInBytes}) and by every writer that places a chunk. Shared rather than merely agreed on, so
+   * the write path and the measurement path cannot describe the same bytes differently again (#6358).
+   * <p>
+   * Before this existed each writer subtracted something of its own: the continuation chunk of a fresh spill left
+   * the 12 header bytes out, the extension of an existing chain left the marker out and counted the whole remaining
+   * buffer instead of the chunk it wrote, and the one landing on a brand-new page counted neither and measured
+   * against a base that still included the page header. All three were absorbed by the thresholds in
+   * {@link #updatePageStatistics} rather than by being right.
+   *
+   * @param markerSize bytes the chunk marker took, as {@code writeNumber} reported them.
+   * @param chunkSize  content bytes the chunk carries, as its header declares them.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private static int chunkFootprint(final int markerSize, final int chunkSize) {
+    return markerSize + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE + chunkSize;
   }
 
   /**
@@ -4809,6 +4852,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     while (bufferSize > 0) {
       MutablePage nextPage = null;
 
+      // Only a chunk placed on space just TAKEN from a page moves that page's free tail; a chunk rewritten inside
+      // the footprint the chain already owns moves nothing. -1 says "nothing to account", and the two below carry
+      // the measurement to the single accounting at the end of the iteration, where the chunk's size is settled
+      // (#6358) - before this, the two allocating branches each guessed at it from what they knew before the write.
+      int freeSpaceBeforeChunk = -1;
+      int chunkMarkerSize = 0;
+
       if (nextChunkPointer > 0) {
         final int chunkPageId = (int) (nextChunkPointer / maxRecordsInPage);
         final int chunkPositionInPage = (int) (nextChunkPointer % maxRecordsInPage);
@@ -4836,7 +4886,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         int recordIdInPage = 0;
         int txPageCounter = getTotalPages();
 
-        final int totalSpaceNeeded = bufferSize + Binary.LONG_SERIALIZED_SIZE + INT_SERIALIZED_SIZE;
+        // #6358: budgeted for the marker too. Leaving it out asked for one byte less than the chunk goes on to
+        // occupy, so a page with exactly that much left was accepted and the chunk written on it came out a byte
+        // shorter than the request implied - harmless, and one more way this call site described a chunk differently
+        // from the one in writeMultiPageRecord that asks the same question.
+        final int totalSpaceNeeded = chunkFootprint(CHUNK_MARKER_BUDGET, bufferSize);
 
         final PageAnalysis pageAnalysis = findAvailableSpace(currentPage.pageId.getPageNumber(), totalSpaceNeeded, txPageCounter,
                 true, headChunkPageToAvoid);
@@ -4863,8 +4917,6 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
               if (recordIdInPage >= pageAnalysis.totalRecordsInPage)
                 nextPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) (recordIdInPage + 1));
-
-              updatePageStatistics(nextPage.pageId.getPageNumber(), pageAnalysis.spaceAvailableInCurrentPage, -totalSpaceNeeded);
             }
           }
         }
@@ -4878,20 +4930,24 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           newPosition = contentHeaderSize;
           nextPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET, newPosition);
           nextPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) 1);
-          updatePageStatistics(nextPage.pageId.getPageNumber(), nextPage.getAvailableContentSize(), -bufferSize);
         }
 
         // WRITE IN THE PREVIOUS PAGE POINTER THE CURRENT POSITION OF THE NEXT CHUNK
         writeNextChunkPointer(currentPage, nextChunkPointerOffset,
                 (long) nextPage.getPageId().getPageNumber() * maxRecordsInPage + recordIdInPage,
                 currentPage == firstPage ? firstChunkCoverage : 0);
-        int spaceAvailableInCurrentPage = nextPage.getMaxContentSize() - newPosition;
 
-        final int byteWritten = nextPage.writeNumber(newPosition, NEXT_CHUNK);
-        spaceAvailableInCurrentPage -= byteWritten;
+        // Both branches above - a page the allocator reused and a page created for this chunk - hand out the free
+        // tail starting at newPosition, so the base is the same one and it is the page's maximum content size, never
+        // getAvailableContentSize() (which still counts the page header, the overstatement #4958 and #5067 removed
+        // from everywhere else).
+        freeSpaceBeforeChunk = nextPage.getMaxContentSize() - newPosition;
+
+        chunkMarkerSize = nextPage.writeNumber(newPosition, NEXT_CHUNK);
+        final int spaceAvailableInCurrentPage = freeSpaceBeforeChunk - chunkMarkerSize;
 
         chunkSize = spaceAvailableInCurrentPage - INT_SERIALIZED_SIZE - LONG_SERIALIZED_SIZE;
-        newPosition += byteWritten;
+        newPosition += chunkMarkerSize;
       }
 
       if (poisonSlots)
@@ -4915,6 +4971,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       }
 
       nextPage.writeInt(newPosition, chunkSize);
+
+      // #6358: the chunk's footprint is known only here - the last-chunk branch above may have shortened it - and
+      // it is one derivation shared with the spill and with the page walk, rather than a subtraction each writer
+      // improvised.
+      if (freeSpaceBeforeChunk > -1)
+        updatePageStatistics(nextPage.pageId.getPageNumber(), freeSpaceBeforeChunk,
+                -chunkFootprint(chunkMarkerSize, chunkSize));
 
       // SAVE THE POSITION OF THE POINTER TO THE NEXT CHUNK
       newPosition += INT_SERIALIZED_SIZE;
@@ -5150,9 +5213,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         lastRecordSize[0] = LONG_SERIALIZED_SIZE;
         lastRecordSize[1] = 1L;
       } else if (isChunkHead(lastRecordSize[0]) || lastRecordSize[0] == NEXT_CHUNK) {
-        // CONSIDER THE CHUNK SIZE
-        lastRecordSize[0] = page.readInt((int) (lastRecordPositionInPage + lastRecordSize[1]));
-        lastRecordSize[1] = 1L + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE;
+        // #6358: the chunk's footprint through the one derivation, and against the marker size readNumberAndSize
+        // actually reported rather than a hardcoded 1. The 1 was right for every marker in use - they all encode to a
+        // single byte - which is exactly the kind of agreement-by-coincidence the shared helper exists to replace:
+        // this is the THIRD reader of a page's layout, and what it returns feeds updatePageStatistics through the
+        // spill's slot enlargement and through growRecordInPage.
+        final int chunkMarkerSize = (int) lastRecordSize[1];
+        return lastRecordPositionInPage + chunkFootprint(chunkMarkerSize,
+                page.readInt(lastRecordPositionInPage + chunkMarkerSize));
       } else if (lastRecordSize[0] < RECORD_PLACEHOLDER_CONTENT) {
         lastRecordSize[0] *= -1L;
       }
@@ -5581,12 +5649,37 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   /**
    * Update the in memory statistics about the free space in page.
+   * <p>
+   * The two arguments describe ONE quantity between them: {@code availableSpace + delta} is the free space the page
+   * has once the caller's write has landed, and that is the only thing recorded. Both halves are the caller's own
+   * measurement - there is no "I do not know" to pass.
+   * <p>
+   * #6358: there used to be one, undeclared and indistinguishable from a real answer. An {@code availableSpace} of 0
+   * was read as "apply my delta to whatever you already hold" whenever an entry existed for the page, so a caller
+   * reporting a page with genuinely no free tail left had its delta added to a stale number instead of to 0. Nothing
+   * in the signature said so, and no caller ever wanted it: every one of them measures the page it is writing to.
+   * The overload is gone rather than given a sentinel of its own, because a sentinel nobody passes is a second
+   * meaning waiting for the next caller to find by accident.
+   *
+   * @param availableSpace free space the page had before this write, measured against
+   *                       {@link BasePage#getMaxContentSize()} - never {@code getAvailableContentSize()}, which
+   *                       still counts the page header.
+   * @param delta          change this write makes to it: negative for space taken, positive for space given back,
+   *                       and 0 when {@code availableSpace} is a measurement of the settled page rather than a
+   *                       change to it (see {@link #accountCompressedPage}).
    */
   private void updatePageStatistics(final int pageId, final int availableSpace, final int delta) {
     changesFromLastStats.incrementAndGet();
 
     if (reuseSpaceMode.ordinal() < REUSE_SPACE_MODE.HIGH.ordinal())
       return;
+
+    // A page cannot have less than no free space. Under -ea (surefire's default) this is the tripwire that says a
+    // write path and the commit-time measurement have stopped describing the same bytes; in production the branches
+    // below absorb it as they always did.
+    assert availableSpace >= 0 && availableSpace + delta >= 0 :
+        "page " + pageId + " of bucket '" + componentName + "' is reported with " + availableSpace + " free bytes and a delta of "
+            + delta;
 
     synchronized (freeSpaceInPages) {
       if (availableSpace + delta == 0)
@@ -5598,9 +5691,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         final int usableSpaceInPage = getPageSize() - BasePage.PAGE_HEADER_SIZE - contentHeaderSize;
 
         final boolean hasEntry = freeSpaceInPages.containsKey(pageId);
-        final int existingFreeSpace = hasEntry ? freeSpaceInPages.get(pageId, 0) : 0;
-        final int prevSpace = availableSpace == 0 && hasEntry ? existingFreeSpace : availableSpace;
-        final int newSpace = prevSpace + delta;
+        final int newSpace = availableSpace + delta;
 
         if (hasEntry) {
           if (newSpace <= MINIMUM_SPACE_LEFT_IN_PAGE || (freeSpaceInPages.size() >= MAX_PAGES_GATHER_STATS

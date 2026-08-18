@@ -45,8 +45,29 @@ public class GremlinQueryEngineFactory implements QueryEngine.QueryEngineFactory
       return (GremlinQueryEngine) engine;
 
     } catch (final Throwable e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on initializing Gremlin query engine", e);
-      throw new CommandParsingException("Error on initializing Gremlin query engine", e);
+      final String message = "Error on initializing Gremlin query engine" + classpathHint(e);
+      LogManager.instance().log(this, Level.SEVERE, message, e);
+      throw new CommandParsingException(message, e);
     }
+  }
+
+  /**
+   * Names the real problem when the engine could not start because TinkerPop is not on the classpath, rather than
+   * leaving it as a {@code NoClassDefFoundError} buried under a generic message (issue #6359, item 3).
+   * <p>
+   * The way to reach this is not exotic: {@code arcadedb-gremlin}'s plain jar carries no TinkerPop of its own, and a
+   * build that consumes it in place of the {@code shaded} uber-jar - which is what Maven substitutes for a
+   * classified dependency whose module is in the same reactor but has not reached the {@code package} phase - gets
+   * ArcadeDB's Gremlin classes with nothing behind them.
+   */
+  static String classpathHint(final Throwable e) {
+    for (Throwable cause = e; cause != null; cause = cause.getCause())
+      if (cause instanceof NoClassDefFoundError || cause instanceof ClassNotFoundException) {
+        final String missing = cause.getMessage();
+        if (missing != null && missing.contains("tinkerpop"))
+          return ": the Apache TinkerPop libraries are not on the classpath (missing '" + missing.replace('/', '.')
+              + "'). Use the 'shaded' arcadedb-gremlin artifact, or add the TinkerPop dependencies alongside the plain one";
+      }
+    return "";
   }
 }

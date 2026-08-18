@@ -84,19 +84,14 @@ public class RebuildTypeStatement extends DDLStatement {
     for (final Map.Entry<Expression, Expression> e : settings.entrySet()) {
       final String key = e.getKey().toString();
       if ("batchSize".equalsIgnoreCase(key)) {
-        final Object raw = e.getValue().value;
-        try {
-          batchSize = Integer.parseInt(raw == null ? "null" : raw.toString());
-        } catch (final NumberFormatException nfe) {
-          throw new CommandSQLParsingException(
-              "REBUILD TYPE setting 'batchSize' must be a positive integer, got: " + raw);
-        }
         // batchSize is the modulus for the in-rebuild commit cadence (count[0] % batchSize == 0). A zero or
         // negative value would either ArithmeticException (mod-zero) or never trip the commit branch (modulo by
-        // a negative still works but the boundary semantics are nonsensical). Reject up front.
-        if (batchSize <= 0)
-          throw new CommandSQLParsingException(
-              "REBUILD TYPE setting 'batchSize' must be a positive integer, got: " + batchSize);
+        // a negative still works but the boundary semantics are nonsensical), so the shared reader refuses it.
+        //
+        // It also reads the setting by EVALUATING the expression rather than off Expression.value, which is null
+        // for every numeric literal the parser builds: this used to refuse every batchSize it was given, legal ones
+        // included, with "got: null" (issue #6359, item 2).
+        batchSize = parsePositiveIntSetting("REBUILD TYPE", "batchSize", e.getValue().execute((Result) null, context));
       } else if ("repartition".equalsIgnoreCase(key)) {
         // Boolean opt-in. When true, every record whose current bucket no longer matches its
         // partition strategy's hash is deleted from its current bucket and re-inserted into the

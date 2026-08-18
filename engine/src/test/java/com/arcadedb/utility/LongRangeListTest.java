@@ -155,6 +155,36 @@ class LongRangeListTest {
     assertThat(new LongRangeList(0L, 1L, 5).subList(2, 2)).isEmpty();
   }
 
+  /**
+   * A range read backwards is still an arithmetic progression, so it must come back as one: copying it is what
+   * put the heap exhaustion back into {@code reverse()} (issue #6353).
+   */
+  @Test
+  void reversedIsStillALazyRange() {
+    assertThat(new LongRangeList(0L, 1L, 5).reversed()).isInstanceOf(LongRangeList.class)
+        .containsExactly(4L, 3L, 2L, 1L, 0L);
+    assertThat(new LongRangeList(0L, 3L, 4).reversed()).isInstanceOf(LongRangeList.class)
+        .containsExactly(9L, 6L, 3L, 0L);
+    assertThat(new LongRangeList(10L, -3L, 4).reversed()).isInstanceOf(LongRangeList.class)
+        .containsExactly(1L, 4L, 7L, 10L);
+    // Reversing twice is the identity, and the empty and single-element cases are their own reverse.
+    assertThat(new LongRangeList(10L, -3L, 4).reversed().reversed()).containsExactly(10L, 7L, 4L, 1L);
+    assertThat(new LongRangeList(0L, 1L, 0).reversed()).isInstanceOf(LongRangeList.class).isEmpty();
+    assertThat(new LongRangeList(7L, 2L, 1).reversed()).isInstanceOf(LongRangeList.class).containsExactly(7L);
+  }
+
+  /**
+   * {@code Long.MIN_VALUE} has no positive counterpart, so the reversed step is not representable. Only a
+   * two-element range can carry that step - a third element would need {@code 2 * |step|} to fit in a long - so
+   * the answer is materialised rather than wrapped around into a wrong range.
+   */
+  @Test
+  void reversedFallsBackWhenTheStepCannotBeNegated() {
+    final LongRangeList list = new LongRangeList(Long.MAX_VALUE, Long.MIN_VALUE, 2);
+    assertThat(list).containsExactly(Long.MAX_VALUE, -1L);
+    assertThat(list.reversed()).containsExactly(-1L, Long.MAX_VALUE);
+  }
+
   @Test
   void equalsAndHashCodeFollowTheListContract() {
     assertThat(new LongRangeList(0L, 1L, 3)).isEqualTo(List.of(0L, 1L, 2L));

@@ -39,10 +39,18 @@ public class ListExpression implements Expression {
 
   @Override
   public Object evaluate(final Result result, final CommandContext context) {
-    final List<Object> values = new ArrayList<>();
-    for (final Expression element : elements) {
-      values.add(element.evaluate(result, context));
-    }
+    return evaluateWith(element -> element.evaluate(result, context));
+  }
+
+  /**
+   * Build the list, delegating every element evaluation to the supplied evaluator. Shared with
+   * {@code ExpressionEvaluator}, which resolves the elements through itself so aggregation overrides apply
+   * (issue #6354).
+   */
+  public Object evaluateWith(final SubEvaluator subEvaluator) {
+    final List<Object> values = new ArrayList<>(elements.size());
+    for (final Expression element : elements)
+      values.add(subEvaluator.evaluate(element));
     return values;
   }
 

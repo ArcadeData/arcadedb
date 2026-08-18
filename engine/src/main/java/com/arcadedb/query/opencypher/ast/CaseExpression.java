@@ -77,21 +77,11 @@ public class CaseExpression implements Expression {
   }
 
   /**
-   * Functional interface used to evaluate a single sub-expression of the CASE.
-   * Lets callers plug in an override-aware evaluator (e.g. one that resolves pre-computed
-   * aggregation results) while sharing the branch-selection and equality semantics below.
-   */
-  @FunctionalInterface
-  public interface SubExpressionEvaluator {
-    Object evaluate(Expression expression);
-  }
-
-  /**
    * Evaluate the CASE, delegating every sub-expression evaluation to the supplied evaluator.
    * The branch-selection logic and Cypher '=' equality semantics live here so both the plain
    * {@link #evaluate(Result, CommandContext)} path and the aggregation-override path share them.
    */
-  public Object evaluateWith(final SubExpressionEvaluator subEvaluator) {
+  public Object evaluateWith(final SubEvaluator subEvaluator) {
     // Extended form: CASE expr WHEN value THEN result
     if (caseExpression != null) {
       final Object caseValue = subEvaluator.evaluate(caseExpression);

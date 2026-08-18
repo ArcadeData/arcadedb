@@ -352,6 +352,12 @@ public class RemoteSchema implements Schema {
   }
 
   @Override
+  public DocumentType getTypeOrNull(final String typeName) {
+    checkSchemaIsLoaded();
+    return types.get(typeName);
+  }
+
+  @Override
   public LocalSchema getEmbedded() {
     return null;
   }

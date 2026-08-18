@@ -843,10 +843,13 @@ public enum GlobalConfiguration {
   QUERY_MAX_RANGE_SIZE("arcadedb.queryMaxRangeSize", SCOPE.DATABASE, """
       Maximum number of elements a range() expression is allowed to produce. If exceeded, the query is rejected with a \
       client error before any element is generated. Negative number means no limit (the hard limit of 2147483647 elements, \
-      the maximum size of a Java list, still applies). The range itself is lazy and takes no heap, but its elements are \
-      materialised as soon as the range is copied, sorted or serialised in a response, so this setting caps the memory a \
-      single query can request that way. When left at the default it auto-scales with the JVM max heap (never below \
-      1000000 elements), keeping the worst-case materialisation of a range to a fraction of the heap.""",
+      the maximum size of a Java list, still applies). The range itself is lazy and takes no heap, and the operations \
+      whose answer is still an arithmetic progression keep it that way: slicing, tail(), reverse(), coll.sort(), \
+      coll.distinct(), coll.toSet(), coll.flatten() and cutting either end with coll.remove(). Its elements are \
+      materialised only when the answer cannot be a range - inserting into one, merging two of them, concatenating with \
+      +, or serialising the range in a response - so this setting caps the memory a single query can request that way. \
+      When left at the default it auto-scales with the JVM max heap (never below 1000000 elements), keeping the \
+      worst-case materialisation of a range to a fraction of the heap.""",
       Long.class, 10_000_000L, null, value -> {
         // Auto-scale the default with the JVM max heap. A materialised element costs ~24 bytes (boxed Long plus the
         // reference that holds it) and rendering it in a JSON response costs about as much again, so heap/160 keeps
