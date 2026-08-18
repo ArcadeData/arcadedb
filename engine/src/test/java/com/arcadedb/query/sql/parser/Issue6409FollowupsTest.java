@@ -137,6 +137,32 @@ class Issue6409FollowupsTest extends AbstractParserTest {
   }
 
   /**
+   * Found while addressing code review on this very PR, in the same sweep as item 3 but on a statement node rather
+   * than an expression node: {@code ImportDatabaseStatement#equals()} only compared {@code url}, and
+   * {@code ExportDatabaseStatement#getIdentityElements()} only listed {@code url} - so two statements with the same
+   * URL but DIFFERENT {@code WITH} settings compared equal. For {@code IMPORT DATABASE} this was the sharper of the
+   * two: it has no URL at all for a CSV import, so the settings ARE the statement.
+   * {@link BackupDatabaseStatement} already included {@code settings} in its identity; the other two now match it.
+   */
+  @Test
+  void importAndExportStatementsWithDifferentSettingsAreNotEqual() throws Exception {
+    final ImportDatabaseStatement importOne = (ImportDatabaseStatement) new SQLAntlrParser(null).parse(
+        "IMPORT DATABASE http://foo.bar WITH forceDatabaseCreate = true");
+    final ImportDatabaseStatement importTwo = (ImportDatabaseStatement) new SQLAntlrParser(null).parse(
+        "IMPORT DATABASE http://foo.bar WITH forceDatabaseCreate = false");
+    assertThat(importOne).as("same URL, different settings").isNotEqualTo(importTwo);
+    assertThat((ImportDatabaseStatement) new SQLAntlrParser(null).parse("IMPORT DATABASE http://foo.bar WITH forceDatabaseCreate = true"))
+        .as("but the same statement is still the same").isEqualTo(importOne);
+
+    final ExportDatabaseStatement exportOne = (ExportDatabaseStatement) new SQLAntlrParser(null).parse(
+        "EXPORT DATABASE file://foo.bar WITH format = 'graphml'");
+    final ExportDatabaseStatement exportTwo = (ExportDatabaseStatement) new SQLAntlrParser(null).parse(
+        "EXPORT DATABASE file://foo.bar WITH format = 'jsonl'");
+    assertThat(exportOne).as("same URL, different settings").isNotEqualTo(exportTwo);
+    assertThat(exportOne.hashCode()).isNotEqualTo(exportTwo.hashCode());
+  }
+
+  /**
    * Item 4: {@link SimpleNode#equals(Object)} indexed the OTHER node's identity array by THIS node's length, with no
    * guard. Safe today because {@code getClass() == other.getClass()} means both arrays come from the same override,
    * and every override returns a fixed-length array literal - but nothing enforces that invariant. This subclass

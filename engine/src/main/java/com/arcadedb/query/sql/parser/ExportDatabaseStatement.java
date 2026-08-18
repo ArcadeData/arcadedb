@@ -124,9 +124,14 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
       url.toString(params, builder);
   }
 
+  /**
+   * {@code settings} belongs here too, not just {@code url}: two exports to the same URL with different
+   * {@code WITH} settings (format, overwrite, ...) are different statements. {@link BackupDatabaseStatement} already
+   * includes its {@code settings} the same way; this one didn't (found reviewing #6409, item 3's sweep).
+   */
   @Override
   protected Object[] getIdentityElements() {
-    return new Object[] { url };
+    return new Object[] { url, settings };
   }
 
   @Override

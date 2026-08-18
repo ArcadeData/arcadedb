@@ -130,6 +130,12 @@ public class ImportDatabaseStatement extends SimpleExecStatement {
     }
   }
 
+  /**
+   * Compares {@code settings} too, not just {@code url}: for {@code IMPORT DATABASE} the settings ARE the statement
+   * (a CSV import has no URL at all, only {@code WITH vertices=..., edges=...}), so leaving them out of identity
+   * made two imports with completely different sources compare equal (found reviewing #6409, item 3's sweep - the
+   * same over-match direction {@link CaseExpression} had, on a statement rather than an expression node).
+   */
   @Override
   public boolean equals(final Object o) {
     if (this == o)
@@ -137,12 +143,12 @@ public class ImportDatabaseStatement extends SimpleExecStatement {
     if (o == null || getClass() != o.getClass())
       return false;
     final ImportDatabaseStatement that = (ImportDatabaseStatement) o;
-    return Objects.equals(url, that.url);
+    return Objects.equals(url, that.url) && Objects.equals(settings, that.settings);
   }
 
   @Override
   public int hashCode() {
-    return Objects.hash(url);
+    return Objects.hash(url, settings);
   }
 
   @Override
