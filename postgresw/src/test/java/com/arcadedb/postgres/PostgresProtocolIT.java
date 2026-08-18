@@ -483,10 +483,41 @@ class PostgresProtocolIT extends BaseGraphServerTest {
   @Test
   void pgCatalogQuery() throws Exception {
     try (var conn = getConnection(); var st = conn.createStatement()) {
+      // Without the "t.typelem = e.oid" correlation that marks a driver's element-type self-join, this
+      // selects the row of OID 1007 itself, so typname is the array's own name. It used to answer "int4",
+      // the element's name, for every OID filter regardless of whether a join asked for the element - which
+      // is not what PostgreSQL answers here (issue #5290).
       ResultSet rs = st.executeQuery("SELECT typdelim, typname FROM pg_catalog.pg_type WHERE oid = 1007");
       assertThat(rs.next()).isTrue();
       assertThat(rs.getString("typdelim")).isEqualTo(",");
+      assertThat(rs.getString("typname")).isEqualTo("_int4");
+    }
+  }
+
+  @Test
+  void pgCatalogElementTypeSelfJoin() throws Exception {
+    try (var conn = getConnection(); var st = conn.createStatement()) {
+      // The shape pgjdbc actually sends to resolve an array's element type: here the projection does
+      // describe the element, because the join says so.
+      ResultSet rs = st.executeQuery("SELECT e.typdelim, e.typname FROM pg_catalog.pg_type t, pg_catalog.pg_type e "
+          + "WHERE t.oid = 1007 AND t.typelem = e.oid");
+      assertThat(rs.next()).isTrue();
+      assertThat(rs.getString("typdelim")).isEqualTo(",");
       assertThat(rs.getString("typname")).isEqualTo("int4");
+    }
+  }
+
+  @Test
+  void pgTypeQueryReturnsTheOidColumnItWasAskedFor() {
+    // The fixed handful of columns an OID-filtered lookup used to answer with never carried "oid", so a
+    // client selecting by OID got a row missing the very column it selected by (issue #5290).
+    try (var conn = getConnection(); var st = conn.createStatement();
+        ResultSet rs = st.executeQuery("SELECT oid, typname FROM pg_type WHERE oid = 1009")) {
+      assertThat(rs.next()).isTrue();
+      assertThat(rs.getInt("oid")).isEqualTo(1009);
+      assertThat(rs.getString("typname")).isEqualTo("_text");
+    } catch (final Exception e) {
+      throw new AssertionError(e);
     }
   }
 
