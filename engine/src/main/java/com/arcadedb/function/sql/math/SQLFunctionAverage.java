@@ -52,15 +52,7 @@ public class SQLFunctionAverage extends SQLAggregatedFunction {
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
     if (params.length == 1) {
-      if (params[0] instanceof Number number)
-        sum(number);
-      else if (MultiValue.isMultiValue(params[0]))
-        for (final Object n : MultiValue.getMultiValueIterable(params[0]))
-          sum(requireNumericOrNull(n));
-      else
-        // A NON-NUMERIC, NON-NULL, NON-LIST VALUE IS A CLIENT-FACING TYPE ERROR, NOT A ClassCastException (#6390).
-        sum(requireNumericOrNull(params[0]));
-
+      accumulateNumeric(params[0], this::sum);
       return getResult();
     }
 

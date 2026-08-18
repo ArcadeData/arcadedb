@@ -94,6 +94,50 @@ class Issue6390AggregateNumericInputTest extends TestHelper {
     });
   }
 
+  /**
+   * The same bug class in three functions the first sweep missed: a raw {@code (Number)} on {@code pow()}'s
+   * exponent, a raw {@code Comparable} sort in {@code ts.rank} (the {@code ts.lag}/{@code ts.lead} shape), and raw
+   * casts in {@code ts.interpolate}'s linear branch, unlike the siblings around it.
+   */
+  @Test
+  void theRemainingRawCastSiblingsAnswerTypedErrorsToo() {
+    assertThatThrownBy(() -> database.query("sql", "SELECT pow(2, 'x') AS r").next())
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("numeric");
+
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Sweep6390");
+      // A gap in the middle, so the linear branch actually has something to interpolate across.
+      database.command("sql", "INSERT INTO Sweep6390 SET v = 'a', ts = 1000");
+      database.command("sql", "INSERT INTO Sweep6390 SET ts = 2000");
+      database.command("sql", "INSERT INTO Sweep6390 SET v = 'b', ts = 3000");
+    });
+
+    database.transaction(() -> {
+      assertThatThrownBy(() -> database.query("sql", "SELECT ts.interpolate(v, 'linear', ts) AS r FROM Sweep6390").next())
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("requires numeric input");
+      // ts.rank orders by the timestamp, and a row whose timestamp is null keeps its arrival order at the end
+      // rather than NPE the comparator - the ts.lag/ts.lead treatment, which rank had not had either.
+      try (final ResultSet rs = database.query("sql", "SELECT ts.rank(v, ts) AS r FROM Sweep6390")) {
+        assertThat(rs.next().<List<Object>>getProperty("r")).hasSize(3);
+      }
+      database.command("sql", "INSERT INTO Sweep6390 SET v = 'c'");
+      try (final ResultSet rs = database.query("sql", "SELECT ts.rank(v, ts) AS r FROM Sweep6390")) {
+        assertThat(rs.next().<List<Object>>getProperty("r")).hasSize(4);
+      }
+    });
+  }
+
+  @Test
+  void powStillRaisesNumbers() {
+    try (final ResultSet rs = database.query("sql", "SELECT pow(2, 10) AS a, pow(2, '10') AS b")) {
+      final var row = rs.next();
+      assertThat(row.<Number>getProperty("a").intValue()).isEqualTo(1024);
+      assertThat(row.<Number>getProperty("b").intValue()).isEqualTo(1024);
+    }
+  }
+
   @Test
   void numericInputStillAggregatesNormally() {
     database.transaction(() -> {

@@ -22,20 +22,10 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.SQLMethod;
 import com.arcadedb.utility.NumberUtils;
 
-import java.math.BigDecimal;
-
 /**
  * @author Johann Sorel (Geomatys)
  */
 public abstract class AbstractSQLMethod implements SQLMethod {
-  /**
-   * Longest numeric literal {@link #indexArgument} will parse as a character index. An int is at most ten digits and
-   * a sign, and the decimal fallback allows a fractional part, so this is generous by a wide margin - it exists only
-   * so a pathological literal out of the query text cannot make BigDecimal parse megabytes to reach a number that
-   * saturates to the same bound either way (issue #6389).
-   */
-  private static final int MAX_INDEX_ARGUMENT_DIGITS = 64;
-
   private final String name;
   private final int    minParams;
   private final int    maxParams;
@@ -125,36 +115,13 @@ public abstract class AbstractSQLMethod implements SQLMethod {
    * @throws IllegalArgumentException if the value cannot be read as a number
    */
   protected int indexArgument(final Object param, final String argumentName) {
-    if (param instanceof Number number)
-      return NumberUtils.saturateToInt(number);
-
-    if (param instanceof CharSequence) {
-      final String text = param.toString().trim();
-      try {
-        return Integer.parseInt(text);
-      } catch (final NumberFormatException ignoreAndTryDecimal) {
-        // The decimal fallback is what makes `substring(2.5)` work, but BigDecimal parses whatever length it is
-        // handed, and the cost of parsing then comparing grows with it. A character index is at most ten digits and
-        // a sign, so a literal orders of magnitude longer than that is not a number anyone is indexing a string
-        // with - refuse it by length rather than allocate a BigDecimal to find out.
-        if (text.length() > MAX_INDEX_ARGUMENT_DIGITS)
-          throw new IllegalArgumentException(
-              getName() + "() requires a numeric <" + argumentName + ">, but received a " + text.length()
-                  + "-character literal, over the " + MAX_INDEX_ARGUMENT_DIGITS + " limit");
-
-        try {
-          return NumberUtils.saturateToInt(new BigDecimal(text));
-        } catch (final NumberFormatException e) {
-          throw new IllegalArgumentException(
-              getName() + "() requires a numeric <" + argumentName + ">, but received '" + text + "'", e);
-        }
-      }
-    }
+    final Integer index = NumberUtils.saturateToIntOrNull(param);
+    if (index != null)
+      return index;
 
     throw new IllegalArgumentException(
-        getName() + "() requires a numeric <" + argumentName + ">, but received " + (param == null ?
-            "null" :
-            "a value of type " + param.getClass().getSimpleName()));
+        getName() + "() requires a numeric <" + argumentName + ">, but received " + NumberUtils.describeRejectedNumber(
+            param));
   }
 
   protected Object getParameterValue(final Identifiable iRecord, final String iValue) {

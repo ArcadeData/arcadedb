@@ -28,6 +28,7 @@ import org.antlr.v4.runtime.CommonTokenStream;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * The SQL null-coalescing operator {@code ??} used to return its RIGHT operand whatever the left one was, because the
@@ -99,6 +100,21 @@ class Issue6393NullCoalescingTest extends TestHelper {
         assertThat(rs.hasNext()).isFalse();
       }
     });
+  }
+
+  /**
+   * The short-circuit is a behaviour, not just an optimisation: the right operand may be a function call or a
+   * sub-query, and it must not run when the fallback is not taken. Observed with an argument that throws when it IS
+   * evaluated, so the two directions are told apart by whether the error escapes.
+   */
+  @Test
+  void rightOperandIsNotEvaluatedWhenTheLeftIsNotNull() {
+    try (final ResultSet rs = database.query("sql", "SELECT 1 ?? 'abcdef'.substring('boom') AS n")) {
+      assertThat(rs.next().<Number>getProperty("n").intValue()).isEqualTo(1);
+    }
+    // ...and IS evaluated when the fallback is taken, so the test above cannot pass by the operand being dead.
+    assertThatThrownBy(() -> database.query("sql", "SELECT null ?? 'abcdef'.substring('boom') AS n").next())
+        .isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test

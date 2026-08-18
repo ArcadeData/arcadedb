@@ -245,7 +245,9 @@ class Issue6389FunctionArgumentTest extends TestHelper {
     final String huge = "9".repeat(100_000);
     assertThatThrownBy(() -> database.query("sql", "SELECT 'abcdef'.substring('" + huge + "') AS a").next())
         .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("limit");
+        .hasMessageContaining("limit")
+        // The message summarises the literal by length rather than echoing 100,000 characters into a log.
+        .hasMessageNotContaining(huge);
     // A long-but-plausible literal still saturates rather than being refused.
     try (final ResultSet rs = database.query("sql", "SELECT 'abcdef'.substring('00000000000000000002.5') AS a")) {
       assertThat(rs.next().<String>getProperty("a")).isEqualTo("cdef");

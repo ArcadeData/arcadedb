@@ -3513,15 +3513,26 @@ never looked at. `sum()` was hardened against non-numeric input in #5799 and its
 `sum` answered cleanly; the guard now lives on `SQLFunctionAbstract` and they all share it. Nulls are still
 skipped, which is the documented aggregation behaviour.
 
+**Behaviour change.** `map()` refuses a non-STRING key, `map(null, 'a')` included, where the raw cast used to
+store `(String) null` and build a map with a key nobody can reference. This is deliberately stricter than the
+`[...].asMap()` method, which converts what it is handed: `map()` takes key/value pairs the caller wrote out one
+by one, so a non-string among them is a mistake in the query worth reporting, while `asMap()` is documented as
+turning an arbitrary list *into* a map.
+
 **Breaking change.** `sysdate()` takes a **zone id** as its only argument, per its documented syntax
 `sysdate([<zoneid>])`, and now applies it: it used to read the zone from the *second* argument, so the
 one-argument form silently dropped it and answered server-local time. A second argument is now refused rather
 than accepted and ignored. Formatting is `.format()`'s job - `sysdate().format('yyyy-MM-dd')` - so a call
 written `sysdate('yyyy-MM-dd')`, which never formatted anything, is now an error naming the unknown zone.
 
-Two resource limits ride along, both reachable from caller-supplied text: the date formatter cache is bounded
-(past the ceiling a formatter is still built, just not remembered), and `format()` refuses a field width over
-a million characters instead of allocating it.
+Three resource limits ride along, all reachable from caller-supplied text: the date formatter cache is bounded
+(past the ceiling a formatter is still built, just not remembered), `format()` refuses a field width over a
+million characters instead of allocating it, and a character index is parsed from a bounded literal rather than
+whatever length the query text carries.
+
+One adjacent defect surfaced with the A* fix and is repaired with it: of the five heuristics on three or more
+axes, `EUCLIDEAN` was the only one that dropped `dFactor`, which nobody could see while every `h(n)` was the
+same number. It now scales like its two-axis twin and like the other four.
 
 [#6382](https://github.com/ArcadeData/arcadedb/issues/6382)
 [#6385](https://github.com/ArcadeData/arcadedb/issues/6385)

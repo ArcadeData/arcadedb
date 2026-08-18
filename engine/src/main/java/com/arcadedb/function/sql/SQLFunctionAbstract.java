@@ -188,7 +188,13 @@ public abstract class SQLFunctionAbstract implements SQLFunction {
    * @throws IllegalArgumentException if the value is null or not a number
    */
   protected int requireIntArgument(final Object value, final String argumentName) {
-    return NumberUtils.saturateToInt(requireNumeric(value, argumentName));
+    final Integer number = NumberUtils.saturateToIntOrNull(value);
+    if (number != null)
+      return number;
+
+    throw new IllegalArgumentException(
+        getName() + "() requires a numeric <" + argumentName + ">, but received " + NumberUtils.describeRejectedNumber(
+            value));
   }
 
   /**

@@ -84,14 +84,20 @@ class Issue6385AstarHeuristicPositionTest {
         points[2] = newPoint(db, 10, 8, 0); // goal
       });
 
-      for (final SQLHeuristicFormula formula : SQLHeuristicFormula.values()) {
-        final SQLFunctionAstar threeAxis = axisHeuristic(db, points[0], formula);
-        final SQLFunctionAstar twoAxis = axisHeuristic(db, points[0], formula);
-        twoAxis.paramVertexAxisNames = new String[] { "x", "y" };
+      // A non-default dFactor as well as the default: it scales every heuristic, and running only at 1.0 cannot
+      // see a branch that drops it - which is how the N-axis EUCLIDEAN came to be the one of five that did.
+      for (final double dFactor : new double[] { 1.0, 3.0 })
+        for (final SQLHeuristicFormula formula : SQLHeuristicFormula.values()) {
+          final SQLFunctionAstar threeAxis = axisHeuristic(db, points[0], formula);
+          final SQLFunctionAstar twoAxis = axisHeuristic(db, points[0], formula);
+          twoAxis.paramVertexAxisNames = new String[] { "x", "y" };
+          threeAxis.paramDFactor = dFactor;
+          twoAxis.paramDFactor = dFactor;
 
-        assertThat(threeAxis.getHeuristicCost(points[1], null, points[2], threeAxis.context)).as("%s", formula)
-            .isEqualTo(twoAxis.getHeuristicCost(points[1], null, points[2], twoAxis.context));
-      }
+          assertThat(threeAxis.getHeuristicCost(points[1], null, points[2], threeAxis.context))
+              .as("%s at dFactor %s", formula, dFactor)
+              .isEqualTo(twoAxis.getHeuristicCost(points[1], null, points[2], twoAxis.context));
+        }
     });
   }
 

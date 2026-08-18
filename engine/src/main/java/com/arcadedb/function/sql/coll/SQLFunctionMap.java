@@ -27,6 +27,12 @@ import java.util.Map;
 
 /**
  * This operator add an entry in a map. The entry is composed by a key and a value.
+ * <p>
+ * A key must be a STRING and anything else is refused, which is deliberately stricter than the
+ * {@code [...].asMap()} method: this function takes key/value pairs the caller wrote out one by one, so a
+ * non-string among them is a mistake in the query worth reporting, whereas {@code asMap()} is documented as
+ * turning an arbitrary list INTO a map and converts what it is handed. Both used to answer a ClassCastException
+ * instead (issue #6389).
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
