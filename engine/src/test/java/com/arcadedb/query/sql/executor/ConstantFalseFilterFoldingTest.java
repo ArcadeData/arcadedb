@@ -141,6 +141,54 @@ class ConstantFalseFilterFoldingTest extends TestHelper {
     assertThat(names("SELECT FROM Character WHERE uuid() = 'not-a-uuid'")).isEmpty();
   }
 
+  /**
+   * Issue #6190: {@code SQLFunction#isDeterministic()} lets a call to a marked-pure built-in over literal arguments
+   * fold exactly like a plain literal comparison would - the sibling of {@link #aFilterCallingAFunctionIsNeverFolded()}
+   * for the one shape that is now safe to evaluate at plan time.
+   */
+  @Test
+  void aFilterCallingADeterministicFunctionIsFolded() {
+    assertNoScan(planOf("SELECT FROM Character WHERE abs(-1) = 999"));
+    assertThat(names("SELECT FROM Character WHERE abs(-1) = 999")).isEmpty();
+
+    assertScan(planOf("SELECT FROM Character WHERE abs(-1) = 1"));
+    assertThat(names("SELECT FROM Character WHERE abs(-1) = 1")).containsExactlyInAnyOrder("Arya", "Jon", "Tyrion");
+  }
+
+  /**
+   * The plan-caching consumer of the same marker: a statement whose only function call targets a deterministic
+   * built-in over cacheable arguments is no longer excluded from the plan cache by {@code FunctionCall#isCacheable()}
+   * returning {@code false} unconditionally.
+   */
+  @Test
+  void aStatementWithADeterministicFunctionInTheFilterIsCacheable() {
+    final String sql = "SELECT name FROM Character WHERE age > abs(-1)";
+    final DatabaseInternal db = (DatabaseInternal) database;
+
+    // the type creation in beginTest() invalidates the plan cache with a millisecond-resolution stamp the plan has
+    // to beat: see the sibling guard below and RidInScanOptimizationTest for the same pattern
+    final long setupMillis = System.currentTimeMillis();
+    while (System.currentTimeMillis() == setupMillis)
+      Thread.onSpinWait();
+
+    assertThat(names(sql)).containsExactlyInAnyOrder("Arya", "Jon", "Tyrion");
+    assertThat(db.getExecutionPlanCache().contains(sql)).as("a deterministic function call must not block plan caching")
+        .isTrue();
+  }
+
+  /**
+   * The mirror of the previous test: a non-deterministic call in the filter still blocks caching, exactly as before
+   * this marker existed.
+   */
+  @Test
+  void aStatementWithANonDeterministicFunctionInTheFilterIsNotCacheable() {
+    final String sql = "SELECT name FROM Character WHERE age > 0 AND uuid() IS NOT NULL";
+    final DatabaseInternal db = (DatabaseInternal) database;
+
+    assertThat(names(sql)).containsExactlyInAnyOrder("Arya", "Jon", "Tyrion");
+    assertThat(db.getExecutionPlanCache().contains(sql)).isFalse();
+  }
+
   @Test
   void limitZeroDoesNotScanItsTarget() {
     final ResultSet rs = database.query("sql", "SELECT name FROM Character LIMIT 0");

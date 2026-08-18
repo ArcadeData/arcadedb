@@ -50,8 +50,10 @@ public class BinaryCondition extends BooleanExpression {
   }
 
   /**
-   * Folds the comparison at plan time, but only when both of its operands are written in the statement as literals
-   * ({@code 1 = 0}, {@code 'a' = 'b'}, {@code 1 = 1 + 1}).
+   * Folds the comparison at plan time, but only when both of its operands are foldable: written in the statement as
+   * literals ({@code 1 = 0}, {@code 'a' = 'b'}, {@code 1 = 1 + 1}), or a call to a
+   * {@link com.arcadedb.query.sql.executor.SQLFunction#isDeterministic() deterministic} built-in over foldable
+   * arguments ({@code 1 = abs(-1)}, issue #6190).
    */
   @Override
   public boolean isAlwaysFalse(final CommandContext context) {
@@ -59,8 +61,8 @@ public class BinaryCondition extends BooleanExpression {
   }
 
   /**
-   * The mirror of {@link #isAlwaysFalse(CommandContext)}, folded under the same literal-only restriction: a comparison
-   * whose operands are both written in the statement ({@code 1 = 1}, {@code 'a' = 'a'}, {@code 2 = 1 + 1}) is true for
+   * The mirror of {@link #isAlwaysFalse(CommandContext)}, folded under the same restriction: a comparison whose
+   * operands are both foldable ({@code 1 = 1}, {@code 'a' = 'a'}, {@code 2 = 1 + 1}, {@code 1 = abs(-1)}) is true for
    * every record or for none, and the planner can drop the filter instead of evaluating it once per record.
    */
   @Override
@@ -69,15 +71,16 @@ public class BinaryCondition extends BooleanExpression {
   }
 
   /**
-   * Evaluates the comparison at plan time, but only when both of its operands are written in the statement as literals.
-   * See {@link Expression#isLiteral()} for why a bound parameter and a function call are excluded even though both
-   * could be computed without a record.
+   * Evaluates the comparison at plan time, but only when both of its operands are {@link Expression#isFoldable()
+   * foldable}. See {@link Expression#isLiteral()} for why a bound parameter is excluded even though it could be
+   * computed without a record, and {@link Expression#isFoldable()} for the one function-call shape that is admitted
+   * despite that restriction.
    *
    * @return true when the fold is possible AND its verdict is {@code expected}; false whenever the comparison cannot be
    * folded, which is the conservative answer both callers need
    */
   private boolean literalVerdict(final CommandContext context, final Boolean expected) {
-    if (left == null || right == null || !left.isLiteral() || !right.isLiteral())
+    if (left == null || right == null || !left.isFoldable() || !right.isFoldable())
       return false;
 
     try {

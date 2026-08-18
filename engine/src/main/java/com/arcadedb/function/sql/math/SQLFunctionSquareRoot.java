@@ -75,4 +75,12 @@ public class SQLFunctionSquareRoot extends SQLFunctionMathAbstract {
   public Object getResult() {
     return result;
   }
+
+  /**
+   * Pure math over its single argument (issue #6190).
+   */
+  @Override
+  public boolean isDeterministic() {
+    return true;
+  }
 }
