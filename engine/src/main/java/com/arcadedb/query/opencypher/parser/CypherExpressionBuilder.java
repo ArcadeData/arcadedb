@@ -2203,33 +2203,13 @@ class CypherExpressionBuilder {
     final Cypher25Parser.LabelComparisonContext labelCtx = (Cypher25Parser.LabelComparisonContext) ctx.comparisonExpression6();
     final Cypher25Parser.LabelExpressionContext labelExprCtx = labelCtx.labelExpression();
 
-    final List<String> labels = new ArrayList<>();
-    LabelCheckExpression.LabelOperator operator = LabelCheckExpression.LabelOperator.AND;
-
-    String labelText = labelExprCtx.getText();
-    if (labelText.startsWith(":"))
-      labelText = labelText.substring(1);
-    else if (labelText.toUpperCase(Locale.ROOT).startsWith("IS"))
-      labelText = labelText.substring(2).trim();
-
-    if (labelText.contains("|")) {
-      operator = LabelCheckExpression.LabelOperator.OR;
-      final String[] parts = labelText.split("\\|:?");
-      for (final String part : parts) {
-        final String label = part.trim();
-        if (!label.isEmpty())
-          labels.add(label);
-      }
-    } else if (labelText.contains("&") || labelText.contains(":")) {
-      final String[] parts = labelText.split("[&:]");
-      for (final String part : parts) {
-        final String label = part.trim();
-        if (!label.isEmpty())
-          labels.add(label);
-      }
-    } else {
-      labels.add(labelText.trim());
-    }
+    // See parseLabelCheckExpression in CypherASTBuilder: extract through the grammar so backticks
+    // are stripped and a quoted label is never split on a character of its own name. This also
+    // drops the ':'/'IS' prefix at the token level, so both spellings land on the same label.
+    final List<String> labels = ParserUtils.extractLabels(labelExprCtx);
+    final LabelCheckExpression.LabelOperator operator = ParserUtils.isLabelDisjunction(labelExprCtx) ?
+        LabelCheckExpression.LabelOperator.OR :
+        LabelCheckExpression.LabelOperator.AND;
 
     return new BooleanWrapperExpression(new LabelCheckExpression(leftExpr, labels, operator, ctx.getText()));
   }
