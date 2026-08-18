@@ -58,6 +58,10 @@ public final class RowAliases {
    * @param original the record the write started from
    * @param updated  the record the write produced
    */
+  // Nothing here consults LabelReplacements' map, and nothing needs to: this answers "the row holds an older copy
+  // of a record that is still there", which is a different question from "the row holds a record that was deleted
+  // and replaced". A label write needs both, and SetStep.applyLabels asks them in that order - propagateUpdate for
+  // the aliases of the vertex it is about to move, then LabelReplacements.redirect once it has moved.
   public static void propagateUpdate(final Result row, final Document original, final Document updated) {
     final RID originalRid = original.getIdentity();
     if (originalRid == null)

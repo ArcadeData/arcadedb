@@ -145,6 +145,18 @@ class CypherLabelDisjunctionOnExpandedNodeIssue6338Test {
     assertThat(keys("MATCH (y:Author:Topic) RETURN y.k AS k")).containsExactly("both");
   }
 
+  @Test
+  void anAlternativeWhoseLabelIsOnlyKnownAtRuntimeIsRefusedToo() {
+    // The refusal keys on the disjunction itself, not on how many labels came back with it: a dynamic $(expression)
+    // alternative is collected separately from the static ones, so this shape carries a single static label and
+    // would have slipped past a count-based guard - while being the one where a write acting on "A or B" is least
+    // defensible, the second label not even being known until the query runs.
+    assertThatThrownBy(() -> database.command("opencypher", "CREATE (n:Author|$('Topic') {k:'dyn'})"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("Label expressions are not allowed in CREATE");
+    assertThat(keys("MATCH (y {k:'dyn'}) RETURN y.k AS k")).isEmpty();
+  }
+
   @SuppressWarnings("unchecked")
   private List<String> listKeys(final String query) {
     try (final ResultSet rs = database.query("opencypher", query)) {

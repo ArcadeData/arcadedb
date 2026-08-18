@@ -186,6 +186,11 @@ class CypherLabelWriteDegreeGuardIssue6335Test {
   /**
    * Captures WARNING records so a test can assert that something was reported. {@link LogManager#setLogger} documents
    * this as its intended use; the previous logger is always put back.
+   * <p>
+   * The logger is process-wide, as are the {@code GlobalConfiguration} values these tests set, so this class assumes
+   * the sequential execution the module runs under - {@code forkCount=1}, {@code reuseForks=true}, and no JUnit
+   * parallel configuration. If class-level parallelism is ever turned on for {@code engine}, this capture has to
+   * move to a per-test logger rather than a swap of the global one.
    */
   private static final class CapturingLogger implements Logger {
     private final List<LogRecord> warnings = Collections.synchronizedList(new ArrayList<>());

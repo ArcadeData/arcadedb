@@ -1724,12 +1724,19 @@ public class CypherSemanticValidator {
   private void checkNoLabelDisjunction(final PathPattern path, final String clause) {
     if (path == null)
       return;
-    for (final NodePattern node : path.getNodes())
-      if (node.isLabelDisjunction() && node.getLabels().size() > 1)
-        throw new CommandParsingException("UnexpectedSyntax: Label expressions are not allowed in " + clause
-            + ", only in MATCH and in expressions: " + String.join("|", node.getLabels())
-            + " does not name the labels to write. Use ':" + String.join(":", node.getLabels())
-            + "' to give the node all of them");
+    for (final NodePattern node : path.getNodes()) {
+      // On the flag alone, never on how many labels came back with it. The flag means a '|' was written, while the
+      // static list can hold fewer than two of them: a Cypher 25 dynamic $(expression) alternative is collected
+      // separately and is not in it, so (n:A|$(x)) would slip past a count-based guard - which is the one shape
+      // where letting a label expression through would matter most, the labels not even being known until runtime.
+      if (!node.isLabelDisjunction())
+        continue;
+      final List<String> labels = node.getLabels();
+      throw new CommandParsingException("UnexpectedSyntax: Label expressions are not allowed in " + clause
+          + ", only in MATCH and in expressions: '|' says which labels a node MAY have, which is not something a "
+          + "write can act on"
+          + (labels.size() > 1 ? ". Use ':" + String.join(":", labels) + "' to give the node all of them" : ""));
+    }
   }
 
   private void checkMergeNullProperties(final PathPattern path) {
