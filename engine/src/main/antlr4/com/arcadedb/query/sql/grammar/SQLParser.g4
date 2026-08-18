@@ -1106,6 +1106,9 @@ checkDatabaseStatement
       // Issue #6090: opt-in reclaim of ORPHAN EDGE RECORDS (edge records no vertex's edge list references).
       // Deliberately its own clause rather than part of FIX - see DatabaseChecker.setDeleteOrphanEdgeRecords.
       (DELETE ORPHANS)?
+      // Issue #6360: the tier of checking that DECODES the data instead of reconciling what describes it. See
+      // DatabaseChecker.setDeep.
+      (DEEP)?
       (COMPRESS)?
     ;
 
@@ -1703,6 +1706,7 @@ identifier
     | ADDBUCKET
     | REMOVEBUCKET
     | ORPHANS
+    | DEEP
     | FORCE
     | OPTIMIZE
     | INVERSE
