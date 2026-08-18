@@ -248,6 +248,35 @@ class CypherMatchClauseUniquenessIssue6310Test extends TestHelper {
         .containsExactlyInAnyOrder("a1|c1", "a1|c2", "a2|c2", "a3|c3");
   }
 
+  /**
+   * Which plan runs a clause decides which of the two implementations its uniqueness comes from, so it is
+   * worth pinning rather than assuming. The cost-based optimizer declines every variable-length hop, comma
+   * or no comma - so there is no optimizer-side variable-length path for the guards above to be wrong on,
+   * and a test claiming to cover one would in fact be exercising the traditional plan. A comma clause of
+   * fixed-length hops IS optimized, which is what makes the rest of this class cover both implementations.
+   * <p>
+   * A tripwire, not a preference: when the optimizer does grow variable-length support, this fails, and
+   * whoever adds it is made to answer the uniqueness question on that path too.
+   */
+  @Test
+  void theOptimizerDeclinesVariableLengthHopsButNotCommas() {
+    assertThat(planOf("MATCH (x:C)-[*1..2]->(y:A), (p:E)-[]->(q:A) RETURN x.n AS a"))
+        .contains("Traditional Execution");
+    assertThat(planOf("MATCH p1 = shortestPath((x:C)-[*1..2]->(y:A)), (p:E)-[]->(q:A) RETURN x.n AS a"))
+        .contains("Traditional Execution");
+    assertThat(planOf("MATCH (x:C)-[*1..2]->(y:A) RETURN x.n AS a"))
+        .contains("Traditional Execution");
+    assertThat(planOf("MATCH (n0:A)<-[r1]-(:E), (n3:C)-[]->(:E)-[r2]->(n0) RETURN n0.n AS a"))
+        .doesNotContain("Traditional Execution");
+  }
+
+  private String planOf(final String query) {
+    try (final ResultSet rs = database.query("opencypher", "EXPLAIN " + query)) {
+      assertThat(rs.hasNext()).isTrue();
+      return String.valueOf(rs.next().<Object>getProperty("executionPlan"));
+    }
+  }
+
   private List<String> rows(final String query) {
     final List<String> out = new ArrayList<>();
     try (final ResultSet rs = database.query("opencypher", query)) {
