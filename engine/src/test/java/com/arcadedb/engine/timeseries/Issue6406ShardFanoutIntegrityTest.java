@@ -50,8 +50,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class Issue6406ShardFanoutIntegrityTest extends TestHelper {
 
-  private static final int SHARDS      = 4;
-  private static final int ROWS        = 2_000;
+  private static final int SHARDS        = 4;
+  private static final int ROWS          = 2_000;
   private static final int DAMAGED_SHARD = 2;
 
   @Override
