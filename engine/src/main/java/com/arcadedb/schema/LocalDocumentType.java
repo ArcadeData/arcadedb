@@ -2028,7 +2028,11 @@ public class LocalDocumentType implements DocumentType {
           // there - see IndexBuilder#buildSharesCallerTransaction, which owns the predicate for every call site.
           // Per index rather than once, because an index family that cannot use a shared transaction (the vector ones,
           // whose search path reads through the page cache rather than through the transaction) has to keep building in
-          // one go whatever the caller holds.
+          // one go whatever the caller holds. Which is also the LIMIT of what this fixes: a vector index propagated
+          // here is still built inside the component-creation transaction, and that one does not join the caller's, so
+          // it sees the caller's uncommitted writes no more than it did before. Nothing regressed - no vector build
+          // has ever joined a caller's transaction - but "the propagated index now covers uncommitted records" is true
+          // of the families that can share one, not of every family.
           final DatabaseInternal database = (DatabaseInternal) schema.getDatabase();
           final boolean callerTransactionHasChanges = IndexBuilder.callerTransactionHasChanges(database);
           // Two lists, because "has to be built later" and "has to be taken away if anything goes wrong" are not the

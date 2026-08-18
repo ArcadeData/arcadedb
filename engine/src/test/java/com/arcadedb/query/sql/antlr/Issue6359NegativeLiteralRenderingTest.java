@@ -95,6 +95,19 @@ class Issue6359NegativeLiteralRenderingTest extends TestHelper {
     assertThat(render("SELECT distinct(name) FROM V")).isEqualTo("SELECT DISTINCT name FROM V");
   }
 
+  /**
+   * Nesting collapses to the one pair that carries the meaning. Each layer is judged on the operand it wraps, so the
+   * layers around an already-parenthesised block wrap something that renders as one atom and print nothing - which
+   * leaves the rendering saying exactly what the expression means, once.
+   */
+  @Test
+  void redundantLayersOfParenthesesCollapseToTheOneThatMatters() {
+    assertThat(render("SELECT ((a + b)) * c AS n")).isEqualTo("SELECT (a + b) * c AS n");
+    assertThat(render("SELECT (((1 + 2))) * 3 AS n")).isEqualTo("SELECT (1 + 2) * 3 AS n");
+    assertThat(render("SELECT -((1 + 2)) AS n")).isEqualTo("SELECT 0 - (1 + 2) AS n");
+    assertThat(render("SELECT ((a)) FROM V")).isEqualTo("SELECT a FROM V");
+  }
+
   /** And the column name a caller reads back is the one it has always been. */
   @Test
   void anUnaliasedParenthesisedProjectionKeepsItsName() {
