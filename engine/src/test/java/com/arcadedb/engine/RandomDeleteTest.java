@@ -27,6 +27,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
@@ -87,7 +88,22 @@ class RandomDeleteTest extends TestHelper {
     for (Iterator<Record> it = db.iterateType(TYPE, true); it.hasNext(); )
       found.add(it.next().asVertex().getIdentity());
 
-    assertThat(found).isEqualTo(rids);
+    // The scan must return exactly the records that were inserted - every one of them, once each, and nothing else.
+    // Compared as a SET (both sides sorted by position, which also catches a record handed out twice) and not in the
+    // order they were inserted, because that order is not a property of anything: a scan walks a bucket in PHYSICAL
+    // order, a RID is a physical position, and a record inserted into space a delete gave back lands wherever that
+    // space is rather than after the last record written.
+    //
+    // Until #6339 the two orders did coincide, and only because the allocator could not see the space this test's own
+    // mass delete had freed: the free-space statistics were never told, so every re-insert appended to the end of the
+    // bucket and the bucket grew by another 100k slots per cycle. Asserting insertion order here was therefore
+    // asserting that nothing was reused - the defect - so the order goes and the identity of the records stays.
+    final List<RID> foundByPosition = new ArrayList<>(found);
+    final List<RID> insertedByPosition = new ArrayList<>(rids);
+    foundByPosition.sort(Comparator.comparingLong(RID::getPosition));
+    insertedByPosition.sort(Comparator.comparingLong(RID::getPosition));
+    assertThat(foundByPosition).hasSameSizeAs(insertedByPosition);
+    assertThat(foundByPosition).isEqualTo(insertedByPosition);
 
     assertThat(db.countType(TYPE, true)).isEqualTo(rids.size());
   }
