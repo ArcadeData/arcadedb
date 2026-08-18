@@ -4696,11 +4696,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   /**
    * How many bytes a chunk occupies on the page that holds it: its marker, the {@code INT} declaring the content
-   * size, the {@code LONG} pointing at the next chunk, and the content itself. The ONE derivation, called by both
+   * size, the {@code LONG} pointing at the next chunk, and the content itself. The ONE derivation, called by all three
    * readers of a page's layout ({@link #contentEndOffset}, {@link #getOrderedRecordsInPage} - and therefore by the
-   * commit-time measurement of {@link #accountCompressedPage}, which sums what the latter returned) and by every
-   * writer that places a chunk. Shared rather than merely agreed on, so the write path and the measurement path
-   * cannot describe the same bytes differently again (#6358).
+   * commit-time measurement of {@link #accountCompressedPage}, which sums what the latter returned - and
+   * {@link #getPageOccupiedInBytes}) and by every writer that places a chunk. Shared rather than merely agreed on, so
+   * the write path and the measurement path cannot describe the same bytes differently again (#6358).
    * <p>
    * Before this existed each writer subtracted something of its own: the continuation chunk of a fresh spill left
    * the 12 header bytes out, the extension of an existing chain left the marker out and counted the whole remaining
@@ -5213,9 +5213,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         lastRecordSize[0] = LONG_SERIALIZED_SIZE;
         lastRecordSize[1] = 1L;
       } else if (isChunkHead(lastRecordSize[0]) || lastRecordSize[0] == NEXT_CHUNK) {
-        // CONSIDER THE CHUNK SIZE
-        lastRecordSize[0] = page.readInt((int) (lastRecordPositionInPage + lastRecordSize[1]));
-        lastRecordSize[1] = 1L + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE;
+        // #6358: the chunk's footprint through the one derivation, and against the marker size readNumberAndSize
+        // actually reported rather than a hardcoded 1. The 1 was right for every marker in use - they all encode to a
+        // single byte - which is exactly the kind of agreement-by-coincidence the shared helper exists to replace:
+        // this is the THIRD reader of a page's layout, and what it returns feeds updatePageStatistics through the
+        // spill's slot enlargement and through growRecordInPage.
+        final int chunkMarkerSize = (int) lastRecordSize[1];
+        return lastRecordPositionInPage + chunkFootprint(chunkMarkerSize,
+                page.readInt(lastRecordPositionInPage + chunkMarkerSize));
       } else if (lastRecordSize[0] < RECORD_PLACEHOLDER_CONTENT) {
         lastRecordSize[0] *= -1L;
       }
