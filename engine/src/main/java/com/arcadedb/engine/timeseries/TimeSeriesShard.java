@@ -100,6 +100,13 @@ public class TimeSeriesShard implements AutoCloseable {
    * {@link ConcurrentModificationException} from the real commit would. Same idiom as
    * {@code RaftReplicatedDatabase.TEST_PHASE2_COMMIT_FAULT} for the equivalent leader-side problem.
    * <p>
+   * One static field for every {@code TimeSeriesShard} in the JVM, not one per instance or per type - same
+   * shape as {@link #TEST_PRE_PHASE4C_HOOK}, and safe today for the same reason: this module runs with a single
+   * Surefire fork and no parallel test execution, so at most one test has it armed at a time. Do not enable
+   * parallel test execution for this module without addressing this hook (and {@link #TEST_PRE_PHASE4C_HOOK}) -
+   * two tests racing to arm/clear the same field would each risk firing the other's fault, or clearing a fault
+   * a still-running test needed.
+   * <p>
    * Tests that set this MUST reset it to {@code null} in an {@code @AfterEach} method, for the same
    * reason as {@link #TEST_PRE_PHASE4C_HOOK} above.
    */

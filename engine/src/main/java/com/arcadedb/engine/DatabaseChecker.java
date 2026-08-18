@@ -734,8 +734,11 @@ public class DatabaseChecker {
 
       try {
         // ONE walk over the type's shards, not three: the report carries the totals this pass publishes alongside
-        // the findings, with each shard measuring itself inside the same lock window it checks itself in - so the
-        // numbers and the verdict describe one instant rather than three.
+        // the findings, and the totals are read inside the SAME lock window each shard's mutable-half check
+        // already runs in - so the numbers describe one instant, not a second and third walk over the same
+        // shards. The sealed-half findings do not share that window (issue #6406 item 1: they are fanned out
+        // across the type's own pool, after every shard's mutable half has already run) - see
+        // TimeSeriesEngine.checkIntegrity's own javadoc for what that trades away and why it is still safe.
         final TimeSeriesEngine.IntegrityReport report = engine.checkIntegrity(options);
 
         totalShards += report.shards();
