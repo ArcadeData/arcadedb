@@ -84,8 +84,8 @@ class Issue6382ContainsTextColonTest extends TestHelper {
   /**
    * A real field qualifier on a multi-property index keeps working, and a prefix that is NOT an indexed property is
    * literal text: it matches the document that really carries it, not nothing at all. Exercised through the index
-   * lookup directly, because the planner does not push a single-property {@code CONTAINSTEXT} down onto a
-   * multi-property full-text index.
+   * lookup directly: it is the raw qualifier handling that is under test here, below the positional per-property key
+   * the planner now builds for a multi-property index (issue #6414).
    */
   @Test
   void multiPropertyIndexKeepsFieldQualifiersAndTreatsUnknownOnesAsLiterals() {

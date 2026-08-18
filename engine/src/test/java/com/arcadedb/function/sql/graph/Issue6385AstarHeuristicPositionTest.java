@@ -51,7 +51,7 @@ class Issue6385AstarHeuristicPositionTest {
       final Vertex source = points[0];
       final Vertex goal = points[3];
 
-      for (final SQLHeuristicFormula formula : SQLHeuristicFormula.values()) {
+      for (final SQLHeuristicFormula formula : axisFormulas()) {
         final SQLFunctionAstar astar = axisHeuristic(db, source, formula);
 
         final double atSource = astar.getHeuristicCost(source, null, goal, astar.context);
@@ -87,7 +87,7 @@ class Issue6385AstarHeuristicPositionTest {
       // A non-default dFactor as well as the default: it scales every heuristic, and running only at 1.0 cannot
       // see a branch that drops it - which is how the N-axis EUCLIDEAN came to be the one of five that did.
       for (final double dFactor : new double[] { 1.0, 3.0 })
-        for (final SQLHeuristicFormula formula : SQLHeuristicFormula.values()) {
+        for (final SQLHeuristicFormula formula : axisFormulas()) {
           final SQLFunctionAstar threeAxis = axisHeuristic(db, points[0], formula);
           final SQLFunctionAstar twoAxis = axisHeuristic(db, points[0], formula);
           twoAxis.paramVertexAxisNames = new String[] { "x", "y" };
@@ -99,6 +99,15 @@ class Issue6385AstarHeuristicPositionTest {
               .isEqualTo(twoAxis.getHeuristicCost(points[1], null, points[2], twoAxis.context));
         }
     });
+  }
+
+  /**
+   * Every formula that is computed FROM THE AXES. CUSTOM is not one of them: it delegates h(n) wholesale to a
+   * user function and reads no coordinate, so the distance assertions below say nothing about it (issue #6414).
+   */
+  private static SQLHeuristicFormula[] axisFormulas() {
+    return new SQLHeuristicFormula[] { SQLHeuristicFormula.MANHATTAN, SQLHeuristicFormula.MAXAXIS,
+        SQLHeuristicFormula.DIAGONAL, SQLHeuristicFormula.EUCLIDEAN, SQLHeuristicFormula.EUCLIDEANNOSQR };
   }
 
   private SQLFunctionAstar axisHeuristic(final Database db, final Vertex source, final SQLHeuristicFormula formula) {

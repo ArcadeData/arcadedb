@@ -66,6 +66,7 @@ import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Function;
 import java.util.logging.Level;
 
 /**
@@ -224,9 +225,144 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   }
 
   /**
+   * Decomposes a POSITIONAL key over a multi-property index into one field-qualified single-text query per constrained
+   * property, or answers {@code null} when the key is not positional and must keep its historical "text to find anywhere"
+   * meaning.
+   * <p>
+   * A multi-property full-text index stores each token twice - once qualified as {@code field:token} and once unprefixed
+   * (see {@link #put}) - so a per-property lookup is exact rather than a filter over a superset. Before issue #6414 nothing
+   * could ask for one: {@code get()} read {@code keys[0]} and ignored the rest, so
+   * {@code WHERE title CONTAINSTEXT 'java' AND content CONTAINSTEXT 'zzz'} was answered by the first condition alone with
+   * the second silently dropped, and a condition on a single property could not use the index at all.
+   * <p>
+   * Each whitespace-separated part of the text is qualified individually, because that is the granularity
+   * {@link #parseQueryTerms} works at: qualifying only the head would leave every following word matching any property.
+   * The qualifier is the property's BASE name ({@code obj.hd}, not the index's {@code obj.hd by item}): the modified
+   * spelling carries spaces, which the whitespace split would tear apart before anything could recognise it.
+   *
+   * @param propertyNames the indexed property names, in index order
+   * @param keys          the lookup key
+   *
+   * @return one single-element key per constrained property, or {@code null} if {@code keys} is not a positional key
+   */
+  static List<Object[]> splitPositionalKey(final List<String> propertyNames, final Object[] keys) {
+    if (propertyNames == null || propertyNames.size() < 2 || keys == null || keys.length != propertyNames.size())
+      return null;
+
+    final List<Object[]> result = new ArrayList<>(keys.length);
+    for (int i = 0; i < keys.length; i++) {
+      if (keys[i] == null)
+        continue;
+      result.add(new Object[] { qualifyEveryPart(keys[i].toString(), Index.basePropertyName(propertyNames.get(i))) });
+    }
+    return result;
+  }
+
+  /**
+   * Answers the indexed property a query qualifier names, in the spelling the POSTINGS use, or {@code null} when the
+   * qualifier names no indexed property.
+   * <p>
+   * The two spellings differ for a property indexed with a modifier: {@link #put} prefixes tokens with the index's own
+   * property name ({@code obj.hd by item}) while a query can only write the base name ({@code obj.hd}) - the modified one
+   * carries spaces and would not survive the whitespace split. Matching on the base name and answering with the stored one
+   * is what lets a field-qualified lookup reach those postings at all.
+   */
+  private static String storedFieldFor(final List<String> propertyNames, final String qualifier) {
+    if (propertyNames == null || qualifier == null)
+      return null;
+    for (final String property : propertyNames)
+      if (property.equals(qualifier) || Index.basePropertyName(property).equals(qualifier))
+        return property;
+    return null;
+  }
+
+  /**
+   * Prefixes every whitespace-separated part of {@code text} with {@code field:}, the form {@link #parseQueryTerms}
+   * recognises as a field qualifier. A part that already carries a colon keeps it as literal text: only the FIRST colon
+   * separates the qualifier, so {@code jira:1234} under field {@code title} becomes {@code title:jira:1234} and is
+   * analyzed as the two tokens the document really stored (issue #6382's rule, unchanged).
+   */
+  private static String qualifyEveryPart(final String text, final String field) {
+    final StringBuilder qualified = new StringBuilder(text.length() + 16);
+    for (final String part : text.split("\\s+")) {
+      if (part.isEmpty())
+        continue;
+      if (!qualified.isEmpty())
+        qualified.append(' ');
+      qualified.append(field).append(':').append(part);
+    }
+    return qualified.toString();
+  }
+
+  /**
+   * Answers the documents that satisfy EVERY per-property query, scores summed. The conjunction is what makes a positional
+   * key a faithful translation of the {@code AND} that produced it; within one property the terms keep the existing
+   * disjunctive coordination scoring.
+   * <p>
+   * One implementation, called from here for a bucket-local lookup and from {@link FullTextSearch#searchSimple} for the
+   * type-wide BM25 one. Two copies of a full-text rule is exactly what issue #6382 came from, so this one is shared rather
+   * than written twice (issue #6414).
+   *
+   * @param perProperty one single-element key per constrained property, as {@link #splitPositionalKey} returns
+   * @param lookup      answers one property's key; the caller decides whether that is bucket-local or type-wide
+   */
+  static Map<RID, Float> intersectPerProperty(final List<Object[]> perProperty,
+      final Function<Object[], IndexCursor> lookup) {
+    Map<RID, Float> intersection = null;
+    for (final Object[] key : perProperty) {
+      final Map<RID, Float> matches = new HashMap<>();
+      try (final IndexCursor cursor = lookup.apply(key)) {
+        while (cursor.hasNext()) {
+          // merge, not put: a cursor answers one entry per document today, and summing is the answer that stays right if
+          // one ever answers the same document twice.
+          matches.merge(canonicalRID(cursor.next().getIdentity()), cursor.getFloatScore(), Float::sum);
+        }
+      }
+
+      if (intersection == null)
+        intersection = matches;
+      else {
+        intersection.keySet().retainAll(matches.keySet());
+        for (final Map.Entry<RID, Float> e : intersection.entrySet())
+          e.setValue(e.getValue() + matches.get(e.getKey()));
+      }
+
+      if (intersection.isEmpty())
+        break;
+    }
+
+    return intersection == null ? Map.of() : intersection;
+  }
+
+  /**
+   * Builds the most-relevant-first cursor over an already scored document set, RID as a stable tiebreaker so equal-scored
+   * documents come back in a deterministic order.
+   */
+  static IndexCursor rankedCursor(final Map<RID, Float> scores, final Object[] keys, final int limit) {
+    if (scores == null || scores.isEmpty())
+      return new TempIndexCursor(List.of());
+
+    final ArrayList<IndexCursorEntry> list = new ArrayList<>(scores.size());
+    for (final Map.Entry<RID, Float> e : scores.entrySet())
+      list.add(new IndexCursorEntry(keys, e.getKey(), e.getValue()));
+
+    if (list.size() > 1)
+      list.sort((o1, o2) -> {
+        final int cmp = Float.compare(o2.floatScore, o1.floatScore);
+        return cmp != 0 ? cmp : o1.record.getIdentity().compareTo(o2.record.getIdentity());
+      });
+
+    return new TempIndexCursor(limit > -1 && list.size() > limit ? list.subList(0, limit) : list);
+  }
+
+  /**
    * Searches the index for the given query text.
    * The query text is parsed into terms, analyzed, and then matched against the index.
    * Results are scored based on the number of matching terms (coordination factor).
+   * <p>
+   * On a multi-property index the key is POSITIONAL: {@code keys[i]} is the text to find in the i-th indexed property, and a
+   * {@code null} slot leaves that property unconstrained. See {@link #splitPositionalKey}. A one-element key keeps the
+   * historical meaning - text to find in any indexed property - so nothing that passed a single query string changes.
    *
    * @param keys  The query arguments. keys[0] is expected to be the query string.
    * @param limit The maximum number of results to return. -1 for no limit.
@@ -234,6 +370,10 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    */
   @Override
   public IndexCursor get(final Object[] keys, final int limit) {
+    final List<Object[]> perProperty = splitPositionalKey(getPropertyNames(), keys);
+    if (perProperty != null)
+      return rankedCursor(intersectPerProperty(perProperty, key -> get(key, -1)), keys, limit);
+
     if (underlyingIndex.isStoreTermFrequency())
       return getBM25(keys, limit);
 
@@ -806,9 +946,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * never stored, so it matched nothing at all (issue #6382).
    * <p>
    * On a single-property index the qualifier is dropped even when it does name the property: that index stores
-   * unprefixed tokens only (see {@link #put}), so {@code label:java} means the same as {@code java} there. This
-   * mirrors {@code FullTextQueryExecutor.isUnqualified}, which the Lucene-backed executor already applied and this
-   * path did not.
+   * unprefixed tokens only (see {@link #put}), so {@code label:java} means the same as {@code java} there. That
+   * decision is not made here - both query paths ask {@link FullTextQueryExecutor#isUnqualified(List, String)}, so
+   * they cannot drift apart again the way they did in issue #6382 (issue #6414, item 4).
    *
    * @param queryText The raw query string.
    * @return A list of parsed QueryTerms.
@@ -819,7 +959,6 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       return terms;
 
     final List<String> propertyNames = getPropertyNames();
-    final boolean multiProperty = propertyNames != null && propertyNames.size() > 1;
 
     // Split by whitespace to get individual terms
     final String[] parts = queryText.split("\\s+");
@@ -829,10 +968,14 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
 
       // Check for field:value pattern
       final int colonIdx = part.indexOf(':');
-      if (colonIdx > 0 && colonIdx < part.length() - 1 && propertyNames != null && propertyNames.contains(
-          part.substring(0, colonIdx))) {
+      final String storedField = colonIdx > 0 && colonIdx < part.length() - 1 ?
+          storedFieldFor(propertyNames, part.substring(0, colonIdx)) :
+          null;
+      if (storedField != null) {
         // Field-prefixed term: qualified only where qualified keys are stored, i.e. on a multi-property index
-        terms.add(new QueryTerm(multiProperty ? part.substring(0, colonIdx) : null, part.substring(colonIdx + 1)));
+        terms.add(new QueryTerm(FullTextQueryExecutor.isUnqualified(propertyNames, part.substring(0, colonIdx)) ?
+            null :
+            storedField, part.substring(colonIdx + 1)));
       } else {
         // Literal text: the analyzer decides how it tokenizes
         terms.add(new QueryTerm(null, part));

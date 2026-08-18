@@ -20,9 +20,12 @@ package com.arcadedb.function.sql.graph;
 
 /**
  * Heuristic formula enum.
+ * <p>
+ * {@link #CUSTOM} is not computed here: it delegates h(n) to the SQL function named by the {@code customHeuristicFormula}
+ * option, which is why that option exists at all. It is selected implicitly by supplying that option (issue #6414).
  *
  * @author Saeed Tabrizi (saeed a_t  nowcando.com)
  */
 public enum SQLHeuristicFormula {
-  MANHATTAN, MAXAXIS, DIAGONAL, EUCLIDEAN, EUCLIDEANNOSQR
+  MANHATTAN, MAXAXIS, DIAGONAL, EUCLIDEAN, EUCLIDEANNOSQR, CUSTOM
 }

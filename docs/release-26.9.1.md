@@ -3540,3 +3540,60 @@ same number. It now scales like its two-axis twin and like the other four.
 [#6389](https://github.com/ArcadeData/arcadedb/issues/6389)
 [#6390](https://github.com/ArcadeData/arcadedb/issues/6390)
 [#6393](https://github.com/ArcadeData/arcadedb/issues/6393)
+
+## A documented A* option is applied, and CONTAINSTEXT answers the same question whatever the index's shape (#6414)
+
+Four follow-ups from #6408, independent of each other.
+
+`astar`'s `customHeuristicFormula` was documented in the function's own syntax string, listed among its accepted
+options, and read from the caller's map into a field that **nothing ever consulted**. There was no `CUSTOM` constant
+to dispatch to either, so a query supplying one silently got `MANHATTAN` - the default - with no error and no
+warning. The option now names a SQL function that computes `h(n)`, called as
+`fn(currentVertex, parentVertex, targetVertex, sourceVertex, depth, dFactor)` and returning a number. It is
+consulted before any vertex-axis test, so a custom formula works with no `vertexAxisNames` declared at all and owns
+`h(n)` outright: no axis is read and no tie-breaker is layered on its answer. Every way of getting it wrong is now an
+error the caller sees - an unknown function name, `heuristicFormula:'CUSTOM'` with no function named, a built-in
+formula named alongside a custom one (a contradiction, not a precedence question), or a function that returns
+something that is not a number. `dijkstra`, which has no heuristic, keeps rejecting the option outright.
+
+`CONTAINSTEXT` on a **multi-property** full-text index was two defects, and both are now fixed.
+
+A condition on one of the index's properties was not pushed down at all: the planner required the *first* index
+property to be constrained and then every following one, so `WHERE title CONTAINSTEXT 'java'` on an index over
+`(title, content)` fell back to a full scan. That is not only slower - the scan evaluates `CONTAINSTEXT` as
+`String.contains`, where the index matches analyzer *tokens*, so the same operator over the same data answered
+differently depending only on how the index had been declared. `label CONTAINSTEXT 'ava'` found a row whose label is
+`java` on a multi-property index and found nothing on a single-property one, and nothing in the query text told the
+user which they were getting.
+
+A condition on **both** properties was worse: it *was* pushed down, but the lookup read only the first key and the
+planner had already removed both conditions from the residual filter, so the second was dropped entirely.
+`WHERE title CONTAINSTEXT 'java' AND content CONTAINSTEXT 'zzz'` returned every row of the type - the second
+condition matches nothing - rather than none.
+
+A full-text index key is one query string per indexed property, not a composite key whose used prefix has to be
+contiguous, and a multi-property index already stores every token twice, once qualified as `field:token` and once
+unprefixed. The key is now POSITIONAL: `keys[i]` is the text to find in the i-th indexed property and a `null` slot
+leaves that property unconstrained, so any subset of the properties in any position is an exact lookup, and several
+of them are a conjunction. Every whitespace-separated word is bound to the property its condition names, not just
+the first. A single-property index builds the same one-element key it always did, and a one-element key keeps its
+historical "text to find in any indexed property" meaning, so nothing that passed a single query string changes.
+
+> [!IMPORTANT]
+> **Behaviour change.** `CONTAINSTEXT` on a property covered by a multi-property full-text index now matches analyzer
+> tokens (case-insensitive, whole-token) rather than substrings, which is what the same operator has always done on a
+> single-property index. A query relying on the substring fallback - `title CONTAINSTEXT 'ava'` matching `java` -
+> stops matching there. Use a `SEARCH_INDEX(...)` wildcard, or `LIKE '%ava%'`, for substring search. The operator's
+> meaning is now decided by whether a full-text index covers the property, which `EXPLAIN` answers, and no longer by
+> how many properties that index happens to span.
+
+Two smaller items ride along. The "is this qualifier really a field?" rule now lives in one place consulted by both
+full-text query paths, rather than in two copies that drifted apart once already - #6382 existed because the
+Lucene-backed executor had the rule and the direct `get()` path did not. And the designated regression test for
+#1814 wrote its dynamic default as `default "sysdate('YYYY-MM-DD')"`, a double-quoted SQL *string literal*: the
+call never happened, the literal text was stored verbatim, and the test asserted only that a constant string is not
+null - so it could not have failed if dynamic-default evaluation regressed. It now uses an expression and asserts
+the stored value parses as a date, before and after `APPLY DEFAULTS`, with a sentinel in between that the expression
+cannot produce. Deliberately not an equality against today's date: the two transactions can straddle midnight.
+
+[#6414](https://github.com/ArcadeData/arcadedb/issues/6414)
