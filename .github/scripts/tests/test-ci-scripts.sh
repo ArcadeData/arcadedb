@@ -26,6 +26,7 @@ RESULTS="$SCRIPTS/check-test-results.py"
 GUARDS="$SCRIPTS/check-test-reporter-guards.py"
 ALLOWLIST="$SCRIPTS/check-license-allowlist.py"
 DBDOCSSYNC="$SCRIPTS/check-database-docs-sync.py"
+CONTROLCHARS="$SCRIPTS/check-source-control-chars.py"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -1055,6 +1056,36 @@ CHECK DATABASE [ TYPE <type-name>[,]* ] [ RECLAIM UNREFERENCED FILES[,]* ]
 EOF
 expect "recovers a full keyword phrase when a placeholder touches the last keyword" 0 "agree on 2 clause" \
     "$DBDOCSSYNC" "$work/dbdocs-adjacent-bracket/SQLParser.g4" "$work/dbdocs-adjacent-bracket/sql-database-admin.adoc"
+
+# The raw NUL that reached ArcadeDBServer.java (issue #6426) compiled and behaved correctly, so the
+# only thing that noticed was grep - which reported the whole 1351-line file as binary and returned
+# nothing for every search over it. The guard has to catch the byte wherever it sits, and must not
+# trip on the tab/newline/carriage-return that every source file is made of.
+mkdir -p "$work/controlchars-clean"
+printf 'class A {\n\tvoid a() {\n\t\tb("x\\0y");\r\n\t}\n}\n' >"$work/controlchars-clean/A.java"
+expect "accepts tabs, CRLF and an escaped NUL" 0 "" \
+    "$CONTROLCHARS" "$work/controlchars-clean"
+
+mkdir -p "$work/controlchars-nul"
+printf 'class A {\n  int i = "x".indexOf('"'"'\000'"'"');\n}\n' >"$work/controlchars-nul/A.java"
+expect "rejects a raw NUL byte and points at its line" 1 "A.java:2:" \
+    "$CONTROLCHARS" "$work/controlchars-nul"
+
+# ESC is the one that reads as harmless - it is how a terminal colour code is written - and it makes
+# the file just as invisible to grep as the NUL does.
+mkdir -p "$work/controlchars-esc"
+printf 'RED = "\033[31m"\n' >"$work/controlchars-esc/colors.py"
+expect "rejects a raw ESC byte" 1 "ESC" \
+    "$CONTROLCHARS" "$work/controlchars-esc"
+
+# A control byte in build output or in a vendored bundle is not ours to fix, and a binary suffix is
+# not a source file at all - neither may fail the build.
+mkdir -p "$work/controlchars-skipped/target" "$work/controlchars-skipped/node_modules"
+printf 'class B {\000}\n' >"$work/controlchars-skipped/target/B.java"
+printf 'var x = "\000";\n' >"$work/controlchars-skipped/node_modules/bundle.js"
+printf '\000\001\002' >"$work/controlchars-skipped/logo.png"
+expect "ignores build output, vendored bundles and non-source files" 0 "" \
+    "$CONTROLCHARS" "$work/controlchars-skipped"
 
 echo
 if [[ $failures -gt 0 ]]; then

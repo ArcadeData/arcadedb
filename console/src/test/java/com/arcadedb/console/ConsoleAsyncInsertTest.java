@@ -148,7 +148,7 @@ public class ConsoleAsyncInsertTest {
   }
 
   @Test
-  void bulkAsyncInsertProductsUsingSQL() {
+  void bulkAsyncInsertProductsUsingSQL() throws IOException {
     GlobalConfiguration.SERVER_ROOT_PATH.setValue(".");
     GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("./target/databases");
 
@@ -206,8 +206,6 @@ public class ConsoleAsyncInsertTest {
       LocalDateTime start, stop, ref;
       ref = LocalDateTime.now().minusMonths(1);
 
-      final long begin = System.currentTimeMillis();
-
       for (int i = 0; i < N; i++) {
         name = UUID.randomUUID().toString();
         start = ref.plusMinutes(i);
@@ -216,7 +214,7 @@ public class ConsoleAsyncInsertTest {
         inventoryProductAsyncWithSQL(database, product, okCount, errCount);
       }
 
-      checkResults(txErrorCounter, database, okCount, errCount, N, begin);
+      checkResults(arcadeDBServer, txErrorCounter, database, okCount, errCount, N);
     } finally {
       arcadeDBServer.stop();
       FileUtils.deleteRecursively(new File(arcadeDBServer.getRootPath() + File.separator + "config"));
@@ -224,7 +222,7 @@ public class ConsoleAsyncInsertTest {
   }
 
   @Test
-  void bulkAsyncInsertProductsUsingAPI() {
+  void bulkAsyncInsertProductsUsingAPI() throws IOException {
     GlobalConfiguration.SERVER_ROOT_PATH.setValue(".");
     GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("./target/databases");
 
@@ -283,8 +281,6 @@ public class ConsoleAsyncInsertTest {
       LocalDateTime start, stop, ref;
       ref = LocalDateTime.now().minusMonths(1);
 
-      final long begin = System.currentTimeMillis();
-
       for (int i = 0; i < N; i++) {
         name = UUID.randomUUID().toString();
         start = ref.plusMinutes(i);
@@ -293,7 +289,7 @@ public class ConsoleAsyncInsertTest {
         inventoryProductAsyncWithAPI(database, product, okCount, errCount);
       }
 
-      checkResults(txErrorCounter, database, okCount, errCount, N, begin);
+      checkResults(arcadeDBServer, txErrorCounter, database, okCount, errCount, N);
     } finally {
       arcadeDBServer.stop();
       FileUtils.deleteRecursively(new File(arcadeDBServer.getRootPath() + File.separator + "config"));
@@ -398,11 +394,9 @@ public class ConsoleAsyncInsertTest {
     }
   }
 
-  private void checkResults(AtomicLong txErrorCounter, Database database, AtomicLong okCount, AtomicLong errCount, long N,
-      long begin) {
+  private void checkResults(ArcadeDBServer server, AtomicLong txErrorCounter, Database database, AtomicLong okCount,
+      AtomicLong errCount, long N) throws IOException {
     assertThat(database.async().waitCompletion(30_000)).isTrue();
-
-    System.out.println("Total async insertion of " + N + " elements in " + (System.currentTimeMillis() - begin));
 
     assertThat(N).isEqualTo(okCount.get());
     assertThat(errCount.get()).isEqualTo(0);
@@ -411,16 +405,20 @@ public class ConsoleAsyncInsertTest {
       Result result = resultSet.next();
       assertThat(N).isEqualTo((Long) result.getProperty("total"));
       Console console = new Console();
-      String URL = "remote:localhost/" + DATABASE_NAME + " " + userName + " " + password;
+      // CONNECT TO THE PORT THE SERVER ACTUALLY BOUND: THE DEFAULT IS A RANGE, SO WITH 2480 ALREADY TAKEN THIS SERVER LISTENS
+      // ELSEWHERE AND A PORT-LESS URL WOULD REACH THE FOREIGN ONE INSTEAD, FAILING AS 'User/Password not valid'
+      String URL = "remote:localhost:" + server.getHttpServer().getPort() + "/" + DATABASE_NAME + " " + userName + " " + password;
       assertThat(console.parse("connect " + URL)).isTrue();
       final StringBuilder buffer = new StringBuilder();
       console.setOutput(buffer::append);
       assertThat(console.parse("select count(*) from Product")).isTrue();
-      String[] lines = buffer.toString().split("\\r?\\n|\\r");
+      final String output = buffer.toString();
+      // SAY WHAT CAME BACK: WHEN THE ANSWER IS NOT THIS SERVER'S THE ROW IS MISSING, AND INDEXING INTO IT REPORTS AN
+      // ArrayIndexOutOfBoundsException THAT NAMES NEITHER THE QUERY NOR THE SERVER THAT ANSWERED IT
+      assertThat(output).as("console output of the remote count").contains("count(*)");
+      String[] lines = output.split("\\r?\\n|\\r");
       int count = Integer.parseInt(lines[4].split("\\|")[2].trim());
       assertThat(count).isEqualTo(N);
-    } catch (IOException e) {
-      System.out.println(e.getMessage());
     }
   }
 
