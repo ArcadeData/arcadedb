@@ -852,7 +852,7 @@ public class ArcadeDBServer {
     if (databaseName == null || databaseName.trim().isEmpty())
       throw new IllegalArgumentException("Database name is empty");
 
-    if (databaseName.indexOf('/') > -1 || databaseName.indexOf('\\') > -1 || databaseName.indexOf(' ') > -1
+    if (databaseName.indexOf('/') > -1 || databaseName.indexOf('\\') > -1 || databaseName.indexOf('\0') > -1
         || databaseName.equals(".") || databaseName.equals("..") || databaseName.contains(".."))
       throw new IllegalArgumentException("Database name '" + databaseName + "' contains invalid characters");
 
