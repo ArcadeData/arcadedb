@@ -169,9 +169,12 @@ public final class CSRCountUtils {
    * An unlabelled anchor is what {@code MATCH ()-[:TYPE]->() RETURN count(*)} has, and there is no cheaper question
    * to ask a graph. It used to leave every operator with no set to enumerate; "every vertex" is the set it means.
    * Both walks are the one in {@code Labels.iterateMatchingVertices}, which visits no vertex twice and which the
-   * MATCH anchor and the start of a pattern comprehension scan with as well (issue #6352).
+   * MATCH anchor and the start of a pattern comprehension scan with as well (issue #6352). Sharing it also means a
+   * label that names an edge or document type answers with no anchors rather than with records that are not
+   * vertices: labels and relationship types are separate namespaces, the rule the rest of the engine already
+   * applies.
    *
-   * @return an iterator over the anchor vertices, empty when the label is declared on nothing
+   * @return an iterator over the anchor vertices, empty when no vertex type carries the label
    */
   public static Iterator<? extends Identifiable> iterateAnchors(final Database db, final String label) {
     return Labels.iterateMatchingVertices(db, label != null ? List.of(label) : null, false);

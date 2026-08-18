@@ -98,6 +98,9 @@ public class NodeByLabelDisjunctionScan extends AbstractPhysicalOperator {
         buffer.clear();
         bufferIndex = 0;
 
+        // Disjunction by construction: the planner only picks this operator for (n:A|B). A one-element list
+        // would scan the same records either way - a single label is one polymorphic scan, and "any of one" and
+        // "all of one" are the same question - so the flag needs no guard tying it to labels.size() > 1.
         if (candidates == null)
           candidates = Labels.iterateMatchingVertices(context.getDatabase(), labels, true);
 
