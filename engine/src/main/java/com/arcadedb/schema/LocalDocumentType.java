@@ -1996,8 +1996,7 @@ public class LocalDocumentType implements DocumentType {
       // EVERYTHING THAT FOLLOWS THE LINKAGE IS GUARDED BY IT. The three lines above are the link; every step below can
       // still refuse - a paired external bucket that cannot be created, an index propagation that hits a duplicate, an
       // inherited partition the suitability check rejects for this subtype (#5637) - and a refusal that left the link
-      // standing would hand back a type that IS a subtype, with none of what being one implies. Only the propagation
-      // path used to roll it back, so the other two left it half applied.
+      // standing would hand back a type that IS a subtype, with none of what being one implies.
       //
       // Every sub-index the propagation attaches is recorded HERE, outside the propagation's own block, because the
       // steps that can refuse do not all come before it: a strategy the subtype cannot take (#5637) is raised AFTER
@@ -2017,22 +2016,18 @@ public class LocalDocumentType implements DocumentType {
 
         if (createIndexes) {
           // The indexes propagated here go over buckets that ALREADY HOLD RECORDS, which is the whole difference
-          // between this call site and the sibling in createBucket() - there the bucket has just been created, so no
-          // transaction can hold uncommitted writes into it and there is nothing for a scan to miss. Here a caller that
-          // inserts and then links a super type in ONE transaction is exactly the shape of issue #6324 item 1: the
-          // records are not committed, so the scan does not see them, and they were saved before the index existed to
-          // stage an entry for. The result was an index that is readable, reported healthy by CHECK DATABASE, and
-          // answers the lookup it exists for with nothing (issue #6359, item 1).
+          // between this call site and the sibling in createBucket(), where the bucket has just been created and a
+          // scan has nothing to miss. A caller that inserts and then links a super type in ONE transaction must get an
+          // index covering those records; without the split below it gets one that is readable, reported healthy by
+          // CHECK DATABASE, and answers the lookup it exists for with nothing (issues #6324 and #6359, item 1).
           //
           // Decided BEFORE the transactions below, while the answer is still about the transaction that was already
           // there - see IndexBuilder#buildSharesCallerTransaction, which owns the predicate for every call site.
-          // Per index rather than once, because an index family that cannot use a shared transaction (the vector ones,
-          // whose search path reads through the page cache rather than through the transaction) has to keep building in
-          // one go whatever the caller holds. Which is also the LIMIT of what this fixes: a vector index propagated
-          // here is still built inside the component-creation transaction, and that one does not join the caller's, so
-          // it sees the caller's uncommitted writes no more than it did before. Nothing regressed - no vector build
-          // has ever joined a caller's transaction - but "the propagated index now covers uncommitted records" is true
-          // of the families that can share one, not of every family.
+          //
+          // Per index rather than once: a family that cannot share a caller's transaction (the vector ones, whose
+          // search path reads through the page cache rather than through the transaction) keeps building in one go
+          // whatever the caller holds. That is also the LIMIT of this - a propagated vector index does not see the
+          // caller's uncommitted writes, and never has.
           final DatabaseInternal database = (DatabaseInternal) schema.getDatabase();
           final boolean callerTransactionHasChanges = IndexBuilder.callerTransactionHasChanges(database);
           // Two lists, because "has to be built later" and "has to be taken away if anything goes wrong" are not the
@@ -2133,19 +2128,17 @@ public class LocalDocumentType implements DocumentType {
 
       } catch (final RuntimeException e) {
         // EVERY sub-index the propagation made goes, not only the ones that still had a build outstanding, and not
-        // only when the propagation is what refused. Done from here rather than from a transaction's error callback
-        // because that callback is NOT reached on every failure: a NeedRetryException or a DuplicatedKeyException
-        // raised inside a JOINED transaction is rethrown immediately by LocalDatabase.transaction (issue #661 -
-        // retrying would roll back a transaction it does not own), skipping the callback entirely. And a duplicate is
-        // exactly what the build can hit, since it now sees the caller's own pending writes.
+        // only when the propagation is what refused. It cannot hang off a transaction's error callback: inside a
+        // JOINED transaction, LocalDatabase.transaction rethrows a NeedRetryException or a DuplicatedKeyException
+        // immediately rather than calling it (#661), and a duplicate is exactly what this build can hit now that it
+        // sees the caller's pending writes.
         for (final Index subIndex : created)
           IndexBuilder.dropPartiallyBuiltIndex(schema, subIndex);
 
-        // THE LINK GOES BACK, and for the propagation path that is what makes the refusal reach the caller at all:
-        // LocalDatabase.transaction retries a DuplicatedKeyException once (#4959), and on that retry this method
-        // would find the super type ALREADY in superTypes, return early without propagating anything, and let the
-        // transaction COMMIT - handing back a linked super type whose index holds no entry for a single one of the
-        // subtype's records. That is this issue's own defect, reached through the retry rather than through the scan.
+        // THE LINK GOES BACK, which is what makes the refusal reach the caller at all: LocalDatabase.transaction
+        // retries a DuplicatedKeyException once (#4959), and a retry that found the super type already linked would
+        // return early, propagate nothing, and COMMIT - handing back a subtype whose index holds no entry for any of
+        // its records.
         //
         // The paired external buckets ensureExternalBucketsRecursive may have created are deliberately left: they are
         // additive, idempotent, and reused by the next attempt.
