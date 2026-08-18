@@ -3579,10 +3579,13 @@ of them are a conjunction. Every whitespace-separated word is bound to the prope
 the first. A single-property index builds the same one-element key it always did, and a one-element key keeps its
 historical "text to find in any indexed property" meaning, so nothing that passed a single query string changes.
 
-**Behaviour change.** `CONTAINSTEXT` on a property covered by a multi-property full-text index now matches analyzer
-tokens (case-insensitive, whole-token) rather than substrings, which is what the same operator has always done on a
-single-property index. A query relying on the substring fallback - `title CONTAINSTEXT 'ava'` matching `java` -
-stops matching there. Use a `SEARCH_INDEX(...)` wildcard, or `LIKE '%ava%'`, for substring search.
+> [!IMPORTANT]
+> **Behaviour change.** `CONTAINSTEXT` on a property covered by a multi-property full-text index now matches analyzer
+> tokens (case-insensitive, whole-token) rather than substrings, which is what the same operator has always done on a
+> single-property index. A query relying on the substring fallback - `title CONTAINSTEXT 'ava'` matching `java` -
+> stops matching there. Use a `SEARCH_INDEX(...)` wildcard, or `LIKE '%ava%'`, for substring search. The operator's
+> meaning is now decided by whether a full-text index covers the property, which `EXPLAIN` answers, and no longer by
+> how many properties that index happens to span.
 
 Two smaller items ride along. The "is this qualifier really a field?" rule now lives in one place consulted by both
 full-text query paths, rather than in two copies that drifted apart once already - #6382 existed because the
@@ -3590,6 +3593,7 @@ Lucene-backed executor had the rule and the direct `get()` path did not. And the
 #1814 wrote its dynamic default as `default "sysdate('YYYY-MM-DD')"`, a double-quoted SQL *string literal*: the
 call never happened, the literal text was stored verbatim, and the test asserted only that a constant string is not
 null - so it could not have failed if dynamic-default evaluation regressed. It now uses an expression and asserts
-the value is today's date, before and after `APPLY DEFAULTS`.
+the stored value parses as a date, before and after `APPLY DEFAULTS`, with a sentinel in between that the expression
+cannot produce. Deliberately not an equality against today's date: the two transactions can straddle midnight.
 
 [#6414](https://github.com/ArcadeData/arcadedb/issues/6414)

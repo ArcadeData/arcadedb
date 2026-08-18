@@ -3987,15 +3987,7 @@ public class SelectExecutionPlanner {
     BinaryCondition additionalRangeCondition = null;
 
     for (String indexField : indexFields) {
-      // Strip modifiers to get base field name
-      String baseFieldName = indexField;
-      if (indexField.endsWith(" by key")) {
-        baseFieldName = indexField.substring(0, indexField.length() - 7);
-      } else if (indexField.endsWith(" by value")) {
-        baseFieldName = indexField.substring(0, indexField.length() - 9);
-      } else if (indexField.endsWith(" by item")) {
-        baseFieldName = indexField.substring(0, indexField.length() - 8);
-      }
+      final String baseFieldName = Index.basePropertyName(indexField);
 
       final boolean supportNull = index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX;
       final boolean ciCollation = isIndexCaseInsensitive(index, indexFields.indexOf(indexField));
