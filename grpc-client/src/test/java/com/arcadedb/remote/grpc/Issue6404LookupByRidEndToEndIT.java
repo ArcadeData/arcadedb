@@ -48,10 +48,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * fallback that {@code lookupByRID()}, which must return a concrete {@link Record}, does not have.
  *
  * <p>The fix sends {@code @cat} on the wire, matching HTTP, so the client never needs the schema fallback at all.
+ * This is the end-to-end reproduction through the high-level client; {@code Issue6404LookupByRidMissingCatIT} in
+ * {@code grpcw} pins the same fix directly against the wire response.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue6404LookupByRidMissingCatIT extends BaseGraphServerTest {
+public class Issue6404LookupByRidEndToEndIT extends BaseGraphServerTest {
 
   private static final int    GRPC_PORT   = 50051;
   private static final int    HTTP_PORT   = 2480;
@@ -62,7 +64,7 @@ public class Issue6404LookupByRidMissingCatIT extends BaseGraphServerTest {
   @Override
   public void setTestConfiguration() {
     super.setTestConfiguration();
-    GlobalConfiguration.SERVER_PLUGINS.setValue("GRPC:com.arcadedb.server.grpc.GrpcServerPlugin");
+    GlobalConfiguration.SERVER_PLUGINS.setValue("GrpcServer:com.arcadedb.server.grpc.GrpcServerPlugin");
   }
 
   @BeforeEach

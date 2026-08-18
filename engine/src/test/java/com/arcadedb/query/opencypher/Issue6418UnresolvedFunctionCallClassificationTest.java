@@ -107,6 +107,25 @@ class Issue6418UnresolvedFunctionCallClassificationTest {
     assertThat(isIdempotent("MATCH (n:Issue6418Person) RETURN n")).isTrue();
   }
 
+  /**
+   * The trickiest branch of {@code isConfirmedPureFunctionName}: the parser rewrites the underscored
+   * {@code vector_norm}/{@code vector_distance} spellings into a dotted SQL bridge name ({@code vector.magnitude},
+   * {@code vector.l2Distance}, ...) before a {@code FunctionCallExpression} is ever built, so these land in the
+   * classifier as dotted names resolved via {@code DefaultSQLFunctionFactory}'s direct (unprefixed, unmapped)
+   * lookup rather than via {@link com.arcadedb.function.CypherFunctionRegistry} or
+   * {@link com.arcadedb.function.CypherBuiltinFunctions}. Pinned here directly rather than only transitively
+   * through execution, since a regression in this branch specifically would misclassify every dotted built-in
+   * that isn't in the other two sources.
+   */
+  @Test
+  void dottedBuiltinsResolvedOnlyThroughTheSqlFunctionFactoryStayIdempotent() {
+    assertThat(isIdempotent(
+        "RETURN vector_norm(vector([1.0, 5.0, 3.0, 6.7], 4, FLOAT32), EUCLIDEAN) AS norm")).isTrue();
+    assertThat(isIdempotent(
+        "RETURN vector_distance(vector([1.0, 5.0, 3.0, 6.7], 4, FLOAT32), vector([5.0, 2.5, 3.1, 9.0], 4, FLOAT32), EUCLIDEAN) AS distance"))
+        .isTrue();
+  }
+
   @Test
   void queryRejectsWriteFunctionCallInExpressionPosition() {
     assertThatThrownBy(() -> database.query("opencypher", "RETURN test6418.createPerson('Dave')"))
