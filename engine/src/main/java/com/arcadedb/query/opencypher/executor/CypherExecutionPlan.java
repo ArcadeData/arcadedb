@@ -2074,11 +2074,11 @@ public class CypherExecutionPlan {
         // For the first hop, use sourceVar; for subsequent hops, use the previous targetVar
         String currentSourceVar = sourceVar;
 
-        // Smart GAV eligibility: for each anonymous hop, check if its edge types overlap
-        // with any other hop's types in the same pattern. If disjoint, null relVar enables
-        // fast path (GAV/CSR). If overlapping, generate an internal anonymous variable to
-        // force edge-loading for cross-hop uniqueness checking.
-        final boolean[] hopNeedsEdgeTracking = computeHopEdgeTrackingNeeds(pathPattern);
+        // Smart GAV eligibility: for each anonymous hop, check whether any other hop of the same MATCH
+        // clause - this pattern part or another one across a comma - could be the same physical edge. If
+        // none can, a null relVar enables the fast path (GAV/CSR). If one can, generate an internal
+        // anonymous variable to force edge-loading, so relationship uniqueness has something to compare.
+        final boolean[] hopNeedsEdgeTracking = computeHopEdgeTrackingNeeds(pathPatterns, patternIndex);
 
         for (int i = 0; i < pathPattern.getRelationshipCount(); i++) {
           final RelationshipPattern relPattern = pathPattern.getRelationship(i);
@@ -2715,8 +2715,8 @@ public class CypherExecutionPlan {
               // For the first hop, use sourceVar; for subsequent hops, use the previous targetVar
               String currentSourceVar = sourceVar;
 
-              // Smart GAV eligibility: same analysis as ordered path
-              final boolean[] hopNeedsEdgeTrackingLegacy = computeHopEdgeTrackingNeeds(pathPattern);
+              // Smart GAV eligibility: same clause-scoped analysis as the ordered path
+              final boolean[] hopNeedsEdgeTrackingLegacy = computeHopEdgeTrackingNeeds(pathPatterns, patternIndex);
 
               for (int i = 0; i < pathPattern.getRelationshipCount(); i++) {
                 final RelationshipPattern relPattern = pathPattern.getRelationship(i);
@@ -4197,83 +4197,80 @@ public class CypherExecutionPlan {
   }
 
   /**
-   * Checks whether an edge variable is actually referenced in the query outside its
-   * MATCH pattern declaration. If the variable appears only in the pattern (e.g.,
-   * {@code [r:KNOWS]}) but is never used elsewhere, it can be treated as anonymous
-   * for GAV/fast-path purposes.
-
-
-
-
-  /**
-   * Determines which hops in a path pattern need edge tracking for Cypher's relationship
-   * uniqueness constraint. A hop needs tracking only if its edge types could overlap with
-   * another hop's types in the same pattern AND the overlapping hops could match the same
-   * physical edge. Two hops with the same edge type but type-disjoint source or target
-   * vertex labels cannot match the same edge.
+   * Determines which hops of one comma-separated pattern part have to bind their edge so that Cypher's
+   * relationship uniqueness can be enforced.
    * <p>
-   * Rules:
+   * Uniqueness is scoped to the whole MATCH clause, not to one pattern part: two parts separated by a comma
+   * are one pattern and may never bind the same relationship (two separate MATCH clauses may - that is the
+   * documented difference between the comma and a second MATCH). The check itself is a comparison against the
+   * edges the row already carries, so a hop that is never asked to bind its edge is invisible to it. Scoping
+   * this analysis to a single part therefore did not merely miss an optimisation, it dropped the constraint:
+   * a part that cannot collide with itself - a single hop, typically - bound nothing, and the hop of a later
+   * part had nothing to compare against (issue #6310).
+   * <p>
+   * A hop is left free - which is what keeps it on the GAV/CSR fast path - only when no other hop in the
+   * clause can be the same physical edge:
    * <ul>
-   *   <li>Single-hop pattern → no tracking needed (no other hop to conflict with)</li>
-   *   <li>Untyped hop (matches all edge types) → always needs tracking</li>
-   *   <li>Typed hop whose types are disjoint from all other hops → no tracking</li>
-   *   <li>Typed hop with type overlap but disjoint vertex labels on the edge endpoints → no tracking</li>
-   *   <li>Typed hop with type overlap and compatible vertex labels → needs tracking</li>
+   *   <li>the only hop in the clause has nothing to collide with;</li>
+   *   <li>two hops whose edge types are disjoint in the schema are always different edges. An edge has
+   *   exactly one type, so a hop's type list is a disjunction: the pair is disjoint only when every
+   *   combination is. Subtyping counts as overlap - {@code [:BASE]} and {@code [:SUB]} both match a
+   *   {@code SUB} edge;</li>
+   *   <li>two hops whose OUT or IN endpoint patterns are type-disjoint cannot be the same edge either,
+   *   whatever their types.</li>
    * </ul>
    *
-   * @param pathPattern the path pattern to analyze
-   * @return boolean array, true at index i if hop i needs edge tracking
+   * @param clausePatterns the comma-separated pattern parts of the MATCH clause being planned
+   * @param patternIndex   index in {@code clausePatterns} of the part being planned
+   *
+   * @return boolean array, true at index i if hop i of that part must bind its edge
    */
-  private boolean[] computeHopEdgeTrackingNeeds(final PathPattern pathPattern) {
-    final int hopCount = pathPattern.getRelationshipCount();
-    final boolean[] needs = new boolean[hopCount];
-    if (hopCount <= 1)
-      return needs; // single-hop: all false
+  private boolean[] computeHopEdgeTrackingNeeds(final List<PathPattern> clausePatterns, final int patternIndex) {
+    final PathPattern pathPattern = clausePatterns.get(patternIndex);
+    final boolean[] needs = new boolean[pathPattern.getRelationshipCount()];
 
-    // Collect edge types per hop (null = untyped, matches all)
-    final List<String>[] hopTypes = new List[hopCount];
-    boolean hasUntyped = false;
-    for (int i = 0; i < hopCount; i++) {
-      final RelationshipPattern rel = pathPattern.getRelationship(i);
-      if (rel.hasTypes())
-        hopTypes[i] = rel.getTypes();
-      else {
-        hopTypes[i] = null;
-        hasUntyped = true;
-      }
-    }
-
-    for (int i = 0; i < hopCount; i++) {
-      if (hopTypes[i] == null) {
-        // Untyped hop: overlaps with everything
-        needs[i] = true;
-        continue;
-      }
-      if (hasUntyped) {
-        // Another hop is untyped → overlaps with us
-        needs[i] = true;
-        continue;
-      }
-      // Check if our types overlap with any other hop's types
-      for (int j = 0; j < hopCount; j++) {
-        if (i == j)
-          continue;
-        // Both typed: check intersection
-        for (final String type : hopTypes[i]) {
-          if (hopTypes[j].contains(type)) {
-            // Same edge type — check if the hops are guaranteed to match different
-            // physical edges based on their vertex endpoint labels
-            if (areHopsDisjointByEndpointLabels(pathPattern, i, j))
-              continue; // Disjoint endpoints → skip this overlap
+    for (int i = 0; i < needs.length; i++) {
+      for (int p = 0; p < clausePatterns.size() && !needs[i]; p++) {
+        final PathPattern other = clausePatterns.get(p);
+        for (int j = 0; j < other.getRelationshipCount(); j++) {
+          if (p == patternIndex && i == j)
+            continue;
+          if (hopsCanMatchTheSameEdge(pathPattern, i, other, j)) {
             needs[i] = true;
             break;
           }
         }
-        if (needs[i])
-          break;
       }
     }
     return needs;
+  }
+
+  /**
+   * Whether two hops of the same MATCH clause could bind the same physical edge, and so have to be compared
+   * against each other for relationship uniqueness. Conservative: it answers yes unless the schema proves
+   * otherwise, because a wrong no silently returns rows Cypher forbids.
+   */
+  private boolean hopsCanMatchTheSameEdge(final PathPattern patternI, final int hopI, final PathPattern patternJ,
+      final int hopJ) {
+    final RelationshipPattern relI = patternI.getRelationship(hopI);
+    final RelationshipPattern relJ = patternJ.getRelationship(hopJ);
+
+    if (relI.hasTypes() && relJ.hasTypes() && edgeTypesAreDisjoint(relI.getTypes(), relJ.getTypes()))
+      return false;
+
+    return !areHopsDisjointByEndpointLabels(patternI, hopI, patternJ, hopJ);
+  }
+
+  /**
+   * Whether no edge in the schema can satisfy both type lists. An edge carries exactly one type, so each list
+   * is a disjunction and the two are disjoint only when every pair of alternatives is.
+   */
+  private boolean edgeTypesAreDisjoint(final List<String> typesI, final List<String> typesJ) {
+    for (final String typeI : typesI)
+      for (final String typeJ : typesJ)
+        if (!labelsAreTypeDisjoint(typeI, typeJ))
+          return false;
+    return true;
   }
 
   /**
@@ -4300,8 +4297,9 @@ public class CypherExecutionPlan {
   }
 
   /**
-   * Checks if two hops with the same edge type are guaranteed to match different physical edges
-   * based on the vertex labels at their edge endpoints.
+   * Checks if two hops of the same MATCH clause - each one identified by its pattern part and its index
+   * inside it, so the pair may straddle a comma - are guaranteed to match different physical edges based
+   * on the vertex labels at their edge endpoints.
    * <p>
    * An edge has exactly one OUT vertex and one IN vertex. If we can prove that the OUT vertex
    * (or IN vertex) for hop i must be of a different type than for hop j, the edges are distinct.
@@ -4313,19 +4311,20 @@ public class CypherExecutionPlan {
    *   <li>BOTH direction: cannot determine mapping → conservative (not disjoint)</li>
    * </ul>
    */
-  private boolean areHopsDisjointByEndpointLabels(final PathPattern pathPattern, final int hopI, final int hopJ) {
-    final Direction dirI = pathPattern.getRelationship(hopI).getDirection();
-    final Direction dirJ = pathPattern.getRelationship(hopJ).getDirection();
+  private boolean areHopsDisjointByEndpointLabels(final PathPattern patternI, final int hopI,
+      final PathPattern patternJ, final int hopJ) {
+    final Direction dirI = patternI.getRelationship(hopI).getDirection();
+    final Direction dirJ = patternJ.getRelationship(hopJ).getDirection();
 
     // BOTH direction: can't determine which node is the edge's OUT/IN vertex
     if (dirI == Direction.BOTH || dirJ == Direction.BOTH)
       return false;
 
     // Map pattern nodes to edge endpoints based on direction
-    final NodePattern edgeOutI = dirI == Direction.OUT ? pathPattern.getNode(hopI) : pathPattern.getNode(hopI + 1);
-    final NodePattern edgeOutJ = dirJ == Direction.OUT ? pathPattern.getNode(hopJ) : pathPattern.getNode(hopJ + 1);
-    final NodePattern edgeInI = dirI == Direction.OUT ? pathPattern.getNode(hopI + 1) : pathPattern.getNode(hopI);
-    final NodePattern edgeInJ = dirJ == Direction.OUT ? pathPattern.getNode(hopJ + 1) : pathPattern.getNode(hopJ);
+    final NodePattern edgeOutI = dirI == Direction.OUT ? patternI.getNode(hopI) : patternI.getNode(hopI + 1);
+    final NodePattern edgeOutJ = dirJ == Direction.OUT ? patternJ.getNode(hopJ) : patternJ.getNode(hopJ + 1);
+    final NodePattern edgeInI = dirI == Direction.OUT ? patternI.getNode(hopI + 1) : patternI.getNode(hopI);
+    final NodePattern edgeInJ = dirJ == Direction.OUT ? patternJ.getNode(hopJ + 1) : patternJ.getNode(hopJ);
 
     // If the OUT vertex labels are type-disjoint, the edges are different
     if (nodeLabelsAreTypeDisjoint(edgeOutI, edgeOutJ))
