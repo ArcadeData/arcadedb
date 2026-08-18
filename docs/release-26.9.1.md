@@ -3374,3 +3374,41 @@ mid-write openable, and there is nothing before it to renumber.
 
 [#6342](https://github.com/ArcadeData/arcadedb/issues/6342)
 [#6341](https://github.com/ArcadeData/arcadedb/issues/6341)
+
+## A `REBUILD` setting is evaluated and validated, so a typo stops selecting the other behaviour (#6359)
+
+`REBUILD INDEX` and `REBUILD TYPE` read their `WITH` settings by evaluating the setting's expression and
+handing the value to one of two shared readers on `DDLStatement`. Both previously read the expression a
+different way, and both let bad input through without saying so.
+
+The user-visible change is the boolean one. `Boolean.parseBoolean` answers `false` for anything it does not
+recognise, so `REBUILD INDEX i WITH statsOnly = yes` did not fail - it silently selected the OTHER behaviour,
+which for `statsOnly` is the difference between recomputing index statistics and rebuilding the entire index.
+Boolean settings now go through `parseBooleanSetting`, which accepts a boolean or `true`/`false` and refuses
+everything else by name. A statement carrying such a typo reports it rather than quietly doing the more
+expensive and different thing.
+
+Two numeric fixes come with it. `REBUILD TYPE ... WITH batchSize` read `Expression.value`, which is null for
+every numeric literal the parser builds, so it refused every value it was given, legal ones included, with
+`got: null`. And `WITH batchSize = -1` reached `Integer.parseInt` as the string `"0 - 1"`, because a unary
+minus was modelled as a subtraction from zero - a raw `NumberFormatException` naming neither the setting nor
+the problem. Numeric settings now go through `parsePositiveIntSetting`, which names the statement, the setting
+and the value, and a negative literal is now the number the user typed (see below).
+
+Evaluating rather than rendering is also what makes `WITH batchSize = :size` resolve a bound parameter:
+rendering an expression answers with the placeholder text, which no amount of parsing turns into an integer.
+
+## A negative literal is a number, and the parentheses a statement was written with survive (#6359)
+
+The SQL parser modelled a unary minus as a subtraction from zero, so the AST for `-1` was `0 - 1` and that is
+what `Expression.toString()` produced. That rendering is not cosmetic: it is what `EXPLAIN` prints, what an
+unaliased projection is named after, and what a statement re-reading one of its own settings parses. The minus
+is now folded into the literal, keeping the exact numeric type the arithmetic used to produce.
+
+Measuring that turned up the same defect for the parentheses a statement was written with, which the renderer
+dropped: `(1 + 2) * 3` rendered as `1 + 2 * 3`, which reads back as 7 rather than 9, and `2 * -1` rendered as
+`2 * 0 - 1`, which reads back as -1 rather than -2. Parentheses are now printed where dropping them could
+change the meaning - around a compound arithmetic operand - and not where they are decoration, so
+`SELECT (name) FROM V` keeps the column name it has always had.
+
+[#6359](https://github.com/ArcadeData/arcadedb/issues/6359)
