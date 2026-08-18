@@ -133,4 +133,36 @@ class TerminalParserTest {
     assertThat(split("INSERT INTO doc CONTENT {\"a\": \"b;c\", \"d\": 1}")).containsExactly(
         "INSERT INTO doc CONTENT {\"a\": \"b;c\", \"d\": 1}");
   }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/6392: one closing brace too many used to drive the brace depth below
+   * zero, and from there no semicolon could ever match the `depth == 0` test again, so every following command was appended to
+   * the malformed one instead of being executed on its own.
+   */
+  @Test
+  void unbalancedClosingBraceDoesNotDisableTheSeparator() {
+    assertThat(split("INSERT INTO doc CONTENT {\"a\":{\"b\":1}}}; SELECT 1; SELECT 2")).containsExactly(
+        "INSERT INTO doc CONTENT {\"a\":{\"b\":1}}}", " SELECT 1", " SELECT 2");
+  }
+
+  @Test
+  void closingBraceWithNothingOpenIsJustText() {
+    assertThat(split("SELECT 1 }; SELECT 2")).containsExactly("SELECT 1 }", " SELECT 2");
+  }
+
+  /**
+   * Every stray brace used to dig the depth one level deeper, so the damage survived any number of well formed JSON objects
+   * coming after it.
+   */
+  @Test
+  void strayBracesDoNotAccumulate() {
+    assertThat(split("} ; } ; SELECT 1")).containsExactly("} ", " } ", " SELECT 1");
+    assertThat(split("SELECT 1 }; INSERT INTO doc CONTENT {\"a\": 1}; SELECT 2")).containsExactly("SELECT 1 }",
+        " INSERT INTO doc CONTENT {\"a\": 1}", " SELECT 2");
+  }
+
+  @Test
+  void unbalancedClosingBraceInsideAStringIsNotCounted() {
+    assertThat(split("SELECT '}}}' ; SELECT 1")).containsExactly("SELECT '}}}' ", " SELECT 1");
+  }
 }
