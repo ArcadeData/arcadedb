@@ -43,12 +43,18 @@ import static org.assertj.core.api.Assertions.assertThat;
  * place where a fix could land on one path and not the other, which is exactly the arrangement that hid the
  * list-slice heap exhaustion until issue #6323.
  * <p>
- * Every expression below is therefore run twice: plainly, which takes the AST path, and beside an aggregate,
- * which takes the evaluator path. The two must answer identically - the same value, or the same failure. Failing
- * identically matters as much as succeeding: half the operand matrix these issues established is about which
- * error a bad operand produces.
+ * There is a third writing of the same semantics, in {@code ConstantFolder.foldArithmetic}, which answers an
+ * operation over two literals at parse time and replaces it with the result - so a fold that disagrees with
+ * execution silently rewrites the query into a different one. It now calls the same method, and is checked here
+ * as a third path.
  * <p>
- * {@link #theEvaluatorPathIsActuallyExercised()} is what keeps this from being a test of one code path run twice.
+ * Every expression below is therefore run three ways: as a WHERE predicate over UNWIND-bound operands, which the
+ * AST node evaluates; as a projection over the same operands, which {@code ExpressionEvaluator} evaluates; and as
+ * a WHERE predicate over the literals themselves, which the folder answers before execution begins. All three
+ * must agree - the same value, the same type, or the same failure. Failing identically matters as much as succeeding: half the operand
+ * matrix these issues established is about which error a bad operand produces.
+ * <p>
+ * {@link #theTwoPathsAreDistinct()} is what keeps this from being a test of one code path run three times.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -104,6 +110,7 @@ class CypherArithmeticEvaluatorParityTest {
   void bothPathsAnswerIdentically(final String testCase) {
     final String[] parts = testCase.split(" @@ ", 3);
     final String operation = "(lv " + parts[1] + " rv)";
+    final String literalOperation = "(" + parts[0] + " " + parts[1] + " " + parts[2] + ")";
     // Both operands are bound by UNWIND, so the only thing that differs between the two queries below is WHERE
     // against RETURN - and that is exactly what selects the path. A projection is evaluated by
     // ExpressionEvaluator; a WHERE predicate is evaluated by the AST node itself. See theTwoPathsAreDistinct().
@@ -111,27 +118,38 @@ class CypherArithmeticEvaluatorParityTest {
 
     final String viaEvaluator = outcome(unwind + "RETURN " + operation + " AS r");
     final String viaAst = outcome(unwind + "WITH lv, rv WHERE " + operation + " IS NOT NULL RETURN 1 AS r");
+    // The third evaluator of the same semantics: ConstantFolder answers an operation over two literals at parse
+    // time and replaces it with the result, so the query never evaluates it at all. A fold that disagrees with
+    // execution rewrites the query into a different one. It rewrites predicates, not projections, which is why
+    // the literal operation is hosted in a WHERE here and in the agreement query below.
+    final String viaFolder = outcome("UNWIND [1] AS x WITH x WHERE " + literalOperation + " IS NOT NULL RETURN 1 AS r");
 
     // Failing identically matters as much as succeeding: half the operand matrix these issues established is
     // about WHICH error a bad operand produces, and a bare ClassCastException on one path where the other says
-    // what is wrong with the query is precisely the drift issue #6344 found in the slice bounds.
-    if (viaEvaluator.startsWith("ERROR") || viaAst.startsWith("ERROR")) {
-      assertThat(viaAst).as("`%s` raises the same failure on both paths", testCase).isEqualTo(viaEvaluator);
+    // what is wrong with the query is precisely the drift issue #6344 found in the slice bounds. The folder is
+    // held to the same standard by its own contract: it keeps the expression unfolded when the operation fails,
+    // so the failure still arrives from execution, unchanged.
+    if (viaEvaluator.startsWith("ERROR") || viaAst.startsWith("ERROR") || viaFolder.startsWith("ERROR")) {
+      assertThat(viaAst).as("`%s` raises the same failure on the AST path", testCase).isEqualTo(viaEvaluator);
+      assertThat(viaFolder).as("`%s` raises the same failure when folded", testCase).isEqualTo(viaEvaluator);
       return;
     }
 
-    // Neither failed, so compare the values - in a single query, so nothing is marshalled through Java and lost
-    // on the way. viaEvaluator is a projection, the two repetitions inside WHERE are the AST node, and
-    // valueType() pins the type as well as the value: 3 and 3.0 are equal under Cypher '=' but must not be
-    // produced by one path where the other produces the integer.
+    // Nothing failed, so compare the values - in a single query, so nothing is marshalled through Java and lost
+    // on the way. `projected` is the evaluator, the repetitions inside WHERE are the AST node, `folded` is the
+    // constant folder, and valueType() pins the type as well as the value: 3 and 3.0 are equal under Cypher '='
+    // but must not be produced by one path where another produces the integer.
     final long agreements = count(unwind
         + "WITH lv, rv, " + operation + " AS projected "
         + "WHERE valueType(" + operation + ") = valueType(projected) "
-        // NaN is not equal to itself, so the two paths agreeing on it has to be said separately.
+        + "  AND valueType(" + literalOperation + ") = valueType(projected) "
+        // NaN is not equal to itself, so the paths agreeing on it has to be said separately.
         + "  AND ((" + operation + " IS NULL AND projected IS NULL) OR " + operation + " = projected"
         + "       OR (valueType(projected) = 'FLOAT NOT NULL' AND isNaN(" + operation + ") AND isNaN(projected))) "
+        + "  AND ((" + literalOperation + " IS NULL AND projected IS NULL) OR " + literalOperation + " = projected"
+        + "       OR (valueType(projected) = 'FLOAT NOT NULL' AND isNaN(" + literalOperation + ") AND isNaN(projected))) "
         + "RETURN 1 AS r");
-    assertThat(agreements).as("`%s` gives the same value and type on both paths", testCase).isEqualTo(1L);
+    assertThat(agreements).as("`%s` gives the same value and type on all three paths", testCase).isEqualTo(1L);
   }
 
   /**

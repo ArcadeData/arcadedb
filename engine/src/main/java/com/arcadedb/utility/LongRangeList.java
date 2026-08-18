@@ -195,6 +195,9 @@ public class LongRangeList extends AbstractList<Long> implements RandomAccess {
       // Reversing nothing, or a single element, gives back the same sequence.
       return this;
     try {
+      // start + (size - 1) * step is the last element, which get(size - 1) already computes without overflowing:
+      // the constructor is only ever handed a size that LongRangeList.cardinality() counted for a range whose end
+      // is a long, so the last element is a long too.
       return new LongRangeList(start + (long) (size - 1) * step, Math.negateExact(step), size);
     } catch (final ArithmeticException e) {
       // Long.MIN_VALUE has no positive counterpart. Only a two-element range can carry that step - a third element
