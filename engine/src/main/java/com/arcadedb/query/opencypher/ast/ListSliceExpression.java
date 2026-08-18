@@ -72,9 +72,16 @@ public class ListSliceExpression implements Expression {
   }
 
   private static Integer sliceBound(final Expression bound, final Result result, final CommandContext context) {
-    if (bound == null)
-      return null;
-    final Object value = bound.evaluate(result, context);
+    return bound == null ? null : sliceBound(bound.evaluate(result, context));
+  }
+
+  /**
+   * A slice bound from its already evaluated value: the index it denotes, or null when the value is null - which
+   * makes the whole slice null, as any null operand does. Shared with {@code ExpressionEvaluator}, which evaluates
+   * the operand through itself: without it that path cast straight to {@code Number} and answered a non-numeric
+   * bound with a raw ClassCastException instead of saying what was wrong with the query (issue #6323).
+   */
+  public static Integer sliceBound(final Object value) {
     if (value == null)
       return null;
     if (value instanceof Number number)

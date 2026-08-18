@@ -371,7 +371,7 @@ public class ExpressionEvaluator {
       final Object fromValue = evaluate(expression.getFromExpression(), result, context);
       if (fromValue == null)
         return null;
-      from = ((Number) fromValue).intValue();
+      from = ListSliceExpression.sliceBound(fromValue);
     }
 
     Integer to = null;
@@ -379,7 +379,7 @@ public class ExpressionEvaluator {
       final Object toValue = evaluate(expression.getToExpression(), result, context);
       if (toValue == null)
         return null;
-      to = ((Number) toValue).intValue();
+      to = ListSliceExpression.sliceBound(toValue);
     }
 
     // The slicing itself belongs to the AST node, so the two paths cannot answer differently (issue #6323).

@@ -38,6 +38,7 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * Regression test for issue #6323 item 2: {@code IN} answered membership by walking the list element by element,
@@ -182,6 +183,26 @@ class CypherInRangeMembershipTest {
     assertThat(single("RETURN 999999998 IN range(0, 999999999)[0..1000000000] AS r", Map.of())).isEqualTo(true);
     assertThat(single("RETURN size(range(0, 999999999)[10..1000000000]) AS r", Map.of())).isEqualTo(999_999_990L);
     stopwatch.assertStayedUnder(2_000L, "a range carried through a variable or a slice is still an arithmetic answer");
+  }
+
+  /**
+   * A slice is evaluated by two callers - the AST node and the aggregation-aware evaluator - and both now answer a
+   * malformed bound by saying what is wrong with the query, instead of one of them casting straight to a Number
+   * and raising a bare ClassCastException.
+   */
+  @Test
+  void aNonNumericSliceBoundIsReportedTheSameWayOnBothPaths() {
+    for (final String query : new String[] {
+        "RETURN range(0, 10)[$v..3] AS r",
+        "RETURN collect(range(0, 10))[0][$v..3] AS r" }) {
+      final Throwable thrown = catchThrowable(() -> single(query, Map.of("v", "not a number")));
+      assertThat(thrown).as("%s", query).isNotNull();
+
+      final StringBuilder messages = new StringBuilder();
+      for (Throwable current = thrown; current != null; current = current.getCause())
+        messages.append(current.getMessage()).append(" | ");
+      assertThat(messages.toString()).as("%s", query).contains("Slice index must be a number");
+    }
   }
 
   private Object single(final String query, final Map<String, Object> parameters) {
