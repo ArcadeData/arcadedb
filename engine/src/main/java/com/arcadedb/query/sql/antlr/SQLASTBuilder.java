@@ -7299,7 +7299,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   /**
    * Visit CHECK DATABASE statement.
    * Grammar: CHECK DATABASE (TYPE ident (COMMA ident)*)? (BUCKET (ident|int) (COMMA (ident|int))*)?
-   * (RECORD rid (COMMA rid)*)? (FIX)? (DELETE ORPHANS)? (DEEP)? (COMPRESS)?
+   * (RECORD rid (COMMA rid)*)? (FIX)? (DELETE ORPHANS)? (RECLAIM UNREFERENCED FILES)? (DEEP)? (COMPRESS)?
    */
   @Override
   public CheckDatabaseStatement visitCheckDatabaseStmt(final SQLParser.CheckDatabaseStmtContext ctx) {
@@ -7358,6 +7358,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // ORPHANS alone identifies the clause - it is the only place the token appears in this statement.
     if (checkCtx.ORPHANS() != null) {
       stmt.deleteOrphans = true;
+    }
+
+    // Parse RECLAIM UNREFERENCED FILES flag (#6189): opt-in reclaim of files no schema component was ever built
+    // for. RECLAIM alone identifies the clause - it is the only place the token appears in this statement.
+    if (checkCtx.RECLAIM() != null) {
+      stmt.reclaimUnreferencedFiles = true;
     }
 
     // Parse DEEP flag (#6360): the tier that decodes the data rather than reconciling what describes it.

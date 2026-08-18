@@ -51,4 +51,9 @@ public class SQLFunctionFormat extends SQLFunctionAbstract {
   public String getSyntax() {
     return "format(<format>, <arg1> [,<argN>]*)";
   }
+
+  // Not marked isDeterministic(): java.lang.String#format resolves grouping/decimal separators and similar
+  // conversions against the JVM's default Locale, which is process-wide mutable state outside the arguments
+  // (issue #6190). A caller relying on locale-sensitive conversions across a `Locale.setDefault()` change must
+  // not have a stale value baked into a cached plan.
 }

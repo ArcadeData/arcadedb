@@ -157,20 +157,19 @@ class ErrorHandlingIT extends BaseGraphServerTest {
   }
 
   @Test
-  @DisplayName("Duplicate key insert throws DuplicatedKeyException or DatabaseOperationException with duplicate key message")
+  @DisplayName("Duplicate key insert throws DuplicatedKeyException with the index name and offending key")
   void duplicateKey_throwsDuplicatedKeyException() {
     database.command("sql", "INSERT INTO `" + TYPE + "` SET id = 'dup1', name = 'first'");
 
-    // When the command fails internally, it may throw DatabaseOperationException with the duplicate key message
-    // When gRPC properly maps the error, it throws DuplicatedKeyException
+    // executeCommand now routes failures through GrpcErrorMapper like every other RPC (issue #6192), so
+    // the exact engine exception type - including the index name and offending keys DuplicatedKeyException
+    // carries - survives the trip instead of being flattened into a DatabaseOperationException string.
     assertThatThrownBy(() ->
         database.command("sql", "INSERT INTO `" + TYPE + "` SET id = 'dup1', name = 'second'"))
-        .satisfiesAnyOf(
-            e -> assertThat(e).isInstanceOf(DuplicatedKeyException.class),
-            e -> {
-              assertThat(e).isInstanceOf(DatabaseOperationException.class);
-              assertThat(e.getMessage()).containsIgnoringCase("duplicat");
-            });
+        .isInstanceOfSatisfying(DuplicatedKeyException.class, e -> {
+          assertThat(e.getIndexName()).isNotBlank();
+          assertThat(e.getKeys()).isNotBlank();
+        });
   }
 
   @Test

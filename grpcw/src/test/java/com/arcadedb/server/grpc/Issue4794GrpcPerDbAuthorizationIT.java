@@ -160,9 +160,9 @@ public class Issue4794GrpcPerDbAuthorizationIT extends BaseGraphServerTest {
 
   @Test
   void crossDatabaseCommandIsDenied() {
-    // The command RPC reports execution errors via the response (success=false) rather than a gRPC
-    // error status. The denial must be raised by the per-database authorization gate before any work
-    // happens against the request-body database.
+    // The command RPC now reports execution errors as a gRPC error status through GrpcErrorMapper, the
+    // same as every other RPC (issue #6192). The denial must be raised by the per-database authorization
+    // gate before any work happens against the request-body database.
     final ArcadeDbServiceGrpc.ArcadeDbServiceBlockingStub stub = stubWithHeaderDatabase(ALLOWED_DB);
 
     final ExecuteCommandRequest request = ExecuteCommandRequest.newBuilder()
@@ -171,11 +171,9 @@ public class Issue4794GrpcPerDbAuthorizationIT extends BaseGraphServerTest {
         .setCommand("INSERT INTO Person SET name = 'intruder'")
         .build();
 
-    final ExecuteCommandResponse response = stub.executeCommand(request);
-
-    assertThat(response.getSuccess()).isFalse();
-    assertThat(response.getMessage()).contains("has not access to database '" + getDatabaseName() + "'");
-    assertThat(response.getAffectedRecords()).isZero();
+    assertThatThrownBy(() -> stub.executeCommand(request))
+        .isInstanceOf(StatusRuntimeException.class)
+        .hasMessageContaining("has not access to database '" + getDatabaseName() + "'");
   }
 
   @Test

@@ -187,6 +187,15 @@ public class BaseIdentifier extends SimpleNode {
     return levelZero != null && levelZero.isLiteral(allowInputParameters);
   }
 
+  /**
+   * A suffix is a property or variable reference, never a foldable call.
+   *
+   * @see Expression#isFoldable()
+   */
+  boolean isFoldableFunctionCall() {
+    return levelZero != null && levelZero.isFoldableFunctionCall();
+  }
+
   public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext context) {
     if (isAggregate(context)) {
       final BaseIdentifier result = new BaseIdentifier();

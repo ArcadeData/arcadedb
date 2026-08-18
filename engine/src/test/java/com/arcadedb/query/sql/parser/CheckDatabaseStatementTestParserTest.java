@@ -69,5 +69,11 @@ class CheckDatabaseStatementTestParserTest extends AbstractParserTest {
 
     // DEEP comes after FIX, as the grammar orders every other optional clause of this statement.
     checkWrongSyntax("check database deep fix");
+
+    // #6189's clause landed next to this one, so the order the two sit in is worth pinning rather than
+    // rediscovering: RECLAIM UNREFERENCED FILES first, DEEP after it, COMPRESS last.
+    checkRightSyntax("check database fix reclaim unreferenced files deep");
+    checkRightSyntax("check database type Metrics fix delete orphans reclaim unreferenced files deep compress");
+    checkWrongSyntax("check database fix deep reclaim unreferenced files");
   }
 }

@@ -141,6 +141,54 @@ class ConstantFalseFilterFoldingTest extends TestHelper {
     assertThat(names("SELECT FROM Character WHERE uuid() = 'not-a-uuid'")).isEmpty();
   }
 
+  /**
+   * Issue #6190: {@code SQLFunction#isDeterministic()} lets a call to a marked-pure built-in over literal arguments
+   * fold exactly like a plain literal comparison would - the sibling of {@link #aFilterCallingAFunctionIsNeverFolded()}
+   * for the one shape that is now safe to evaluate at plan time.
+   */
+  @Test
+  void aFilterCallingADeterministicFunctionIsFolded() {
+    assertNoScan(planOf("SELECT FROM Character WHERE abs(-1) = 999"));
+    assertThat(names("SELECT FROM Character WHERE abs(-1) = 999")).isEmpty();
+
+    assertScan(planOf("SELECT FROM Character WHERE abs(-1) = 1"));
+    assertThat(names("SELECT FROM Character WHERE abs(-1) = 1")).containsExactlyInAnyOrder("Arya", "Jon", "Tyrion");
+  }
+
+  /**
+   * The plan-caching consumer of the same marker: a statement whose only function call targets a deterministic
+   * built-in over cacheable arguments is no longer excluded from the plan cache by {@code FunctionCall#isCacheable()}
+   * returning {@code false} unconditionally.
+   */
+  @Test
+  void aStatementWithADeterministicFunctionInTheFilterIsCacheable() {
+    final String sql = "SELECT name FROM Character WHERE age > abs(-1)";
+    final DatabaseInternal db = (DatabaseInternal) database;
+
+    // the type creation in beginTest() invalidates the plan cache with a millisecond-resolution stamp the plan has
+    // to beat: see the sibling guard below and RidInScanOptimizationTest for the same pattern
+    final long setupMillis = System.currentTimeMillis();
+    while (System.currentTimeMillis() == setupMillis)
+      Thread.onSpinWait();
+
+    assertThat(names(sql)).containsExactlyInAnyOrder("Arya", "Jon", "Tyrion");
+    assertThat(db.getExecutionPlanCache().contains(sql)).as("a deterministic function call must not block plan caching")
+        .isTrue();
+  }
+
+  /**
+   * The mirror of the previous test: a non-deterministic call in the filter still blocks caching, exactly as before
+   * this marker existed.
+   */
+  @Test
+  void aStatementWithANonDeterministicFunctionInTheFilterIsNotCacheable() {
+    final String sql = "SELECT name FROM Character WHERE age > 0 AND uuid() IS NOT NULL";
+    final DatabaseInternal db = (DatabaseInternal) database;
+
+    assertThat(names(sql)).containsExactlyInAnyOrder("Arya", "Jon", "Tyrion");
+    assertThat(db.getExecutionPlanCache().contains(sql)).isFalse();
+  }
+
   @Test
   void limitZeroDoesNotScanItsTarget() {
     final ResultSet rs = database.query("sql", "SELECT name FROM Character LIMIT 0");
@@ -316,6 +364,25 @@ class ConstantFalseFilterFoldingTest extends TestHelper {
 
     assertThat(rs.hasNext()).isFalse();
     rs.close();
+  }
+
+  @Test
+  void anArithmeticParenthesisFoldsAtAnyNestingDepth() {
+    // MathExpression.isLiteral()'s javadoc names an array literal and a CASE as the shapes whose operands sit
+    // outside childExpressions and would be missed folds without their own override; an arithmetic parenthesis is
+    // NOT one of them (issue #6186) - ParenthesisExpression's own isLiteral() override answers for it too, so
+    // nesting one, or wrapping it in further arithmetic, still folds
+    assertNoScan(planOf("SELECT FROM Character WHERE (1) = 0"));
+    assertNoScan(planOf("SELECT FROM Character WHERE (1+1) = 0"));
+    assertNoScan(planOf("SELECT FROM Character WHERE (1+1)*2 = 0"));
+  }
+
+  @Test
+  void anArrayLiteralAccessAndACaseAreNotFoldedYet() {
+    // the two shapes MathExpression.isLiteral()'s javadoc does name: pinned here so the comment cannot drift the
+    // other way either. Both are SCAN WITH FILTER today, not EMPTY RESULT - unlike the arithmetic parenthesis above
+    assertScan(planOf("SELECT FROM Character WHERE [1,2][0] = 0"));
+    assertScan(planOf("SELECT FROM Character WHERE (CASE WHEN 1=1 THEN 1 ELSE 2 END) = 0"));
   }
 
   private ExecutionPlan planOf(final String sql, final Object... params) {

@@ -318,7 +318,19 @@ public class FileManager {
     return operation.execute();
   }
 
-  public void dropFile(final int fileId) throws IOException {
+  /**
+   * Drops the file at {@code fileId} and reports whether there was one to drop.
+   * <p>
+   * The check and the drop happen inside the SAME {@code synchronized} block deliberately (issue #6189 review): a
+   * caller that wants to know whether IT was the one that actually removed the file - rather than racing another
+   * dropper and finding it already gone - needs that answer atomically with the removal, not from a separate
+   * {@code existsFile} check beforehand, which a concurrent dropper could invalidate in the gap between the two
+   * calls.
+   *
+   * @return {@code true} if a file was there and this call removed it; {@code false} if the id already did not
+   * resolve to anything, in which case this call did nothing
+   */
+  public boolean dropFile(final int fileId) throws IOException {
     final ComponentFile file;
     synchronized (this) {
       // Drop the file on disk FIRST, then update the maps. If drop() throws, every map is left untouched
@@ -364,6 +376,7 @@ public class FileManager {
         }
       }
     }
+    return file != null;
   }
 
   /**

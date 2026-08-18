@@ -18,15 +18,13 @@
  */
 package com.arcadedb.query.opencypher.executor.operators;
 
-import com.arcadedb.database.Identifiable;
-import com.arcadedb.graph.Vertex;
+import com.arcadedb.database.Record;
+import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.WorkGuard;
-import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.VertexType;
 
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -46,11 +44,10 @@ import java.util.NoSuchElementException;
  * <ul>
  *   <li>No inline WHERE pushdown (unlike {@link NodeByLabelScan#whereFilter}). Filters are
  *       applied as a separate step; pushdown is a perf optimization tracked separately.</li>
- *   <li>Type iterators are constructed eagerly in {@link #buildMatchingIterators}. Each call
- *       to {@code iterateType} wraps the bucket iterators in a {@code MultiIterator} under
- *       a read lock — the wrapper is cheap and page reads stay lazy inside the bucket
- *       iterators, so eager construction has negligible cost for the typical small label
- *       sets seen in practice.</li>
+ *   <li>Which types to scan is decided by {@code Labels.iterateMatchingVertices}, shared with the
+ *       MATCH anchor and the start of a pattern comprehension so that one disjunction cannot mean
+ *       different things in different places (issues #6338, #6352). Each type's iterator is opened
+ *       only once the previous one is drained.</li>
  *   <li>{@code estimatedCardinality} is inherited from the anchor selector and reflects a
  *       single-label scan (the first label only). The true upper bound for a disjunction
  *       is the sum across all matching types; under-estimation here may bias join-order
@@ -75,8 +72,7 @@ public class NodeByLabelDisjunctionScan extends AbstractPhysicalOperator {
     // not enough (issue #6266).
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     return new ResultSet() {
-      private Iterator<Identifiable> currentIterator = null;
-      private Iterator<Iterator<Identifiable>> typeIteratorCursor = null;
+      private Iterator<Record> candidates = null;
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
@@ -102,32 +98,23 @@ public class NodeByLabelDisjunctionScan extends AbstractPhysicalOperator {
         buffer.clear();
         bufferIndex = 0;
 
-        if (typeIteratorCursor == null)
-          typeIteratorCursor = buildMatchingIterators(context).iterator();
+        // Disjunction by construction: the planner only picks this operator for (n:A|B). A one-element list
+        // would scan the same records either way - a single label is one polymorphic scan, and "any of one" and
+        // "all of one" are the same question - so the flag needs no guard tying it to labels.size() > 1.
+        if (candidates == null)
+          candidates = Labels.iterateMatchingVertices(context.getDatabase(), labels, true);
 
-        while (buffer.size() < n) {
+        while (buffer.size() < n && candidates.hasNext()) {
           guard.check();
-          if (currentIterator == null || !currentIterator.hasNext()) {
-            if (!typeIteratorCursor.hasNext()) {
-              finished = true;
-              return;
-            }
-            currentIterator = typeIteratorCursor.next();
-          }
-          while (buffer.size() < n && currentIterator.hasNext()) {
-            guard.check();
-            final Identifiable identifiable = currentIterator.next();
-            final Vertex vertex = identifiable.asVertex();
-            final ResultInternal result = new ResultInternal();
-            result.setProperty(variable, vertex);
-            buffer.add(result);
-          }
+          final Record record = candidates.next();
+          final ResultInternal result = new ResultInternal();
+          result.setProperty(variable, record.asVertex());
+          buffer.add(result);
         }
 
-        // Mark exhausted eagerly when both the current iterator and the type queue are drained,
-        // avoiding one redundant fetchMore round-trip when a query reads to the end (matching
-        // NodeByLabelScan's pattern).
-        if ((currentIterator == null || !currentIterator.hasNext()) && !typeIteratorCursor.hasNext())
+        // Mark exhausted eagerly when the scan is drained, avoiding one redundant fetchMore
+        // round-trip when a query reads to the end (matching NodeByLabelScan's pattern).
+        if (!candidates.hasNext())
           finished = true;
       }
 
@@ -136,30 +123,6 @@ public class NodeByLabelDisjunctionScan extends AbstractPhysicalOperator {
         // No resources to close
       }
     };
-  }
-
-  /**
-   * Builds one iterator per VertexType that is an instance of at least one disjunction label.
-   * The outer loop already enumerates every subtype in the schema, so {@code iterateType} is
-   * called with {@code polymorphic=false} — using {@code true} would duplicate records of
-   * subtypes that match through both the parent type and their own type entry.
-   */
-  private List<Iterator<Identifiable>> buildMatchingIterators(final CommandContext context) {
-    final List<Iterator<Identifiable>> iterators = new ArrayList<>();
-    for (final DocumentType type : context.getDatabase().getSchema().getTypes()) {
-      if (!(type instanceof VertexType))
-        continue;
-      for (final String label : labels) {
-        if (type.instanceOf(label)) {
-          @SuppressWarnings("unchecked")
-          final Iterator<Identifiable> iter =
-              (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(type.getName(), false);
-          iterators.add(iter);
-          break;
-        }
-      }
-    }
-    return iterators;
   }
 
   @Override

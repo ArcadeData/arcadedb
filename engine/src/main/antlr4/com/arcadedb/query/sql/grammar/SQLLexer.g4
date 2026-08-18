@@ -214,6 +214,11 @@ FIX: F I X;
 // Issue #6090: CHECK DATABASE ... FIX DELETE ORPHANS. Also listed among the keywords usable as an identifier, so
 // a schema that already has a type or property called "orphans" keeps parsing.
 ORPHANS: O R P H A N S;
+// Issue #6189: CHECK DATABASE ... FIX RECLAIM UNREFERENCED FILES. Also listed among the keywords usable as an
+// identifier, so a schema that already has a type or property by one of these names keeps parsing.
+RECLAIM: R E C L A I M;
+UNREFERENCED: U N R E F E R E N C E D;
+FILES: F I L E S;
 // Issue #6360: CHECK DATABASE ... DEEP. Also listed among the keywords usable as an identifier, so a schema that
 // already has a type or property called "deep" keeps parsing.
 DEEP: D E E P;

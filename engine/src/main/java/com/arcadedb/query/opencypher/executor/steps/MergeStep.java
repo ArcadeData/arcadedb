@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.executor.steps;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.Record;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
@@ -49,7 +50,6 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.VertexType;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -1018,38 +1018,23 @@ public class MergeStep extends AbstractExecutionStep {
         ? evaluateProperties(nodePattern.getProperties(), result)
         : null;
 
-    if (!nodePattern.hasLabels()) {
-      for (final DocumentType type : context.getDatabase().getSchema().getTypes()) {
-        if (type instanceof VertexType) {
-          @SuppressWarnings("unchecked")
-          final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(type.getName(), false);
-          while (iter.hasNext()) {
-            final Identifiable id = iter.next();
-            if (id instanceof Vertex vertex)
-              if (evaluatedProperties == null || matchesProperties(vertex, evaluatedProperties))
-                matches.add(vertex);
-          }
-        }
-      }
-      return matches;
-    }
+    final List<String> labels = nodePattern.hasLabels() ? nodePattern.getLabels() : null;
 
-    final List<String> labels = nodePattern.getLabels();
-
-    if (labels.size() > 1) {
-      final String firstLabel = labels.get(0);
-      if (!context.getDatabase().getSchema().existsType(firstLabel))
-        return matches;
-      @SuppressWarnings("unchecked")
-      final Iterator<Identifiable> iterator = (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(firstLabel, true);
-      while (iterator.hasNext()) {
-        final Identifiable identifiable = iterator.next();
-        if (identifiable instanceof Vertex vertex) {
-          final List<String> vertexLabels = Labels.getLabels(vertex);
-          if (vertexLabels.containsAll(labels))
-            if (evaluatedProperties == null || matchesProperties(vertex, evaluatedProperties))
-              matches.add(vertex);
-        }
+    if (labels == null || labels.size() > 1) {
+      // No label is every vertex; more than one is a conjunction. The disjunction flag is passed rather than
+      // hardcoded, but it can only arrive false here: CypherSemanticValidator.checkNoLabelDisjunction refuses
+      // (n:A|B) in MERGE at parse time, because "A or B" says which labels a node MAY have and a write has to
+      // know which type to create (issue #6338). Which types can carry every label is decided by Labels, the one
+      // place that knows what a label list means, instead of scanning the first label and comparing label lists
+      // per record: a type extending a composite carries its labels without listing them as its own supertypes,
+      // and MERGE missed such a node and created a duplicate beside the one MATCH found (issue #6352).
+      final Iterator<Record> candidates = Labels.iterateMatchingVertices(context.getDatabase(), labels,
+          nodePattern.isLabelDisjunction());
+      while (candidates.hasNext()) {
+        final Record record = candidates.next();
+        if (record instanceof Vertex vertex)
+          if (evaluatedProperties == null || matchesProperties(vertex, evaluatedProperties))
+            matches.add(vertex);
       }
       return matches;
     }
