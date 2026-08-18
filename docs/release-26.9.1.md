@@ -3412,3 +3412,56 @@ change the meaning - around a compound arithmetic operand - and not where they a
 `SELECT (name) FROM V` keeps the column name it has always had.
 
 [#6359](https://github.com/ArcadeData/arcadedb/issues/6359)
+
+## The `??` operator returns its left operand again, and a mistake in a function call is answered as one (#6382, #6385, #6388, #6389, #6390, #6393)
+
+The SQL null-coalescing operator `??` always returned its **right** operand, whatever the left one was. The
+grammar declares the alternative and `MathExpression.Operator` carries a working `NULL_COALESCING`, but nothing
+in between built the node: with no visitor for it, ANTLR's default `visitChildren` returns the last child it
+visited, so the left operand was gone from the tree before anything could evaluate it. `'left' ?? 'right'` was
+`'right'`, and `null ?? 'right'` agreed only by coincidence - which is the worst shape for a defect, because a
+projection, a `WHERE` term or a `SET` value written `a ?? fallback` read as "the fallback is always taken". It
+now evaluates left-to-right and short-circuits: the right operand, possibly a function call or a sub-query, is
+not evaluated when the fallback is not taken. `toString()` had no case for the operator either, so the
+rendering lost it too.
+
+The A* heuristic stored the **source** vertex's coordinate where the current node's belongs, for three or more
+axes (the two-axis branch was already right). `h(n)` was therefore the same number for every node - an
+admissible heuristic that guides nothing, so the search did the work of a plain Dijkstra while claiming to be
+informed. `dijkstra` delegates to A*, so any call supplying axis coordinates degraded with it.
+
+`CONTAINSTEXT` on a full-text index split its literal on the first `:` and looked the remainder up as a
+field-qualified key. A single-property index stores unprefixed tokens only, so an ordinary value carrying a
+colon - a time, a timestamp, a `ns:name` - asked for a key the corpus never had and matched **nothing**. A
+colon now introduces a qualifier only when the text before it names an indexed property, and on a
+single-property index it is dropped even then, matching the normalization the Lucene-backed path already
+applied; everything else is literal text handed to the analyzer, which is what the operator documents its
+argument to be.
+
+The rest is one theme across three issues: a raw JDK exception - an HTTP 500 - for ordinary valid input, where
+a typed argument error (HTTP 400) is the answer. `duration(1,'year')`, `ts.timeBucket('0s', ts)`,
+`ts.lag(v,-1,ts)`, `ts.lag(value)` without a timestamp, `date()` with a malformed pattern or unknown zone,
+`[1,null,3].join('-')`, `map(1,'a')`, `[1,2,3,4].asMap()`, `'x'.convert('nope')`, `decode('!!!','base64')`,
+`format('%d','x')`, `max([1,'a'])`, `bool_and([1,2,3])`, `nullField.lastindexof('a')` and
+`'abcdef'.substring(2.5)` each threw, and `bool_and(5)` was worse: it returned a confident `true` for input it
+never looked at. `sum()` was hardened against non-numeric input in #5799 and its siblings were not, so `avg`,
+`variance`/`stddev`/`median`, `percentile` and the time-series aggregates answered a `ClassCastException` where
+`sum` answered cleanly; the guard now lives on `SQLFunctionAbstract` and they all share it. Nulls are still
+skipped, which is the documented aggregation behaviour.
+
+**Breaking change.** `sysdate()` takes a **zone id** as its only argument, per its documented syntax
+`sysdate([<zoneid>])`, and now applies it: it used to read the zone from the *second* argument, so the
+one-argument form silently dropped it and answered server-local time. A second argument is now refused rather
+than accepted and ignored. Formatting is `.format()`'s job - `sysdate().format('yyyy-MM-dd')` - so a call
+written `sysdate('yyyy-MM-dd')`, which never formatted anything, is now an error naming the unknown zone.
+
+Two resource limits ride along, both reachable from caller-supplied text: the date formatter cache is bounded
+(past the ceiling a formatter is still built, just not remembered), and `format()` refuses a field width over
+a million characters instead of allocating it.
+
+[#6382](https://github.com/ArcadeData/arcadedb/issues/6382)
+[#6385](https://github.com/ArcadeData/arcadedb/issues/6385)
+[#6388](https://github.com/ArcadeData/arcadedb/issues/6388)
+[#6389](https://github.com/ArcadeData/arcadedb/issues/6389)
+[#6390](https://github.com/ArcadeData/arcadedb/issues/6390)
+[#6393](https://github.com/ArcadeData/arcadedb/issues/6393)

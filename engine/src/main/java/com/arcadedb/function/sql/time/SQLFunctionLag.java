@@ -65,7 +65,7 @@ public class SQLFunctionLag extends SQLAggregatedFunction {
       final CommandContext context) {
     if (!paramsRead) {
       if (params.length >= 2 && params[1] != null) {
-        offset = requireNumeric(params[1], "offset").intValue();
+        offset = requireIntArgument(params[1], "offset");
         // A negative offset would read past the other end of the ordered rows and throw
         // IndexOutOfBoundsException; it is a client-facing argument error (issue #6388).
         if (offset < 0)

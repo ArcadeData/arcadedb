@@ -65,7 +65,7 @@ public class SQLFunctionLead extends SQLAggregatedFunction {
       final CommandContext context) {
     if (!paramsRead) {
       if (params.length >= 2 && params[1] != null) {
-        offset = requireNumeric(params[1], "offset").intValue();
+        offset = requireIntArgument(params[1], "offset");
         // A negative offset would read past the other end of the ordered rows and throw
         // IndexOutOfBoundsException; it is a client-facing argument error (issue #6388).
         if (offset < 0)
@@ -105,8 +105,13 @@ public class SQLFunctionLead extends SQLAggregatedFunction {
 
     final int size = pairs.size();
     final List<Object> result = new ArrayList<>(size);
-    for (int i = 0; i < size; i++)
-      result.add(i + offset < size ? pairs.get(i + offset)[0] : defaultValue);
+    for (int i = 0; i < size; i++) {
+      // Widened: `i + offset` as an int wraps NEGATIVE for a large offset, which reads as "in range" and then indexes
+      // the list with the wrapped value. The lag() twin cannot hit this - `i - offset` only ever goes further out of
+      // range - so the guard belongs here alone.
+      final long target = (long) i + offset;
+      result.add(target < size ? pairs.get((int) target)[0] : defaultValue);
+    }
 
     return result;
   }

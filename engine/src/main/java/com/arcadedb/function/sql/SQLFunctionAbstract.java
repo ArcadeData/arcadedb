@@ -21,6 +21,7 @@ package com.arcadedb.function.sql;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.SQLFunction;
+import com.arcadedb.utility.NumberUtils;
 
 /**
  * Abstract class to extend to build Custom SQL Functions.
@@ -171,6 +172,23 @@ public abstract class SQLFunctionAbstract implements SQLFunction {
         getName() + "() requires a numeric <" + argumentName + ">, but received " + (value == null ?
             "null" :
             "a value of type " + value.getClass().getSimpleName()));
+  }
+
+  /**
+   * Reads a scalar CONFIGURATION argument as an int, saturating rather than wrapping: {@code Number.intValue()} on a
+   * value outside the int range silently returns an unrelated number, which for an offset or a window size drives a
+   * degenerate computation that still looks plausible. The {@link com.arcadedb.query.sql.method.AbstractSQLMethod}
+   * side of the same batch takes the same care with character indexes.
+   *
+   * @param value        the argument value
+   * @param argumentName the argument's name, for the error message
+   *
+   * @return the value as an int, saturated to the int range
+   *
+   * @throws IllegalArgumentException if the value is null or not a number
+   */
+  protected int requireIntArgument(final Object value, final String argumentName) {
+    return NumberUtils.saturateToInt(requireNumeric(value, argumentName));
   }
 
   /**

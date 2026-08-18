@@ -74,7 +74,7 @@ public class SQLFunctionMovingAvg extends SQLAggregatedFunction {
       final FunctionOptions opts = new FunctionOptions(NAME, rawMap, OPTIONS);
       return opts.getInt("window", -1);
     }
-    return requireNumeric(arg, "window_size").intValue();
+    return requireIntArgument(arg, "window_size");
   }
 
   @Override

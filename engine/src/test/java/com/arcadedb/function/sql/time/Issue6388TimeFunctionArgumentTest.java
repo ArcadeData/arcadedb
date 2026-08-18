@@ -82,6 +82,40 @@ class Issue6388TimeFunctionArgumentTest extends TestHelper {
           .hasMessageContaining("no fixed length");
   }
 
+  /**
+   * The weeks conversion is the one place an amount can overflow, and it must answer the same typed error as every
+   * other bad argument in this family rather than a bare ArithmeticException.
+   */
+  @Test
+  void durationRejectsAnAmountThatOverflows() {
+    assertThatThrownBy(() -> database.query("sql", "SELECT duration(1000000000000000000, 'week') AS d").next())
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("overflows");
+  }
+
+  /**
+   * An offset outside the int range must saturate rather than wrap: Number.intValue() on a huge long returns an
+   * unrelated - possibly small and positive - number that would sail past the non-negative check.
+   */
+  @Test
+  void lagAndLeadSaturateAnOutOfRangeOffset() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Huge6388");
+      for (int i = 0; i < 3; i++)
+        database.command("sql", "INSERT INTO Huge6388 SET v = ?, ts = ?", i, i);
+    });
+
+    database.transaction(() -> {
+      // 2^32 wraps to 0 under intValue(); saturated it stays past the end of the rows, so every row takes the default.
+      try (final ResultSet rs = database.query("sql", "SELECT ts.lag(v, 4294967296, ts) AS r FROM Huge6388")) {
+        assertThat(rs.next().<List<Object>>getProperty("r")).containsExactly(null, null, null);
+      }
+      try (final ResultSet rs = database.query("sql", "SELECT ts.lead(v, 4294967296, ts) AS r FROM Huge6388")) {
+        assertThat(rs.next().<List<Object>>getProperty("r")).containsExactly(null, null, null);
+      }
+    });
+  }
+
   @Test
   void timeBucketRejectsANonPositiveInterval() {
     assertThatThrownBy(() -> database.query("sql", "SELECT ts.timeBucket('0s', 1700000000000) AS b").next())

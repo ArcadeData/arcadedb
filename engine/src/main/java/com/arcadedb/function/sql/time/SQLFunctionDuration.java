@@ -58,7 +58,14 @@ public class SQLFunctionDuration extends SQLFunctionAbstract {
     // (7 days) and are converted; years and months do not - their length depends on which year or month - and used to
     // reach Duration.of() as an unsupported estimated unit, which threw UnsupportedTemporalTypeException (issue #6388).
     if (unit == ChronoUnit.WEEKS)
-      return Duration.ofDays(Math.multiplyExact(amount, 7));
+      try {
+        return Duration.ofDays(Math.multiplyExact(amount, 7));
+      } catch (final ArithmeticException e) {
+        // The conversion is the only place an amount can overflow, and a bare ArithmeticException here would be the
+        // one error path in this family still answering 500 for a mistake in the call.
+        throw new IllegalArgumentException(
+            NAME + "() cannot build a duration of " + amount + " weeks: the amount overflows the range of a duration", e);
+      }
 
     // DAYS is the one estimated unit Duration.of() accepts (as exactly 24 hours); every other one - YEARS, MONTHS -
     // it rejects, which is precisely the set to refuse here with an explanation rather than let through.
