@@ -386,7 +386,22 @@ public abstract class IndexBuilder<T extends Index> {
    * yes.
    */
   protected boolean buildSharesCallerTransaction() {
-    if (indexType == null || !indexType.buildCanShareCallerTransaction() || !database.isTransactionActive())
+    return indexType != null && indexType.buildCanShareCallerTransaction() && callerTransactionHasChanges(database);
+  }
+
+  /**
+   * The half of the decision that is about the TRANSACTION rather than about the index family, exposed on its own for
+   * the call site that does not go through a builder at all: {@link LocalDocumentType#addSuperType} propagates a whole
+   * set of a super type's indexes by calling {@link LocalSchema#createBucketIndex} directly, so it asks this once,
+   * before it opens anything, and pairs it with {@code buildCanShareCallerTransaction()} per index. Issue #6359 item 1
+   * is that call site arriving back at the defect #6324 item 1 fixed, and the predicate lives here so a third spelling
+   * of it cannot drift from the other two.
+   * <p>
+   * Timing is the whole trap: inside the component-creation transaction there is ALWAYS one open, it is EMPTY, and the
+   * answer would always be no.
+   */
+  static boolean callerTransactionHasChanges(final DatabaseInternal database) {
+    if (!database.isTransactionActive())
       return false;
     final TransactionContext tx = database.getTransactionIfExists();
     return tx != null && tx.hasChanges();
@@ -403,10 +418,27 @@ public abstract class IndexBuilder<T extends Index> {
    * inside {@code recordFileChanges}.
    */
   protected void buildCreatedIndex(final Index index, final boolean sharesCallerTransaction) {
+    buildCreatedIndex(index, batchSize, sharesCallerTransaction, callback);
+  }
+
+  /** @see #buildCreatedIndex(Index, boolean) - the builder-less form, for the same reason as the predicate above. */
+  static void buildCreatedIndex(final Index index, final int batchSize, final boolean sharesCallerTransaction,
+      final Index.BuildIndexCallback callback) {
     final IndexInternal internal = (IndexInternal) index;
     if (!internal.setStatus(new IndexInternal.INDEX_STATUS[] { IndexInternal.INDEX_STATUS.UNAVAILABLE },
         IndexInternal.INDEX_STATUS.AVAILABLE))
       throw new IndexException("Cannot build the index '" + index.getName() + "' because it is not available");
     internal.build(batchSize, sharesCallerTransaction, callback);
+  }
+
+  /**
+   * Takes away an index that could not be built. The FULL removal, not just the component's own {@code drop()}: on the
+   * two-transaction path the component is already committed and attached to its type, so leaving it behind would
+   * answer lookups with an empty index. This is the cleanup {@code LocalSchema.createBucketIndex} did while the build
+   * still ran inside it (issue #6324, item 1) - an index that could not be built must be GONE, and the caller told so.
+   */
+  static void dropPartiallyBuiltIndex(final LocalSchema schema, final Index index) {
+    if (index != null && schema.existsIndex(index.getName()))
+      schema.dropIndex(index.getName());
   }
 }

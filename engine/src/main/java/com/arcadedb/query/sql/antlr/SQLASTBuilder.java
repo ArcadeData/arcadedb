@@ -2890,6 +2890,15 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       // Unary plus: just return the expression as-is
       return innerExpr;
     } else if (ctx.MINUS() != null) {
+      // A minus applied to a plain numeric literal is folded INTO the literal, so `-1` is the number -1 and not the
+      // subtraction `0 - 1` (issue #6359, item 2). Modelling it as a subtraction is what Expression.toString() then
+      // rendered, and that rendering is read back as text by callers - REBUILD INDEX ... WITH batchSize = -1 reached
+      // Integer.parseInt as the string "0 - 1" - as well as being what EXPLAIN prints and what a projection without
+      // an alias is named after. It is also one evaluation cheaper on every read.
+      final BaseExpression negatedLiteral = tryNegateNumericLiteral(innerExpr);
+      if (negatedLiteral != null)
+        return negatedLiteral;
+
       // Unary minus: create 0 - expression
       // Create a MathExpression with zero and the MINUS operator
       final MathExpression result = new MathExpression();
@@ -2911,6 +2920,48 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     }
 
     throw new CommandSQLParsingException("Unknown unary operator");
+  }
+
+  /**
+   * Folds a unary minus into the numeric literal it applies to, returning the negative literal, or {@code null} when
+   * the operand is anything else - in which case {@link #visitUnary} keeps modelling the negation as {@code 0 - X}.
+   * <p>
+   * Negates the ALREADY-PARSED value rather than re-parsing a {@code "-"}-prefixed text, so the folded literal keeps
+   * exactly the numeric type {@code 0 - X} used to produce ({@code -2147483648} stays a {@code Long}, an
+   * {@code L}-suffixed literal stays a {@code Long}, a bare decimal stays a {@code Float}) and the sign lands
+   * correctly on every literal shape the visitors accept, not only on plain decimal.
+   * <p>
+   * A literal carrying a MODIFIER is left alone: a suffix binds tighter than the sign, so {@code -1.toString()} is
+   * {@code -(1.toString())} and folding it would move the negation inside the call.
+   */
+  private static BaseExpression tryNegateNumericLiteral(final MathExpression expression) {
+    if (!(expression instanceof final BaseExpression base) || base.number == null || base.modifier != null)
+      return null;
+
+    final Number value = base.number.getValue();
+    final Number negated;
+    if (value instanceof final Integer i)
+      negated = -i;
+    else if (value instanceof final Long l)
+      negated = -l;
+    else if (value instanceof final Float f)
+      negated = -f;
+    else if (value instanceof final Double d)
+      negated = -d;
+    else
+      // A magnitude the visitors could not represent as one of the four above has no folded form that is certainly
+      // equivalent, so leave it to the arithmetic.
+      return null;
+
+    final BaseExpression result = new BaseExpression();
+    if (base.number instanceof PInteger)
+      result.number = new PInteger().setValue(negated);
+    else {
+      final PNumber number = new PNumber();
+      number.value = negated;
+      result.number = number;
+    }
+    return result;
   }
 
   /**
@@ -3840,6 +3891,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // Regular parenthesized expression
     final BaseExpression baseExpr = new BaseExpression();
     baseExpr.expression = (Expression) visit(ctx.expression());
+    // Remember that the parentheses were WRITTEN, so the rendering can put them back - see
+    // BaseExpression#parenthesized. Without it `(1 + 2) * 3` renders as `1 + 2 * 3` (issue #6359, item 2).
+    baseExpr.parenthesized = true;
 
     // Process modifiers if present
     if (CollectionUtils.isNotEmpty(ctx.modifier())) {

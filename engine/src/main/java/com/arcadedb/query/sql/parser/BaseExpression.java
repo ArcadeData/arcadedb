@@ -44,6 +44,20 @@ public class BaseExpression extends MathExpression {
   public String         string;
   public Modifier       modifier;
   public boolean        isNull = false;
+  /**
+   * True when this node came from a literal {@code ( ... )} in the statement text. {@link #expression} alone cannot
+   * say: the ANTLR builder also parks map literals, array literals and CASE expressions there, and none of those is a
+   * parenthesised block.
+   * <p>
+   * Rendering only - the parentheses are already reflected in the tree SHAPE, so evaluation never consults this. What
+   * it buys is a rendering that means what the statement meant: {@code (1 + 2) * 3} used to render as
+   * {@code 1 + 2 * 3}, which is 7 rather than 9 when read back, and {@code Expression.toString()} is what EXPLAIN
+   * prints, what an unaliased projection is named after, and what a statement that re-reads one of its own settings
+   * parses (issue #6359, item 2).
+   *
+   * @see #rendersParentheses()
+   */
+  public boolean        parenthesized = false;
 
   public BaseExpression() {
   }
@@ -101,15 +115,34 @@ public class BaseExpression extends MathExpression {
       number.toString(params, builder);
     else if (identifier != null)
       identifier.toString(params, builder);
-    else if (expression != null)
+    else if (expression != null) {
+      final boolean parentheses = rendersParentheses();
+      if (parentheses)
+        builder.append('(');
       expression.toString(params, builder);
-    else if (string != null)
+      if (parentheses)
+        builder.append(')');
+    } else if (string != null)
       builder.append(string);
     else if (inputParam != null)
       inputParam.toString(params, builder);
 
     if (modifier != null)
       modifier.toString(params, builder);
+  }
+
+  /**
+   * Whether the written parentheses have to be rendered back, which is only where dropping them could change what the
+   * text means: around a COMPOUND arithmetic expression, whose operators would otherwise be re-associated by the
+   * surrounding precedence - {@code (1 + 2) * 3} flattened to {@code 1 + 2 * 3} is 7 rather than 9.
+   * <p>
+   * Parentheses around anything that already renders as one atom - an identifier, a literal, a function call, a map or
+   * array literal, a CASE block - carry no meaning, and printing them would change the name every unaliased projection
+   * written that way has always had ({@code SELECT (name) FROM V} is a column called {@code name}).
+   */
+  private boolean rendersParentheses() {
+    return parenthesized && expression != null && expression.mathExpression != null
+        && !expression.mathExpression.operators.isEmpty();
   }
 
   public Object execute(final Identifiable currentRecord, final CommandContext context) {
@@ -458,6 +491,8 @@ public class BaseExpression extends MathExpression {
         }
       }
 
+      result.parenthesized = parenthesized;
+
       if (this.modifier != null)
         result.modifier = this.modifier.copy();
 
@@ -483,6 +518,7 @@ public class BaseExpression extends MathExpression {
     result.number = number == null ? null : number.copy();
     result.identifier = identifier == null ? null : identifier.copy();
     result.expression = expression == null ? null : expression.copy();
+    result.parenthesized = parenthesized;
     result.inputParam = inputParam == null ? null : inputParam.copy();
     result.string = string;
     result.setModifier(modifier == null ? null : modifier.copy());

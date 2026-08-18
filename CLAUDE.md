@@ -79,6 +79,14 @@ Standard Maven and npm invocations apply. The non-obvious ones, each of which si
 green or spuriously red* run rather than an error that tells you what you did wrong:
 
 - **Run unit tests**: `mvn verify` (use `verify`/`install`, not bare `mvn test`, for a full reactor run: the `arcadedb-gremlin-it` module consumes `arcadedb-gremlin`'s package-phase artifacts (the `shaded` uber-jar and `tests` test-jar), which a `test`-phase build never produces)
+- **Any reactor invocation containing `gremlin` AND a module that consumes its `shaded` jar needs `verify`, not
+  `test`**. That is the same trap as above, and `graphql` is the second module in it: `mvn -o test -pl gremlin,graphql`
+  fails `GraphQLGremlinDirectivesTest` while `mvn -o verify -pl gremlin,graphql` and `mvn -o test -pl graphql` alone are
+  both green. Maven substitutes the reactor module for the `shaded`-classified dependency, the `test` phase never runs
+  the shade plugin, and the plain `target/classes` that stands in for it carries no TinkerPop (the dependency declares
+  a wildcard exclusion so the uber-jar is self-contained). The failure now says so - "the Apache TinkerPop libraries
+  are not on the classpath" - but the surefire summary still shows only "Error on initializing Gremlin query engine",
+  which points at the engine rather than at the build (#6359)
 - **Testing a subset of modules needs `-am`**: `mvn -o -pl server -am test`, not `mvn -o -pl server test`. Without
   `-am` the module is the whole reactor, so it resolves `arcadedb-engine` and friends from `~/.m2` instead of from
   your working tree, and can run against an artifact that predates your edits. If you added or renamed a method this
