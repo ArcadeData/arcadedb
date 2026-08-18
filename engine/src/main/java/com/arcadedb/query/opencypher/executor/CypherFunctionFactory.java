@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.executor;
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.function.CypherBuiltinFunctions;
 import com.arcadedb.function.CypherFunctionRegistry;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.agg.CollectDistinctFunction;
@@ -298,75 +299,13 @@ public class CypherFunctionFactory {
 
   /**
    * Check if this is a Cypher-specific function (not available in SQL).
+   * <p>
+   * The name list is {@link CypherBuiltinFunctions}, shared with {@code SimpleCypherStatement}'s parse-time
+   * read-only classification (issue #6418), which needs the same "is this name closed and pure" answer without
+   * being able to reach this executor-layer class.
    */
   private boolean isCypherSpecificFunction(final String functionName) {
-    return switch (functionName) {
-      // Graph functions
-      case "id", "elementid", "labels", "type", "keys", "properties", "startnode", "endnode" -> true;
-      // Path functions
-      case "nodes", "relationships", "length", "path_length" -> true;
-      // Math functions
-      case "rand", "sign", "ceil", "ceiling", "floor", "abs", "sqrt", "round", "isnan",
-           "cosh", "sinh", "tanh", "cot", "coth", "pi", "e", "randomuuid",
-           "acos", "asin", "atan", "atan2", "cos", "sin", "tan",
-           "degrees", "radians", "haversin", "exp", "log", "ln", "log10" -> true;
-      // General functions
-      case "coalesce" -> true;
-      // Predicate functions
-      case "isempty", "exists" -> true;
-      // List functions
-      case "size", "head", "tail", "last", "range" -> true;
-      // String functions
-      case "left", "right", "reverse", "split", "substring", "tolower", "toupper", "lower", "upper", "ltrim", "rtrim", "btrim" ->
-          true;
-      // String functions (additional)
-      case "trim", "replace", "char.length", "character.length", "char_length", "character_length", "charlength",
-           "normalize", "isnormalized" -> true;
-      // Type conversion functions
-      case "tostring", "tointeger", "tofloat", "toboolean",
-           "tostringornull", "tointegerornull", "tofloatornull", "tobooleanornull",
-           "tobooleanlist", "tofloatlist", "tointegerlist", "tostringlist" -> true;
-      // Scalar functions
-      case "nullif", "valuetype" -> true;
-      // Aggregation functions
-      case "collect", "collect_list", "percentiledisc", "percentile_disc", "percentilecont", "percentile_cont", "min", "max",
-           "avg" -> true;
-      // Temporal functions
-      case "timestamp" -> true;
-      // Temporal constructor functions
-      case "date", "localtime", "local_time", "time", "zoned_time", "localdatetime", "local_datetime", "datetime", "zoned_datetime",
-           "duration", "duration_between" -> true;
-      // Temporal truncation functions
-      case "date.truncate", "localtime.truncate", "time.truncate", "localdatetime.truncate", "datetime.truncate" -> true;
-      // Temporal epoch functions
-      case "datetime.fromepoch", "datetime.fromepochmillis" -> true;
-      // Temporal format function
-      case "format" -> true;
-      // Duration calculation functions
-      case "duration.between", "duration.inmonths", "duration.indays", "duration.inseconds" -> true;
-      // LOAD CSV context functions
-      case "file", "linenumber" -> true;
-      // Vector similarity functions
-      case "vector.similarity.cosine", "vector.similarity.euclidean" -> true;
-      // Vector construction and distance functions (used by Cypher vector(), vector_norm(), vector_distance())
-      // Note: vector_norm and vector_distance with EUCLIDEAN/DOT metrics delegate to SQL functions
-      // (vector.magnitude, vector.l1Norm, vector.l2Distance, vector.dotProduct) via the SQL bridge
-      case "vector.create", "vector.distance.manhattan", "vector.distance.cosine",
-           "vector", "vector.dimension.count", "vector_dimension_count", "vector.distance" -> true;
-      // Vector distance functions
-      case "vector.distance.euclidean" -> true;
-      // Vector norm function
-      case "vector.norm" -> true;
-      // Geo-spatial functions
-      case "point", "distance", "point.withinbbox", "point.distance" -> true;
-      // Temporal clock functions (realtime/statement/transaction are aliases for current instant)
-      case "date.realtime", "date.statement", "date.transaction" -> true;
-      case "localtime.realtime", "localtime.statement", "localtime.transaction" -> true;
-      case "time.realtime", "time.statement", "time.transaction" -> true;
-      case "localdatetime.realtime", "localdatetime.statement", "localdatetime.transaction" -> true;
-      case "datetime.realtime", "datetime.statement", "datetime.transaction" -> true;
-      default -> false;
-    };
+    return CypherBuiltinFunctions.isBuiltin(functionName);
   }
 
   /**

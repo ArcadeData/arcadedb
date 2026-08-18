@@ -18,11 +18,16 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.function.CypherBuiltinFunctions;
+import com.arcadedb.function.CypherFunctionRegistry;
+import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
+import com.arcadedb.query.opencypher.parser.CypherExpressionWalker;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Simple implementation of CypherStatement for Phase 1.
@@ -155,8 +160,9 @@ public class SimpleCypherStatement implements CypherStatement {
     final boolean hasForeach = this.clausesInOrder.stream().anyMatch(c -> c.getType() == ClauseEntry.ClauseType.FOREACH);
     final boolean writeSubquery = anyWriteSubquery(this.clausesInOrder);
     final boolean writeProcedureCall = anyWriteProcedureCall(this.callClauses);
+    final boolean unresolvedFunctionCall = anyUnresolvedFunctionCall(this);
     this.readOnly = !hasCreate && !hasMerge && !hasDelete && !hasRemove && !hasForeach
-        && (setClause == null || setClause.isEmpty()) && !writeSubquery && !writeProcedureCall;
+        && (setClause == null || setClause.isEmpty()) && !writeSubquery && !writeProcedureCall && !unresolvedFunctionCall;
 
     // Pre-compute flags used by CypherExecutionPlan.execute() to avoid repeated clause scanning
     this.hasVariableLengthPath = computeHasVariableLengthPath();
@@ -264,10 +270,12 @@ public class SimpleCypherStatement implements CypherStatement {
    * A {@code CALL} nested in a {@code CALL { ... }} subquery is already covered: {@link #anyWriteSubquery}
    * recurses through the inner statement's own {@code isReadOnly()}, which now accounts for this.
    * <p>
-   * A name that resolves to no registered procedure is left alone - it is not this method's business to guess
-   * what a SQL-function fallback or an outright unknown name does. The registry lookup is a static
-   * case-insensitive map read that also strips the {@code apoc.} prefix, so both spellings of one procedure
-   * classify identically, and it costs nothing at execution time: this runs once per parse, and parsed
+   * A name that resolves to no registered procedure falls through {@link #isConfirmedPureFunctionName} - the same
+   * check an expression-position call goes through (issue #6418) - because {@code CallStep} resolves a CALL target
+   * through the identical chain: {@link CypherProcedureRegistry}, then {@link CypherFunctionRegistry}, then a
+   * {@code DEFINE FUNCTION} custom adapter for a dotted name, then the built-in SQL fallback. The registry lookup
+   * is a static case-insensitive map read that also strips the {@code apoc.} prefix, so both spellings of one
+   * procedure classify identically, and it costs nothing at execution time: this runs once per parse, and parsed
    * statements are cached per query text.
    */
   private static boolean anyWriteProcedureCall(final List<CallClause> calls) {
@@ -275,10 +283,13 @@ public class SimpleCypherStatement implements CypherStatement {
       return false;
     for (final CallClause call : calls) {
       final CypherProcedure procedure = CypherProcedureRegistry.get(call.getProcedureName());
-      // A per-call refinement may only narrow, so a procedure that never writes needs no second look.
-      if (procedure == null || !procedure.isWriteProcedure())
+      if (procedure != null) {
+        // A per-call refinement may only narrow, so a procedure that never writes needs no second look.
+        if (procedure.isWriteProcedure() && procedure.isWriteProcedure(literalArguments(call)))
+          return true;
         continue;
-      if (procedure.isWriteProcedure(literalArguments(call)))
+      }
+      if (!isConfirmedPureFunctionName(call.getProcedureName()))
         return true;
     }
     return false;
@@ -298,6 +309,75 @@ public class SimpleCypherStatement implements CypherStatement {
       if (arguments.get(i) instanceof LiteralExpression literal)
         values[i] = literal.getValue();
     return values;
+  }
+
+  /** Explicit access to a built-in SQL function, e.g. {@code RETURN sql.abs(-1)} - always closed and pure. */
+  private static final String SQL_FUNCTION_PREFIX = "sql.";
+
+  /**
+   * Returns {@code true} when {@code rawName} is confirmed, without any database access, to be unable to resolve to
+   * a schema-registered {@code DEFINE FUNCTION} body - the gap issue #6418 is about, reachable both from a CALL
+   * clause target ({@link #anyWriteProcedureCall}) and from a function call in expression position
+   * ({@link #anyUnresolvedFunctionCall}), since {@code CallStep} and {@code FunctionCallExpression}'s resolver
+   * fall through the identical chain: {@link CypherProcedureRegistry} or {@link CypherFunctionRegistry}, then a
+   * {@code DEFINE FUNCTION} custom adapter for a dotted name, then the built-in SQL fallback.
+   * <p>
+   * {@code CustomFunctionAdapter.getOrCreateCustomFunctionAdapter} - the one and only path from either call shape
+   * to a schema-registered function body - refuses outright to build an adapter for a name with no {@code .} in
+   * it. So a BARE name, whichever of a function's several underscored or dotted spellings the caller used
+   * ({@code count}, {@code vector_distance}, ...), can never reach one and needs no lookup at all; only a DOTTED
+   * name needs a further check, since a namespaced built-in ({@code text.*}/{@code map.*}/{@code date.*}/
+   * {@code vector.*}/...) is dotted too - and the parser rewrites the underscored {@code vector_norm}/
+   * {@code vector_distance} spellings into a dotted SQL bridge name of their own ({@code vector.magnitude},
+   * {@code vector.l2Distance}, ...) before a {@link FunctionCallExpression} is ever built, so those two land here
+   * as dotted regardless of how the query spelled them. A dotted name is confirmed pure when it is registered in
+   * {@link CypherFunctionRegistry}, one of the hardcoded names in {@link CypherBuiltinFunctions}
+   * ({@code date.truncate}, {@code point.withinbbox}, ...), explicitly bridged to a built-in SQL function via the
+   * {@code sql.} prefix, or - matching {@code CypherFunctionFactory}'s own last resort - a name
+   * {@link DefaultSQLFunctionFactory} already answers for directly, unprefixed and unmapped (the vector bridge
+   * names above are exactly this case: registered as built-in SQL functions under their dotted names, reached with
+   * no {@code sql.} prefix and no {@link CypherFunctionRegistry} entry either). Every other dotted name - a
+   * {@code library.function} custom function being the shape #6418 is about, but also a plain typo - is
+   * conservatively treated as possibly a write: a false "maybe writes" costs a caller its optimization, a false
+   * "definitely read-only" costs correctness (a follower serving a write locally instead of forwarding it to the
+   * leader, or {@code SubqueryStep} skipping the refresh #6362 needs), the same asymmetry
+   * {@link CypherReferencedVariables} applies to its own "shape not modelled" answer.
+   */
+  private static boolean isConfirmedPureFunctionName(final String rawName) {
+    final String name = rawName.toLowerCase(Locale.ROOT);
+    return !name.contains(".") || CypherFunctionRegistry.hasFunction(name) || CypherBuiltinFunctions.isBuiltin(name)
+        || name.startsWith(SQL_FUNCTION_PREFIX) || DefaultSQLFunctionFactory.getInstance().hasFunction(name);
+  }
+
+  /**
+   * Returns {@code true} when the statement calls a function whose write-or-not status cannot be confirmed at parse
+   * time - a call in expression position ({@code WITH foo() AS x}, {@code RETURN sql.foo()}, nested inside another
+   * expression) that {@link #isConfirmedPureFunctionName} cannot clear. {@code SQLFunctionDefinition.execute} runs
+   * a {@code DEFINE FUNCTION} body as a full {@code sqlscript} command that can itself write, so a call reaching
+   * one here must not be classified read-only. See issue #6418.
+   * <p>
+   * Reuses {@link CypherExpressionWalker} - the traversal {@link CypherReferencedVariables} relies on for the same
+   * kind of "every expression, wherever it appears" question - rather than a partial recursion of its own, so this
+   * reaches {@code WHERE}, {@code SET}, {@code CREATE}/{@code MERGE} inline properties, {@code FOREACH} bodies and
+   * nested {@code CALL { }}/{@code EXISTS}/{@code COUNT}/{@code COLLECT} subqueries alike.
+   */
+  private static boolean anyUnresolvedFunctionCall(final CypherStatement statement) {
+    final UnresolvedFunctionCallDetector detector = new UnresolvedFunctionCallDetector();
+    CypherExpressionWalker.walk(statement, detector);
+    return detector.found;
+  }
+
+  private static final class UnresolvedFunctionCallDetector implements CypherExpressionWalker.Visitor {
+    private boolean found = false;
+
+    @Override
+    public void visit(final Expression expression) {
+      if (found || !(expression instanceof FunctionCallExpression call))
+        return;
+
+      if (!isConfirmedPureFunctionName(call.getFunctionName()))
+        found = true;
+    }
   }
 
   @Override

@@ -479,8 +479,17 @@ class DictionaryMultiPageTest extends TestHelper {
       dictionary.getIdByName("aNameOnPageZero", true);
       assertThat(dictionary.getTotalPages()).isEqualTo(1);
       assertThat(((DatabaseInternal) other).getPageManager().waitAllPagesOfDatabaseAreFlushed(other)).isTrue();
+      // Issue #6415: this premise has failed intermittently on CI's full-suite unit-tests lane (getTotalPages()
+      // 0 instead of 1) right after the drain above reported success, with no local repro found across 3300+
+      // iterations and 2 full engine-module runs. Read the raw OS file length too, bypassing the FileChannel
+      // entirely: if a recurrence shows this ALSO at 0, the write itself never reached disk (a flush-pipeline
+      // bug); if this shows the correct 65536 while the channel disagrees, the two disagree only through
+      // PaginatedComponentFile's own view (a channel visibility/caching bug) - the two hypotheses the original
+      // investigation could not distinguish between without exactly this data point.
+      final long rawOsFileLength = dictionary.getComponentFile().getOSFile().length();
       assertThat(dictionary.getComponentFile().getTotalPages())
-          .as("the premise: the file really holds page 0 and nothing after it")
+          .as("the premise: the file really holds page 0 and nothing after it (raw OS file length observed as %d bytes)",
+              rawOsFileLength)
           .isEqualTo(1L);
 
       // CLAIM TWO PAGES THAT WERE NEVER WRITTEN
