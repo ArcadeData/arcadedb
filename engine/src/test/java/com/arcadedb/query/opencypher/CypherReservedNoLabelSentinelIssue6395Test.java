@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -30,6 +31,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #6395: a node whose only label is literally {@code V} or {@code Vertex} used to report no labels, and a
@@ -152,14 +154,47 @@ class CypherReservedNoLabelSentinelIssue6395Test {
   }
 
   @Test
-  void theSentinelItselfIsNotWritableAsALabel() {
-    // ~NO_LABEL~ contains the composite separator, so it can never survive as a single label name - the same
-    // guard that already refuses it inside any other label.
-    command("CREATE (n {k:'x'}) SET n:`~NO_LABEL~`");
+  void theSentinelItselfIsNotWritableAsALabelViaCreate() {
+    // Found in code review: CREATE (:`~NO_LABEL~`) bypasses the composite-name protection entirely, because a
+    // single label is never run through isLabelComposite - it lands directly on the sentinel type, which
+    // isBaseVertexTypeName then filters, reopening the exact V/Vertex collision this class exists to close under
+    // a name a query merely has to spell correctly instead of guess.
+    assertThatThrownBy(() -> command("CREATE (:`~NO_LABEL~` {k:'x'})"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining(Labels.NO_LABEL_TYPE);
 
-    // Whatever the engine did with a label containing the separator, it must not have become the sentinel: the
-    // node still answers to no genuine label, or to a label distinguishable from the reserved one.
-    assertThat(labelsOf("k", "x")).doesNotContain(Labels.NO_LABEL_TYPE);
+    assertThat(rows("MATCH (n {k:'x'}) RETURN n.k AS r"))
+        .as("the rejected CREATE must not have left a node behind")
+        .isEmpty();
+  }
+
+  @Test
+  void theSentinelItselfIsNotWritableAsALabelViaSet() {
+    // A vertex already typed as the sentinel: SET-ing the same label it already carries is Cypher's ordinary
+    // no-op (SET n:Existing on a vertex that already answers to Existing changes nothing), and instanceOf
+    // correctly says an unlabelled vertex's own type already IS the sentinel - so this path never reaches
+    // ensureCompositeType with a label list at all, and is the counterweight asserting that.
+    command("CREATE (n {k:'already-unlabelled'})");
+    command("MATCH (n {k:'already-unlabelled'}) SET n:`~NO_LABEL~`");
+    assertThat(labelsOf("k", "already-unlabelled")).isEmpty();
+
+    // A vertex that genuinely gains a new label: this is the path that must be rejected, since it is the one
+    // that would otherwise build a composite naming the sentinel.
+    command("CREATE (n:Foo {k:'x'})");
+
+    assertThatThrownBy(() -> command("MATCH (n:Foo {k:'x'}) SET n:`~NO_LABEL~`"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining(Labels.NO_LABEL_TYPE);
+
+    // The rejected SET must not have relabelled the node either.
+    assertThat(labelsOf("k", "x")).containsExactly("Foo");
+  }
+
+  @Test
+  void theSentinelItselfIsNotWritableAsALabelViaMerge() {
+    assertThatThrownBy(() -> command("MERGE (n:`~NO_LABEL~` {k:'x'})"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining(Labels.NO_LABEL_TYPE);
   }
 
   // ---------------------------------------------------------------------------------------------------------

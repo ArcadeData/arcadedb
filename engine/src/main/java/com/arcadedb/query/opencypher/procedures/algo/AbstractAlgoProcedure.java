@@ -706,7 +706,13 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
           }
           return adj;
         }
-        // No view to size the copy from, so the rows are priced as they arrive.
+        // No view to size the copy from, so the rows are priced as they arrive, 1024 nodes at a time. That
+        // interval is a node count, not a byte count: a single supernode's neighbour list is fully materialised
+        // by getNeighborIds() before the next checkpoint has a chance to refuse it, unlike the NeighborView
+        // branch above and the OLTP buildAdjacencyList below, both of which know the exact entry count before
+        // allocating a single row. Narrow in practice - it takes one enormous row rather than many average ones
+        // to matter - and left as a known limitation rather than checkpointed per-row, which would cost a
+        // reservation call per node on every CSR-backed call that lacks a NeighborView (code review, issue #6317).
         reserveAdjacency(nodeCount, 0);
         final int[][] adj = new int[nodeCount][];
         long entries = 0;

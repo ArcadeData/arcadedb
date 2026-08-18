@@ -78,6 +78,15 @@ public final class LoadCSVRowContext {
    * ends at the first {@code WITH} - and, because the functions read a context variable that no later row resets,
    * {@code WITH row RETURN linenumber()} answered every row with the line number of whichever row happened to be
    * evaluated last. Neo4j documents both functions as usable anywhere in the query following {@code LOAD CSV}.
+   * <p>
+   * Deliberately unconditional: this carries the context forward whether or not the {@code WITH} that produced
+   * {@code target} actually projects {@code row} or anything derived from it - {@code WITH 1 AS x} still keeps
+   * {@code file()}/{@code linenumber()} answering for the rest of the query. That reading follows from "usable
+   * anywhere in the query following LOAD CSV": the two functions are a property of the query's position relative
+   * to the LOAD CSV clause, the same way {@code count(*)} needs no variable in scope, not a property of whether
+   * the row variable itself survived the projection. Pinned by
+   * {@code CypherLoadCSVRowContextIssue6402Test.theRowContextSurvivesAProjectionThatDropsRowEntirely}
+   * (issue #6402 code review).
    */
   public static void carryOver(final Result source, final ResultInternal target) {
     if (source == null || target == null || !source.hasProperty(FILE))

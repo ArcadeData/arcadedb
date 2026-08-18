@@ -120,6 +120,15 @@ class CypherLoadCSVRowContextIssue6402Test {
     assertThat(rows("WITH row, linenumber() AS ln WITH ln RETURN ln AS r")).containsExactly(1, 2, 3);
   }
 
+  @Test
+  void theRowContextSurvivesAProjectionThatDropsRowEntirely() {
+    // The deliberate reading, pinned per code review: file()/linenumber() are a property of the query's
+    // position relative to LOAD CSV, not of row still being in scope - the same way count(*) needs no variable
+    // bound. "WITH 1 AS x" drops row from scope entirely and must not turn the functions off.
+    assertThat(rows("WITH 1 AS x RETURN linenumber() AS r")).containsExactly(1, 2, 3);
+    assertThat(rows("WITH 1 AS x RETURN file() AS r")).hasSize(3).allMatch(url::equals);
+  }
+
   // ---------------------------------------------------------------------------------------------------------
   // The context is execution state, so it does not become a column of its own
   // ---------------------------------------------------------------------------------------------------------

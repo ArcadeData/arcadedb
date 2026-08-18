@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.coll;
 
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.utility.LongRangeList;
 
@@ -63,10 +64,13 @@ public class CollFlatten extends AbstractCollFunction {
     if (args.length > 1) {
       if (args[1] == null)
         return null;
-      if (args[1] instanceof Number)
-        maxDepth = ((Number) args[1]).intValue();
-      else if (args[1] instanceof Boolean)
+      if (args[1] instanceof Boolean)
         maxDepth = (Boolean) args[1] ? 1 : -1;
+      else
+        // A caller mistake here is a client error, exactly like every other argument in the family (issue
+        // #6403) - args[1] used to fall through every branch silently and leave maxDepth at its default instead
+        // of raising, so coll.flatten([[1]], 'x') answered as though depth had been omitted (code review).
+        maxDepth = CypherFunctionHelper.requireNumberArgument(args[1], getName()).intValue();
     }
 
     if (asRange(list) != null)

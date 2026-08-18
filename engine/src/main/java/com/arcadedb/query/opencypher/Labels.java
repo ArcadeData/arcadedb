@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
@@ -492,10 +493,21 @@ public final class Labels {
    * <p>
    * Duplicate labels are automatically ignored, matching Neo4j's behavior
    * (GitHub issue #3264).
+   * <p>
+   * A label literally equal to {@link #NO_LABEL_TYPE} is refused rather than created: {@link #LABEL_SEPARATOR}
+   * makes the sentinel unwritable as one label among several (it can never survive {@link #isLabelComposite}'s
+   * name match), but a single-label {@code CREATE (:`~NO_LABEL~`)} bypasses that entirely and would otherwise
+   * land the vertex on the sentinel type itself - the exact {@code V}/{@code Vertex} collision this class exists
+   * to close, reopened under a name a query merely has to spell correctly instead of guess (issue #6395 review).
+   * Every write path that can introduce a new label - {@code CreateStep}, {@code MergeStep}, {@code SetStep}'s
+   * {@code SET n:Label}, and the {@code merge.node} procedure - creates its type through this one method, so the
+   * guard here closes all of them at once.
    *
    * @param schema the database schema
    * @param labels list of labels for the vertex (duplicates are ignored)
    * @return the type name to use (composite type name if multiple unique labels)
+   *
+   * @throws CommandSemanticException when {@code labels} contains {@link #NO_LABEL_TYPE}
    */
   public static String ensureCompositeType(final Schema schema, final List<String> labels) {
     if (labels == null || labels.isEmpty())
@@ -503,6 +515,10 @@ public final class Labels {
 
     // Deduplicate and sort labels using TreeSet
     final Set<String> uniqueLabels = new TreeSet<>(labels);
+
+    if (uniqueLabels.contains(NO_LABEL_TYPE))
+      throw new CommandSemanticException(
+          "'" + NO_LABEL_TYPE + "' is a reserved type name and cannot be used as a label");
 
     // Handle single label case (including after deduplication)
     if (uniqueLabels.size() == 1) {

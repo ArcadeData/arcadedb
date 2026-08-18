@@ -89,6 +89,16 @@ public class SubqueryStep extends AbstractExecutionStep {
     this.expressionEvaluator = expressionEvaluator;
     this.importedVariables = computeImportedVariables(subqueryClause);
     this.importAllVariables = importedVariables == null;
+    // isReadOnly() is exact for every CREATE/SET/MERGE/DELETE/REMOVE/FOREACH shape and for a CALL to a registered
+    // CypherProcedure (SimpleCypherStatement.anyWriteProcedureCall), which is every write path Cypher itself
+    // exposes. It is NOT exact for a call - anywhere in the statement, CALL or expression position - into a
+    // user-defined SQL function (DEFINE FUNCTION): SQLFunctionDefinition.execute runs the definition as a full
+    // "sqlscript" command, which can itself CREATE/UPDATE/DELETE. Such a call reads as read-only here and skips
+    // the refresh below, which can reintroduce #4182/#6362-style staleness for that one narrow shape. Tracked as
+    // a known limitation (issue #6395 review) rather than fixed here: closing it properly needs the same
+    // whole-statement, every-expression-position walk isReadOnly() itself would need, and this flag also backs
+    // HA leader routing (issue #6094) - not a change to make inside an unrelated bug-fix batch under time
+    // pressure.
     this.innerMayWrite = !subqueryClause.getInnerStatement().isReadOnly();
   }
 

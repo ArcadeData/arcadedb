@@ -140,6 +140,15 @@ class CypherCollFunctionParityIssue6403Test {
   }
 
   @Test
+  void aNonNumericFlattenDepthIsAClientErrorToo() {
+    // Found in code review: depth silently stayed at its default of 1 instead of raising, for any argument that
+    // was neither null, a Number nor a Boolean.
+    assertThatThrownBy(() -> drain("RETURN coll.flatten([[1, 2], [3]], 'x') AS r"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("Type mismatch");
+  }
+
+  @Test
   void anOutOfRangeIndexIsAClientErrorToo() {
     assertThatThrownBy(() -> drain("RETURN coll.insert([1, 2], -1, 0) AS r"))
         .isInstanceOf(CommandSemanticException.class)
