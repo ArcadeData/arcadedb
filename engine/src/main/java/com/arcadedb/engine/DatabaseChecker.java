@@ -25,6 +25,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
+import com.arcadedb.engine.timeseries.TimeSeriesIntegrity;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -70,6 +71,8 @@ public class DatabaseChecker {
   private       int                 verboseLevel = 1;
   private       boolean             fix          = false;
   private       boolean             compress     = false;
+  /** #6360: see {@link #setDeep(boolean)}. */
+  private       boolean             deep         = false;
   /** #6090: see {@link #setDeleteOrphanEdgeRecords(boolean)} for why this is not part of {@link #fix}. */
   private       boolean             deleteOrphanEdgeRecords = false;
   /** #6189: see {@link #setReclaimUnreferencedFiles(boolean)} for why this is not part of {@link #fix} either. */
@@ -200,6 +203,10 @@ public class DatabaseChecker {
     // omitting the keys - "did this run look at the TimeSeries files at all?" has to be answerable from the result
     // of every run, and a database with no TimeSeries type answers it with zeros rather than with silence.
     result.put("corruptedTimeSeries", new LinkedHashSet<String>());
+    // #6360: one line per DERIVED counter or header FIX rewrote, and a count of them. Deliberately not folded into
+    // autoFix - see checkTimeSeries.
+    result.put("timeSeriesRepairs", new LinkedHashSet<String>());
+    result.put("repairedTimeSeries", 0L);
     result.put("totalTimeSeriesTypes", 0L);
     result.put("totalTimeSeriesShards", 0L);
     result.put("totalTimeSeriesSamples", 0L);
@@ -668,11 +675,24 @@ public class DatabaseChecker {
    * in the engine could detect a file left in that state, because the header a mismatched session also wrote
    * counts rows the pages no longer hold.
    * <p>
-   * <b>Report-only, in both modes.</b> There is no {@code FIX} arm and the omission is deliberate rather than
-   * unfinished. A record bucket can be repaired because its records are self-describing and its indexes are
-   * derivable from them; a sealed store is append-only columnar data whose blocks are the only copy, so "repair"
-   * would mean deciding which samples to discard - a question that needs answering before code, not after. What
-   * this pass does is make the state visible, which is the part that was missing entirely.
+   * <b>{@code FIX} repairs derived bookkeeping and never a sample</b> (issue #6360 item 1, which asked exactly
+   * this). Three things here are DERIVED - the mutable bucket's page-0 counters, the sealed store's header block
+   * count and global timestamp bounds, and the tail of an interrupted sealed append - and every one of them is
+   * recomputable from, or invisible to, the data it describes. Rewriting them discards nothing, and leaving them
+   * wrong is not cosmetic: {@code TimeSeriesSealedStore.loadDirectory} reads the global bounds straight out of the
+   * header instead of recomputing them, so a query pruned against a wrong bound silently misses data the file
+   * holds, and {@code appendBlock} writes at the END of the sealed file, so a tail nothing can read makes every
+   * block appended after it unreadable too. Even there the repair is narrow: only a tail that STARTS with a block
+   * magic is dropped, because that one is incomplete by its own evidence, while one that does not could be a
+   * complete block whose magic took a bit flip.
+   * <p>
+   * Everything else is reported and left alone, and that is the answer rather than a deferral. A record bucket can
+   * be repaired because its records are self-describing and its indexes are derivable from them; a sealed block is
+   * append-only columnar data and the ONLY copy of the samples in it, so "repair" there means choosing which
+   * samples to throw away. Under HA a sealed store is derived and a node can rebuild one by recompacting from its
+   * replicated mutable pages - which makes discarding one recoverable, not automatic. That is an operator's
+   * decision with the operator's knowledge of the cluster behind it, and a checker that made it for them would be
+   * deleting data to make its own report come out clean.
    * <p>
    * <b>Scoped by TYPE and by nothing else.</b> The type filter has already been applied by the caller's
    * classification, so naming a type checks that type's files and nothing else, exactly as it does for a document
@@ -692,10 +712,12 @@ public class DatabaseChecker {
 
     stepBegin("Checking TimeSeries", timeSeriesTypes.size());
 
+    final TimeSeriesIntegrity.Options options = TimeSeriesIntegrity.Options.of(deep, fix);
     final Set<String> corrupted = new LinkedHashSet<>();
     long totalShards = 0;
     long totalSamples = 0;
     long totalSealedBlocks = 0;
+    long totalRepairs = 0;
 
     for (final LocalTimeSeriesType type : timeSeriesTypes) {
       stepTick();
@@ -714,7 +736,7 @@ public class DatabaseChecker {
         // ONE walk over the type's shards, not three: the report carries the totals this pass publishes alongside
         // the findings, with each shard measuring itself inside the same lock window it checks itself in - so the
         // numbers and the verdict describe one instant rather than three.
-        final TimeSeriesEngine.IntegrityReport report = engine.checkIntegrity();
+        final TimeSeriesEngine.IntegrityReport report = engine.checkIntegrity(options);
 
         totalShards += report.shards();
         totalSamples += report.samples();
@@ -725,6 +747,12 @@ public class DatabaseChecker {
           for (final String problem : report.problems())
             addWarning("timeseries '" + type.getName() + "': " + problem);
         }
+
+        // Kept out of autoFix, which is the RECORD action count (#6136) and has never included anything that is
+        // not a removed record or a pruned index entry. A header rewritten from the pages it describes is neither.
+        totalRepairs += report.repairs().size();
+        for (final String repair : report.repairs())
+          ((LinkedHashSet<String>) result.get("timeSeriesRepairs")).add("timeseries '" + type.getName() + "': " + repair);
       } catch (final Exception e) {
         // Same shape as the index arm: a check that cannot complete is itself a finding, never a reason to
         // abandon the rest of the run.
@@ -738,6 +766,7 @@ public class DatabaseChecker {
     result.put("totalTimeSeriesShards", totalShards);
     result.put("totalTimeSeriesSamples", totalSamples);
     result.put("totalTimeSeriesSealedBlocks", totalSealedBlocks);
+    result.put("repairedTimeSeries", totalRepairs);
 
     stepComplete();
   }
@@ -1128,6 +1157,27 @@ public class DatabaseChecker {
 
   public DatabaseChecker setCompress(final boolean compress) {
     this.compress = compress;
+    return this;
+  }
+
+  /**
+   * Opt-in for the checks that have to DECODE the data rather than reconcile what describes it - {@code CHECK
+   * DATABASE ... DEEP} (issue #6360).
+   * <p>
+   * Today only the TimeSeries pass has a tier above its default, and what that tier adds is not more of the same:
+   * the default already reads every byte of every sealed store to verify its per-block CRC32s, which proves the
+   * bytes are the bytes that were written and proves nothing about whether they mean what the block claims. DEEP
+   * decompresses each block and reconciles it against the three claims read paths answer queries from without ever
+   * looking at the values - sorted timestamps, per-column min/max/sum, and the distinct tag values block pruning
+   * skips on. Each of those, when wrong, produces a wrong ANSWER rather than an error.
+   * <p>
+   * It is a clause of its own rather than the default because it is the one part of the check whose cost is
+   * decompression of the whole dataset rather than a sequential read of it, and because everything it can find is
+   * a bug in a writer rather than damage a disk did - the class of thing an operator goes looking for, not the
+   * class they run a scheduled check for.
+   */
+  public DatabaseChecker setDeep(final boolean deep) {
+    this.deep = deep;
     return this;
   }
 

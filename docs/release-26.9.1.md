@@ -3412,3 +3412,67 @@ change the meaning - around a compound arithmetic operand - and not where they a
 `SELECT (name) FROM V` keeps the column name it has always had.
 
 [#6359](https://github.com/ArcadeData/arcadedb/issues/6359)
+
+## `CHECK DATABASE` on a TimeSeries type: a `DEEP` tier, a `FIX` that repairs derived bookkeeping, and a sealed block that knows where it is (#6360)
+
+#6340 gave TimeSeries its first coverage in `CHECK DATABASE`, and deliberately left three questions open. This
+closes all three.
+
+### `CHECK DATABASE ... DEEP` decodes the data instead of reconciling what describes it
+
+The default tier reads every byte of every sealed store to verify each block's CRC32. That proves the bytes are
+the bytes that were written, and proves nothing about whether they mean what the block claims. Three things
+every read path answers queries from, without ever looking at a value, are checked only under the new `DEEP`
+clause:
+
+- **sorted timestamps** - the range iterator binary-searches a block's timestamps, so an unsorted block silently
+  returns a subset of the rows that match a query;
+- **the declared per-column min/max/sum** - the aggregation push-down answers `MIN`/`MAX`/`SUM`/`AVG` straight
+  from them without decompressing anything, so a wrong statistic is a wrong answer nothing later contradicts;
+- **the declared distinct tag values** - block-level pruning SKIPS a whole block whose declaration does not list
+  the value being filtered on, so a value present in the data and missing from the declaration hides those rows
+  entirely.
+
+Every one of those is a wrong ANSWER rather than an error, which is the category of damage a checker exists for.
+
+```sql
+CHECK DATABASE DEEP
+CHECK DATABASE TYPE Metrics FIX DEEP
+```
+
+The per-block CRC pass deliberately did NOT move behind the new clause. It is the same cost class as the record
+scan the checker already runs over every bucket of every document type, and a default tier that skipped it would
+answer "clean" having read only the directory.
+
+### `FIX` now repairs the derived bookkeeping, and still never touches a sample
+
+Three things a TimeSeries type stores are derived from data they merely describe, and all three are now
+repaired: the mutable bucket's page-0 counters (sample count, min and max timestamp), the sealed store's header
+block count and global timestamp bounds, and the tail of an interrupted sealed append. None of that is cosmetic -
+`loadDirectory` reads the sealed global bounds out of the header rather than recomputing them, so a range query
+pruned against a wrong bound silently misses data the file holds, and `appendBlock` writes at the END of the
+sealed file, so a tail nothing can read makes every block appended after it unreadable too.
+
+The tail repair is narrower than it sounds, on purpose. Only a tail that STARTS with a block magic is dropped:
+that one is a block the directory scan recognised and could not read to the end of, so it is incomplete by its
+own evidence. A tail that does not start with one could equally be a COMPLETE block whose magic took a bit flip,
+which a hex editor can still recover, so it is reported and left exactly where it is.
+
+Everything else is reported and left alone, and that is the answer rather than a deferral: a sealed block is the
+only copy of the samples in it, so "repair" there means choosing which samples to throw away. Under HA a sealed
+store is derived and a node can rebuild one by recompacting from its replicated mutable pages, which makes
+discarding one recoverable rather than automatic, and that is an operator's decision.
+
+Two new result keys: `repairedTimeSeries` (a count) and `timeSeriesRepairs` (one line per repair). Neither folds
+into `autoFix`, which has always been the record-action count.
+
+### A sealed block now records where it is and which CRC guards it
+
+`BlockEntry.blockStartOffset` and `storedCRC` were assigned in exactly one place, inside `loadDirectory()` - so
+a block this process WROTE carried zero in both, while the constructor pre-set `crcValidated = true`. Since
+`commitTempCompactionFile` installs a rewritten directory without re-reading it, that was the state of the
+entire live directory after every compaction, retention pass and downsampling cycle. Nothing broke only because
+the two readers of those fields short-circuit on the flag that was hiding them; clearing it produced
+`CRC mismatch in sealed store block at offset 0 (stored=0x0, ...)` on a perfectly healthy store. Both fields are
+now set by every path that produces an entry, which also lets the check hold the directory in memory against the
+file.

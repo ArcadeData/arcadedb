@@ -219,6 +219,9 @@ ORPHANS: O R P H A N S;
 RECLAIM: R E C L A I M;
 UNREFERENCED: U N R E F E R E N C E D;
 FILES: F I L E S;
+// Issue #6360: CHECK DATABASE ... DEEP. Also listed among the keywords usable as an identifier, so a schema that
+// already has a type or property called "deep" keeps parsing.
+DEEP: D E E P;
 SLEEP: S L E E P;
 CONSOLE: C O N S O L E;
 START: S T A R T;

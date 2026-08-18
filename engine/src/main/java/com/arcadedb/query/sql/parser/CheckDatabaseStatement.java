@@ -73,6 +73,12 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
    * {@link com.arcadedb.engine.DatabaseChecker#setReclaimUnreferencedFiles(boolean)}.
    */
   public       boolean               reclaimUnreferencedFiles = false;
+  /**
+   * #6360: {@code DEEP}. Opts into the checks that DECODE the data instead of reconciling what describes it - see
+   * {@link DatabaseChecker#setDeep(boolean)}. Independent of {@code FIX}: nothing this tier finds is repairable,
+   * since a block whose declared statistics disagree with its own values was written that way.
+   */
+  public       boolean               deep     = false;
 
   /** Shared with the grammar's own diagnostics: {@code DELETE ORPHANS} is a repair and has nothing to do without FIX. */
   public static final String DELETE_ORPHANS_WITHOUT_FIX_ERROR =
@@ -122,6 +128,7 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
     checker.setRecords(records.stream().map(x -> x.toRecordId((Result) null, context))
         .collect(Collectors.toCollection(LinkedHashSet::new)));
     checker.setFix(fix);
+    checker.setDeep(deep);
     checker.setDeleteOrphanEdgeRecords(deleteOrphans);
     checker.setReclaimUnreferencedFiles(reclaimUnreferencedFiles);
     checker.setCompress(compress);
@@ -196,6 +203,9 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
 
     if (reclaimUnreferencedFiles)
       builder.append(" RECLAIM UNREFERENCED FILES");
+
+    if (deep)
+      builder.append(" DEEP");
 
     if (compress)
       builder.append(" COMPRESS");

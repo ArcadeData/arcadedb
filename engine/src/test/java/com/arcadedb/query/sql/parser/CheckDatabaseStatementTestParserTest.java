@@ -49,4 +49,31 @@ class CheckDatabaseStatementTestParserTest extends AbstractParserTest {
     checkWrongSyntax("check database record");
     checkWrongSyntax("check database record Customer");
   }
+
+  /**
+   * #6360: {@code DEEP}, the tier that decodes the data instead of reconciling what describes it. It composes with
+   * every other clause and is independent of {@code FIX} - nothing it finds is repairable, since a block whose
+   * declared statistics disagree with its own values was written that way.
+   */
+  @Test
+  void deepTier() {
+    checkRightSyntax("CHECK DATABASE DEEP");
+    checkRightSyntax("check database deep");
+    checkRightSyntax("check database type Metrics deep");
+    checkRightSyntax("check database fix deep");
+    checkRightSyntax("check database type Metrics fix deep compress");
+
+    // The keyword stays usable as an identifier, so a schema that already has a type called "deep" keeps parsing.
+    checkRightSyntax("check database type deep");
+    checkRightSyntax("select from deep");
+
+    // DEEP comes after FIX, as the grammar orders every other optional clause of this statement.
+    checkWrongSyntax("check database deep fix");
+
+    // #6189's clause landed next to this one, so the order the two sit in is worth pinning rather than
+    // rediscovering: RECLAIM UNREFERENCED FILES first, DEEP after it, COMPRESS last.
+    checkRightSyntax("check database fix reclaim unreferenced files deep");
+    checkRightSyntax("check database type Metrics fix delete orphans reclaim unreferenced files deep compress");
+    checkWrongSyntax("check database fix deep reclaim unreferenced files");
+  }
 }

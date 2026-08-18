@@ -828,18 +828,10 @@ public class TimeSeriesShard implements AutoCloseable {
 
           final TimeSeriesCodec codec = columns.get(c).getCompressionHint();
           if (codec == TimeSeriesCodec.GORILLA_XOR || codec == TimeSeriesCodec.SIMPLE8B) {
-            double min = Double.MAX_VALUE, max = -Double.MAX_VALUE, sum = 0;
-            for (final Object v : chunkValues) {
-              final double d = ColumnDefinition.numericValueOf(v);
-              if (d < min)
-                min = d;
-              if (d > max)
-                max = d;
-              sum += d;
-            }
-            mins[c] = min;
-            maxs[c] = max;
-            sums[c] = sum;
+            final double[] stats = TimeSeriesSealedStore.reduceNumericStats(chunkValues);
+            mins[c] = stats[0];
+            maxs[c] = stats[1];
+            sums[c] = stats[2];
           }
         }
       }
@@ -944,17 +936,19 @@ public class TimeSeriesShard implements AutoCloseable {
   }
 
   /**
-   * What one shard's integrity check found and what it was looking at: the problems, empty when there are none,
-   * and the size of the thing they are a verdict on. The two travel together deliberately (issue #6340) - a
-   * caller asking the shard separately for its sample count would be told about a different instant than the one
-   * the verdict describes, and would visit the shard three times to learn it.
+   * What one shard's integrity check found, what it repaired and what it was looking at: the problems, empty when
+   * there are none, the repairs {@code FIX} actually applied, and the size of the thing they are a verdict on. The
+   * totals travel with the verdict deliberately (issue #6340) - a caller asking the shard separately for its
+   * sample count would be told about a different instant than the one the verdict describes, and would visit the
+   * shard three times to learn it.
    */
-  public record IntegrityReport(List<String> problems, long samples, long sealedBlocks) {
+  public record IntegrityReport(List<String> problems, List<String> repairs, long samples, long sealedBlocks) {
   }
 
   /**
    * Validates both halves of this shard - the mutable bucket's pages and the sealed store's blocks - and returns
-   * one line per problem, empty when there is none, together with what the two halves hold (issue #6340).
+   * one line per problem, empty when there is none, together with what the two halves hold (issue #6340) and, when
+   * {@link TimeSeriesIntegrity.Options#fix()} is set, one line per repair applied (issue #6360).
    * <p>
    * <b>Two windows, and which work goes in which is the whole design here.</b>
    * <p>
@@ -967,14 +961,24 @@ public class TimeSeriesShard implements AutoCloseable {
    * instant, since a compaction moves rows from one half to the other. That window is bounded by the mutable
    * bucket's page count and reads page headers only.
    * <p>
-   * The sealed store's check runs OUTSIDE both, under nothing but its own {@code directoryLock} read lock, which
-   * it takes itself. That is the expensive half - it CRC32s the whole {@code .ts.sealed} file - and holding the
-   * append lock across it would stall ingestion on this shard for the length of a sequential read of the largest
-   * file the type owns. It does not need them: a sealed block is immutable once written, and every path that
-   * mutates the file ({@code appendBlock}, {@code commitTempCompactionFile}, {@code truncateBefore},
-   * {@code downsampleBlocks}, {@code truncateToBlockCount}, {@code installSealedFileBytes}) takes that same
-   * directory WRITE lock, so the read lock alone already excludes all of them. Layering the shard's locks on top
-   * bought no consistency and cost writers the whole scan.
+   * <b>The repair of the mutable header rides in that same window</b>, in a transaction this method owns, and it
+   * follows {@link #appendSamples(TimeSeriesRowSource)}'s rule to the letter: on a replicated database the
+   * compaction read lock is released BEFORE the commit, because a leader's commit waits for the active recording
+   * session and a compaction holding one is waiting for that lock. A compaction slipping into that gap makes the
+   * commit fail with a {@link ConcurrentModificationException}, which is reported as a repair that did not land
+   * rather than retried. That is where this DEPARTS from {@code appendSamples}, which retries such a conflict three
+   * times, and the difference is required rather than incidental: an append retries the SAME rows, while the
+   * counters this writes were computed by a page walk the winning compaction has just invalidated, so a retry would
+   * write numbers that no longer describe the pages. The next {@code CHECK DATABASE FIX} walks again and finds
+   * whatever is true then; the operator is told to run it.
+   * <p>
+   * The sealed store's check runs OUTSIDE both, under nothing but its own {@code directoryLock}, which it takes
+   * itself. That is the expensive half - it CRC32s the whole {@code .ts.sealed} file - and holding the append lock
+   * across it would stall ingestion on this shard for the length of a sequential read of the largest file the type
+   * owns. It does not need them: a sealed block is immutable once written, and every path that mutates the file
+   * ({@code appendBlock}, {@code commitTempCompactionFile}, {@code truncateBefore}, {@code downsampleBlocks},
+   * {@code truncateToBlockCount}, {@code installSealedFileBytes}) takes that same directory WRITE lock, so its own
+   * read lock already excludes all of them - and a repairing pass takes that write lock itself.
    * <p>
    * The consequence, stated rather than left to be discovered: a compaction may run between the two windows, so
    * the sealed store the second half checks can hold blocks the totals did not count. That is the right trade -
@@ -985,31 +989,90 @@ public class TimeSeriesShard implements AutoCloseable {
    * different formats and different repairs: the mutable bucket is replicated page-by-page under HA while the
    * sealed store is derived and rebuilt locally by each node's own compaction.
    */
-  public IntegrityReport checkIntegrity() throws IOException {
+  public IntegrityReport checkIntegrity(final TimeSeriesIntegrity.Options options) throws IOException {
     final List<String> problems = new ArrayList<>();
-    final long samples;
-    final long sealedBlocks;
+    final List<String> repairs = new ArrayList<>();
+    // Not final: the CME arm below re-reads them, because the values taken inside a transaction that then rolled
+    // back describe a state that never existed.
+    long samples = 0;
+    long sealedBlocks = 0;
+
+    final DatabaseInternal db = database.getWrappedDatabaseInstance();
 
     appendLock.lock();
     try {
       compactionLock.readLock().lock();
+      boolean readLockHeld = true;
+      // A repair writes a page, so it needs a transaction; a caller that already has one keeps it, since the
+      // commit below is only this method's to make when the transaction is.
+      final boolean ownTransaction = options.fix() && !db.isTransactionActive();
+      boolean transactionOpen = false;
       try {
-        for (final String problem : mutableBucket.checkIntegrity())
+        if (ownTransaction) {
+          db.begin();
+          transactionOpen = true;
+        }
+
+        final TimeSeriesIntegrity.Outcome mutableOutcome = mutableBucket.checkIntegrity(options);
+        for (final String problem : mutableOutcome.problems())
           problems.add("mutable bucket: " + problem);
 
         samples = mutableBucket.getSampleCount() + sealedStore.getTotalSampleCount();
         sealedBlocks = sealedStore.getBlockCount();
+
+        if (transactionOpen) {
+          if (db.isReplicated()) {
+            compactionLock.readLock().unlock();
+            readLockHeld = false;
+          }
+          transactionOpen = false;
+          if (mutableOutcome.repairs().isEmpty())
+            db.rollback();
+          else
+            db.commit();
+        }
+
+        // Merged only once the transaction carrying them has committed. A repair the commit lost is not a repair,
+        // and a report that both counted it and told the operator to run the check again would contradict itself.
+        // The CME arm below is therefore reached with this list untouched, which is the point.
+        for (final String repair : mutableOutcome.repairs())
+          repairs.add("mutable bucket: " + repair);
+      } catch (final ConcurrentModificationException e) {
+        if (db.isTransactionActive() && ownTransaction)
+          db.rollback();
+        if (!options.fix())
+          // A reporting run writes nothing, so a conflict here is not a repair that lost a race and there is
+          // nothing to tell an operator to run again.
+          throw new IOException("Failed to check TimeSeries shard " + shardIndex, e);
+        problems.add("mutable bucket: the header repair could not be applied because a compaction rewrote page 0 "
+            + "while the check was running; run the check again");
+        // The totals were read INSIDE the transaction just rolled back, so they describe the repaired header that
+        // never landed. Re-read them from what survived, under the append lock this still holds.
+        samples = mutableBucket.getSampleCount() + sealedStore.getTotalSampleCount();
+        sealedBlocks = sealedStore.getBlockCount();
+      } catch (final IOException e) {
+        if (db.isTransactionActive() && ownTransaction)
+          db.rollback();
+        throw e;
+      } catch (final Exception e) {
+        if (db.isTransactionActive() && ownTransaction)
+          db.rollback();
+        throw new IOException("Failed to check TimeSeries shard " + shardIndex, e);
       } finally {
-        compactionLock.readLock().unlock();
+        if (readLockHeld)
+          compactionLock.readLock().unlock();
       }
     } finally {
       appendLock.unlock();
     }
 
-    for (final String problem : sealedStore.checkIntegrity())
+    final TimeSeriesIntegrity.Outcome sealedOutcome = sealedStore.checkIntegrity(options);
+    for (final String problem : sealedOutcome.problems())
       problems.add("sealed store: " + problem);
+    for (final String repair : sealedOutcome.repairs())
+      repairs.add("sealed store: " + repair);
 
-    return new IntegrityReport(problems, samples, sealedBlocks);
+    return new IntegrityReport(problems, repairs, samples, sealedBlocks);
   }
 
   public TimeSeriesBucket getMutableBucket() {
