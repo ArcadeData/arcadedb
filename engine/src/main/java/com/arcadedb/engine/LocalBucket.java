@@ -3960,6 +3960,27 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
+   * The free TAIL of a page: everything past the last record it holds, measured against
+   * {@link BasePage#getMaxContentSize()} - the usable content region, never {@code getAvailableContentSize()}, which
+   * still counts the page header (#4958, #5067). The quantity every write path reports to the free-space statistics,
+   * derived in ONE place so the scan that reads a page it did not write ({@link #gatherPageStatistics}) and the check
+   * that holds the writers to it ({@link #verifyFreeSpaceClaim}) cannot come to describe it differently - which is
+   * the very failure #6396 exists to make loud.
+   *
+   * @param orderedRecordsInPage the page's live records in position order, as {@link #getOrderedRecordsInPage}
+   *                             returns them.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private int freeTailInPage(final BasePage page, final List<int[]> orderedRecordsInPage) {
+    if (orderedRecordsInPage.isEmpty())
+      return page.getMaxContentSize() - contentHeaderSize;
+
+    final int[] lastRecord = orderedRecordsInPage.getLast();
+    return page.getMaxContentSize() - (lastRecord[0] + lastRecord[1]);
+  }
+
+  /**
    * Holds what a transaction's writes SAID this page's free tail would be against what the page, read here, actually
    * has (#6396).
    * <p>
@@ -3992,13 +4013,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     if (claimed == MutablePage.FREE_SPACE_CLAIM_UNKNOWN)
       return;
 
-    // The tail the page has right now: everything past the last record it holds. Same derivation, and the same
-    // getMaxContentSize() base, gatherPageStatistics measures a page it has not written with (#4958, #5067).
-    int freeTailInPage = page.getMaxContentSize() - contentHeaderSize;
-    if (!orderedRecordContentInPage.isEmpty()) {
-      final int[] lastRecord = orderedRecordContentInPage.getLast();
-      freeTailInPage = page.getMaxContentSize() - (lastRecord[0] + lastRecord[1]);
-    }
+    // The tail the page has right now, through the same derivation gatherPageStatistics measures an unwritten page
+    // with: comparing a claim against a second opinion of the quantity would be the defect this check is for.
+    final int freeTailInPage = freeTailInPage(page, orderedRecordContentInPage);
 
     final boolean exact = page.isFreeSpaceClaimExact();
     assert exact ? claimed == freeTailInPage : claimed <= freeTailInPage :
@@ -5718,11 +5735,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
             // #4958: measure against the usable content region (getMaxContentSize), not the physical
             // page size: the latter overstated the free space of every page by the page header size.
-            int freeSpaceInPage = page.getMaxContentSize() - contentHeaderSize;
-            if (!orderedRecordContentInPage.isEmpty()) {
-              final int[] lastRecord = orderedRecordContentInPage.getLast();
-              freeSpaceInPage = page.getMaxContentSize() - (lastRecord[0] + lastRecord[1]);
-            }
+            final int freeSpaceInPage = freeTailInPage(page, orderedRecordContentInPage);
 
             final int freeSpacePerc = freeSpaceInPage * 100 / (page.getMaxContentSize() - contentHeaderSize);
 
