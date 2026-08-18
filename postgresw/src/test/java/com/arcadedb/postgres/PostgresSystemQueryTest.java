@@ -62,6 +62,13 @@ class PostgresSystemQueryTest {
   }
 
   @Test
+  void anExplicitlyEmptyQuotedAliasIsAColumnNamedEmpty() {
+    // PostgreSQL allows AS "" and names the column "". That is not the same as supplying no alias at all,
+    // which is what an emptiness check on the quoted group used to turn it into.
+    assertThat(PostgresSystemQuery.parse("SELECT current_schema() AS \"\"").columnName).isEmpty();
+  }
+
+  @Test
   void aliasWithoutTheAsKeyword() {
     assertThat(PostgresSystemQuery.parse("SELECT version() v").columnName).isEqualTo("v");
   }

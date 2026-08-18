@@ -22,10 +22,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.entry;
 
 /**
  * The pg_type answers a PostgreSQL client uses to find out what the OIDs it was handed in RowDescription
@@ -39,7 +41,7 @@ class PostgresTypeCatalogTest {
   void enumerationReturnsOneRowPerTypeThisProtocolCanProduce() {
     // This query used to be on an ignore-list and answered with zero rows, so a client that builds its
     // whole OID-to-name map up front built an empty one.
-    final List<Map<String, Object>> rows = PostgresTypeCatalog.enumerate("SELECT oid, typname FROM pg_type");
+    final List<Map<String, Object>> rows = PostgresTypeCatalog.resolve("SELECT oid, typname FROM pg_type");
 
     assertThat(rows).hasSize(PostgresType.values().length);
     assertThat(rows).allSatisfy(row -> assertThat(row.keySet()).containsExactly("oid", "typname"));
@@ -55,7 +57,7 @@ class PostgresTypeCatalogTest {
 
   @Test
   void enumerationIsOrderedByOidSoACachedAnswerNeverReshuffles() {
-    final List<Map<String, Object>> rows = PostgresTypeCatalog.enumerate("SELECT oid FROM pg_type");
+    final List<Map<String, Object>> rows = PostgresTypeCatalog.resolve("SELECT oid FROM pg_type");
 
     int previous = Integer.MIN_VALUE;
     for (final Map<String, Object> row : rows) {
@@ -67,34 +69,34 @@ class PostgresTypeCatalogTest {
 
   @Test
   void projectionOrderIsTheClientsOrderBecauseADataRowIsReadPositionally() {
-    assertThat(PostgresTypeCatalog.enumerate("SELECT typname, oid FROM pg_type").get(0).keySet())
+    assertThat(PostgresTypeCatalog.resolve("SELECT typname, oid FROM pg_type").get(0).keySet())
         .containsExactly("typname", "oid");
-    assertThat(PostgresTypeCatalog.enumerate("SELECT oid, typname FROM pg_type").get(0).keySet())
+    assertThat(PostgresTypeCatalog.resolve("SELECT oid, typname FROM pg_type").get(0).keySet())
         .containsExactly("oid", "typname");
   }
 
   @Test
   void projectionAliasNamesTheColumn() {
-    assertThat(PostgresTypeCatalog.enumerate("SELECT t.oid AS type_oid, t.typname FROM pg_type t").get(0).keySet())
+    assertThat(PostgresTypeCatalog.resolve("SELECT t.oid AS type_oid, t.typname FROM pg_type t").get(0).keySet())
         .containsExactly("type_oid", "typname");
   }
 
   @Test
   void starProjectsEveryColumnTheCatalogKnows() {
-    final Map<String, Object> row = PostgresTypeCatalog.enumerate("SELECT * FROM pg_type").get(0);
+    final Map<String, Object> row = PostgresTypeCatalog.resolve("SELECT * FROM pg_type").get(0);
     assertThat(row.keySet()).contains("oid", "typname", "typelem", "typarray", "typdelim", "typtype", "typcategory",
         "typlen", "typinput", "typnotnull", "typbasetype", "typnamespace", "typrelid");
   }
 
   @Test
   void arrayAndScalarRowsDescribeEachOther() {
-    final Map<String, Object> byOid = PostgresTypeCatalog.enumerate("SELECT oid, typelem, typarray, typcategory FROM pg_type")
+    final Map<String, Object> byOid = PostgresTypeCatalog.resolve("SELECT oid, typelem, typarray, typcategory FROM pg_type")
         .stream().filter(row -> row.get("oid").equals(PostgresType.ARRAY_TEXT.code)).findFirst().orElseThrow();
     assertThat(byOid.get("typelem")).isEqualTo(PostgresType.TEXT.code);
     assertThat(byOid.get("typarray")).isEqualTo(0);   // an array type is not itself the element of one
     assertThat(byOid.get("typcategory")).isEqualTo("A");
 
-    final Map<String, Object> scalar = PostgresTypeCatalog.enumerate("SELECT oid, typelem, typarray, typcategory FROM pg_type")
+    final Map<String, Object> scalar = PostgresTypeCatalog.resolve("SELECT oid, typelem, typarray, typcategory FROM pg_type")
         .stream().filter(row -> row.get("oid").equals(PostgresType.TEXT.code)).findFirst().orElseThrow();
     assertThat(scalar.get("typelem")).isEqualTo(0);
     assertThat(scalar.get("typarray")).isEqualTo(PostgresType.ARRAY_TEXT.code);
@@ -103,63 +105,100 @@ class PostgresTypeCatalogTest {
 
   @ParameterizedTest
   @ValueSource(strings = {
-      // A filter is a different question; the OID/name lookups answer those.
-      "SELECT oid FROM pg_type WHERE typname = 'int4'",
+      // A filter this catalog does not understand is not guessed at.
+      "SELECT oid FROM pg_type WHERE typtype = 'b' AND typlen > 4",
       "SELECT oid FROM pg_type ORDER BY oid",
       // A column this catalog cannot produce is declined whole rather than answered with a hole in it.
       "SELECT oid, typcollation FROM pg_type",
       // Not pg_type at all.
       "SELECT oid FROM pg_class" })
   void shapesThisCatalogCannotAnswerAreDeclined(final String query) {
-    assertThat(PostgresTypeCatalog.enumerate(query)).isNull();
+    assertThat(PostgresTypeCatalog.resolve(query)).isNull();
   }
 
   @Test
-  void oidLookupDescribesTheElementOfTheArrayTheClientAskedAbout() {
-    // The shape pgjdbc sends: SELECT e.typdelim, e.typname FROM pg_type t, pg_type e
-    //                         WHERE t.oid = 1007 AND t.typelem = e.oid
-    final Map<String, Object> row = PostgresTypeCatalog.lookupByOid(
-        "SELECT e.typdelim, e.typname FROM pg_catalog.pg_type t, pg_catalog.pg_type e WHERE t.oid = 1007 AND t.typelem = e.oid");
+  void aFilterOnOidSelectsThatTypesOwnRow() {
+    // Every column the client projected comes back, the OID it filtered on included. The fixed handful of
+    // columns this used to answer with never carried "oid", so a client that asked for it got a row missing
+    // the very column it selected by.
+    final List<Map<String, Object>> rows = PostgresTypeCatalog.resolve(
+        "SELECT oid, typname, typelem FROM pg_type WHERE oid = 1007");
 
-    assertThat(row).containsEntry("typdelim", ",").containsEntry("typname", "int4");
+    assertThat(rows).hasSize(1);
+    assertThat(rows.get(0)).containsExactly(entry("oid", 1007), entry("typname", "_int4"),
+        entry("typelem", PostgresType.INTEGER.code));
   }
 
   @Test
-  void oidLookupReportsTheElementOid() {
-    assertThat(PostgresTypeCatalog.lookupByOid("SELECT typelem FROM pg_type WHERE oid = 1009"))
-        .containsEntry("typelem", PostgresType.TEXT.code);
-  }
-
-  @Test
-  void aScalarOidHasNoElementToReport() {
-    // It used to be answered with text/25, so a client asking about int4 was told its element was text.
-    assertThat(PostgresTypeCatalog.lookupByOid("SELECT typelem FROM pg_type WHERE oid = 23")).isNull();
-  }
-
-  @Test
-  void anUnknownOidStillFallsBackToTextSoADriverGetsAnAnswerItCanUse() {
-    assertThat(PostgresTypeCatalog.lookupByOid("SELECT typelem, typname FROM pg_type WHERE oid = 987654"))
-        .containsEntry("typelem", PostgresType.TEXT.code).containsEntry("typname", "text");
-  }
-
-  @Test
-  void nameLookupAnswersEveryTypeThisProtocolProduces() {
+  void aFilterOnTypeNameSelectsThatTypesOwnRow() {
     for (final PostgresType type : PostgresType.values()) {
-      final Map<String, Object> row = PostgresTypeCatalog.lookupByName("SELECT oid FROM pg_type WHERE typname = '"
-          + type.typeName + "'");
-      assertThat(row).as(type.name()).containsEntry("oid", type.code).containsEntry("typname", type.typeName);
+      final List<Map<String, Object>> rows = PostgresTypeCatalog.resolve(
+          "SELECT oid, typname FROM pg_type WHERE typname = '" + type.typeName + "'");
+      assertThat(rows).as(type.name()).hasSize(1);
+      assertThat(rows.get(0)).as(type.name()).containsEntry("oid", type.code).containsEntry("typname", type.typeName);
     }
   }
 
   @Test
-  void nameLookupOfATypeThisProtocolCannotProduceMeansNoRowRatherThanNoAnswer() {
-    assertThat(PostgresTypeCatalog.lookupByName("SELECT oid FROM pg_type WHERE typname = 'hstore'")).isEmpty();
+  void aFilterNamingATypeThisProtocolCannotProduceMeansNoRowRatherThanNoAnswer() {
+    assertThat(PostgresTypeCatalog.resolve("SELECT oid FROM pg_type WHERE typname = 'hstore'")).isEmpty();
+    assertThat(PostgresTypeCatalog.resolve("SELECT oid FROM pg_type WHERE oid = 987654")).isEmpty();
   }
 
   @Test
-  void aQueryWithNoFilterIsNotALookup() {
-    assertThat(PostgresTypeCatalog.lookupByOid("SELECT oid, typname FROM pg_type")).isNull();
-    assertThat(PostgresTypeCatalog.lookupByName("SELECT oid, typname FROM pg_type")).isNull();
+  void theDriverSelfJoinDescribesTheElementOfTheArray() {
+    // The shape pgjdbc sends. Here - and only here - the projected columns describe a different row from
+    // the one the filter selects, which is what the "t.typelem = e.oid" correlation says.
+    final List<Map<String, Object>> rows = PostgresTypeCatalog.resolve(
+        "SELECT e.typdelim, e.typname FROM pg_catalog.pg_type t, pg_catalog.pg_type e WHERE t.oid = 1007 AND t.typelem = e.oid");
+
+    assertThat(rows).hasSize(1);
+    assertThat(rows.get(0)).containsExactly(entry("typdelim", ","), entry("typname", "int4"));
+  }
+
+  @Test
+  void theDriverSelfJoinAnswersOnlyWhatItProjected() {
+    // Its WHERE clause names both oid and typelem; reading the columns off the whole query rather than off
+    // the projection would answer with fields nobody asked for.
+    final List<Map<String, Object>> rows = PostgresTypeCatalog.resolve(
+        "SELECT e.typdelim FROM pg_catalog.pg_type t, pg_catalog.pg_type e WHERE t.oid = 1009 AND t.typelem = e.oid");
+
+    assertThat(rows.get(0)).containsExactly(entry("typdelim", ","));
+  }
+
+  @Test
+  void theDriverSelfJoinOnAnUnknownOidStillFallsBackToTextSoADriverGetsAnAnswerItCanUse() {
+    final List<Map<String, Object>> rows = PostgresTypeCatalog.resolve(
+        "SELECT e.typname FROM pg_type t, pg_type e WHERE t.oid = 987654 AND t.typelem = e.oid");
+
+    assertThat(rows.get(0)).containsEntry("typname", "text");
+  }
+
+  @Test
+  void theDriverSelfJoinOnAScalarSelectsNothingBecauseAScalarHasNoElement() {
+    assertThat(PostgresTypeCatalog.resolve(
+        "SELECT e.typname FROM pg_type t, pg_type e WHERE t.oid = 23 AND t.typelem = e.oid")).isEmpty();
+  }
+
+  @Test
+  void inputFunctionsAreSpelledTheWayPostgresSpellsThem() {
+    // Synthesising <name> + "in" is right for most types but not for the temporal ones or json, which
+    // PostgreSQL spells with an underscore.
+    final Map<Integer, Object> byOid = new HashMap<>();
+    for (final Map<String, Object> row : PostgresTypeCatalog.resolve("SELECT oid, typinput FROM pg_type"))
+      byOid.put((Integer) row.get("oid"), row.get("typinput"));
+
+    assertThat(byOid).containsEntry(PostgresType.INTEGER.code, "int4in");
+    assertThat(byOid).containsEntry(PostgresType.BOOLEAN.code, "boolin");
+    assertThat(byOid).containsEntry(PostgresType.DATE.code, "date_in");
+    assertThat(byOid).containsEntry(PostgresType.TIMESTAMP.code, "timestamp_in");
+    assertThat(byOid).containsEntry(PostgresType.JSON.code, "json_in");
+    assertThat(byOid).containsEntry(PostgresType.ARRAY_TEXT.code, "array_in");
+  }
+
+  @Test
+  void anExplicitlyEmptyQuotedAliasIsAColumnNamedEmpty() {
+    assertThat(PostgresTypeCatalog.resolve("SELECT oid AS \"\" FROM pg_type").get(0).keySet()).containsExactly("");
   }
 
   @Test

@@ -730,17 +730,9 @@ public class PostgresNetworkExecutor extends Thread {
       LogManager.instance().log(this, Level.INFO, "PSQL: handling pg_type query: %s (thread=%s)",
           query, Thread.currentThread().threadId());
 
-    final Map<String, Object> byOid = PostgresTypeCatalog.lookupByOid(query);
-    if (byOid != null)
-      return Collections.singletonList(new ResultInternal(byOid));
-
-    final Map<String, Object> byName = PostgresTypeCatalog.lookupByName(query);
-    if (byName != null)
-      return byName.isEmpty() ? Collections.emptyList() : Collections.singletonList(new ResultInternal(byName));
-
-    final List<Result> enumerated = toResults(PostgresTypeCatalog.enumerate(query));
-    if (enumerated != null)
-      return enumerated;
+    final List<Result> rows = toResults(PostgresTypeCatalog.resolve(query));
+    if (rows != null)
+      return rows;
 
     // For other pg_type queries we don't specifically handle, return empty result
     // This prevents errors from trying to query non-existent tables

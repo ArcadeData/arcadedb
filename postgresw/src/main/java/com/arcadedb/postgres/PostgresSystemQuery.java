@@ -109,12 +109,13 @@ public class PostgresSystemQuery {
 
     final Function function = Function.valueOf(matcher.group(1).toUpperCase(Locale.ENGLISH));
 
-    // A quoted alias keeps the case the client wrote; an unquoted one is folded to lower case, as
-    // PostgreSQL folds every unquoted identifier.
+    // A quoted alias keeps the case - and the emptiness - the client wrote; an unquoted one is folded to
+    // lower case, as PostgreSQL folds every unquoted identifier. An explicit AS "" is a column named "",
+    // which PostgreSQL allows, and is not the same as having supplied no alias at all.
     final String quotedAlias = matcher.group(2);
     final String bareAlias = matcher.group(3);
     final String columnName;
-    if (quotedAlias != null && !quotedAlias.isEmpty())
+    if (quotedAlias != null)
       columnName = quotedAlias;
     else if (bareAlias != null)
       columnName = bareAlias.toLowerCase(Locale.ENGLISH);
