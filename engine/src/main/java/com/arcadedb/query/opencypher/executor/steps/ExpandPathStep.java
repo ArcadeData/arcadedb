@@ -386,21 +386,7 @@ public class ExpandPathStep extends AbstractExecutionStep {
    * resolved against the current binding.
    */
   private boolean matchesTargetLabel(final Vertex vertex, final Result currentResult) {
-    final List<String> labels = resolveEffectiveLabels(currentResult);
-    if (labels.isEmpty())
-      return true;
-
-    if (targetNodePattern.isLabelDisjunction()) {
-      for (final String label : labels)
-        if (Labels.hasLabel(vertex, label))
-          return true;
-      return false;
-    }
-
-    for (final String label : labels)
-      if (!Labels.hasLabel(vertex, label))
-        return false;
-    return true;
+    return Labels.matches(vertex, resolveEffectiveLabels(currentResult), targetNodePattern.isLabelDisjunction());
   }
 
   /**

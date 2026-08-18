@@ -28,6 +28,7 @@ import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.LabelReplacements;
+import com.arcadedb.query.opencypher.executor.RowAliases;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -234,6 +235,9 @@ public class RemoveStep extends AbstractExecutionStep {
 
     // Update the result with the modified document
     ((ResultInternal) result).setProperty(variable, mutableDoc);
+    // ...and with it every other alias of the same node, so all of them observe the removal - one binding per node
+    // per row is what Cypher promises, and it is what SET has always delivered (issue #6328).
+    RowAliases.propagateUpdate(result, doc, mutableDoc);
   }
 
   /**

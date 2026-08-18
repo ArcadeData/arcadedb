@@ -921,12 +921,11 @@ public class MergeStep extends AbstractExecutionStep {
    * property constraints.
    */
   private boolean matchesNodePattern(final Vertex vertex, final NodePattern nodePattern, final Result result) {
-    if (nodePattern.hasLabels()) {
-      for (final String label : nodePattern.getLabels()) {
-        if (!Labels.hasLabel(vertex, label))
-          return false;
-      }
-    }
+    // Through the one helper, so this reads a disjunction the way every other pattern does (issue #6338). A MERGE
+    // pattern cannot actually carry one - the validator refuses a label expression here, as Neo4j does, because the
+    // create half of MERGE has no way to act on "A or B" - but the check does not get to be the odd one out.
+    if (!Labels.matches(vertex, nodePattern.getLabels(), nodePattern.isLabelDisjunction()))
+      return false;
     if (nodePattern.hasProperties()) {
       final Map<String, Object> props = evaluateProperties(nodePattern.getProperties(), result);
       if (!matchesProperties(vertex, props))

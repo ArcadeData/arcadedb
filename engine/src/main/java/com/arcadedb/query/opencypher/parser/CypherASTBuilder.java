@@ -917,7 +917,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     final List<ReturnClause.ReturnItem> items = new ArrayList<>();
     if (body.returnItems().TIMES() != null)
       // WITH * — pass all variables through
-      items.add(new ReturnClause.ReturnItem(new VariableExpression("*"), "*"));
+      items.add(ReturnClause.ReturnItem.star());
     // Always process explicit return items (handles both "WITH expr" and "WITH *, expr AS alias")
     for (final Cypher25Parser.ReturnItemContext itemCtx : body.returnItems().returnItem()) {
       // Pattern expressions (e.g., (n)-[]->()) are not allowed in WITH projections
@@ -1053,7 +1053,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
     if (body.returnItems().TIMES() != null) {
       // RETURN *
-      items.add(new ReturnClause.ReturnItem(new VariableExpression("*"), "*"));
+      items.add(ReturnClause.ReturnItem.star());
     } else {
       for (final Cypher25Parser.ReturnItemContext itemCtx : body.returnItems().returnItem()) {
         // Bare pattern expressions (e.g., (n)-[]->()) are not allowed in RETURN projections.
