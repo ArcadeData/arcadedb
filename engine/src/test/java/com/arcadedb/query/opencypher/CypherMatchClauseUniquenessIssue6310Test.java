@@ -214,6 +214,18 @@ class CypherMatchClauseUniquenessIssue6310Test extends TestHelper {
     assertThat(rows("MATCH (x:V)-[r1:BASE]->(:V), (y:V)-[r2:SUB]->(:V) RETURN x.n AS a, y.n AS c")).isEmpty();
   }
 
+  /**
+   * An undirected hop has no OUT and no IN end to compare, so the endpoint proof has to decline outright.
+   * Were it to guess - reading {@code (x:E)-[]-(y:A)} as if it were written {@code <-}, so that :A is the
+   * edge's OUT vertex - it would find :A disjoint from the other part's :E and "prove" the two hops
+   * distinct. They are not: undirected, this hop walks the very edge the other part matches.
+   */
+  @Test
+  void aBothDirectionHopGetsNoEndpointProof() {
+    // 3 undirected :E-:A edges x 3 (:E)-[]->(:A) edges, less the 3 pairings that are the same edge.
+    assertThat(rows("MATCH (x:E)-[]-(y:A), (p:E)-[]->(q:A) RETURN x.n AS a, p.n AS c")).hasSize(6);
+  }
+
   @Test
   void aZeroLengthHopSharesNoEdgeWithAnybody() {
     // [*0..0] binds no edge, so it neither collides with the other part nor costs it its fast path:
