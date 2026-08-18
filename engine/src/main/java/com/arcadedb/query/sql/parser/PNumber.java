@@ -39,5 +39,15 @@ public class PNumber extends SimpleNode {
     result.value = value;
     return result;
   }
+
+  /**
+   * The literal's value IS the node: without this the default identity applies and two parses of the same {@code 1}
+   * are different nodes, which would make listing {@code number} among {@link BaseExpression}'s identity elements
+   * say "not equal" for every literal (issue #6401, item 3). {@link PInteger} has always done the same.
+   */
+  @Override
+  protected Object[] getIdentityElements() {
+    return new Object[] { value };
+  }
 }
 /* JavaCC - OriginalChecksum=ebedbca280f59eb8ba8f21dc6132ba10 (do not edit this line) */
