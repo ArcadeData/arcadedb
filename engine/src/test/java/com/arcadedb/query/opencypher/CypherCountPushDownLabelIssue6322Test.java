@@ -123,14 +123,21 @@ class CypherCountPushDownLabelIssue6322Test extends TestHelper {
     assertThat(scalarOf(query)).isEqualTo(1);
   }
 
-  /** {@code tryDetectStarCountStar}: the central variable's label is the type the operator enumerates. */
+  /**
+   * {@code tryDetectStarCountStar}: the central variable's label is the type the operator enumerates.
+   * <p>
+   * The contrasting {@code single} query below leaves both arms unlabelled on purpose: an arm endpoint's own
+   * label is a separate defect (issue #6337, fixed after this test was written) that declines the push-down
+   * regardless of what the central variable's label set looks like, so this comparison keeps that variable out
+   * of the case being tested here.
+   */
   @Test
   void theCentralVariablesLabelSetDeclinesTheStarCountPushDown() {
     final String query = "MATCH (p:Post:Draft)<-[:WROTE]-(:Author), (p)-[:TAGGED]->(:Topic) RETURN count(*) AS c";
     assertThat(explainOf(query)).doesNotContain("COUNT STAR JOIN");
     assertThat(scalarOf(query)).isEqualTo(1);
 
-    final String single = "MATCH (p:Post)<-[:WROTE]-(:Author), (p)-[:TAGGED]->(:Topic) RETURN count(*) AS c";
+    final String single = "MATCH (p:Post)<-[:WROTE]-(), (p)-[:TAGGED]->() RETURN count(*) AS c";
     assertThat(explainOf(single)).contains("COUNT STAR JOIN");
     assertThat(scalarOf(single)).isEqualTo(3);
   }
