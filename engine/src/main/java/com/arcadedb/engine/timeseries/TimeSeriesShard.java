@@ -41,6 +41,7 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.Consumer;
 
 /**
  * Pairs a mutable TimeSeriesBucket with a sealed TimeSeriesSealedStore.
@@ -88,6 +89,28 @@ public class TimeSeriesShard implements AutoCloseable {
    * it leaks into subsequent tests in the same JVM and silently alters their compaction timing.
    */
   public static volatile Runnable TEST_PRE_PHASE4C_HOOK = null;
+
+  /**
+   * Test-only fault-injection hook (issue #6406 item 5). When non-null, fires in
+   * {@link #checkMutableIntegrity} immediately before the {@code FIX} transaction's commit -
+   * but only on the path that actually reaches a commit, a repair with something to write. Set
+   * to a non-null {@link Consumer} (the argument is {@code "<type>_shard_<index>"}) to simulate the
+   * compaction-race arm this method's own javadoc documents but cannot exercise deterministically
+   * without a live concurrent compaction: throw from the consumer, exactly as a losing
+   * {@link ConcurrentModificationException} from the real commit would. Same idiom as
+   * {@code RaftReplicatedDatabase.TEST_PHASE2_COMMIT_FAULT} for the equivalent leader-side problem.
+   * <p>
+   * One static field for every {@code TimeSeriesShard} in the JVM, not one per instance or per type - same
+   * shape as {@link #TEST_PRE_PHASE4C_HOOK}, and safe today for the same reason: this module runs with a single
+   * Surefire fork and no parallel test execution, so at most one test has it armed at a time. Do not enable
+   * parallel test execution for this module without addressing this hook (and {@link #TEST_PRE_PHASE4C_HOOK}) -
+   * two tests racing to arm/clear the same field would each risk firing the other's fault, or clearing a fault
+   * a still-running test needed.
+   * <p>
+   * Tests that set this MUST reset it to {@code null} in an {@code @AfterEach} method, for the same
+   * reason as {@link #TEST_PRE_PHASE4C_HOOK} above.
+   */
+  public static volatile Consumer<String> TEST_FIX_COMMIT_FAULT = null;
 
   public TimeSeriesShard(final DatabaseInternal database, final String baseName, final int shardIndex,
                          final List<ColumnDefinition> columns) throws IOException {
@@ -946,20 +969,31 @@ public class TimeSeriesShard implements AutoCloseable {
   }
 
   /**
-   * Validates both halves of this shard - the mutable bucket's pages and the sealed store's blocks - and returns
-   * one line per problem, empty when there is none, together with what the two halves hold (issue #6340) and, when
+   * Validates the mutable bucket's pages and returns one line per problem, empty when there is none, together with
+   * what BOTH halves of the shard hold at this instant (issue #6340) and, when
    * {@link TimeSeriesIntegrity.Options#fix()} is set, one line per repair applied (issue #6360).
    * <p>
-   * <b>Two windows, and which work goes in which is the whole design here.</b>
+   * This is the SHORT, transaction-bound half of the shard's check; {@link #checkSealedIntegrity} is the other,
+   * expensive one. The split (issue #6406 item 1) is what lets {@link TimeSeriesEngine#checkIntegrity} run this
+   * half sequentially, one shard at a time as before, while fanning {@link #checkSealedIntegrity} out across
+   * {@code shardExecutor} - the same pool {@code aggregateMultiBlocks} already uses for the same shape of
+   * read-only per-shard work. Fanning THIS half out too would put concurrent transactions from the same database
+   * on different pool threads, which ArcadeDB transactions do not support (they are bound to the calling thread);
+   * {@link #checkSealedIntegrity} opens none, so it carries no such restriction.
    * <p>
-   * The SHORT window holds {@link #appendLock} and then the compaction READ lock - the order
+   * <b>The window, and why it covers both totals even though only one half is checked here.</b>
+   * <p>
+   * It holds {@link #appendLock} and then the compaction READ lock - the order
    * {@link #appendSamples(TimeSeriesRowSource)} takes them in, and the one that keeps this free of the inversion
    * the class comment warns about. It covers the mutable bucket's check and BOTH totals. It has to: the mutable
    * header's counters are raised by every append and recomputed by every compaction, so reconciling them against
    * the pages without holding anything would report a healthy shard as damaged whenever a write landed in
    * between, and a total taken outside it would describe neither the state the walk checked nor any other single
    * instant, since a compaction moves rows from one half to the other. That window is bounded by the mutable
-   * bucket's page count and reads page headers only.
+   * bucket's page count and reads page headers only. The sealed store's contribution to the totals
+   * ({@code getTotalSampleCount()}/{@code getBlockCount()}) is a cheap header read, not the CRC walk
+   * {@link #checkSealedIntegrity} does - it is read here, under this window, for the same reason the mutable
+   * count is: so the combined total describes one instant rather than two.
    * <p>
    * <b>The repair of the mutable header rides in that same window</b>, in a transaction this method owns, and it
    * follows {@link #appendSamples(TimeSeriesRowSource)}'s rule to the letter: on a replicated database the
@@ -972,24 +1006,12 @@ public class TimeSeriesShard implements AutoCloseable {
    * write numbers that no longer describe the pages. The next {@code CHECK DATABASE FIX} walks again and finds
    * whatever is true then; the operator is told to run it.
    * <p>
-   * The sealed store's check runs OUTSIDE both, under nothing but its own {@code directoryLock}, which it takes
-   * itself. That is the expensive half - it CRC32s the whole {@code .ts.sealed} file - and holding the append lock
-   * across it would stall ingestion on this shard for the length of a sequential read of the largest file the type
-   * owns. It does not need them: a sealed block is immutable once written, and every path that mutates the file
-   * ({@code appendBlock}, {@code commitTempCompactionFile}, {@code truncateBefore}, {@code downsampleBlocks},
-   * {@code truncateToBlockCount}, {@code installSealedFileBytes}) takes that same directory WRITE lock, so its own
-   * read lock already excludes all of them - and a repairing pass takes that write lock itself.
-   * <p>
-   * The consequence, stated rather than left to be discovered: a compaction may run between the two windows, so
-   * the sealed store the second half checks can hold blocks the totals did not count. That is the right trade -
-   * the totals are a report of what was there and the findings are a verdict on what is there, and a compaction
-   * moving rows between two halves that are BOTH being reported cannot invent or lose a sample.
-   * <p>
-   * Each problem is prefixed with which half of the shard it came from, because the two are different files with
-   * different formats and different repairs: the mutable bucket is replicated page-by-page under HA while the
-   * sealed store is derived and rebuilt locally by each node's own compaction.
+   * Each problem is prefixed with {@code "mutable bucket: "}, mirroring {@link #checkSealedIntegrity}'s
+   * {@code "sealed store: "}, because the two are different files with different formats and different repairs:
+   * the mutable bucket is replicated page-by-page under HA while the sealed store is derived and rebuilt locally
+   * by each node's own compaction.
    */
-  public IntegrityReport checkIntegrity(final TimeSeriesIntegrity.Options options) throws IOException {
+  public IntegrityReport checkMutableIntegrity(final TimeSeriesIntegrity.Options options) throws IOException {
     final List<String> problems = new ArrayList<>();
     final List<String> repairs = new ArrayList<>();
     // Not final: the CME arm below re-reads them, because the values taken inside a transaction that then rolled
@@ -1028,8 +1050,25 @@ public class TimeSeriesShard implements AutoCloseable {
           transactionOpen = false;
           if (mutableOutcome.repairs().isEmpty())
             db.rollback();
-          else
+          else {
+            // Test-only fault injection (issue #6406 item 5), fired only on the path a real
+            // concurrent compaction could actually contend: a repair with something to commit,
+            // immediately before the commit. On a REPLICATED database (db.isReplicated() above)
+            // this is also after the compaction lock was released, which is where a real
+            // compaction race would land per this method's own javadoc. A test that exercises
+            // this hook against a plain, non-replicated database (as Issue6406CompactionRaceIntegrityTest
+            // does) fires it while that lock is STILL held - the hook forces the same
+            // ConcurrentModificationException the catch block below has to handle either way, so
+            // that difference does not matter to what is being tested, but do not read this
+            // comment as claiming the lock is always released by this point; only the replicated
+            // branch releases it. Mirrors RaftReplicatedDatabase.TEST_PHASE2_COMMIT_FAULT, the
+            // same idiom for the same problem (forcing a race that needs a live compaction or a
+            // live Raft cluster to occur on its own). Always null in production.
+            final Consumer<String> fixCommitFault = TEST_FIX_COMMIT_FAULT;
+            if (fixCommitFault != null)
+              fixCommitFault.accept(typeName + "_shard_" + shardIndex);
             db.commit();
+          }
         }
 
         // Merged only once the transaction carrying them has committed. A repair the commit lost is not a repair,
@@ -1066,13 +1105,49 @@ public class TimeSeriesShard implements AutoCloseable {
       appendLock.unlock();
     }
 
+    return new IntegrityReport(problems, repairs, samples, sealedBlocks);
+  }
+
+  /**
+   * Validates the sealed store's blocks and returns one line per problem, prefixed {@code "sealed store: "}, empty
+   * when there is none, together with one line per repair applied when {@link TimeSeriesIntegrity.Options#fix()}
+   * is set. The totals in the returned {@link IntegrityReport} are always zero: {@link #checkMutableIntegrity}
+   * already reads both halves' totals under its own window, for the reason given there, so this half reports
+   * findings only.
+   * <p>
+   * This is the EXPENSIVE half - under {@code DEEP} it decodes every block, and even at the cheaper tier it CRC32s
+   * the whole {@code .ts.sealed} file - and the reason it is a separate method from {@link #checkMutableIntegrity}
+   * (issue #6406 item 1): it opens no transaction and takes neither {@link #appendLock} nor the compaction lock, so
+   * it is safe to run on a pool thread while other shards' mutable halves - or this same shard's, sequentially -
+   * run on the caller's. It takes only the sealed store's own {@code directoryLock}, which
+   * {@link TimeSeriesSealedStore#checkIntegrity} acquires itself: a sealed block is immutable once written, and
+   * every path that mutates the file ({@code appendBlock}, {@code commitTempCompactionFile}, {@code truncateBefore},
+   * {@code downsampleBlocks}, {@code truncateToBlockCount}, {@code installSealedFileBytes}) takes that same
+   * directory WRITE lock, so a reporting run's read lock already excludes all of them, and a repairing run takes
+   * the write lock itself.
+   * <p>
+   * <b>The consequence of the two halves no longer sharing one window</b>, stated rather than left to be
+   * discovered: a compaction may run between {@link #checkMutableIntegrity} and this call, so the sealed store this
+   * checks can hold blocks the other's totals did not count. That gap already existed in the original, unsplit
+   * method - the two halves never shared a lock even there - but {@link TimeSeriesEngine#checkIntegrity} widened
+   * it (code review of #6406): every shard's mutable half now runs before any shard's sealed half, so for every
+   * shard but the last, this method can start well after its own {@link #checkMutableIntegrity} returned rather
+   * than immediately after, and the compaction has correspondingly longer to land in the gap. It is still the
+   * right trade: the totals are a report of what was there and the findings here are a verdict on what is there,
+   * and a compaction moving rows between two halves that are BOTH being reported cannot invent or lose a sample -
+   * a wider gap changes how OFTEN that trade is exercised, not whether it holds.
+   */
+  public IntegrityReport checkSealedIntegrity(final TimeSeriesIntegrity.Options options) throws IOException {
+    final List<String> problems = new ArrayList<>();
+    final List<String> repairs = new ArrayList<>();
+
     final TimeSeriesIntegrity.Outcome sealedOutcome = sealedStore.checkIntegrity(options);
     for (final String problem : sealedOutcome.problems())
       problems.add("sealed store: " + problem);
     for (final String repair : sealedOutcome.repairs())
       repairs.add("sealed store: " + repair);
 
-    return new IntegrityReport(problems, repairs, samples, sealedBlocks);
+    return new IntegrityReport(problems, repairs, 0, 0);
   }
 
   public TimeSeriesBucket getMutableBucket() {

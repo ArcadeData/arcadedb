@@ -25,6 +25,7 @@ COLLECT="$SCRIPTS/collect-coverage-reports.sh"
 RESULTS="$SCRIPTS/check-test-results.py"
 GUARDS="$SCRIPTS/check-test-reporter-guards.py"
 ALLOWLIST="$SCRIPTS/check-license-allowlist.py"
+DBDOCSSYNC="$SCRIPTS/check-database-docs-sync.py"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -956,6 +957,104 @@ expect "rejects a malformed report" 2 "not valid JSON" \
 printf '[]\n' >"$work/array.sarif"
 expect "rejects well-formed JSON that is not an object" 2 "not valid JSON" \
     "$SCRIPTS/filter-meterian-sarif.py" "$work/array.sarif"
+
+echo "check-database-docs-sync.py"
+
+# The #6406 shape: the grammar's checkDatabaseStatement rule and the docs' [[sql-check-database]]
+# syntax block, taken from a real snapshot of both at the time this test was written, agree.
+mkdir -p "$work/dbdocs-clean"
+cat >"$work/dbdocs-clean/SQLParser.g4" <<'EOF'
+checkDatabaseStatement
+    : CHECK DATABASE
+      (TYPE identifier (COMMA identifier)*)?
+      (BUCKET (identifier | INTEGER_LITERAL) (COMMA (identifier | INTEGER_LITERAL))*)?
+      (RECORD rid (COMMA rid)*)?
+      (FIX)?
+      (DELETE ORPHANS)?
+      (RECLAIM UNREFERENCED FILES)?
+      (DEEP)?
+      (COMPRESS)?
+    ;
+EOF
+cat >"$work/dbdocs-clean/sql-database-admin.adoc" <<'EOF'
+[[sql-check-database]]
+===== SQL - `CHECK DATABASE`
+
+[source,sql]
+----
+CHECK DATABASE [ TYPE <type-name>[,]* ] [ BUCKET <bucket-name>[,]* ] [ RECORD <rid>[,]* ]
+              [ FIX ] [ DELETE ORPHANS ] [ RECLAIM UNREFERENCED FILES ] [ DEEP ] [ COMPRESS ]
+----
+EOF
+expect "accepts a grammar and docs block that agree" 0 "agree on 8 clause" \
+    "$DBDOCSSYNC" "$work/dbdocs-clean/SQLParser.g4" "$work/dbdocs-clean/sql-database-admin.adoc"
+
+# The #5680/#6090/#6189 shape itself: a clause lands in the grammar and the docs are never
+# touched. Modeled here as VALIDATE SIGNATURES, a clause neither side has ever had, so this pins
+# detection rather than a coincidence with real history.
+mkdir -p "$work/dbdocs-grammar-ahead"
+cp "$work/dbdocs-clean/sql-database-admin.adoc" "$work/dbdocs-grammar-ahead/"
+sed 's/(COMPRESS)?/(COMPRESS)?\n      (VALIDATE SIGNATURES)?/' \
+    "$work/dbdocs-clean/SQLParser.g4" >"$work/dbdocs-grammar-ahead/SQLParser.g4"
+expect "rejects a grammar clause the docs never mention" 1 "VALIDATE SIGNATURES" \
+    "$DBDOCSSYNC" "$work/dbdocs-grammar-ahead/SQLParser.g4" "$work/dbdocs-grammar-ahead/sql-database-admin.adoc"
+
+# The other direction: the docs still advertise a clause a later grammar change removed. Just as
+# stale, and just as easy to miss without something that reads both sides.
+mkdir -p "$work/dbdocs-docs-ahead"
+cp "$work/dbdocs-clean/sql-database-admin.adoc" "$work/dbdocs-docs-ahead/"
+sed '/(RECLAIM UNREFERENCED FILES)?/d' \
+    "$work/dbdocs-clean/SQLParser.g4" >"$work/dbdocs-docs-ahead/SQLParser.g4"
+expect "rejects a docs clause the grammar no longer has" 1 "RECLAIM UNREFERENCED FILES" \
+    "$DBDOCSSYNC" "$work/dbdocs-docs-ahead/SQLParser.g4" "$work/dbdocs-docs-ahead/sql-database-admin.adoc"
+
+# A multi-keyword clause (DELETE ORPHANS) has to match as ONE phrase, not as two single-keyword
+# clauses that happen to sit next to each other - otherwise a docs block that separately mentions
+# a bare `[ DELETE ]` and a bare `[ ORPHANS ]` would be accepted as if it spelled out the clause
+# the grammar actually has.
+mkdir -p "$work/dbdocs-split-phrase"
+cp "$work/dbdocs-clean/SQLParser.g4" "$work/dbdocs-split-phrase/"
+sed 's/\[ DELETE ORPHANS \]/[ DELETE ] [ ORPHANS ]/' \
+    "$work/dbdocs-clean/sql-database-admin.adoc" >"$work/dbdocs-split-phrase/sql-database-admin.adoc"
+expect "treats a multi-keyword clause as one phrase, not separate keywords" 1 "DELETE ORPHANS" \
+    "$DBDOCSSYNC" "$work/dbdocs-split-phrase/SQLParser.g4" "$work/dbdocs-split-phrase/sql-database-admin.adoc"
+
+# A missing anchor or a missing rule is a script/input problem, not a clause mismatch - it must
+# fail loudly with which one is missing rather than reporting an empty, vacuously-agreeing diff.
+mkdir -p "$work/dbdocs-no-anchor"
+cp "$work/dbdocs-clean/SQLParser.g4" "$work/dbdocs-no-anchor/"
+printf 'No CHECK DATABASE section here.\n' >"$work/dbdocs-no-anchor/sql-database-admin.adoc"
+expect "fails loudly when the docs anchor is missing" 2 "anchor" \
+    "$DBDOCSSYNC" "$work/dbdocs-no-anchor/SQLParser.g4" "$work/dbdocs-no-anchor/sql-database-admin.adoc"
+
+# A clause whose placeholder repetition sits directly against the clause's OWN last keyword, no
+# space in between (RECLAIM UNREFERENCED FILES[,]*) - code review on #6406 flagged that a
+# non-greedy `\[([^\]]+?)\]` extracting the docs' bracket groups stops at the FIRST `]` it meets,
+# which here is the placeholder's own inner one, truncating the captured text to "...FILES[," and
+# silently dropping FILES from the recovered phrase. That used to be a false-positive drift alarm
+# (grammar and docs agreeing in reality, reported as disagreeing) rather than a crash, which is
+# exactly the failure mode a docs-sync guard must not have: it would tell a PR author to "fix" a
+# doc line that was already correct. Depth-tracked bracket matching plus splitting `[`/`]` off as
+# their own tokens in leading_keywords (matching how `(`/`)` were already split) fixes it.
+mkdir -p "$work/dbdocs-adjacent-bracket"
+cat >"$work/dbdocs-adjacent-bracket/SQLParser.g4" <<'EOF'
+checkDatabaseStatement
+    : CHECK DATABASE
+      (TYPE identifier (COMMA identifier)*)?
+      (RECLAIM UNREFERENCED FILES)?
+    ;
+EOF
+cat >"$work/dbdocs-adjacent-bracket/sql-database-admin.adoc" <<'EOF'
+[[sql-check-database]]
+===== SQL - `CHECK DATABASE`
+
+[source,sql]
+----
+CHECK DATABASE [ TYPE <type-name>[,]* ] [ RECLAIM UNREFERENCED FILES[,]* ]
+----
+EOF
+expect "recovers a full keyword phrase when a placeholder touches the last keyword" 0 "agree on 2 clause" \
+    "$DBDOCSSYNC" "$work/dbdocs-adjacent-bracket/SQLParser.g4" "$work/dbdocs-adjacent-bracket/sql-database-admin.adoc"
 
 echo
 if [[ $failures -gt 0 ]]; then
