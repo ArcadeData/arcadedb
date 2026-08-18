@@ -1899,14 +1899,17 @@ public class CypherExecutionPlan {
         }
 
         // Handle zero-length named paths: p = (n)
+        // Note: matchChainStart must stay pointed at matchStep (the actual chain head that
+        // OptionalMatchStep feeds each input row into) - it was already correctly assigned above.
+        // Reassigning it to zeroPathStep here would make OptionalMatchStep call
+        // zeroPathStep.setPrevious(...) directly, discarding the setPrevious(currentStep) link to
+        // matchStep below and leaving zeroPathStep with no previous step (issue #6378).
         final String singlePathVar = pathPattern.hasPathVariable() ? pathPattern.getPathVariable() : null;
         if (singlePathVar != null) {
           matchVariables.add(singlePathVar);
           final ZeroLengthPathStep zeroPathStep = new ZeroLengthPathStep(variable, singlePathVar, context);
           zeroPathStep.setPrevious(currentStep);
           currentStep = zeroPathStep;
-          if (isOptional && matchChainStart == matchStep)
-            matchChainStart = zeroPathStep;
         }
       } else if (pathPattern instanceof ShortestPathPattern) {
         // Handle shortestPath or allShortestPaths patterns
