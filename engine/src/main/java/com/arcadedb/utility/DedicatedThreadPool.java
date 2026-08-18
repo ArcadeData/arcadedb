@@ -79,6 +79,30 @@ public abstract class DedicatedThreadPool {
    */
   protected static final long WARN_THROTTLE_INTERVAL_MS = 60_000L;
 
+  protected final ThreadPoolExecutor executor;
+
+  private final SaturationPolicy saturationPolicy;
+  /**
+   * The whole saturation WARNING as a format string, composed ONCE at construction rather than assembled per event.
+   * Two reasons, and the second is the one that matters: a saturating pool is the last place to be concatenating
+   * strings, and the pool's name has to be LITERAL text in the message rather than an argument, or an operator
+   * grepping their console for "Query parallelism pool saturated" - and a log-capturing test doing the same - finds
+   * a bare "%s saturated" instead. Takes exactly three arguments: queue capacity, thread count, cumulative fallbacks.
+   */
+  private final String     saturationWarnMessage;
+  private final boolean    boundedQueue;
+  private final AtomicLong callerRunCount       = new AtomicLong();
+  /**
+   * Initialised to {@code 0L} and not {@code Long.MIN_VALUE}: the throttle below subtracts it from
+   * {@code System.currentTimeMillis()}, and {@code MIN_VALUE} would overflow that subtraction and silently suppress
+   * the first-ever warning - the one that matters most.
+   */
+  private final AtomicLong lastSaturationWarnMs = new AtomicLong(0L);
+
+  // The nested types below are declared AFTER the fields, not at the top where the idiom usually puts them: PMD's
+  // FieldDeclarationsShouldBeAtStartOfClass counts a nested type as the end of the field section and reports every
+  // field that follows one. Same reason AsyncCommandPool keeps its Holder down here.
+
   /** What a pool does with a task its bounded queue refused. */
   public enum SaturationPolicy {
     /**
@@ -124,26 +148,6 @@ public abstract class DedicatedThreadPool {
   public record PoolStats(int poolSize, int activeThreads, int queueDepth, int queueCapacityRemaining,
                           long completedTasks, long callerRunFallbacks) {
   }
-
-  protected final ThreadPoolExecutor executor;
-
-  private final SaturationPolicy saturationPolicy;
-  /**
-   * The whole saturation WARNING as a format string, composed ONCE at construction rather than assembled per event.
-   * Two reasons, and the second is the one that matters: a saturating pool is the last place to be concatenating
-   * strings, and the pool's name has to be LITERAL text in the message rather than an argument, or an operator
-   * grepping their console for "Query parallelism pool saturated" - and a log-capturing test doing the same - finds
-   * a bare "%s saturated" instead. Takes exactly three arguments: queue capacity, thread count, cumulative fallbacks.
-   */
-  private final String     saturationWarnMessage;
-  private final boolean    boundedQueue;
-  private final AtomicLong callerRunCount       = new AtomicLong();
-  /**
-   * Initialised to {@code 0L} and not {@code Long.MIN_VALUE}: the throttle below subtracts it from
-   * {@code System.currentTimeMillis()}, and {@code MIN_VALUE} would overflow that subtraction and silently suppress
-   * the first-ever warning - the one that matters most.
-   */
-  private final AtomicLong lastSaturationWarnMs = new AtomicLong(0L);
 
   /**
    * @param threadNamePrefix      worker thread names are this plus a per-pool sequence number
