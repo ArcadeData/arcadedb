@@ -1643,6 +1643,171 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /**
+   * Validates everything this format asserts about itself and returns one line per problem, empty when there is
+   * none - the shape {@code IndexInternal.checkIntegrity()} uses, so {@code DatabaseChecker} folds the answers of
+   * every storage kind the same way (issue #6340).
+   * <p>
+   * <b>This is what {@code CHECK DATABASE} had no way to look at.</b> The checker walks record buckets and indexes;
+   * a sealed store is neither, so until now the whole of a TimeSeries type's compacted data - which is most of its
+   * data - was outside the reach of the tool whose job is to answer "is this database intact".
+   * <p>
+   * <b>It verifies the block CRCs, and that is the expensive part.</b> Every block carries a CRC32 over its
+   * metadata and its compressed columns, and it is checked lazily on the first read of that block, so a block never
+   * read is a block never verified. Doing it here reads the whole file once, sequentially, which is the same cost
+   * class as the record scan {@code checkBuckets} already runs over every bucket and is the only thing that
+   * actually answers the question. Rows are deliberately NOT decompressed: the CRC covers the same bytes for a
+   * fraction of the CPU, and what a repair would mean for an append-only store is a separate question.
+   * <p>
+   * The on-disk header is compared against the scanned directory only when it is not dirty. {@code appendBlock}
+   * marks it dirty and {@link #flushHeader} rewrites it, so between the two the header legitimately under-reports
+   * the blocks the file already holds and comparing them would report a healthy store as damaged.
+   */
+  public List<String> checkIntegrity() throws IOException {
+    final List<String> problems = new ArrayList<>();
+
+    directoryLock.readLock().lock();
+    try {
+      final long fileLength = indexFile.length();
+      if (fileLength < HEADER_SIZE) {
+        problems.add("the file is " + fileLength + " bytes, shorter than its " + HEADER_SIZE + "-byte header");
+        return problems;
+      }
+
+      // Through readBytes() rather than a bare indexChannel.read(): a FileChannel may legally return fewer bytes
+      // than asked for - not merely theoretical on a network filesystem - and the buffer's untouched tail is
+      // zeros. Anywhere else that costs a retry; HERE it would turn "the read came up short" into a header or a
+      // CRC that does not match, which is a false accusation of corruption made by the very code whose job is to
+      // tell corruption from health. readBytes() loops and throws at a real end of file.
+      final ByteBuffer headerBuf = ByteBuffer.wrap(readBytes(0, HEADER_SIZE));
+
+      final int magic = headerBuf.getInt();
+      if (magic != MAGIC_VALUE) {
+        problems.add("the header does not start with the 'TSIX' magic (found 0x" + Integer.toHexString(magic)
+            + "): the file is not a sealed store, or its first bytes were overwritten");
+        return problems;
+      }
+
+      final int version = headerBuf.get() & 0xFF;
+      if (version != CURRENT_VERSION)
+        problems.add("the header declares format version " + version + ", but this build writes and reads version "
+            + CURRENT_VERSION);
+
+      final int colCount = headerBuf.getShort() & 0xFFFF;
+      if (colCount != columns.size())
+        problems.add("the header declares " + colCount + " column(s) but the schema declares " + columns.size());
+
+      final int storedBlockCount = headerBuf.getInt();
+      final long storedMinTs = headerBuf.getLong();
+      final long storedMaxTs = headerBuf.getLong();
+
+      if (!headerDirty && storedBlockCount != blockDirectory.size())
+        problems.add("the header declares " + storedBlockCount + " block(s) but scanning the file found "
+            + blockDirectory.size());
+
+      long computedMinTs = Long.MAX_VALUE;
+      long computedMaxTs = Long.MIN_VALUE;
+      // Where the next block's metadata must start. Blocks are written back to back from the header onwards, so
+      // this is the only description of a block's start that holds for EVERY entry in the directory: the
+      // BlockEntry.blockStartOffset field is populated by loadDirectory() alone, and a block appended by this
+      // process carries 0 in it (see the CRC comment below).
+      long blockStart = HEADER_SIZE;
+      // Whether the walk reached the end of the directory. The two totals below and the trailing-bytes check are
+      // both statements about ALL the blocks, so a walk that stopped at block N cannot make either of them: what
+      // it accumulated is a prefix, and reporting a prefix as the whole would turn one finding into three.
+      boolean walkedEveryBlock = true;
+
+      for (int i = 0; i < blockDirectory.size(); i++) {
+        final BlockEntry entry = blockDirectory.get(i);
+
+        if (entry.sampleCount <= 0)
+          problems.add("block " + i + " (offset " + blockStart + ") declares " + entry.sampleCount + " sample(s)");
+        if (entry.minTimestamp > entry.maxTimestamp)
+          problems.add("block " + i + " (offset " + blockStart + ") declares min timestamp " + entry.minTimestamp
+              + " above its max timestamp " + entry.maxTimestamp);
+
+        boolean sizesUsable = true;
+        for (int c = 0; c < entry.columnSizes.length; c++)
+          if (entry.columnSizes[c] < 0) {
+            problems.add("block " + i + " (offset " + blockStart + ") declares a negative size " + entry.columnSizes[c]
+                + " for column " + c);
+            sizesUsable = false;
+          }
+
+        // The metadata sits between the block's start and its first column, so a first column at or before the
+        // start means the directory and the file disagree about where this block is - and every offset after it
+        // is then meaningless, which is why the walk stops rather than carrying on.
+        if (sizesUsable && entry.columnOffsets[0] <= blockStart) {
+          problems.add("block " + i + " places its first column at " + entry.columnOffsets[0]
+              + ", at or before the " + blockStart + " where the block itself starts");
+          sizesUsable = false;
+        }
+
+        if (!sizesUsable) {
+          walkedEveryBlock = false;
+          break;
+        }
+
+        final long endOfData =
+            entry.columnOffsets[entry.columnSizes.length - 1] + entry.columnSizes[entry.columnSizes.length - 1];
+        if (endOfData + 4 > fileLength) {
+          problems.add("block " + i + " (offset " + blockStart + ") ends at " + (endOfData + 4)
+              + ", past the end of a file of " + fileLength + " bytes: it was truncated");
+          walkedEveryBlock = false;
+          break;
+        }
+
+        if (entry.minTimestamp < computedMinTs)
+          computedMinTs = entry.minTimestamp;
+        if (entry.maxTimestamp > computedMaxTs)
+          computedMaxTs = entry.maxTimestamp;
+
+        // Recomputed from the FILE, not delegated to validateBlockCRC() and not compared against entry.storedCRC.
+        // Two reasons, and both are about a check having to actually look:
+        //  - validateBlockCRC() returns early for a block whose flag is already set, which is right for a read (a
+        //    block is immutable once written, so paying twice buys nothing) and wrong here: a second CHECK DATABASE
+        //    in the same process would answer "clean" without having read a byte.
+        //  - blockStartOffset and storedCRC are populated by loadDirectory() alone, i.e. only for blocks this
+        //    process found on disk when it opened the file. A block appended by THIS process has both on disk and
+        //    zero in the fields, with crcValidated pre-set to true because a block just written needs no checking
+        //    - so it is precisely the block a check must not take memory's word about. Nothing reads those two
+        //    fields for such a block today, which is why the gap is latent rather than a defect.
+        // Both sides therefore come from the file: the bytes from blockStart, and the CRC from where the writer
+        // put it, immediately after the data.
+        final int blockSize = (int) (endOfData - blockStart);
+        final int storedCRC = ByteBuffer.wrap(readBytes(endOfData, 4)).getInt();
+
+        final CRC32 crc = new CRC32();
+        crc.update(readBytes(blockStart, blockSize));
+        if ((int) crc.getValue() != storedCRC)
+          problems.add("block " + i + ": CRC mismatch at offset " + blockStart + " (stored=0x"
+              + Integer.toHexString(storedCRC) + ", computed=0x" + Integer.toHexString((int) crc.getValue())
+              + "): its metadata or its compressed columns are not the bytes that were written");
+
+        blockStart = endOfData + 4;
+      }
+
+      if (walkedEveryBlock && !headerDirty && !blockDirectory.isEmpty()) {
+        if (storedMinTs != computedMinTs)
+          problems.add("the header declares global min timestamp " + storedMinTs + " but the blocks hold "
+              + computedMinTs);
+        if (storedMaxTs != computedMaxTs)
+          problems.add("the header declares global max timestamp " + storedMaxTs + " but the blocks hold "
+              + computedMaxTs);
+      }
+
+      if (walkedEveryBlock && blockStart != fileLength)
+        // The directory scan stops at the first thing that is not a block magic, so a partial block left by an
+        // interrupted append is invisible to every other reader: it is neither used nor reported. Say so.
+        problems.add((fileLength - blockStart) + " byte(s) follow the last readable block and belong to no "
+            + "block: the tail of a write that did not complete. They are ignored by every read path");
+    } finally {
+      directoryLock.readLock().unlock();
+    }
+
+    return problems;
+  }
+
+  /**
    * Returns how many times {@link #downsampleBlocks} actually rewrote the sealed file. A steady-state
    * maintenance cycle (nothing new old enough to reduce) must not increment this. Used by regression tests
    * to assert downsampling idempotency (issue #4599).

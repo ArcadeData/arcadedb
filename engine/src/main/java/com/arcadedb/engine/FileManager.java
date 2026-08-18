@@ -424,16 +424,42 @@ public class FileManager {
     return fileNameMap.get(componentName);
   }
 
+  /**
+   * Returns the file registered under {@code fileName}, opening and registering one at {@code filePath} when there
+   * is none. This is the by-<em>name</em> half of the pair; {@link #getOrCreateFile(int, String)} is the by-id one.
+   * <p>
+   * <b>The mode is a request the caller is entitled to, not a hint (issue #6340.)</b> On a hit this used to hand
+   * the registered file back whatever mode it carried, which is the third member of the family the by-name id
+   * check (#6283) and the by-id name check (#6314) closed: the caller asks for one thing and is handed another.
+   * The direction that matters is the quiet one - a caller asking for {@code READ_ONLY} and being given a
+   * {@code READ_WRITE} file gets a WEAKER guarantee than it asked for, with nothing anywhere saying so, and
+   * mode is the one file property whose whole purpose is to be a guarantee.
+   * <p>
+   * Reopening the file to satisfy the request is deliberately not what happens instead. The mode selects the
+   * {@code RandomAccessFile} open string ({@code PaginatedComponentFile.open}) and a registered file is shared by
+   * every component addressing it, so "upgrading" one would change the channel under readers that had asked for
+   * the narrower one - trading a loud refusal for a silent widening, which is the very shape being removed here.
+   * <p>
+   * <b>Nothing reaches this today, and that is a statement rather than an assumption.</b> This overload has
+   * exactly one caller, {@code PaginatedComponent}'s constructor, and a hit on it survives the file-id guard
+   * there only when the component was deliberately built on the registered file's own id - which today means
+   * {@code TimeSeriesTagDictionary}'s build-on-an-existing-file constructor, and that one now takes the mode
+   * from the file too ({@link ComponentFile#getMode()}). Every other component reaches this on the miss path,
+   * where the file is opened with the mode asked for and agrees by construction. The guard is what keeps the
+   * next caller from having to re-derive that.
+   *
+   * @throws IllegalStateException when a file is already registered under {@code fileName} in a different mode
+   */
   public ComponentFile getOrCreateFile(final String fileName, final String filePath, final ComponentFile.MODE mode)
       throws IOException {
     ComponentFile file = fileNameMap.get(fileName);
     if (file != null)
-      return file;
+      return checkModeMatches(file, mode);
 
     synchronized (this) {
       file = fileNameMap.get(fileName);
       if (file != null)
-        return file;
+        return checkModeMatches(file, mode);
 
       file = new PaginatedComponentFile(filePath, mode);
       registerFile(file);
@@ -489,6 +515,23 @@ public class FileManager {
       throw new SchemaException(
           "File id " + file.getFileId() + " is already registered as '" + file.getFileName() + "' but was requested as '"
               + requestedName + "' ('" + filePath + "')");
+    return file;
+  }
+
+  /**
+   * Asserts that an already-registered file is open in the mode the caller asked for (issue #6340). Thrown as an
+   * {@link IllegalStateException} and not as the {@link SchemaException} its by-id sibling above raises, because the
+   * two say different things: a file name that does not match is a file-id space that has diverged from the
+   * leader's, which the HA follower turns into a quarantine-and-resync, while a mode that does not match is a caller
+   * asking for a guarantee the shared file cannot give it - a programming error on the same footing as the file-id
+   * and page-size guards in {@code PaginatedComponent}, which is this overload's only caller and which throws
+   * exactly this.
+   */
+  private static ComponentFile checkModeMatches(final ComponentFile file, final ComponentFile.MODE mode) {
+    if (file.getMode() != mode)
+      throw new IllegalStateException(
+          "File '" + file.getFileName() + "' is already open in mode " + file.getMode() + " but was requested in mode "
+              + mode + " ('" + file.getFilePath() + "')");
     return file;
   }
 

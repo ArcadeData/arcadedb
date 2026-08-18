@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -37,6 +38,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.LocalEdgeType;
+import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.BinarySerializer;
@@ -188,6 +190,14 @@ public class DatabaseChecker {
     result.put("deletedRecordsAfterFix", new LinkedHashSet<>());
     result.put("corruptedRecords", new LinkedHashSet<>());
     result.put("corruptedIndexes", new LinkedHashSet<>());
+    // Issue #6340: the TimeSeries pass, seeded like every other family so a clean run publishes zeros rather than
+    // omitting the keys - "did this run look at the TimeSeries files at all?" has to be answerable from the result
+    // of every run, and a database with no TimeSeries type answers it with zeros rather than with silence.
+    result.put("corruptedTimeSeries", new LinkedHashSet<String>());
+    result.put("totalTimeSeriesTypes", 0L);
+    result.put("totalTimeSeriesShards", 0L);
+    result.put("totalTimeSeriesSamples", 0L);
+    result.put("totalTimeSeriesSealedBlocks", 0L);
     result.put("totalWarnings", 0L);
     result.put("totalCorruptedRecords", 0L);
     result.put("distinctMissingReferences", 0L);
@@ -208,6 +218,11 @@ public class DatabaseChecker {
     final List<DocumentType> edgeTypes = new ArrayList<>();
     final List<DocumentType> vertexTypes = new ArrayList<>();
     final List<DocumentType> documentTypes = new ArrayList<>();
+    // Issue #6340: a TimeSeries type is a LocalDocumentType and used to land in documentTypes, where the per-type
+    // pass found it had no record buckets and did nothing - which is the whole reason CHECK DATABASE had no
+    // TimeSeries coverage. Its data is not in record buckets: it is in the .tstb/.tstd components the schema
+    // registers as files and in the .ts.sealed files outside the paginated layer, so it gets its own pass.
+    final List<LocalTimeSeriesType> timeSeriesTypes = new ArrayList<>();
     for (final DocumentType type : database.getSchema().getTypes()) {
       if (types != null && !types.isEmpty() && (type == null || !types.contains(type.getName())))
         continue;
@@ -215,6 +230,8 @@ public class DatabaseChecker {
         edgeTypes.add(type);
       else if (type instanceof LocalVertexType)
         vertexTypes.add(type);
+      else if (type instanceof LocalTimeSeriesType tsType)
+        timeSeriesTypes.add(tsType);
       else
         documentTypes.add(type);
     }
@@ -268,6 +285,10 @@ public class DatabaseChecker {
       currentStep = 0;
       totalSteps = edgeTypes.size() + vertexTypes.size() + documentTypes.size() // per-type checks
           + 3 // buckets + external properties + indexes
+          // #6340: ONE step for all TimeSeries types, and only when the database has any. A step per type would
+          // change the plan of every database that has none, which is what every existing progress expectation
+          // was written against; a step that is not there costs nobody anything.
+          + (timeSeriesTypes.isEmpty() ? 0 : 1)
           + (reclaimOrphanedSegments ? 1 : 0)
           + (fix ? 1 : 0) // rebuild affected indexes
           + (compress ? 1 : 0);
@@ -288,6 +309,8 @@ public class DatabaseChecker {
       }
 
       checkDocuments(documentTypes);
+
+      checkTimeSeries(timeSeriesTypes);
 
       checkBuckets(result);
 
@@ -623,6 +646,94 @@ public class DatabaseChecker {
 
       stepComplete();
     }
+  }
+
+  /**
+   * Validates the storage of every TimeSeries type in scope (issue #6340).
+   * <p>
+   * <b>Why this pass exists.</b> Before it, {@code DatabaseChecker} contained no reference to TimeSeries at all -
+   * not to {@code .tstb}, not to {@code .tstd}, not to {@code .ts.sealed}. The checker walks record buckets and
+   * indexes; a TimeSeries type has neither, since {@code LocalTimeSeriesType} registers its shards with the schema
+   * as FILES rather than as a type's record buckets and its compacted data does not go through the paginated layer
+   * at all. So a type falling into the document arm had nothing to scan, and every one of the three on-disk
+   * formats TimeSeries owns - the mutable bucket, the sealed store, the tag dictionary, the last two with their
+   * own magics, headers and CRCs - was outside the reach of the only tool whose job is to find damage in them.
+   * That was not an abstract gap: #6314 fixed a bug that wrote real rows to disk at the wrong stride, and nothing
+   * in the engine could detect a file left in that state, because the header a mismatched session also wrote
+   * counts rows the pages no longer hold.
+   * <p>
+   * <b>Report-only, in both modes.</b> There is no {@code FIX} arm and the omission is deliberate rather than
+   * unfinished. A record bucket can be repaired because its records are self-describing and its indexes are
+   * derivable from them; a sealed store is append-only columnar data whose blocks are the only copy, so "repair"
+   * would mean deciding which samples to discard - a question that needs answering before code, not after. What
+   * this pass does is make the state visible, which is the part that was missing entirely.
+   * <p>
+   * <b>Scoped by TYPE and by nothing else.</b> The type filter has already been applied by the caller's
+   * classification, so naming a type checks that type's files and nothing else, exactly as it does for a document
+   * type. A BUCKET scope does not narrow this pass and cannot: a TimeSeries shard is not a bucket, so there is
+   * nothing for a bucket name to select - the same reason {@link #checkIndexes} is not narrowed by BUCKET either.
+   * A RECORD scope never reaches here, since that branch skips every database-wide pass.
+   * <p>
+   * ONE step for all types rather than one per type, so a database with no TimeSeries type keeps the step plan it
+   * had. The per-type progress is the tick.
+   */
+  private void checkTimeSeries(final List<LocalTimeSeriesType> timeSeriesTypes) {
+    if (timeSeriesTypes.isEmpty())
+      return;
+
+    if (verboseLevel > 0)
+      LogManager.instance().log(this, Level.INFO, "Checking TimeSeries types...");
+
+    stepBegin("Checking TimeSeries", timeSeriesTypes.size());
+
+    final Set<String> corrupted = new LinkedHashSet<>();
+    long totalShards = 0;
+    long totalSamples = 0;
+    long totalSealedBlocks = 0;
+
+    for (final LocalTimeSeriesType type : timeSeriesTypes) {
+      stepTick();
+
+      final TimeSeriesEngine engine = type.getEngine();
+      if (engine == null) {
+        // The type is in the schema but its engine never initialised, so its files were never opened. Reported
+        // rather than skipped: a type nothing can read is exactly the kind of thing this check is asked about.
+        addWarning("timeseries '" + type.getName() + "': the storage engine is not initialised, so none of its "
+            + "files could be read");
+        corrupted.add(type.getName());
+        continue;
+      }
+
+      try {
+        // ONE walk over the type's shards, not three: the report carries the totals this pass publishes alongside
+        // the findings, with each shard measuring itself inside the same lock window it checks itself in - so the
+        // numbers and the verdict describe one instant rather than three.
+        final TimeSeriesEngine.IntegrityReport report = engine.checkIntegrity();
+
+        totalShards += report.shards();
+        totalSamples += report.samples();
+        totalSealedBlocks += report.sealedBlocks();
+
+        if (!report.problems().isEmpty()) {
+          corrupted.add(type.getName());
+          for (final String problem : report.problems())
+            addWarning("timeseries '" + type.getName() + "': " + problem);
+        }
+      } catch (final Exception e) {
+        // Same shape as the index arm: a check that cannot complete is itself a finding, never a reason to
+        // abandon the rest of the run.
+        addWarning("timeseries '" + type.getName() + "': integrity check failed: " + e.getMessage());
+        corrupted.add(type.getName());
+      }
+    }
+
+    ((LinkedHashSet<String>) result.get("corruptedTimeSeries")).addAll(corrupted);
+    result.put("totalTimeSeriesTypes", (long) timeSeriesTypes.size());
+    result.put("totalTimeSeriesShards", totalShards);
+    result.put("totalTimeSeriesSamples", totalSamples);
+    result.put("totalTimeSeriesSealedBlocks", totalSealedBlocks);
+
+    stepComplete();
   }
 
   /**
