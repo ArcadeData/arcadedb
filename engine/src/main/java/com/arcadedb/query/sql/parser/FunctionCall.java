@@ -23,6 +23,8 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
+import com.arcadedb.function.sql.graph.SQLFunctionMove;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.AggregationContext;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -30,12 +32,12 @@ import com.arcadedb.query.sql.executor.FunctionAggregationContext;
 import com.arcadedb.query.sql.executor.IndexableSQLFunction;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.SQLFunction;
-import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
-import com.arcadedb.function.sql.graph.SQLFunctionMove;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 public class FunctionCall extends SimpleNode {
@@ -452,6 +454,16 @@ public class FunctionCall extends SimpleNode {
   }
 
   /**
+   * Determinism is a property of the function's NAME, not of any particular call site or instance - so the answer
+   * is memoized per name here rather than re-resolved (and, for a class-registered built-in, reflectively
+   * re-instantiated) on every {@link #isCacheable()}/{@link #isFoldable()} check, both of which run on every
+   * execution of a statement containing this call, cache hit or not. Safe for the life of the JVM: the built-in
+   * registry {@link #resolveDeterministic(String)} reads is the process-wide {@link DefaultSQLFunctionFactory}
+   * singleton, populated once at construction and never mutated at runtime.
+   */
+  private static final Map<String, Boolean> DETERMINISTIC_FUNCTIONS = new ConcurrentHashMap<>();
+
+  /**
    * Resolves this call's target purely against the built-in {@link DefaultSQLFunctionFactory} registry - the same
    * static lookup {@link com.arcadedb.query.sql.SQLQueryEngine#getFunction(String)} consults first, before falling
    * back to a database-scoped user function library or the unified {@link com.arcadedb.function.FunctionRegistry} of
@@ -462,10 +474,14 @@ public class FunctionCall extends SimpleNode {
    * treated as not deterministic.
    */
   private boolean isDeterministicFunction() {
+    return DETERMINISTIC_FUNCTIONS.computeIfAbsent(name.getStringValue().toLowerCase(Locale.ENGLISH), FunctionCall::resolveDeterministic);
+  }
+
+  private static boolean resolveDeterministic(final String lowercaseName) {
     try {
-      final SQLFunction function = DefaultSQLFunctionFactory.getInstance().getFunctionInstance(name.getStringValue());
+      final SQLFunction function = DefaultSQLFunctionFactory.getInstance().getFunctionInstance(lowercaseName);
       return function != null && function.isDeterministic();
-    } catch (final Exception e) {
+    } catch (final CommandExecutionException e) {
       return false;
     }
   }
