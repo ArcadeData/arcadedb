@@ -1998,6 +1998,12 @@ public class LocalDocumentType implements DocumentType {
         // one go whatever the caller holds.
         final DatabaseInternal database = (DatabaseInternal) schema.getDatabase();
         final boolean callerTransactionHasChanges = IndexBuilder.callerTransactionHasChanges(database);
+        // Two lists, because "has to be built later" and "has to be taken away if anything goes wrong" are not the
+        // same set. An index family that cannot share the caller's transaction is built INLINE during component
+        // creation and never reaches toBuild, so a cleanup keyed on toBuild alone would leave it behind, committed
+        // and attached to a type relationship unlinkSuperType has just undone. Reachable whenever a super type
+        // carries both a vector index and an ordinary one.
+        final List<Index> created = new ArrayList<>();
         final List<Index> toBuild = new ArrayList<>();
         try {
           // The COMPONENTS are created in a transaction of their OWN. The enclosing recordFileChanges writes the
@@ -2030,14 +2036,15 @@ public class LocalDocumentType implements DocumentType {
                     // Inherit the page size of the index being propagated, like the createBucket() path above does.
                     // Hardcoding the LSM default here gave a HASH index a page size it cannot address (#5713), and
                     // getPageSizeForNewFile() is the accessor that guarantees the value is legal to create with.
-                    final Index created = schema.createBucketIndex(this, index.getKeyTypes(), bucket, name, index.getType(),
+                    final Index subIndex = schema.createBucketIndex(this, index.getKeyTypes(), bucket, name, index.getType(),
                         index.isUnique(), index.getPageSizeForNewFile(), index.getNullStrategy(), null,
                         index.getPropertyNames().toArray(new String[index.getPropertyNames().size()]), index,
                         IndexBuilder.BUILD_BATCH_SIZE,
                         index.getMetadata(), !sharesCallerTransaction);
 
+                    created.add(subIndex);
                     if (sharesCallerTransaction)
-                      toBuild.add(created);
+                      toBuild.add(subIndex);
                   }
                 }
               }
@@ -2049,23 +2056,20 @@ public class LocalDocumentType implements DocumentType {
             // pages that transaction has modified first, the committed ones underneath. That is the only way it sees
             // records the caller has written and not yet committed, and it makes the entries commit, or roll back,
             // with the records they describe.
-            //
-            // Cleaned up from a try/catch of its own rather than from the transaction's error callback, because that
-            // callback is NOT reached on every failure: a NeedRetryException or a DuplicatedKeyException raised
-            // inside a JOINED transaction is rethrown immediately by LocalDatabase.transaction (issue #661), skipping
-            // the callback entirely. And a duplicate is exactly what this build can hit, since it now sees the
-            // caller's own pending writes.
-            try {
-              database.transaction(() -> {
-                for (final Index created : toBuild)
-                  IndexBuilder.buildCreatedIndex(created, IndexBuilder.BUILD_BATCH_SIZE, true, null);
-              }, true);
-            } catch (final RuntimeException e) {
-              for (final Index created : toBuild)
-                IndexBuilder.dropPartiallyBuiltIndex(schema, created);
-              throw e;
-            }
+            database.transaction(() -> {
+              for (final Index subIndex : toBuild)
+                IndexBuilder.buildCreatedIndex(subIndex, IndexBuilder.BUILD_BATCH_SIZE, true, null);
+            }, true);
         } catch (final RuntimeException e) {
+          // EVERY sub-index this propagation made goes, not only the ones that still had a build outstanding - see
+          // the note on the two lists above. Done here rather than from the transaction's error callback because
+          // that callback is NOT reached on every failure: a NeedRetryException or a DuplicatedKeyException raised
+          // inside a JOINED transaction is rethrown immediately by LocalDatabase.transaction (issue #661 - retrying
+          // would roll back a transaction it does not own), skipping the callback entirely. And a duplicate is
+          // exactly what this build can hit, since it now sees the caller's own pending writes.
+          for (final Index subIndex : created)
+            IndexBuilder.dropPartiallyBuiltIndex(schema, subIndex);
+
           // THE LINK GOES BACK TOO, not only the half-built indexes, and this is what makes the refusal reach the
           // caller at all. LocalDatabase.transaction retries a DuplicatedKeyException once (#4959); on that retry
           // this method would find the super type ALREADY in superTypes, return early without propagating anything,

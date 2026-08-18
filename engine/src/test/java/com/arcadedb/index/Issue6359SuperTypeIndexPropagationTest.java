@@ -223,6 +223,54 @@ class Issue6359SuperTypeIndexPropagationTest extends TestHelper {
   }
 
   /**
+   * The cleanup covers EVERY sub-index the propagation made, not only the ones that still had a build outstanding.
+   * <p>
+   * An index family that cannot share the caller's transaction - the vector ones, whose search path reads through the
+   * page cache rather than through the transaction - is built INLINE while the components are created, so it never
+   * reaches the list of pending builds. A super type carrying both a vector index and an ordinary one therefore has
+   * one of each, and a cleanup keyed on the pending list alone left the vector sub-index committed and attached to a
+   * type relationship that had just been undone.
+   * <p>
+   * Getting there also required {@link com.arcadedb.index.vector.LSMVectorIndex} to answer which {@code TypeIndex} it
+   * belongs to. It used to answer null, so {@code LocalSchema.dropIndexInternal} never detached a dropped vector
+   * sub-index from its wrapper - on every path that drops one, not only this one - and {@code addSuperType} could not
+   * recognise an already-propagated vector index, minting a second one on the retry.
+   */
+  @Test
+  @Timeout(60)
+  void aRefusalTakesAwayTheIndexesThatWereBuiltInlineToo() {
+    database.transaction(() -> {
+      final DocumentType superType = database.getSchema().createDocumentType("Super", 1);
+      superType.createProperty("id", Type.INTEGER);
+      superType.createProperty("embedding", Type.ARRAY_OF_FLOATS);
+      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Super", "id");
+      database.command("sql",
+          "CREATE INDEX ON Super (embedding) LSM_VECTOR METADATA {\"dimensions\": 4, \"similarity\": \"cosine\"}").close();
+      database.getSchema().createDocumentType("Sub", 1);
+    });
+
+    final int subBucketId = database.getSchema().getType("Sub").getBuckets(false).getFirst().getFileId();
+
+    assertThatThrownBy(() -> database.transaction(() -> {
+      for (int i = 0; i < 2; i++) {
+        final MutableDocument v = database.newDocument("Sub");
+        v.set("id", 5);
+        v.set("embedding", new float[] { 1, 2, 3, 4 });
+        v.save();
+      }
+      database.getSchema().getType("Sub").addSuperType("Super");
+    })).isInstanceOf(DuplicatedKeyException.class);
+
+    assertThat(database.getSchema().getType("Sub").getSuperTypes()).isEmpty();
+
+    // BOTH wrappers, because the vector one is the index that was built inline and the whole point of the test.
+    for (final String indexName : new String[] { "Super[id]", "Super[embedding]" })
+      for (final IndexInternal sub : ((TypeIndex) database.getSchema().getIndexByName(indexName)).getIndexesOnBuckets())
+        assertThat(sub.getAssociatedBucketId()).as(indexName + " keeps no sub-index on the subtype's bucket")
+            .isNotEqualTo(subBucketId);
+  }
+
+  /**
    * The sibling call site, {@code LocalDocumentType.createBucket}, is SAFE and must not be "fixed" by symmetry: the
    * bucket it indexes has just been created, so no transaction can hold uncommitted writes into it and there is
    * nothing for the scan to miss. Nailed down here so the property is asserted rather than merely asserted about -

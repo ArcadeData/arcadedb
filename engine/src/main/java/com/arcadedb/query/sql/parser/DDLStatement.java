@@ -95,36 +95,45 @@ public abstract class DDLStatement extends Statement {
   }
 
   /**
-   * Parses a {@code WITH} clause setting that has to be a whole number of at least one, reporting BOTH ways it can
+   * Parses a {@code WITH} clause setting that has to be a whole number of at least one, reporting EVERY way it can
    * fail as a parsing error that names the statement, the setting and the value.
    * <p>
-   * Reads the setting by RENDERING its expression: {@link SimpleNode#value} is null for every numeric literal the
-   * parser builds, so a statement reading it directly refuses every value it is given, including the legal ones - that
-   * is what {@code REBUILD TYPE ... WITH batchSize = 1000} did, failing with "got: null" (issue #6359, item 2).
+   * Takes the EVALUATED value, exactly like {@link #parseBooleanSetting}, so callers pass
+   * {@code expression.execute((Result) null, context)}. Reading the expression any other way does not work: the
+   * {@link SimpleNode#value} field is null for every numeric literal the parser builds, so a statement consulting it
+   * refuses every value it is given including the legal ones - that is what {@code REBUILD TYPE ... WITH batchSize =
+   * 1000} did, failing with "got: null" - and RENDERING the expression instead answers with the placeholder text for
+   * a bound parameter, so {@code WITH batchSize = :size} could never resolve to the number the caller bound. Only
+   * evaluation covers literals and parameters alike (issue #6359, item 2).
    * <p>
    * A value below one is refused rather than coerced: it is not a smaller batch, it is a request that cannot be
    * honoured, and each caller would read it differently - a scan-based index build as "never chunk", a rebuild loop
-   * whose commit cadence is {@code count % batchSize} as a modulo by zero.
+   * whose commit cadence is {@code count % batchSize} as a modulo by zero. A fractional or out-of-int-range number is
+   * refused for the same reason: truncating one would honour a request nobody made.
    * <p>
    * Shares {@link #parseBooleanSetting}'s reasoning: one place for the rules so a statement added later picks them up
    * rather than re-deriving them, and so a raw {@link NumberFormatException} - which names neither the setting nor the
    * problem - cannot escape from any of them.
+   *
+   * @param raw the evaluated value of the setting expression
    */
   protected static int parsePositiveIntSetting(final String statementContext, final String settingName,
-      final Expression value) {
-    final String text = value == null ? null : value.toString().trim();
-
+      final Object raw) {
     Integer parsed = null;
-    if (text != null)
+    if (raw instanceof final Number number) {
+      final double exact = number.doubleValue();
+      if (exact == Math.rint(exact) && exact >= 1 && exact <= Integer.MAX_VALUE)
+        parsed = (int) exact;
+    } else if (raw != null)
       try {
-        parsed = Integer.valueOf(text);
+        parsed = Integer.valueOf(raw.toString().trim());
       } catch (final NumberFormatException notANumber) {
-        // Reported below together with the out-of-range case, so both refusals read the same and both name the value.
+        // Reported below together with every other refusal, so they all read the same and all name the value.
       }
 
     if (parsed == null || parsed < 1)
       throw new CommandSQLParsingException(
-          statementContext + " setting '" + settingName + "' must be a whole number of at least 1, got: " + text);
+          statementContext + " setting '" + settingName + "' must be a whole number of at least 1, got: " + raw);
 
     return parsed;
   }

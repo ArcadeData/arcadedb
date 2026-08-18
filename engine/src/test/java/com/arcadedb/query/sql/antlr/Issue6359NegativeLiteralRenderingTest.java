@@ -26,6 +26,8 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -169,5 +171,31 @@ class Issue6359NegativeLiteralRenderingTest extends TestHelper {
     database.command("sql", "REBUILD INDEX `V[id]` WITH batchSize = 1000").close();
     database.command("sql", "REBUILD TYPE V WITH batchSize = 1000").close();
     assertThat(database.getSchema().getIndexByName("V[id]").get(new Object[] { 1 }).hasNext()).isTrue();
+  }
+
+  /**
+   * A numeric setting is read by EVALUATING its expression, not by rendering it, so a BOUND PARAMETER resolves to the
+   * number the caller bound. Rendering answers with the placeholder text, which no amount of parsing turns into an
+   * integer - the reason the reader takes the evaluated value, exactly like the boolean one next to it.
+   */
+  @Test
+  void aNumericSettingAcceptsABoundParameter() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("V", 1).createProperty("id", Type.INTEGER);
+      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "V", "id");
+    });
+    database.transaction(() -> {
+      final MutableDocument v = database.newDocument("V");
+      v.set("id", 1);
+      v.save();
+    });
+
+    database.command("sql", "REBUILD INDEX `V[id]` WITH batchSize = :size", Map.of("size", 1000)).close();
+    database.command("sql", "REBUILD TYPE V WITH batchSize = :size", Map.of("size", 1000)).close();
+    assertThat(database.getSchema().getIndexByName("V[id]").get(new Object[] { 1 }).hasNext()).isTrue();
+
+    // And a bound value that is not a legal batch size is refused by that value, not by its placeholder.
+    assertThatThrownBy(() -> database.command("sql", "REBUILD INDEX `V[id]` WITH batchSize = :size",
+        Map.of("size", -1)).close()).hasMessageContaining("batchSize").hasMessageContaining("-1");
   }
 }

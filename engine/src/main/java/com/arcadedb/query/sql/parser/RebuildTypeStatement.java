@@ -88,10 +88,10 @@ public class RebuildTypeStatement extends DDLStatement {
         // negative value would either ArithmeticException (mod-zero) or never trip the commit branch (modulo by
         // a negative still works but the boundary semantics are nonsensical), so the shared reader refuses it.
         //
-        // It also reads the setting by RENDERING the expression rather than off Expression.value, which is null for
-        // every numeric literal the parser builds: this used to refuse every batchSize it was given, legal ones
+        // It also reads the setting by EVALUATING the expression rather than off Expression.value, which is null
+        // for every numeric literal the parser builds: this used to refuse every batchSize it was given, legal ones
         // included, with "got: null" (issue #6359, item 2).
-        batchSize = parsePositiveIntSetting("REBUILD TYPE", "batchSize", e.getValue());
+        batchSize = parsePositiveIntSetting("REBUILD TYPE", "batchSize", e.getValue().execute((Result) null, context));
       } else if ("repartition".equalsIgnoreCase(key)) {
         // Boolean opt-in. When true, every record whose current bucket no longer matches its
         // partition strategy's hash is deleted from its current bucket and re-inserted into the

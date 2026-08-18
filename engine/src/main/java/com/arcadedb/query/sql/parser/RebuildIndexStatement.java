@@ -39,6 +39,7 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
@@ -88,12 +89,15 @@ public class RebuildIndexStatement extends DDLStatement {
     boolean statsOnly = false;
     if (!settings.isEmpty()) {
       for (Map.Entry<Expression, Expression> entry : settings.entrySet()) {
+        // Evaluated, not rendered: that is what resolves a bound parameter as well as a literal - see
+        // DDLStatement#parsePositiveIntSetting.
+        final Object settingValue = entry.getValue().execute((Result) null, context);
         if ("batchSize".equalsIgnoreCase(entry.getKey().toString()))
-          batchSize = parsePositiveIntSetting("REBUILD INDEX", "batchSize", entry.getValue());
+          batchSize = parsePositiveIntSetting("REBUILD INDEX", "batchSize", settingValue);
         else if ("maxAttempts".equalsIgnoreCase(entry.getKey().toString()))
-          maxAttempts = parsePositiveIntSetting("REBUILD INDEX", "maxAttempts", entry.getValue());
+          maxAttempts = parsePositiveIntSetting("REBUILD INDEX", "maxAttempts", settingValue);
         else if ("statsOnly".equalsIgnoreCase(entry.getKey().toString()))
-          statsOnly = Boolean.parseBoolean(entry.getValue().toString());
+          statsOnly = parseBooleanSetting("REBUILD INDEX", "statsOnly", settingValue);
         else
           throw new CommandSQLParsingException("Unrecognized setting '" + entry.getKey() + "' in rebuild index statement");
       }

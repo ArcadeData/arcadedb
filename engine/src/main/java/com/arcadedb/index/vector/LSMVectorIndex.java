@@ -178,6 +178,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // getMostRecentFileName(). Every node names the index after the file it holds, so the leader has to
   // follow its own rename or its schema stops matching the followers that rebuilt it from that file.
   private volatile String              indexName;
+  /** The wrapper this bucket sub-index is registered under - see {@link #getTypeIndex()}. */
+  private          TypeIndex           typeIndex;
   protected     LSMVectorIndexMutable  mutable;
   private final ReentrantReadWriteLock lock;
   LSMVectorIndexMetadata metadata; // Package-private for Phase 2 access from ArcadePageVectorValues and
@@ -5340,12 +5342,23 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   @Override
   public void setTypeIndex(final TypeIndex typeIndex) {
-    // Not applicable for this index type
+    this.typeIndex = typeIndex;
   }
 
+  /**
+   * The wrapper this bucket sub-index belongs to, like every other index family answers - {@link
+   * com.arcadedb.index.sparsevector.LSMSparseVectorIndex} included. It used to answer null ("not applicable for this
+   * index type"), which was never true: a vector index IS registered under a {@link TypeIndex}, and the null made two
+   * callers do the wrong thing (issue #6359).
+   * <p>
+   * {@code LocalSchema.dropIndexInternal} skips {@code parentTypeIndex.removeIndexOnBucket(...)} when this is null, so
+   * a dropped vector sub-index stayed listed by its wrapper - a reference to an index that no longer exists, on every
+   * path that drops one. And {@code LocalDocumentType.addSuperType} compares it to decide whether a super type's
+   * index is already propagated to a bucket, so it never recognised one and minted a duplicate on every attempt.
+   */
   @Override
   public TypeIndex getTypeIndex() {
-    return null;
+    return typeIndex;
   }
 
   @Override
