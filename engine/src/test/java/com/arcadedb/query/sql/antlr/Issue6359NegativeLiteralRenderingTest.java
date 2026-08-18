@@ -211,4 +211,24 @@ class Issue6359NegativeLiteralRenderingTest extends TestHelper {
     assertThatThrownBy(() -> database.command("sql", "REBUILD INDEX `V[id]` WITH batchSize = :size",
         Map.of("size", -1)).close()).hasMessageContaining("batchSize").hasMessageContaining("-1");
   }
+
+  /**
+   * One value, read the same way whichever shape it arrives in. A whole number is a whole number written as an
+   * integer, as a decimal, or as text; a fractional one is not a batch size in any of them, and truncating it would
+   * honour a request nobody made.
+   */
+  @Test
+  void aNumericSettingReadsOneValueTheSameWayInEveryShapeItArrivesIn() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("V", 1).createProperty("id", Type.INTEGER);
+      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "V", "id");
+    });
+
+    for (final String accepted : new String[] { "1000", "1000.0", "'1000'" })
+      database.command("sql", "REBUILD INDEX `V[id]` WITH batchSize = " + accepted).close();
+
+    for (final String refused : new String[] { "1000.5", "'1000.5'", "'not a number'", "0" })
+      assertThatThrownBy(() -> database.command("sql", "REBUILD INDEX `V[id]` WITH batchSize = " + refused).close())
+          .as(refused).hasMessageContaining("batchSize");
+  }
 }

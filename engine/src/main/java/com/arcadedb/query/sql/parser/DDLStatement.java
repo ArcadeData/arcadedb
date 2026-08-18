@@ -119,22 +119,26 @@ public abstract class DDLStatement extends Statement {
    */
   protected static int parsePositiveIntSetting(final String statementContext, final String settingName,
       final Object raw) {
-    Integer parsed = null;
-    if (raw instanceof final Number number) {
-      final double exact = number.doubleValue();
-      if (exact == Math.rint(exact) && exact >= 1 && exact <= Integer.MAX_VALUE)
-        parsed = (int) exact;
-    } else if (raw != null)
+    Double exact = null;
+    if (raw instanceof final Number number)
+      exact = number.doubleValue();
+    else if (raw != null)
       try {
-        parsed = Integer.valueOf(raw.toString().trim());
+        // Read as a double rather than as an int, so the same value written as TEXT is read the same way: the branch
+        // above already accepts a Double of 5.0, and refusing the string "5.0" while accepting "5" would be an
+        // accident of which branch the value happened to arrive on.
+        exact = Double.valueOf(raw.toString().trim());
       } catch (final NumberFormatException notANumber) {
         // Reported below together with every other refusal, so they all read the same and all name the value.
       }
 
-    if (parsed == null || parsed < 1)
+    // One test for every way this can be wrong - absent, not a number, fractional, out of int range, below one -
+    // because they are one answer: this is not a value the setting can take. Truncating a fractional one would
+    // honour a request nobody made, and NaN fails the whole-number test as surely as 1.5 does.
+    if (exact == null || exact != Math.rint(exact) || exact < 1 || exact > Integer.MAX_VALUE)
       throw new CommandSQLParsingException(
           statementContext + " setting '" + settingName + "' must be a whole number of at least 1, got: " + raw);
 
-    return parsed;
+    return exact.intValue();
   }
 }
