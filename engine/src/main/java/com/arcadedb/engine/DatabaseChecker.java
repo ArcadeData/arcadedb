@@ -72,6 +72,8 @@ public class DatabaseChecker {
   private       boolean             compress     = false;
   /** #6090: see {@link #setDeleteOrphanEdgeRecords(boolean)} for why this is not part of {@link #fix}. */
   private       boolean             deleteOrphanEdgeRecords = false;
+  /** #6189: see {@link #setReclaimUnreferencedFiles(boolean)} for why this is not part of {@link #fix} either. */
+  private       boolean             reclaimUnreferencedFiles = false;
   private       Set<Object>         buckets      = Collections.emptySet();
   private       Set<String>         types        = Collections.emptySet();
   /**
@@ -187,6 +189,10 @@ public class DatabaseChecker {
     // Issue #6143: files this node holds that no schema component claims. Report-only, always present so a clean
     // run says "none" rather than saying nothing, and empty under a RECORD scope, which cannot answer the question.
     result.put("unreferencedFiles", new LinkedHashSet<String>());
+    // Issue #6189: which of the above this run actually deleted, seeded empty for the same reason - a caller must
+    // be able to read "none" rather than "nothing was asked". Stays empty unless BOTH fix and
+    // reclaimUnreferencedFiles are set; see checkUnreferencedFiles().
+    result.put("reclaimedUnreferencedFiles", new LinkedHashSet<String>());
     result.put("deletedRecordsAfterFix", new LinkedHashSet<>());
     result.put("corruptedRecords", new LinkedHashSet<>());
     result.put("corruptedIndexes", new LinkedHashSet<>());
@@ -1142,6 +1148,28 @@ public class DatabaseChecker {
     return this;
   }
 
+  /**
+   * Opt-in for reclaiming unreferenced files (issue #6189): the operator-triggered alternative to the automatic,
+   * inferred reclaim that issue #6189 explicitly did NOT take (see that issue for the full argument against it).
+   * Only meaningful together with {@link #setFix(boolean)}, which performs the removal.
+   * <p>
+   * Deletes exactly the files {@link UnreferencedFiles#scan} already proves under
+   * {@link UnreferencedFiles.Kind#NO_SCHEMA_COMPONENT} - nothing in the schema names them, so a raw file delete
+   * can never leave a dangling schema reference. The other two shapes {@code UnreferencedFiles} can prove,
+   * {@link UnreferencedFiles.Kind#UNOWNED_BUCKET} and {@link UnreferencedFiles.Kind#UNOWNED_INDEX}, are registered
+   * schema components; reclaiming those safely means unregistering the component, not only deleting its file, and
+   * stays a manual {@code DROP BUCKET} / index-tooling operation the finding's reason already names.
+   * <p>
+   * SEPARATE FROM {@code FIX} ON PURPOSE, for the same reason {@link #setDeleteOrphanEdgeRecords} is: reporting a
+   * finding is always safe, deleting is a step an operator has to ask for explicitly, on the node they chose to run
+   * this on. This runs against whatever {@link DatabaseInternal} this checker was constructed with - it does not
+   * itself target a specific node of a cluster.
+   */
+  public DatabaseChecker setReclaimUnreferencedFiles(final boolean reclaimUnreferencedFiles) {
+    this.reclaimUnreferencedFiles = reclaimUnreferencedFiles;
+    return this;
+  }
+
   public DatabaseChecker setMaxWarnings(final int maxWarnings) {
     this.maxWarnings = maxWarnings;
     return this;
@@ -1192,11 +1220,13 @@ public class DatabaseChecker {
   }
 
   /**
-   * Reports the paginated files this node holds that no schema component claims (issue #6143).
+   * Reports the paginated files this node holds that no schema component claims (issue #6143), and - only when both
+   * {@link #fix} and {@link #reclaimUnreferencedFiles} were asked for - deletes the ones it can prove safe to delete
+   * (issue #6189).
    * <p>
-   * It NEVER removes them, in either mode - see {@link UnreferencedFiles} for why a file whose reference this walk
-   * cannot follow must not be deleted to reclaim disk. The finding is a pointer for an operator, who removes them
-   * with the node stopped.
+   * The finding is always logged (verbosity permitting) and recorded in the {@code unreferencedFiles} result key
+   * BEFORE any deletion runs, so an operator who reads the log or the result sees what was found before what was
+   * removed - "the finding printed first" is a code-order guarantee here, not merely a documentation claim.
    * <p>
    * REPORTED AS ITS OWN RESULT KEY, NOT AS A WARNING, and the distinction is not cosmetic. A warning here means the
    * data is suspect; an unreferenced file is not a defect in the data at all - nothing is corrupt, nothing is lost,
@@ -1236,27 +1266,103 @@ public class DatabaseChecker {
     for (final UnreferencedFiles.UnreferencedFile file : unreferenced)
       reported.add(file.toString());
 
-    if (verboseLevel < 1)
-      return;
+    final boolean reclaiming = fix && reclaimUnreferencedFiles;
 
-    // The log line names at most this many. The full list is always in the result key, which is a collection a
-    // caller can read; embedding all of it here would put an unbounded line in the log.
-    final StringBuilder names = new StringBuilder();
-    for (int i = 0; i < unreferenced.size() && i < LOGGED_UNREFERENCED_FILES; i++) {
-      if (i > 0)
-        names.append(", ");
-      names.append(unreferenced.get(i).fileName());
+    if (verboseLevel >= 1) {
+      // The log line names at most this many. The full list is always in the result key, which is a collection a
+      // caller can read; embedding all of it here would put an unbounded line in the log.
+      final StringBuilder names = new StringBuilder();
+      for (int i = 0; i < unreferenced.size() && i < LOGGED_UNREFERENCED_FILES; i++) {
+        if (i > 0)
+          names.append(", ");
+        names.append(unreferenced.get(i).fileName());
+      }
+      if (unreferenced.size() > LOGGED_UNREFERENCED_FILES)
+        names.append(" and ").append(unreferenced.size() - LOGGED_UNREFERENCED_FILES)
+            .append(" more (see the 'unreferencedFiles' result)");
+
+      LogManager.instance().log(this, Level.INFO,
+          "%d file(s) on this node are referenced by no schema component (this pass covers the whole database, "
+              + "whatever TYPE or BUCKET scope was asked for: a file nothing claims is a property of the schema, "
+              + "not of a type): %s. They are inert - no query, index or replication path reads a file the schema "
+              + "does not reference - so this costs disk only. %s", null, unreferenced.size(), names,
+          reclaiming ?
+              "CHECK DATABASE FIX RECLAIM UNREFERENCED FILES was asked for, so the ones this node can prove safe to "
+                  + "delete are being reclaimed now" :
+              "This check does not remove them; re-run as CHECK DATABASE FIX RECLAIM UNREFERENCED FILES to reclaim "
+                  + "the ones it can prove safe to delete, or remove them by hand with the server stopped, after a "
+                  + "backup");
     }
-    if (unreferenced.size() > LOGGED_UNREFERENCED_FILES)
-      names.append(" and ").append(unreferenced.size() - LOGGED_UNREFERENCED_FILES)
-          .append(" more (see the 'unreferencedFiles' result)");
 
-    LogManager.instance().log(this, Level.INFO,
-        "%d file(s) on this node are referenced by no schema component and nothing will reclaim them (this pass "
-            + "covers the whole database, whatever TYPE or BUCKET scope was asked for: a file nothing claims is a "
-            + "property of the schema, not of a type): %s. They are inert - no query, index or replication path "
-            + "reads a file the schema does not reference - so this costs disk only, and this check does not remove "
-            + "them. Remove them with the server stopped, after a backup", null, unreferenced.size(), names);
+    // Logged/recorded above FIRST, deletion (if any) only after: an operator reading the log or the result sees
+    // what was found before what was removed.
+    if (reclaiming)
+      reclaimUnreferencedFiles(unreferenced);
+  }
+
+  /**
+   * Deletes the {@link UnreferencedFiles.Kind#NO_SCHEMA_COMPONENT} findings from {@code unreferenced} - the only
+   * shape a raw file delete can never leave a dangling schema reference behind, because nothing in the schema
+   * names it (issue #6189). {@code UNOWNED_BUCKET} and {@code UNOWNED_INDEX} findings are left untouched; see
+   * {@link #setReclaimUnreferencedFiles(boolean)} for why.
+   * <p>
+   * One file's failure does not abort the rest: {@link FileManager#dropFile} can fail independently per file, and a
+   * caller reclaiming ten files wants the nine that worked, not none of them because the tenth's I/O failed.
+   * <p>
+   * {@code unreferenced} is a snapshot {@link UnreferencedFiles#scan} took with no lock, on a database that stays
+   * open and writable for the whole of this method: the exact shape this reclaims, "no schema component was ever
+   * built for it", is also what a legitimate, still-in-progress instalment sequence looks like before it publishes
+   * (see the class doc). So EVERY file is re-verified right here, immediately before its own {@code dropFile} call,
+   * rather than trusted from the snapshot - a schema reload landing between the scan and this file's turn in the
+   * loop (which the I/O of dropping earlier files in the list only gives more time to) would otherwise mean
+   * deleting a file that is, by now, backing a live component. The re-check is one map lookup, so paying it per
+   * file costs nothing worth avoiding. It cannot close the window all the way to zero - a reload landing in the
+   * gap between this check and the {@code dropFile} two lines below is still possible - only a lock shared with
+   * the schema-attach path could do that, which is a separate, larger change this method does not make.
+   * <p>
+   * Package-private rather than private: the seam a test needs to drive this exact race deterministically, by
+   * handing it a finding whose fileId has since gained a real component, instead of only documenting the residual
+   * window in a comment (see {@code Issue6189ReclaimUnreferencedFilesTest}).
+   * <p>
+   * The "is it still gone from the schema" check and the "actually drop it" step are two separate calls rather
+   * than one, and cannot be otherwise: unregistering a schema component and removing a file are different
+   * subsystems with no shared lock to make them atomic together, which is exactly why the window between them is
+   * the one residual this method documents rather than closes. The "is it already gone from the FILE MANAGER"
+   * check does NOT have that excuse - both the check and the drop are one subsystem - so it is not a separate call
+   * at all: {@link FileManager#dropFile} reports whether it found anything to remove, atomically with removing it
+   * (issue #6189 review, second round), which is what {@code reclaimed} below trusts instead of a same-effect but
+   * racy {@code existsFile} call made before it.
+   */
+  void reclaimUnreferencedFiles(final List<UnreferencedFiles.UnreferencedFile> unreferenced) {
+    final LinkedHashSet<String> reclaimed = (LinkedHashSet<String>) result.get("reclaimedUnreferencedFiles");
+    for (final UnreferencedFiles.UnreferencedFile file : unreferenced) {
+      if (file.kind() != UnreferencedFiles.Kind.NO_SCHEMA_COMPONENT)
+        continue;
+
+      if (database.getSchema().getEmbedded().getFileByIdIfExists(file.fileId()) != null) {
+        // A schema component now claims this file id - it stopped being reclaimable sometime after the scan. Skip
+        // it rather than delete out from under whatever just attached it; the next CHECK DATABASE run reports its
+        // current state.
+        addWarning("skipped reclaiming " + file + ": a schema component was attached to it after it was found, so "
+            + "it is no longer safe to delete");
+        continue;
+      }
+
+      try {
+        if (!database.getFileManager().dropFile(file.fileId()))
+          // Already gone by the time this file's turn came up - e.g. a second RECLAIM run in flight at once, or the
+          // file was dropped some other way. dropFile() reports this atomically with checking, so - unlike the
+          // schema race above - there is no window left to warn about: whatever removed it already achieved the
+          // end state this call wanted, so this is a silent skip, not a warning.
+          continue;
+
+        reclaimed.add(file.toString());
+        if (verboseLevel >= 1)
+          LogManager.instance().log(this, Level.INFO, "reclaimed unreferenced file %s", null, file);
+      } catch (final IOException e) {
+        addWarning("failed to reclaim unreferenced file " + file + ": " + e.getMessage());
+      }
+    }
   }
 
   /** Detects (and on FIX deletes) external-property records that are no longer referenced by any primary record. */

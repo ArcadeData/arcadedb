@@ -3189,6 +3189,37 @@ could not tell the count push-down from the full type scan it exists to replace.
 [#6279](https://github.com/ArcadeData/arcadedb/issues/6279)
 [#6270](https://github.com/ArcadeData/arcadedb/issues/6270)
 
+## `CHECK DATABASE` can now reclaim one of the three shapes of unreferenced file it reports (#6189)
+
+#6143 gave an operator a way to *find* the paginated files a node holds that no schema component claims - what an
+abandoned schema-WAL instalment sequence leaves on a follower that lost leadership mid-session, among other causes -
+but it never deleted anything. Finding them was progress; an operator who read the `unreferencedFiles` result key or
+the SEVERE line still had to stop the node and remove the files by hand. That was the right call for a diagnostic,
+but it left the actual problem open: this database had no unreferenced-file garbage collection at all.
+
+An **inferred**, always-on reclaim was considered and deliberately not built: a follower tracking which files its own
+abandoned instalments created, and dropping the ones a later schema reload still does not reference. It would be a
+file deletion driven by inference, unattended, on a replica, on a code path whose history is silent divergence rather
+than exceptions - a bad ratio for a payoff that is only wasted disk.
+
+What shipped instead is **operator-triggered**: a new opt-in clause, `CHECK DATABASE FIX RECLAIM UNREFERENCED
+FILES`, on the same pattern #6090's `DELETE ORPHANS` already established - its own clause, meaningless without `FIX`,
+refused with a clear error rather than silently implied. The finding is logged and recorded in the
+`unreferencedFiles` result key before any file is touched, and what was actually removed is reported back under its
+own `reclaimedUnreferencedFiles` key, seeded empty rather than left absent so a clean run reads "none" rather than
+"nothing was asked."
+
+It reclaims exactly **one** of the three shapes `UnreferencedFiles` can prove: a file the file manager holds with no
+schema component built for it at all - the shape an abandoned instalment sequence leaves. That is the only one a raw
+file delete can never turn into a worse state, because by construction nothing in the schema's registries names it.
+The other two provable shapes - a bucket, or an automatic index, that a schema component still names but no type
+claims - stay report-only: their file is only half of what would need to go, and unregistering the component too is
+what `DROP BUCKET` and the index tooling already do safely. `UnreferencedFiles.UnreferencedFile` now carries that
+distinction as a `Kind` enum alongside its human-phrased reason, so a caller can act on the shape rather than parse
+the sentence.
+
+[#6189](https://github.com/ArcadeData/arcadedb/issues/6189)
+
 ## An update that shrinks onto a chunk boundary frees the chunks it drops, and one `FIX` clears the backlog (#6319, #6320, #6314)
 
 ### Ordinary updates leaked continuation chunks (#6319)
