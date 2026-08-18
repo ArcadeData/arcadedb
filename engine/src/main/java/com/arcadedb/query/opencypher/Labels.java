@@ -18,13 +18,19 @@
  */
 package com.arcadedb.query.opencypher;
 
+import com.arcadedb.database.Database;
+import com.arcadedb.database.Record;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.VertexType;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.Iterator;
 import java.util.List;
+import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -207,6 +213,98 @@ public final class Labels {
       if (!schema.existsType(labels.get(i)))
         return false;
     return true;
+  }
+
+  /**
+   * The vertex types whose records can satisfy a node pattern's label constraint: every declared vertex type
+   * {@link #matches(DocumentType, List, boolean)} accepts, so a disjunction {@code (n:A|B)} selects the types of
+   * <b>both</b> alternatives and a conjunction {@code (n:A:B)} only the types carrying all of them. An empty label
+   * list selects every vertex type.
+   * <p>
+   * This is the scan-side companion of {@code matches}: deciding a row and deciding what to scan have to say the
+   * same thing about a disjunction, and when they did not, an unbound start node scanned only the first
+   * alternative's type and the alternatives after it silently went missing from the answer (issue #6352).
+   * <p>
+   * The returned types are meant to be iterated <b>non-polymorphically</b>: the list already contains every matching
+   * subtype, so a polymorphic scan of each would visit a subtype once per matching ancestor.
+   *
+   * @param schema      the database schema
+   * @param labels      the labels written on the pattern (already resolved, dynamic labels included)
+   * @param disjunction whether the labels were written as alternatives ({@code A|B}) rather than as a conjunction
+   *
+   * @return the vertex types to scan, empty when nothing in the schema can match
+   */
+  private static List<DocumentType> matchingVertexTypes(final Schema schema, final List<String> labels,
+      final boolean disjunction) {
+    final Collection<? extends DocumentType> allTypes = schema.getTypes();
+    final List<DocumentType> matching = new ArrayList<>(allTypes.size());
+    for (final DocumentType type : allTypes)
+      if (type instanceof VertexType && matches(type, labels, disjunction))
+        matching.add(type);
+    return matching;
+  }
+
+  /**
+   * Walks every vertex that can satisfy a node pattern's label constraint, in one lazy pass and without visiting a
+   * vertex twice, over the types {@code matchingVertexTypes} selects.
+   * <p>
+   * A single label is served by one polymorphic scan of that type, which is the same set of records at the price of
+   * one schema lookup instead of a walk of the whole type list.
+   *
+   * @param database    the database to scan
+   * @param labels      the labels written on the pattern (already resolved, dynamic labels included)
+   * @param disjunction whether the labels were written as alternatives ({@code A|B}) rather than as a conjunction
+   *
+   * @return an iterator over the candidate vertices, empty when nothing in the schema can match
+   */
+  public static Iterator<Record> iterateMatchingVertices(final Database database, final List<String> labels,
+      final boolean disjunction) {
+    final Schema schema = database.getSchema();
+
+    if (labels != null && labels.size() == 1) {
+      final String label = labels.get(0);
+      // A type name that names an edge or document type is not a label: labels and relationship types are separate
+      // namespaces in Cypher, so such a pattern matches no node rather than yielding records that are not vertices.
+      if (!schema.existsType(label) || !(schema.getType(label) instanceof VertexType))
+        return Collections.emptyIterator();
+      return database.iterateType(label, true);
+    }
+
+    final List<DocumentType> types = matchingVertexTypes(schema, labels, disjunction);
+    if (types.isEmpty())
+      return Collections.emptyIterator();
+    if (types.size() == 1)
+      return database.iterateType(types.get(0).getName(), false);
+    return new ChainedTypeIterator(database, types);
+  }
+
+  /**
+   * Walks a list of types one after the other, opening each type's iterator only when the previous one is drained.
+   */
+  private static final class ChainedTypeIterator implements Iterator<Record> {
+    private final Database           database;
+    private final List<DocumentType> types;
+    private       int                nextType = 0;
+    private       Iterator<Record>   current  = Collections.emptyIterator();
+
+    private ChainedTypeIterator(final Database database, final List<DocumentType> types) {
+      this.database = database;
+      this.types = types;
+    }
+
+    @Override
+    public boolean hasNext() {
+      while (!current.hasNext() && nextType < types.size())
+        current = database.iterateType(types.get(nextType++).getName(), false);
+      return current.hasNext();
+    }
+
+    @Override
+    public Record next() {
+      if (!hasNext())
+        throw new NoSuchElementException();
+      return current.next();
+    }
   }
 
   /**

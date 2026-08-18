@@ -25,16 +25,12 @@ import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
-import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.VertexType;
+import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.utility.IntHashSet;
 
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
-import java.util.NoSuchElementException;
 
 /**
  * Shared static utilities for CSR count-push-down operators.
@@ -172,38 +168,16 @@ public final class CSRCountUtils {
    * <p>
    * An unlabelled anchor is what {@code MATCH ()-[:TYPE]->() RETURN count(*)} has, and there is no cheaper question
    * to ask a graph. It used to leave every operator with no set to enumerate; "every vertex" is the set it means.
-   * Subtypes are reached through the labelled iterator's own polymorphism and, in the unlabelled walk, by iterating
-   * each declared vertex type non-polymorphically, so no vertex is visited twice.
+   * Both walks are the one in {@code Labels.iterateMatchingVertices}, which visits no vertex twice and which the
+   * MATCH anchor and the start of a pattern comprehension scan with as well (issue #6352). Sharing it also means a
+   * label that names an edge or document type answers with no anchors rather than with records that are not
+   * vertices: labels and relationship types are separate namespaces, the rule the rest of the engine already
+   * applies.
    *
-   * @return an iterator over the anchor vertices, empty when the label is declared on nothing
+   * @return an iterator over the anchor vertices, empty when no vertex type carries the label
    */
   public static Iterator<? extends Identifiable> iterateAnchors(final Database db, final String label) {
-    if (label != null)
-      return db.getSchema().existsType(label) ? db.iterateType(label, true) : Collections.emptyIterator();
-
-    final List<String> vertexTypes = new ArrayList<>();
-    for (final DocumentType type : db.getSchema().getTypes())
-      if (type instanceof VertexType)
-        vertexTypes.add(type.getName());
-
-    return new Iterator<Identifiable>() {
-      private int                              nextType = 0;
-      private Iterator<? extends Identifiable> current  = Collections.emptyIterator();
-
-      @Override
-      public boolean hasNext() {
-        while (!current.hasNext() && nextType < vertexTypes.size())
-          current = db.iterateType(vertexTypes.get(nextType++), false);
-        return current.hasNext();
-      }
-
-      @Override
-      public Identifiable next() {
-        if (!hasNext())
-          throw new NoSuchElementException();
-        return current.next();
-      }
-    };
+    return Labels.iterateMatchingVertices(db, label != null ? List.of(label) : null, false);
   }
 
   /**
