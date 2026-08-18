@@ -152,7 +152,10 @@ public class InExpression implements BooleanExpression {
     if (range.isEmpty())
       return Boolean.FALSE;
 
-    // Integral types the = operator compares as longs, without going through a double.
+    // Integral types, answered as longs. The = operator's own long-vs-long branch covers only a Long/Integer
+    // pair, so a Short or a Byte is compared there through doubleValue() instead - which reaches the same answer:
+    // a value of at most 15 bits converts to a double exactly, and so does any element that could equal it, since
+    // an element large enough to lose precision is far larger than any Short or Byte.
     if (value instanceof Long || value instanceof Integer || value instanceof Short || value instanceof Byte)
       return range.containsLong(((Number) value).longValue());
 

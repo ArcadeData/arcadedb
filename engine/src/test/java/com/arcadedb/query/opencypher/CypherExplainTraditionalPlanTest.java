@@ -20,6 +20,8 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.query.sql.executor.ExecutionPlan;
+import com.arcadedb.query.sql.executor.ExecutionStep;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -128,6 +130,35 @@ class CypherExplainTraditionalPlanTest {
     assertThat(count("MATCH (n:Person {name: 'Carol'}) RETURN count(n) AS c")).isZero();
   }
 
+  /**
+   * The same for every other statement that writes. Building a chain is now the answer to EXPLAIN for the whole
+   * executor package, not just for {@code CreateStep}, so the property being relied on - a step does its work in
+   * {@code syncPull} and nothing in its constructor - is asserted against each kind of step that could break it.
+   */
+  @Test
+  void explainingAnyWriteDescribesItWithoutPerformingIt() {
+    database.transaction(() -> database.command("opencypher", "CREATE (n:Person {name: 'Dave', age: 30})"));
+
+    final Map<String, String> writesAndTheirStep = Map.of(
+        "MATCH (n:Person {name: 'Dave'}) SET n.age = 99 RETURN n", "SET",
+        "MATCH (n:Person {name: 'Dave'}) REMOVE n.age RETURN n", "REMOVE",
+        "MATCH (n:Person {name: 'Dave'}) DELETE n", "DELETE",
+        "MERGE (n:Person {name: 'Erin'}) RETURN n", "MERGE",
+        "FOREACH (i IN range(1, 3) | CREATE (:Person {name: 'foreach'}))", "FOREACH",
+        "MATCH (a:Person {name: 'Dave'}), (b:Person {name: 'Alice'}) CREATE (a)-[:KNOWS]->(b)", "CREATE");
+
+    for (final Map.Entry<String, String> write : writesAndTheirStep.entrySet()) {
+      assertThat(explain(write.getKey(), Map.of()))
+          .as("EXPLAIN describes '%s'", write.getKey())
+          .containsIgnoringCase(write.getValue());
+
+      assertThat(count("MATCH (n:Person) RETURN count(n) AS c")).as("after EXPLAIN of '%s'", write.getKey()).isEqualTo(3L);
+      assertThat(count("MATCH (n:Person {name: 'Dave'}) RETURN n.age AS c")).as("after EXPLAIN of '%s'", write.getKey())
+          .isEqualTo(30L);
+      assertThat(count("MATCH ()-[r]->() RETURN count(r) AS c")).as("after EXPLAIN of '%s'", write.getKey()).isZero();
+    }
+  }
+
   /** A UNION is answered branch by branch, so describing it means describing every branch. */
   @Test
   void explainDescribesEveryUnionBranch() {
@@ -146,11 +177,23 @@ class CypherExplainTraditionalPlanTest {
         .contains("n:Company");
   }
 
-  /** The structured step list backs the text, so a client reading the plan as data sees the same chain. */
+  /**
+   * The structured step list backs the text, so a client reading the plan as data sees the same chain - including
+   * on the optimized path, where the steps are built from the very {@code PhysicalPlan} instance the text is
+   * printed from, and so cannot describe a second, separately optimized plan.
+   */
   @Test
   void explainPublishesTheStepsAsStructuredData() {
     try (final ResultSet rs = database.query("opencypher", "EXPLAIN MATCH (n:Person) RETURN n.name AS name")) {
-      assertThat(rs.getExecutionPlan().orElseThrow().getSteps()).isNotEmpty();
+      final ExecutionPlan plan = rs.getExecutionPlan().orElseThrow();
+      final List<ExecutionStep> steps = plan.getSteps();
+      assertThat(steps).isNotEmpty();
+
+      // The operator the printed physical plan names is the one the structured steps describe.
+      assertThat(plan.prettyPrint(0, 2)).contains("NodeByLabelScan(n:Person)");
+      assertThat(steps.stream().map(ExecutionStep::getDescription).reduce("", String::concat))
+          .contains("NodeByLabelScan(n:Person)")
+          .contains("PROJECT RETURN name");
     }
   }
 

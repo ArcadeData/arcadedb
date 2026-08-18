@@ -26,6 +26,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.ast.ArithmeticExpression;
 import com.arcadedb.query.opencypher.ast.BooleanCoercionExpression;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
@@ -136,7 +137,6 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.query.sql.parser.ExplainResultSet;
-import com.arcadedb.log.LogManager;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -731,8 +731,13 @@ public class CypherExecutionPlan {
       explainOutput.append("\n");
       explainOutput.append(String.format("Total Estimated Cost: %.2f\n", physicalPlan.getTotalEstimatedCost()));
       explainOutput.append(String.format("Total Estimated Rows: %d\n", physicalPlan.getTotalEstimatedCardinality()));
-      if (countPushDown == null)
+      if (countPushDown == null) {
+        // Not a second optimization: buildExecutionStepsWithOptimizer wraps THIS plan's physicalPlan - the same
+        // instance the text above is printed from - so the structured steps and the text cannot describe two
+        // different plans.
         describedSteps = stepChainOf(stepsForDescription());
+        appendStepsAfterTheOptimizedMatch(explainOutput, describedSteps);
+      }
     } else if (countPushDown == null) {
       explainOutput.append("Using Traditional Execution (Non-Optimized)\n\n");
       explainOutput.append("Reason: Query pattern not yet supported by optimizer\n\n");
@@ -795,6 +800,25 @@ public class CypherExecutionPlan {
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.FINE, "Error on building the execution plan to describe it", e);
       return null;
+    }
+  }
+
+  /**
+   * Appends the steps that run after the optimized MATCH, which the physical plan does not describe.
+   * <p>
+   * The optimizer claims the MATCH pattern only: RETURN, ORDER BY, LIMIT and every write clause stay execution
+   * steps appended to the operator chain. Printing the physical plan alone therefore answered
+   * {@code EXPLAIN MATCH (n) WHERE ... DELETE n} with a scan and no mention of the delete (issue #6323). The first
+   * element of the chain is the operator wrapper the physical plan above already describes, so it is skipped.
+   */
+  private static void appendStepsAfterTheOptimizedMatch(final StringBuilder output, final List<ExecutionStep> chain) {
+    if (chain.size() < 2)
+      return;
+
+    output.append("\nSteps After the Optimized Match:\n");
+    for (final ExecutionStep step : chain.subList(1, chain.size())) {
+      output.append(((AbstractExecutionStep) step).prettyPrint(0, 2));
+      output.append("\n");
     }
   }
 
@@ -900,6 +924,9 @@ public class CypherExecutionPlan {
     if (errorMessage != null)
       profileOutput.append(String.format("\nError: %s\n", errorMessage));
 
+    // Collect execution steps for structured plan data
+    final List<ExecutionStep> executionSteps = stepChainOf(rootStep);
+
     // Asked before canUseOptimizedPhysicalPlan() for the reason explain() asks it first: the push-down replaced the
     // chain, so the optimizer's physical plan is not what ran (issue #5715).
     if (countPushedDown) {
@@ -914,6 +941,8 @@ public class CypherExecutionPlan {
       profileOutput.append(physicalPlan.getRootOperator().explain(0));
       profileOutput.append(String.format("\nEstimated Cost: %.2f\n", physicalPlan.getTotalEstimatedCost()));
       profileOutput.append(String.format("Estimated Rows: %d\n", physicalPlan.getTotalEstimatedCardinality()));
+      if (!countPushedDown)
+        appendStepsAfterTheOptimizedMatch(profileOutput, executionSteps);
     } else if (!countPushedDown) {
       profileOutput.append("\nExecution Plan (Traditional):\n");
       if (rootStep != null)
@@ -921,9 +950,6 @@ public class CypherExecutionPlan {
       else
         profileOutput.append("No execution steps generated\n");
     }
-
-    // Collect execution steps for structured plan data
-    final List<ExecutionStep> executionSteps = stepChainOf(rootStep);
 
     results.setPlan(new OpenCypherExplainExecutionPlan(profileOutput.toString(), executionSteps, endTime - startTime));
     // Surface the CRUD-count accumulator built up by the mutation steps during the profiled run,
