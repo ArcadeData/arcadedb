@@ -1763,9 +1763,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * the ordinary delete would remove. An orphaned continuation chunk (#6294) has no chain left to walk either, and
    * only its own slot to give back.
    * <p>
-   * No page statistics are updated, matching {@code deleteRecordInternal} on the very same markers: both shapes carry
-   * a NEGATIVE size marker, from which the space the slot occupied cannot be derived without reading the record it no
-   * longer describes. The next {@code gatherPageStatistics} measures the page as it now is.
+   * No page statistics are updated here, and since #6339 that is a decision rather than an omission: what the page
+   * has to offer once this slot is gone is settled by the compression the commit runs on it, which reports it
+   * ({@link #compressPageInternal}). Until then the slot is a hole the allocator could not use anyway.
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
@@ -3774,16 +3774,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // Track deleted RID to prevent reuse within the same transaction
         database.getTransaction().addDeletedRecord(rid);
 
-        if (recordSize[0] > -1) {
-          if (reuseSpaceMode.ordinal() >= REUSE_SPACE_MODE.HIGH.ordinal()) {
-            // UPDATE THE STATISTICS
-            final PageAnalysis pageAnalysis = new PageAnalysis(page);
-            pageAnalysis.totalRecordsInPage = recordCountInPage;
-            getFreeSpaceInPage(pageAnalysis);
-            updatePageStatistics(pageId, pageAnalysis.spaceAvailableInCurrentPage, (int) ((recordSize[0] + recordSize[1]) * -1));
-          } else
-            changesFromLastStats.incrementAndGet();
-        }
+        // #6339: the delete no longer tells the free-space statistics anything, because everything it used to tell
+        // them was wrong. It measured the page AFTER zeroing the slot - so the tail the delete had just released was
+        // already in the number - and then subtracted the record's footprint from it, landing back on exactly the
+        // free space the page had BEFORE the delete; mid-page it subtracted a footprint from a tail that had not
+        // moved at all, and could drop the page's entry outright. It also skipped every negative marker, i.e. every
+        // shape that is not a plain record, and tested that marker on `recordSize` AFTER the chunk-chain walk above
+        // had reassigned it to the last chunk of the chain. What the page really has to offer is measured once, on
+        // the packed page, by the compression the commit runs on it (compressPageInternal).
 
       } else {
         // CORRUPTED RECORD: WRITE ZERO AS POINTER TO RECORD. There is no readable pre-image to check the replay
@@ -3857,6 +3855,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         LogManager.instance().log(this, Level.FINE, "Update record count from %d to 0 in page %s", recordCountInPage, page.pageId);
         wipeOutFreeSpace(page, (short) 0);
       }
+      accountCompressedPage(page, contentHeaderSize);
       return;
     }
 
@@ -3890,6 +3889,41 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
     if (forceWipeOut || !holes.isEmpty())
       wipeOutFreeSpace(page, recordCountInPage);
+
+    // #6339: the page's occupancy is settled now, and this is the one place that knows it exactly - the records were
+    // just packed from contentHeaderSize upwards, so their footprints sum to where the free tail begins. Everything
+    // the free-space statistics are told anywhere else is a delta an individual write knows about its own bytes; this
+    // is the whole page, measured, and it is what closes the gap the deltas cannot: a hole in the middle of a page is
+    // NOT free tail while it is a hole - the allocator hands out the tail and nothing else - and it stops being one
+    // right here.
+    int contentEndInPage = contentHeaderSize;
+    for (final int[] record : orderedRecordContentInPage)
+      contentEndInPage += record[1];
+    accountCompressedPage(page, contentEndInPage);
+  }
+
+  /**
+   * Records, in the free-space statistics, the free tail a page has once {@link #compressPageInternal} has packed it
+   * (#6339). The delta convention of {@link #updatePageStatistics} carries an absolute value as
+   * {@code (theSpaceThereIs, 0)}, which is what this is: a measurement, not a change - and a page packed to its
+   * maximum content size lands on 0 and has its entry dropped, exactly as a page a spill has sealed does.
+   * <p>
+   * Costs nothing to derive: the sum comes from the ordered record list the compression already built.
+   * <p>
+   * What it trades, stated so the next reader does not take it for an oversight: a record deleted and another
+   * inserted inside the SAME still-open transaction do not see the freed space as a hint, because the page is packed
+   * at commit and not before. The allocator is never given a wrong answer by this - {@code findAvailableSpace}
+   * re-reads every candidate page - only a placement it could have made and did not, and the freed page is offered
+   * from the commit onwards. It was measured before being accepted: an accounting at the free itself, which is the
+   * only thing that could close that window, moved 4 pages out of 239 on a transaction that deletes two thirds of
+   * 4000 records and re-inserts as many, and cost a slot-table scan per freed slot to do it.
+   *
+   * @param contentEndInPage first free byte of the packed page, i.e. where its free tail starts.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private void accountCompressedPage(final MutablePage page, final int contentEndInPage) {
+    updatePageStatistics(page.getPageId().getPageNumber(), page.getMaxContentSize() - contentEndInPage, 0);
   }
 
   private void wipeOutFreeSpace(final MutablePage page, final short recordCountInPage) throws IOException {
@@ -5049,6 +5083,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         break;
       }
 
+      // #6339: nothing is told to the free-space statistics here, deliberately. The bytes are the page's again, but
+      // the chunk leaves a HOLE that the allocator cannot hand out, and what the page will really have on offer is
+      // settled by the compression the commit runs on it (compressPageInternal, which reports what it packed). A
+      // guess made here would have to be undone there.
       chunkPointer = nextPage.readLong((int) (recordPositionInPage + recordSize[1]) + INT_SERIALIZED_SIZE);
     }
   }
@@ -5405,10 +5443,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // Snapshot keys/values into local arrays so we can safely mutate freeSpaceInPages
     // (put/remove) inside the loop body. The snapshot is bounded by MAX_PAGES_GATHER_STATS (100).
     //
-    // The snapshot is sorted by pageId to preserve the deterministic "fill lowest pageId first"
-    // allocation behavior that the previous TreeMap-backed implementation provided implicitly via
-    // its ordered iteration. Tests like RandomDeleteTest depend on this so that re-inserts after
-    // bulk deletes land at the same RIDs as the original inserts.
+    // The snapshot is sorted by pageId to preserve the deterministic "fill lowest pageId first" allocation behaviour
+    // that the previous TreeMap-backed implementation provided implicitly via its ordered iteration. What it buys is
+    // a REPRODUCIBLE choice among the candidate pages - the same bucket state allocates the same way twice - and the
+    // locality of preferring the pages nearest the front of the file.
+    //
+    // What it does NOT buy, and used to be claimed here (#6339): that a re-insert after a bulk delete lands on the
+    // RID the original insert had. It cannot, and it could not then either - which page is a candidate at all depends
+    // on what the free-space statistics hold at that moment, and this ordering only decides between the pages that
+    // made it into that map. RandomDeleteTest was cited as depending on it and no longer does: it compares the scan
+    // against the records it inserted rather than against the order it inserted them in.
     final int snapSize = freeSpaceInPages.size();
     final int[] snapPageIds = new int[snapSize];
     final int[] snapPageStats = new int[snapSize];
