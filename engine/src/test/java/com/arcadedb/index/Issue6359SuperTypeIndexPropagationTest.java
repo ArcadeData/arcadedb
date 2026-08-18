@@ -271,6 +271,43 @@ class Issue6359SuperTypeIndexPropagationTest extends TestHelper {
   }
 
   /**
+   * The propagation holds the async workers while it builds, like every other index build does (issue #6303, item 2).
+   * <p>
+   * The barrier answers about the past; a build needs the other half too - that nothing WRITES during the scan. A
+   * record an async worker saves in the window between the barrier and the sub-index's registration is in neither the
+   * scan nor the index, which is the same gap this propagation exists to close, reopened for async writers. This is
+   * the end-to-end shape: the executor is genuinely busy while the super type is linked.
+   */
+  @Test
+  @Timeout(180)
+  void aPropagationRunWhileTheExecutorIsBusyCoversEveryRecord() {
+    final int records = 1_000;
+
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Super", 1).createProperty("id", Type.INTEGER);
+      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Super", "id");
+      database.getSchema().createDocumentType("Sub", 1);
+    });
+    database.async().setParallelLevel(2);
+
+    for (int i = 0; i < records; i++) {
+      final MutableDocument v = database.newDocument("Sub");
+      v.set("id", i);
+      database.async().createRecord(v, null);
+    }
+
+    database.getSchema().getType("Sub").addSuperType("Super");
+
+    database.async().waitCompletion();
+
+    assertThat(database.countType("Sub", false)).isEqualTo(records);
+    final Index propagated = database.getSchema().getIndexByName("Super[id]");
+    assertThat(propagated.countEntries())
+        .as("every record must have an entry, whatever the async side was doing while the index was propagated")
+        .isEqualTo(records);
+  }
+
+  /**
    * The sibling call site, {@code LocalDocumentType.createBucket}, is SAFE and must not be "fixed" by symmetry: the
    * bucket it indexes has just been created, so no transaction can hold uncommitted writes into it and there is
    * nothing for the scan to miss. Nailed down here so the property is asserted rather than merely asserted about -

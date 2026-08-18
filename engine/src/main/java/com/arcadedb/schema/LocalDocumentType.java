@@ -26,6 +26,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RecordEvents;
 import com.arcadedb.database.RecordEventsRegistry;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.database.async.AsyncQuiesce;
 import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.RoundRobinBucketSelectionStrategy;
@@ -1961,6 +1962,25 @@ public class LocalDocumentType implements DocumentType {
         //throw new IllegalArgumentException("Property '" + p + "' is already defined in type '" + name + "' or any super types");
       }
 
+    // QUIESCED for the same reason TypeIndexBuilder and BucketIndexBuilder are (issue #6303, item 2), and taken HERE
+    // rather than around the propagation itself: the barrier answers about the past, and a build needs the other half
+    // too - that nothing WRITES during the scan - but recordFileChanges runs under the database WRITE LOCK, which is
+    // the lock an async worker needs to commit its batch. Requested from inside it, the quiescence waits for workers
+    // that cannot proceed until it returns, and gives up 60 seconds later.
+    //
+    // Only when there are indexes to propagate: the schema-load path passes createIndexes=false and scans nothing.
+    // quiesceAsync() reads the executor field rather than calling async(), so a database that never touched the async
+    // API does not grow a thread pool here, and it is reentrant, so a builder reached from below rides on this one.
+    try (final AsyncQuiesce asyncPaused = createIndexes ?
+        ((DatabaseInternal) schema.getDatabase()).quiesceAsync() : () -> {
+    }) {
+      addSuperTypeInternal(superType, createIndexes);
+    }
+
+    return this;
+  }
+
+  private void addSuperTypeInternal(final DocumentType superType, final boolean createIndexes) {
     recordFileChanges(() -> {
       final LocalDocumentType embeddedSuperType = (LocalDocumentType) superType;
 
@@ -2005,6 +2025,7 @@ public class LocalDocumentType implements DocumentType {
         // carries both a vector index and an ordinary one.
         final List<Index> created = new ArrayList<>();
         final List<Index> toBuild = new ArrayList<>();
+
         try {
           // The COMPONENTS are created in a transaction of their OWN. The enclosing recordFileChanges writes the
           // schema entry that names each of them whatever the caller's transaction goes on to do, so the index FILES
@@ -2012,6 +2033,14 @@ public class LocalDocumentType implements DocumentType {
           // rolls back would leave the schema pointing at a file with no pages, which fails on the next write with
           // "the file is invalid".
           database.transaction(() -> {
+            // Emptied on entry, not on declaration: this transaction retries on its own (a NeedRetryException from a
+            // concurrent schema mutation), and a retry re-runs this lambda from scratch. Left to accumulate, the
+            // rolled-back attempt's indexes would be handed to the build alongside the surviving ones, which reports
+            // a failure that has nothing to do with the conflict that caused the retry. TypeIndexBuilder's
+            // equivalent loop is immune because it assigns into a pre-sized array by position.
+            created.clear();
+            toBuild.clear();
+
             for (final TypeIndex index : indexes) {
               if (index.getType() == null) {
                 LogManager.instance().log(this, Level.WARNING,
@@ -2106,6 +2135,5 @@ public class LocalDocumentType implements DocumentType {
 
       return null;
     });
-    return this;
   }
 }
