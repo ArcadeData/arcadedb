@@ -322,7 +322,7 @@ public class PatternPredicateExpression implements BooleanExpression {
       final CommandContext context) {
     if (nodePattern == null)
       return true;
-    if (!matchesTargetLabels(vertex, nodePattern.getLabels()))
+    if (!matchesTargetLabels(vertex, nodePattern))
       return false;
     if (!matchesTargetProperties(vertex, nodePattern, row, context))
       return false;
@@ -330,19 +330,14 @@ public class PatternPredicateExpression implements BooleanExpression {
   }
 
   /**
-   * Check if a vertex matches the target labels.
-   * If no labels are specified, returns true (matches any vertex).
+   * Checks a vertex against a node pattern's labels, with the meaning the pattern gave them: a disjunction
+   * {@code (n:A|B)} accepts any of them, a conjunction {@code (n:A:B)} requires all (issue #6338). This used to AND
+   * unconditionally, so {@code exists((a)-->(:A|B))} answered false for a vertex that carries one of the two - the
+   * block form {@code EXISTS { }} takes the subquery path and always answered it correctly, which is what made the
+   * disagreement hard to see.
    */
-  private boolean matchesTargetLabels(final Vertex vertex, final List<String> targetLabels) {
-    if (targetLabels == null || targetLabels.isEmpty())
-      return true;
-
-    // Check if vertex has ALL the specified labels (AND semantics)
-    for (final String label : targetLabels) {
-      if (!Labels.hasLabel(vertex, label))
-        return false;
-    }
-    return true;
+  private boolean matchesTargetLabels(final Vertex vertex, final NodePattern nodePattern) {
+    return Labels.matches(vertex, nodePattern.getLabels(), nodePattern.isLabelDisjunction());
   }
 
   /**

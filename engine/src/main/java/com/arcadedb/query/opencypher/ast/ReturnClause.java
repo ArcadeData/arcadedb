@@ -83,7 +83,7 @@ public class ReturnClause {
    * Check if this is a RETURN * (return all variables).
    */
   public boolean isReturnAll() {
-    return items.size() == 1 && "*".equals(items.get(0).getOutputName());
+    return items.size() == 1 && items.get(0).isStar();
   }
 
   /**
@@ -121,12 +121,40 @@ public class ReturnClause {
   public static class ReturnItem {
     private final Expression expression;
     private final String alias;
+    private final boolean star;
     private String originalText;
     private String expressionText;
 
     public ReturnItem(final Expression expression, final String alias) {
+      this(expression, alias, false);
+    }
+
+    private ReturnItem(final Expression expression, final String alias, final boolean star) {
       this.expression = expression;
       this.alias = alias;
+      this.star = star;
+    }
+
+    /**
+     * The projection item a bare {@code WITH *} / {@code RETURN *} stands for: not a projected name but an
+     * instruction to forward everything already in scope.
+     * <p>
+     * It is built here, and only here, so that being the star is a property of the item rather than of the name it
+     * happens to carry. The parser writes it as a variable called {@code "*"}, which is also what a user gets by
+     * writing the backticked variable {@code `*`} - so before issue #6334 a projection like {@code WITH n AS `*`}
+     * was read as a star and forwarded the incoming scope instead of resetting it to the one name it projects,
+     * while its own alias was never projected at all.
+     */
+    public static ReturnItem star() {
+      return new ReturnItem(new VariableExpression("*"), "*", true);
+    }
+
+    /**
+     * Whether this item is the {@code *} of {@code WITH *} / {@code RETURN *}, rather than a projection whose
+     * output happens to be named {@code *}.
+     */
+    public boolean isStar() {
+      return star;
     }
 
     public Expression getExpression() {

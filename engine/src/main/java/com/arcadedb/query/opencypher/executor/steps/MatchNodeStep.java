@@ -815,16 +815,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
     final List<String> labels = resolveEffectiveLabels(currentResult);
     if (labels.size() <= 1)
       return true; // Single label already filtered by iterator
-    if (pattern.isLabelDisjunction()) {
-      for (final String label : labels)
-        if (Labels.hasLabel(vertex, label))
-          return true;
-      return false;
-    }
-    for (final String label : labels)
-      if (!Labels.hasLabel(vertex, label))
-        return false;
-    return true;
+    return Labels.matches(vertex, labels, pattern.isLabelDisjunction());
   }
 
   /**
@@ -837,19 +828,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
   }
 
   private boolean matchesAllLabelsBound(final Vertex vertex, final Result currentResult) {
-    final List<String> labels = resolveEffectiveLabels(currentResult);
-    if (labels.isEmpty())
-      return true;
-    if (pattern.isLabelDisjunction()) {
-      for (final String label : labels)
-        if (Labels.hasLabel(vertex, label))
-          return true;
-      return false;
-    }
-    for (final String label : labels)
-      if (!Labels.hasLabel(vertex, label))
-        return false;
-    return true;
+    return Labels.matches(vertex, resolveEffectiveLabels(currentResult), pattern.isLabelDisjunction());
   }
 
   /**

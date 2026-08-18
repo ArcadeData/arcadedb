@@ -31,6 +31,7 @@ import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.query.opencypher.InlineProperties;
+import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
@@ -189,17 +190,12 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
   }
 
   /**
-   * Checks whether all target node labels exist in the schema.
-   * If any label does not exist, no target vertex can match.
+   * Checks whether the schema can still produce a target vertex satisfying the pattern's labels: a conjunction
+   * needs every label, a disjunction only one of them (issue #6338).
    */
   private boolean targetLabelsExistInSchema(final CommandContext context) {
-    if (targetNodePattern == null || !targetNodePattern.hasLabels())
-      return true;
-    final var schema = context.getDatabase().getSchema();
-    for (final String label : targetNodePattern.getLabels())
-      if (!schema.existsType(label))
-        return false;
-    return true;
+    return targetNodePattern == null || Labels.canMatchInSchema(context.getDatabase().getSchema(),
+        targetNodePattern.getLabels(), targetNodePattern.isLabelDisjunction());
   }
 
   @Override
@@ -381,13 +377,12 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
             if (targetRid == null)
               continue;
 
-            // Label filter via bucket ID (no vertex load)
-            if (targetNodePattern != null && targetNodePattern.hasLabels()) {
-              final String targetLabel = targetNodePattern.getLabels().get(0);
-              final String typeName = db.getSchema().getTypeByBucketId(targetRid.getBucketId()).getName();
-              if (!targetLabel.equals(typeName) && !db.getSchema().getType(typeName).instanceOf(targetLabel))
-                continue;
-            }
+            // Label filter via bucket ID (no vertex load): the record's type is what the labels are tested
+            // against, so the whole label list is honoured here exactly as it is on the loaded-vertex paths.
+            if (targetNodePattern != null && targetNodePattern.hasLabels()
+                && !Labels.matches(db.getSchema().getTypeByBucketId(targetRid.getBucketId()),
+                targetNodePattern.getLabels(), targetNodePattern.isLabelDisjunction()))
+              continue;
 
             // Bound variable identity check (no vertex load)
             // Compare bucket+offset only — RIDs from GAV may lack the database reference
@@ -918,17 +913,14 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
   }
 
   /**
-   * Checks if a target vertex matches the label constraints from the target node pattern.
+   * Checks a target vertex against the label constraints of the target node pattern, with the same meaning
+   * {@link com.arcadedb.query.opencypher.executor.steps.MatchNodeStep} gives them when the node is the pattern
+   * anchor: a disjunction {@code (n:A|B)} accepts any of the labels, a conjunction {@code (n:A:B)} requires all of
+   * them (issue #6338).
    */
   private boolean matchesTargetLabel(final Vertex vertex) {
-    if (targetNodePattern == null || !targetNodePattern.hasLabels())
-      return true;
-
-    // Check that the vertex has ALL required labels using type hierarchy
-    for (final String label : targetNodePattern.getLabels())
-      if (!vertex.getType().instanceOf(label))
-        return false;
-    return true;
+    return targetNodePattern == null
+        || Labels.matches(vertex, targetNodePattern.getLabels(), targetNodePattern.isLabelDisjunction());
   }
 
   /** Checks if the target vertex satisfies the inline property map; dynamic values are resolved against currentResult. */

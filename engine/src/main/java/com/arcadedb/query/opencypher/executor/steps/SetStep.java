@@ -30,6 +30,7 @@ import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.LabelReplacements;
+import com.arcadedb.query.opencypher.executor.RowAliases;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.QueryStatistics;
@@ -286,7 +287,7 @@ public class SetStep extends AbstractExecutionStep {
     if (savedRid != null)
       writtenDocs.put(savedRid, mutableDoc);
 
-    propagateUpdateToSameNodeAliases(result, doc, mutableDoc);
+    RowAliases.propagateUpdate(result, doc, mutableDoc);
     // Fallback: ensure the named variable is updated even when doc has no identity yet
     if (variableToUpdate != null && doc.getIdentity() == null)
       ((ResultInternal) result).setProperty(variableToUpdate, mutableDoc);
@@ -334,7 +335,7 @@ public class SetStep extends AbstractExecutionStep {
     final RID savedRid = mutableDoc.getIdentity();
     if (savedRid != null)
       writtenDocs.put(savedRid, mutableDoc);
-    propagateUpdateToSameNodeAliases(result, doc, mutableDoc);
+    RowAliases.propagateUpdate(result, doc, mutableDoc);
     if (doc.getIdentity() == null)
       ((ResultInternal) result).setProperty(item.getVariable(), mutableDoc);
   }
@@ -376,7 +377,7 @@ public class SetStep extends AbstractExecutionStep {
     final RID savedRid = mutableDoc.getIdentity();
     if (savedRid != null)
       writtenDocs.put(savedRid, mutableDoc);
-    propagateUpdateToSameNodeAliases(result, doc, mutableDoc);
+    RowAliases.propagateUpdate(result, doc, mutableDoc);
     if (doc.getIdentity() == null)
       ((ResultInternal) result).setProperty(item.getVariable(), mutableDoc);
   }
@@ -424,21 +425,6 @@ public class SetStep extends AbstractExecutionStep {
       ((ResultInternal) result).setProperty(variable, mutable);
   }
 
-  /**
-   * After mutating a document, update every alias in the result row that points to the same node
-   * (identified by RID) so all aliases observe the new state within the same query.
-   */
-  private void propagateUpdateToSameNodeAliases(final Result result, final Document originalDoc, final Document updatedDoc) {
-    final RID originalRid = originalDoc.getIdentity();
-    if (originalRid == null)
-      return;
-    for (final String propName : result.getPropertyNames()) {
-      final Object prop = result.getProperty(propName);
-      if (prop instanceof Document other && other != updatedDoc && originalRid.equals(other.getIdentity()))
-        ((ResultInternal) result).setProperty(propName, updatedDoc);
-    }
-  }
-
   private void applyLabels(final SetClause.SetItem item, final Result result,
       final Map<RID, MutableDocument> writtenDocs, final LabelReplacements labelReplacements) {
     final Object obj = result.getProperty(item.getVariable());
@@ -455,7 +441,7 @@ public class SetStep extends AbstractExecutionStep {
     // the caller - and it costs one map lookup that is skipped entirely until a label write actually happens.
     final Vertex prior = labelReplacements.resolve(vertex);
     if (prior != vertex) {
-      propagateUpdateToSameNodeAliases(result, vertex, prior);
+      RowAliases.propagateUpdate(result, vertex, prior);
       vertex = prior;
     }
     // The RID the write is about to displace: the live one, not the one the row happened to carry.

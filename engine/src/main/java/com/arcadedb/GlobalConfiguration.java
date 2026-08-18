@@ -738,6 +738,23 @@ public enum GlobalConfiguration {
       NAT, multicast and reserved ranges. Set to an empty string to disable IP filtering (not recommended).""",
       String.class, IPAddressBlocklist.DEFAULT_RESERVED_RANGES),
 
+  OPENCYPHER_LABEL_WRITE_DEGREE_WARNING("arcadedb.opencypher.labelWriteDegreeWarning", SCOPE.DATABASE,
+      """
+      Degree above which a Cypher label write (SET n:Label / REMOVE n:Label) logs a warning. A record's type comes from the \
+      bucket it lives in, so a label change is not a metadata edit: the vertex is rewritten under the new type and every \
+      incident edge is re-created in both directions, which makes the write O(degree) and gives the vertex and all of its \
+      edges new RIDs. On a supernode that is the difference between a millisecond and a stall, and nothing in the query says \
+      so. The warning reports the node, the two types and how many edges were rewritten. Set to 0 to disable it.""",
+      Integer.class, 10_000),
+
+  OPENCYPHER_LABEL_WRITE_DEGREE_LIMIT("arcadedb.opencypher.labelWriteDegreeLimit", SCOPE.DATABASE,
+      """
+      Maximum degree of a vertex a Cypher label write (SET n:Label / REMOVE n:Label) is allowed to rewrite. Above it the \
+      command fails instead of paying the O(degree) rewrite described in arcadedb.opencypher.labelWriteDegreeWarning. \
+      Disabled by default (0): the rewrite is slow, not wrong, so refusing it is opt-in. Enabling it costs one extra \
+      edge-list walk per label write, to answer the question before any record has moved.""",
+      Integer.class, 0),
+
   OPENCYPHER_ID_BUCKET_BITS("arcadedb.opencypher.idBucketBits", SCOPE.JVM,
       """
       Number of bits reserved for the bucketId when packing a RID into the numeric value returned by the OpenCypher id() function (and SQL's .asCypherRID() method). \

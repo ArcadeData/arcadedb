@@ -221,12 +221,10 @@ public class PatternComprehensionExpression implements Expression {
    */
   private boolean matchesStartPattern(final Vertex vertex, final NodePattern startNodePattern, final Result bindings,
       final ResultInternal whereEvalRow, final CommandContext context) {
-    if (startNodePattern.hasLabels()) {
-      for (final String label : startNodePattern.getLabels()) {
-        if (!Labels.hasLabel(vertex, label))
-          return false;
-      }
-    }
+    // A disjunction (n:A|B) accepts any of the labels, a conjunction (n:A:B) requires all - the same meaning the
+    // pattern has when it is written in a MATCH instead of inside a comprehension (issue #6338).
+    if (!Labels.matches(vertex, startNodePattern.getLabels(), startNodePattern.isLabelDisjunction()))
+      return false;
     if (!InlineProperties.matches(vertex, startNodePattern.getProperties(), bindings, context))
       return false;
     return matchesNodeWhereExpression(vertex, startNodePattern, whereEvalRow, context);
@@ -320,12 +318,8 @@ public class PatternComprehensionExpression implements Expression {
   private boolean matchesEndPattern(final Vertex vertex, final NodePattern endNodePattern, final Result baseResult,
       final Result bindings, final ResultInternal whereEvalRow, final RelationshipPattern relPattern, final Edge edge,
       final CommandContext context) {
-    if (endNodePattern.hasLabels()) {
-      for (final String label : endNodePattern.getLabels()) {
-        if (!Labels.hasLabel(vertex, label))
-          return false;
-      }
-    }
+    if (!Labels.matches(vertex, endNodePattern.getLabels(), endNodePattern.isLabelDisjunction()))
+      return false;
     if (!InlineProperties.matches(vertex, endNodePattern.getProperties(), bindings, context))
       return false;
     // Variable binding consistency (issue #4111): if the end variable is already

@@ -18,12 +18,15 @@
  */
 package com.arcadedb.query.opencypher.executor;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -34,6 +37,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.logging.Level;
 
 /**
  * Carries out a Cypher label write and remembers what it displaced.
@@ -191,34 +195,92 @@ public final class LabelReplacements {
   /**
    * Rewrites {@code vertex} under {@code newTypeName}, carrying over its properties and its edges (with their own
    * properties, which a plain re-link would silently drop), deletes the original and records the replacement.
+   * <p>
+   * <b>This is a write proportional to the vertex's degree, and it changes RIDs.</b> Every incident edge is
+   * re-created in both directions, which also mutates each neighbour's edge list, so {@code SET n:Label} on a
+   * vertex with a million edges rewrites a million edge records for what the user wrote as a metadata change - and
+   * it undoes the locality the striping and append-merge paths build. The vertex's RID changes and so does every
+   * edge's, which leaves anything holding one across the write - an application-side reference, a stored link from
+   * a non-graph type, an external index, a client that cached an earlier result - pointing at a deleted record. The
+   * query's own row follows the move ({@link #redirect}); nothing can make an outside reference follow it.
+   * <p>
+   * None of that is fixable while a label is a type and a type is a bucket, so the two knobs of issue #6335 make it
+   * visible rather than silent: {@code arcadedb.opencypher.labelWriteDegreeWarning} logs what the write cost, and
+   * {@code arcadedb.opencypher.labelWriteDegreeLimit} (off by default) refuses it outright above a degree, before
+   * any record has moved.
    *
    * @return the vertex that now holds the identity of the original
    */
   public MutableVertex replace(final Vertex vertex, final String newTypeName) {
     final Database database = vertex.getDatabase();
     final RID originalRid = vertex.getIdentity();
+    final String originalTypeName = vertex.getTypeName();
+
+    final int limit = database.getConfiguration().getValueAsInteger(GlobalConfiguration.OPENCYPHER_LABEL_WRITE_DEGREE_LIMIT);
+    if (limit > 0) {
+      final long degree = countEdgesToMigrate(vertex, originalRid);
+      if (degree > limit)
+        throw new CommandExecutionException(
+            "Label write on " + originalRid + " (" + originalTypeName + " -> " + newTypeName + ") rejected: the vertex has "
+                + degree + " edges and arcadedb.opencypher.labelWriteDegreeLimit is " + limit
+                + ". A label change rewrites the vertex and every one of its edges under the new type, so it costs a write "
+                + "per edge and changes every RID involved. Model the distinction as a property, or raise the limit if the "
+                + "cost is acceptable");
+    }
 
     final MutableVertex newVertex = database.newVertex(newTypeName);
     for (final String property : vertex.getPropertyNames())
       newVertex.set(property, vertex.get(property));
     newVertex.save();
 
+    long migratedEdges = 0;
     // Outgoing first, so a self-loop is migrated exactly once: the incoming pass below skips it rather than
     // re-creating it as a second edge between the same pair.
     for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.OUT)) {
       final RID in = edge.getIn();
       final Identifiable target = originalRid.equals(in) ? newVertex : in;
       track(edge, newVertex.newEdge(edge.getTypeName(), target, propertiesOf(edge)));
+      ++migratedEdges;
     }
     for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.IN)) {
       if (originalRid.equals(edge.getOut()))
         continue;
       track(edge, edge.getVertex(Vertex.DIRECTION.OUT).newEdge(edge.getTypeName(), newVertex, propertiesOf(edge)));
+      ++migratedEdges;
     }
 
     vertex.delete();
     vertices.put(originalRid, newVertex);
+
+    // Counted while migrating rather than measured up front: the count is exact and costs nothing, and a report of
+    // what the write actually did is what explains a stall that has already happened.
+    final int warnAbove = database.getConfiguration()
+        .getValueAsInteger(GlobalConfiguration.OPENCYPHER_LABEL_WRITE_DEGREE_WARNING);
+    if (warnAbove > 0 && migratedEdges >= warnAbove)
+      LogManager.instance().log(this, Level.WARNING,
+          "Cypher label write on %s (%s -> %s) rewrote the vertex and %d incident edges: a label change moves the record to "
+              + "a new type, so it is O(degree) and every RID involved (the vertex and all its edges) changed. Set "
+              + "arcadedb.opencypher.labelWriteDegreeWarning to 0 to silence this, or "
+              + "arcadedb.opencypher.labelWriteDegreeLimit to refuse it",
+          originalRid, originalTypeName, newTypeName, migratedEdges);
+
     return newVertex;
+  }
+
+  /**
+   * The number of edges {@link #replace} would re-create, counted the same way the migration counts them so that the
+   * limit refuses on the number the warning would have reported.
+   * <p>
+   * Not {@code countEdges(BOTH)}: that sums the two edge lists independently, so a self-loop - which is in both -
+   * counts twice, while the migration deliberately re-creates it once. The IN pass walks the connected RIDs rather
+   * than the edges, so the skip costs a list walk and not a record load per edge.
+   */
+  private static long countEdgesToMigrate(final Vertex vertex, final RID originalRid) {
+    long count = vertex.countEdges(Vertex.DIRECTION.OUT);
+    for (final RID neighbour : vertex.getConnectedVertexRIDs(Vertex.DIRECTION.IN))
+      if (!originalRid.equals(neighbour))
+        ++count;
+    return count;
   }
 
   private void track(final Edge original, final Edge replacement) {

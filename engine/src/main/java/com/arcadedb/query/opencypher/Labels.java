@@ -147,6 +147,69 @@ public final class Labels {
   }
 
   /**
+   * Checks a vertex against a pattern's label list, with the meaning the pattern gave it: a disjunction
+   * {@code (n:A|B)} is satisfied by any one of the labels, a conjunction {@code (n:A:B)} by all of them, and an
+   * empty list by everything.
+   * <p>
+   * This is the one place that knows what a disjunction means for a matched record. Every step that has to decide
+   * whether a vertex satisfies a node pattern routes through it - the anchor of a pattern, the far endpoint of a
+   * single hop, and the end of a variable-length path - because they used to decide it separately and disagreed:
+   * before issue #6338 a disjunction written on a node a relationship expands into ANDed its alternatives and so
+   * rejected every row, silently, while the same disjunction on the anchor matched.
+   *
+   * @param vertex      the vertex to test
+   * @param labels      the labels written on the pattern (already resolved, dynamic labels included)
+   * @param disjunction whether the labels were written as alternatives ({@code A|B}) rather than as a conjunction
+   *
+   * @return true when the vertex satisfies the label constraint
+   */
+  public static boolean matches(final Vertex vertex, final List<String> labels, final boolean disjunction) {
+    return matches(vertex.getType(), labels, disjunction);
+  }
+
+  /**
+   * Type-level form of {@link #matches(Vertex, List, boolean)}, for the paths that resolve a record's type from its
+   * bucket id and must not pay for loading the record.
+   */
+  public static boolean matches(final DocumentType type, final List<String> labels, final boolean disjunction) {
+    if (labels == null || labels.isEmpty())
+      return true;
+    if (type == null)
+      return false;
+    if (disjunction) {
+      for (int i = 0; i < labels.size(); i++)
+        if (type.instanceOf(labels.get(i)))
+          return true;
+      return false;
+    }
+    for (int i = 0; i < labels.size(); i++)
+      if (!type.instanceOf(labels.get(i)))
+        return false;
+    return true;
+  }
+
+  /**
+   * Whether the schema can still produce a record satisfying the label constraint, used to skip work rather than to
+   * decide a row: a conjunction needs every label to name an existing type, a disjunction only needs one of them.
+   * An alternative naming a type nobody ever created is an alternative that matches nothing, not a filter that
+   * rejects everything (issue #6338).
+   */
+  public static boolean canMatchInSchema(final Schema schema, final List<String> labels, final boolean disjunction) {
+    if (labels == null || labels.isEmpty())
+      return true;
+    if (disjunction) {
+      for (int i = 0; i < labels.size(); i++)
+        if (schema.existsType(labels.get(i)))
+          return true;
+      return false;
+    }
+    for (int i = 0; i < labels.size(); i++)
+      if (!schema.existsType(labels.get(i)))
+        return false;
+    return true;
+  }
+
+  /**
    * Ensures composite type exists, creating it if necessary.
    * Returns the type name to use for creating vertices.
    * <p>

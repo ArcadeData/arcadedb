@@ -82,20 +82,9 @@ public class LabelCheckExpression implements BooleanExpression {
     if (value == null)
       return null; // null:Label -> null in Cypher 3VL
 
-    if (value instanceof Vertex vertex) {
-      if (operator == LabelOperator.OR) {
-        for (final String label : labels) {
-          if (Labels.hasLabel(vertex, label))
-            return true;
-        }
-        return false;
-      }
-      for (final String label : labels) {
-        if (!Labels.hasLabel(vertex, label))
-          return false;
-      }
-      return true;
-    }
+    if (value instanceof Vertex vertex)
+      // Same meaning a disjunction has when it is written on the pattern instead of in the WHERE (issue #6338).
+      return Labels.matches(vertex, labels, operator == LabelOperator.OR);
 
     if (value instanceof Edge edge) {
       // For relationships, ":Type" is a type-equality predicate. With multiple

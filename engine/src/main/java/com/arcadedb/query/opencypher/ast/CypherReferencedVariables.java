@@ -378,7 +378,7 @@ public final class CypherReferencedVariables {
           return;
         }
         // RETURN * / WITH * project every variable in scope by name, the seeded ones included.
-        if ("*".equals(item.getOutputName())) {
+        if (item.isStar()) {
           complete = false;
           return;
         }

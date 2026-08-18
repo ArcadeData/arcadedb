@@ -2576,6 +2576,11 @@ class CypherExpressionBuilder {
     String variable = null;
     List<String> labels = null;
     Map<String, Object> properties = null;
+    // A node pattern in expression position - a pattern comprehension, a pattern predicate - used to be built with
+    // the disjunction flag hardcoded to false, so (y:A|B) arrived at the executor looking exactly like (y:A:B) and
+    // matched only what carries BOTH labels. Read off the grammar here, the same way the MATCH-side builder does,
+    // rather than left for the executor to guess (issue #6338).
+    boolean labelDisjunction = false;
 
     if (ctx.variable() != null) {
       variable = ctx.variable().getText();
@@ -2583,6 +2588,7 @@ class CypherExpressionBuilder {
 
     if (ctx.labelExpression() != null) {
       labels = extractLabels(ctx.labelExpression());
+      labelDisjunction = ParserUtils.isLabelDisjunction(ctx.labelExpression());
     }
 
     String propertiesParameterName = null;
@@ -2600,7 +2606,7 @@ class CypherExpressionBuilder {
     if (ctx.expression() != null)
       whereExpression = new BooleanCoercionExpression(parseExpression(ctx.expression()));
 
-    return new NodePattern(variable, labels, null, properties, propertiesParameterName, false, whereExpression);
+    return new NodePattern(variable, labels, null, properties, propertiesParameterName, labelDisjunction, whereExpression);
   }
 
   /**
