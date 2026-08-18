@@ -87,6 +87,27 @@ class CypherStarCountArmLabelIssue6337Test extends TestHelper {
         "MATCH (p:Post)<-[:VIA]-(x:Bad)<-[:LINK]-(a:Author), (p)-[:TAGGED]->(t:Topic) RETURN p"));
   }
 
+  /**
+   * The other three tests all put the central variable at position 0 or the last position of its path
+   * pattern, which builds a single {@code Arm} via {@code buildArmForward}/{@code buildArmBackward}. When the
+   * central variable sits in the <em>interior</em> of a pattern instead, {@code tryDetectStarCountStar} splits
+   * it into a {@code leftArm} and a {@code rightArm} from the same pattern - a third construction path the
+   * label-decline loop has to cover too, since it runs once per pattern before that split, not once per arm.
+   */
+  @Test
+  void aLabelledEndpointDeclinesTheStarCountPushDownWhenTheCentralNodeIsInterior() {
+    database.command("opencypher", "CREATE (:Extra {k:'e1'})");
+    database.command("opencypher", "MATCH (p:Post {k:'p1'}), (e:Extra {k:'e1'}) CREATE (p)-[:VIA]->(e)");
+
+    // p sits between (:Author) and (:Topic) in the first pattern, so this one PathPattern alone yields both
+    // a leftArm (back to :Author) and a rightArm (forward to :Topic); the second pattern only supplies p's
+    // second occurrence so it counts as the central variable at all.
+    final String query = "MATCH (:Author)-[:WROTE]->(p:Post)-[:TAGGED]->(:Topic), (p)-[:VIA]->() RETURN count(*) AS c";
+    assertThat(explainOf(query)).doesNotContain("COUNT STAR JOIN");
+    assertThat(scalarOf(query)).isEqualTo(rowCountOf(
+        "MATCH (a:Author)-[:WROTE]->(p:Post)-[:TAGGED]->(t:Topic), (p)-[:VIA]->(e) RETURN p"));
+  }
+
   // ===================================================================================================
   // helpers
   // ===================================================================================================
