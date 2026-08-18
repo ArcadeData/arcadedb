@@ -91,7 +91,7 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
   public LinkedList<RID> execute(final Object self, final Identifiable currentRecord, final Object currentResult,
       final Object[] params, final CommandContext ctx) {
     context = ctx;
-    final SQLFunctionAstar context = this;
+    final SQLFunctionAstar astar = this;
 
     final Document record = currentRecord != null ? (Document) currentRecord.getRecord() : null;
 
@@ -144,7 +144,7 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
     paramWeightFieldName = FileUtils.getStringContent(params[2]);
 
     if (params.length > 3) {
-      bindAdditionalParams(params[3], context);
+      bindAdditionalParams(params[3], astar);
     }
     ctx.setVariable("getNeighbors", 0);
     if (paramSourceVertex == null || paramDestinationVertex == null) {
@@ -296,7 +296,7 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
     return result;
   }
 
-  private void bindAdditionalParams(final Object additionalParams, final SQLFunctionAstar context) {
+  private void bindAdditionalParams(final Object additionalParams, final SQLFunctionAstar astar) {
     if (additionalParams == null)
       return;
 
@@ -311,44 +311,44 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
     final FunctionOptions opts = new FunctionOptions(NAME, rawMap, OPTIONS);
 
     if (opts.containsKey(PARAM_EDGE_TYPE_NAMES))
-      context.paramEdgeTypeNames = stringArray(opts.get(PARAM_EDGE_TYPE_NAMES));
+      astar.paramEdgeTypeNames = stringArray(opts.get(PARAM_EDGE_TYPE_NAMES));
     if (opts.containsKey(PARAM_VERTEX_AXIS_NAMES))
-      context.paramVertexAxisNames = stringArray(opts.get(PARAM_VERTEX_AXIS_NAMES));
+      astar.paramVertexAxisNames = stringArray(opts.get(PARAM_VERTEX_AXIS_NAMES));
 
     if (opts.containsKey(PARAM_DIRECTION)) {
       final Object raw = opts.get(PARAM_DIRECTION);
       if (raw instanceof Vertex.DIRECTION direction)
-        context.paramDirection = direction;
+        astar.paramDirection = direction;
       else
-        context.paramDirection = Vertex.DIRECTION.valueOf(raw.toString().toUpperCase(Locale.ENGLISH));
+        astar.paramDirection = Vertex.DIRECTION.valueOf(raw.toString().toUpperCase(Locale.ENGLISH));
     }
 
-    context.paramParallel = opts.getBoolean(PARAM_PARALLEL, context.paramParallel);
-    context.paramMaxDepth = opts.getLong(PARAM_MAX_DEPTH, context.paramMaxDepth);
-    context.paramEmptyIfMaxDepth = opts.getBoolean(PARAM_EMPTY_IF_MAX_DEPTH, context.paramEmptyIfMaxDepth);
-    context.paramTieBreaker = opts.getBoolean(PARAM_TIE_BREAKER, context.paramTieBreaker);
-    context.paramDFactor = opts.getDouble(PARAM_D_FACTOR, context.paramDFactor);
+    astar.paramParallel = opts.getBoolean(PARAM_PARALLEL, astar.paramParallel);
+    astar.paramMaxDepth = opts.getLong(PARAM_MAX_DEPTH, astar.paramMaxDepth);
+    astar.paramEmptyIfMaxDepth = opts.getBoolean(PARAM_EMPTY_IF_MAX_DEPTH, astar.paramEmptyIfMaxDepth);
+    astar.paramTieBreaker = opts.getBoolean(PARAM_TIE_BREAKER, astar.paramTieBreaker);
+    astar.paramDFactor = opts.getDouble(PARAM_D_FACTOR, astar.paramDFactor);
 
     if (opts.containsKey(PARAM_HEURISTIC_FORMULA)) {
       final Object raw = opts.get(PARAM_HEURISTIC_FORMULA);
       if (raw instanceof SQLHeuristicFormula formula)
-        context.paramHeuristicFormula = formula;
+        astar.paramHeuristicFormula = formula;
       else
-        context.paramHeuristicFormula = SQLHeuristicFormula.valueOf(raw.toString().toUpperCase(Locale.ENGLISH));
+        astar.paramHeuristicFormula = SQLHeuristicFormula.valueOf(raw.toString().toUpperCase(Locale.ENGLISH));
     }
 
     // The option the syntax advertises is now applied instead of being read into a field nothing consulted (issue
     // #6414). Supplying it selects CUSTOM, so a caller does not have to write the formula name twice; naming a
     // different formula alongside it is a contradiction rather than a precedence question, and says so.
     if (opts.containsKey(PARAM_CUSTOM_HEURISTIC_FORMULA)) {
-      if (opts.containsKey(PARAM_HEURISTIC_FORMULA) && context.paramHeuristicFormula != SQLHeuristicFormula.CUSTOM)
+      if (opts.containsKey(PARAM_HEURISTIC_FORMULA) && astar.paramHeuristicFormula != SQLHeuristicFormula.CUSTOM)
         throw new CommandSQLParsingException(
-            "Options '" + PARAM_HEURISTIC_FORMULA + "' (" + context.paramHeuristicFormula + ") and '"
+            "Options '" + PARAM_HEURISTIC_FORMULA + "' (" + astar.paramHeuristicFormula + ") and '"
                 + PARAM_CUSTOM_HEURISTIC_FORMULA + "' conflict for function '" + NAME
                 + "': a custom formula replaces the built-in one, so name only one of them");
 
-      context.bindCustomHeuristicFunction(opts.getString(PARAM_CUSTOM_HEURISTIC_FORMULA, null), this.context);
-    } else if (context.paramHeuristicFormula == SQLHeuristicFormula.CUSTOM)
+      astar.bindCustomHeuristicFunction(opts.getString(PARAM_CUSTOM_HEURISTIC_FORMULA, null), context);
+    } else if (astar.paramHeuristicFormula == SQLHeuristicFormula.CUSTOM)
       throw new CommandSQLParsingException(
           "Option '" + PARAM_HEURISTIC_FORMULA + "' of function '" + NAME + "' is CUSTOM but no '"
               + PARAM_CUSTOM_HEURISTIC_FORMULA + "' was given to name the function to call");

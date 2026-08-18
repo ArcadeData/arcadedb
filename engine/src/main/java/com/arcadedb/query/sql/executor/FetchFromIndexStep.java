@@ -386,7 +386,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       final String fieldName = textCondition.getLeft().getDefaultAlias().getStringValue();
       int position = -1;
       for (int i = 0; i < properties.size(); i++)
-        if (SelectExecutionPlanner.stripIndexPropertyModifier(properties.get(i)).equals(fieldName)) {
+        if (Index.basePropertyName(properties.get(i)).equals(fieldName)) {
           position = i;
           break;
         }

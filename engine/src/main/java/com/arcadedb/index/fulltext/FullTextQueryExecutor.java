@@ -21,6 +21,7 @@ package com.arcadedb.index.fulltext;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.RID;
 import com.arcadedb.function.text.TextLevenshteinDistance;
+import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.IndexException;
@@ -486,7 +487,8 @@ public class FullTextQueryExecutor {
    * A term is unqualified when the parser left it on the {@link #DEFAULT_FIELD} sentinel, or when it is qualified with the
    * sole property of a single-property index: such an index stores only unprefixed postings (see
    * {@link LSMTreeFullTextIndex#put}), so {@code field:term} and {@code term} are equivalent there. This is what lets a
-   * non-colliding sentinel be used without breaking single-property {@code content:term} queries.
+   * non-colliding sentinel be used without breaking single-property {@code content:term} queries. The property is compared
+   * by its BASE name, since {@code obj.hd} is what a query can write for a property the index calls {@code obj.hd by item}.
    * <p>
    * Issue #6382 existed because the two paths had encoded this rule separately and drifted: the executor had it and the
    * direct path did not, so a single-property index answered nothing for any literal containing a colon. Both now call
@@ -498,7 +500,8 @@ public class FullTextQueryExecutor {
   static boolean isUnqualified(final List<String> propertyNames, final String field) {
     if (field == null || field.isEmpty() || DEFAULT_FIELD.equals(field))
       return true;
-    return propertyNames != null && propertyNames.size() == 1 && propertyNames.getFirst().equals(field);
+    return propertyNames != null && propertyNames.size() == 1 && Index.basePropertyName(propertyNames.getFirst())
+        .equals(field);
   }
 
   /**

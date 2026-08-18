@@ -3903,20 +3903,6 @@ public class SelectExecutionPlanner {
   }
 
   /**
-   * Strips the {@code by key} / {@code by value} / {@code by item} modifier an index property name can carry, leaving the
-   * document property it indexes.
-   */
-  static String stripIndexPropertyModifier(final String indexField) {
-    if (indexField.endsWith(" by key"))
-      return indexField.substring(0, indexField.length() - 7);
-    if (indexField.endsWith(" by value"))
-      return indexField.substring(0, indexField.length() - 9);
-    if (indexField.endsWith(" by item"))
-      return indexField.substring(0, indexField.length() - 8);
-    return indexField;
-  }
-
-  /**
    * given a full text index and a flat AND block, returns a descriptor on how to process it with an
    * index (index, index key and additional filters to apply after index fetch
    * <p>
@@ -3947,7 +3933,7 @@ public class SelectExecutionPlanner {
     result.keyCondition = indexKeyValue;
 
     for (final String indexField : indexFields) {
-      final String baseFieldName = stripIndexPropertyModifier(indexField);
+      final String baseFieldName = Index.basePropertyName(indexField);
       final Iterator<BooleanExpression> blockIterator = blockCopy.getSubBlocks().iterator();
       while (blockIterator.hasNext()) {
         final BooleanExpression singleExp = blockIterator.next();

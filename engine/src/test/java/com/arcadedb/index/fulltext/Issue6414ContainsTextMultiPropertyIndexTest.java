@@ -135,6 +135,41 @@ class Issue6414ContainsTextMultiPropertyIndexTest extends TestHelper {
     });
   }
 
+  /**
+   * A property indexed {@code BY ITEM} is named {@code "obj.hd by item"} by the index and {@code obj.hd} by every query
+   * that mentions it, and {@link LSMTreeFullTextIndex#put} prefixes its postings with the FORMER. So the per-property key
+   * only reaches them if the qualifier written as the base name resolves back to the stored spelling: without that, this
+   * shape answered nothing at all, and before the positional key it answered its first condition and dropped the second.
+   */
+  @Test
+  void aNestedByItemPropertyIsSearchedByTheNameTheQueryWrites() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Pair6414");
+      database.command("sql", "CREATE PROPERTY Pair6414.hd STRING");
+      database.command("sql", "CREATE PROPERTY Pair6414.tl STRING");
+      database.command("sql", "CREATE DOCUMENT TYPE Doc6414");
+      database.command("sql", "CREATE PROPERTY Doc6414.obj LIST OF Pair6414");
+      database.command("sql", "CREATE INDEX combo6414 ON Doc6414 (`obj.hd` BY ITEM, `obj.tl` BY ITEM) FULL_TEXT");
+
+      database.command("sql", "INSERT INTO Doc6414 SET id = 'x', obj = "
+          + "[{\"@type\": \"Pair6414\", \"hd\": \"alpha\", \"tl\": \"beta\"}]");
+      database.command("sql", "INSERT INTO Doc6414 SET id = 'y', obj = "
+          + "[{\"@type\": \"Pair6414\", \"hd\": \"gamma\", \"tl\": \"delta\"}]");
+    });
+
+    database.transaction(() -> {
+      assertThat(explain("SELECT id FROM Doc6414 WHERE `obj.hd` CONTAINSTEXT 'alpha'")).contains("FETCH FROM INDEX");
+      assertThat(idsMatching("SELECT id FROM Doc6414 WHERE `obj.hd` CONTAINSTEXT 'alpha'")).containsExactly("x");
+      // The token lives in the OTHER indexed property, so the condition naming this one does not match it.
+      assertThat(idsMatching("SELECT id FROM Doc6414 WHERE `obj.hd` CONTAINSTEXT 'beta'")).isEmpty();
+      assertThat(idsMatching(
+          "SELECT id FROM Doc6414 WHERE `obj.hd` CONTAINSTEXT 'alpha' AND `obj.tl` CONTAINSTEXT 'beta'"))
+          .containsExactly("x");
+      assertThat(idsMatching(
+          "SELECT id FROM Doc6414 WHERE `obj.hd` CONTAINSTEXT 'alpha' AND `obj.tl` CONTAINSTEXT 'zzz'")).isEmpty();
+    });
+  }
+
   private void createArticles(final String indexCommand) {
     createArticles(indexCommand, "Article6414");
   }

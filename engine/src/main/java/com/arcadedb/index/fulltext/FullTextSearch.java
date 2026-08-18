@@ -25,7 +25,6 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
-import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
@@ -196,27 +195,10 @@ public class FullTextSearch {
     final int effectiveLimit = limit < 1 ? -1 : limit;
 
     final List<Object[]> perProperty = LSMTreeFullTextIndex.splitPositionalKey(typeIndex.getPropertyNames(), keys);
-    if (perProperty != null) {
-      Map<RID, Float> intersection = null;
-      for (final Object[] key : perProperty) {
-        final Map<RID, Float> matches = new HashMap<>();
-        try (final IndexCursor cursor = searchSimple(typeIndex, key, -1)) {
-          mergeCursor(matches, cursor);
-        }
-
-        if (intersection == null)
-          intersection = matches;
-        else {
-          intersection.keySet().retainAll(matches.keySet());
-          for (final Map.Entry<RID, Float> e : intersection.entrySet())
-            e.setValue(e.getValue() + matches.get(e.getKey()));
-        }
-
-        if (intersection.isEmpty())
-          break;
-      }
-      return rankedCursor(intersection == null ? Map.of() : intersection, keys, effectiveLimit);
-    }
+    if (perProperty != null)
+      return LSMTreeFullTextIndex.rankedCursor(
+          LSMTreeFullTextIndex.intersectPerProperty(perProperty, key -> searchSimple(typeIndex, key, -1)), keys,
+          effectiveLimit);
 
     final Map<String, Float> scoringTokens = bucketIndexes.getFirst().getSimpleQueryTokenBoosts(keys);
     final BM25ScoringContext scoringContext = createScoringContext(bucketIndexes,
@@ -226,7 +208,7 @@ public class FullTextSearch {
       mergeCursor(allResults,
           ftIndex.scoreBM25WithContext(null, scoringTokens, keys, effectiveLimit, scoringContext));
 
-    return rankedCursor(allResults, keys, effectiveLimit);
+    return LSMTreeFullTextIndex.rankedCursor(allResults, keys, effectiveLimit);
   }
 
   /**
@@ -351,20 +333,6 @@ public class FullTextSearch {
     }
   }
 
-  private static IndexCursor rankedCursor(final Map<RID, Float> scores, final Object[] keys, final int limit) {
-    final List<IndexCursorEntry> entries = new ArrayList<>(scores.size());
-    for (final Map.Entry<RID, Float> score : scores.entrySet())
-      entries.add(new IndexCursorEntry(keys, score.getKey(), score.getValue()));
-
-    entries.sort((left, right) -> {
-      final int scoreComparison = Float.compare(right.floatScore, left.floatScore);
-      return scoreComparison != 0 ? scoreComparison :
-          left.record.getIdentity().compareTo(right.record.getIdentity());
-    });
-    if (limit > -1 && entries.size() > limit)
-      return new TempIndexCursor(entries.subList(0, limit));
-    return new TempIndexCursor(entries);
-  }
 
   private static RID canonicalRID(final RID rid) {
     return rid instanceof final FullTextPostingRID posting ?

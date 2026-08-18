@@ -66,6 +66,7 @@ import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Function;
 import java.util.logging.Level;
 
 /**
@@ -236,6 +237,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * <p>
    * Each whitespace-separated part of the text is qualified individually, because that is the granularity
    * {@link #parseQueryTerms} works at: qualifying only the head would leave every following word matching any property.
+   * The qualifier is the property's BASE name ({@code obj.hd}, not the index's {@code obj.hd by item}): the modified
+   * spelling carries spaces, which the whitespace split would tear apart before anything could recognise it.
    *
    * @param propertyNames the indexed property names, in index order
    * @param keys          the lookup key
@@ -250,9 +253,27 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     for (int i = 0; i < keys.length; i++) {
       if (keys[i] == null)
         continue;
-      result.add(new Object[] { qualifyEveryPart(keys[i].toString(), propertyNames.get(i)) });
+      result.add(new Object[] { qualifyEveryPart(keys[i].toString(), Index.basePropertyName(propertyNames.get(i))) });
     }
     return result;
+  }
+
+  /**
+   * Answers the indexed property a query qualifier names, in the spelling the POSTINGS use, or {@code null} when the
+   * qualifier names no indexed property.
+   * <p>
+   * The two spellings differ for a property indexed with a modifier: {@link #put} prefixes tokens with the index's own
+   * property name ({@code obj.hd by item}) while a query can only write the base name ({@code obj.hd}) - the modified one
+   * carries spaces and would not survive the whitespace split. Matching on the base name and answering with the stored one
+   * is what lets a field-qualified lookup reach those postings at all.
+   */
+  private static String storedFieldFor(final List<String> propertyNames, final String qualifier) {
+    if (propertyNames == null || qualifier == null)
+      return null;
+    for (final String property : propertyNames)
+      if (property.equals(qualifier) || Index.basePropertyName(property).equals(qualifier))
+        return property;
+    return null;
   }
 
   /**
@@ -277,15 +298,24 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * Answers the documents that satisfy EVERY per-property query, scores summed. The conjunction is what makes a positional
    * key a faithful translation of the {@code AND} that produced it; within one property the terms keep the existing
    * disjunctive coordination scoring.
+   * <p>
+   * One implementation, called from here for a bucket-local lookup and from {@link FullTextSearch#searchSimple} for the
+   * type-wide BM25 one. Two copies of a full-text rule is exactly what issue #6382 came from, so this one is shared rather
+   * than written twice (issue #6414).
+   *
+   * @param perProperty one single-element key per constrained property, as {@link #splitPositionalKey} returns
+   * @param lookup      answers one property's key; the caller decides whether that is bucket-local or type-wide
    */
-  private IndexCursor getAllOf(final List<Object[]> perProperty, final Object[] keys, final int limit) {
+  static Map<RID, Float> intersectPerProperty(final List<Object[]> perProperty,
+      final Function<Object[], IndexCursor> lookup) {
     Map<RID, Float> intersection = null;
     for (final Object[] key : perProperty) {
       final Map<RID, Float> matches = new HashMap<>();
-      try (final IndexCursor cursor = get(key, -1)) {
+      try (final IndexCursor cursor = lookup.apply(key)) {
         while (cursor.hasNext()) {
-          final RID rid = cursor.next().getIdentity();
-          matches.merge(rid, cursor.getFloatScore(), Float::sum);
+          // merge, not put: a cursor answers one entry per document today, and summing is the answer that stays right if
+          // one ever answers the same document twice.
+          matches.merge(canonicalRID(cursor.next().getIdentity()), cursor.getFloatScore(), Float::sum);
         }
       }
 
@@ -301,14 +331,14 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         break;
     }
 
-    return rankedCursor(intersection, keys, limit);
+    return intersection == null ? Map.of() : intersection;
   }
 
   /**
    * Builds the most-relevant-first cursor over an already scored document set, RID as a stable tiebreaker so equal-scored
    * documents come back in a deterministic order.
    */
-  private static IndexCursor rankedCursor(final Map<RID, Float> scores, final Object[] keys, final int limit) {
+  static IndexCursor rankedCursor(final Map<RID, Float> scores, final Object[] keys, final int limit) {
     if (scores == null || scores.isEmpty())
       return new TempIndexCursor(List.of());
 
@@ -342,7 +372,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   public IndexCursor get(final Object[] keys, final int limit) {
     final List<Object[]> perProperty = splitPositionalKey(getPropertyNames(), keys);
     if (perProperty != null)
-      return getAllOf(perProperty, keys, limit);
+      return rankedCursor(intersectPerProperty(perProperty, key -> get(key, -1)), keys, limit);
 
     if (underlyingIndex.isStoreTermFrequency())
       return getBM25(keys, limit);
@@ -938,12 +968,14 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
 
       // Check for field:value pattern
       final int colonIdx = part.indexOf(':');
-      if (colonIdx > 0 && colonIdx < part.length() - 1 && propertyNames != null && propertyNames.contains(
-          part.substring(0, colonIdx))) {
-        final String field = part.substring(0, colonIdx);
+      final String storedField = colonIdx > 0 && colonIdx < part.length() - 1 ?
+          storedFieldFor(propertyNames, part.substring(0, colonIdx)) :
+          null;
+      if (storedField != null) {
         // Field-prefixed term: qualified only where qualified keys are stored, i.e. on a multi-property index
-        terms.add(new QueryTerm(FullTextQueryExecutor.isUnqualified(propertyNames, field) ? null : field,
-            part.substring(colonIdx + 1)));
+        terms.add(new QueryTerm(FullTextQueryExecutor.isUnqualified(propertyNames, part.substring(0, colonIdx)) ?
+            null :
+            storedField, part.substring(colonIdx + 1)));
       } else {
         // Literal text: the analyzer decides how it tokenizes
         terms.add(new QueryTerm(null, part));
