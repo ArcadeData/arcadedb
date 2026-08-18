@@ -5526,10 +5526,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // Snapshot keys/values into local arrays so we can safely mutate freeSpaceInPages
     // (put/remove) inside the loop body. The snapshot is bounded by MAX_PAGES_GATHER_STATS (100).
     //
-    // The snapshot is sorted by pageId to preserve the deterministic "fill lowest pageId first"
-    // allocation behavior that the previous TreeMap-backed implementation provided implicitly via
-    // its ordered iteration. Tests like RandomDeleteTest depend on this so that re-inserts after
-    // bulk deletes land at the same RIDs as the original inserts.
+    // The snapshot is sorted by pageId to preserve the deterministic "fill lowest pageId first" allocation behaviour
+    // that the previous TreeMap-backed implementation provided implicitly via its ordered iteration. What it buys is
+    // a REPRODUCIBLE choice among the candidate pages - the same bucket state allocates the same way twice - and the
+    // locality of preferring the pages nearest the front of the file.
+    //
+    // What it does NOT buy, and used to be claimed here (#6339): that a re-insert after a bulk delete lands on the
+    // RID the original insert had. It cannot, and it could not then either - which page is a candidate at all depends
+    // on what the free-space statistics hold at that moment, and this ordering only decides between the pages that
+    // made it into that map. RandomDeleteTest was cited as depending on it and no longer does: it compares the scan
+    // against the records it inserted rather than against the order it inserted them in.
     final int snapSize = freeSpaceInPages.size();
     final int[] snapPageIds = new int[snapSize];
     final int[] snapPageStats = new int[snapSize];
