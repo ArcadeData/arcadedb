@@ -31,6 +31,7 @@ import com.arcadedb.query.sql.parser.BetweenCondition;
 import com.arcadedb.query.sql.parser.BinaryCompareOperator;
 import com.arcadedb.query.sql.parser.BinaryCondition;
 import com.arcadedb.query.sql.parser.BooleanExpression;
+import com.arcadedb.query.sql.parser.ContainsTextCondition;
 import com.arcadedb.query.sql.parser.EqualsCompareOperator;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.GeOperator;
@@ -41,6 +42,7 @@ import com.arcadedb.query.sql.parser.LeOperator;
 import com.arcadedb.query.sql.parser.LtOperator;
 import com.arcadedb.query.sql.parser.PCollection;
 import com.arcadedb.query.sql.parser.ValueExpression;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.utility.MultiIterator;
@@ -343,11 +345,65 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
    * it's not key = [...] but a real condition on field names, already ordered (field names will be ignored)
    */
   private void processAndBlock() {
+    if (processFullTextBlock())
+      return;
+
     final PCollection fromKey = indexKeyFrom((AndBlock) condition, additionalRangeCondition);
     final PCollection toKey = indexKeyTo((AndBlock) condition, additionalRangeCondition);
     final boolean fromKeyIncluded = indexKeyFromIncluded((AndBlock) condition, additionalRangeCondition);
     final boolean toKeyIncluded = indexKeyToIncluded((AndBlock) condition, additionalRangeCondition);
     init(fromKey, fromKeyIncluded, toKey, toKeyIncluded);
+  }
+
+  /**
+   * Builds the POSITIONAL key a full-text index expects and opens the lookup with it: {@code keys[i]} is the text to find in
+   * the i-th indexed property, {@code null} leaving that property unconstrained. Field names matter here, unlike everywhere
+   * else on this step - a full-text index key is one query string per property rather than a composite ordered key, so a
+   * condition on the second property alone is a perfectly good key and must not be shifted into the first slot.
+   * <p>
+   * Answers false, leaving the generic path to run, whenever the block is not exactly that: another index type, a range
+   * condition alongside, anything but {@code CONTAINSTEXT}, a property this index does not cover, a multi-value key, or two
+   * conditions on the same property. A single-property index takes this path too and produces the same one-element key it
+   * always did (issue #6414, item 2).
+   */
+  private boolean processFullTextBlock() {
+    if (index.getType() != Schema.INDEX_TYPE.FULL_TEXT || additionalRangeCondition != null)
+      return false;
+
+    final List<String> properties = index.getPropertyNames();
+    if (properties == null || properties.isEmpty())
+      return false;
+
+    final List<BooleanExpression> subBlocks = ((AndBlock) condition).getSubBlocks();
+    if (subBlocks.isEmpty())
+      return false;
+
+    final Object[] keys = new Object[properties.size()];
+    for (final BooleanExpression exp : subBlocks) {
+      if (!(exp instanceof ContainsTextCondition textCondition))
+        return false;
+
+      final String fieldName = textCondition.getLeft().getDefaultAlias().getStringValue();
+      int position = -1;
+      for (int i = 0; i < properties.size(); i++)
+        if (SelectExecutionPlanner.stripIndexPropertyModifier(properties.get(i)).equals(fieldName)) {
+          position = i;
+          break;
+        }
+
+      if (position < 0 || keys[position] != null)
+        return false;
+
+      final Object value = textCondition.getRight().execute((Result) null, context);
+      if (value != null && !(value instanceof Identifiable) && MultiValue.isMultiValue(value))
+        return false;
+
+      keys[position] = value;
+    }
+
+    cursor = index.get(keys);
+    fetchNextEntry();
+    return true;
   }
 
   private void processIsNullCondition() {

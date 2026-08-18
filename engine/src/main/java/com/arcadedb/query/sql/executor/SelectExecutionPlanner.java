@@ -3903,8 +3903,31 @@ public class SelectExecutionPlanner {
   }
 
   /**
+   * Strips the {@code by key} / {@code by value} / {@code by item} modifier an index property name can carry, leaving the
+   * document property it indexes.
+   */
+  static String stripIndexPropertyModifier(final String indexField) {
+    if (indexField.endsWith(" by key"))
+      return indexField.substring(0, indexField.length() - 7);
+    if (indexField.endsWith(" by value"))
+      return indexField.substring(0, indexField.length() - 9);
+    if (indexField.endsWith(" by item"))
+      return indexField.substring(0, indexField.length() - 8);
+    return indexField;
+  }
+
+  /**
    * given a full text index and a flat AND block, returns a descriptor on how to process it with an
    * index (index, index key and additional filters to apply after index fetch
+   * <p>
+   * Every {@code CONTAINSTEXT} the index covers is claimed, whichever properties they are and however few: a full-text index
+   * key is one query string per indexed property, not a composite key whose prefix has to be contiguous, and a multi-property
+   * index stores each token both field-qualified and unprefixed so a per-property lookup is exact. Requiring the FIRST index
+   * property to be constrained, and then every following one, meant a condition on one property of a two-property index fell
+   * back to a full scan - where {@code CONTAINSTEXT} silently changed from analyzer-token matching to
+   * {@code String.contains} - while a condition on BOTH was pushed down and then answered by the first one alone, with the
+   * second dropped from the filter as well (issue #6414, item 2). {@link FetchFromIndexStep} turns the claimed conditions
+   * into the positional key the index expects.
    *
    * @param context
    * @param index
@@ -3916,41 +3939,23 @@ public class SelectExecutionPlanner {
   private IndexSearchDescriptor buildIndexSearchDescriptorForFulltext(final CommandContext context, final Index index,
       final AndBlock block, final DocumentType clazz) {
     final List<String> indexFields = index.getPropertyNames();
-    final BinaryCondition keyCondition = new BinaryCondition();
-    final Identifier key = new Identifier("key");
-    keyCondition.setLeft(new Expression(key));
-    boolean found = false;
 
     final AndBlock blockCopy = block.copy();
-    Iterator<BooleanExpression> blockIterator;
-
     final AndBlock indexKeyValue = new AndBlock();
     final IndexSearchDescriptor result = new IndexSearchDescriptor();
     result.index = (RangeIndex) index;
     result.keyCondition = indexKeyValue;
+
     for (final String indexField : indexFields) {
-      blockIterator = blockCopy.getSubBlocks().iterator();
-      final boolean breakHere = false;
-      boolean indexFieldFound = false;
+      final String baseFieldName = stripIndexPropertyModifier(indexField);
+      final Iterator<BooleanExpression> blockIterator = blockCopy.getSubBlocks().iterator();
       while (blockIterator.hasNext()) {
         final BooleanExpression singleExp = blockIterator.next();
         if (singleExp instanceof ContainsTextCondition textCondition) {
           final Expression left = textCondition.getLeft();
           // Get field name from expression - handle both simple identifiers (e.g. txt) and dotted
           // path expressions (e.g. lst.txt) used with BY ITEM nested property indexes
-          final String fieldName = left.getDefaultAlias().getStringValue();
-          // Strip modifiers to get base field name
-          String baseFieldName = indexField;
-          if (indexField.endsWith(" by key")) {
-            baseFieldName = indexField.substring(0, indexField.length() - 7);
-          } else if (indexField.endsWith(" by value")) {
-            baseFieldName = indexField.substring(0, indexField.length() - 9);
-          } else if (indexField.endsWith(" by item")) {
-            baseFieldName = indexField.substring(0, indexField.length() - 8);
-          }
-          if (baseFieldName.equals(fieldName)) {
-            found = true;
-            indexFieldFound = true;
+          if (baseFieldName.equals(left.getDefaultAlias().getStringValue())) {
             final ContainsTextCondition condition = new ContainsTextCondition();
             condition.setLeft(left);
             condition.setRight(textCondition.getRight().copy());
@@ -3960,20 +3965,13 @@ public class SelectExecutionPlanner {
           }
         }
       }
-      if (breakHere || !indexFieldFound) {
-        break;
-      }
     }
 
-    if (result.getSubBlocks().size() < index.getPropertyNames().size() && !index.supportsOrderedIterations())
-      // hash indexes do not support partial key match
+    if (indexKeyValue.getSubBlocks().isEmpty())
       return null;
 
-    if (found) {
-      result.remainingCondition = blockCopy;
-      return result;
-    }
-    return null;
+    result.remainingCondition = blockCopy;
+    return result;
   }
 
   /**

@@ -181,6 +181,10 @@ public class FullTextSearch {
   /**
    * Executes the literal-token lookup used by {@link TypeIndex#get(Object[])} while keeping BM25 scores comparable across bucket
    * indexes. Lucene boolean/wildcard syntax is intentionally not interpreted on this path.
+   * <p>
+   * A POSITIONAL key over a multi-property index (see {@link LSMTreeFullTextIndex#splitPositionalKey}) is a conjunction over
+   * the properties it constrains, so it is answered as one type-wide lookup per property, intersected. The corpus statistics
+   * stay type-wide within each of those lookups, which is what keeps the scores comparable (issue #6414).
    */
   public static IndexCursor searchSimple(final TypeIndex typeIndex, final Object[] keys, final int limit) {
     final List<LSMTreeFullTextIndex> bucketIndexes = getBucketIndexes(typeIndex);
@@ -190,6 +194,30 @@ public class FullTextSearch {
       throw new IllegalArgumentException("searchSimple requires a BM25 full-text index");
 
     final int effectiveLimit = limit < 1 ? -1 : limit;
+
+    final List<Object[]> perProperty = LSMTreeFullTextIndex.splitPositionalKey(typeIndex.getPropertyNames(), keys);
+    if (perProperty != null) {
+      Map<RID, Float> intersection = null;
+      for (final Object[] key : perProperty) {
+        final Map<RID, Float> matches = new HashMap<>();
+        try (final IndexCursor cursor = searchSimple(typeIndex, key, -1)) {
+          mergeCursor(matches, cursor);
+        }
+
+        if (intersection == null)
+          intersection = matches;
+        else {
+          intersection.keySet().retainAll(matches.keySet());
+          for (final Map.Entry<RID, Float> e : intersection.entrySet())
+            e.setValue(e.getValue() + matches.get(e.getKey()));
+        }
+
+        if (intersection.isEmpty())
+          break;
+      }
+      return rankedCursor(intersection == null ? Map.of() : intersection, keys, effectiveLimit);
+    }
+
     final Map<String, Float> scoringTokens = bucketIndexes.getFirst().getSimpleQueryTokenBoosts(keys);
     final BM25ScoringContext scoringContext = createScoringContext(bucketIndexes,
         scanDocumentFrequencies(bucketIndexes, scoringTokens));

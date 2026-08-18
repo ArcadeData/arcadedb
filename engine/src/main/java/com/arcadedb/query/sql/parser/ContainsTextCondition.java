@@ -28,6 +28,20 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * The {@code CONTAINSTEXT} operator.
+ * <p>
+ * When a full-text index covers the property on the left, the planner pushes the whole condition down onto it and the
+ * answer is analyzer-TOKEN matching: case-insensitive, whole tokens, stop words and stemming as the index's analyzer
+ * defines them. That holds however the index is declared - one property or several - since issue #6414 gave the
+ * multi-property index a per-property key.
+ * <p>
+ * The {@link #evaluate} below is the fallback for everything else, and it is a plain case-sensitive
+ * {@code String.contains}: substring matching, no analyzer involved. So the operator's meaning is decided by whether a
+ * full-text index covers the property, which {@code EXPLAIN} answers - {@code FETCH FROM INDEX} versus a scan - and
+ * nothing else. Use {@code SEARCH_INDEX(...)} for the full Lucene query syntax, or {@code LIKE '%..%'} when substring
+ * matching is what is wanted.
+ */
 @SuppressWarnings("ALL")
 public class ContainsTextCondition extends BooleanExpression {
   public Expression left;

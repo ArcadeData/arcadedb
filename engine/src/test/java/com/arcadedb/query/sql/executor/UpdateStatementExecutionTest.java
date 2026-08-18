@@ -33,6 +33,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -1082,33 +1083,50 @@ public class UpdateStatementExecutionTest extends TestHelper {
     });
   }
 
-  // Issue #1814: APPLY DEFAULTS evaluates dynamic default expressions (e.g. sysdate) on UPDATE
+  /**
+   * Issue #1814: APPLY DEFAULTS evaluates dynamic default expressions (e.g. sysdate) on UPDATE.
+   * <p>
+   * The default has to be an EXPRESSION. Written as {@code default "sysdate(...)"} - a double-quoted SQL string
+   * literal - the call never happened and the literal text was stored verbatim, so the test asserted only that a
+   * constant string is not null and could not fail if dynamic-default evaluation regressed (issue #6414, item 3).
+   * The assertions below are on the value itself: it has to parse as a date, and after APPLY DEFAULTS it has to have
+   * replaced a sentinel the expression cannot produce.
+   */
   @Test
   void updateWithApplyDefaultsAndDynamicDefault() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE timestamped");
       database.command("sql", "CREATE PROPERTY timestamped.name STRING");
-      database.command("sql", "CREATE PROPERTY timestamped.updated STRING (default \"sysdate('YYYY-MM-DD')\")");
+      database.command("sql", "CREATE PROPERTY timestamped.updated STRING (default sysdate().format('yyyy-MM-dd'))");
     });
 
     database.transaction(() -> {
       database.command("sql", "INSERT INTO timestamped SET name = 'test'");
-
-      ResultSet result = database.query("sql", "SELECT FROM timestamped WHERE name = 'test'");
-      assertThat(result.hasNext()).isTrue();
-      var record = result.next();
-      String initialUpdated = record.getProperty("updated");
-      assertThat((Object) initialUpdated).isNotNull();
+      assertThatIsADate(readUpdated());
     });
 
     database.transaction(() -> {
+      // A sentinel the default cannot produce: after APPLY DEFAULTS re-evaluates the expression it must be gone.
+      database.command("sql", "UPDATE timestamped SET updated = 'stale' WHERE name = 'test'");
       database.command("sql", "UPDATE timestamped SET updated = null APPLY DEFAULTS WHERE name = 'test'");
-
-      ResultSet result = database.query("sql", "SELECT FROM timestamped WHERE name = 'test'");
-      assertThat(result.hasNext()).isTrue();
-      var record = result.next();
-      assertThat((Object) record.getProperty("updated")).isNotNull();
+      assertThatIsADate(readUpdated());
     });
+  }
+
+  private String readUpdated() {
+    try (final ResultSet result = database.query("sql", "SELECT FROM timestamped WHERE name = 'test'")) {
+      assertThat(result.hasNext()).isTrue();
+      return result.next().getProperty("updated");
+    }
+  }
+
+  /**
+   * Deliberately not an equality against today's date: the two transactions above can straddle midnight. Parsing is
+   * enough to prove the expression ran, because the stored literal it replaces - and the 'stale' sentinel - do not.
+   */
+  private static void assertThatIsADate(final String value) {
+    assertThat(value).matches("\\d{4}-\\d{2}-\\d{2}");
+    assertThat(LocalDate.parse(value, DateTimeFormatter.ofPattern("yyyy-MM-dd"))).isNotNull();
   }
 
 }

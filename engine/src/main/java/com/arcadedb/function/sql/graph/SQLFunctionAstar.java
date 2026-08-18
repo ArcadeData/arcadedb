@@ -23,6 +23,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
@@ -336,11 +337,26 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
         context.paramHeuristicFormula = SQLHeuristicFormula.valueOf(raw.toString().toUpperCase(Locale.ENGLISH));
     }
 
-    context.paramCustomHeuristicFormula = opts.getString(PARAM_CUSTOM_HEURISTIC_FORMULA, context.paramCustomHeuristicFormula);
+    // The option the syntax advertises is now applied instead of being read into a field nothing consulted (issue
+    // #6414). Supplying it selects CUSTOM, so a caller does not have to write the formula name twice; naming a
+    // different formula alongside it is a contradiction rather than a precedence question, and says so.
+    if (opts.containsKey(PARAM_CUSTOM_HEURISTIC_FORMULA)) {
+      if (opts.containsKey(PARAM_HEURISTIC_FORMULA) && context.paramHeuristicFormula != SQLHeuristicFormula.CUSTOM)
+        throw new CommandSQLParsingException(
+            "Options '" + PARAM_HEURISTIC_FORMULA + "' (" + context.paramHeuristicFormula + ") and '"
+                + PARAM_CUSTOM_HEURISTIC_FORMULA + "' conflict for function '" + NAME
+                + "': a custom formula replaces the built-in one, so name only one of them");
+
+      context.bindCustomHeuristicFunction(opts.getString(PARAM_CUSTOM_HEURISTIC_FORMULA, null), this.context);
+    } else if (context.paramHeuristicFormula == SQLHeuristicFormula.CUSTOM)
+      throw new CommandSQLParsingException(
+          "Option '" + PARAM_HEURISTIC_FORMULA + "' of function '" + NAME + "' is CUSTOM but no '"
+              + PARAM_CUSTOM_HEURISTIC_FORMULA + "' was given to name the function to call");
   }
 
   public String getSyntax() {
-    return "astar(<sourceVertex>, <destinationVertex>, <weightEdgeFieldName>, [<options>]) \n // options  : {direction:\"OUT\",edgeTypeNames:[] , vertexAxisNames:[] , parallel : false , tieBreaker:true,maxDepth:99999,dFactor:1.0,customHeuristicFormula:'custom_Function_Name_here'  }";
+    return "astar(<sourceVertex>, <destinationVertex>, <weightEdgeFieldName>, [<options>]) \n // options  : {direction:\"OUT\",edgeTypeNames:[] , vertexAxisNames:[] , parallel : false , tieBreaker:true,maxDepth:99999,dFactor:1.0,heuristicFormula:'MANHATTAN',customHeuristicFormula:'custom_Function_Name_here'  }"
+        + "\n // customHeuristicFormula names a SQL function called as fn(currentVertex, parentVertex, targetVertex, sourceVertex, depth, dFactor) and returning h(n) as a number";
   }
 
   @Override
@@ -396,6 +412,11 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
   @Override
   protected double getHeuristicCost(final Vertex node, Vertex parent, final Vertex target, final CommandContext ctx) {
     double hresult = 0.0;
+
+    // Ahead of every axis test on purpose: a custom formula owns h(n) outright, so it applies whether or not the
+    // caller also declared vertex axes, and no tie-breaker is layered on top of its answer.
+    if (paramHeuristicFormula == SQLHeuristicFormula.CUSTOM)
+      return getCustomHeuristicCost(node, parent, target, currentDepth, ctx);
 
     if (paramVertexAxisNames.length == 0) {
       return hresult;
