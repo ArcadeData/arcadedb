@@ -1451,7 +1451,7 @@ public class MergeStep extends AbstractExecutionStep {
     builder.append(ind);
     builder.append("+ MERGE");
     if (context.isProfiling()) {
-      builder.append(" (").append(getCostFormatted()).append(")");
+      builder.append(" (").append(getCostFormatted());
       if (rowCount > 0)
         builder.append(", ").append(getRowCountFormatted());
       builder.append(")");

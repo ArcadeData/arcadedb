@@ -317,6 +317,10 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
       builder.append("]");
     }
     builder.append(" -> ").append(countAlias).append(")");
+    // The label the counted node carries is the difference between counting the edges and counting the edges that
+    // reach that label, and the plan named neither it nor the step it belongs to before issue #6323.
+    if (targetLabel != null)
+      builder.append(" [target: ").append(targetLabel).append("]");
     if (context.isProfiling()) {
       builder.append(" (").append(getCostFormatted());
       if (rowCount > 0)

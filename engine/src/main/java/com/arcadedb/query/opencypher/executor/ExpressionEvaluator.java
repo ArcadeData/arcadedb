@@ -366,50 +366,24 @@ public class ExpressionEvaluator {
     if (listValue == null)
       return null;
 
-    // Treat Collections and Java arrays (incl. primitive arrays from numeric-array parameters,
-    // issue #4284) uniformly as Cypher lists without copying upfront.
-    final boolean isListLike = listValue instanceof Collection || listValue.getClass().isArray();
-    final int size;
-    if (isListLike)
-      size = MultiValue.getSize(listValue);
-    else if (listValue instanceof String)
-      size = ((String) listValue).length();
-    else
-      throw new IllegalArgumentException("Cannot slice type: " + listValue.getClass().getSimpleName());
-
-    int from = 0;
+    Integer from = null;
     if (expression.getFromExpression() != null) {
       final Object fromValue = evaluate(expression.getFromExpression(), result, context);
       if (fromValue == null)
         return null;
-      from = ((Number) fromValue).intValue();
+      from = ListSliceExpression.sliceBound(fromValue);
     }
 
-    int to = size;
+    Integer to = null;
     if (expression.getToExpression() != null) {
       final Object toValue = evaluate(expression.getToExpression(), result, context);
       if (toValue == null)
         return null;
-      to = ((Number) toValue).intValue();
+      to = ListSliceExpression.sliceBound(toValue);
     }
 
-    if (from < 0)
-      from = Math.max(0, size + from);
-    if (to < 0)
-      to = Math.max(0, size + to);
-    from = Math.min(from, size);
-    to = Math.min(to, size);
-
-    if (from >= to)
-      return listValue instanceof String ? "" : new ArrayList<>();
-
-    if (isListLike) {
-      final List<Object> slice = new ArrayList<>(to - from);
-      for (int i = from; i < to; i++)
-        slice.add(MultiValue.getValue(listValue, i));
-      return slice;
-    }
-    return ((String) listValue).substring(from, to);
+    // The slicing itself belongs to the AST node, so the two paths cannot answer differently (issue #6323).
+    return ListSliceExpression.slice(listValue, from, to);
   }
 
   /**

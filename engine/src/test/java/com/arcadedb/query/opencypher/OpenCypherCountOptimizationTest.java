@@ -240,9 +240,11 @@ class OpenCypherCountOptimizationTest {
   }
 
   @Test
-  void countEdgesReturnNotAppliedWithTargetLabel() {
-    // When target node has a label, countEdges() can't filter by target type,
-    // so the optimization must NOT be applied — otherwise results would be wrong.
+  void countEdgesReturnFiltersByTheTargetLabel() {
+    // The push-down was once declined when the counted node carried a label, because it could not filter by
+    // target type. CountEdgesReturnStep takes a targetLabel and applies it, so the push-down is taken and what
+    // it counts is the edges that reach that label. This used to assert the step was ABSENT from the plan, and
+    // that held only because the plan text did not print the steps following an optimized MATCH (issue #6323).
     database.transaction(() -> {
       database.getSchema().createVertexType("Person").createProperty("name", String.class);
       database.getSchema().createVertexType("Company").createProperty("name", String.class);
@@ -266,14 +268,15 @@ class OpenCypherCountOptimizationTest {
       assertThat(rs.hasNext()).isFalse();
     }
 
-    // Verify the optimization is NOT used (falls back to standard path)
+    // The plan names the step AND the label it filters on, which is what makes the count above readable as
+    // "edges to a Person" rather than "edges".
     try (final ResultSet rs = database.query("opencypher",
         "PROFILE MATCH (p:Person)-[:KNOWS]->(friend:Person) RETURN p.name AS name, count(friend) AS cnt")) {
       while (rs.hasNext())
         rs.next();
       assertThat(rs.getExecutionPlan().isPresent()).isTrue();
       final String plan = rs.getExecutionPlan().get().prettyPrint(0, 2);
-      assertThat(plan).doesNotContain("COUNT EDGES RETURN");
+      assertThat(plan).contains("COUNT EDGES RETURN").contains("[target: Person]");
     }
   }
 
