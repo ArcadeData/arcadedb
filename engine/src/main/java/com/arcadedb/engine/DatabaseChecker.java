@@ -705,15 +705,18 @@ public class DatabaseChecker {
       }
 
       try {
-        totalShards += engine.getShardCount();
-        for (int i = 0; i < engine.getShardCount(); i++)
-          totalSealedBlocks += engine.getShard(i).getSealedStore().getBlockCount();
-        totalSamples += engine.countSamples();
+        // ONE walk over the type's shards, not three: the report carries the totals this pass publishes alongside
+        // the findings, with each shard measuring itself inside the same lock window it checks itself in - so the
+        // numbers and the verdict describe one instant rather than three.
+        final TimeSeriesEngine.IntegrityReport report = engine.checkIntegrity();
 
-        final List<String> problems = engine.checkIntegrity();
-        if (!problems.isEmpty()) {
+        totalShards += report.shards();
+        totalSamples += report.samples();
+        totalSealedBlocks += report.sealedBlocks();
+
+        if (!report.problems().isEmpty()) {
           corrupted.add(type.getName());
-          for (final String problem : problems)
+          for (final String problem : report.problems())
             addWarning("timeseries '" + type.getName() + "': " + problem);
         }
       } catch (final Exception e) {

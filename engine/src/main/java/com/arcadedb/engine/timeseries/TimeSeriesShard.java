@@ -944,8 +944,17 @@ public class TimeSeriesShard implements AutoCloseable {
   }
 
   /**
+   * What one shard's integrity check found and what it was looking at: the problems, empty when there are none,
+   * and the size of the thing they are a verdict on. The two travel together deliberately (issue #6340) - a
+   * caller asking the shard separately for its sample count would be told about a different instant than the one
+   * the verdict describes, and would visit the shard three times to learn it.
+   */
+  public record IntegrityReport(List<String> problems, long samples, long sealedBlocks) {
+  }
+
+  /**
    * Validates both halves of this shard - the mutable bucket's pages and the sealed store's blocks - and returns
-   * one line per problem, empty when there is none (issue #6340).
+   * one line per problem, empty when there is none, together with what the two halves hold (issue #6340).
    * <p>
    * <b>The locks are what make the answer worth having.</b> Every counter checked on either side is reconciled
    * against the bytes it describes, and both are maintained live: an append raises the mutable header's sample
@@ -955,11 +964,16 @@ public class TimeSeriesShard implements AutoCloseable {
    * the order {@link #appendSamples(TimeSeriesRowSource)} takes them in and the one that keeps this free of the
    * inversion the class comment warns about; queries are unaffected, since they take the same read lock.
    * <p>
+   * The sample and block totals are taken inside that same window, which is why they are returned from here rather
+   * than read off the shard afterwards: a compaction landing in between moves rows from the mutable half to the
+   * sealed one, so a total gathered separately describes neither the state the walk checked nor any other single
+   * instant.
+   * <p>
    * Each problem is prefixed with which half of the shard it came from, because the two are different files with
    * different formats and different repairs: the mutable bucket is replicated page-by-page under HA while the
    * sealed store is derived and rebuilt locally by each node's own compaction.
    */
-  public List<String> checkIntegrity() throws IOException {
+  public IntegrityReport checkIntegrity() throws IOException {
     final List<String> problems = new ArrayList<>();
 
     appendLock.lock();
@@ -970,14 +984,15 @@ public class TimeSeriesShard implements AutoCloseable {
           problems.add("mutable bucket: " + problem);
         for (final String problem : sealedStore.checkIntegrity())
           problems.add("sealed store: " + problem);
+
+        return new IntegrityReport(problems, mutableBucket.getSampleCount() + sealedStore.getTotalSampleCount(),
+            sealedStore.getBlockCount());
       } finally {
         compactionLock.readLock().unlock();
       }
     } finally {
       appendLock.unlock();
     }
-
-    return problems;
   }
 
   public TimeSeriesBucket getMutableBucket() {

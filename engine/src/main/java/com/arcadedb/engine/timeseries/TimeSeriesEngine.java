@@ -708,6 +708,14 @@ public class TimeSeriesEngine implements AutoCloseable {
   }
 
   /**
+   * What this type's integrity check found and what it was looking at (issue #6340). {@code CHECK DATABASE}
+   * reports both: a caller reading a sample total of zero on a type that holds millions could not otherwise tell
+   * "checked and clean" from "not looked at", which is the state this whole pass exists to end.
+   */
+  public record IntegrityReport(List<String> problems, int shards, long samples, long sealedBlocks) {
+  }
+
+  /**
    * Validates every file this type stores data in - each shard's mutable bucket and sealed store, plus the shared
    * tag dictionary - and returns one line per problem, empty when there is none (issue #6340).
    * <p>
@@ -718,21 +726,31 @@ public class TimeSeriesEngine implements AutoCloseable {
    * storage component in the engine was covered; these three formats, each with its own magic, header and (for the
    * sealed store) CRCs, were not.
    * <p>
+   * Every shard is visited ONCE, and the totals come back with the verdict rather than being gathered by a second
+   * and third walk over the same shards: each shard measures itself inside the same lock window it checks itself
+   * in, so the numbers and the findings describe one instant instead of three.
+   * <p>
    * Each line names the shard it came from, since a type has as many of each file as it has shards and an operator
    * acting on a finding needs to know which one to act on.
    */
-  public List<String> checkIntegrity() throws IOException {
+  public IntegrityReport checkIntegrity() throws IOException {
     final List<String> problems = new ArrayList<>();
+    long samples = 0;
+    long sealedBlocks = 0;
 
-    for (final TimeSeriesShard shard : shards)
-      for (final String problem : shard.checkIntegrity())
+    for (final TimeSeriesShard shard : shards) {
+      final TimeSeriesShard.IntegrityReport report = shard.checkIntegrity();
+      for (final String problem : report.problems())
         problems.add("shard " + shard.getShardIndex() + " " + problem);
+      samples += report.samples();
+      sealedBlocks += report.sealedBlocks();
+    }
 
     if (tagDictionary != null)
       for (final String problem : tagDictionary.checkIntegrity())
         problems.add("tag dictionary: " + problem);
 
-    return problems;
+    return new IntegrityReport(problems, shardCount, samples, sealedBlocks);
   }
 
   public int getShardCount() {
