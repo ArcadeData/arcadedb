@@ -1680,6 +1680,7 @@ public class CypherSemanticValidator {
   }
 
   private void validateCreatePathPattern(final PathPattern path) {
+    checkNoLabelDisjunction(path, "CREATE");
     for (final RelationshipPattern rel : path.getRelationships()) {
       // CREATE relationships must specify exactly one type
       if (!rel.hasTypes())
@@ -1697,6 +1698,7 @@ public class CypherSemanticValidator {
   }
 
   private void validateMergePathPattern(final PathPattern path) {
+    checkNoLabelDisjunction(path, "MERGE");
     for (final RelationshipPattern rel : path.getRelationships()) {
       // MERGE relationships must specify exactly one type
       if (!rel.hasTypes())
@@ -1710,6 +1712,24 @@ public class CypherSemanticValidator {
     }
     // MERGE cannot have null property values
     checkMergeNullProperties(path);
+  }
+
+  /**
+   * A label disjunction says which labels a node may have, which is a question only a read can answer: there is no
+   * node a write could produce that satisfies "A or B" without picking one. Neo4j refuses a label expression in
+   * CREATE and MERGE for that reason, and so does this - it used to be accepted and then quietly given conjunction
+   * meaning, which made {@code MERGE (n:A|B {k:'x'})} miss an existing {@code :B} node and create a second one under
+   * an invented {@code A~B} composite type instead of matching it (issue #6338).
+   */
+  private void checkNoLabelDisjunction(final PathPattern path, final String clause) {
+    if (path == null)
+      return;
+    for (final NodePattern node : path.getNodes())
+      if (node.isLabelDisjunction() && node.getLabels().size() > 1)
+        throw new CommandParsingException("UnexpectedSyntax: Label expressions are not allowed in " + clause
+            + ", only in MATCH and in expressions: " + String.join("|", node.getLabels())
+            + " does not name the labels to write. Use ':" + String.join(":", node.getLabels())
+            + "' to give the node all of them");
   }
 
   private void checkMergeNullProperties(final PathPattern path) {

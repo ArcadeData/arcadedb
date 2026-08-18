@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -30,6 +31,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for issue #6338: a label disjunction {@code (y:A|B)} written on a node a relationship expands
@@ -105,6 +107,50 @@ class CypherLabelDisjunctionOnExpandedNodeIssue6338Test {
   @Test
   void disjunctionOnAVariableLengthTargetMatchesEitherLabel() {
     assertThat(keys("MATCH (p:Post)-[:TAGGED*1..2]->(y:Author|Topic) RETURN y.k AS k")).containsExactly("t1");
+  }
+
+  @Test
+  void disjunctionInAPatternComprehensionMatchesEitherLabel() {
+    // A node pattern in expression position was built with the disjunction flag hardcoded to false, so (y:A|B)
+    // reached the executor indistinguishable from (y:A:B) and the comprehension came back empty.
+    assertThat(listKeys("MATCH (p:Post) RETURN [(p)-->(y:Author|Topic) | y.k] AS l")).containsExactly("t1");
+    assertThat(listKeys("MATCH (p:Post) RETURN [(p)-->(y:Topic) | y.k] AS l")).containsExactly("t1");
+    assertThat(listKeys("MATCH (p:Post) RETURN [(p)-->(y:Author:Topic) | y.k] AS l")).isEmpty();
+  }
+
+  @Test
+  void disjunctionInAFunctionStyleExistsMatchesEitherLabel() {
+    // The block form EXISTS { } takes the subquery path and always answered this correctly; the function form is
+    // evaluated by PatternPredicateExpression, which ANDed the alternatives. Two spellings, one meaning.
+    assertThat(keys("MATCH (a:Post) WHERE exists((a)-->(:Author|Topic)) RETURN a.k AS k")).containsExactly("p1");
+    assertThat(keys("MATCH (a:Post) WHERE EXISTS { (a)-->(:Author|Topic) } RETURN a.k AS k")).containsExactly("p1");
+    assertThat(keys("MATCH (a:Post) WHERE exists((a)-->(:Author:Topic)) RETURN a.k AS k")).isEmpty();
+  }
+
+  @Test
+  void aLabelExpressionIsRefusedByTheClausesThatWrite() {
+    // A disjunction says which labels a node MAY have, which only a read can answer. Neo4j refuses it in CREATE and
+    // MERGE; ArcadeDB used to accept it and give it conjunction meaning, so MERGE missed the existing :Topic node
+    // and created a second one under an invented Author~Topic type.
+    assertThatThrownBy(() -> database.command("opencypher", "CREATE (n:Author|Topic {k:'new'})"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("Label expressions are not allowed in CREATE");
+    assertThatThrownBy(() -> database.command("opencypher", "MERGE (n:Author|Topic {k:'t1'})"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("Label expressions are not allowed in MERGE");
+
+    // Nothing was written by either attempt, and a conjunction is still accepted where it means something.
+    assertThat(keys("MATCH (y {k:'t1'}) RETURN labels(y)[0] AS k")).containsExactly("Topic");
+    database.command("opencypher", "CREATE (:Author:Topic {k:'both'})");
+    assertThat(keys("MATCH (y:Author:Topic) RETURN y.k AS k")).containsExactly("both");
+  }
+
+  @SuppressWarnings("unchecked")
+  private List<String> listKeys(final String query) {
+    try (final ResultSet rs = database.query("opencypher", query)) {
+      assertThat(rs.hasNext()).isTrue();
+      return (List<String>) rs.next().getProperty("l");
+    }
   }
 
   private List<String> keys(final String query) {
