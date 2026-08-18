@@ -165,6 +165,8 @@ class ConstantFalseFilterFoldingTest extends TestHelper {
     final String sql = "SELECT name FROM Character WHERE age > abs(-1)";
     final DatabaseInternal db = (DatabaseInternal) database;
 
+    // the type creation in beginTest() invalidates the plan cache with a millisecond-resolution stamp the plan has
+    // to beat: see the sibling guard below and RidInScanOptimizationTest for the same pattern
     final long setupMillis = System.currentTimeMillis();
     while (System.currentTimeMillis() == setupMillis)
       Thread.onSpinWait();
