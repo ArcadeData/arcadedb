@@ -287,6 +287,18 @@ public class CaseExpression extends MathExpression {
     builder.append(" END");
   }
 
+  /**
+   * Without this override, identity fell back to the inherited {@link MathExpression#getIdentityElements()} -
+   * {@code childExpressions} and {@code operators}, which this class never populates - so every {@code CASE}
+   * expression's identity array held two empty lists, and two DIFFERENT {@code CASE WHEN} expressions compared
+   * EQUAL to each other (issue #6409, item 3: not the under-match the issue's own sweep went looking for, but the
+   * inverse failure the same corpus test catches just as well).
+   */
+  @Override
+  protected Object[] getIdentityElements() {
+    return new Object[] { caseExpression, alternatives, elseExpression };
+  }
+
   @Override
   public CaseExpression copy() {
     if (caseExpression != null) {

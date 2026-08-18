@@ -18,6 +18,8 @@
  */
 package com.arcadedb.query.sql.parser;
 
+import java.util.Objects;
+
 /**
  * Represents a single WHEN...THEN alternative in a SQL CASE expression.
  * Example: WHEN age < 18 THEN 'minor'
@@ -61,5 +63,26 @@ public class CaseAlternative {
 
   public boolean isSimpleForm() {
     return whenCondition != null;
+  }
+
+  /**
+   * {@link CaseExpression#getIdentityElements()} carries {@code alternatives} - a {@code List<CaseAlternative>} -
+   * as one element, and {@code List.equals()} compares it element by element with THIS method, so without it every
+   * two alternatives fell back to reference identity (issue #6409, item 3).
+   */
+  @Override
+  public boolean equals(final Object o) {
+    if (this == o)
+      return true;
+    if (o == null || getClass() != o.getClass())
+      return false;
+    final CaseAlternative that = (CaseAlternative) o;
+    return Objects.equals(whenCondition, that.whenCondition) && Objects.equals(whenExpression, that.whenExpression)
+        && Objects.equals(thenExpression, that.thenExpression);
+  }
+
+  @Override
+  public int hashCode() {
+    return Objects.hash(whenCondition, whenExpression, thenExpression);
   }
 }

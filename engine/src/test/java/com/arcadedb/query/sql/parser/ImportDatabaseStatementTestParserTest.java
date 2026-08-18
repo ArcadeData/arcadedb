@@ -89,19 +89,15 @@ class ImportDatabaseStatementTestParserTest extends AbstractParserTest {
   }
 
   /**
-   * Renders the settings the way {@code executeSimple} consumes them: the raw setting name held in
-   * {@code Expression.value} against the rendered value.
-   * <p>
-   * Comparing the two {@code Map<Expression, Expression>} instances directly would not work: {@code SimpleNode}
-   * derives {@code hashCode()} from a freshly allocated {@code Object[]}, so an {@code Expression} hashes to a
-   * different bucket on every call and {@code HashMap.equals} can never find a key. That is a separate, pre-existing
-   * defect - the settings map is only ever iterated in production, never looked up - and this test deliberately does
-   * not depend on it either way.
+   * Renders the settings the way {@code executeSimple} consumes them: the setting name read back with
+   * {@code toString()} against the rendered value. The key is built as {@code new Expression(Identifier)} - never
+   * the raw-{@code value} shape this used to read (issue #6409, item 1) - so {@code toString()} is how every one of
+   * the five {@code WITH}-settings statements recovers it now.
    */
   private static Map<String, String> renderSettings(final ImportDatabaseStatement statement) {
     final Map<String, String> rendered = new HashMap<>();
     for (final Map.Entry<Expression, Expression> entry : statement.settings.entrySet())
-      rendered.put(entry.getKey().value.toString(), entry.getValue().toString());
+      rendered.put(entry.getKey().toString(), entry.getValue().toString());
     return rendered;
   }
 }

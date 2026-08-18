@@ -64,7 +64,18 @@ class Issue6401NodeIdentityTest extends AbstractParserTest {
     assertThat(statement.hashCode()).isEqualTo(statement.hashCode());
   }
 
-  /** And the other half of the contract: two nodes that are equal answer the same hash code. */
+  /**
+   * And the other half of the contract: two nodes that are equal answer the same hash code. This is the corpus the
+   * issue #6401 javadoc above suggested widening to sweep for nodes whose identity does not work (issue #6409, item
+   * 3). Widening it surfaced three: {@code foo[1..5]} exercises {@link ArrayRangeSelector}, confirmed by that issue
+   * to fall back to reference identity and UNDER-match (two equal parses compared unequal); {@code ORDER BY} and
+   * {@code INSERT ... SET} exercise {@link OrderByItem} and {@link InsertSetExpression}, which had the same gap; and
+   * a bare {@code CaseExpression} had the opposite failure - no {@code getIdentityElements()} override of its own
+   * meant it inherited {@link MathExpression}'s, which reads fields ({@code childExpressions}, {@code operators})
+   * {@code CaseExpression} never populates, so it OVER-matched: two structurally different {@code CASE WHEN}
+   * expressions compared equal to each other. The rest is a representative spread of statement and expression
+   * shapes rather than an exhaustive walk of the ~67 {@code getIdentityElements()} overrides.
+   */
   @Test
   void equalNodesAnswerEqualHashCodes() {
     for (final String query : new String[] { //
@@ -73,13 +84,48 @@ class Issue6401NodeIdentityTest extends AbstractParserTest {
         "SELECT a.b[1] FROM V WHERE c = 'x'", //
         "SELECT (1 + 2) * 3 FROM V", //
         "SELECT max(a) FROM V GROUP BY b", //
-        "SELECT FROM V WHERE a IN [1, 2, 3]" }) {
+        "SELECT FROM V WHERE a IN [1, 2, 3]", //
+        "SELECT foo[1..5] FROM V", //
+        "SELECT foo[1...5] FROM V", //
+        "SELECT foo[?..?] FROM V", //
+        "SELECT foo[:a..:b] FROM V", //
+        "SELECT FROM V WHERE a = ?", //
+        "SELECT FROM V WHERE a = :name", //
+        "SELECT FROM V WHERE a BETWEEN 1 AND 10", //
+        "SELECT FROM V WHERE a LIKE 'foo%'", //
+        "SELECT FROM V ORDER BY a DESC LIMIT 10 SKIP 5", //
+        "SELECT CASE WHEN a = 1 THEN 'x' ELSE 'y' END FROM V", //
+        "SELECT CASE a WHEN 1 THEN 'x' ELSE 'y' END FROM V", //
+        "UPDATE V SET a = 1 WHERE b = 2", //
+        "DELETE FROM V WHERE a = 1", //
+        "INSERT INTO V SET a = 1", //
+        "REBUILD INDEX idx WITH batchSize = 100", //
+        "REBUILD TYPE Foo WITH batchSize = 100, repartition = true", //
+        "IMPORT DATABASE http://foo.bar WITH forceDatabaseCreate = true", //
+        "EXPORT DATABASE file://foo.bar WITH format = 'graphml'", //
+        "BACKUP DATABASE file://foo.bar WITH compressionLevel = 5" }) {
       final SimpleNode one = checkRightSyntax(query);
       final SimpleNode other = checkRightSyntax(query);
 
       assertThat(one).as(query).isEqualTo(other);
       assertThat(one.hashCode()).as(query).isEqualTo(other.hashCode());
     }
+  }
+
+  /**
+   * The inverse of {@link #equalNodesAnswerEqualHashCodes()}: two DIFFERENT {@code CASE WHEN} expressions must
+   * compare unequal. This is the one the corpus test above cannot express - it only ever compares a query against
+   * itself - and it is the one that actually caught the {@link CaseExpression} defect (issue #6409, item 3): before
+   * the fix, every {@code CASE} expression's identity was the two EMPTY lists it inherited from
+   * {@link MathExpression}, so any two of them were equal regardless of their WHEN/THEN content.
+   */
+  @Test
+  void differentCaseExpressionsAreNotTheSameExpression() {
+    final Expression one = projectionOf("SELECT CASE WHEN a = 1 THEN 'x' ELSE 'y' END FROM V");
+    final Expression two = projectionOf("SELECT CASE WHEN a = 2 THEN 'p' ELSE 'q' END FROM V");
+
+    assertThat(one).as("different WHEN/THEN branches are different expressions").isNotEqualTo(two);
+    assertThat(projectionOf("SELECT CASE WHEN a = 1 THEN 'x' ELSE 'y' END FROM V")).as("but the same one is the same").isEqualTo(one);
   }
 
   /** A bare numeric literal: five of {@code BaseExpression}'s fields are null, and the value lived in the sixth. */
@@ -153,10 +199,13 @@ class Issue6401NodeIdentityTest extends AbstractParserTest {
 
   /**
    * The shape that turned item 3 from a trap into a live defect once the hash codes started agreeing with
-   * {@code equals()}: {@code IMPORT}, {@code EXPORT} and {@code BACKUP DATABASE} park a setting NAME in the node's
-   * inherited {@code value} slot rather than building an identifier expression out of it, and {@code value} was not
-   * among {@link Expression}'s identity elements - so every key of a {@code WITH} clause was a node whose every
-   * other field is {@code null}/{@code false}, which is to say equal to every other key.
+   * {@code equals()}: before issue #6409 item 1, {@code IMPORT}, {@code EXPORT} and {@code BACKUP DATABASE} parked a
+   * setting NAME in the node's inherited {@code value} slot rather than building an identifier expression out of it,
+   * and {@code value} was not among {@link Expression}'s identity elements - so every key of a {@code WITH} clause
+   * was a node whose every other field is {@code null}/{@code false}, which is to say equal to every other key.
+   * <p>
+   * The key is now built the same way {@code REBUILD INDEX} and {@code REBUILD TYPE} already built it - {@code new
+   * Expression(Identifier)} - so it is read back with {@code toString()}, not the raw {@code value} slot.
    */
   @Test
   void everySettingKeyOfAWithClauseIsItsOwnKey() {
@@ -164,7 +213,7 @@ class Issue6401NodeIdentityTest extends AbstractParserTest {
         "IMPORT DATABASE http://www.foo.bar WITH forceDatabaseCreate = true, commitEvery = 10000");
 
     assertThat(statement.settings).as("two settings are two entries").hasSize(2);
-    assertThat(statement.settings.keySet().stream().map(k -> k.value.toString()))
+    assertThat(statement.settings.keySet().stream().map(Expression::toString))
         .containsExactlyInAnyOrder("forceDatabaseCreate", "commitEvery");
   }
 

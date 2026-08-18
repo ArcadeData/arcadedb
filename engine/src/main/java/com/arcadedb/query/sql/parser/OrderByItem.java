@@ -24,6 +24,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.serializer.BinaryComparator;
 
 import java.util.Map;
+import java.util.Objects;
 import java.util.logging.Level;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
@@ -205,5 +206,28 @@ public class OrderByItem {
 
   public void setModifier(final Modifier modifier) {
     this.modifier = modifier;
+  }
+
+  /**
+   * {@link OrderBy#getIdentityElements()} hands {@link SimpleNode#equals(Object)} the raw {@code OrderByItem}
+   * elements to compare with {@link Objects#equals(Object, Object)}, which without this fell back to reference
+   * identity: two separate parses of the very same {@code ORDER BY} clause were never equal, and so neither was any
+   * statement that carries one (issue #6409, item 3).
+   */
+  @Override
+  public boolean equals(final Object o) {
+    if (this == o)
+      return true;
+    if (o == null || getClass() != o.getClass())
+      return false;
+    final OrderByItem that = (OrderByItem) o;
+    return Objects.equals(alias, that.alias) && Objects.equals(modifier, that.modifier) && Objects.equals(recordAttr, that.recordAttr)
+        && Objects.equals(expression, that.expression) && Objects.equals(type, that.type)
+        && Objects.equals(directionParameter, that.directionParameter);
+  }
+
+  @Override
+  public int hashCode() {
+    return Objects.hash(alias, modifier, recordAttr, expression, type, directionParameter);
   }
 }

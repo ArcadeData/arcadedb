@@ -126,6 +126,13 @@ public abstract class SimpleNode implements Node {
 
     final Object[] otherElements = ((SimpleNode) other).getIdentityElements();
 
+    // Every override in the codebase today returns a fixed-length array literal, so this never trips - but nothing
+    // enforces that, and a future override built conditionally (e.g. appending an optional element) would otherwise
+    // throw ArrayIndexOutOfBoundsException out of equals(), which is not a place callers expect to have to handle one
+    // (issue #6409, item 4).
+    if (ownElements.length != otherElements.length)
+      return false;
+
     for (int i = 0; i < ownElements.length; i++)
       if (!Objects.equals(ownElements[i], otherElements[i]))
         return false;
