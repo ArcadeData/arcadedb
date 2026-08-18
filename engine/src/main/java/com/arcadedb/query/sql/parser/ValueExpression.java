@@ -34,6 +34,14 @@ import java.util.Map;
 /**
  * this class is only used by the query executor to store pre-calculated values and store them in a temporary AST. It's not produced
  * by parsing
+ * <p>
+ * It carries its whole meaning in the inherited {@code value} slot, so it inherits {@link Expression}'s identity
+ * unchanged and is compared by that value: two nodes wrapping the same pre-calculated value are the same node, and two
+ * wrapping different ones are not. Before {@code value} joined that identity every {@code ValueExpression} was
+ * {@code equals()} to every other one (issue #6401, item 3). The consequence to keep in mind is that the identity is
+ * only as well-behaved as the WRAPPED object's own {@code equals}/{@code hashCode}: nothing here stops a caller from
+ * pre-calculating a mutable value, so a node put in a hash-based collection and then mutated behaves like any other
+ * key mutated after insertion. No such collection exists today.
  */
 public class ValueExpression extends Expression {
   public ValueExpression(final Object val) {
