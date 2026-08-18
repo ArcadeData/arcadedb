@@ -586,9 +586,20 @@ public class Expression extends SimpleNode {
     }
   }
 
+  /**
+   * The same rule {@link BaseExpression#getIdentityElements()} follows, applied to the fields {@link #execute} reads:
+   * every one of them, in the order that method consults them.
+   * <p>
+   * {@link #whereCondition} and the inherited {@code value} slot used to be missing, and both carry a value -
+   * {@code execute} returns them. {@code value} is what the three {@code WITH ...} settings builders park a setting
+   * NAME in ({@code IMPORT}, {@code EXPORT} and {@code BACKUP DATABASE}), so with it left out every setting key in
+   * one of those statements was a node whose remaining fields are all {@code null}/{@code false} - which is to say
+   * every key was {@code equals()} to every other key (issue #6401, item 3).
+   */
   @Override
   protected Object[] getIdentityElements() {
-    return new Object[] { isNull, singleQuotes, doubleQuotes, rid, mathExpression, arrayConcatExpression, json, booleanValue };
+    return new Object[] { isNull, singleQuotes, doubleQuotes, rid, mathExpression, whereCondition, arrayConcatExpression, json,
+        booleanValue, value };
   }
 
   @Override

@@ -20,6 +20,7 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -132,6 +133,15 @@ public abstract class SimpleNode implements Node {
     return true;
   }
 
+  /**
+   * The other half of {@link #equals(Object)}, and it has to be computed over the same thing: the CONTENTS of
+   * {@code getIdentityElements()}, element by element, exactly as the comparison above walks them.
+   * <p>
+   * {@link Arrays#hashCode(Object[])} is what does that. {@code Objects.hashCode(elements)} - which is what used to
+   * be here - has no varargs overload to bind to, so the array bound to {@code Objects.hashCode(Object)} and the
+   * answer was the array's IDENTITY hash: a fresh one on every call, since {@code getIdentityElements()} allocates,
+   * so a node did not even agree with itself twice in a row (issue #6401, item 4).
+   */
   @Override
   public int hashCode() {
     final Object[] elements = getIdentityElements();
@@ -139,7 +149,7 @@ public abstract class SimpleNode implements Node {
       // NOT IMPLEMENTED, USE THE DEFAULT IMPLEMENTATION
       return super.hashCode();
 
-    return Objects.hashCode(elements);
+    return Arrays.hashCode(elements);
   }
 
   protected Object[] getIdentityElements() {
