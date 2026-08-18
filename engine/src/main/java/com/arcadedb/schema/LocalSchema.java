@@ -1480,6 +1480,11 @@ public class LocalSchema implements Schema {
   }
 
   @Override
+  public LocalDocumentType getTypeOrNull(final String typeName) {
+    return types.get(typeName);
+  }
+
+  @Override
   public String getTypeNameByBucketId(final int bucketId) {
     final DocumentType type = getTypeByBucketId(bucketId);
     return type != null ? type.getName() : null;

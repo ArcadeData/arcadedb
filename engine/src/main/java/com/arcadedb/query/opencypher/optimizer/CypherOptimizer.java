@@ -413,7 +413,7 @@ public class CypherOptimizer {
     final var schema = database.getSchema();
     for (final LogicalRelationship rel : logicalPlan.getRelationships())
       for (final String edgeTypeName : rel.getTypes())
-        if (schema.existsType(edgeTypeName) && schema.getType(edgeTypeName) instanceof EdgeType et && !et.isBidirectional())
+        if (schema.getTypeOrNull(edgeTypeName) instanceof EdgeType et && !et.isBidirectional())
           return true;
     return false;
   }
@@ -439,7 +439,7 @@ public class CypherOptimizer {
 
         boolean bidirectional = true;
         for (final String edgeTypeName : rel.getTypes())
-          if (schema.existsType(edgeTypeName) && schema.getType(edgeTypeName) instanceof EdgeType et && !et.isBidirectional()) {
+          if (schema.getTypeOrNull(edgeTypeName) instanceof EdgeType et && !et.isBidirectional()) {
             bidirectional = false;
             break;
           }

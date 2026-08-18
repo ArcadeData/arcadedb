@@ -24,6 +24,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
@@ -89,11 +90,9 @@ public class StatisticsProvider {
       }
 
       // Skip types that do not exist in the schema (issue #4090).
-      // schema.getType() throws SchemaException for unknown names, so existsType() must be checked first.
-      if (!schema.existsType(typeName))
+      final DocumentType type = schema.getTypeOrNull(typeName);
+      if (type == null)
         continue;
-
-      final DocumentType type = schema.getType(typeName);
 
       // Collect type cardinality using cached O(1) count
       final long recordCount = database.countType(typeName, false);
@@ -199,6 +198,32 @@ public class StatisticsProvider {
   }
 
   /**
+   * The number of records a scan of a node pattern's label constraint will visit: the sum over exactly the types
+   * {@link Labels#matchingVertexTypes} selects, counted non-polymorphically the same way the scan walks them, so no
+   * subtype is charged twice.
+   * <p>
+   * A label disjunction used to be costed as if only its first alternative existed (issue #6363), because the anchor
+   * estimate came from a single-label lookup while the operator scanned every type any alternative accepted. The
+   * under-estimate made a disjunction look like the cheapest side to drive a join from.
+   * <p>
+   * The counts are the engine's cached O(1) bucket counts and are read directly rather than through
+   * {@link #getTypeStatistics}: a matching subtype need not be named in the query, so it need not have been collected.
+   *
+   * @param labels      the labels written on the pattern
+   * @param disjunction whether the labels were written as alternatives ({@code A|B}) rather than as a conjunction
+   *
+   * @return the total record count across the scanned types, 0 when nothing in the schema can match
+   */
+  public long getMatchingVertexCardinality(final List<String> labels, final boolean disjunction) {
+    if (database == null)
+      return 0L;
+    long total = 0;
+    for (final DocumentType type : Labels.matchingVertexTypes(database.getSchema(), labels, disjunction))
+      total += database.countType(type.getName(), false);
+    return total;
+  }
+
+  /**
    * Calculates the average degree (edges per vertex) for a relationship type.
    * <p>
    * Formula: avgDegree = (2 * edgeCount) / (sourceVertexCount + targetVertexCount)
@@ -223,7 +248,7 @@ public class StatisticsProvider {
     }
 
     final Schema schema = database.getSchema();
-    final boolean isEdgeType = schema.existsType(relationshipType) && schema.getType(relationshipType) instanceof EdgeType;
+    final boolean isEdgeType = schema.getTypeOrNull(relationshipType) instanceof EdgeType;
 
     final double avgDegree;
     if (isEdgeType && graphStatisticsCache != null) {
@@ -256,12 +281,8 @@ public class StatisticsProvider {
     final Schema schema = database.getSchema();
 
     // Get edge type statistics
-    if (!schema.existsType(relationshipType))
+    if (!(schema.getTypeOrNull(relationshipType) instanceof EdgeType))
       return 10.0; // Fallback: no edge type found
-    final DocumentType edgeType = schema.getType(relationshipType);
-    if (!(edgeType instanceof EdgeType)) {
-      return 10.0; // Fallback: no edge type found
-    }
 
     final long edgeCount = database.countType(relationshipType, false);
     if (edgeCount == 0) {
@@ -342,7 +363,7 @@ public class StatisticsProvider {
       return meanEdgesPerConnectedPairCache.get(edgeType);
 
     final Schema schema = database.getSchema();
-    final boolean isEdgeType = schema.existsType(edgeType) && schema.getType(edgeType) instanceof EdgeType;
+    final boolean isEdgeType = schema.getTypeOrNull(edgeType) instanceof EdgeType;
 
     final double mean;
     if (isEdgeType && graphStatisticsCache != null) {
@@ -373,7 +394,7 @@ public class StatisticsProvider {
     if (vertexLabel == null)
       return 0;
     final Schema schema = database.getSchema();
-    if (!schema.existsType(vertexLabel) || !(schema.getType(vertexLabel) instanceof VertexType))
+    if (!(schema.getTypeOrNull(vertexLabel) instanceof VertexType))
       return 0;
     return database.countType(vertexLabel, false);
   }
@@ -403,11 +424,7 @@ public class StatisticsProvider {
    */
   private double calculateMeanEdgesPerConnectedPair(final String edgeType) {
     final Schema schema = database.getSchema();
-    if (!schema.existsType(edgeType))
-      return DEFAULT_MEAN_EDGES_PER_CONNECTED_PAIR;
-
-    final DocumentType type = schema.getType(edgeType);
-    if (!(type instanceof EdgeType))
+    if (!(schema.getTypeOrNull(edgeType) instanceof EdgeType))
       return DEFAULT_MEAN_EDGES_PER_CONNECTED_PAIR;
 
     final Set<Map.Entry<RID, RID>> distinctPairs = new HashSet<>();

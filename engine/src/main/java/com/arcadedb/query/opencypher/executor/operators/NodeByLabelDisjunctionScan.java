@@ -48,11 +48,10 @@ import java.util.NoSuchElementException;
  *       MATCH anchor and the start of a pattern comprehension so that one disjunction cannot mean
  *       different things in different places (issues #6338, #6352). Each type's iterator is opened
  *       only once the previous one is drained.</li>
- *   <li>{@code estimatedCardinality} is inherited from the anchor selector and reflects a
- *       single-label scan (the first label only). The true upper bound for a disjunction
- *       is the sum across all matching types; under-estimation here may bias join-order
- *       choices when a disjunction node competes with other anchor candidates. Tracked as
- *       a follow-up rather than fixed in this PR.</li>
+ *   <li>{@code estimatedCardinality} is inherited from the anchor selector, which sums the record count over the
+ *       same types this operator scans. It used to be a single-label estimate - the first alternative only - which
+ *       under-priced a disjunction anchor against every other candidate and biased join ordering towards driving
+ *       from it (issue #6363).</li>
  * </ul>
  */
 public class NodeByLabelDisjunctionScan extends AbstractPhysicalOperator {

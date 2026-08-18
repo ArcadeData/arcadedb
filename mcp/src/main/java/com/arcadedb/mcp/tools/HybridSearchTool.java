@@ -510,7 +510,7 @@ public class HybridSearchTool {
       if (name.indexOf('\'') >= 0 || name.indexOf('`') >= 0 || name.indexOf('\\') >= 0)
         throw new IllegalArgumentException(
             "expand.edgeTypes entry '" + name + "' contains a quote or backslash, which is not supported");
-      if (!database.getSchema().existsType(name) || !(database.getSchema().getType(name) instanceof EdgeType))
+      if (!(database.getSchema().getTypeOrNull(name) instanceof EdgeType))
         throw new IllegalArgumentException("Edge type '" + name + "' does not exist. "
             + describeAvailableEdgeTypes(database));
       names.add(name);

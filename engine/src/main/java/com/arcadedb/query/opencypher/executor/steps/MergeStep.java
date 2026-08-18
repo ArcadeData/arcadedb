@@ -1394,11 +1394,14 @@ public class MergeStep extends AbstractExecutionStep {
           if (!(obj instanceof Vertex vertex))
             break;
           vertex = labelReplacements.resolve(vertex);
-          final List<String> existingLabels = Labels.getLabels(vertex);
-          final List<String> allLabels = new ArrayList<>(existingLabels);
+          // Same rule as SET: the new type is built from the vertex's OWN labels, so an inherited label is not
+          // re-listed in place of the subtype that carries it, and a label the vertex already answers to adds
+          // nothing (issue #6363).
+          final DocumentType currentType = vertex.getType();
+          final List<String> allLabels = new ArrayList<>(Labels.getOwnLabels(vertex));
           int newLabelsCount = 0;
           for (final String label : item.getLabels())
-            if (!allLabels.contains(label)) {
+            if (!currentType.instanceOf(label) && !allLabels.contains(label)) {
               allLabels.add(label);
               newLabelsCount++;
             }

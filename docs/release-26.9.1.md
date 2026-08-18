@@ -3,6 +3,37 @@
 This is a living document: fixes, improvements, new features, and breaking changes are collected here as
 they land during the 26.9.1 development cycle, so the release notes are ready at tag time.
 
+## A Cypher node's labels are the ones it answers to, and adding one no longer takes one away (#6363)
+
+`labels()` decided a vertex's labels from a single question - does the type have supertypes - and answered "the
+supertypes" when it did, "its own name" when it did not. That rule fits only the synthetic `A~B` composite the
+multi-label support builds. Under ordinary type inheritance it was wrong in both directions: a vertex of a type
+declared `Manager EXTENDS Employee` reported `["Employee"]`, missing the very label `MATCH (n:Manager)` had just
+matched it by, and a type extending a composite reported the internal `Author~Topic` name and neither label it
+encodes.
+
+The same list is what `SET`, `REMOVE` and `MERGE` build the new type from, so it was written back:
+`MATCH (n:Manager) SET n:Extra` moved the record to a freshly invented `Employee~Extra` and `MATCH (n:Manager)`
+then returned **0 rows**. Adding a label removed one, silently.
+
+`labels(n)` now returns every type name the node is an instance of, sorted, minus the synthetic composite names,
+so `L IN labels(n)` and `n:L` finally answer the same question. A label write is rebuilt from the node's *own*
+labels instead: `SET n:Extra` on a `Manager` builds `Extra~Manager` extending both, so the node stays a `Manager`,
+stays an `Employee`, and gains `Extra`. Adding a label the node already answers to changes nothing and is not
+counted in `labels-added`.
+
+**Breaking change.** `REMOVE n:Employee` on a vertex of type `Manager EXTENDS Employee` is now refused with a
+`CommandSemanticException` (HTTP 400) naming both labels, where it previously appeared to succeed and left the
+node in the wrong type. There is no correct outcome for it: no type the vertex could be moved to answers *no* to
+`:Employee` while still answering *yes* to `:Manager`. Remove the subtype as well (`REMOVE n:Manager, n:Employee`)
+or change the hierarchy in SQL. Removing a label the node simply does not have stays a no-op, as in Neo4j.
+
+Two smaller fixes ride along. A label disjunction anchor `(n:A|B)` was costed as if only `:A` existed while
+`NodeByLabelDisjunctionScan` visited every type any alternative accepts, which biased join ordering towards
+driving from it; the estimate is now summed over exactly the types the scan walks. And `Schema` gained
+`getTypeOrNull(String)`, the non-throwing companion of `getType` that the `existsType(x) ? getType(x) : null`
+pairs all over the engine wanted - a `default` method, so an out-of-tree `Schema` implementation keeps working.
+
 ## A pathologically nested or long Cypher expression is now a parse error, not a StackOverflowError (#5851)
 
 A ~2KB `WHERE` clause with about 1000 nested parentheses crashed the parsing thread with a
