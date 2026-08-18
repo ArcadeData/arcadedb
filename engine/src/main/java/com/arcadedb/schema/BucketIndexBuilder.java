@@ -126,10 +126,9 @@ public class BucketIndexBuilder extends IndexBuilder<Index> {
         metadata.typeIndexName = indexName;
       }
 
-      // Read before the transactions below, while the answer can still be "there is none" (issue #6324, item 1):
-      // whether the build joins the caller's transaction, and - if it does - that it may not commit it.
-      final boolean joinCallerTransaction = indexType.buildCanShareCallerTransaction();
-      final int buildBatchSize = joinCallerTransaction ? IndexInternal.buildBatchSizeFor(database, batchSize) : batchSize;
+      // Read before the transactions below, while the answer can still be "there is none" (issue #6324, item 1): a
+      // build shares a transaction only when the caller already had one open and this index family can use it.
+      final boolean sharesCallerTransaction = indexType.buildCanShareCallerTransaction() && database.isTransactionActive();
 
       return schema.recordFileChanges(() -> {
         final AtomicReference<Index> result1 = new AtomicReference<>();
@@ -150,7 +149,7 @@ public class BucketIndexBuilder extends IndexBuilder<Index> {
           }
 
           final Index index = schema.createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize, nullStrategy,
-              callback, propertyNames, null, buildBatchSize, metadata, false);
+              callback, propertyNames, null, batchSize, metadata, false);
           result1.set(index);
 
           schema.saveConfiguration();
@@ -162,8 +161,8 @@ public class BucketIndexBuilder extends IndexBuilder<Index> {
           }
         });
 
-        database.transaction(() -> buildCreatedIndex(result1.get(), buildBatchSize), joinCallerTransaction, maxAttempts,
-            null, error -> {
+        database.transaction(() -> buildCreatedIndex(result1.get(), sharesCallerTransaction), sharesCallerTransaction,
+            maxAttempts, null, error -> {
           // The FULL removal, not just the component's own drop(): unlike a failure inside the creation transaction -
           // which rolls the whole thing back before anything is registered - the component here is already committed
           // and attached to its type, so leaving it behind would answer lookups with an empty index. This is the same

@@ -409,10 +409,10 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     if (replaced != null)
       existingTypeIndex.drop();
 
-    // Read here because below this line there is always a transaction, and both answers depend on there not being one
-    // yet (issue #6324, item 1): whether the build joins the caller's, and - if it does - that it may not commit it.
-    final boolean joinCallerTransaction = indexType.buildCanShareCallerTransaction();
-    final int buildBatchSize = joinCallerTransaction ? IndexInternal.buildBatchSizeFor(database, batchSize) : batchSize;
+    // Read here because below this line there is ALWAYS a transaction, and the answer is about there not being one
+    // yet: a build shares a transaction only when the caller already had one open and this index family can use it
+    // (issue #6324, item 1).
+    final boolean sharesCallerTransaction = indexType.buildCanShareCallerTransaction() && database.isTransactionActive();
 
     final TypeIndex created;
     // The barrier of #6281, paid at the top of this method, covers what the async side wrote BEFORE the build. This
@@ -448,7 +448,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
 
               final LocalBucket bucket = (LocalBucket) buckets.get(finalIdx);
 
-              indexes[finalIdx] = createBucketIndex(schema, type, keyTypes, bucket, false, buildBatchSize);
+              indexes[finalIdx] = createBucketIndex(schema, type, keyTypes, bucket, false);
 
             }, false, maxAttempts, null, null);
 
@@ -458,8 +458,8 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
             // CREATE INDEX ON V (id)` in one transaction used to end with the record present and NO entry for it,
             // in neither the scan nor the index - and it makes the entries commit, or roll back, with the records
             // they describe. The vector families opt out; INDEX_TYPE#buildCanShareCallerTransaction says why.
-            database.transaction(() -> buildCreatedIndex(indexes[finalIdx], buildBatchSize), joinCallerTransaction,
-                maxAttempts, null, null);
+            database.transaction(() -> buildCreatedIndex(indexes[finalIdx], sharesCallerTransaction),
+                sharesCallerTransaction, maxAttempts, null, null);
           }
 
         return null;
@@ -585,13 +585,8 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
 
   protected Index createBucketIndex(final LocalSchema schema, final LocalDocumentType type, final Type[] keyTypes,
       final LocalBucket bucket, final boolean build) {
-    return createBucketIndex(schema, type, keyTypes, bucket, build, batchSize);
-  }
-
-  protected Index createBucketIndex(final LocalSchema schema, final LocalDocumentType type, final Type[] keyTypes,
-      final LocalBucket bucket, final boolean build, final int buildBatchSize) {
     return schema.createBucketIndex(type, keyTypes, bucket, metadata.typeName, indexType, unique, pageSize, nullStrategy, callback,
-        metadata.propertyNames.toArray(new String[0]), null, buildBatchSize,
+        metadata.propertyNames.toArray(new String[0]), null, batchSize,
         metadata, build);
   }
 

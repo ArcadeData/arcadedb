@@ -5937,12 +5937,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
     this.metadata = (LSMVectorIndexMetadata) metadata;
   }
 
+  /**
+   * {@code buildIndexBatchSize} is IGNORED here, and deliberately: this build chunks by BYTES
+   * ({@code arcadedb.vectorIndex.txChunkSizeMB}), not by record count, so a record count means nothing to it. The
+   * permission to commit at all arrives as its own parameter (issue #6324, item 1) - reading it off the batch size
+   * would make a user's {@code REBUILD INDEX ... WITH batchSize = 0} silently turn the chunking off for the whole
+   * rebuild.
+   */
   @Override
-  public long build(final int buildIndexBatchSize, final BuildIndexCallback callback) {
-    // A build that shares the caller's transaction says so by passing BUILD_WITHOUT_CHUNKED_COMMIT, and this build's
-    // chunking is by BYTES rather than by records - so the batch size arrives here as a permission, not as a size
-    // (issue #6324, item 1).
-    return build(callback, null, buildIndexBatchSize != IndexInternal.BUILD_WITHOUT_CHUNKED_COMMIT);
+  public long build(final int buildIndexBatchSize, final boolean sharesCallerTransaction,
+      final BuildIndexCallback callback) {
+    return build(callback, null, !sharesCallerTransaction);
   }
 
   /**
@@ -6092,7 +6097,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // Scan the bucket and index all documents
     db.scanBucket(db.getSchema().getBucketById(metadata.associatedBucketId).getName(), record -> {
       // Add to index
-      final Document source = IndexInternal.buildSourceRecord(db, record);
+      // !chunkedCommitAllowed IS "this build shares a transaction it did not open": the two are exact inverses on
+      // every path into this method, and a build that owns its transaction has nothing for that transaction to
+      // correct.
+      final Document source = IndexInternal.buildSourceRecord(db, record, !chunkedCommitAllowed);
       db.getIndexer().addToIndex(LSMVectorIndex.this, record.getIdentity(), source);
       total.incrementAndGet();
 

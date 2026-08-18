@@ -71,6 +71,30 @@ public class RebuildIndexStatement extends DDLStatement {
   public RebuildIndexStatement() {
   }
 
+  /**
+   * Reads a setting that has to be a whole number of at least one, reporting BOTH ways it can fail as a parsing error
+   * that names the setting.
+   * <p>
+   * A bare {@code Integer.parseInt} let a {@code NumberFormatException} out carrying the raw rendering of the
+   * expression - {@code WITH batchSize = -1} renders as {@code "0 - 1"} - which names neither the setting nor the
+   * problem. And a value below one is refused rather than coerced: it is not a smaller batch, it is a request that
+   * cannot be honoured, and each index family would read it differently - the scan-based builds as "never chunk", a
+   * vector rebuild not at all, since it chunks by bytes rather than by record count (issue #6324, item 1).
+   */
+  private static int parsePositiveSetting(final String name, final String value) {
+    final int parsed;
+    try {
+      parsed = Integer.parseInt(value.trim());
+    } catch (final NumberFormatException e) {
+      throw new CommandSQLParsingException(
+          "Invalid " + name + " '" + value + "' in rebuild index statement: it must be a whole number of at least 1");
+    }
+    if (parsed < 1)
+      throw new CommandSQLParsingException(
+          "Invalid " + name + " " + parsed + " in rebuild index statement: it must be at least 1");
+    return parsed;
+  }
+
   @Override
   public ResultSet executeDDL(final CommandContext context) {
     // Index (re)build is a schema-maintenance operation, gated by UPDATE_SCHEMA like DROP INDEX. The full-rebuild path
@@ -92,9 +116,9 @@ public class RebuildIndexStatement extends DDLStatement {
         // parsed (it was for the integer in `WITH batchSize = 1000`), so toString() is the reliable accessor for all literals.
         final String settingValue = entry.getValue().toString();
         if ("batchSize".equalsIgnoreCase(entry.getKey().toString()))
-          batchSize = Integer.parseInt(settingValue);
+          batchSize = parsePositiveSetting("batchSize", settingValue);
         else if ("maxAttempts".equalsIgnoreCase(entry.getKey().toString()))
-          maxAttempts = Integer.parseInt(settingValue);
+          maxAttempts = parsePositiveSetting("maxAttempts", settingValue);
         else if ("statsOnly".equalsIgnoreCase(entry.getKey().toString()))
           statsOnly = Boolean.parseBoolean(settingValue);
         else

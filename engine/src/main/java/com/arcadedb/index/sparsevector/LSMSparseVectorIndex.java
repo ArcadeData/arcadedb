@@ -748,8 +748,9 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
   }
 
   @Override
-  public long build(final int buildIndexBatchSize, final BuildIndexCallback callback) {
-    return underlyingIndex.build(buildIndexBatchSize, callback);
+  public long build(final int buildIndexBatchSize, final boolean sharesCallerTransaction,
+      final BuildIndexCallback callback) {
+    return underlyingIndex.build(buildIndexBatchSize, sharesCallerTransaction, callback);
   }
 
   @Override

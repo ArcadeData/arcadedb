@@ -371,7 +371,8 @@ public class HashIndex implements IndexInternal {
   // ─── INDEX INTERNAL ──────────────────────────────────────
 
   @Override
-  public long build(final int buildIndexBatchSize, final BuildIndexCallback callback) {
+  public long build(final int buildIndexBatchSize, final boolean sharesCallerTransaction,
+      final BuildIndexCallback callback) {
     checkIsValid();
     final AtomicLong total = new AtomicLong();
 
@@ -386,7 +387,7 @@ public class HashIndex implements IndexInternal {
       final long startTime = System.currentTimeMillis();
 
       db.scanBucket(db.getSchema().getBucketById(metadata.associatedBucketId).getName(), record -> {
-        final Document source = IndexInternal.buildSourceRecord(db, record);
+        final Document source = IndexInternal.buildSourceRecord(db, record, sharesCallerTransaction);
         db.getIndexer().addToIndex(HashIndex.this, record.getIdentity(), source);
         total.incrementAndGet();
 
@@ -397,7 +398,7 @@ public class HashIndex implements IndexInternal {
               name, total.get(), rate);
         }
 
-        IndexInternal.commitBuildBatch(db, total.get(), buildIndexBatchSize);
+        IndexInternal.commitBuildBatch(db, total.get(), buildIndexBatchSize, sharesCallerTransaction);
 
         if (callback != null)
           callback.onDocumentIndexed(source, total.get());

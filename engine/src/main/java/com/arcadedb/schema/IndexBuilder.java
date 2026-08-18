@@ -378,11 +378,11 @@ public abstract class IndexBuilder<T extends Index> {
    * puts it back there itself. The window in between is invisible: both halves run under the schema's write lock,
    * inside {@code recordFileChanges}.
    */
-  protected void buildCreatedIndex(final Index index, final int buildBatchSize) {
+  protected void buildCreatedIndex(final Index index, final boolean sharesCallerTransaction) {
     final IndexInternal internal = (IndexInternal) index;
     if (!internal.setStatus(new IndexInternal.INDEX_STATUS[] { IndexInternal.INDEX_STATUS.UNAVAILABLE },
         IndexInternal.INDEX_STATUS.AVAILABLE))
       throw new IndexException("Cannot build the index '" + index.getName() + "' because it is not available");
-    internal.build(buildBatchSize, callback);
+    internal.build(batchSize, sharesCallerTransaction, callback);
   }
 }

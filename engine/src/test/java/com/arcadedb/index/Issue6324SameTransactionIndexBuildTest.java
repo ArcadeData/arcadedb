@@ -27,6 +27,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for issue #6324, item 1: a {@code CREATE INDEX} that runs in the SAME transaction as the writes it
@@ -204,5 +205,37 @@ class Issue6324SameTransactionIndexBuildTest extends TestHelper {
     }
 
     assertThat(database.getSchema().getIndexByName("V[id]").get(new Object[] { 3 }).hasNext()).isTrue();
+  }
+
+  /**
+   * The permission to commit is a parameter of the build's own, never a value of its batch size.
+   * <p>
+   * It used to be spelled "batch size 0", which collides with a user-supplied
+   * {@code REBUILD INDEX ... WITH batchSize = 0}: for the vector families, which do not chunk by record count at all,
+   * that literal zero would have been read as the permission and turned off the byte-based chunking for the whole
+   * rebuild. The statement refuses the value now, which is the honest answer for every index family - a batch size
+   * below one is not a smaller batch, it is a request that cannot be honoured.
+   */
+  @Test
+  @Timeout(60)
+  void aNonPositiveRebuildBatchSizeIsRefusedRatherThanReadAsAPermission() {
+    database.transaction(() -> database.getSchema().createDocumentType("V", 1).createProperty("id", Type.INTEGER));
+    database.transaction(() -> database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "V", "id"));
+    database.transaction(() -> {
+      final MutableDocument v = database.newDocument("V");
+      v.set("id", 1);
+      v.save();
+    });
+
+    assertThatThrownBy(() -> database.command("sql", "REBUILD INDEX `V[id]` WITH batchSize = 0").close())
+        .hasMessageContaining("batchSize");
+    assertThatThrownBy(() -> database.command("sql", "REBUILD INDEX `V[id]` WITH batchSize = -1").close())
+        .hasMessageContaining("batchSize");
+    assertThatThrownBy(() -> database.command("sql", "REBUILD INDEX `V[id]` WITH maxAttempts = 0").close())
+        .hasMessageContaining("maxAttempts");
+
+    // A legal one still rebuilds, so the guard above is not simply refusing everything.
+    database.command("sql", "REBUILD INDEX `V[id]` WITH batchSize = 1").close();
+    assertThat(database.getSchema().getIndexByName("V[id]").get(new Object[] { 1 }).hasNext()).isTrue();
   }
 }

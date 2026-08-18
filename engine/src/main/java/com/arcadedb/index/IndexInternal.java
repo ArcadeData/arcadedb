@@ -18,7 +18,6 @@
  */
 package com.arcadedb.index;
 
-import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
@@ -44,31 +43,29 @@ public interface IndexInternal extends Index {
   enum INDEX_STATUS {UNAVAILABLE, AVAILABLE, COMPACTION_SCHEDULED, COMPACTION_IN_PROGRESS}
 
   /**
-   * The {@code buildIndexBatchSize} that says "this build may not commit anything": it is sharing a transaction it
-   * did not open, so the records it is indexing are the caller's uncommitted work and committing them is the
-   * caller's decision, not the build's (issue #6324, item 1).
+   * Populates the index by SCANNING the records it covers.
    *
-   * @see #commitBuildBatch(DatabaseInternal, long, int)
+   * @param buildIndexBatchSize    records per chunked commit, for the builds that chunk by record count. Never a
+   *                               permission: see {@code sharesCallerTransaction}, which is the one that says whether
+   *                               committing is allowed at all
+   * @param sharesCallerTransaction whether this build is running INSIDE a transaction somebody else opened, which is
+   *                               what lets its scan see records that transaction has written and not committed
+   *                               (issue #6324, item 1). A build that shares a transaction may not commit it, and has
+   *                               to ask that transaction for its own written copy of each scanned record
+   * @param callback               per-record progress callback, or null
    */
-  int BUILD_WITHOUT_CHUNKED_COMMIT = 0;
-
-  long build(int buildIndexBatchSize, BuildIndexCallback callback);
+  long build(int buildIndexBatchSize, boolean sharesCallerTransaction, BuildIndexCallback callback);
 
   /**
-   * The batch size a scan-based build may be given, which is {@code batchSize} only when the build is going to open
-   * the transaction it runs in.
-   * <p>
-   * Written once, and asked BEFORE the build opens anything, because after that point a transaction is always active
-   * and the question can no longer be put. A transaction already open on this thread is a caller's; the build joins
-   * it so its scan can see what that caller has written (issue #6324, item 1), and a build that shares a transaction
-   * may not commit it.
+   * A build that OWNS the transaction it runs in, which is every build reached other than through
+   * {@code IndexBuilder#buildCreatedIndex}: it may commit, and there is no caller's uncommitted work for it to see.
    */
-  static int buildBatchSizeFor(final BasicDatabase database, final int batchSize) {
-    return database.isTransactionActive() ? BUILD_WITHOUT_CHUNKED_COMMIT : batchSize;
+  default long build(final int buildIndexBatchSize, final BuildIndexCallback callback) {
+    return build(buildIndexBatchSize, false, callback);
   }
 
   /**
-   * The chunked commit every scan-based {@link #build(int, BuildIndexCallback)} performs: once every
+   * The chunked commit every scan-based {@link #build(int, boolean, BuildIndexCallback)} performs: once every
    * {@code buildIndexBatchSize} records the build's transaction is committed and reopened, so indexing a large bucket
    * does not accumulate every entry of it in one transaction.
    * <p>
@@ -77,19 +74,22 @@ public interface IndexInternal extends Index {
    * transaction opened by a caller - a {@code CREATE INDEX} inside an open transaction, which is where the records
    * being indexed are the caller's own uncommitted writes (issue #6324, item 1). Committing there would publish
    * whatever else that transaction has done, halfway through a DDL statement the caller has not finished, and would
-   * leave the caller holding a transaction object that has already been popped. The builders signal it by passing
-   * {@link #BUILD_WITHOUT_CHUNKED_COMMIT}, which {@link #buildBatchSizeFor} decides.
+   * leave the caller holding a transaction object that has already been popped.
    * <p>
-   * A non-positive batch size is treated the same way rather than as a modulo by zero, which is what the four copies
-   * did with a batch size of 0.
+   * The permission is a PARAMETER OF ITS OWN and never a value of {@code buildIndexBatchSize}. Spelling it as
+   * "batch size 0" would collide with a user-supplied {@code REBUILD INDEX ... WITH batchSize = 0} for any index
+   * family that does not chunk by record count - the vector builds chunk by bytes and would read that literal zero as
+   * the permission. A non-positive batch size is still treated as "no chunking" rather than as a modulo by zero,
+   * which is what the four copies did with it.
    *
-   * @param database            the database whose build transaction is being chunked
-   * @param processedRecords    how many records the build has indexed so far
-   * @param buildIndexBatchSize records per chunk, or {@link #BUILD_WITHOUT_CHUNKED_COMMIT} to never commit
+   * @param database                the database whose build transaction is being chunked
+   * @param processedRecords        how many records the build has indexed so far
+   * @param buildIndexBatchSize     records per chunk; non-positive means no chunking
+   * @param sharesCallerTransaction when true the build owns nothing and commits nothing
    */
   static void commitBuildBatch(final DatabaseInternal database, final long processedRecords,
-      final int buildIndexBatchSize) {
-    if (buildIndexBatchSize <= 0 || processedRecords % buildIndexBatchSize != 0)
+      final int buildIndexBatchSize, final boolean sharesCallerTransaction) {
+    if (sharesCallerTransaction || buildIndexBatchSize <= 0 || processedRecords % buildIndexBatchSize != 0)
       return;
     database.getWrappedDatabaseInstance().commit();
     database.getWrappedDatabaseInstance().begin();
@@ -107,13 +107,18 @@ public interface IndexInternal extends Index {
    * leaving the stale key behind for good. Asking the transaction closes the gap at the only place the two views can
    * disagree.
    * <p>
-   * Costs nothing when there is nothing to correct: with no transaction, or none that wrote this record, it is one
-   * hash lookup returning null and the scanned record is used as-is.
+   * A build that owns its transaction is answered without asking anything: it is on the per-record hot path of every
+   * index build and rebuild in the engine, and there is nothing for a transaction it opened itself to correct.
    *
-   * @param database the database whose transaction may hold a newer copy
-   * @param scanned  the record as the bucket scan produced it
+   * @param database                the database whose transaction may hold a newer copy
+   * @param scanned                 the record as the bucket scan produced it
+   * @param sharesCallerTransaction whether there is a caller's transaction that could hold a newer copy at all
    */
-  static Document buildSourceRecord(final DatabaseInternal database, final Record scanned) {
+  static Document buildSourceRecord(final DatabaseInternal database, final Record scanned,
+      final boolean sharesCallerTransaction) {
+    if (!sharesCallerTransaction)
+      return (Document) scanned;
+
     final TransactionContext tx = database.getTransactionIfExists();
     if (tx != null) {
       final Record written = tx.getWrittenRecord(scanned.getIdentity());
