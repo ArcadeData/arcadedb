@@ -110,9 +110,12 @@ public class AlgoKNN extends AbstractAlgoProcedure {
     final int k = Math.min(rawK, n);
     final int[][] adj = graph.adjacency(dir, relTypes);
 
-    // Build BitSets for O(1) intersection
+    // Build BitSets for O(1) intersection: a nodeCount x nodeCount bit matrix, reserved before the first BitSet
+    // is allocated and built under the checkpoint, because the build is itself O(n²/64) (issue #6375).
+    graph.memory().reserve(bitsetMatrixBytes(n, n), "the neighbour bitsets", n + " x " + n + " nodes");
     final BitSet[] neighborSets = new BitSet[n];
     for (int i = 0; i < n; i++) {
+      guard.checkPeriodically(i);
       neighborSets[i] = new BitSet(n);
       for (final int j : adj[i])
         neighborSets[i].set(j);

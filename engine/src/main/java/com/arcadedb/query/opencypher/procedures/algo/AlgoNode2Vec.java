@@ -130,7 +130,7 @@ public class AlgoNode2Vec extends AbstractAlgoProcedure {
 
     // Both reservations are made off the node count and the knobs alone, so they come before the adjacency
     // lists are materialised: a call that cannot afford its buffers should not first pay the O(edges) build.
-    final MemoryBudget memory = newMemoryBudget(db);
+    final MemoryBudget memory = graph.memory();
     // Sized in long arithmetic: `n * walksPerNode` wraps int for a large walksPerNode, which used to size the
     // walk matrix with a negative or (for an exact multiple of 2^32) far too small a value.
     final long totalWalksAsLong = saturatingProduct(n, walksPerNode);

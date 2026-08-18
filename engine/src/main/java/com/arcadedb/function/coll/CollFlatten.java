@@ -18,7 +18,6 @@
  */
 package com.arcadedb.function.coll;
 
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.utility.LongRangeList;
 
@@ -55,8 +54,7 @@ public class CollFlatten extends AbstractCollFunction {
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length < 1)
-      throw new CommandExecutionException("coll.flatten() requires at least 1 argument");
+    checkArity(args);
     final List<Object> list = asList(args[0]);
     if (list == null)
       return null;
@@ -71,7 +69,7 @@ public class CollFlatten extends AbstractCollFunction {
         maxDepth = (Boolean) args[1] ? 1 : -1;
     }
 
-    if (args[0] instanceof LongRangeList)
+    if (asRange(list) != null)
       // A range holds longs and nothing else, so it is already flat at every depth - including depth 0, where the
       // answer is the input. Copying it materialised a range that costs no heap while it stays lazy (issue #6353).
       return list;

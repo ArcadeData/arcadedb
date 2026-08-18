@@ -59,6 +59,46 @@ public class ParserUtils {
   }
 
   /**
+   * The hop bounds a relationship pattern's {@code *} suffix declares, as the pair
+   * {@code RelationshipPattern} carries: {@code null} on either side means "unbounded in that direction", and both
+   * {@code null} means the pattern is not variable-length at all.
+   *
+   * @param minHops lower bound, inclusive
+   * @param maxHops upper bound, inclusive, {@code null} when unbounded
+   */
+  public record PathLength(Integer minHops, Integer maxHops) {
+    /** The bounds of a relationship pattern carrying no {@code *} suffix: a single fixed hop. */
+    public static final PathLength FIXED_SINGLE_HOP = new PathLength(null, null);
+  }
+
+  /**
+   * Reads the hop bounds off a {@code pathLength} context, normalizing the bare {@code [*]} spelling.
+   * <p>
+   * {@code [*]} means {@code [*1..]} everywhere in Cypher, and normalizing it is not decoration: with both bounds
+   * left {@code null}, {@code RelationshipPattern.isVariableLength()} answers false and the hop is planned as one
+   * fixed hop, so {@code [(a)-[*]->(b:A) | b.n]} silently answered as though the user had written a single-hop
+   * pattern. That is what happened while the MATCH-side builder normalized it and the expression-side copy of the
+   * same block did not (issue #6370), so the normalization lives here and both builders read it from one place
+   * rather than each carrying its own copy to drift from.
+   *
+   * @param ctx the {@code pathLength} context, which the caller has already established is present
+   *
+   * @return the declared bounds, never {@code null}
+   */
+  public static PathLength parsePathLength(final Cypher25Parser.PathLengthContext ctx) {
+    if (ctx == null)
+      return PathLength.FIXED_SINGLE_HOP;
+    if (ctx.single != null) {
+      final int exact = Integer.parseInt(ctx.single.getText());
+      return new PathLength(exact, exact);
+    }
+    final Integer minHops = ctx.from != null ? Integer.parseInt(ctx.from.getText()) : null;
+    final Integer maxHops = ctx.to != null ? Integer.parseInt(ctx.to.getText()) : null;
+    // Bare * with no range: [*] means [*1..] (min=1, max=unbounded).
+    return minHops == null && maxHops == null ? new PathLength(1, null) : new PathLength(minHops, maxHops);
+  }
+
+  /**
    * Extract labels from a label expression context using grammar-based parsing.
    * Handles multiple labels, alternative labels, and combinations.
    * Examples:

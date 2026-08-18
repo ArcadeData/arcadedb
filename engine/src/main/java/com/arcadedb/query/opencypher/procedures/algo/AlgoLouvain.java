@@ -30,9 +30,7 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 
 import com.arcadedb.utility.IntIntHashMap;
 
-import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.IntStream;
@@ -106,10 +104,7 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> vertIter = getAllVertices(db, null);
-    while (vertIter.hasNext())
-      vertices.add(vertIter.next());
+    final List<Vertex> vertices = loadVertices(db, null, newMemoryBudget(db));
     if (vertices.isEmpty())
       return Stream.empty();
 

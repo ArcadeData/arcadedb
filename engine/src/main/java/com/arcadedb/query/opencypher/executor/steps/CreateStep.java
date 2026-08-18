@@ -371,9 +371,11 @@ public class CreateStep extends AbstractExecutionStep {
   private Vertex createVertex(final NodePattern nodePattern, final Result currentResult) {
     final long startVertex = context.isProfiling() ? System.nanoTime() : 0;
 
+    // No label written: land in the reserved sentinel rather than a name a query could also have written as
+    // a real label (issue #6395).
     final List<String> labels = nodePattern.hasLabels()
         ? nodePattern.getLabels()
-        : List.of("Vertex");
+        : List.of(Labels.NO_LABEL_TYPE);
 
     // Get or create the appropriate type (composite if multiple labels)
     final String typeName = Labels.ensureCompositeType(

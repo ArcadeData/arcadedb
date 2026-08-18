@@ -77,6 +77,7 @@ public class SubqueryStep extends AbstractExecutionStep {
   private final ExpressionEvaluator expressionEvaluator;
   private final Set<String> importedVariables;
   private final boolean importAllVariables;
+  private final boolean innerMayWrite;
 
   public SubqueryStep(final SubqueryClause subqueryClause, final CommandContext context,
                        final DatabaseInternal database, final Map<String, Object> parameters,
@@ -88,6 +89,7 @@ public class SubqueryStep extends AbstractExecutionStep {
     this.expressionEvaluator = expressionEvaluator;
     this.importedVariables = computeImportedVariables(subqueryClause);
     this.importAllVariables = importedVariables == null;
+    this.innerMayWrite = !subqueryClause.getInnerStatement().isReadOnly();
   }
 
   /**
@@ -438,7 +440,14 @@ public class SubqueryStep extends AbstractExecutionStep {
 
       return results;
     } finally {
-      refreshDocumentBindings(outerRow);
+      // Only a subquery that can write has anything to refresh. A read-only one cannot have invalidated a binding,
+      // and re-reading it is not free of consequence: lookupByRID answers from the transaction cache, so the
+      // snapshot the outer row was carrying is replaced by the live, shared record instance - and a write performed
+      // for a LATER row then shows through the binding of an EARLIER one. That is issue #6362: inserting the
+      // identity subquery CALL (*) { RETURN 0 AS barrier } after MERGE ... ON MATCH SET turned [10, 99] into
+      // [99, 99]. The refresh itself is still required for the writing case it was added for (issue #4182).
+      if (innerMayWrite)
+        refreshDocumentBindings(outerRow);
     }
   }
 

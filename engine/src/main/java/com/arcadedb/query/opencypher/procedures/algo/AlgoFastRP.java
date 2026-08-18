@@ -123,7 +123,7 @@ public class AlgoFastRP extends AbstractAlgoProcedure {
     // matrix - at the default of 128 the pair costs about 2 KB per node, 2 GB at a million nodes. The node count
     // and the knob are all the estimate needs, so the reservation comes before the adjacency lists are
     // materialised: a call that cannot afford its matrices should not first pay the O(edges) build.
-    newMemoryBudget(db).reserve(saturatingProduct(2L, matrixBytes(n, dimensions, DOUBLE_BYTES)),
+    graph.memory().reserve(saturatingProduct(2L, matrixBytes(n, dimensions, DOUBLE_BYTES)),
         "the embedding matrices", "2 matrices of " + n + " nodes x dimensions=" + dimensions);
 
     final int[][] adj = graph.adjacency(dir, relTypes);

@@ -18,7 +18,6 @@
  */
 package com.arcadedb.function.coll;
 
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.List;
@@ -51,8 +50,7 @@ public class CollIndexOf extends AbstractCollFunction {
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length != 2)
-      throw new CommandExecutionException("coll.indexOf() requires exactly 2 arguments");
+    checkArity(args);
     final List<Object> list = asList(args[0]);
     if (list == null || args[1] == null)
       return null;

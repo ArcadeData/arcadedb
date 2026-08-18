@@ -97,7 +97,10 @@ public class AlgoKTruss extends AbstractAlgoProcedure {
     final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH, relTypes);
 
     // Build neighbor BitSets for O(1) membership test: a nodeCount x nodeCount bit matrix, built before the
-    // peeling loop that carries the checkpoint.
+    // peeling loop that carries the checkpoint. Reserved twice over the call because computeFullTrussDecomposition
+    // builds a second one below while this one is still alive, which is exactly what the running total is for
+    // (issue #6375).
+    graph.memory().reserve(bitsetMatrixBytes(n, n), "the neighbour bitsets", n + " x " + n + " nodes");
     final BitSet[] neighborSets = new BitSet[n];
     for (int i = 0; i < n; i++) {
       guard.checkPeriodically(i);
@@ -191,6 +194,8 @@ public class AlgoKTruss extends AbstractAlgoProcedure {
     // Assign truss numbers: nodes in remaining edges get at least kParam truss number
     // For full decomposition, track max k where each node is still connected
     // Re-run the full decomposition
+    graph.memory().reserve(bitsetMatrixBytes(n, n), "the neighbour bitsets of the truss decomposition",
+        n + " x " + n + " nodes");
     final int[] nodeTruss = computeFullTrussDecomposition(guard, n, adj, neighborSets, edgeMap, edges, edgeCount);
 
     final List<Result> results = new ArrayList<>(n);

@@ -19,6 +19,7 @@
 package com.arcadedb.function.cypher;
 
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.query.opencypher.LoadCSVRowContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
@@ -44,6 +45,6 @@ public class LoadCSVFileFunction implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     checkArity(args);
-    return context.getVariable("__loadCSV_file");
+    return context.getVariable(LoadCSVRowContext.FILE);
   }
 }

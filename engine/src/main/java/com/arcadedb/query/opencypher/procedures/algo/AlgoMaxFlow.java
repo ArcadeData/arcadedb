@@ -29,9 +29,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.WorkGuard;
 
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
@@ -94,10 +92,8 @@ public class AlgoMaxFlow extends AbstractAlgoProcedure {
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
+    final MemoryBudget memory = newMemoryBudget(db);
+    final List<Vertex> vertices = loadVertices(db, null, memory);
 
     final int n = vertices.size();
     if (n == 0)
@@ -114,7 +110,7 @@ public class AlgoMaxFlow extends AbstractAlgoProcedure {
     // both alive to the end: 1.6 GB at 10 000 nodes, with no knob involved. Reserved before the first is
     // allocated so that a graph too large for the dense formulation is a client error naming the node count and
     // the budget, rather than an OutOfMemoryError.
-    newMemoryBudget(db).reserve(saturatingProduct(2L, matrixBytes(n, n, DOUBLE_BYTES)),
+    memory.reserve(saturatingProduct(2L, matrixBytes(n, n, DOUBLE_BYTES)),
         "the capacity and residual matrices", "2 matrices of " + n + " x " + n + " nodes");
 
     // Build capacity matrix as n×n array
