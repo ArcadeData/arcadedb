@@ -182,14 +182,15 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
   }
 
   /**
-   * Opens a second view over a file that is ALREADY registered with the file manager, taking the id, the page size
-   * and the version from that file rather than re-deriving any of them (issue #6314). Every one of the three is a
-   * property of the file and of nothing else, so this is the only form a caller in that position should need.
+   * Opens a second view over a file that is ALREADY registered with the file manager, taking the id, the page size,
+   * the version AND the mode from that file rather than re-deriving any of them (issues #6314 and #6340). Every one
+   * of the four is a property of the file and of nothing else, so this is the only form a caller in that position
+   * should need - and the mode was the last one still guessed here, hard-coded to {@code READ_WRITE} in the middle
+   * of three values that were read off the file, because {@code ComponentFile} had no accessor for it.
    */
   public TimeSeriesTagDictionary(final DatabaseInternal database, final String name, final PaginatedComponentFile file)
       throws IOException {
-    this(database, name, file.getFilePath(), file.getFileId(), ComponentFile.MODE.READ_WRITE, file.getPageSize(),
-        file.getVersion());
+    this(database, name, file.getFilePath(), file.getFileId(), file.getMode(), file.getPageSize(), file.getVersion());
   }
 
   /**
@@ -591,6 +592,121 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
    */
   public void setMaxSize(final int maxSize) {
     this.maxSize = maxSize;
+  }
+
+  /**
+   * Validates everything this format asserts about itself and returns one line per problem, empty when there is
+   * none - the shape {@code IndexInternal.checkIntegrity()} uses, so {@code DatabaseChecker} folds the answers of
+   * every storage kind the same way (issue #6340).
+   * <p>
+   * What it can find that nothing else does: a dictionary is the only thing that can turn a 4-byte id in a
+   * mutable row back into the tag it stands for, so a truncated or unwalkable one does not fail a query - it makes
+   * every tag written since the damage read back as {@code null}, silently, on every row. The entry count in page
+   * 0 and the per-page counters are reconcilable against the entries themselves, which is what lets that be said
+   * before a reader trips over it.
+   * <p>
+   * The walk is the same one {@link #load(StoredHeader)} does and costs the same: one page read per data page,
+   * with the entries decoded only far enough to step over them.
+   * <p>
+   * Held under {@link #internLock} for the same reason the shard check holds its append lock: the counters are
+   * raised by a live writer, so reading page 0 and then walking the pages without it would report a healthy
+   * dictionary as short by exactly the entries an intern committed in between. Interning is contended only during
+   * warm-up, so this blocks nothing in steady state.
+   */
+  public List<String> checkIntegrity() throws IOException {
+    internLock.lock();
+    try {
+      return checkIntegrityUnderLock();
+    } finally {
+      internLock.unlock();
+    }
+  }
+
+  private List<String> checkIntegrityUnderLock() throws IOException {
+    final List<String> problems = new ArrayList<>();
+
+    final long fileSize = getComponentFile().getSize();
+    if (fileSize % pageSize != 0)
+      problems.add("the file is " + fileSize + " bytes, which is not a whole number of " + pageSize
+          + "-byte pages: it was written at a different page size, or its tail was truncated");
+
+    final BasePage headerPage = database.getPageManager()
+        .getImmutablePage(new PageId(database, fileId, 0), pageSize, true, false);
+    if (headerPage == null || headerPage.readInt(HEADER_MAGIC_OFFSET) != MAGIC_VALUE) {
+      if (fileSize > 0)
+        problems.add("the file holds " + fileSize + " bytes but page 0 does not carry the 'TSTD' magic: the header "
+            + "page is missing or was overwritten, so every tag id in this type's rows is unresolvable");
+      return problems;
+    }
+
+    final int formatVersion = headerPage.readByte(HEADER_FORMAT_VERSION_OFFSET) & 0xFF;
+    if (formatVersion != version)
+      problems.add("page 0 declares format version " + formatVersion + " but the file name says version " + version);
+
+    final int declaredEntries = headerPage.readInt(HEADER_ENTRY_COUNT_OFFSET);
+    final int declaredPages = headerPage.readInt(HEADER_DATA_PAGE_COUNT);
+    if (declaredEntries < 0 || declaredPages < 0) {
+      problems.add("page 0 declares " + declaredEntries + " entries over " + declaredPages
+          + " data page(s), and a count cannot be negative");
+      return problems;
+    }
+
+    final int capacity = pageSize - BasePage.PAGE_HEADER_SIZE - DATA_ENTRIES_OFFSET;
+    int entries = 0;
+    // Whether every page page 0 announces was walked to its end. The total below is a statement about ALL of them,
+    // so a walk that stopped partway cannot make it: what it counted is a prefix, and reporting a prefix as the
+    // whole restates one finding as two.
+    boolean walkedEveryEntry = true;
+
+    for (int pageNumber = 1; pageNumber <= declaredPages; pageNumber++) {
+      final BasePage page = database.getPageManager()
+          .getImmutablePage(new PageId(database, fileId, pageNumber), pageSize, true, false);
+      if (page == null) {
+        problems.add("page 0 declares " + declaredPages + " data page(s) but page " + pageNumber
+            + " is not in the file: every id stored on it is unresolvable");
+        walkedEveryEntry = false;
+        break;
+      }
+
+      final int pageEntries = page.readInt(DATA_ENTRY_COUNT_OFFSET);
+      final int pageUsed = page.readInt(DATA_USED_BYTES_OFFSET);
+      if (pageEntries < 0 || pageUsed < 0 || pageUsed > capacity) {
+        problems.add("data page " + pageNumber + " declares " + pageEntries + " entries over " + pageUsed
+            + " byte(s), which a page of capacity " + capacity + " cannot hold");
+        walkedEveryEntry = false;
+        continue;
+      }
+
+      // Walked rather than trusted: the counters and the bytes have to agree, and it is the bytes a reader
+      // actually steps through - an entry whose length prefix overruns the used region makes every entry after
+      // it on the page resolve to something else.
+      int offset = 0;
+      int walked = 0;
+      while (walked < pageEntries) {
+        if (offset + 2 > pageUsed) {
+          problems.add("data page " + pageNumber + " declares " + pageEntries + " entries but only " + walked
+              + " fit in the " + pageUsed + " byte(s) it declares as used");
+          walkedEveryEntry = false;
+          break;
+        }
+        final int length = page.readShort(DATA_ENTRIES_OFFSET + offset) & 0xFFFF;
+        if (length > TimeSeriesBucket.MAX_STRING_BYTES || offset + 2 + length > pageUsed) {
+          problems.add("entry " + walked + " of data page " + pageNumber + " declares a length of " + length
+              + " byte(s), which runs past the " + pageUsed + " byte(s) the page declares as used");
+          walkedEveryEntry = false;
+          break;
+        }
+        offset += 2 + length;
+        walked++;
+      }
+      entries += walked;
+    }
+
+    if (walkedEveryEntry && entries != declaredEntries)
+      problems.add("page 0 declares " + declaredEntries + " entries but its " + declaredPages
+          + " data page(s) hold " + entries + ": the ids above " + entries + " resolve to nothing");
+
+    return problems;
   }
 
   // --- Private helpers ---

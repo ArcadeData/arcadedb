@@ -1005,23 +1005,149 @@ public class TimeSeriesBucket extends PaginatedComponent {
    * hit, the page having just been loaded.
    */
   private BasePage readHeaderPage() throws IOException {
-    final PageId headerPageId = new PageId(database, fileId, 0);
+    final BasePage headerPage = readPageIfPresent(0);
+    return headerPage != null && headerPage.readInt(HEADER_MAGIC_OFFSET) == MAGIC_VALUE ? headerPage : null;
+  }
+
+  /**
+   * Resolves one page of this bucket for reading, or {@code null} when the file does not carry it. The two rules
+   * {@link #readHeaderPage()} documents at length - never fabricate the page, never gate on {@link #getTotalPages()}
+   * - are properties of this resolution and not of page 0, so they live here and page 0 only adds the magic test
+   * on top.
+   */
+  private BasePage readPageIfPresent(final int pageNumber) throws IOException {
+    final PageId pageId = new PageId(database, fileId, pageNumber);
     final TransactionContext tx = database.getTransactionIfExists();
     final boolean inTransaction = tx != null && tx.isActive();
 
-    BasePage headerPage;
-    if (inTransaction && tx.hasPageForRecord(headerPageId))
-      headerPage = tx.getPage(headerPageId, pageSize);
+    BasePage page;
+    if (inTransaction && tx.hasPageForRecord(pageId))
+      page = tx.getPage(pageId, pageSize);
     else {
       // (isNew=true, createIfNotExists=false): the pair that answers "absent" with null instead of creating the
       // page, as TimeSeriesTagDictionary.readStoredHeader() does. With isNew=false the page manager would throw
       // on a page that is not there.
-      headerPage = database.getPageManager().getImmutablePage(headerPageId, pageSize, true, false);
-      if (headerPage != null && inTransaction)
-        headerPage = tx.getPage(headerPageId, pageSize);
+      page = database.getPageManager().getImmutablePage(pageId, pageSize, true, false);
+      if (page != null && inTransaction)
+        page = tx.getPage(pageId, pageSize);
     }
 
-    return headerPage != null && headerPage.readInt(HEADER_MAGIC_OFFSET) == MAGIC_VALUE ? headerPage : null;
+    return page;
+  }
+
+  /**
+   * Validates everything the mutable row format asserts about itself and returns one line per problem, empty when
+   * there is none - the shape {@code IndexInternal.checkIntegrity()} uses, so {@code DatabaseChecker} folds the
+   * answers of every storage kind the same way (issue #6340).
+   * <p>
+   * <b>The counters are the point.</b> Page 0 declares a sample count, a min and a max timestamp and a data page
+   * count, and every one of them is maintained exactly by {@link #appendSamples} and recomputed exactly by
+   * {@code clearDataPagesUpTo}, so each is reconcilable against the pages themselves. That is what makes this able
+   * to see the damage issue #6314 left behind: a session that wrote at the wrong stride put real rows at offsets
+   * this bucket will never look at again, and the header it also wrote counts them - so the sum over the data
+   * pages comes up short of the number page 0 claims, which is a statement no other reader ever makes.
+   * <p>
+   * Only page headers are read - 18 bytes at the front of each data page - and no row is decoded. That bounds the
+   * pass at one page read per data page, which is strictly cheaper than the record scan {@code checkBuckets}
+   * already runs over every record bucket.
+   */
+  public List<String> checkIntegrity() throws IOException {
+    final List<String> problems = new ArrayList<>();
+
+    final long fileSize = file.getSize();
+    if (fileSize % pageSize != 0)
+      problems.add("the file is " + fileSize + " bytes, which is not a whole number of " + pageSize
+          + "-byte pages: it was written at a different page size, or its tail was truncated");
+
+    final BasePage headerPage = readHeaderPage();
+    if (headerPage == null) {
+      if (fileSize > 0)
+        problems.add("the file holds " + fileSize + " bytes but page 0 does not carry the 'TSBC' magic: the header "
+            + "page is missing or was overwritten, so nothing can say what the rest of the file holds");
+      return problems;
+    }
+
+    final int formatVersion = headerPage.readByte(HEADER_FORMAT_VERSION_OFFSET) & 0xFF;
+    if (formatVersion != version)
+      problems.add("page 0 declares mutable row format version " + formatVersion + " but the file name says version "
+          + version + ": the two decide whether a TAG column is a 4-byte dictionary id or an inline string");
+
+    final int declaredColumns = headerPage.readShort(HEADER_COLUMN_COUNT_OFFSET) & 0xFFFF;
+    if (!columns.isEmpty() && declaredColumns != columns.size())
+      problems.add("page 0 declares " + declaredColumns + " column(s) but the schema declares " + columns.size());
+
+    final int dataPageCount = headerPage.readInt(HEADER_DATA_PAGE_COUNT);
+    if (dataPageCount < 0) {
+      problems.add("page 0 declares a negative data page count of " + dataPageCount);
+      return problems;
+    }
+
+    final long declaredSamples = headerPage.readLong(HEADER_SAMPLE_COUNT_OFFSET);
+    final long declaredMinTs = headerPage.readLong(HEADER_MIN_TS_OFFSET);
+    final long declaredMaxTs = headerPage.readLong(HEADER_MAX_TS_OFFSET);
+
+    // A component-factory stub has no columns until the type hands them over, and without them there is no stride
+    // and so no per-page sample ceiling to test against. The counters below are still reconcilable.
+    final int maxSamplesPerPage = columns.isEmpty() ? -1 : getMaxSamplesPerPage();
+
+    long samples = 0;
+    long minTs = Long.MAX_VALUE;
+    long maxTs = Long.MIN_VALUE;
+    // Whether every page page 0 announces was actually read. The three totals below are statements about ALL of
+    // them, so a walk that stopped at page N cannot make any of them: what it accumulated is a prefix, and
+    // reporting a prefix as the whole restates one finding as four.
+    boolean walkedEveryPage = true;
+    for (int pageNumber = 1; pageNumber <= dataPageCount; pageNumber++) {
+      final BasePage dataPage = readPageIfPresent(pageNumber);
+      if (dataPage == null) {
+        problems.add("page 0 declares " + dataPageCount + " data page(s) but page " + pageNumber
+            + " is not in the file: the samples it should hold are unreadable");
+        walkedEveryPage = false;
+        break;
+      }
+
+      final int count = dataPage.readShort(DATA_SAMPLE_COUNT_OFFSET) & 0xFFFF;
+      if (maxSamplesPerPage > 0 && count > maxSamplesPerPage) {
+        problems.add("data page " + pageNumber + " declares " + count + " sample(s), more than the "
+            + maxSamplesPerPage + " a " + pageSize + "-byte page holds at this type's " + rowSize + "-byte stride");
+        // The count is not usable, so neither is any total it would go into.
+        walkedEveryPage = false;
+        continue;
+      }
+
+      samples += count;
+      if (count == 0)
+        continue;
+
+      final long pageMinTs = dataPage.readLong(DATA_MIN_TS_OFFSET);
+      final long pageMaxTs = dataPage.readLong(DATA_MAX_TS_OFFSET);
+      if (pageMinTs > pageMaxTs) {
+        problems.add("data page " + pageNumber + " declares min timestamp " + pageMinTs + " above its max timestamp "
+            + pageMaxTs);
+        walkedEveryPage = false;
+        continue;
+      }
+      if (pageMinTs < minTs)
+        minTs = pageMinTs;
+      if (pageMaxTs > maxTs)
+        maxTs = pageMaxTs;
+    }
+
+    if (!walkedEveryPage)
+      return problems;
+
+    if (samples != declaredSamples)
+      problems.add("page 0 declares " + declaredSamples + " sample(s) but its " + dataPageCount
+          + " data page(s) hold " + samples);
+
+    if (samples > 0) {
+      if (declaredMinTs != minTs)
+        problems.add("page 0 declares min timestamp " + declaredMinTs + " but its data pages hold " + minTs);
+      if (declaredMaxTs != maxTs)
+        problems.add("page 0 declares max timestamp " + declaredMaxTs + " but its data pages hold " + maxTs);
+    }
+
+    return problems;
   }
 
   void initHeaderPage() throws IOException {
