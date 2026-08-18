@@ -230,6 +230,25 @@ class CypherExplainTraditionalPlanTest {
     }
   }
 
+  /**
+   * EXPLAIN answers a question about a query, so whatever a query that parses does to the planner, it answers with
+   * a plan text: a statement that cannot be planned has its failure named inside the description rather than
+   * raised in place of it, or dropped into a log line nobody has enabled. A query that does not parse is a
+   * different answer and keeps raising, since there is no plan to describe and the parse error says why.
+   */
+  @Test
+  void explainAnswersWithAPlanWhateverTheQueryAsksFor() {
+    for (final String query : new String[] {
+        "MATCH (n:NoSuchType) RETURN n",
+        "MATCH (n:Person)-[:NO_SUCH_EDGE*2..3]->(m) RETURN m",
+        "MATCH (n:Person) WHERE n.name = $neverBound RETURN n",
+        "MATCH (n:Person) WITH n ORDER BY n.nothing SKIP 1 LIMIT 0 RETURN count(n) AS c" }) {
+      final String plan = explain(query, Map.of());
+      assertThat(plan).as("%s", query).contains("OpenCypher Native Execution Plan");
+      assertThat(plan).as("%s", query).doesNotContain("Execution plan not available: null");
+    }
+  }
+
   /** A query the optimizer does claim keeps describing the physical plan it will run. */
   @Test
   void explainStillDescribesTheOptimizedPlanWhenThereIsOne() {

@@ -735,8 +735,13 @@ public class CypherExecutionPlan {
         // Not a second optimization: buildExecutionStepsWithOptimizer wraps THIS plan's physicalPlan - the same
         // instance the text above is printed from - so the structured steps and the text cannot describe two
         // different plans.
-        describedSteps = stepChainOf(stepsForDescription());
-        appendStepsAfterTheOptimizedMatch(explainOutput, describedSteps);
+        try {
+          describedSteps = stepChainOf(stepsForDescription());
+          appendStepsAfterTheOptimizedMatch(explainOutput, describedSteps);
+        } catch (final Exception e) {
+          explainOutput.append("\n");
+          appendPlanBuildFailure(explainOutput, e);
+        }
       }
     } else if (isUnion()) {
       // A UNION has no plan of its own to be optimized or not: the planner leaves its physicalPlan null and plans
@@ -786,7 +791,14 @@ public class CypherExecutionPlan {
       return allSteps;
     }
 
-    final AbstractExecutionStep rootStep = stepsForDescription();
+    final AbstractExecutionStep rootStep;
+    try {
+      rootStep = stepsForDescription();
+    } catch (final Exception e) {
+      appendPlanBuildFailure(output, e);
+      return Collections.emptyList();
+    }
+
     if (rootStep == null) {
       output.append("Execution will use step-by-step interpretation\n");
       return Collections.emptyList();
@@ -798,21 +810,32 @@ public class CypherExecutionPlan {
   }
 
   /**
+   * Reports a plan that could not be built as part of the description, rather than as a failed EXPLAIN or as
+   * nothing at all.
+   * <p>
+   * EXPLAIN answers a question about a query, so a query that cannot be planned is an answer to it: the statement
+   * would fail the same way when run, and naming the failure beats both raising it - which would leave the user
+   * with no plan and no reason - and swallowing it into a log line nobody has enabled (issue #6323). The stack
+   * trace still goes to the log, since only the message belongs in a plan.
+   */
+  private void appendPlanBuildFailure(final StringBuilder output, final Exception cause) {
+    LogManager.instance().log(this, Level.FINE, "Error on building the execution plan to describe it", cause);
+    output.append("Execution plan not available: ")
+        .append(cause.getMessage() != null ? cause.getMessage() : cause.getClass().getSimpleName())
+        .append("\n");
+  }
+
+  /**
    * The step chain this query would run, built only to be described, or null when the statement produces none.
-   * A failure to build is reported as the description rather than as a failed EXPLAIN: the query would fail the
-   * same way when run, and saying so is more useful than a plan-less error.
+   * Building it is the same work {@link #execute()} does before pulling anything, so it fails on the statements
+   * that would fail there: the callers report that failure instead of propagating it.
    */
   private AbstractExecutionStep stepsForDescription() {
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
     context.setInputParameters(parameters);
     setupFunctionResolver(context);
-    try {
-      return canUseOptimizedPhysicalPlan() ? buildExecutionStepsWithOptimizer(context) : buildExecutionSteps(context);
-    } catch (final Exception e) {
-      LogManager.instance().log(this, Level.FINE, "Error on building the execution plan to describe it", e);
-      return null;
-    }
+    return canUseOptimizedPhysicalPlan() ? buildExecutionStepsWithOptimizer(context) : buildExecutionSteps(context);
   }
 
   /**

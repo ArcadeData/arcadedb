@@ -166,8 +166,11 @@ public class InExpression implements BooleanExpression {
         // NaN equals nothing, not even itself (issue #5293), and no long is infinite.
         return Boolean.FALSE;
       if (Math.abs(asDouble) >= EXACT_DOUBLE_LIMIT)
-        // Past 2^53 a double no longer distinguishes adjacent longs, so which elements it equals is no longer a
-        // question of value: leave that to the walk, which is the definition of the answer.
+        // From 2^53 up a double no longer distinguishes adjacent longs, so which elements it equals stops being a
+        // question of one value: leave it to the walk, which is the definition of the answer. The bound is
+        // inclusive because 2^53 ITSELF is already ambiguous - 2^53+1 is not representable and rounds ties-to-even
+        // down onto 2^53, so both longs convert to this same double, and picking one of them would answer FALSE
+        // for a range that holds only the other.
         return null;
       if (asDouble != Math.rint(asDouble))
         return Boolean.FALSE;

@@ -140,6 +140,33 @@ class CypherInRangeMembershipTest {
   }
 
   /**
+   * The 2^53 boundary, where the fast path stops answering and hands back to the walk. It is inclusive, and that
+   * is load-bearing rather than over-cautious: 2^53+1 is not representable as a double and rounds ties-to-even
+   * down onto 2^53, so BOTH longs convert to the same double. A fast path that took 2^53 as unambiguous would
+   * pick one of them and answer false for a range that holds only the other - which is what the second case here
+   * would catch. The walk compares element to operand as doubles, so it says true for both.
+   */
+  @Test
+  void theExactDoubleBoundaryIsAnsweredAsTheWalkAnswersIt() {
+    final long twoTo53 = 1L << 53;
+    assertThat((double) (twoTo53 + 1)).as("the premise: 2^53+1 rounds onto 2^53").isEqualTo((double) twoTo53);
+
+    // A range that holds 2^53 but not 2^53+1, and one that holds 2^53+1 but not 2^53.
+    final String holdsTheEven = "range(" + twoTo53 + ", " + (twoTo53 + 4) + ", 4)";
+    final String holdsTheOdd = "range(" + (twoTo53 + 1) + ", " + (twoTo53 + 5) + ", 4)";
+    final Map<String, Object> asDouble = Map.of("v", (double) twoTo53);
+
+    assertThat(single("RETURN $v IN " + holdsTheEven + " AS r", asDouble))
+        .isEqualTo(single("RETURN $v IN [" + twoTo53 + ", " + (twoTo53 + 4) + "] AS r", asDouble));
+    assertThat(single("RETURN $v IN " + holdsTheOdd + " AS r", asDouble))
+        .isEqualTo(single("RETURN $v IN [" + (twoTo53 + 1) + ", " + (twoTo53 + 5) + "] AS r", asDouble));
+
+    // Below the boundary a double still names exactly one long, so the fast path answers it.
+    assertThat(single("RETURN 9007199254740991.0 IN range(9007199254740991, 9007199254740991) AS r", Map.of()))
+        .isEqualTo(true);
+  }
+
+  /**
    * The complexity claim, and the reported cost: none of these can be answered by a walk in the time allowed, and
    * loosening the bound deletes the test. The element asked for sits at the very end of the range, which is the
    * worst case for the walk and the same case as any other for the arithmetic.
