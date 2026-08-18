@@ -6115,8 +6115,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * {@code REBUILD TYPE} refused a repeat; the other four silently accepted it, last one wins.
    * <p>
    * The dedup key is the LOWERCASED setting name, not {@link Expression} identity: identity is case-sensitive
-   * (issue #6401), so {@code batchSize} and {@code BATCHSIZE} would otherwise land as two separate map entries even
-   * though every reader recognises a setting with {@code equalsIgnoreCase}.
+   * (issue #6401), so {@code batchSize} and {@code BATCHSIZE} would otherwise land as two separate map entries. That
+   * matches how {@code REBUILD INDEX} and {@code REBUILD TYPE} already recognise a setting, with
+   * {@code equalsIgnoreCase}. The other three don't read case-insensitively - {@code BackupDatabaseStatement}'s
+   * switch is exact-case, and {@code Import}/{@code ExportDatabaseStatement} hand the key through as-is to the
+   * integration-module setter - so for them this is a deliberate defensive choice, not a fix for an existing
+   * case-insensitive read: refusing the case-only repeat is still better than silently keeping whichever spelling the
+   * map iterates last.
    * <p>
    * The key itself is always built as {@code new Expression(Identifier)} - never the raw-{@code value} shape
    * {@code IMPORT}/{@code EXPORT}/{@code BACKUP DATABASE} used to use (issue #6409, item 1) - so every reader can
