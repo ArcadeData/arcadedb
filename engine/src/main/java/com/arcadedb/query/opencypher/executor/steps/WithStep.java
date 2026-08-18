@@ -232,7 +232,7 @@ public class WithStep extends AbstractExecutionStep {
     final ResultInternal result = new ResultInternal();
 
     for (final ReturnClause.ReturnItem item : withClause.getItems()) {
-      if ("*".equals(item.getOutputName())) {
+      if (item.isStar()) {
         // WITH * — copy all properties from input
         for (final String prop : inputResult.getPropertyNames())
           result.setProperty(prop, inputResult.getProperty(prop));

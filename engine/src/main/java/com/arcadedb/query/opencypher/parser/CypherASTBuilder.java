@@ -917,7 +917,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     final List<ReturnClause.ReturnItem> items = new ArrayList<>();
     if (body.returnItems().TIMES() != null)
       // WITH * — pass all variables through
-      items.add(new ReturnClause.ReturnItem(new VariableExpression("*"), "*"));
+      items.add(ReturnClause.ReturnItem.star());
     // Always process explicit return items (handles both "WITH expr" and "WITH *, expr AS alias")
     for (final Cypher25Parser.ReturnItemContext itemCtx : body.returnItems().returnItem()) {
       // Pattern expressions (e.g., (n)-[]->()) are not allowed in WITH projections
@@ -1053,7 +1053,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
     if (body.returnItems().TIMES() != null) {
       // RETURN *
-      items.add(new ReturnClause.ReturnItem(new VariableExpression("*"), "*"));
+      items.add(ReturnClause.ReturnItem.star());
     } else {
       for (final Cypher25Parser.ReturnItemContext itemCtx : body.returnItems().returnItem()) {
         // Bare pattern expressions (e.g., (n)-[]->()) are not allowed in RETURN projections.
@@ -1539,39 +1539,14 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   private LabelCheckExpression parseLabelCheckExpression(final Expression variableExpr,
       final Cypher25Parser.LabelExpressionContext labelExprCtx,
       final String text) {
-    // Extract labels and operator from the label expression
-    final List<String> labels = new ArrayList<>();
-    LabelCheckExpression.LabelOperator operator = LabelCheckExpression.LabelOperator.AND;
-
-    // Get the text and parse the labels - remove leading : or IS
-    final String labelText = labelExprCtx.getText();
-    String cleanText = labelText;
-    if (cleanText.startsWith(":"))
-      cleanText = cleanText.substring(1);
-
-    // Check if it contains OR operator (|)
-    if (cleanText.contains("|")) {
-      operator = LabelCheckExpression.LabelOperator.OR;
-      // Split by | (may have optional : after |)
-      final String[] parts = cleanText.split("\\|:?");
-      for (final String part : parts) {
-        final String label = part.trim();
-        if (!label.isEmpty())
-          labels.add(label);
-      }
-    } else if (cleanText.contains("&") || cleanText.contains(":")) {
-      // AND operator (& or :)
-      operator = LabelCheckExpression.LabelOperator.AND;
-      final String[] parts = cleanText.split("[&:]");
-      for (final String part : parts) {
-        final String label = part.trim();
-        if (!label.isEmpty())
-          labels.add(label);
-      }
-    } else {
-      // Single label
-      labels.add(cleanText.trim());
-    }
+    // Same extraction the node pattern uses, so `n:`Event Message`` in a WHERE resolves the very
+    // label that (n:`Event Message`) resolves in a pattern - backticks stripped, quoted names kept
+    // whole. Reading them off the text instead left the backticks on the label, which made the
+    // predicate unsatisfiable and its negation a silent no-op.
+    final List<String> labels = ParserUtils.extractLabels(labelExprCtx);
+    final LabelCheckExpression.LabelOperator operator = ParserUtils.isLabelDisjunction(labelExprCtx) ?
+        LabelCheckExpression.LabelOperator.OR :
+        LabelCheckExpression.LabelOperator.AND;
 
     return new LabelCheckExpression(variableExpr, labels, operator, text);
   }
