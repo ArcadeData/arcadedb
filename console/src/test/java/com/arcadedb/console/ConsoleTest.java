@@ -44,6 +44,7 @@ import java.nio.file.Files;
 import java.text.SimpleDateFormat;
 import java.util.Arrays;
 import java.util.Iterator;
+import java.util.Locale;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -326,16 +327,37 @@ class ConsoleTest {
   }
 
   /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/6392: what is still malformed must stay malformed.
+   * Issue https://github.com/ArcadeData/arcadedb/issues/6392: what is still malformed must stay malformed, and the message says
+   * which half is missing so the user does not have to guess.
    */
   @Test
   void setWithoutTheSeparatorIsRejected() {
-    assertThatThrownBy(() -> console.parse("set limit")).isInstanceOf(ConsoleException.class);
+    assertThatThrownBy(() -> console.parse("set limit")).isInstanceOf(ConsoleException.class)
+        .hasMessageContaining("Invalid syntax for SET, use");
   }
 
   @Test
   void setWithoutAKeyIsRejected() {
-    assertThatThrownBy(() -> console.parse("set = 7")).isInstanceOf(ConsoleException.class);
+    assertThatThrownBy(() -> console.parse("set = 7")).isInstanceOf(ConsoleException.class).hasMessageContaining("missing name");
+    assertThatThrownBy(() -> console.parse("set    = 7")).isInstanceOf(ConsoleException.class).hasMessageContaining("missing name");
+  }
+
+  /**
+   * The setting names are ASCII, so their case must fold in English: with a Turkish default locale the dotless lowercase of 'I'
+   * used to make `LIMIT` miss its own branch and fall through to the global configuration.
+   */
+  @Test
+  void setNameIsFoldedInEnglishWhateverTheDefaultLocale() throws Exception {
+    final Locale defaultLocale = Locale.getDefault();
+    final StringBuilder buffer = new StringBuilder();
+    console.setOutput(output -> buffer.append(output));
+    try {
+      Locale.setDefault(Locale.forLanguageTag("tr-TR"));
+      console.parse("set LIMIT = 7");
+    } finally {
+      Locale.setDefault(defaultLocale);
+    }
+    assertThat(buffer.toString()).contains("Set new limit to 7");
   }
 
   /**

@@ -313,13 +313,17 @@ public class Console {
   private void executeSet(final String line) {
     // THE VALUE IS EVERYTHING AFTER THE FIRST '=': IT CAN CONTAIN FURTHER SEPARATORS AND IT CAN BE EMPTY (ISSUE #6392)
     final String[] pair = splitKeyValue(line);
-    if (pair == null || pair[0].isBlank())
+    if (pair == null)
       throw new ConsoleException("Invalid syntax for SET, use SET <name> = <value>");
+    if (pair[0].isBlank())
+      // SAY WHICH HALF IS MISSING, LIKE THE `-D<key>=<value>` PATH ALREADY DOES
+      throw new ConsoleException("Invalid syntax for SET: missing name, use SET <name> = <value>");
 
     final String key = pair[0].trim();
     final String value = pair[1].trim();
 
-    switch (key.toLowerCase()) {
+    // THE SETTING NAMES ARE ASCII, SO THE CASE MUST FOLD IN ENGLISH: WITH A TURKISH DEFAULT LOCALE `LIMIT` WOULD NOT MATCH
+    switch (key.toLowerCase(Locale.ENGLISH)) {
     case "limit" -> {
       limit = Integer.parseInt(value);
       outputLine(3, "Set new limit to %d", limit);
