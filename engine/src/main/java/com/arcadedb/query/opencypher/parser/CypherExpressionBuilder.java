@@ -2186,7 +2186,7 @@ class CypherExpressionBuilder {
         final Expression rhsExpr = parseExpressionFromText(strCtx.expression6());
         final List<Expression> listItems = new ArrayList<>();
         listItems.add(rhsExpr);
-        return new BooleanWrapperExpression(new InExpression(leftExpr, listItems, false));
+        return new BooleanWrapperExpression(new InExpression(leftExpr, listItems));
       }
     }
 

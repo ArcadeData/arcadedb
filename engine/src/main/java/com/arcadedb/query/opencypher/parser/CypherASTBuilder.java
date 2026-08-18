@@ -1426,7 +1426,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
           final Expression rhsExpr = expressionBuilder.parseExpressionFromText(strListCtx.expression6());
           final List<Expression> listItems = new ArrayList<>();
           listItems.add(rhsExpr);
-          return new InExpression(leftExpr, listItems, false);
+          return new InExpression(leftExpr, listItems);
         }
 
         // Check for REGEX (=~)

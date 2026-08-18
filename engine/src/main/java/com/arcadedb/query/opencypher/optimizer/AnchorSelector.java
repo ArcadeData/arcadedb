@@ -514,9 +514,9 @@ public class AnchorSelector {
     }
 
     if (expression instanceof InExpression inExpr) {
-      if (inExpr.isNot())
-        return;
-
+      // No negated form to decline: Cypher has no NOT IN operator. The negation is written NOT x IN list and
+      // parses as a TernaryLogicalExpression(NOT) around this node, which this walk has no branch for and so
+      // never descends into - the predicate is not extracted at all rather than extracted and then rejected.
       if (!(inExpr.getExpression() instanceof PropertyAccessExpression propAccess))
         return;
       if (!propAccess.getVariableName().equals(variable))

@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -30,6 +31,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * Regression test for issue #5293: the IN operator must use the same equality semantics as the =
@@ -179,6 +181,34 @@ public class CypherInEqualitySemanticsIssue5293Test {
         Map.of("values", List.of(1, 2, 3)));
     assertThat(rs.hasNext()).isTrue();
     assertThat((Boolean) rs.next().getProperty("result")).isTrue();
+  }
+
+  /**
+   * Cypher has no {@code NOT IN} operator - Neo4j has none either - so the negation is a NOT around the whole
+   * membership test, and {@code InExpression} has no negated form to build. It carried an {@code isNot} flag that
+   * both of its construction sites fixed at false, which read as a choice the parser was making and never was.
+   */
+  @Test
+  void negationIsWrittenAroundInBecauseThereIsNoNotInOperator() {
+    final Result row = querySingleRow(
+        "RETURN NOT 2 IN [1, 2, 3] AS notFound, NOT 9 IN [1, 2, 3] AS notMissing, "
+            + "NOT (2 IN [1, 2, 3]) AS parenthesised, NOT null IN [1] AS unknown, NOT null IN [] AS emptyList");
+    assertThat((Boolean) row.getProperty("notFound")).isFalse();
+    assertThat((Boolean) row.getProperty("notMissing")).isTrue();
+    assertThat((Boolean) row.getProperty("parenthesised")).isFalse();
+    assertThat((Boolean) row.getProperty("unknown")).isNull();
+    assertThat((Boolean) row.getProperty("emptyList")).isTrue();
+  }
+
+  /** The form the flag would have stood for is not a query at all: the parser refuses it, as Neo4j does. */
+  @Test
+  void notInIsNotAnOperator() {
+    for (final String query : new String[] {
+        "RETURN 2 NOT IN [1, 2, 3] AS r",
+        "MATCH (n:Item) WHERE n.name NOT IN ['a'] RETURN n" }) {
+      final Throwable thrown = catchThrowable(() -> database.query("opencypher", query));
+      assertThat(thrown).as("%s", query).isInstanceOf(CommandParsingException.class);
+    }
   }
 
   @Test

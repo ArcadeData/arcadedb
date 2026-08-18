@@ -33,6 +33,12 @@ import java.util.List;
 /**
  * IN expression for WHERE clauses.
  * Example: n.name IN ['Alice', 'Bob', 'Charlie']
+ * <p>
+ * There is no negated form of this node, because Cypher has no {@code NOT IN} operator - Neo4j has none either,
+ * and this parser rejects {@code x NOT IN list} outright. The negation is written {@code NOT x IN list} and parses
+ * as a {@code TernaryLogicalExpression(NOT)} around this node, so neither of the two places that build it ever had
+ * a second shape to pass. It carried an {@code isNot} flag anyway, fixed at false at both, which made every
+ * three-valued answer below read as a choice it was not making.
  */
 public class InExpression implements BooleanExpression {
   /** {@code 2^53}: the first magnitude at which a double stops representing every long exactly. */
@@ -40,17 +46,15 @@ public class InExpression implements BooleanExpression {
 
   private final Expression expression;
   private final List<Expression> list;
-  private final boolean isNot;
 
   // Membership is equality against each element, so the element check reuses the = operator's
   // comparator (issue #5293) rather than a second, drifting implementation. Held per AST node so no
   // wrapper is allocated per element per row.
   private final ComparisonExpression equalityComparator = ComparisonExpression.valueComparator(ComparisonExpression.Operator.EQUALS);
 
-  public InExpression(final Expression expression, final List<Expression> list, final boolean isNot) {
+  public InExpression(final Expression expression, final List<Expression> list) {
     this.expression = expression;
     this.list = list;
-    this.isNot = isNot;
   }
 
   @Override
@@ -111,12 +115,12 @@ public class InExpression implements BooleanExpression {
     if (value == null)
       // Every comparison against null is null, whatever the elements are, so only their number matters: a
       // non-empty list makes this uncertain, an empty one leaves nothing to be uncertain about.
-      return valuesToCheck.iterator().hasNext() ? null : Boolean.valueOf(isNot);
+      return valuesToCheck.iterator().hasNext() ? null : Boolean.FALSE;
 
     if (valuesToCheck instanceof LongRangeList range) {
       final Boolean found = rangeMembership(range, value);
       if (found != null)
-        return isNot != found;
+        return found;
     }
 
     // 3VL: null IN [1,2,3] -> null, 5 IN [1,null,3] -> null (if not found otherwise)
@@ -126,13 +130,13 @@ public class InExpression implements BooleanExpression {
       if (cmp == null)
         foundNull = true;
       else if (cmp)
-        return isNot ? false : true;
+        return Boolean.TRUE;
     }
 
     if (foundNull)
       return null;
 
-    return isNot ? true : false;
+    return Boolean.FALSE;
   }
 
   /**
@@ -209,7 +213,7 @@ public class InExpression implements BooleanExpression {
   public String getText() {
     final StringBuilder sb = new StringBuilder();
     sb.append(expression.getText());
-    sb.append(isNot ? " NOT IN [" : " IN [");
+    sb.append(" IN [");
     for (int i = 0; i < list.size(); i++) {
       if (i > 0) sb.append(", ");
       sb.append(list.get(i).getText());
@@ -224,9 +228,5 @@ public class InExpression implements BooleanExpression {
 
   public List<Expression> getList() {
     return list;
-  }
-
-  public boolean isNot() {
-    return isNot;
   }
 }
