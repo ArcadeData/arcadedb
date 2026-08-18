@@ -145,10 +145,14 @@ class CypherCountPushDownLabelIssue6322Test extends TestHelper {
   /**
    * The central variable is written once per arm, and the operator enumerates one type of central node, so two
    * arms naming different types cannot both be honoured by it.
+   * <p>
+   * The arms are left unlabelled on purpose, for the same reason as {@code single} above: a labelled arm
+   * endpoint declines the push-down on its own (issue #6337), which would make this test pass even if the
+   * central-label-conflict check it is named for stopped working.
    */
   @Test
   void conflictingCentralLabelsDeclineTheStarCountPushDown() {
-    final String query = "MATCH (p:Post)<-[:WROTE]-(:Author), (p:Draft)-[:TAGGED]->(:Topic) RETURN count(*) AS c";
+    final String query = "MATCH (p:Post)<-[:WROTE]-(), (p:Draft)-[:TAGGED]->() RETURN count(*) AS c";
     assertThat(explainOf(query)).doesNotContain("COUNT STAR JOIN");
     assertThat(scalarOf(query)).isEqualTo(1);
   }
