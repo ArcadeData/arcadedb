@@ -463,6 +463,13 @@ class DictionaryMultiPageTest extends TestHelper {
    * failed once in a full-suite run with the assertion below reporting nothing raised at all, and the two are the only
    * premises it rests on. Stating both means the next such run says WHICH one stopped being true instead of leaving that to
    * be inferred from a guard that did not fire.
+   * <p>
+   * The file premise is DRAINED before it is asserted (issue #6351). The append above commits, which advances the component's
+   * page count and hands the page to the flush thread; the file only grows when that thread gets to it. Asserting the file
+   * without waiting would be asserting a race, and it is the very race #6351 was about - it is the one shape that produces
+   * exactly the "nothing raised at all" this test once reported, because the load used to decide whether there was anything to
+   * read from the file's size. {@link DictionaryFileSizeLagTest} covers a file behind its committed count on purpose; here the
+   * file is meant to hold page 0, so wait until it does.
    */
   @Test
   void aDictionaryPageThatIsClaimedButMissingFailsLoudly() throws IOException {
@@ -471,6 +478,7 @@ class DictionaryMultiPageTest extends TestHelper {
       final Dictionary dictionary = other.getSchema().getDictionary();
       dictionary.getIdByName("aNameOnPageZero", true);
       assertThat(dictionary.getTotalPages()).isEqualTo(1);
+      assertThat(((DatabaseInternal) other).getPageManager().waitAllPagesOfDatabaseAreFlushed(other)).isTrue();
       assertThat(dictionary.getComponentFile().getTotalPages())
           .as("the premise: the file really holds page 0 and nothing after it")
           .isEqualTo(1L);

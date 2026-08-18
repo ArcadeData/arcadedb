@@ -1755,6 +1755,18 @@ public class PageManager extends LockContext {
     checkForPageDisposal();
   }
 
+  /**
+   * <b>A read answering is not the same fact as the file holding the page, and no caller can tell the two apart</b> (issue
+   * #6351, note). The read cache is consulted FIRST and the flush queue second ({@link #loadPage}), so a resident image answers
+   * for a page whose bytes may not be on disk yet - which is the whole point of both, and correct - and only a miss in both ever
+   * reaches {@code file.getTotalPages()}. With {@code createIfNotExists} the read invents a zero page rather than refusing at
+   * all.
+   * <p>
+   * So a guard must never infer "this page exists" from a read having succeeded. It has to read the BYTES and say what makes
+   * them legal content, the way {@link Dictionary#reload()} does with the per-page header every dictionary page carries. Making
+   * residency prove it corresponds to the file would be a large change on the hottest path in the engine, for a hazard nobody
+   * has demonstrated; this note is here so the next person who finds a guard behaving oddly does not have to rediscover why.
+   */
   private CachedPage getCachedPage(final PageId pageId, final int pageSize, final boolean isNew, final boolean createIfNotExists)
       throws IOException {
     checkForPageDisposal();
