@@ -21,6 +21,7 @@ package com.arcadedb.index;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -305,6 +306,45 @@ class Issue6359SuperTypeIndexPropagationTest extends TestHelper {
     assertThat(propagated.countEntries())
         .as("every record must have an entry, whatever the async side was doing while the index was propagated")
         .isEqualTo(records);
+  }
+
+  /**
+   * The link is handed back on EVERY refusal, not only on the one the index propagation raises.
+   * <p>
+   * Linking a super type applies the linkage first and then does three things that can each still refuse: pairing
+   * external buckets, propagating the indexes, and inheriting the bucket selection strategy. Only the second used to
+   * roll the linkage back, so a refusal from either of the others handed the caller a type that IS a subtype with
+   * none of what being one implies. The shape below is the third: a partition that is legal on the super type and
+   * unsuitable for this subtype, whose own index on the partition key is declared {@code COLLATE CI} (#5637).
+   */
+  @Test
+  @Timeout(60)
+  void aRefusalFromOutsideTheIndexPropagationHandsTheLinkBackToo() {
+    database.transaction(() -> {
+      database.getSchema().buildDocumentType().withName("Super").withTotalBuckets(4).create();
+      database.command("sql", "CREATE PROPERTY Super.k STRING").close();
+      database.command("sql", "CREATE INDEX ON Super (k) UNIQUE").close();
+      database.command("sql", "ALTER TYPE Super BucketSelectionStrategy `partitioned('k')`").close();
+
+      database.getSchema().buildDocumentType().withName("Sub").withTotalBuckets(4).create();
+      database.command("sql", "CREATE PROPERTY Sub.k STRING").close();
+      database.command("sql", "CREATE INDEX ON Sub (k COLLATE CI) UNIQUE").close();
+    });
+
+    assertThatThrownBy(() -> database.transaction(() -> database.getSchema().getType("Sub").addSuperType("Super")))
+        .isInstanceOf(SchemaException.class).hasMessageContaining("COLLATE CI");
+
+    assertThat(database.getSchema().getType("Sub").getSuperTypes())
+        .as("the subtype is as unlinked as the refusal left it").isEmpty();
+    assertThat(database.getSchema().getType("Super").getSubTypes())
+        .as("and so is the super type, on the other side of the same link").isEmpty();
+
+    // The refusal took nothing away permanently: a subtype the partition IS suitable for still links.
+    database.transaction(() -> {
+      database.getSchema().buildDocumentType().withName("Ok").withTotalBuckets(4).create();
+      database.getSchema().getType("Ok").addSuperType("Super");
+    });
+    assertThat(database.getSchema().getType("Ok").getSuperTypes()).hasSize(1);
   }
 
   /**

@@ -1993,145 +1993,155 @@ public class LocalDocumentType implements DocumentType {
       final List<Integer> linkedBucketIds = cachedPolymorphicBucketIds;
       embeddedSuperType.updatePolymorphicBucketsCache(true, linkedBuckets, linkedBucketIds);
 
-      // IF THE NEWLY-LINKED SUPERTYPE HAS ANY EXTERNAL PROPERTY (OWN OR INHERITED), THIS SUBTYPE MUST OWN PAIRED
-      // EXTERNAL BUCKETS FOR ITS OWN PRIMARY BUCKETS, BECAUSE RECORDS OF THIS SUBTYPE LIVE IN THIS SUBTYPE'S BUCKETS.
-      if (embeddedSuperType.hasExternalProperties())
-        ensureExternalBucketsRecursive();
+      // EVERYTHING THAT FOLLOWS THE LINKAGE IS GUARDED BY IT. The three lines above are the link; every step below can
+      // still refuse - a paired external bucket that cannot be created, an index propagation that hits a duplicate, an
+      // inherited partition the suitability check rejects for this subtype (#5637) - and a refusal that left the link
+      // standing would hand back a type that IS a subtype, with none of what being one implies. Only the propagation
+      // path used to roll it back, so the other two left it half applied.
+      try {
 
-      // CREATE INDEXES AUTOMATICALLY ON PROPERTIES DEFINED IN SUPER TYPES
-      final Collection<TypeIndex> indexes = new ArrayList<>(getAllIndexes(true));
-      indexes.removeAll(indexesByProperties.values());
+        // IF THE NEWLY-LINKED SUPERTYPE HAS ANY EXTERNAL PROPERTY (OWN OR INHERITED), THIS SUBTYPE MUST OWN PAIRED
+        // EXTERNAL BUCKETS FOR ITS OWN PRIMARY BUCKETS, BECAUSE RECORDS OF THIS SUBTYPE LIVE IN THIS SUBTYPE'S BUCKETS.
+        if (embeddedSuperType.hasExternalProperties())
+          ensureExternalBucketsRecursive();
 
-      if (createIndexes) {
-        // The indexes propagated here go over buckets that ALREADY HOLD RECORDS, which is the whole difference
-        // between this call site and the sibling in createBucket() - there the bucket has just been created, so no
-        // transaction can hold uncommitted writes into it and there is nothing for a scan to miss. Here a caller that
-        // inserts and then links a super type in ONE transaction is exactly the shape of issue #6324 item 1: the
-        // records are not committed, so the scan does not see them, and they were saved before the index existed to
-        // stage an entry for. The result was an index that is readable, reported healthy by CHECK DATABASE, and
-        // answers the lookup it exists for with nothing (issue #6359, item 1).
-        //
-        // Decided BEFORE the transactions below, while the answer is still about the transaction that was already
-        // there - see IndexBuilder#buildSharesCallerTransaction, which owns the predicate for every call site.
-        // Per index rather than once, because an index family that cannot use a shared transaction (the vector ones,
-        // whose search path reads through the page cache rather than through the transaction) has to keep building in
-        // one go whatever the caller holds.
-        final DatabaseInternal database = (DatabaseInternal) schema.getDatabase();
-        final boolean callerTransactionHasChanges = IndexBuilder.callerTransactionHasChanges(database);
-        // Two lists, because "has to be built later" and "has to be taken away if anything goes wrong" are not the
-        // same set. An index family that cannot share the caller's transaction is built INLINE during component
-        // creation and never reaches toBuild, so a cleanup keyed on toBuild alone would leave it behind, committed
-        // and attached to a type relationship unlinkSuperType has just undone. Reachable whenever a super type
-        // carries both a vector index and an ordinary one.
-        final List<Index> created = new ArrayList<>();
-        final List<Index> toBuild = new ArrayList<>();
+        // CREATE INDEXES AUTOMATICALLY ON PROPERTIES DEFINED IN SUPER TYPES
+        final Collection<TypeIndex> indexes = new ArrayList<>(getAllIndexes(true));
+        indexes.removeAll(indexesByProperties.values());
 
-        try {
-          // The COMPONENTS are created in a transaction of their OWN. The enclosing recordFileChanges writes the
-          // schema entry that names each of them whatever the caller's transaction goes on to do, so the index FILES
-          // have to be committed on the same terms: leaving a first page inside a caller's transaction that later
-          // rolls back would leave the schema pointing at a file with no pages, which fails on the next write with
-          // "the file is invalid".
-          database.transaction(() -> {
-            // Emptied on entry, not on declaration: this transaction retries on its own (a NeedRetryException from a
-            // concurrent schema mutation), and a retry re-runs this lambda from scratch. Left to accumulate, the
-            // rolled-back attempt's indexes would be handed to the build alongside the surviving ones, which reports
-            // a failure that has nothing to do with the conflict that caused the retry. TypeIndexBuilder's
-            // equivalent loop is immune because it assigns into a pre-sized array by position.
-            created.clear();
-            toBuild.clear();
+        if (createIndexes) {
+          // The indexes propagated here go over buckets that ALREADY HOLD RECORDS, which is the whole difference
+          // between this call site and the sibling in createBucket() - there the bucket has just been created, so no
+          // transaction can hold uncommitted writes into it and there is nothing for a scan to miss. Here a caller that
+          // inserts and then links a super type in ONE transaction is exactly the shape of issue #6324 item 1: the
+          // records are not committed, so the scan does not see them, and they were saved before the index existed to
+          // stage an entry for. The result was an index that is readable, reported healthy by CHECK DATABASE, and
+          // answers the lookup it exists for with nothing (issue #6359, item 1).
+          //
+          // Decided BEFORE the transactions below, while the answer is still about the transaction that was already
+          // there - see IndexBuilder#buildSharesCallerTransaction, which owns the predicate for every call site.
+          // Per index rather than once, because an index family that cannot use a shared transaction (the vector ones,
+          // whose search path reads through the page cache rather than through the transaction) has to keep building in
+          // one go whatever the caller holds.
+          final DatabaseInternal database = (DatabaseInternal) schema.getDatabase();
+          final boolean callerTransactionHasChanges = IndexBuilder.callerTransactionHasChanges(database);
+          // Two lists, because "has to be built later" and "has to be taken away if anything goes wrong" are not the
+          // same set. An index family that cannot share the caller's transaction is built INLINE during component
+          // creation and never reaches toBuild, so a cleanup keyed on toBuild alone would leave it behind, committed
+          // and attached to a type relationship unlinkSuperType has just undone. Reachable whenever a super type
+          // carries both a vector index and an ordinary one.
+          final List<Index> created = new ArrayList<>();
+          final List<Index> toBuild = new ArrayList<>();
 
-            for (final TypeIndex index : indexes) {
-              if (index.getType() == null) {
-                LogManager.instance().log(this, Level.WARNING,
-                    "Error on creating implicit indexes from super type '" + superType.getName() + "': key types is null");
-              } else {
-                final boolean sharesCallerTransaction =
-                    callerTransactionHasChanges && index.getType().buildCanShareCallerTransaction();
+          try {
+            // The COMPONENTS are created in a transaction of their OWN. The enclosing recordFileChanges writes the
+            // schema entry that names each of them whatever the caller's transaction goes on to do, so the index FILES
+            // have to be committed on the same terms: leaving a first page inside a caller's transaction that later
+            // rolls back would leave the schema pointing at a file with no pages, which fails on the next write with
+            // "the file is invalid".
+            database.transaction(() -> {
+              // Emptied on entry, not on declaration: this transaction retries on its own (a NeedRetryException from a
+              // concurrent schema mutation), and a retry re-runs this lambda from scratch. Left to accumulate, the
+              // rolled-back attempt's indexes would be handed to the build alongside the surviving ones, which reports
+              // a failure that has nothing to do with the conflict that caused the retry. TypeIndexBuilder's
+              // equivalent loop is immune because it assigns into a pre-sized array by position.
+              created.clear();
+              toBuild.clear();
 
-                for (int i = 0; i < buckets.size(); i++) {
-                  final Bucket bucket = buckets.get(i);
+              for (final TypeIndex index : indexes) {
+                if (index.getType() == null) {
+                  LogManager.instance().log(this, Level.WARNING,
+                      "Error on creating implicit indexes from super type '" + superType.getName() + "': key types is null");
+                } else {
+                  final boolean sharesCallerTransaction =
+                      callerTransactionHasChanges && index.getType().buildCanShareCallerTransaction();
 
-                  boolean alreadyCreated = false;
-                  for (IndexInternal idx : getPolymorphicBucketIndexByBucketId(bucket.getFileId(), index.getPropertyNames())) {
-                    final TypeIndex typeIndex = idx.getTypeIndex();
-                    if (typeIndex != null && typeIndex.equals(index)) {
-                      alreadyCreated = true;
-                      break;
+                  for (int i = 0; i < buckets.size(); i++) {
+                    final Bucket bucket = buckets.get(i);
+
+                    boolean alreadyCreated = false;
+                    for (IndexInternal idx : getPolymorphicBucketIndexByBucketId(bucket.getFileId(), index.getPropertyNames())) {
+                      final TypeIndex typeIndex = idx.getTypeIndex();
+                      if (typeIndex != null && typeIndex.equals(index)) {
+                        alreadyCreated = true;
+                        break;
+                      }
                     }
-                  }
 
-                  if (!alreadyCreated) {
-                    // Inherit the page size of the index being propagated, like the createBucket() path above does.
-                    // Hardcoding the LSM default here gave a HASH index a page size it cannot address (#5713), and
-                    // getPageSizeForNewFile() is the accessor that guarantees the value is legal to create with.
-                    final Index subIndex = schema.createBucketIndex(this, index.getKeyTypes(), bucket, name, index.getType(),
-                        index.isUnique(), index.getPageSizeForNewFile(), index.getNullStrategy(), null,
-                        index.getPropertyNames().toArray(new String[index.getPropertyNames().size()]), index,
-                        IndexBuilder.BUILD_BATCH_SIZE,
-                        index.getMetadata(), !sharesCallerTransaction);
+                    if (!alreadyCreated) {
+                      // Inherit the page size of the index being propagated, like the createBucket() path above does.
+                      // Hardcoding the LSM default here gave a HASH index a page size it cannot address (#5713), and
+                      // getPageSizeForNewFile() is the accessor that guarantees the value is legal to create with.
+                      final Index subIndex = schema.createBucketIndex(this, index.getKeyTypes(), bucket, name, index.getType(),
+                          index.isUnique(), index.getPageSizeForNewFile(), index.getNullStrategy(), null,
+                          index.getPropertyNames().toArray(new String[index.getPropertyNames().size()]), index,
+                          IndexBuilder.BUILD_BATCH_SIZE,
+                          index.getMetadata(), !sharesCallerTransaction);
 
-                    created.add(subIndex);
-                    if (sharesCallerTransaction)
-                      toBuild.add(subIndex);
+                      created.add(subIndex);
+                      if (sharesCallerTransaction)
+                        toBuild.add(subIndex);
+                    }
                   }
                 }
               }
-            }
-          }, false);
+            }, false);
 
-          if (!toBuild.isEmpty())
-            // The BUILD then joins the caller's transaction, because a scan reads the transaction it runs in: the
-            // pages that transaction has modified first, the committed ones underneath. That is the only way it sees
-            // records the caller has written and not yet committed, and it makes the entries commit, or roll back,
-            // with the records they describe.
-            database.transaction(() -> {
-              for (final Index subIndex : toBuild)
-                IndexBuilder.buildCreatedIndex(subIndex, IndexBuilder.BUILD_BATCH_SIZE, true, null);
-            }, true);
-        } catch (final RuntimeException e) {
-          // EVERY sub-index this propagation made goes, not only the ones that still had a build outstanding - see
-          // the note on the two lists above. Done here rather than from the transaction's error callback because
-          // that callback is NOT reached on every failure: a NeedRetryException or a DuplicatedKeyException raised
-          // inside a JOINED transaction is rethrown immediately by LocalDatabase.transaction (issue #661 - retrying
-          // would roll back a transaction it does not own), skipping the callback entirely. And a duplicate is
-          // exactly what this build can hit, since it now sees the caller's own pending writes.
-          for (final Index subIndex : created)
-            IndexBuilder.dropPartiallyBuiltIndex(schema, subIndex);
+            if (!toBuild.isEmpty())
+              // The BUILD then joins the caller's transaction, because a scan reads the transaction it runs in: the
+              // pages that transaction has modified first, the committed ones underneath. That is the only way it sees
+              // records the caller has written and not yet committed, and it makes the entries commit, or roll back,
+              // with the records they describe.
+              database.transaction(() -> {
+                for (final Index subIndex : toBuild)
+                  IndexBuilder.buildCreatedIndex(subIndex, IndexBuilder.BUILD_BATCH_SIZE, true, null);
+              }, true);
+          } catch (final RuntimeException e) {
+            // EVERY sub-index this propagation made goes, not only the ones that still had a build outstanding - see
+            // the note on the two lists above. Done here rather than from the transaction's error callback because
+            // that callback is NOT reached on every failure: a NeedRetryException or a DuplicatedKeyException raised
+            // inside a JOINED transaction is rethrown immediately by LocalDatabase.transaction (issue #661 - retrying
+            // would roll back a transaction it does not own), skipping the callback entirely. And a duplicate is
+            // exactly what this build can hit, since it now sees the caller's own pending writes.
+            for (final Index subIndex : created)
+              IndexBuilder.dropPartiallyBuiltIndex(schema, subIndex);
 
-          // THE LINK GOES BACK TOO, not only the half-built indexes, and this is what makes the refusal reach the
-          // caller at all. LocalDatabase.transaction retries a DuplicatedKeyException once (#4959); on that retry
-          // this method would find the super type ALREADY in superTypes, return early without propagating anything,
-          // and let the transaction COMMIT - leaving the caller with a linked super type whose index holds no entry
-          // for a single one of the subtype's records. That is the exact defect this issue is about, reached through
-          // the retry instead of through the scan.
-          //
-          // The paired external buckets that ensureExternalBucketsRecursive may have created are deliberately left:
-          // they are additive, idempotent and reused by the next attempt.
-          unlinkSuperType(embeddedSuperType, linkedBuckets, linkedBucketIds);
-
-          // Every failure shape, not only IndexException. The build joins the caller's transaction now, so it can
-          // fail with a DuplicatedKeyException raised on the caller's own pending writes or with a NeedRetryException
-          // - neither of which is an IndexException, and both of which used to reach the caller with no line saying
-          // which super type's propagation they came out of.
-          LogManager.instance()
-              .log(this, Level.WARNING, "Error on creating implicit indexes from super type '" + superType.getName() + "'", e);
-          throw e;
+            // The LINK is handed back by the guard around the whole block, not from here. Every failure shape reaches
+            // it, not only IndexException. The build joins the caller's transaction now, so it can
+            // fail with a DuplicatedKeyException raised on the caller's own pending writes or with a NeedRetryException
+            // - neither of which is an IndexException, and both of which used to reach the caller with no line saying
+            // which super type's propagation they came out of.
+            LogManager.instance()
+                .log(this, Level.WARNING, "Error on creating implicit indexes from super type '" + superType.getName() + "'", e);
+            throw e;
+          }
         }
-      }
 
-      if (!superType.getBucketSelectionStrategy().getName().equalsIgnoreCase(getBucketSelectionStrategy().getName()))
-        // INHERIT THE BUCKET SELECTION STRATEGY FROM THE SUPER TYPE. The enclosing recordFileChanges saves the
-        // schema when it completes, and that write carries this strategy, so the setter does not persist on its own.
+        if (!superType.getBucketSelectionStrategy().getName().equalsIgnoreCase(getBucketSelectionStrategy().getName()))
+          // INHERIT THE BUCKET SELECTION STRATEGY FROM THE SUPER TYPE. The enclosing recordFileChanges saves the
+          // schema when it completes, and that write carries this strategy, so the setter does not persist on its own.
+          //
+          // An inherited partition that is unsuitable for this subtype still refuses here, as it always has: what
+          // changed with issue #5637 is that the refusal now arrives as the SchemaException the suitability check
+          // raises rather than the IllegalArgumentException the binding used to throw. Checked against every caller
+          // of addSuperType - CreateTypeAbstractStatement, AlterTypeStatement's SUPERTYPE branch, TypeBuilder, the
+          // Cypher Labels helper, and LocalSchema's dropType re-attach - and none of them catches either type, so
+          // nothing distinguishes the two. Neither is a CommandParsingException, so the HTTP status is unchanged too.
+          // (AlterTypeStatement's one catch names both, but it guards the BucketSelectionStrategy branch, not this.)
+          setBucketSelectionStrategy(superType.getBucketSelectionStrategy().copy(), false);
+
+      } catch (final RuntimeException e) {
+        // THE LINK GOES BACK, and for the propagation path that is what makes the refusal reach the caller at all:
+        // LocalDatabase.transaction retries a DuplicatedKeyException once (#4959), and on that retry this method
+        // would find the super type ALREADY in superTypes, return early without propagating anything, and let the
+        // transaction COMMIT - handing back a linked super type whose index holds no entry for a single one of the
+        // subtype's records. That is this issue's own defect, reached through the retry rather than through the scan.
         //
-        // An inherited partition that is unsuitable for this subtype still refuses here, as it always has: what
-        // changed with issue #5637 is that the refusal now arrives as the SchemaException the suitability check
-        // raises rather than the IllegalArgumentException the binding used to throw. Checked against every caller
-        // of addSuperType - CreateTypeAbstractStatement, AlterTypeStatement's SUPERTYPE branch, TypeBuilder, the
-        // Cypher Labels helper, and LocalSchema's dropType re-attach - and none of them catches either type, so
-        // nothing distinguishes the two. Neither is a CommandParsingException, so the HTTP status is unchanged too.
-        // (AlterTypeStatement's one catch names both, but it guards the BucketSelectionStrategy branch, not this.)
-        setBucketSelectionStrategy(superType.getBucketSelectionStrategy().copy(), false);
+        // The paired external buckets ensureExternalBucketsRecursive may have created are deliberately left: they are
+        // additive, idempotent, and reused by the next attempt.
+        unlinkSuperType(embeddedSuperType, linkedBuckets, linkedBucketIds);
+        throw e;
+      }
 
       return null;
     });
