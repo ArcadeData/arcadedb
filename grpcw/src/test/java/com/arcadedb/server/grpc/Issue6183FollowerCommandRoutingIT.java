@@ -31,12 +31,14 @@ import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
+import io.grpc.StatusRuntimeException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Where a leader-only refusal can actually arise over gRPC, and where it cannot. Issue #6183 asked whether every
@@ -135,20 +137,18 @@ class Issue6183FollowerCommandRoutingIT extends BaseRaftHATest {
   }
 
   /**
-   * A refused DDL would need the trailers to name the node to go to instead, which is why it is the one failure
-   * {@code executeCommand} answers as a gRPC error. Everything else keeps the {@code success=false} envelope
-   * this RPC has always used, so a client reading that flag is unaffected.
+   * A refused DDL needs the trailers to name the node to go to instead, but that is no longer what sets it apart:
+   * every {@code executeCommand} failure - including an ordinary one like a SQL syntax error - now surfaces as a
+   * gRPC error status through {@code GrpcErrorMapper}, the same as every other RPC (issue #6192). The
+   * {@code success=false} in-band envelope this test used to pin is exactly the defect that issue fixed.
    */
   @Test
-  void anOrdinaryCommandFailureStillComesBackInTheResponse() throws Exception {
+  void anOrdinaryCommandFailureSurfacesAsAGrpcError() {
     final int leaderIndex = findLeaderIndex();
     assertThat(leaderIndex).isGreaterThanOrEqualTo(0);
 
-    final ExecuteCommandResponse response = execute("localhost:" + (BASE_GRPC_PORT + leaderIndex),
-        "SELECTT FROM Nothing");
-
-    assertThat(response.getSuccess()).isFalse();
-    assertThat(response.getMessage()).isNotEmpty();
+    assertThatThrownBy(() -> execute("localhost:" + (BASE_GRPC_PORT + leaderIndex), "SELECTT FROM Nothing"))
+        .isInstanceOf(StatusRuntimeException.class);
   }
 
   private int anyFollowerOf(final int leaderIndex) {

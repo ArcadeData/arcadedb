@@ -37,15 +37,19 @@ import static org.mockito.Mockito.when;
 /**
  * Regression test for issue #4804.
  * <p>
- * {@code ArcadeDbGrpcService.executeCommand} reports execution failures in-band as
- * {@code ExecuteCommandResponse.success=false} while still closing the RPC with gRPC status
+ * At the time this was fixed, {@code ArcadeDbGrpcService.executeCommand} reported execution failures
+ * in-band as {@code ExecuteCommandResponse.success=false} while still closing the RPC with gRPC status
  * {@code OK} (unlike {@code executeQuery}/{@code createRecord}, which call {@code onError}).
  * {@code GrpcMetricsInterceptor} previously keyed its error counter solely off {@code !status.isOk()},
  * so every command failure was counted as a success and error observability for the most-used RPC
  * was broken.
  * <p>
- * These tests pin that the interceptor now counts an in-band command failure as an error even when
- * the gRPC status is OK, while a successful command is not counted as an error.
+ * Issue #6192 later routed every {@code executeCommand} failure through {@code onError} too, so the
+ * in-band scenario these tests build by hand no longer happens for a real command failure. The tests
+ * are kept as a defensive pin on the interceptor's counting logic itself - message-then-OK-status is
+ * still a legal gRPC response shape for it to see, from this RPC or any future one - while the
+ * {@code nonOkStatusIsStillCountedAsError} test below now covers what {@code executeCommand} actually
+ * produces on failure.
  */
 class Issue4804GrpcCommandErrorMetricsTest {
 

@@ -542,6 +542,14 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         LogManager.instance().log(this, Level.FINE, "CLIENT executeCommand: success = %s", response.getSuccess());
 
       if (!response.getSuccess()) {
+        // Unreachable against a correct server: executeCommandInternal now only ever returns success=true
+        // (every failure is rethrown server-side and reaches this client as a StatusRuntimeException, caught
+        // below and mapped to the exact engine exception type - issue #6192). Kept and logged loudly rather
+        // than removed, as a canary: if a future server-side regression ever reintroduces this in-band
+        // envelope, it fails visibly here instead of silently resurrecting the untyped fallback #6192 fixed.
+        LogManager.instance().log(this, Level.SEVERE,
+            "CLIENT executeCommand: server returned success=false in-band, which should be unreachable after #6192: %s",
+            response.getMessage());
         throw new DatabaseOperationException("Failed to execute command: " + response.getMessage());
       }
 
