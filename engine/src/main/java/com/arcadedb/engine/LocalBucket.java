@@ -193,6 +193,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * Whether the free-space claims the write paths make are held against the commit-time measurement (#6396). On
    * exactly when assertions are - surefire's default, never a production run - because the check IS an assertion:
    * it costs two field stores per write, and a comparison against a page walk the compression was doing anyway.
+   * <p>
+   * It is gated a second time, by {@code reuseSpaceMode}: {@link #updatePageStatistics} returns before stating a
+   * claim below {@link REUSE_SPACE_MODE#HIGH}, so under a non-default {@code arcadedb.bucketReuseSpaceMode} every
+   * page stays at {@link MutablePage#FREE_SPACE_CLAIM_UNKNOWN} and the check goes quiet. That is right rather than
+   * an oversight - there are no deltas to keep honest when nothing is tracking free space - but it is worth knowing
+   * before wondering why the assertion never fires.
    */
   private static final   boolean                   CHECK_FREE_SPACE_CLAIMS          = LocalBucket.class.desiredAssertionStatus();
   private static final   int                       SPARE_SPACE_FOR_GROWTH           = 32;
@@ -2755,6 +2761,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             "the chunk marker took " + markerSizeWritten + " bytes where " + markerSize + " were budgeted";
 
         page.writeByteArray(existingPos + markerSizeWritten, body, 0, body.length);
+
+        // #6396: a slot that spilled as the LAST record of its page eats into the free tail directly, and
+        // slotEnlargementForChunkHead counts that tail as room the slot already has - so the enlargement above is 0
+        // by construction there and reports nothing. How much of the tail the head chunk really took depends on the
+        // COMMITTED page this replay landed on, not on the one the write measured, so it is measured here: the head
+        // chunk ends where it ends, and everything past it is what the page has left.
+        if (lastRecordPositionInPage == existingPos)
+          updatePageStatistics(page, page.getMaxContentSize() - (existingPos + markerSizeWritten + body.length), 0);
+
         return true;
       }
 
@@ -2786,6 +2801,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       final int sizeLen = page.writeNumber(existingPos, isPlaceHolder ? -1L * body.length : body.length);
       page.writeByteArray((int) (existingPos + sizeLen), body, 0, body.length);
+
+      // #6396: the mirror of updateRecordInternal's same-or-shorter branch, and it gives bytes back the same way -
+      // silently, because only the page's LAST record moves the free tail and nothing here knows whether this is it.
+      // Saying so matters MORE on this path than on the live one: rebaseSlots replays every buffered slot onto ONE
+      // page image and compresses it once at the end, so a shrink that stayed quiet would leave the exact claim
+      // ANOTHER slot's replay made (a growth re-flowing the same page) standing over a page it no longer describes.
+      if (sizeLen + body.length < rs[1] + committedSize)
+        freedWithoutClaiming(page);
+
       return true;
 
     } catch (final IOException e) {

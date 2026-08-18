@@ -18,6 +18,7 @@
  */
 package com.arcadedb.engine;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BucketPageLayoutTestSupport;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
@@ -195,6 +196,59 @@ class Issue6396FreeSpaceClaimTest extends BucketPageLayoutTestSupport {
         .as("a floor above the page's real tail is still a writer describing bytes it did not write")
         .rootCause().isInstanceOf(AssertionError.class)
         .hasMessageContaining("free bytes or more");
+  }
+
+  /**
+   * The disjoint-slot merge replays SEVERAL slot writes onto ONE page image and compresses it once, at the end
+   * (#5381, {@code TransactionContext.rebaseSlots}) - so a replay branch that says nothing about the free tail does
+   * not merely fail to update a hint, it leaves the claim ANOTHER slot's replay made standing over a page that has
+   * moved on. Found in review of this change.
+   * <p>
+   * The shape: one record GROWS (its replay states an exact tail) and the page's LAST record SHRINKS in the same
+   * transaction, while a concurrent commit to the same page forces the replay. The shrink's replay branch is the
+   * mirror of {@code updateRecordInternal}'s same-or-shorter overwrite and gives the tail back exactly as that one
+   * does, so it demotes the claim exactly as that one does.
+   * <p>
+   * Deterministic rather than racing: the concurrent commit happens on another thread which is joined before this
+   * transaction commits, so the page version has certainly moved by the time the merge is asked for.
+   */
+  @Test
+  void aSlotMergeReplayGivingBytesBackDoesNotLeaveAnotherSlotsClaimStanding() {
+    final boolean slotMerge = GlobalConfiguration.TX_PAGE_SLOT_MERGE.getValueAsBoolean();
+    GlobalConfiguration.TX_PAGE_SLOT_MERGE.setValue(true);
+    try {
+      final List<RID> rids = new ArrayList<>();
+      database.transaction(() -> {
+        for (int i = 0; i < 8; i++)
+          rids.add(database.newDocument(TYPE).set("v", "v".repeat(400)).save().getIdentity());
+      });
+
+      final RID first = rids.getFirst();
+      final RID last = rids.getLast();
+      final RID bystander = rids.get(4);
+
+      database.transaction(() -> {
+        // A growth, whose replay states an exact free tail for the whole page...
+        first.asDocument(true).modify().set("v", "g".repeat(700)).save();
+        // ...and a shrink of the record that ENDS the page, whose replay hands bytes back to that same tail.
+        last.asDocument(true).modify().set("v", "s").save();
+
+        // A committed change to the same page, from another transaction: this is what makes our commit reload the
+        // page and replay our two slots onto it instead of writing our own image.
+        inAnotherThread(() -> database.transaction(
+            () -> bystander.asDocument(true).modify().set("v", "b".repeat(400)).save()));
+      });
+
+      database.transaction(() -> {
+        assertThat(first.asDocument(true).getString("v")).isEqualTo("g".repeat(700));
+        assertThat(last.asDocument(true).getString("v")).isEqualTo("s");
+        assertThat(bystander.asDocument(true).getString("v")).isEqualTo("b".repeat(400));
+      });
+      assertThat(countRecords(TYPE)).isEqualTo(8);
+      checkDatabase();
+    } finally {
+      GlobalConfiguration.TX_PAGE_SLOT_MERGE.setValue(slotMerge);
+    }
   }
 
   /**
