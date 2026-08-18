@@ -800,7 +800,10 @@ public class CypherExecutionPlan {
     }
 
     if (rootStep == null) {
-      output.append("Execution will use step-by-step interpretation\n");
+      // The statement built no chain at all, which execute() answers with an empty result set. This used to read
+      // "Execution will use step-by-step interpretation" - a route-selection message, true when this branch was
+      // reached without ever building anything, and misleading now that it means there was nothing to describe.
+      output.append("No execution steps: this statement produces no rows to execute\n");
       return Collections.emptyList();
     }
 
