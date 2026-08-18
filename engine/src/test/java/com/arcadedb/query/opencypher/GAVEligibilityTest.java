@@ -18,8 +18,8 @@
  */
 package com.arcadedb.query.opencypher;
 
+import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -39,7 +39,12 @@ class GAVEligibilityTest {
 
   @BeforeEach
   void setup() {
-    database = new DatabaseFactory("./target/databases/testopencypher-gav-eligibility").create();
+    // Drop first rather than create outright: a run killed between create() and the @AfterEach below leaves the
+    // directory behind, and create() refuses to overwrite an existing database - so the NEXT run failed here with
+    // "Database ... already exists" and one kill cost two runs. The build removes target/databases before the test
+    // phase for the same reason; this keeps the class self-healing when it is run straight from an IDE, which does
+    // not go through the Maven lifecycle.
+    database = TestHelper.dropDatabase("./target/databases/testopencypher-gav-eligibility").create();
 
     // Create LSQB-like schema
     database.getSchema().createVertexType("Person");
