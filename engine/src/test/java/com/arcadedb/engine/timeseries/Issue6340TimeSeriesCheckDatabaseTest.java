@@ -29,6 +29,7 @@ import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.util.Collection;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -297,5 +298,198 @@ class Issue6340TimeSeriesCheckDatabaseTest extends TestHelper {
       final Result row = resultSet.next();
       assertThat(corruptedTypesOf(row)).containsExactly("Memory");
     }
+  }
+
+  /**
+   * Patches a field of a closed component file's page 0, at {@code contentOffset} bytes past the page header, and
+   * reopens the database. Every damage shape below is one of these: the header is what page 0 asserts about the
+   * rest of the file, so each field is a distinct thing the check has to notice.
+   */
+  private void patchHeaderField(final String filePath, final int contentOffset, final Patch patch) throws Exception {
+    database.close();
+    try (final RandomAccessFile raf = new RandomAccessFile(new File(filePath), "rw")) {
+      raf.seek(BasePage.PAGE_HEADER_SIZE + contentOffset);
+      patch.apply(raf);
+    } finally {
+      database = factory.open();
+    }
+  }
+
+  @FunctionalInterface
+  private interface Patch {
+    void apply(RandomAccessFile raf) throws Exception;
+  }
+
+  /**
+   * The format version byte decides how a row is READ - whether a TAG column is a 4-byte dictionary id or an
+   * inline string - so a page 0 that disagrees with the file name is the one thing that turns every row into a
+   * different row. This is the header half of the guard #6314 added to the component itself.
+   */
+  @Test
+  void aMutableBucketWhoseHeaderVersionDisagreesWithItsFileNameIsReported() throws Exception {
+    final TimeSeriesEngine engine = createType("Cpu");
+    appendRows(engine, 200);
+
+    patchHeaderField(engine.getShard(0).getMutableBucket().getComponentFile().getFilePath(), 4,
+        raf -> raf.writeByte(TimeSeriesBucket.CURRENT_VERSION + 7));
+
+    final Result row = runCheck();
+
+    assertThat(corruptedTypesOf(row)).containsExactly("Cpu");
+    assertThat(warningsOf(row)).anyMatch(w -> w.contains("timeseries 'Cpu'")
+        && w.contains("mutable row format version " + (TimeSeriesBucket.CURRENT_VERSION + 7)));
+  }
+
+  /**
+   * The stride is computed from the schema's columns, so a header claiming a different count means the rows were
+   * written at a width nothing will read them back at.
+   */
+  @Test
+  void aMutableBucketWhoseHeaderColumnCountDisagreesWithTheSchemaIsReported() throws Exception {
+    final TimeSeriesEngine engine = createType("Cpu");
+    appendRows(engine, 200);
+
+    patchHeaderField(engine.getShard(0).getMutableBucket().getComponentFile().getFilePath(), 5,
+        raf -> raf.writeShort(99));
+
+    final Result row = runCheck();
+
+    assertThat(corruptedTypesOf(row)).containsExactly("Cpu");
+    assertThat(warningsOf(row)).anyMatch(w -> w.contains("timeseries 'Cpu'")
+        && w.contains("declares 99 column(s)"));
+  }
+
+  /**
+   * A header announcing data pages the file does not hold, which is the other direction of the #6314 residue: the
+   * samples those pages should carry are simply not there.
+   * <p>
+   * It also pins the ONE-finding rule: the walk stops at the first missing page, so the aggregate "declares X
+   * samples but the pages hold Y" - which the short count would otherwise trip - is deliberately not reported on
+   * top. A single root cause reads as a single finding.
+   */
+  @Test
+  void aMutableBucketAnnouncingDataPagesItDoesNotHaveReportsThatAloneAndOnce() throws Exception {
+    final TimeSeriesEngine engine = createType("Cpu");
+    appendRows(engine, 200);
+
+    patchHeaderField(engine.getShard(0).getMutableBucket().getComponentFile().getFilePath(), 40,
+        raf -> raf.writeInt(9_999));
+
+    final Result row = runCheck();
+
+    assertThat(corruptedTypesOf(row)).containsExactly("Cpu");
+
+    final List<String> bucketWarnings = warningsOf(row).stream()
+        .filter(w -> w.contains("timeseries 'Cpu'") && w.contains("mutable bucket")).toList();
+    assertThat(bucketWarnings).hasSize(1);
+    assertThat(bucketWarnings.getFirst()).contains("declares 9999 data page(s) but page");
+  }
+
+  /**
+   * A file that is not a whole number of its own pages was written at a different stride or lost its tail - the
+   * O(1) check that needs no walk at all.
+   */
+  @Test
+  void aMutableBucketFileThatIsNotAWholeNumberOfPagesIsReported() throws Exception {
+    final TimeSeriesEngine engine = createType("Cpu");
+    appendRows(engine, 200);
+    final String bucketPath = engine.getShard(0).getMutableBucket().getComponentFile().getFilePath();
+
+    database.close();
+    try (final RandomAccessFile raf = new RandomAccessFile(new File(bucketPath), "rw")) {
+      raf.setLength(raf.length() - 16);
+    } finally {
+      database = factory.open();
+    }
+
+    final Result row = runCheck();
+
+    assertThat(corruptedTypesOf(row)).containsExactly("Cpu");
+    assertThat(warningsOf(row)).anyMatch(w -> w.contains("timeseries 'Cpu'")
+        && w.contains("not a whole number of"));
+  }
+
+  /**
+   * A dictionary whose header claims more entries than its pages hold: every id above what the pages actually
+   * carry resolves to nothing, which a reader experiences as a null tag rather than as an error.
+   */
+  @Test
+  void aTagDictionaryClaimingMoreEntriesThanItsPagesHoldIsReported() throws Exception {
+    final TimeSeriesEngine engine = createType("Cpu");
+    appendRows(engine, 200);
+    final TimeSeriesTagDictionary dictionary = engine.getTagDictionary();
+    assertThat(dictionary).isNotNull();
+
+    patchHeaderField(dictionary.getComponentFile().getFilePath(), 5, raf -> raf.writeInt(500));
+
+    final Result row = runCheck();
+
+    assertThat(corruptedTypesOf(row)).containsExactly("Cpu");
+    assertThat(warningsOf(row)).anyMatch(w -> w.contains("timeseries 'Cpu'") && w.contains("tag dictionary")
+        && w.contains("declares 500 entries"));
+  }
+
+  // NOT TESTED HERE, and the reason is a finding in its own right: corrupting the sealed store's OWN header magic
+  // produces no CHECK DATABASE warning, because TimeSeriesSealedStore's constructor throws on a bad magic,
+  // initEngine() then fails during schema load, and the TimeSeries type DISAPPEARS FROM THE SCHEMA entirely - the
+  // database reopens cleanly with the type simply gone (probed: totalTimeSeriesTypes=0, existsType("Cpu")=false).
+  // A check cannot report a type that is no longer there. That silent disappearance lives in the schema load path
+  // rather than in this pass, and what should happen instead - refuse the open, quarantine the type, or surface it
+  // read-only - is a design question of its own. Left as a follow-up rather than pinned here, because a test
+  // asserting the current behaviour would enshrine it.
+
+  /**
+   * Bytes past the last readable block: the tail of a write that did not complete. The directory scan stops at
+   * the first thing that is not a block magic, so this region is invisible to every other reader - neither used
+   * nor reported - which is exactly why the check has to say it is there.
+   */
+  @Test
+  void bytesFollowingTheLastSealedBlockAreReported() throws Exception {
+    final TimeSeriesEngine engine = createType("Cpu");
+    appendRows(engine, ROWS);
+    engine.compactAll();
+    final File sealed = new File(getDatabasePath(), "Cpu_shard_0.ts.sealed");
+
+    database.close();
+    try (final RandomAccessFile raf = new RandomAccessFile(sealed, "rw")) {
+      raf.seek(raf.length());
+      raf.write(new byte[64]);
+    } finally {
+      database = factory.open();
+    }
+
+    final Result row = runCheck();
+
+    assertThat(corruptedTypesOf(row)).containsExactly("Cpu");
+    assertThat(warningsOf(row)).anyMatch(w -> w.contains("timeseries 'Cpu'") && w.contains("sealed store")
+        && w.contains("64 byte(s) follow the last readable block"));
+  }
+
+  /**
+   * The sealed header's block count against what scanning the file actually finds. Compared only once the header
+   * is clean on disk, which a close-and-reopen guarantees - while blocks are being appended it legitimately
+   * under-reports, and comparing then would call a healthy store damaged.
+   */
+  @Test
+  void aSealedStoreHeaderMiscountingItsBlocksIsReported() throws Exception {
+    final TimeSeriesEngine engine = createType("Cpu");
+    appendRows(engine, ROWS);
+    engine.compactAll();
+    final File sealed = new File(getDatabasePath(), "Cpu_shard_0.ts.sealed");
+
+    database.close();
+    try (final RandomAccessFile raf = new RandomAccessFile(sealed, "rw")) {
+      // Block count is the int at offset 7 of the 27-byte header: magic(4) + version(1) + colCount(2).
+      raf.seek(7);
+      raf.writeInt(42);
+    } finally {
+      database = factory.open();
+    }
+
+    final Result row = runCheck();
+
+    assertThat(corruptedTypesOf(row)).containsExactly("Cpu");
+    assertThat(warningsOf(row)).anyMatch(w -> w.contains("timeseries 'Cpu'") && w.contains("sealed store")
+        && w.contains("declares 42 block(s)"));
   }
 }
