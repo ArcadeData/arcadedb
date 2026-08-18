@@ -1021,10 +1021,13 @@ public class MergeStep extends AbstractExecutionStep {
     final List<String> labels = nodePattern.hasLabels() ? nodePattern.getLabels() : null;
 
     if (labels == null || labels.size() > 1) {
-      // No label is every vertex; more than one is a conjunction, MERGE refusing a disjunction outright
-      // (issue #6338). Which types can carry every label is decided by Labels, the one place that knows what a
-      // label list means, instead of scanning the first label and comparing label lists per record: a type
-      // extending a composite carries its labels without listing them as its own supertypes (issue #6352).
+      // No label is every vertex; more than one is a conjunction. The disjunction flag is passed rather than
+      // hardcoded, but it can only arrive false here: CypherSemanticValidator.checkNoLabelDisjunction refuses
+      // (n:A|B) in MERGE at parse time, because "A or B" says which labels a node MAY have and a write has to
+      // know which type to create (issue #6338). Which types can carry every label is decided by Labels, the one
+      // place that knows what a label list means, instead of scanning the first label and comparing label lists
+      // per record: a type extending a composite carries its labels without listing them as its own supertypes,
+      // and MERGE missed such a node and created a duplicate beside the one MATCH found (issue #6352).
       final Iterator<Record> candidates = Labels.iterateMatchingVertices(context.getDatabase(), labels,
           nodePattern.isLabelDisjunction());
       while (candidates.hasNext()) {

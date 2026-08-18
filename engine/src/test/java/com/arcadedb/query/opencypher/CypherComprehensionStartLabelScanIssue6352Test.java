@@ -146,6 +146,25 @@ class CypherComprehensionStartLabelScanIssue6352Test {
     assertThat(keys("MATCH (y {k:'sp1'}) RETURN y.k AS k")).containsExactly("sp1");
   }
 
+  @Test
+  void theOptimizerDisjunctionScanReturnsEveryAlternativeToo() {
+    // The MATCH spellings above are answered by whichever path the planner picks; this pins the cost-based one,
+    // whose NodeByLabelDisjunctionScan operator now shares the scan with everything else and lost its own copy
+    // of the walk in the process.
+    final String plan = explain("MATCH (y:Author|Topic) RETURN y.k AS k");
+    assertThat(plan).contains("NodeByLabelDisjunctionScan(y:Author|Topic)");
+
+    assertThat(keys("MATCH (y:Author|Topic) RETURN y.k AS k")).containsExactlyInAnyOrder("a1", "t1", "b1");
+    assertThat(keys("MATCH (y:NoSuchLabel|Topic) RETURN y.k AS k")).containsExactlyInAnyOrder("t1", "b1");
+    assertThat(keys("MATCH (y:NoSuchLabel|NorThisOne) RETURN y.k AS k")).isEmpty();
+  }
+
+  private String explain(final String query) {
+    try (final ResultSet rs = database.query("opencypher", "EXPLAIN " + query)) {
+      return rs.getExecutionPlan().get().prettyPrint(0, 2);
+    }
+  }
+
   @SuppressWarnings("unchecked")
   private List<String> listKeys(final String query) {
     try (final ResultSet rs = database.query("opencypher", query)) {
