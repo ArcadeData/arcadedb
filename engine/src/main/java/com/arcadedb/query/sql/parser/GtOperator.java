@@ -21,7 +21,6 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.Identifiable;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 
@@ -47,13 +46,27 @@ public class GtOperator extends SimpleNode implements BinaryCompareOperator {
 
     if (right == null)
       return false;
-    if (left instanceof Identifiable && !(right instanceof Identifiable))
-      return false;
 
     if (!(left instanceof Comparable))
       return false;
 
-    return BinaryComparator.compareTo(left, right) > 0;
+    // No Identifiable-vs-non-Identifiable short circuit here (issue #6188): a RID's own compareTo() already
+    // knows how to compare against its string spelling (e.g. a bound parameter holding "#1:2" instead of a
+    // real RID), and BinaryComparator.compareTo() falls through to that Comparable#compareTo(). Rejecting the
+    // pair up front - as this operator alone among Lt/Ge/Le used to - silently turned "@rid > :p" into "always
+    // false" whenever the parameter carried a RID's string form rather than a RID/Identifiable instance.
+    try {
+      return BinaryComparator.compareTo(left, right) > 0;
+    } catch (final IllegalArgumentException | IndexOutOfBoundsException e) {
+      // right reached here as a bare String because Type.convertOrNull() above only recognizes an exact
+      // RID.class target and silently leaves a DatabaseRID-typed left uncoerced (#6188 review follow-up).
+      // RID#compareTo(Object) then tries to parse it as "#bucket:position" itself, and a string that isn't
+      // RID-shaped throws - IllegalArgumentException/NumberFormatException for a missing "#" or non-numeric
+      // parts, IndexOutOfBoundsException for a missing ":" separator. Same "no defined ordering" contract as
+      // the conversion-failure case just above (#5900): report "not greater" instead of letting whichever
+      // parse failure the malformed input happens to trigger escape mid-scan.
+      return false;
+    }
   }
 
   @Override

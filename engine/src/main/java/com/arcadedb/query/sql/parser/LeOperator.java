@@ -49,7 +49,20 @@ public class LeOperator extends SimpleNode implements BinaryCompareOperator {
 
     if (right == null)
       return false;
-    return BinaryComparator.compareTo(left, right) <= 0;
+
+    try {
+      return BinaryComparator.compareTo(left, right) <= 0;
+    } catch (final IllegalArgumentException | IndexOutOfBoundsException e) {
+      // A right-hand String that Type.convertOrNull() above could not coerce (e.g. a DatabaseRID-typed left,
+      // which is not the exact RID.class the conversion special-cases) reaches Comparable#compareTo() as a bare
+      // String. RID#compareTo(Object) then tries to parse it as "#bucket:position" itself, and a string that
+      // isn't RID-shaped throws - IllegalArgumentException/NumberFormatException for a missing "#" or
+      // non-numeric parts, IndexOutOfBoundsException for a missing ":" separator (#6188 review follow-up). Same
+      // "no defined ordering" contract as the conversion-failure case just above (#5900): report "not
+      // less-or-equal" instead of letting whichever parse failure the malformed input happens to trigger escape
+      // mid-scan.
+      return false;
+    }
   }
 
   @Override
