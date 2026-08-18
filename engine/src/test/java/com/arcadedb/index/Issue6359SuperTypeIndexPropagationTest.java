@@ -24,6 +24,7 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
@@ -362,6 +363,63 @@ class Issue6359SuperTypeIndexPropagationTest extends TestHelper {
       database.getSchema().getType("Ok").addSuperType("Super");
     });
     assertThat(database.getSchema().getType("Ok").getSuperTypes()).hasSize(1);
+  }
+
+  /**
+   * The FIRST of the three post-linkage steps, and the last arm of that guard nothing asserted: pairing the external
+   * buckets.
+   * <p>
+   * A super type carrying an EXTERNAL property (own or inherited) means every subtype has to own a paired
+   * {@code <primaryBucket>_ext} bucket of its own, because records of a subtype live in the subtype's buckets. That
+   * pairing refuses on its own terms - {@code ensureExternalBucketFor} will not adopt a bucket that is already some
+   * user type's PRIMARY bucket - so no fault injection is needed to reach it: name a primary bucket after the one the
+   * subtype's pairing would want, and the refusal arrives from step one, before an index has been propagated or a
+   * strategy inherited.
+   * <p>
+   * What it pins is that the refusal leaves the type as unlinked as it found it, on BOTH sides of the link, and with
+   * no half-adopted external bucket recorded against it.
+   */
+  @Test
+  @Timeout(60)
+  void aRefusalFromTheExternalBucketPairingHandsTheLinkBackToo() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Super", 1).createProperty("payload", Type.STRING).setExternal(true);
+      database.getSchema().createDocumentType("Sub", 1);
+      database.getSchema().createDocumentType("Squatter", 1);
+    });
+
+    // The name Sub's paired external bucket WOULD take, claimed first as a primary bucket of an unrelated type.
+    final String contended = database.getSchema().getType("Sub").getBuckets(false).getFirst().getName() + "_ext";
+    database.transaction(() -> database.command("sql", "ALTER TYPE Squatter BUCKET +`" + contended + "`").close());
+
+    assertThatThrownBy(() -> database.transaction(() -> database.getSchema().getType("Sub").addSuperType("Super")))
+        .isInstanceOf(SchemaException.class).hasMessageContaining("already a primary bucket of another user type");
+
+    assertThat(database.getSchema().getType("Sub").getSuperTypes())
+        .as("the subtype is as unlinked as the refusal left it").isEmpty();
+    assertThat(database.getSchema().getType("Super").getSubTypes())
+        .as("and so is the super type, on the other side of the same link").isEmpty();
+    assertThat(((LocalDocumentType) database.getSchema().getType("Sub")).hasExternalBuckets())
+        .as("and nothing was half-adopted on the way out").isFalse();
+    assertThat(database.getSchema().getType("Squatter").getBuckets(false).stream().map(Bucket::getName))
+        .as("the contended bucket still belongs to whoever owned it").contains(contended);
+
+    // The refusal took nothing away permanently: with the collision gone, the very same link is made and the pairing
+    // this time creates the bucket it could not adopt.
+    database.transaction(() -> {
+      database.command("sql", "ALTER TYPE Squatter BUCKET -`" + contended + "`").close();
+      database.command("sql", "DROP BUCKET `" + contended + "`").close();
+    });
+    database.transaction(() -> database.getSchema().getType("Sub").addSuperType("Super"));
+
+    assertThat(database.getSchema().getType("Sub").getSuperTypes()).hasSize(1);
+    final LocalDocumentType sub = (LocalDocumentType) database.getSchema().getType("Sub");
+    assertThat(sub.getExternalBucketIdFor(sub.getBuckets(false).getFirst().getFileId()))
+        .as("the inherited EXTERNAL property now has a bucket of its own to write into").isNotNull();
+
+    // And it is a working one, not merely a registered one.
+    database.transaction(() -> database.newDocument("Sub").set("payload", "x".repeat(4096)).save());
+    assertThat(database.countType("Sub", false)).isEqualTo(1);
   }
 
   /**

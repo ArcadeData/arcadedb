@@ -591,9 +591,18 @@ public class BaseExpression extends MathExpression {
       this.identifier.extractSubQueries(collector);
   }
 
+  /**
+   * Every field that carries a VALUE, which is what identity means here: two nodes are the same node when they mean
+   * the same thing. {@link #number} and {@link #expression} used to be missing, and they are the two that hold a
+   * numeric literal and a wrapped sub-expression - so for {@code 1} and {@code 2} all the remaining fields are
+   * {@code null}/{@code false} and the two parsed forms compared EQUAL (issue #6401, item 3).
+   * <p>
+   * {@link #parenthesized} is deliberately out: it is rendering-only - the parentheses are already in the tree SHAPE -
+   * so two nodes that differ in it alone mean the same thing.
+   */
   @Override
   protected Object[] getIdentityElements() {
-    return new Object[] { identifier, inputParam, string, modifier, isNull };
+    return new Object[] { number, identifier, expression, inputParam, string, modifier, isNull };
   }
 
   @Override
