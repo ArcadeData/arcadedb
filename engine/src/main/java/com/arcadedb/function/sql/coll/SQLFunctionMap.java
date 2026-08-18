@@ -62,6 +62,13 @@ public class SQLFunctionMap extends SQLAggregatedCollectionFunction<Map<String, 
       throw new IllegalArgumentException("Map function: expected a map or pairs of parameters as key, value");
     else
       for (int i = 0; i < params.length; i += 2) {
+        // A MAP KEY IS A STRING; ANYTHING ELSE USED TO REACH THIS CAST AND THROW ClassCastException (ISSUE #6389).
+        if (!(params[i] instanceof String))
+          throw new IllegalArgumentException(
+              "Map function: expected a STRING key, but received " + (params[i] == null ?
+                  "null" :
+                  "a value of type " + params[i].getClass().getSimpleName()));
+
         final String key = (String) params[i];
         final Object value = params[i + 1];
 

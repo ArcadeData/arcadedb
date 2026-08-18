@@ -18,6 +18,8 @@
  */
 package com.arcadedb.utility;
 
+import java.util.IllegalFormatException;
+
 /**
  * String helpers that the engine needs on paths where the obvious form allocates.
  *
@@ -50,5 +52,86 @@ public class StringUtils {
         return true;
 
     return false;
+  }
+
+  /**
+   * Widest field a {@code %<width>s`-style} conversion may ask for in a user-supplied format. Deliberately generous -
+   * a padded report column is nowhere near it - and the point is only that {@code format('%99999999s', 'x')} must not
+   * turn eight characters of query text into a 100MB string (issue #6389).
+   */
+  public static final int MAX_FORMAT_WIDTH = 1_000_000;
+
+  /**
+   * Applies a user-supplied {@link java.util.Formatter} pattern, answering a typed argument error for everything the
+   * JDK reports by throwing.
+   * <p>
+   * {@code String.format} raises a family of unchecked exceptions for input that is simply wrong - a conversion that
+   * does not match its argument ({@code format('%d','x')}), a conversion that does not exist ({@code format('%y')}),
+   * a null pattern - and every one of them used to escape the SQL {@code format()} function and its method twin as a
+   * raw JDK exception, i.e. an HTTP 500 for a mistake in the query (issue #6389). The width ceiling is checked BEFORE
+   * formatting, because that one is not an error the JDK reports at all: it allocates.
+   *
+   * @param caller the function or method name, for the error message
+   * @param format the caller-supplied format pattern
+   * @param args   the format arguments
+   *
+   * @return the formatted string
+   *
+   * @throws IllegalArgumentException if the pattern is null, malformed, mismatched or asks for an excessive width
+   */
+  public static String format(final String caller, final String format, final Object... args) {
+    if (format == null)
+      throw new IllegalArgumentException(caller + "() requires a non-null format");
+
+    checkFormatWidth(caller, format);
+
+    try {
+      return String.format(format, args);
+    } catch (final IllegalFormatException e) {
+      throw new IllegalArgumentException(
+          caller + "() cannot apply the format '" + format + "': " + e.getClass().getSimpleName() + " - " + e.getMessage(), e);
+    }
+  }
+
+  /**
+   * Rejects a conversion whose width or precision exceeds {@link #MAX_FORMAT_WIDTH}. Scans the pattern once rather
+   * than compiling a regex: this runs per formatted value.
+   */
+  private static void checkFormatWidth(final String caller, final String format) {
+    for (int i = 0; i < format.length(); i++) {
+      if (format.charAt(i) != '%')
+        continue;
+
+      // Skip the argument index, the flags, then read the width - and, past a '.', the precision - as plain digits.
+      // A number too long to be an int is over the ceiling by definition, so digits are counted rather than parsed.
+      int j = i + 1;
+      long number = 0;
+      int digits = 0;
+      while (j < format.length()) {
+        final char c = format.charAt(j);
+        if (c >= '0' && c <= '9') {
+          if (++digits <= 10)
+            number = number * 10 + (c - '0');
+          else
+            number = Long.MAX_VALUE;
+        } else if (c == '$' || c == '.') {
+          // '$' closed an argument index and '.' opens the precision: either way the digits read so far were not a
+          // width, so start counting again.
+          number = 0;
+          digits = 0;
+        } else if (c != '-' && c != '#' && c != '+' && c != ' ' && c != '0' && c != ',' && c != '(') {
+          // Not a flag either: the conversion character, so the specifier ends here.
+          break;
+        }
+        j++;
+      }
+
+      if (number > MAX_FORMAT_WIDTH)
+        throw new IllegalArgumentException(
+            caller + "() format '" + format + "' asks for a field of " + number + " characters, over the " + MAX_FORMAT_WIDTH
+                + " limit");
+
+      i = j;
+    }
   }
 }

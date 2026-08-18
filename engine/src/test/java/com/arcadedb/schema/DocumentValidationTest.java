@@ -203,7 +203,9 @@ class DocumentValidationTest extends TestHelper {
 
     database.command("sql", "create property Validation.long LONG (default 1)");
     database.command("sql", "create property Validation.string STRING (default \"1\")");
-    database.command("sql", "create property Validation.dat DATETIME (default sysdate('YYYY-MM-DD HH:MM:SS'))");
+    // sysdate()'s only argument is a zone id, not a format (issue #6388): the string passed here was never a valid
+    // java.time pattern either, it was simply ignored.
+    database.command("sql", "create property Validation.dat DATETIME (default sysdate())");
 
     assertThat(clazz.getProperty("long").getDefaultValue()).isEqualTo(1L);
     assertThat(clazz.getProperty("string").getDefaultValue()).isEqualTo("1");

@@ -67,7 +67,9 @@ public class SQLMethodAsMap extends AbstractSQLMethod {
     while (iter.hasNext()) {
       final Object key = iter.next();
       if (iter.hasNext())
-        map.put((String) key, iter.next());
+        // A map key is a STRING: converting a non-string key is what asMap() means by "transform into a Map".
+        // The raw cast threw ClassCastException on the perfectly ordinary [1,2,3,4].asMap() (issue #6389).
+        map.put(key == null ? null : key.toString(), iter.next());
     }
 
     return map;

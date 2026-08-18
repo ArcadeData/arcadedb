@@ -295,9 +295,15 @@ class SQLFunctionAdditionalCoverageTest extends TestHelper {
     rs.close();
   }
 
+  /**
+   * sysdate()'s only argument is a ZONE ID, per its documented syntax {@code sysdate([<zoneid>])} - formatting is
+   * .format()'s job. This used to pass 'yyyy-MM-dd' and assert only that the answer was at least ten characters
+   * long, which the default ISO rendering satisfies: the argument was read as params[1] and silently dropped, so the
+   * assertion held whatever was passed (issue #6388).
+   */
   @Test
-  void sysdateWithFormat() {
-    final ResultSet rs = database.query("sql", "SELECT sysdate('yyyy-MM-dd').asString() as now");
+  void sysdateWithZone() {
+    final ResultSet rs = database.query("sql", "SELECT sysdate('Europe/Rome').asString() as now");
     assertThat(rs.hasNext()).isTrue();
     final String now = rs.next().getProperty("now");
     assertThat(now).isNotNull();

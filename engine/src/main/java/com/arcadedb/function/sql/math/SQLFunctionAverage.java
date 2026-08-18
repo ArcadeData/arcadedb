@@ -56,7 +56,10 @@ public class SQLFunctionAverage extends SQLAggregatedFunction {
         sum(number);
       else if (MultiValue.isMultiValue(params[0]))
         for (final Object n : MultiValue.getMultiValueIterable(params[0]))
-          sum((Number) n);
+          sum(requireNumericOrNull(n));
+      else
+        // A NON-NUMERIC, NON-NULL, NON-LIST VALUE IS A CLIENT-FACING TYPE ERROR, NOT A ClassCastException (#6390).
+        sum(requireNumericOrNull(params[0]));
 
       return getResult();
     }
@@ -66,7 +69,7 @@ public class SQLFunctionAverage extends SQLAggregatedFunction {
     Number rowSum = null;
     int rowTotal = 0;
     for (int i = 0; i < params.length; ++i) {
-      final Number value = (Number) params[i];
+      final Number value = requireNumericOrNull(params[i]);
       if (value != null) {
         rowTotal++;
         rowSum = rowSum == null ? value : Type.increment(rowSum, value);

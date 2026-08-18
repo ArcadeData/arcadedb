@@ -2647,6 +2647,46 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
+   * Null-coalescing expression ({@code ??}).
+   * Grammar: expression NULL_COALESCING expression
+   * <p>
+   * Without this visitor ANTLR's default {@code visitChildren} returned the result of the LAST child, which dropped
+   * the left operand from the tree altogether: {@code 'left' ?? 'right'} both rendered and evaluated as
+   * {@code 'right'} (issue #6393). The node is built as a two-operand {@link MathExpression} carrying
+   * {@link MathExpression.Operator#NULL_COALESCING}, whose {@code apply()} already implemented the semantics.
+   * <p>
+   * Unlike the sibling {@code ||} alternative next door, chains are NOT flattened: nesting {@code a ?? b ?? c} as
+   * {@code (a ?? b) ?? c} is what makes the left-to-right short-circuit in {@link MathExpression#execute} possible,
+   * and the operator is left-associative so the nesting matches how it parses.
+   */
+  @Override
+  public Expression visitNullCoalescing(final SQLParser.NullCoalescingContext ctx) {
+    final MathExpression coalesce = new MathExpression();
+    coalesce.childExpressions.add(asMathExpression((Expression) visit(ctx.expression(0))));
+    coalesce.childExpressions.add(asMathExpression((Expression) visit(ctx.expression(1))));
+    coalesce.operators.add(MathExpression.Operator.NULL_COALESCING);
+
+    final Expression result = new Expression();
+    result.mathExpression = coalesce;
+    return result;
+  }
+
+  /**
+   * Adapts an {@link Expression} to the {@link MathExpression} an operator node takes as a child. An expression that
+   * already IS a math expression is used as-is; anything the grammar parks outside that hierarchy (NULL, TRUE/FALSE,
+   * a RID, a JSON literal, an array concatenation, a parenthesised WHERE block) is wrapped in the
+   * {@link BaseExpression#expression} slot, which both {@code execute()} and {@code toString()} already delegate to.
+   */
+  private static MathExpression asMathExpression(final Expression expr) {
+    if (expr.mathExpression != null)
+      return expr.mathExpression;
+
+    final BaseExpression wrapper = new BaseExpression();
+    wrapper.expression = expr;
+    return wrapper;
+  }
+
+  /**
    * Helper method to copy fields from Expression to ArrayConcatExpressionElement.
    */
   private void copyExpressionFields(final Expression from, final ArrayConcatExpressionElement to) {

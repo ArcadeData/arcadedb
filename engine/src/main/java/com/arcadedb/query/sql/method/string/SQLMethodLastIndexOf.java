@@ -36,7 +36,13 @@ public class SQLMethodLastIndexOf extends AbstractSQLMethod {
 
   @Override
   public Object execute(final Object value, final Identifiable currentRecord, final CommandContext context, final Object[] params) {
+    // Same guards as the sibling indexOf(), which had them and this one did not (issue #6389).
+    if (value == null || params[0] == null)
+      return null;
+
     final String toFind = FileUtils.getStringContent(params[0].toString());
-    return params.length > 1 ? value.toString().lastIndexOf(toFind, Integer.parseInt(params[1].toString())) : value.toString().lastIndexOf(toFind);
+    return params.length > 1 ?
+        value.toString().lastIndexOf(toFind, indexArgument(params[1], "from-index")) :
+        value.toString().lastIndexOf(toFind);
   }
 }

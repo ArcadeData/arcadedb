@@ -64,9 +64,11 @@ public class SQLFunctionPercentile extends SQLAggregatedFunction {
       addValue(number);
     } else if (MultiValue.isMultiValue(params[0])) {
       for (final Object n : MultiValue.getMultiValueIterable(params[0])) {
-        addValue((Number) n);
+        addValue(requireNumericOrNull(n));
       }
-    }
+    } else
+      // A NON-NUMERIC, NON-NULL, NON-LIST VALUE IS A CLIENT-FACING TYPE ERROR, NOT A ClassCastException (#6390).
+      addValue(requireNumericOrNull(params[0]));
     return null;
   }
 

@@ -47,7 +47,7 @@ public class SQLMethodCharAt extends AbstractSQLMethod {
       return null;
     }
 
-    final int index = Integer.parseInt(params[0].toString());
+    final int index = indexArgument(params[0], "position");
     final String valueAsString = value.toString();
     // Out of range (including negative) has no character to return: null rather than letting
     // charAt() throw StringIndexOutOfBoundsException (#5885).

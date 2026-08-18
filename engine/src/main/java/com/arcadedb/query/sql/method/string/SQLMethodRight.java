@@ -52,7 +52,7 @@ public class SQLMethodRight extends AbstractSQLMethod {
 
     // A negative offset has no characters to return, same as MySQL's RIGHT(): clamp rather than let
     // substring() throw StringIndexOutOfBoundsException (#5885).
-    final int offset = Math.max(0, Integer.parseInt(params[0].toString()));
+    final int offset = Math.max(0, indexArgument(params[0], "characters"));
     return valueAsString.substring(offset < valueAsString.length() ? valueAsString.length() - offset : 0);
   }
 

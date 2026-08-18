@@ -55,8 +55,9 @@ public class SQLMethodJoin extends AbstractSQLMethod {
           .map(p -> p[0].toString())
           .orElse(",");
 
+      // String::valueOf, not Object::toString: a null element in the list is rendered, not an NPE (issue #6389).
       return list.stream()
-          .map(Object::toString)
+          .map(String::valueOf)
           .collect(Collectors.joining(separator));
 
     } else
