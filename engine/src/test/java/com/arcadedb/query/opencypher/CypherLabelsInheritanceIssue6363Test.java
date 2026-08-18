@@ -21,12 +21,14 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Document;
+import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.function.ToIntFunction;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -192,6 +194,19 @@ class CypherLabelsInheritanceIssue6363Test {
   }
 
   @Test
+  void aLabelNamedTwiceInOneClauseIsCountedOnce() {
+    // A label is set membership, not a count: naming it twice adds or removes it once, and the reported
+    // labels-added / labels-removed have to say so. ArcadeDB already deduplicates the type the write lands on
+    // (Labels.ensureCompositeType), so only the counters could disagree.
+    database.transaction(() -> database.command("opencypher", "MATCH (n:Manager) SET n:Extra:Extra"));
+    assertThat(labelsAdded("MATCH (n:Manager) SET n:Another:Another")).isEqualTo(1);
+
+    assertThat(labelsRemoved("MATCH (n:Manager) REMOVE n:Extra:Extra")).isEqualTo(1);
+    assertThat(count("MATCH (n:Extra) RETURN count(n) AS c")).isEqualTo(0);
+    assertThat(count("MATCH (n:Manager) RETURN count(n) AS c")).isEqualTo(1);
+  }
+
+  @Test
   void anUnlabelledVertexStillReportsNoLabels() {
     database.transaction(() -> database.command("opencypher", "CREATE ({k:'u1'})"));
     assertThat(labels("MATCH (n {k:'u1'}) RETURN labels(n) AS l")).isEmpty();
@@ -210,6 +225,26 @@ class CypherLabelsInheritanceIssue6363Test {
       assertThat(rs.hasNext()).isTrue();
       return ((Number) rs.next().getProperty("c")).longValue();
     }
+  }
+
+  private int labelsAdded(final String command) {
+    return writeStatistic(command, QueryStatistics::getLabelsAdded);
+  }
+
+  private int labelsRemoved(final String command) {
+    return writeStatistic(command, QueryStatistics::getLabelsRemoved);
+  }
+
+  private int writeStatistic(final String command, final ToIntFunction<QueryStatistics> reader) {
+    final int[] value = new int[] { -1 };
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("opencypher", command)) {
+        while (rs.hasNext())
+          rs.next();
+        value[0] = rs.getStatistics().map(reader::applyAsInt).orElse(-1);
+      }
+    });
+    return value[0];
   }
 
   private String typeOf(final String key) {

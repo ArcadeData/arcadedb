@@ -273,14 +273,16 @@ public class RemoveStep extends AbstractExecutionStep {
     final List<String> remainingLabels = new ArrayList<>(currentLabels);
     remainingLabels.removeAll(labelsToRemove);
 
-    // Count the labels the vertex actually carries - a label it does not have is a no-op, exactly as in Neo4j.
-    // A label it only answers to through a type it keeps is a different matter: no type it could be moved to
-    // answers 'no' to that label and 'yes' to the subtype implying it, so the removal is refused rather than
-    // reported as done and silently not done.
+    // Count the labels the vertex actually carries - a label it does not have is a no-op, exactly as in Neo4j, and
+    // a label named twice in one clause is one label, since a label is set membership and not a count. A label the
+    // vertex only answers to through a type it keeps is a different matter: no type it could be moved to answers
+    // 'no' to that label and 'yes' to the subtype implying it, so the removal is refused rather than reported as
+    // done and silently not done.
     final Schema schema = context.getDatabase().getSchema();
     int removedLabelsCount = 0;
-    for (final String label : labelsToRemove) {
-      if (!currentType.instanceOf(label))
+    for (int i = 0; i < labelsToRemove.size(); i++) {
+      final String label = labelsToRemove.get(i);
+      if (!currentType.instanceOf(label) || labelsToRemove.indexOf(label) != i)
         continue;
       if (Labels.impliedBy(schema, remainingLabels, label))
         throw new CommandSemanticException("Cannot remove label '" + label + "' from a vertex of type '"
