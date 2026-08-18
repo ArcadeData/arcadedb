@@ -1480,6 +1480,10 @@ public class LocalDocumentType implements DocumentType {
     final Collection<TypeIndex> existentIndexes = getAllIndexes(true);
 
     if (!existentIndexes.isEmpty()) {
+      // ONE TRANSACTION OF ITS OWN, and unlike the sibling propagation in addSuperType() this one does NOT have to
+      // join the caller's - do not "fix" it by symmetry (issue #6359, item 1). The bucket being indexed here has just
+      // been created, so no transaction can be holding uncommitted writes into it and the scan has nothing to miss;
+      // joining would only cost the build its chunked commit.
       schema.getDatabase().transaction(() -> {
         for (TypeIndex idx : existentIndexes) {
           // getPageSizeForNewFile(), not getPageSize(): this creates a NEW index file, so the page size carried over has
@@ -1961,13 +1965,37 @@ public class LocalDocumentType implements DocumentType {
       indexes.removeAll(indexesByProperties.values());
 
       if (createIndexes) {
+        // The indexes propagated here go over buckets that ALREADY HOLD RECORDS, which is the whole difference
+        // between this call site and the sibling in createBucket() - there the bucket has just been created, so no
+        // transaction can hold uncommitted writes into it and there is nothing for a scan to miss. Here a caller that
+        // inserts and then links a super type in ONE transaction is exactly the shape of issue #6324 item 1: the
+        // records are not committed, so the scan does not see them, and they were saved before the index existed to
+        // stage an entry for. The result was an index that is readable, reported healthy by CHECK DATABASE, and
+        // answers the lookup it exists for with nothing (issue #6359, item 1).
+        //
+        // Decided BEFORE the transactions below, while the answer is still about the transaction that was already
+        // there - see IndexBuilder#buildSharesCallerTransaction, which owns the predicate for every call site.
+        // Per index rather than once, because an index family that cannot use a shared transaction (the vector ones,
+        // whose search path reads through the page cache rather than through the transaction) has to keep building in
+        // one go whatever the caller holds.
+        final DatabaseInternal database = (DatabaseInternal) schema.getDatabase();
+        final boolean callerTransactionHasChanges = IndexBuilder.callerTransactionHasChanges(database);
+        final List<Index> toBuild = new ArrayList<>();
         try {
-          schema.getDatabase().transaction(() -> {
+          // The COMPONENTS are created in a transaction of their OWN. The enclosing recordFileChanges writes the
+          // schema entry that names each of them whatever the caller's transaction goes on to do, so the index FILES
+          // have to be committed on the same terms: leaving a first page inside a caller's transaction that later
+          // rolls back would leave the schema pointing at a file with no pages, which fails on the next write with
+          // "the file is invalid".
+          database.transaction(() -> {
             for (final TypeIndex index : indexes) {
               if (index.getType() == null) {
                 LogManager.instance().log(this, Level.WARNING,
                     "Error on creating implicit indexes from super type '" + superType.getName() + "': key types is null");
               } else {
+                final boolean sharesCallerTransaction =
+                    callerTransactionHasChanges && index.getType().buildCanShareCallerTransaction();
+
                 for (int i = 0; i < buckets.size(); i++) {
                   final Bucket bucket = buckets.get(i);
 
@@ -1980,19 +2008,45 @@ public class LocalDocumentType implements DocumentType {
                     }
                   }
 
-                  if (!alreadyCreated)
+                  if (!alreadyCreated) {
                     // Inherit the page size of the index being propagated, like the createBucket() path above does.
                     // Hardcoding the LSM default here gave a HASH index a page size it cannot address (#5713), and
                     // getPageSizeForNewFile() is the accessor that guarantees the value is legal to create with.
-                    schema.createBucketIndex(this, index.getKeyTypes(), bucket, name, index.getType(), index.isUnique(),
-                        index.getPageSizeForNewFile(), index.getNullStrategy(), null,
+                    final Index created = schema.createBucketIndex(this, index.getKeyTypes(), bucket, name, index.getType(),
+                        index.isUnique(), index.getPageSizeForNewFile(), index.getNullStrategy(), null,
                         index.getPropertyNames().toArray(new String[index.getPropertyNames().size()]), index,
                         IndexBuilder.BUILD_BATCH_SIZE,
-                        index.getMetadata());
+                        index.getMetadata(), !sharesCallerTransaction);
+
+                    if (sharesCallerTransaction)
+                      toBuild.add(created);
+                  }
                 }
               }
             }
           }, false);
+
+          if (!toBuild.isEmpty())
+            // The BUILD then joins the caller's transaction, because a scan reads the transaction it runs in: the
+            // pages that transaction has modified first, the committed ones underneath. That is the only way it sees
+            // records the caller has written and not yet committed, and it makes the entries commit, or roll back,
+            // with the records they describe.
+            //
+            // Cleaned up from a try/catch of its own rather than from the transaction's error callback, because that
+            // callback is NOT reached on every failure: a NeedRetryException or a DuplicatedKeyException raised
+            // inside a JOINED transaction is rethrown immediately by LocalDatabase.transaction (issue #661), skipping
+            // the callback entirely. And a duplicate is exactly what this build can hit, since it now sees the
+            // caller's own pending writes.
+            try {
+              database.transaction(() -> {
+                for (final Index created : toBuild)
+                  IndexBuilder.buildCreatedIndex(created, IndexBuilder.BUILD_BATCH_SIZE, true, null);
+              }, true);
+            } catch (final RuntimeException e) {
+              for (final Index created : toBuild)
+                IndexBuilder.dropPartiallyBuiltIndex(schema, created);
+              throw e;
+            }
         } catch (final IndexException e) {
           LogManager.instance()
               .log(this, Level.WARNING, "Error on creating implicit indexes from super type '" + superType.getName() + "'", e);

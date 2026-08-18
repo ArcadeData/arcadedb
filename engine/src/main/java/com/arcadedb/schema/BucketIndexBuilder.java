@@ -78,17 +78,6 @@ public class BucketIndexBuilder extends IndexBuilder<Index> {
         callback, propertyNames, null, batchSize, metadata, build);
   }
 
-  /**
-   * Takes away an index that could not be built. The FULL removal, not just the component's own {@code drop()}: on the
-   * two-transaction path the component is already committed and attached to its type, so leaving it behind would
-   * answer lookups with an empty index. This is the cleanup {@code LocalSchema.createBucketIndex} did while the build
-   * still ran inside it (issue #6324, item 1) - an index that could not be built must be GONE, and the caller told so.
-   */
-  private static void dropPartiallyBuiltIndex(final LocalSchema schema, final Index index) {
-    if (index != null && schema.existsIndex(index.getName()))
-      schema.dropIndex(index.getName());
-  }
-
   @Override
   public Index create() {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);

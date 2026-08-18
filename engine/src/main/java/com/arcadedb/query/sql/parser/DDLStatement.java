@@ -93,4 +93,39 @@ public abstract class DDLStatement extends Statement {
     throw new CommandSQLParsingException(
         statementContext + " setting '" + settingName + "' must be true or false, got: " + raw);
   }
+
+  /**
+   * Parses a {@code WITH} clause setting that has to be a whole number of at least one, reporting BOTH ways it can
+   * fail as a parsing error that names the statement, the setting and the value.
+   * <p>
+   * Reads the setting by RENDERING its expression: {@link SimpleNode#value} is null for every numeric literal the
+   * parser builds, so a statement reading it directly refuses every value it is given, including the legal ones - that
+   * is what {@code REBUILD TYPE ... WITH batchSize = 1000} did, failing with "got: null" (issue #6359, item 2).
+   * <p>
+   * A value below one is refused rather than coerced: it is not a smaller batch, it is a request that cannot be
+   * honoured, and each caller would read it differently - a scan-based index build as "never chunk", a rebuild loop
+   * whose commit cadence is {@code count % batchSize} as a modulo by zero.
+   * <p>
+   * Shares {@link #parseBooleanSetting}'s reasoning: one place for the rules so a statement added later picks them up
+   * rather than re-deriving them, and so a raw {@link NumberFormatException} - which names neither the setting nor the
+   * problem - cannot escape from any of them.
+   */
+  protected static int parsePositiveIntSetting(final String statementContext, final String settingName,
+      final Expression value) {
+    final String text = value == null ? null : value.toString().trim();
+
+    Integer parsed = null;
+    if (text != null)
+      try {
+        parsed = Integer.valueOf(text);
+      } catch (final NumberFormatException notANumber) {
+        // Reported below together with the out-of-range case, so both refusals read the same and both name the value.
+      }
+
+    if (parsed == null || parsed < 1)
+      throw new CommandSQLParsingException(
+          statementContext + " setting '" + settingName + "' must be a whole number of at least 1, got: " + text);
+
+    return parsed;
+  }
 }
