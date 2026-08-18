@@ -85,19 +85,16 @@ def top_level_optional_groups(rule_body):
 
 
 def leading_keywords(text):
-    """
-    Return the leading run of ALL-CAPS tokens in `text`, joined with spaces.
-
-    This is the clause's own keyword phrase, stopping at the first token that is not a bare
-    keyword (a rule reference, a literal, a nested group, ...).
-
-    `(`/`)` and `[`/`]` are split off as their own tokens rather than left glued to a neighbour,
-    for both callers: a grammar clause can nest a `( ... )` alternation right after its keywords
-    (`(identifier | INTEGER_LITERAL)`), and a docs clause can nest a `[,]*`-style placeholder
-    repetition the same way (`<type-name>[,]*`). Either glued form would fail the bare-keyword
-    regex as one token and silently truncate the phrase one word early - splitting them off first
-    means a token is exactly one keyword or exactly one punctuation mark, never both at once.
-    """
+    """Return the leading run of ALL-CAPS tokens in `text`, joined with spaces."""
+    # This is the clause's own keyword phrase, stopping at the first token that is not a bare
+    # keyword (a rule reference, a literal, a nested group, ...).
+    #
+    # `(`/`)` and `[`/`]` are split off as their own tokens rather than left glued to a neighbour,
+    # for both callers: a grammar clause can nest a `( ... )` alternation right after its keywords
+    # (`(identifier | INTEGER_LITERAL)`), and a docs clause can nest a `[,]*`-style placeholder
+    # repetition the same way (`<type-name>[,]*`). Either glued form would fail the bare-keyword
+    # regex as one token and silently truncate the phrase one word early - splitting them off
+    # first means a token is exactly one keyword or exactly one punctuation mark, never both.
     tokens = text
     for bracket in '()[]':
         tokens = tokens.replace(bracket, f' {bracket} ')
@@ -138,19 +135,16 @@ def extract_syntax_block(doc_text, anchor):
 
 
 def top_level_bracket_groups(text):
-    r"""
-    Yield the inner text of every top-level `[ ... ]` group in `text`, in order.
-
-    Depth-tracked rather than a `[^\]]*` regex: a clause's own placeholder can carry a NESTED
-    bracket - `[ TYPE <type-name>[,]* ]` has one inside the type-name repetition - and a
-    non-greedy `\[([^\]]+?)\]` stops at that INNER `]`, not the clause's real closing one. That
-    happened to still resolve to the right clause name here only because `leading_keywords`
-    truncates at the first non-keyword token anyway, so the truncated match and the full one
-    produce the same phrase by coincidence of today's doc wording - not by construction. A syntax
-    block phrased differently (uppercase text inside the nested brackets, or brackets before the
-    clause's own keyword) would have silently misparsed. Depth tracking has no such coincidence to
-    rely on.
-    """
+    r"""Yield the inner text of every top-level `[ ... ]` group in `text`, in order."""
+    # Depth-tracked rather than a `[^\]]*` regex: a clause's own placeholder can carry a NESTED
+    # bracket - `[ TYPE <type-name>[,]* ]` has one inside the type-name repetition - and a
+    # non-greedy `\[([^\]]+?)\]` stops at that INNER `]`, not the clause's real closing one. That
+    # happened to still resolve to the right clause name here only because `leading_keywords`
+    # truncates at the first non-keyword token anyway, so the truncated match and the full one
+    # produce the same phrase by coincidence of today's doc wording - not by construction. A
+    # syntax block phrased differently (uppercase text inside the nested brackets, or brackets
+    # before the clause's own keyword) would have silently misparsed. Depth tracking has no such
+    # coincidence to rely on.
     i = 0
     n = len(text)
     while i < n:
