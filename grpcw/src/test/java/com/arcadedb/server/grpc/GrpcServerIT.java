@@ -317,10 +317,10 @@ public class GrpcServerIT extends BaseGraphServerTest {
         .setCommand("INVALID SQL SYNTAX HERE")
         .build();
 
-    ExecuteCommandResponse response = authenticatedStub.executeCommand(request);
-
-    assertThat(response.getSuccess()).isFalse();
-    assertThat(response.getMessage()).isNotEmpty();
+    // A command failure is a gRPC error status through GrpcErrorMapper, not an in-band success=false
+    // response (issue #6192).
+    assertThatThrownBy(() -> authenticatedStub.executeCommand(request))
+        .isInstanceOf(StatusRuntimeException.class);
   }
 
   // CRUD operation tests
