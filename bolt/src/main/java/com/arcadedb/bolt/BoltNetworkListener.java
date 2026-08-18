@@ -23,6 +23,7 @@ import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
+import com.arcadedb.server.network.PreAuthConnectionGate;
 import com.arcadedb.server.network.ServerSocketFactory;
 
 import java.io.IOException;
@@ -50,6 +51,8 @@ public class BoltNetworkListener extends Thread {
   private volatile boolean                             active = true;
   private final    Set<BoltNetworkExecutor>            activeConnections = ConcurrentHashMap.newKeySet();
   private final    int                                 maxConnections;
+  /** Bounds how many accepted connections can sit un-authenticated at once (issue #6412). */
+  private final    PreAuthConnectionGate               preAuthGate = new PreAuthConnectionGate("BOLT");
 
   public BoltNetworkListener(final ArcadeDBServer server,
       final ServerSocketFactory socketFactory,
@@ -87,6 +90,21 @@ public class BoltNetworkListener extends Thread {
             continue;
           }
 
+          // One thread and one file descriptor are committed here, before the client has proved anything: past
+          // the cap the socket is closed straight away rather than being given either (issue #6412). This is
+          // narrower than the BOLT_MAX_CONNECTIONS cap above, which counts every connection including the
+          // authenticated ones a healthy client pool holds open.
+          final PreAuthConnectionGate.Ticket ticket = preAuthGate.accept();
+          if (ticket == null) {
+            preAuthGate.logRefusal(this, socket.getRemoteSocketAddress());
+            try {
+              socket.close();
+            } catch (final IOException e) {
+              // Ignore
+            }
+            continue;
+          }
+
           socket.setPerformancePreferences(0, 2, 1);
           socket.setTcpNoDelay(true);
 
@@ -94,9 +112,15 @@ public class BoltNetworkListener extends Thread {
           // blocking TLS handshake are performed on that thread, never here on the accept path, so a slow,
           // aborted or untrusted handshake can only affect its own connection and never wedges the shared
           // listener for other clients (issue #5106).
-          final BoltNetworkExecutor connection = new BoltNetworkExecutor(server, socket, this, sslHelper);
-          activeConnections.add(connection);
-          connection.start();
+          try {
+            final BoltNetworkExecutor connection = new BoltNetworkExecutor(server, socket, this, sslHelper, ticket);
+            activeConnections.add(connection);
+            connection.start();
+          } catch (final Exception e) {
+            // The executor never started, so nothing will hand the permit back for it.
+            ticket.release();
+            throw e;
+          }
 
         } catch (final Exception e) {
           if (active)

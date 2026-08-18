@@ -35,6 +35,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.network.PreAuthConnectionGate;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.NumberUtils;
@@ -63,6 +64,11 @@ public class RedisNetworkExecutor extends Thread {
   private final    Map<String, Object> defaultBucket    = new ConcurrentHashMap<>();
   private          String              selectedDatabaseName = null;
   private          ServerSecurityUser  authenticatedUser    = null;
+  /**
+   * The listener's permit for a connection that has not authenticated yet, handed back the moment it does -
+   * or when it goes away without ever doing so (issue #6412).
+   */
+  private final    PreAuthConnectionGate.Ticket preAuthTicket;
   private final    int                 maxMultiBulkDepth;
   private final    int                 maxMultiBulkLength;
   private final    int                 maxBulkLength;
@@ -86,6 +92,12 @@ public class RedisNetworkExecutor extends Thread {
   }
 
   public RedisNetworkExecutor(final ArcadeDBServer server, final Socket socket) throws IOException {
+    this(server, socket, null);
+  }
+
+  public RedisNetworkExecutor(final ArcadeDBServer server, final Socket socket,
+      final PreAuthConnectionGate.Ticket preAuthTicket) throws IOException {
+    this.preAuthTicket = preAuthTicket;
     setName(Constants.PRODUCT + "-redis/" + socket.getInetAddress());
     this.server = server;
     this.channel = new ChannelBinaryServer(socket, server.getConfiguration());
@@ -183,6 +195,9 @@ public class RedisNetworkExecutor extends Thread {
       }
     } finally {
       ProtocolContext.clear();
+      // Whatever ended the loop, the listener's permit must go back: a connection that dies without ever
+      // authenticating would otherwise keep its slot for the life of the server (issue #6412).
+      releasePreAuthTicket();
     }
   }
 
@@ -199,8 +214,18 @@ public class RedisNetworkExecutor extends Thread {
 
   public void close() {
     shutdown = true;
+    releasePreAuthTicket();
     if (channel != null)
       channel.close();
+  }
+
+  /**
+   * Hands the listener's pre-authentication permit back. Idempotent, so authenticating and then closing -
+   * the normal life of a connection - releases exactly one permit.
+   */
+  private void releasePreAuthTicket() {
+    if (preAuthTicket != null)
+      preAuthTicket.release();
   }
 
   private void executeCommand(final Object command) {
@@ -685,6 +710,7 @@ public class RedisNetworkExecutor extends Thread {
    */
   private void markAuthenticated(final ServerSecurityUser user) {
     this.authenticatedUser = user;
+    releasePreAuthTicket();
     try {
       channel.socket.setSoTimeout(0);
     } catch (final SocketException e) {

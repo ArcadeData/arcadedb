@@ -58,6 +58,7 @@ import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.network.PreAuthConnectionGate;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -123,6 +124,11 @@ public class BoltNetworkExecutor extends Thread {
   private final ArcadeDBServer      server;
   private volatile Socket           socket; // Reassigned to the SSLSocket once TLS negotiation completes
   private final BoltSslHelper       sslHelper;
+  /**
+   * The listener's permit for a connection that has not authenticated yet, handed back the moment it does -
+   * or when it goes away without ever doing so (issue #6412).
+   */
+  private final PreAuthConnectionGate.Ticket preAuthTicket;
   private       BoltChunkedInput    input;
   private       BoltChunkedOutput   output;
   private final boolean             debug;
@@ -164,11 +170,17 @@ public class BoltNetworkExecutor extends Thread {
 
   public BoltNetworkExecutor(final ArcadeDBServer server, final Socket socket, final BoltNetworkListener listener,
       final BoltSslHelper sslHelper) {
+    this(server, socket, listener, sslHelper, null);
+  }
+
+  public BoltNetworkExecutor(final ArcadeDBServer server, final Socket socket, final BoltNetworkListener listener,
+      final BoltSslHelper sslHelper, final PreAuthConnectionGate.Ticket preAuthTicket) {
     super("BOLT-" + socket.getRemoteSocketAddress());
     this.server = server;
     this.socket = socket;
     this.listener = listener;
     this.sslHelper = sslHelper;
+    this.preAuthTicket = preAuthTicket;
     this.debug = GlobalConfiguration.BOLT_DEBUG.getValueAsBoolean();
     // NOTE: transport (TLS) negotiation and the socket I/O streams are intentionally set up in run(), on this
     // per-connection thread, so a slow/failed/hostile TLS handshake can never block the shared accept thread.
@@ -254,8 +266,20 @@ public class BoltNetworkExecutor extends Thread {
       LogManager.instance().log(this, Level.SEVERE, "BOLT connection error", e);
     } finally {
       ProtocolContext.clear();
+      // Whatever ended the loop, the listener's permit must go back: a connection that dies without ever
+      // authenticating would otherwise keep its slot for the life of the server (issue #6412).
+      releasePreAuthTicket();
       cleanup();
     }
+  }
+
+  /**
+   * Hands the listener's pre-authentication permit back. Idempotent, so authenticating and then terminating -
+   * the normal life of a connection - releases exactly one permit.
+   */
+  private void releasePreAuthTicket() {
+    if (preAuthTicket != null)
+      preAuthTicket.release();
   }
 
   /**
@@ -1716,6 +1740,7 @@ public class BoltNetworkExecutor extends Thread {
    * keep applying past a successful HELLO/LOGON.
    */
   private void markAuthenticated() {
+    releasePreAuthTicket();
     try {
       socket.setSoTimeout(0);
     } catch (final SocketException e) {
