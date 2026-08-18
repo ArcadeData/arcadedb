@@ -366,6 +366,25 @@ class ConstantFalseFilterFoldingTest extends TestHelper {
     rs.close();
   }
 
+  @Test
+  void anArithmeticParenthesisFoldsAtAnyNestingDepth() {
+    // MathExpression.isLiteral()'s javadoc names an array literal and a CASE as the shapes whose operands sit
+    // outside childExpressions and would be missed folds without their own override; an arithmetic parenthesis is
+    // NOT one of them (issue #6186) - ParenthesisExpression's own isLiteral() override answers for it too, so
+    // nesting one, or wrapping it in further arithmetic, still folds
+    assertNoScan(planOf("SELECT FROM Character WHERE (1) = 0"));
+    assertNoScan(planOf("SELECT FROM Character WHERE (1+1) = 0"));
+    assertNoScan(planOf("SELECT FROM Character WHERE (1+1)*2 = 0"));
+  }
+
+  @Test
+  void anArrayLiteralAccessAndACaseAreNotFoldedYet() {
+    // the two shapes MathExpression.isLiteral()'s javadoc does name: pinned here so the comment cannot drift the
+    // other way either. Both are SCAN WITH FILTER today, not EMPTY RESULT - unlike the arithmetic parenthesis above
+    assertScan(planOf("SELECT FROM Character WHERE [1,2][0] = 0"));
+    assertScan(planOf("SELECT FROM Character WHERE (CASE WHEN 1=1 THEN 1 ELSE 2 END) = 0"));
+  }
+
   private ExecutionPlan planOf(final String sql, final Object... params) {
     try (final ResultSet rs = params.length == 0 ? database.query("sql", sql) : database.query("sql", sql, params)) {
       return rs.getExecutionPlan().orElseThrow();
