@@ -281,6 +281,11 @@ class Issue6359SuperTypeIndexPropagationTest extends TestHelper {
    * record an async worker saves in the window between the barrier and the sub-index's registration is in neither the
    * scan nor the index, which is the same gap this propagation exists to close, reopened for async writers. This is
    * the end-to-end shape: the executor is genuinely busy while the super type is linked.
+   * <p>
+   * The timeout is a HANG DETECTOR and not a latency bound, which is why it is this generous and why the test is not
+   * in the {@code slow} lane: the records are queued rather than awaited, so it runs in milliseconds, but a
+   * quiescence that cannot park a worker gives up only after its own 60-second budget and the failure has to arrive
+   * as that refusal rather than as a timeout.
    */
   @Test
   @Timeout(180)
