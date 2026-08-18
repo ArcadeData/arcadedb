@@ -282,6 +282,8 @@ public class RemoveStep extends AbstractExecutionStep {
     int removedLabelsCount = 0;
     for (int i = 0; i < labelsToRemove.size(); i++) {
       final String label = labelsToRemove.get(i);
+      // indexOf != i skips a repeat of a label named earlier in the same clause - a linear scan rather than a Set,
+      // because a clause holds a handful of labels and this costs no allocation on a path that usually finds none.
       if (!currentType.instanceOf(label) || labelsToRemove.indexOf(label) != i)
         continue;
       if (Labels.impliedBy(schema, remainingLabels, label))
@@ -302,6 +304,11 @@ public class RemoveStep extends AbstractExecutionStep {
       newTypeName = Labels.ensureCompositeType(schema, remainingLabels);
     }
 
+    // Nothing to do when the reduced type is the type the vertex already has, and this guard has to stay AHEAD of
+    // the statistics update below: the count above asks `instanceOf`, which says yes to a vertex's own composite
+    // name (`REMOVE n:`Author~Topic`` on an Author~Topic vertex), while that name is not one of the labels
+    // `remainingLabels` is built from and so removes nothing. This early return is what keeps such a no-op from
+    // being reported as a removal.
     if (vertex.getTypeName().equals(newTypeName))
       return;
 

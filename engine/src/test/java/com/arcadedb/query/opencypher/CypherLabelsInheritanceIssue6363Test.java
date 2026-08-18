@@ -151,6 +151,21 @@ class CypherLabelsInheritanceIssue6363Test {
   }
 
   @Test
+  void namingACompositeTypeItselfAsALabelToRemoveChangesNothing() {
+    // The count asks instanceOf, which says yes to a vertex's own composite name, while that name is not one of
+    // the labels the reduced type is rebuilt from - so it removes nothing. The unchanged-type guard is what keeps
+    // that from being reported as a removal, and this pins the pairing so a refactor of either one cannot quietly
+    // start counting a no-op as a change.
+    database.transaction(() -> database.command("opencypher", "CREATE (:Author:Topic {k:'b1'})"));
+
+    assertThat(labelsRemoved("MATCH (n {k:'b1'}) REMOVE n:`Author~Topic`")).isEqualTo(0);
+
+    assertThat(typeOf("b1")).isEqualTo("Author~Topic");
+    assertThat(labels("MATCH (n {k:'b1'}) RETURN labels(n) AS l")).containsExactly("Author", "Topic");
+    assertThat(count("MATCH (n:Author) RETURN count(n) AS c")).isEqualTo(1);
+  }
+
+  @Test
   void removingAnInheritedLabelIsRefusedRatherThanSilentlyLyingAboutIt() {
     // Manager IS-A Employee in the schema: no type the vertex could be moved to answers 'no' to :Employee while
     // still answering 'yes' to :Manager. Saying so beats a no-op that leaves n:Employee true after REMOVE n:Employee.
