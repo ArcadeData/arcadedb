@@ -22,7 +22,9 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashMap;
 import java.util.LinkedHashSet;
+import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -119,6 +121,32 @@ class Issue6414ContainsTextMultiPropertyIndexTest extends TestHelper {
   }
 
   /**
+   * A {@code null} value cannot match anything - {@link com.arcadedb.query.sql.parser.ContainsTextCondition#evaluate}
+   * answers false for it off the index, and a single-property index answers nothing. On the positional key the two
+   * readings share one slot, since {@code null} is also how the key says "this property is not constrained", so the
+   * condition has to fail the whole block rather than quietly disappear from it.
+   */
+  @Test
+  void aNullValuedConditionMatchesNothingRatherThanBeingDropped() {
+    createArticles("CREATE INDEX ON Article6414 (title, content) FULL_TEXT");
+    createArticles("CREATE INDEX ON Single6414 (title) FULL_TEXT", "Single6414");
+
+    final Map<String, Object> noValue = new HashMap<>();
+    noValue.put("missing", null);
+
+    database.transaction(() -> {
+      // Was 'a': the unsatisfiable condition landed in the slot that means "unconstrained" and was never checked.
+      assertThat(idsMatching(
+          "SELECT id FROM Article6414 WHERE title CONTAINSTEXT 'java' AND content CONTAINSTEXT :missing", noValue))
+          .isEmpty();
+      assertThat(idsMatching("SELECT id FROM Article6414 WHERE content CONTAINSTEXT :missing", noValue)).isEmpty();
+      // The same question of a single-property index, which always answered nothing, and of a property no index covers.
+      assertThat(idsMatching("SELECT id FROM Single6414 WHERE title CONTAINSTEXT :missing", noValue)).isEmpty();
+      assertThat(idsMatching("SELECT id FROM Article6414 WHERE id CONTAINSTEXT :missing", noValue)).isEmpty();
+    });
+  }
+
+  /**
    * The BM25 similarity reaches the index through a different scoring path (type-wide corpus statistics), which has to
    * read the same positional key.
    */
@@ -193,8 +221,12 @@ class Issue6414ContainsTextMultiPropertyIndexTest extends TestHelper {
   }
 
   private Set<String> idsMatching(final String query) {
+    return idsMatching(query, Map.of());
+  }
+
+  private Set<String> idsMatching(final String query, final Map<String, Object> parameters) {
     final Set<String> ids = new LinkedHashSet<>();
-    try (final ResultSet rs = database.query("sql", query)) {
+    try (final ResultSet rs = database.query("sql", query, parameters)) {
       while (rs.hasNext())
         ids.add(rs.next().getProperty("id"));
     }

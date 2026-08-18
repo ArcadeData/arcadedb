@@ -365,6 +365,12 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
    * condition alongside, anything but {@code CONTAINSTEXT}, a property this index does not cover, a multi-value key, or two
    * conditions on the same property. A single-property index takes this path too and produces the same one-element key it
    * always did (issue #6414, item 2).
+   * <p>
+   * A condition whose right side evaluates to {@code null} makes the whole block match NOTHING rather than leaving its
+   * property unconstrained. The two readings share one slot - a {@code null} slot is exactly how the key says "this property
+   * is not constrained" - so folding a null-valued condition into it would silently drop the condition instead of failing
+   * it. That is what {@link ContainsTextCondition#evaluate} does off the index (a non-String value is never a match), what
+   * a single-property index already did (an empty query text finds no term), and now what a multi-property one does too.
    */
   private boolean processFullTextBlock() {
     if (index.getType() != Schema.INDEX_TYPE.FULL_TEXT || additionalRangeCondition != null)
@@ -395,7 +401,13 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
         return false;
 
       final Object value = textCondition.getRight().execute((Result) null, context);
-      if (value != null && !(value instanceof Identifiable) && MultiValue.isMultiValue(value))
+      if (value == null) {
+        // Unsatisfiable, not unconstrained: no cursor at all, which fetchNextEntry() reads as an exhausted scan.
+        cursor = null;
+        fetchNextEntry();
+        return true;
+      }
+      if (!(value instanceof Identifiable) && MultiValue.isMultiValue(value))
         return false;
 
       keys[position] = value;
