@@ -1027,6 +1027,35 @@ printf 'No CHECK DATABASE section here.\n' >"$work/dbdocs-no-anchor/sql-database
 expect "fails loudly when the docs anchor is missing" 2 "anchor" \
     "$DBDOCSSYNC" "$work/dbdocs-no-anchor/SQLParser.g4" "$work/dbdocs-no-anchor/sql-database-admin.adoc"
 
+# A clause whose placeholder repetition sits directly against the clause's OWN last keyword, no
+# space in between (RECLAIM UNREFERENCED FILES[,]*) - code review on #6406 flagged that a
+# non-greedy `\[([^\]]+?)\]` extracting the docs' bracket groups stops at the FIRST `]` it meets,
+# which here is the placeholder's own inner one, truncating the captured text to "...FILES[," and
+# silently dropping FILES from the recovered phrase. That used to be a false-positive drift alarm
+# (grammar and docs agreeing in reality, reported as disagreeing) rather than a crash, which is
+# exactly the failure mode a docs-sync guard must not have: it would tell a PR author to "fix" a
+# doc line that was already correct. Depth-tracked bracket matching plus splitting `[`/`]` off as
+# their own tokens in leading_keywords (matching how `(`/`)` were already split) fixes it.
+mkdir -p "$work/dbdocs-adjacent-bracket"
+cat >"$work/dbdocs-adjacent-bracket/SQLParser.g4" <<'EOF'
+checkDatabaseStatement
+    : CHECK DATABASE
+      (TYPE identifier (COMMA identifier)*)?
+      (RECLAIM UNREFERENCED FILES)?
+    ;
+EOF
+cat >"$work/dbdocs-adjacent-bracket/sql-database-admin.adoc" <<'EOF'
+[[sql-check-database]]
+===== SQL - `CHECK DATABASE`
+
+[source,sql]
+----
+CHECK DATABASE [ TYPE <type-name>[,]* ] [ RECLAIM UNREFERENCED FILES[,]* ]
+----
+EOF
+expect "recovers a full keyword phrase when a placeholder touches the last keyword" 0 "agree on 2 clause" \
+    "$DBDOCSSYNC" "$work/dbdocs-adjacent-bracket/SQLParser.g4" "$work/dbdocs-adjacent-bracket/sql-database-admin.adoc"
+
 echo
 if [[ $failures -gt 0 ]]; then
     echo "$failures of $checks checks failed"

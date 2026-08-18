@@ -747,6 +747,18 @@ public class TimeSeriesEngine implements AutoCloseable {
    * parallelism. A type with one shard sees no fan-out (a single future, resolved on the pool with the same cost as
    * calling it directly); the benefit scales with shard count, which is also where the sequential form's wall-clock
    * used to scale.
+   * <p>
+   * <b>What running all shards' mutable halves before any shard's sealed half actually widens</b> (code review of
+   * #6406, called out here rather than left to be inferred from the two methods' javadoc separately): before this
+   * split, one shard's sealed check ran immediately after that SAME shard's mutable check, so the window between
+   * them was however long the unlock-and-return took - a handful of instructions. Now every shard's sealed check
+   * waits for EVERY shard's mutable check to finish first, so for every shard but the last, that window is however
+   * long the remaining shards' mutable phases take - potentially the bulk of the whole pass's sequential portion.
+   * This is a genuine change in how long a compaction has to land in the gap, not only a documentation one. It is
+   * still safe for the reason {@link TimeSeriesShard#checkSealedIntegrity} gives: the guarantee was never "nothing
+   * can happen between the two checks", it was "each half's own findings and totals describe one self-consistent
+   * instant of THAT half" - and a wider gap does not weaken that, it only makes a compaction landing in it more
+   * likely, which was already an accepted, documented outcome before this issue.
    */
   public IntegrityReport checkIntegrity(final TimeSeriesIntegrity.Options options) throws IOException {
     final List<String> problems = new ArrayList<>();

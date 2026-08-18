@@ -1115,10 +1115,14 @@ public class TimeSeriesShard implements AutoCloseable {
    * <p>
    * <b>The consequence of the two halves no longer sharing one window</b>, stated rather than left to be
    * discovered: a compaction may run between {@link #checkMutableIntegrity} and this call, so the sealed store this
-   * checks can hold blocks the other's totals did not count. That was already true of the original, unsplit method -
-   * the two halves never shared a lock even there - and it is the right trade regardless: the totals are a report of
-   * what was there and the findings here are a verdict on what is there, and a compaction moving rows between two
-   * halves that are BOTH being reported cannot invent or lose a sample.
+   * checks can hold blocks the other's totals did not count. That gap already existed in the original, unsplit
+   * method - the two halves never shared a lock even there - but {@link TimeSeriesEngine#checkIntegrity} widened
+   * it (code review of #6406): every shard's mutable half now runs before any shard's sealed half, so for every
+   * shard but the last, this method can start well after its own {@link #checkMutableIntegrity} returned rather
+   * than immediately after, and the compaction has correspondingly longer to land in the gap. It is still the
+   * right trade: the totals are a report of what was there and the findings here are a verdict on what is there,
+   * and a compaction moving rows between two halves that are BOTH being reported cannot invent or lose a sample -
+   * a wider gap changes how OFTEN that trade is exercised, not whether it holds.
    */
   public IntegrityReport checkSealedIntegrity(final TimeSeriesIntegrity.Options options) throws IOException {
     final List<String> problems = new ArrayList<>();
