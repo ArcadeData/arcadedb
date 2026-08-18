@@ -499,6 +499,7 @@ public class RebuildIndexStatement extends DDLStatement {
     } else {
       name.toString(params, builder);
     }
+    appendWithSettings(settings, params, builder);
   }
 
   @Override
@@ -506,6 +507,9 @@ public class RebuildIndexStatement extends DDLStatement {
     final RebuildIndexStatement result = new RebuildIndexStatement();
     result.all = all;
     result.name = name == null ? null : name.copy();
+    // WITHOUT THIS, A COPY SILENTLY DROPS EVERY 'WITH ...' SETTING (batchSize, maxAttempts, statsOnly) - THE SAME
+    // DEFECT Export/Backup/ImportDatabaseStatement HAD (#6080, #6409)
+    result.settings.putAll(settings);
     return result;
   }
 
@@ -520,13 +524,14 @@ public class RebuildIndexStatement extends DDLStatement {
 
     if (all != that.all)
       return false;
-    return Objects.equals(name, that.name);
+    return Objects.equals(name, that.name) && Objects.equals(settings, that.settings);
   }
 
   @Override
   public int hashCode() {
     int result = all ? 1 : 0;
     result = 31 * result + (name != null ? name.hashCode() : 0);
+    result = 31 * result + settings.hashCode();
     return result;
   }
 }

@@ -180,6 +180,7 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
       builder.append(' ');
       url.toString(params, builder);
     }
+    appendWithSettings(settings, params, builder);
   }
 
   @Override

@@ -122,6 +122,7 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
     builder.append("EXPORT DATABASE ");
     if (url != null)
       url.toString(params, builder);
+    appendWithSettings(settings, params, builder);
   }
 
   /**
