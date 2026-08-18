@@ -1957,11 +1957,23 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     else
       cat = mapRecordType(grpcRecord);
 
-    if (cat != null)
-      map.put("@cat", cat);
-
     if (cat == null)
       return null;
+
+    // The wire's @cat is trustworthy for the CATEGORY (issue #6404), but constructing a concrete
+    // RemoteImmutableDocument/Vertex/Edge still needs the type resolvable client-side - its constructor looks
+    // the type up eagerly and throws SchemaException if it can't. Unlike @cat, the client's schema cache has no
+    // way to know about a type created after it was last (or never) loaded, and RemoteSchema only reloads a
+    // NEVER-loaded cache, not a stale one: a type created after the first schema access on this connection stays
+    // invisible until something explicitly invalidates the cache. Before @cat was sent on the wire this same
+    // existsType() check was where the category came from in the first place (mapRecordType(), below), so an
+    // unresolvable type was already silently downgraded to the property-only fallback instead of a crash -
+    // trusting the wire for the category must not remove that safety net.
+    final String typeName = grpcRecord.getType();
+    if (typeName.isEmpty() || !getSchema().existsType(typeName))
+      return null;
+
+    map.put("@cat", cat);
 
     return switch (cat) {
       case "d" -> new RemoteImmutableDocument(this, map);
