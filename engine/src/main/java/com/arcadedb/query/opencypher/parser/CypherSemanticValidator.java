@@ -1973,16 +1973,21 @@ public class CypherSemanticValidator {
       checkDuplicateAliases(withClause.getItems());
   }
 
+  /**
+   * The {@code *} of {@code WITH *} / {@code RETURN *} projects no column of its own and so cannot collide with one;
+   * it is recognised by {@link ReturnClause.ReturnItem#isStar()} rather than by its name, because a projection can
+   * legitimately be aliased to the literal name {@code *} with backticks, and two of those DO collide (issue #6334).
+   */
   private void checkDuplicateAliases(final List<ReturnClause.ReturnItem> items) {
     final Set<String> seen = new HashSet<>();
     for (final ReturnClause.ReturnItem item : items) {
+      if (item.isStar())
+        continue;
       String name = item.getAlias();
       if (name == null && item.getExpression() instanceof VariableExpression)
         name = ((VariableExpression) item.getExpression()).getVariableName();
-      if (name != null && !"*".equals(name)) {
-        if (!seen.add(name))
-          throw new CommandParsingException("ColumnNameConflict: Column name '" + name + "' is defined more than once");
-      }
+      if (name != null && !seen.add(name))
+        throw new CommandParsingException("ColumnNameConflict: Column name '" + name + "' is defined more than once");
     }
   }
 

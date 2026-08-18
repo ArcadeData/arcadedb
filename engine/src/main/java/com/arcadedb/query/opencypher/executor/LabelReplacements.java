@@ -218,7 +218,7 @@ public final class LabelReplacements {
 
     final int limit = database.getConfiguration().getValueAsInteger(GlobalConfiguration.OPENCYPHER_LABEL_WRITE_DEGREE_LIMIT);
     if (limit > 0) {
-      final long degree = vertex.countEdges(Vertex.DIRECTION.BOTH);
+      final long degree = countEdgesToMigrate(vertex, originalRid);
       if (degree > limit)
         throw new CommandExecutionException(
             "Label write on " + originalRid + " (" + originalTypeName + " -> " + newTypeName + ") rejected: the vertex has "
@@ -265,6 +265,22 @@ public final class LabelReplacements {
           originalRid, originalTypeName, newTypeName, migratedEdges);
 
     return newVertex;
+  }
+
+  /**
+   * The number of edges {@link #replace} would re-create, counted the same way the migration counts them so that the
+   * limit refuses on the number the warning would have reported.
+   * <p>
+   * Not {@code countEdges(BOTH)}: that sums the two edge lists independently, so a self-loop - which is in both -
+   * counts twice, while the migration deliberately re-creates it once. The IN pass walks the connected RIDs rather
+   * than the edges, so the skip costs a list walk and not a record load per edge.
+   */
+  private static long countEdgesToMigrate(final Vertex vertex, final RID originalRid) {
+    long count = vertex.countEdges(Vertex.DIRECTION.OUT);
+    for (final RID neighbour : vertex.getConnectedVertexRIDs(Vertex.DIRECTION.IN))
+      if (!originalRid.equals(neighbour))
+        ++count;
+    return count;
   }
 
   private void track(final Edge original, final Edge replacement) {

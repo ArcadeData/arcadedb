@@ -21,7 +21,10 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.log.LogManager;
+import com.arcadedb.log.Logger;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import org.junit.jupiter.api.AfterEach;
@@ -31,6 +34,7 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -125,13 +129,99 @@ class CypherLabelWriteDegreeGuardIssue6335Test {
 
   @Test
   void crossingTheWarningThresholdReportsWithoutRefusing() {
+    final CapturingLogger captured = new CapturingLogger();
+    final Logger previous = LogManager.instance().getLogger();
     database.getConfiguration().setValue(GlobalConfiguration.OPENCYPHER_LABEL_WRITE_DEGREE_WARNING, 1);
+    LogManager.instance().setLogger(captured);
     try {
       database.command("opencypher", "MATCH (h:Hub) SET h:Popular");
       assertThat(labelsOfHub()).contains("Hub", "Popular");
       assertThat(degreeOfHub()).isEqualTo(5);
     } finally {
+      LogManager.instance().setLogger(previous);
       database.getConfiguration().setValue(GlobalConfiguration.OPENCYPHER_LABEL_WRITE_DEGREE_WARNING, 10_000);
+    }
+
+    // "Silent" is the failure mode the whole issue is about, so the warning is asserted rather than assumed: without
+    // this, deleting the log call would leave every other assertion here green.
+    assertThat(captured.warnings)
+        .as("a label write past the threshold has to say so")
+        .anySatisfy(record -> {
+          assertThat(record.message).contains("Cypher label write on");
+          assertThat(record.args).contains("Hub", "Hub~Popular", 5L);
+        });
+  }
+
+  @Test
+  void aSelfLoopIsCountedOnceBecauseItIsMigratedOnce() {
+    // countEdges(BOTH) sums the two edge lists, so a self-loop - present in both - counts twice, while the migration
+    // re-creates it once. The guard has to refuse on the number it would report, or the limit and the warning
+    // disagree about the same vertex: here 6 edges are migrated, and countEdges(BOTH) would have said 7.
+    database.transaction(() -> database.command("opencypher", "MATCH (h:Hub) CREATE (h)-[:LINK]->(h)"));
+
+    final CapturingLogger captured = new CapturingLogger();
+    final Logger previous = LogManager.instance().getLogger();
+    database.getConfiguration().setValue(GlobalConfiguration.OPENCYPHER_LABEL_WRITE_DEGREE_LIMIT, 6);
+    database.getConfiguration().setValue(GlobalConfiguration.OPENCYPHER_LABEL_WRITE_DEGREE_WARNING, 1);
+    LogManager.instance().setLogger(captured);
+    try {
+      database.command("opencypher", "MATCH (h:Hub) SET h:Popular");
+      assertThat(labelsOfHub()).contains("Hub", "Popular");
+      assertThat(degreeOfHub()).isEqualTo(6); // 5 leaves + the self-loop, which relationship uniqueness yields once
+    } finally {
+      LogManager.instance().setLogger(previous);
+      database.getConfiguration().setValue(GlobalConfiguration.OPENCYPHER_LABEL_WRITE_DEGREE_WARNING, 10_000);
+      database.getConfiguration().setValue(GlobalConfiguration.OPENCYPHER_LABEL_WRITE_DEGREE_LIMIT, 0);
+    }
+
+    assertThat(captured.warnings)
+        .as("the warning counts the edges the write re-created, the self-loop once")
+        .anySatisfy(record -> assertThat(record.args).contains(6L));
+  }
+
+  /** A log record as {@link Logger} receives it, kept only for what these assertions read. */
+  private record LogRecord(Level level, String message, List<Object> args) {
+  }
+
+  /**
+   * Captures WARNING records so a test can assert that something was reported. {@link LogManager#setLogger} documents
+   * this as its intended use; the previous logger is always put back.
+   */
+  private static final class CapturingLogger implements Logger {
+    private final List<LogRecord> warnings = Collections.synchronizedList(new ArrayList<>());
+
+    // Both overloads record directly: delegating from the fixed-arity one to the varargs one would resolve back to
+    // itself (the fixed arity is the exact match) and recurse until the stack gives out.
+    @Override
+    public void log(final Object requester, final Level level, final String message, final Throwable exception,
+        final String context, final Object arg1, final Object arg2, final Object arg3, final Object arg4,
+        final Object arg5, final Object arg6, final Object arg7, final Object arg8, final Object arg9,
+        final Object arg10, final Object arg11, final Object arg12, final Object arg13, final Object arg14,
+        final Object arg15, final Object arg16, final Object arg17) {
+      record(level, message, new Object[] { arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12,
+          arg13, arg14, arg15, arg16, arg17 });
+    }
+
+    @Override
+    public void log(final Object requester, final Level level, final String message, final Throwable exception,
+        final String context, final Object... args) {
+      record(level, message, args);
+    }
+
+    /** Keeps the non-null arguments, with a RID as its string so an assertion can name it without a live record. */
+    private void record(final Level level, final String message, final Object[] args) {
+      if (level != Level.WARNING)
+        return;
+      final List<Object> present = new ArrayList<>();
+      if (args != null)
+        for (final Object arg : args)
+          if (arg != null)
+            present.add(arg instanceof RID rid ? rid.toString() : arg);
+      warnings.add(new LogRecord(level, message, present));
+    }
+
+    @Override
+    public void flush() {
     }
   }
 

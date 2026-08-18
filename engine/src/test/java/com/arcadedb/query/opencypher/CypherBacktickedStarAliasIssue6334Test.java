@@ -26,6 +26,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for issue #6334: a projection aliased to the backticked variable {@code `*`} was mistaken for
@@ -89,6 +90,20 @@ class CypherBacktickedStarAliasIssue6334Test {
   @Test
   void theRealStarStillForwardsWhenCombinedWithAProjection() {
     assertThat(count("MATCH (n:P {name:'a'}) WITH *, n.name AS nm MATCH (n:P) RETURN count(*) AS c")).isEqualTo(1);
+  }
+
+  @Test
+  void twoColumnsNamedStarStillCollide() {
+    // The duplicate-column check used to exempt any item whose name was "*", real star or not, so two projections
+    // aliased to the backticked star slipped past it - the same name-vs-item confusion this issue is about.
+    assertThatThrownBy(() -> database.query("opencypher",
+        "MATCH (n:P) RETURN n.name AS `*`, n.name AS `*`"))
+        .hasMessageContaining("ColumnNameConflict");
+  }
+
+  @Test
+  void theRealStarIsNotAColumnAndCollidesWithNothing() {
+    assertThat(count("MATCH (n:P {name:'a'}) WITH *, n.name AS nm RETURN count(*) AS c")).isEqualTo(1);
   }
 
   @Test
