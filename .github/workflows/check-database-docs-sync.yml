@@ -21,6 +21,13 @@
 # (#6189) each added a clause to CHECK DATABASE's grammar without a matching edit to its
 # documented syntax in arcadedb-docs - three separate PRs missing the same line, because nothing
 # checked. This job is what checks, every time the grammar rule that can drift changes.
+#
+# It always diffs against arcadedb-docs' CURRENT default branch, so if a grammar change and its
+# doc update are sequenced as two separate PRs (grammar landing first), the grammar PR's run of
+# this job is red until the docs PR merges - that is the check doing its job, not a bug: the two
+# really are out of sync at that point, and this job exists to say so rather than let it pass
+# silently. Land the doc update first, or accept the red job until it does; workflow_dispatch
+# below re-runs the check on demand once arcadedb-docs catches up.
 name: CHECK DATABASE docs sync
 
 on:

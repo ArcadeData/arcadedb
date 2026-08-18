@@ -759,6 +759,15 @@ public class TimeSeriesEngine implements AutoCloseable {
    * can happen between the two checks", it was "each half's own findings and totals describe one self-consistent
    * instant of THAT half" - and a wider gap does not weaken that, it only makes a compaction landing in it more
    * likely, which was already an accepted, documented outcome before this issue.
+   * <p>
+   * <b>{@code shardExecutor} has a new kind of consumer</b> (code review of #6406): this pass never touched that
+   * pool before this issue, and {@code appendBatch}'s parallel dispatch (no enclosing transaction on the calling
+   * thread) and {@link #aggregateMultiBlocks} already share it. A {@code DEEP} check now occupies all
+   * {@code shardCount} of its threads for the length of a full CRC32/decode walk over every shard's sealed file,
+   * so a concurrent append or aggregation that would otherwise run immediately queues behind it instead. Sharing
+   * the pool for this shape of read-only per-shard work is the existing, intentional design (see the
+   * {@code engine-concurrency} skill's pool inventory) - this is a new, and potentially long-running, consumer of
+   * it, not a new pool or a new pattern.
    */
   public IntegrityReport checkIntegrity(final TimeSeriesIntegrity.Options options) throws IOException {
     final List<String> problems = new ArrayList<>();

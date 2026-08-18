@@ -1046,11 +1046,17 @@ public class TimeSeriesShard implements AutoCloseable {
           else {
             // Test-only fault injection (issue #6406 item 5), fired only on the path a real
             // concurrent compaction could actually contend: a repair with something to commit,
-            // right where this method's own javadoc says the race would land - after the
-            // replicated branch above has released the compaction lock, immediately before the
-            // commit. Mirrors RaftReplicatedDatabase.TEST_PHASE2_COMMIT_FAULT, the same idiom for
-            // the same problem (forcing a race that needs a live compaction or a live Raft
-            // cluster to occur on its own). Always null in production.
+            // immediately before the commit. On a REPLICATED database (db.isReplicated() above)
+            // this is also after the compaction lock was released, which is where a real
+            // compaction race would land per this method's own javadoc. A test that exercises
+            // this hook against a plain, non-replicated database (as Issue6406CompactionRaceIntegrityTest
+            // does) fires it while that lock is STILL held - the hook forces the same
+            // ConcurrentModificationException the catch block below has to handle either way, so
+            // that difference does not matter to what is being tested, but do not read this
+            // comment as claiming the lock is always released by this point; only the replicated
+            // branch releases it. Mirrors RaftReplicatedDatabase.TEST_PHASE2_COMMIT_FAULT, the
+            // same idiom for the same problem (forcing a race that needs a live compaction or a
+            // live Raft cluster to occur on its own). Always null in production.
             final Consumer<String> fixCommitFault = TEST_FIX_COMMIT_FAULT;
             if (fixCommitFault != null)
               fixCommitFault.accept(typeName + "_shard_" + shardIndex);
