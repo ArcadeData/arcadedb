@@ -87,6 +87,8 @@ class CypherMatchClauseUniquenessIssue6310Test extends TestHelper {
 
     // c1 -> e1 -> a1, c2 -> e1 -> a1, c2 -> e2 -> a2, c3 -> e3 -> a3: the join on n0 is what makes it 4 and
     // not 3 x 4, and the two anonymous hops of the single pattern part are always distinct edges.
+    // This asserts the two forms AGREE; the pre-fix 4-vs-2 divergence itself is demonstrated in
+    // CypherWithStarScopeIssue6311Test, which pins the WITH * Cartesian product that caused it.
     assertThat(direct).isEqualTo(4);
     assertThat(materialized).isEqualTo(direct);
   }
@@ -210,6 +212,13 @@ class CypherMatchClauseUniquenessIssue6310Test extends TestHelper {
     assertThat(rows("CALL { MATCH (x:V)-[r1:BASE]->(:V), (y:V)-[r2:SUB]->(:V) RETURN x.n AS a, y.n AS c } RETURN a, c"))
         .isEmpty();
     assertThat(rows("MATCH (x:V)-[r1:BASE]->(:V), (y:V)-[r2:SUB]->(:V) RETURN x.n AS a, y.n AS c")).isEmpty();
+  }
+
+  @Test
+  void aZeroLengthHopSharesNoEdgeWithAnybody() {
+    // [*0..0] binds no edge, so it neither collides with the other part nor costs it its fast path:
+    // 3 zero-length :C bindings x the 3 (:E)-[]->(:A) edges, nothing removed.
+    assertThat(rows("MATCH (x:C)-[*0..0]->(y), (p:E)-[]->(q:A) RETURN x.n AS a, p.n AS c")).hasSize(9);
   }
 
   @Test

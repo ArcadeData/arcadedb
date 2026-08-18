@@ -4255,6 +4255,10 @@ public class CypherExecutionPlan {
     final RelationshipPattern relI = patternI.getRelationship(hopI);
     final RelationshipPattern relJ = patternJ.getRelationship(hopJ);
 
+    // A hop capped at zero edges - [*0..0] - binds none, so it has nothing to share with anybody.
+    if (bindsNoEdge(relI) || bindsNoEdge(relJ))
+      return false;
+
     if (relI.hasTypes() && relJ.hasTypes() && edgeTypesAreDisjoint(relI.getTypes(), relJ.getTypes()))
       return false;
 
@@ -4344,6 +4348,12 @@ public class CypherExecutionPlan {
 
     // If the IN vertex labels are type-disjoint, the edges are different
     return nodeLabelsAreTypeDisjoint(edgeInI, edgeInJ);
+  }
+
+  /** Whether the hop is pinned to zero edges, and so binds none at all. */
+  private static boolean bindsNoEdge(final RelationshipPattern rel) {
+    final Integer maxHops = rel.getMaxHops();
+    return rel.isVariableLength() && maxHops != null && maxHops == 0;
   }
 
   /** Whether the hop can bind more than one edge, so its declared endpoints are not one edge's endpoints. */
