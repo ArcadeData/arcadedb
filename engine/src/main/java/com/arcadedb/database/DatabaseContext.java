@@ -383,12 +383,23 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
   }
 
   public static class DatabaseContextTL {
-    public final List<TransactionContext> transactions = new ArrayList<>(3);
-    public       boolean                  asyncMode    = false;
+    public final List<TransactionContext> transactions             = new ArrayList<>(3);
+    /**
+     * Whether the default round-robin bucket strategy picks a bucket PER THREAD for this database, so that concurrent
+     * writers do not compete for the same pages.
+     * <p>
+     * It was called {@code asyncMode}, which is what it is not (issue #6324, note b). It has never meant "this thread
+     * is an async worker": #6303 removed the one place that read it that way ({@code RebuildIndexStatement}, where
+     * the misreading refused exactly the operation that issue set out to give back), and it is set on
+     * {@code AsyncCommandPool} threads, which are deliberately NOT workers. "Is this thread a worker of that
+     * executor" is answered by thread IDENTITY ({@code DatabaseAsyncExecutorImpl.isCurrentThreadOneOfMyWorkers}), and
+     * nothing else should be asked of this flag.
+     */
+    public       boolean                  perThreadBucketSelection = false;
     private      Binary                   temporaryBuffer1;
     private      Binary                   temporaryBuffer2;
-    private      int                      maxNested    = 3;
-    private      SecurityDatabaseUser     currentUser  = null;
+    private      int                      maxNested                = 3;
+    private      SecurityDatabaseUser     currentUser              = null;
     // The stateful client session bound to this thread context (GQL SESSION statements).
     // Set by the protocol owner (HTTP/Bolt) alongside the transaction; null in plain embedded use.
     private      QuerySession             querySession = null;

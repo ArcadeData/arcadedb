@@ -5937,9 +5937,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
     this.metadata = (LSMVectorIndexMetadata) metadata;
   }
 
+  /**
+   * {@code buildIndexBatchSize} is IGNORED here, and deliberately: this build chunks by BYTES
+   * ({@code arcadedb.vectorIndex.txChunkSizeMB}), not by record count, so a record count means nothing to it. The
+   * permission to commit at all arrives as its own parameter (issue #6324, item 1) - reading it off the batch size
+   * would make a user's {@code REBUILD INDEX ... WITH batchSize = 0} silently turn the chunking off for the whole
+   * rebuild.
+   */
   @Override
-  public long build(final int buildIndexBatchSize, final BuildIndexCallback callback) {
-    return build(callback, null);
+  public long build(final int buildIndexBatchSize, final boolean sharesCallerTransaction,
+      final BuildIndexCallback callback) {
+    return build(callback, null, !sharesCallerTransaction);
   }
 
   /**
@@ -5952,6 +5960,25 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @return Total number of records indexed
    */
   public long build(final BuildIndexCallback callback, final GraphBuildCallback graphCallback) {
+    return build(callback, graphCallback, true);
+  }
+
+  /**
+   * Build the vector index with optional graph building progress callback.
+   * Uses WAL bypass and transaction chunking for efficient bulk loading.
+   *
+   * @param callback             Callback for document indexing progress
+   * @param graphCallback        Callback for graph building progress
+   * @param chunkedCommitAllowed whether the build owns the transaction it runs in and may therefore commit it
+   *                             periodically to bound its size. False when the build is sharing a transaction opened
+   *                             by a caller - a {@code CREATE INDEX} inside an open transaction - where committing
+   *                             would publish the caller's unfinished work halfway through a DDL statement
+   *                             (issue #6324, item 1)
+   *
+   * @return Total number of records indexed
+   */
+  public long build(final BuildIndexCallback callback, final GraphBuildCallback graphCallback,
+      final boolean chunkedCommitAllowed) {
     final long totalRecords;
 
     lock.writeLock().lock();
@@ -5977,11 +6004,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
           try {
             // PHASE 2: Bulk load vector data with chunking
-            totalRecords = bulkLoadVectorData(callback);
+            totalRecords = bulkLoadVectorData(callback, chunkedCommitAllowed);
 
             // PHASE 3: Build and persist graph with chunking
             if (vectorIndex.size() > 0 && graphState == GraphState.LOADING) {
-              buildGraphWithChunking(graphCallback);
+              buildGraphWithChunking(graphCallback, chunkedCommitAllowed);
             }
 
             // PHASE 4: Final commit and mark READY
@@ -6042,11 +6069,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * Bulk load vector data with transaction chunking to avoid memory/size limits.
    * Called during index build with WAL disabled.
    *
-   * @param callback Callback for document indexing progress
+   * @param callback             Callback for document indexing progress
+   * @param chunkedCommitAllowed whether this build owns its transaction and may commit it at a chunk boundary
    *
    * @return Total number of vectors loaded
    */
-  private long bulkLoadVectorData(final BuildIndexCallback callback) {
+  private long bulkLoadVectorData(final BuildIndexCallback callback, final boolean chunkedCommitAllowed) {
     final AtomicInteger total = new AtomicInteger();
     final long LOG_INTERVAL = 10000;
     final long startTime = System.currentTimeMillis();
@@ -6069,7 +6097,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // Scan the bucket and index all documents
     db.scanBucket(db.getSchema().getBucketById(metadata.associatedBucketId).getName(), record -> {
       // Add to index
-      db.getIndexer().addToIndex(LSMVectorIndex.this, record.getIdentity(), (Document) record);
+      // !chunkedCommitAllowed IS "this build shares a transaction it did not open": the two are exact inverses on
+      // every path into this method, and a build that owns its transaction has nothing for that transaction to
+      // correct.
+      final Document source = IndexInternal.buildSourceRecord(db, record, !chunkedCommitAllowed);
+      db.getIndexer().addToIndex(LSMVectorIndex.this, record.getIdentity(), source);
       total.incrementAndGet();
 
       // Estimate bytes written (rough approximation)
@@ -6087,7 +6119,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       }
 
       // Chunk boundary: commit and start new transaction
-      if (bytesInCurrentChunk.get() >= chunkSizeBytes) {
+      if (chunkedCommitAllowed && bytesInCurrentChunk.get() >= chunkSizeBytes) {
         LogManager.instance().log(this, Level.INFO,
             "Committing chunk: %.1fMB written, %d vectors...",
             bytesInCurrentChunk.get() / (1024.0 * 1024.0), total.get());
@@ -6100,7 +6132,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       }
 
       if (callback != null)
-        callback.onDocumentIndexed((Document) record, total.get());
+        callback.onDocumentIndexed(source, total.get());
 
       return true;
     });
@@ -6117,17 +6149,23 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * Build graph from vectors and persist with chunking support.
    * Called during index build with WAL disabled.
    *
-   * @param graphCallback Callback for graph building progress
+   * @param graphCallback        Callback for graph building progress
+   * @param chunkedCommitAllowed whether this build owns the transaction it runs in and may therefore commit it at a
+   *                             chunk boundary. False when the build joined a caller's transaction (issue #6324,
+   *                             item 1): the graph is then written in one go, which is the same trade the caller
+   *                             already made by opening a transaction around the writes being indexed
    */
-  private void buildGraphWithChunking(final GraphBuildCallback graphCallback) throws IOException {
+  private void buildGraphWithChunking(final GraphBuildCallback graphCallback, final boolean chunkedCommitAllowed)
+      throws IOException {
     LogManager.instance().log(this, Level.INFO,
         "LSM Vector graph building with transaction chunking for: %s", indexName);
 
     final DatabaseInternal db = getDatabase();
 
     // Get chunk size from configuration (default 50MB). Guard against accidental 0/negative to ensure chunked graph
-    // persistence.
-    final long chunkSizeMB = getTxChunkSize();
+    // persistence. Zero when the build may not commit, which is writeGraph's own documented way of saying "no
+    // chunking" and therefore leaves the chunk callback unreachable rather than merely unused.
+    final long chunkSizeMB = chunkedCommitAllowed ? getTxChunkSize() : 0L;
 
     // Track if we started the transaction (for graph building)
     final boolean startedTransaction = db.getTransaction().getStatus() != TransactionContext.STATUS.BEGUN;

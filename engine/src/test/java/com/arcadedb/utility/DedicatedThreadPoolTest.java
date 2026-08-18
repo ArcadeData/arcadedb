@@ -1,0 +1,144 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.utility;
+
+import com.arcadedb.GlobalConfiguration;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.atomic.AtomicReference;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/**
+ * Tests for the shared base of the engine's dedicated executors (issue #6324, item 4).
+ * <p>
+ * What is worth pinning here is not the {@link java.util.concurrent.ThreadPoolExecutor} - the JDK tests that - but the
+ * things the four copies of this code were getting subtly different, and the two combinations the base refuses so that
+ * a new pool cannot be built without answering the {@code engine-concurrency} checklist.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+class DedicatedThreadPoolTest {
+
+  private static final class TestPool extends DedicatedThreadPool {
+    private TestPool(final int queueCapacity, final SaturationPolicy policy) {
+      super("ArcadeDB-DedicatedThreadPoolTest-", 1, queueCapacity, policy, DedicatedThreadPool::plainWorker,
+          "Test pool", "nothing at all", GlobalConfiguration.QUERY_PARALLELISM_POOL_THREADS);
+    }
+  }
+
+  /** An unbounded queue never rejects, so a rejection policy on it is a statement that cannot come true. */
+  @Test
+  void anUnboundedQueueCannotHaveARejectionPolicy() {
+    assertThatThrownBy(() -> new TestPool(DedicatedThreadPool.UNBOUNDED_QUEUE, DedicatedThreadPool.SaturationPolicy.CALLER_RUNS))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("never rejects");
+  }
+
+  /** And a bounded one has to say what happens to the task it refuses - that is the checklist, enforced. */
+  @Test
+  void aBoundedQueueMustDeclareASaturationPolicy() {
+    assertThatThrownBy(() -> new TestPool(4, DedicatedThreadPool.SaturationPolicy.NONE))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("no policy");
+  }
+
+  /**
+   * {@code -1}, not a near-2^31 constant that would read oddly next to the bounded pools on the same dashboard row.
+   * {@code ParallelScanProducerPool} used to hard-code this in its own {@code getPoolStats}.
+   */
+  @Test
+  void anUnboundedPoolReportsItsQueueCapacityAsNotApplicable() {
+    final TestPool pool = new TestPool(DedicatedThreadPool.UNBOUNDED_QUEUE, DedicatedThreadPool.SaturationPolicy.NONE);
+    try {
+      assertThat(pool.getPoolStats().queueCapacityRemaining()).isEqualTo(-1);
+      assertThat(pool.getPoolStats().callerRunFallbacks()).as("a pool that cannot reject never falls back").isZero();
+    } finally {
+      pool.close();
+    }
+  }
+
+  /** Caller-runs means exactly that, and the fallback is counted so an operator sees saturation rather than latency. */
+  @Test
+  @Timeout(60)
+  void aRejectedTaskRunsOnTheSubmitterAndIsCounted() {
+    final TestPool pool = new TestPool(4, DedicatedThreadPool.SaturationPolicy.CALLER_RUNS);
+    try {
+      final AtomicReference<Thread> ranOn = new AtomicReference<>();
+      pool.runOnCaller(() -> ranOn.set(Thread.currentThread()), 4, 1);
+
+      assertThat(ranOn.get()).isSameAs(Thread.currentThread());
+      assertThat(pool.getPoolStats().callerRunFallbacks()).isEqualTo(1);
+    } finally {
+      pool.close();
+    }
+  }
+
+  /**
+   * A task rejected by a SHUT-DOWN pool would otherwise be neither run nor completed, leaving a caller blocked in an
+   * untimed {@code Future.get()} for ever (#4961). Cancelling its future ends the wait instead.
+   */
+  @Test
+  @Timeout(60)
+  void aTaskRejectedByAShutDownPoolHasItsFutureCancelled() {
+    final TestPool pool = new TestPool(4, DedicatedThreadPool.SaturationPolicy.CALLER_RUNS);
+    pool.close();
+
+    final AtomicReference<Boolean> ran = new AtomicReference<>(false);
+    final FutureTask<Void> task = new FutureTask<>(() -> {
+      ran.set(true);
+      return null;
+    });
+    pool.runOnCaller(task, 4, 1);
+
+    assertThat(ran.get()).as("a shut-down pool must not run the task").isFalse();
+    assertThat(task.isCancelled()).as("...and must not leave its caller waiting for a result that never comes").isTrue();
+  }
+
+  /** The same task on a pool that runs it regardless, which is what a pool with no future to cancel needs. */
+  @Test
+  @Timeout(60)
+  void theEvenWhenShutDownPolicyRunsItAnyway() {
+    final TestPool pool = new TestPool(4, DedicatedThreadPool.SaturationPolicy.CALLER_RUNS_EVEN_WHEN_SHUT_DOWN);
+    pool.close();
+
+    final AtomicReference<Boolean> ran = new AtomicReference<>(false);
+    pool.runOnCaller(() -> ran.set(true), 4, 1);
+
+    assertThat(ran.get()).as("the submitter has already counted this as in flight: dropping it strands that count")
+        .isTrue();
+  }
+
+  /** The shared sizing: an explicit positive value wins, anything else is cores with a floor of two. */
+  @Test
+  void sizingTakesTheExplicitValueOrFallsBackToCores() {
+    assertThat(DedicatedThreadPool.autoSizeThreads(7)).isEqualTo(7);
+    assertThat(DedicatedThreadPool.autoSizeThreads(0))
+        .isEqualTo(Math.max(DedicatedThreadPool.DEFAULT_THREADS_FLOOR, Runtime.getRuntime().availableProcessors()));
+    assertThat(DedicatedThreadPool.autoSizeThreads(-3)).as("a negative value is coerced, not honoured")
+        .isEqualTo(Math.max(DedicatedThreadPool.DEFAULT_THREADS_FLOOR, Runtime.getRuntime().availableProcessors()));
+
+    assertThat(DedicatedThreadPool.queueSizeOrDefault(64)).isEqualTo(64);
+    assertThat(DedicatedThreadPool.queueSizeOrDefault(0)).isEqualTo(DedicatedThreadPool.DEFAULT_QUEUE_SIZE);
+    assertThat(DedicatedThreadPool.queueSizeOrDefault(-1)).isEqualTo(DedicatedThreadPool.DEFAULT_QUEUE_SIZE);
+  }
+}

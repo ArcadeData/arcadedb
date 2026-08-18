@@ -2704,9 +2704,13 @@ public class LocalSchema implements Schema {
 
       indexMap.put(indexName, index);
 
+      // An index created but not populated here is parked UNAVAILABLE, so nothing can read it while it is empty. Two
+      // callers arrive with build=false: the sorted build, which populates every bucket index in one streamed pass
+      // and publishes them together, and the two-transaction split of issue #6324 item 1, which commits the component
+      // on its own before building it inside whatever transaction the caller holds.
       if (!build && !index.setStatus(new IndexInternal.INDEX_STATUS[] { IndexInternal.INDEX_STATUS.AVAILABLE },
           IndexInternal.INDEX_STATUS.UNAVAILABLE))
-        throw new IndexException("Cannot prepare empty index '" + indexName + "' for sorted population");
+        throw new IndexException("Cannot prepare empty index '" + indexName + "' for population");
 
       type.addIndexInternal(index, bucket.getFileId(), propertyNames, propIndex);
 

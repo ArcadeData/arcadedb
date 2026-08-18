@@ -19,12 +19,7 @@
 package com.arcadedb.query;
 
 import com.arcadedb.GlobalConfiguration;
-
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
+import com.arcadedb.utility.DedicatedThreadPool;
 
 /**
  * JVM-wide dedicated executor for the BLOCKING producer tasks of parallel bucket scans
@@ -78,7 +73,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public final class ParallelScanProducerPool {
+public final class ParallelScanProducerPool extends DedicatedThreadPool {
 
   private static final class Holder {
     static final ParallelScanProducerPool INSTANCE = new ParallelScanProducerPool();
@@ -95,60 +90,21 @@ public final class ParallelScanProducerPool {
     }
   }
 
-  /** Floor for the auto-sized thread count. */
-  private static final int DEFAULT_THREADS_FLOOR = 2;
-
-  private final ThreadPoolExecutor executor;
-
   private ParallelScanProducerPool() {
     // 0 = auto-size to available cores (with a floor of DEFAULT_THREADS_FLOOR). An explicit positive value
     // wins, so an operator can cap the pool on very high core-count machines where (cores) blocking
     // producers would be excessive. Negative values are coerced to auto for safety.
-    final int configuredThreads = GlobalConfiguration.PARALLEL_SCAN_PRODUCER_POOL_THREADS.getValueAsInteger();
-    final int threads = configuredThreads > 0
-        ? configuredThreads
-        : Math.max(DEFAULT_THREADS_FLOOR, Runtime.getRuntime().availableProcessors());
-    final AtomicInteger workerSeq = new AtomicInteger();
-
-    final ThreadPoolExecutor pool = new ThreadPoolExecutor(
-        threads, threads,
-        60L, TimeUnit.SECONDS,
-        new LinkedBlockingQueue<>(), // unbounded ON PURPOSE: see class javadoc
-        r -> {
-          final Thread t = new ProducerThread(r, "ArcadeDB-ParallelScanProducer-" + workerSeq.incrementAndGet());
-          t.setDaemon(true);
-          return t;
-        });
-    pool.allowCoreThreadTimeOut(true);
-    this.executor = pool;
+    //
+    // The one pool here with an UNBOUNDED queue and NO caller-runs policy, which the base class treats as a pair
+    // because a queue that never rejects has nothing to hand back: the deviation, and the #4948 self-deadlock that
+    // forces it, are argued in the class javadoc above. Its PoolStats therefore report queueCapacityRemaining=-1 and
+    // a caller-runs count that stays at zero for ever; queueDepth is this pool's saturation signal.
+    super("ArcadeDB-ParallelScanProducer-", autoSizeThreads(
+            GlobalConfiguration.PARALLEL_SCAN_PRODUCER_POOL_THREADS.getValueAsInteger()),
+        UNBOUNDED_QUEUE, SaturationPolicy.NONE, ProducerThread::new, "Parallel-scan producer pool", null);
   }
 
   public static ParallelScanProducerPool getInstance() {
     return Holder.INSTANCE;
-  }
-
-  /** The dedicated executor for blocking parallel-scan producer tasks. */
-  public ExecutorService getExecutorService() {
-    return executor;
-  }
-
-  /**
-   * Live pool statistics for the metrics binder (Studio "Executor Pools" card).
-   * {@code queueCapacityRemaining} is reported as {@code -1} (not applicable): the task queue is
-   * unbounded by design, and a near-2^31 constant would read oddly next to the bounded pools.
-   * {@code queueDepth} is the saturation signal for this pool.
-   */
-  public PoolStats getPoolStats() {
-    return new PoolStats(
-        executor.getPoolSize(),
-        executor.getActiveCount(),
-        executor.getQueue().size(),
-        -1,
-        executor.getCompletedTaskCount(),
-        0L); // no caller-runs policy on this pool by design (see class javadoc)
-  }
-
-  public record PoolStats(int poolSize, int activeThreads, int queueDepth, int queueCapacityRemaining,
-                          long completedTasks, long callerRunFallbacks) {
   }
 }

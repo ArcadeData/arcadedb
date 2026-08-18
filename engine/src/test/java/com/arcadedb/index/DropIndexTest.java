@@ -243,8 +243,13 @@ class DropIndexTest extends TestHelper {
         v2.save();
       }
 
+      // TOT + 1 and not TOT: the record created further up already holds TOT, and 'id' carries a UNIQUE index. The
+      // duplicate went unnoticed while the rebuilt index was populated in a transaction of its own - the entry for
+      // the pre-existing record was committed separately, so nothing compared the two - and is caught at save() now
+      // that the rebuild shares this transaction (issue #6324, item 1). What this test is about is dropping and
+      // recreating a type and its indexes, so the second record only has to exist.
       final MutableDocument v3 = database.newDocument(TYPE_NAME);
-      v3.set("id", TOT);
+      v3.set("id", TOT + 1);
       v3.save();
 
       assertThat(database.countType(TYPE_NAME, true)).isEqualTo(TOT + 2);

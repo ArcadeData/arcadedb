@@ -18,6 +18,7 @@
  */
 package com.arcadedb.database.async;
 
+import com.arcadedb.query.opencypher.ast.CypherDDLStatement;
 import com.arcadedb.query.sql.parser.DDLStatement;
 import org.junit.jupiter.api.Test;
 
@@ -40,6 +41,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * So the list is not maintained by hand and hope. This walks every {@link DDLStatement} subclass the parser package
  * ships and fails if one begins with a verb the filter does not know - which is the moment somebody adds it, not the
  * moment a user notices their new statement is refused when dispatched asynchronously.
+ * <p>
+ * The filter became cross-language with issue #6324, item 5, so the same guarantee is owed to Cypher: its four DDL
+ * statements go through the same textual pre-filter before the engine is asked to classify them.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -77,6 +81,25 @@ class AsyncDDLKeywordCoverageTest {
     assertThat(uncovered).as(
             "these DDL statements start with a verb DatabaseAsyncExecutorImpl.DDL_LEADING_KEYWORDS does not list, so a "
                 + "script containing one would skip classification and be refused when dispatched asynchronously")
+        .isEmpty();
+  }
+
+  /**
+   * The same guarantee for Cypher (issue #6324, item 5): its DDL is enumerated rather than subclassed, so this walks
+   * {@link CypherDDLStatement.Kind} instead of the classpath. Each kind is named {@code <VERB>_<NOUN>}, and the verb
+   * is what the filter has to know - a fifth kind added with a verb that is not there would be dispatched to a worker
+   * and refused, quietly taking back the operation the routing exists to give.
+   */
+  @Test
+  void everyCypherDDLKindBeginsWithAVerbTheFilterKnows() {
+    final List<String> uncovered = new ArrayList<>();
+    for (final CypherDDLStatement.Kind kind : CypherDDLStatement.Kind.values())
+      if (!DatabaseAsyncExecutorImpl.mayContainDDL(kind.name().substring(0, kind.name().indexOf('_'))))
+        uncovered.add(kind.name());
+
+    assertThat(uncovered).as(
+            "these Cypher DDL kinds start with a verb DatabaseAsyncExecutorImpl.DDL_LEADING_KEYWORDS does not list, so a "
+                + "statement of that kind would skip classification and be refused when dispatched asynchronously")
         .isEmpty();
   }
 

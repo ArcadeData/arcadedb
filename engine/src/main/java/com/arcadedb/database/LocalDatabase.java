@@ -1124,7 +1124,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       if (bucketName == null && record instanceof Document doc)
         bucket = (LocalBucket) doc.getType().getBucketIdByRecord(doc,
-            DatabaseContext.INSTANCE.getContext(databasePath).asyncMode);
+            DatabaseContext.INSTANCE.getContext(databasePath).perThreadBucketSelection);
       else {
         bucket = (LocalBucket) schema.getBucketByName(bucketName);
         // Reject direct writes to internal buckets (e.g. paired external-property buckets). They are infrastructure

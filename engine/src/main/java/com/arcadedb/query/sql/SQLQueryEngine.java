@@ -39,6 +39,7 @@ import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.sql.method.DefaultSQLMethodFactory;
 import com.arcadedb.query.sql.parser.Limit;
+import com.arcadedb.query.sql.parser.DDLStatement;
 import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.MultiIterator;
@@ -320,6 +321,15 @@ public class SQLQueryEngine implements QueryEngine {
 
   public Statement parse(final String query, final DatabaseInternal database) {
     return database.getStatementCache().get(query);
+  }
+
+  /**
+   * Free, and that is why SQL can answer it (issue #6324, item 5): the parse is a {@code StatementCache} lookup that
+   * the execution about to follow will repeat with the same key.
+   */
+  @Override
+  public DDLClassification classifyDDL(final String query) {
+    return parse(query, database) instanceof DDLStatement ? DDLClassification.DDL : DDLClassification.NOT_DDL;
   }
 
   public static String validateVariableName(String varName) {
