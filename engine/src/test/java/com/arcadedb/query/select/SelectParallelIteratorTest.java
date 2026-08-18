@@ -20,6 +20,7 @@ package com.arcadedb.query.select;/*
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.utility.StallAwareStopwatch;
 
 import org.junit.jupiter.api.Test;
 
@@ -43,6 +44,35 @@ public class SelectParallelIteratorTest extends TestHelper {
   // AND THE TIMEOUT TESTS EXERCISE THE STREAMING (NON-EMPTY QUEUE) PATH ONLY
   private static final int SMALL_RECORDS = 1_000;
   private static final int BUCKETS       = 8;
+  /**
+   * A HANG DETECTOR, not a latency bound (issue #6324, item 3). Every wait below has to end, and only some of them
+   * carry a claim about HOW SOON - so this number is deliberately far past anything healthy, and a run that reaches
+   * it has a wedged producer rather than a slow one.
+   */
+  private static final int HANG_DETECTOR_MS = 120_000;
+  /**
+   * The tripwire between "the producers gave up" and "the producers are spinning on a full queue for ever", which is
+   * the whole of #5065. Measured with the JVM-wide stall inside the window discounted, so it can stay this side of
+   * unbounded on a machine running back-to-back suites; the raw form failed at 25.1 s against a 15 s budget on a busy
+   * machine and passed 5/5 on an idle one, which is the coin flip CLAUDE.md's #6260 rule exists to remove.
+   */
+  private static final int GIVE_UP_TRIPWIRE_MS = 15_000;
+
+  /**
+   * The producers must stop rather than run to their unbounded end. Generous is free here: widening the tripwire
+   * cannot turn a passing run red, while narrowing it is what would break.
+   */
+  private void assertProducersGaveUp(final String whatItSeparates) {
+    final StallAwareStopwatch watch = StallAwareStopwatch.start();
+    assertThat(database.async().waitCompletion(HANG_DETECTOR_MS)).as("the producers must return at all").isTrue();
+    watch.assertGaveUpWithin(GIVE_UP_TRIPWIRE_MS, whatItSeparates);
+  }
+
+  /** Liveness only: the scan has to finish. Nothing here claims how quickly, so nothing here is a bound. */
+  private void assertProducersFinished() {
+    assertThat(database.async().waitCompletion(HANG_DETECTOR_MS))
+        .as("the parallel scan must finish rather than hang (liveness guard, not a latency bound)").isTrue();
+  }
 
   public SelectParallelIteratorTest() {
     autoStartTx = false;
@@ -64,7 +94,7 @@ public class SelectParallelIteratorTest extends TestHelper {
   void fullParallelScanReturnsAllRecords() {
     final List<Vertex> result = database.select().fromType("Big").compile().parallel().<Vertex>vertices().toList();
     assertThat(result).hasSize(TOTAL_RECORDS);
-    assertThat(database.async().waitCompletion(15_000)).isTrue();
+    assertProducersFinished();
   }
 
   @Test
@@ -72,7 +102,7 @@ public class SelectParallelIteratorTest extends TestHelper {
     final List<Vertex> result = database.select().fromType("Big").limit(10).compile().parallel().<Vertex>vertices().toList();
 
     // THE PRODUCERS MUST STOP ONCE THE LIMIT IS SATISFIED INSTEAD OF SPINNING FOREVER ON THE FULL QUEUE (#5065)
-    assertThat(database.async().waitCompletion(15_000)).isTrue();
+    assertProducersGaveUp("a producer that stops at the limit from one that spins on a full queue for ever");
     assertThat(result).hasSize(10);
   }
 
@@ -87,7 +117,7 @@ public class SelectParallelIteratorTest extends TestHelper {
 
     // THE CONSUMER STOPS DRAINING WITHOUT CLOSING (E.G. AN EXCEPTION IN USER CODE): THE PRODUCERS MUST GIVE UP
     // WITHIN THE STALL BOUND (THE SELECT TIMEOUT HERE) INSTEAD OF PINNING THE ASYNC WORKERS AT 100% CPU (#5065)
-    assertThat(database.async().waitCompletion(15_000)).isTrue();
+    assertProducersGaveUp("a producer that honours the 1s stall bound from one that pins a worker at 100% CPU");
   }
 
   @Test
@@ -102,7 +132,7 @@ public class SelectParallelIteratorTest extends TestHelper {
     // CLOSE WHILE THE PRODUCERS ARE STILL STREAMING: THE ASYNC WORKERS MUST RETURN WITHIN A BOUND (#5065)
     iterator.close();
 
-    assertThat(database.async().waitCompletion(15_000)).isTrue();
+    assertProducersGaveUp("a producer that notices the close from one that keeps browsing its whole bucket");
     assertThat(iterator.hasNext()).isFalse();
   }
 
@@ -110,7 +140,7 @@ public class SelectParallelIteratorTest extends TestHelper {
   void skipIsAppliedOnParallelScan() {
     final List<Vertex> result = database.select().fromType("Big").skip(100).compile().parallel().<Vertex>vertices().toList();
     assertThat(result).hasSize(TOTAL_RECORDS - 100);
-    assertThat(database.async().waitCompletion(15_000)).isTrue();
+    assertProducersFinished();
   }
 
   @Test
@@ -120,12 +150,12 @@ public class SelectParallelIteratorTest extends TestHelper {
     final List<Vertex> result = database.select().fromType("Big").skip(100).limit(50).compile().parallel().<Vertex>vertices()
         .toList();
     assertThat(result).hasSize(50);
-    assertThat(database.async().waitCompletion(15_000)).isTrue();
+    assertProducersFinished();
 
     final List<Vertex> result2 = database.select().fromType("Big").skip(10).limit(50).compile().parallel().<Vertex>vertices()
         .toList();
     assertThat(result2).hasSize(50);
-    assertThat(database.async().waitCompletion(15_000)).isTrue();
+    assertProducersFinished();
   }
 
   @Test
@@ -158,7 +188,7 @@ public class SelectParallelIteratorTest extends TestHelper {
         iterator.next();
     }).isInstanceOf(TimeoutException.class);
 
-    assertThat(database.async().waitCompletion(15_000)).isTrue();
+    assertProducersFinished();
   }
 
   @Test
@@ -180,6 +210,6 @@ public class SelectParallelIteratorTest extends TestHelper {
     }
 
     assertThat(fetchedAfterTimeout).isZero();
-    assertThat(database.async().waitCompletion(15_000)).isTrue();
+    assertProducersFinished();
   }
 }

@@ -63,6 +63,32 @@ public class BucketIndexBuilder extends IndexBuilder<Index> {
     return typeName;
   }
 
+  /** Creates the sub-index on this builder's bucket, resolving the bucket from the type by name. */
+  private Index createIndexOnBucket(final LocalSchema schema, final LocalDocumentType type, final Type[] keyTypes,
+      final boolean build) {
+    Bucket bucket = null;
+    for (final Bucket b : type.getBuckets(true)) {
+      if (bucketName.equals(b.getName())) {
+        bucket = b;
+        break;
+      }
+    }
+
+    return schema.createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize, nullStrategy,
+        callback, propertyNames, null, batchSize, metadata, build);
+  }
+
+  /**
+   * Takes away an index that could not be built. The FULL removal, not just the component's own {@code drop()}: on the
+   * two-transaction path the component is already committed and attached to its type, so leaving it behind would
+   * answer lookups with an empty index. This is the cleanup {@code LocalSchema.createBucketIndex} did while the build
+   * still ran inside it (issue #6324, item 1) - an index that could not be built must be GONE, and the caller told so.
+   */
+  private static void dropPartiallyBuiltIndex(final LocalSchema schema, final Index index) {
+    if (index != null && schema.existsIndex(index.getName()))
+      schema.dropIndex(index.getName());
+  }
+
   @Override
   public Index create() {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
@@ -126,31 +152,45 @@ public class BucketIndexBuilder extends IndexBuilder<Index> {
         metadata.typeIndexName = indexName;
       }
 
+      // Asked before the transactions below, while the answer is still about the transaction that was already there
+      // (issue #6324, item 1). See IndexBuilder#buildSharesCallerTransaction.
+      final boolean sharesCallerTransaction = buildSharesCallerTransaction();
+
       return schema.recordFileChanges(() -> {
         final AtomicReference<Index> result1 = new AtomicReference<>();
+
+        if (!sharesCallerTransaction) {
+          // ONE TRANSACTION, exactly as before issue #6324: with nothing of anybody else's to see, creating and
+          // building in one go is both simpler and one commit cheaper.
+          database.transaction(() -> {
+            result1.set(createIndexOnBucket(schema, type, keyTypes, true));
+            schema.saveConfiguration();
+          }, false, maxAttempts, null, error -> dropPartiallyBuiltIndex(schema, result1.get()));
+          return result1.get();
+        }
+
+        // TWO TRANSACTIONS, for the reasons spelled out at the same split in TypeIndexBuilder#create: the component
+        // is created and COMMITTED on its own, because the schema entry that names it is written regardless of what
+        // the caller's transaction does; the build then joins the caller's transaction, because a scan reads the
+        // transaction it runs in and that is the only way it sees records the caller has written and not committed.
         database.transaction(() -> {
-
-          Bucket bucket = null;
-          final List<Bucket> buckets = type.getBuckets(true);
-          for (final Bucket b : buckets) {
-            if (bucketName.equals(b.getName())) {
-              bucket = b;
-              break;
-            }
-          }
-
-          final Index index = schema.createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize, nullStrategy,
-              callback, propertyNames, null, batchSize, metadata);
-          result1.set(index);
-
+          result1.set(createIndexOnBucket(schema, type, keyTypes, false));
           schema.saveConfiguration();
+        }, false, maxAttempts, null, error -> dropPartiallyBuiltIndex(schema, result1.get()));
 
-        }, false, maxAttempts, null, error -> {
-          final Index indexToRemove = result1.get();
-          if (indexToRemove != null) {
-            ((IndexInternal) indexToRemove).drop();
-          }
-        });
+        // Cleaned up from a try/catch of its own rather than from the transaction's error callback, because that
+        // callback is NOT reached on every failure: a NeedRetryException or a DuplicatedKeyException raised inside a
+        // JOINED transaction is rethrown immediately by LocalDatabase.transaction (issue #661 - retrying would roll
+        // back a transaction it does not own), skipping the callback entirely. And a duplicate is exactly what this
+        // build can now hit, since it sees the caller's own pending writes. buildCreatedIndex has already flipped the
+        // index to AVAILABLE by then, so leaving it behind would register a half-built index that answers queries.
+        try {
+          database.transaction(() -> buildCreatedIndex(result1.get(), true), true, maxAttempts, null, null);
+        } catch (final RuntimeException e) {
+          dropPartiallyBuiltIndex(schema, result1.get());
+          throw e;
+        }
+
         return result1.get();
       });
     }

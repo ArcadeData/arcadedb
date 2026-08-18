@@ -161,13 +161,13 @@ class Issue6303AsyncDispatchedDDLTest extends TestHelper {
    * transaction and one thread, so the script cannot be half here and half there, and it is the DDL half that
    * dictates where both can run.
    * <p>
-   * Note what this deliberately does NOT assert. The index ends up with no entry for the record the same script
-   * inserted, because both run in one transaction and the record is therefore uncommitted - and so invisible to the
-   * build's scan - at the moment the index is created, having been saved before the index existed to stage an entry
-   * for. That is how the engine answers this script SYNCHRONOUSLY too (measured: `records=1 entries=0` for the same
-   * text inside one explicit transaction), so it is neither introduced nor worsened here and is out of this issue's
-   * scope; asserting an entry would be asserting a fix this PR does not make. What matters for the routing is
-   * pinned: the script ran off the workers, and both of its statements ran.
+   * The entry for the record the script itself inserted is asserted here as of issue #6324, item 1. It used to be
+   * missing, and this test used to say so in a comment instead of asserting it: both statements share one
+   * transaction, so the record was still uncommitted - and therefore invisible to the build's scan - at the moment
+   * the index was created, having been saved before the index existed to stage an entry for. The build now runs
+   * INSIDE the transaction that is writing rather than opening one of its own, which is what lets the scan see it.
+   * {@code Issue6324SameTransactionIndexBuildTest} covers the shape on its own terms; it is asserted from here too
+   * because this is a route a user actually takes to it.
    */
   @Test
   @Timeout(180)
@@ -201,7 +201,10 @@ class Issue6303AsyncDispatchedDDLTest extends TestHelper {
 
     assertThat(database.countType("V", false)).as("and the non-DDL half of the script still did its work")
         .isEqualTo(1);
-    assertThat(database.getSchema().getIndexByName("V[id]")).as("as did the DDL half").isNotNull();
+    final Index index = database.getSchema().getIndexByName("V[id]");
+    assertThat(index).as("as did the DDL half").isNotNull();
+    assertThat(index.countEntries()).as("and the index knows about the record its own script inserted (#6324)")
+        .isEqualTo(1);
   }
 
   /**
