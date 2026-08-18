@@ -537,8 +537,9 @@ class OpenCypherUnionCallProfileTest {
       if (plan.contains("Cost-Based Optimizer")) {
         assertThat(plan).containsAnyOf("NodeByLabelScan", "Total Estimated Cost");
       } else if (plan.contains("Traditional")) {
-        // Even for traditional execution, EXPLAIN should provide some detail
-        assertThat(plan).contains("step-by-step interpretation");
+        // Even for traditional execution, EXPLAIN should provide some detail - which since issue #6323 is the
+        // step chain the query would run, not a sentence saying that a chain is what would run it.
+        assertThat(plan).contains("Execution Plan:").contains("MATCH NODE");
       }
 
       // Consume the explain result

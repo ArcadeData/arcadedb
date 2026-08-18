@@ -70,12 +70,16 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
   // all use it. The budget that had no measurement behind it was also the only one four times larger than
   // its siblings; it is now one of them. It stays generous - three times the largest wait the instrument can
   // prove any of those runs needed - while a genuine hang costs 90s less before it is reported.
+  //
+  // Whether it can come down again, and what to do about the fork adjacency described above, are tracked by
+  // issue #6343: a comment here is not a tracker, which is what issue #6297 was filed to establish and issue
+  // #6323 found had been lost.
   private static final long RESYNC_RETRY_TIMEOUT_MS = 30_000;
   /**
    * Above this, a wait is worth a line in the log: it is evidence about the budget above, not noise. Lowered
    * to 5s with the budget (issue #6267) to keep the same resolution: at the old 10s a wait could consume a
    * third of the new budget and still say nothing, which is the blindness that let the 120s stand unmeasured
-   * for as long as it did.
+   * for as long as it did. The next decision this feeds is issue #6343.
    */
   private static final long SLOW_WAIT_REPORT_MS     = 5_000;
   /**

@@ -248,10 +248,16 @@ jobs:
   slow-unit-tests:
     runs-on: ubuntu-latest
     needs: build-and-package
-    # This lane is the workflow's critical path at ~44 min, and it had no cap at all, so it inherited
-    # GitHub's 6-hour default: a hung fork would have burned six hours of a runner before anyone saw it.
-    # 60 min matches unit-tests and leaves ~16 min of headroom over the current steady state.
-    timeout-minutes: 60
+    # This lane is the workflow's critical path, and it had no cap at all, so it inherited GitHub's 6-hour
+    # default: a hung fork would have burned six hours of a runner before anyone saw it.
+    #
+    # 90 min, up from the 60 that matched unit-tests. The honest duration of this lane has been measured at
+    # 39m27s, 46m and 57m40s on `main`, and one run was CANCELLED at 1h0m16s while progressing normally -
+    # LSMTreeIndexTest had just completed and no test had failed. A cap within a few minutes of that spread
+    # goes red on runner speed alone, and it goes red as "the job failed", which reads as a regression from
+    # the PR under test until someone pulls the logs (issue #6323). This cap is a hang detector, so it is
+    # sized above the slowest honest run rather than around the median.
+    timeout-minutes: 90
     permissions:
       contents: read
       checks: write

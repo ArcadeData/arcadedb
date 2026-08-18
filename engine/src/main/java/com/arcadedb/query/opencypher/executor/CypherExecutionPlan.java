@@ -26,6 +26,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.ast.ArithmeticExpression;
 import com.arcadedb.query.opencypher.ast.BooleanCoercionExpression;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
@@ -147,6 +148,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
+import java.util.logging.Level;
 
 /**
  * Execution plan for a Cypher query.
@@ -704,6 +706,9 @@ public class CypherExecutionPlan {
     explainOutput.append("OpenCypher Native Execution Plan\n");
     explainOutput.append("=================================\n\n");
 
+    // The chain described below, kept so a client reading the plan as data sees what the text shows.
+    List<ExecutionStep> describedSteps = Collections.emptyList();
+
     // The push-down is asked FIRST because execute() asks it first: it replaces the whole chain, so a query it
     // claims never reaches the optimizer, and describing that query by the physical plan the optimizer built for it
     // names a plan the engine does not run. That gap predates this issue, which widens it by routing the plainest
@@ -714,6 +719,7 @@ public class CypherExecutionPlan {
       explainOutput.append("Execution Plan:\n");
       appendStepChain(explainOutput, countPushDown);
       explainOutput.append("\n");
+      describedSteps = stepChainOf(countPushDown);
     }
 
     if (canUseOptimizedPhysicalPlan()) {
@@ -725,13 +731,146 @@ public class CypherExecutionPlan {
       explainOutput.append("\n");
       explainOutput.append(String.format("Total Estimated Cost: %.2f\n", physicalPlan.getTotalEstimatedCost()));
       explainOutput.append(String.format("Total Estimated Rows: %d\n", physicalPlan.getTotalEstimatedCardinality()));
+      if (countPushDown == null) {
+        // Not a second optimization: buildExecutionStepsWithOptimizer wraps THIS plan's physicalPlan - the same
+        // instance the text above is printed from - so the structured steps and the text cannot describe two
+        // different plans.
+        try {
+          describedSteps = stepChainOf(stepsForDescription());
+          appendStepsAfterTheOptimizedMatch(explainOutput, describedSteps);
+        } catch (final Exception e) {
+          explainOutput.append("\n");
+          appendPlanBuildFailure(explainOutput, e);
+        }
+      }
+    } else if (isUnion()) {
+      // A UNION has no plan of its own to be optimized or not: the planner leaves its physicalPlan null and plans
+      // each branch on its own, so a branch below can perfectly well be the optimizer's while the union is not.
+      // Saying "not yet supported by optimizer" here contradicted the `+ OPTIMIZED MATCH` printed underneath it.
+      explainOutput.append("Using Per-Branch Planning (UNION)\n\n");
+      explainOutput.append("Reason: each branch of a UNION is planned on its own - see the branches below\n\n");
+      describedSteps = appendPlanDescription(explainOutput);
     } else if (countPushDown == null) {
       explainOutput.append("Using Traditional Execution (Non-Optimized)\n\n");
-      explainOutput.append("Reason: Query pattern not yet supported by optimizer\n");
-      explainOutput.append("Execution will use step-by-step interpretation\n");
+      explainOutput.append("Reason: Query pattern not yet supported by optimizer\n\n");
+      describedSteps = appendPlanDescription(explainOutput);
     }
 
-    return new ExplainResultSet(new OpenCypherExplainExecutionPlan(explainOutput.toString()));
+    return new ExplainResultSet(new OpenCypherExplainExecutionPlan(explainOutput.toString(), describedSteps, -1));
+  }
+
+  /** Whether this plan is a UNION, which has no plan of its own: it runs the plan of each of its branches. */
+  private boolean isUnion() {
+    return unionSubqueryPlans != null && !unionSubqueryPlans.isEmpty();
+  }
+
+  /**
+   * Describes the chain this plan would run, and returns it.
+   * <p>
+   * EXPLAIN used to stop at the reason above, which left the one command whose entire purpose is inspecting a plan
+   * WITHOUT running it strictly less informative than PROFILE - and PROFILE is no workaround for a slow query, nor
+   * for a writing one, since it executes (issue #6323). The steps are the ones {@link #execute()} builds, and they
+   * are built and never pulled: construction reads the schema, the work is all in {@code syncPull}.
+   * <p>
+   * A UNION is answered branch by branch, so it is described branch by branch: each sub-plan describes the chain it
+   * would run, which for a branch the optimizer claims is that branch's own answer.
+   */
+  private List<ExecutionStep> appendPlanDescription(final StringBuilder output) {
+    if (isUnion()) {
+      output.append("Execution Plan:\n");
+      output.append("+ UNION").append(unionRemoveDuplicates ? "" : " ALL")
+          .append(" (").append(unionSubqueryPlans.size()).append(" queries)\n");
+
+      final List<ExecutionStep> allSteps = new ArrayList<>();
+      for (int i = 0; i < unionSubqueryPlans.size(); i++) {
+        output.append("  Branch ").append(i + 1).append(":\n");
+        final StringBuilder branchOutput = new StringBuilder();
+        allSteps.addAll(unionSubqueryPlans.get(i).appendPlanDescription(branchOutput));
+        output.append(branchOutput.toString().indent(2));
+      }
+      return allSteps;
+    }
+
+    final AbstractExecutionStep rootStep;
+    try {
+      rootStep = stepsForDescription();
+    } catch (final Exception e) {
+      appendPlanBuildFailure(output, e);
+      return Collections.emptyList();
+    }
+
+    if (rootStep == null) {
+      // The statement built no chain at all, which execute() answers with an empty result set. This used to read
+      // "Execution will use step-by-step interpretation" - a route-selection message, true when this branch was
+      // reached without ever building anything, and misleading now that it means there was nothing to describe.
+      output.append("No execution steps: this statement produces no rows to execute\n");
+      return Collections.emptyList();
+    }
+
+    output.append("Execution Plan:\n");
+    appendStepChain(output, rootStep);
+    return stepChainOf(rootStep);
+  }
+
+  /**
+   * Reports a plan that could not be built as part of the description, rather than as a failed EXPLAIN or as
+   * nothing at all.
+   * <p>
+   * EXPLAIN answers a question about a query, so a query that cannot be planned is an answer to it: the statement
+   * would fail the same way when run, and naming the failure beats both raising it - which would leave the user
+   * with no plan and no reason - and swallowing it into a log line nobody has enabled (issue #6323). The stack
+   * trace still goes to the log, since only the message belongs in a plan.
+   * <p>
+   * The message tells the caller nothing running the same statement would not: {@link #execute()} builds this very
+   * chain and lets what it throws reach the client. EXPLAIN needs no privilege beyond running the query it
+   * describes, so there is no audience here that could not have obtained the same message by asking directly.
+   */
+  private void appendPlanBuildFailure(final StringBuilder output, final Exception cause) {
+    LogManager.instance().log(this, Level.FINE, "Error on building the execution plan to describe it", cause);
+    output.append("Execution plan not available: ")
+        .append(cause.getMessage() != null ? cause.getMessage() : cause.getClass().getSimpleName())
+        .append("\n");
+  }
+
+  /**
+   * The step chain this query would run, built only to be described, or null when the statement produces none.
+   * Building it is the same work {@link #execute()} does before pulling anything, so it fails on the statements
+   * that would fail there: the callers report that failure instead of propagating it.
+   */
+  private AbstractExecutionStep stepsForDescription() {
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+    context.setInputParameters(parameters);
+    setupFunctionResolver(context);
+    return canUseOptimizedPhysicalPlan() ? buildExecutionStepsWithOptimizer(context) : buildExecutionSteps(context);
+  }
+
+  /**
+   * Appends the steps that run after the optimized MATCH, which the physical plan does not describe.
+   * <p>
+   * The optimizer claims the MATCH pattern only: RETURN, ORDER BY, LIMIT and every write clause stay execution
+   * steps appended to the operator chain. Printing the physical plan alone therefore answered
+   * {@code EXPLAIN MATCH (n) WHERE ... DELETE n} with a scan and no mention of the delete (issue #6323). The first
+   * element of the chain is the operator wrapper the physical plan above already describes, so it is skipped.
+   */
+  private static void appendStepsAfterTheOptimizedMatch(final StringBuilder output, final List<ExecutionStep> chain) {
+    if (chain.size() < 2)
+      return;
+
+    output.append("\nSteps After the Optimized Match:\n");
+    for (final ExecutionStep step : chain.subList(1, chain.size())) {
+      output.append(((AbstractExecutionStep) step).prettyPrint(0, 2));
+      output.append("\n");
+    }
+  }
+
+  /** A step chain as a first-step-first list, which is the order it is read in and the reverse of how it is linked. */
+  private static List<ExecutionStep> stepChainOf(final AbstractExecutionStep rootStep) {
+    final List<ExecutionStep> stepChain = new ArrayList<>();
+    for (AbstractExecutionStep current = rootStep; current != null; current = (AbstractExecutionStep) current.getPrev())
+      stepChain.add(current);
+    Collections.reverse(stepChain);
+    return stepChain;
   }
 
   /**
@@ -754,13 +893,8 @@ public class CypherExecutionPlan {
 
   /** Appends a step chain first-step-first, which is the order it is read in and the reverse of how it is linked. */
   private static void appendStepChain(final StringBuilder output, final AbstractExecutionStep rootStep) {
-    final List<AbstractExecutionStep> stepChain = new ArrayList<>();
-    for (AbstractExecutionStep current = rootStep; current != null; current = (AbstractExecutionStep) current.getPrev())
-      stepChain.add(current);
-    Collections.reverse(stepChain);
-
-    for (final AbstractExecutionStep step : stepChain) {
-      output.append(step.prettyPrint(0, 2));
+    for (final ExecutionStep step : stepChainOf(rootStep)) {
+      output.append(((AbstractExecutionStep) step).prettyPrint(0, 2));
       output.append("\n");
     }
   }
@@ -832,6 +966,9 @@ public class CypherExecutionPlan {
     if (errorMessage != null)
       profileOutput.append(String.format("\nError: %s\n", errorMessage));
 
+    // Collect execution steps for structured plan data
+    final List<ExecutionStep> executionSteps = stepChainOf(rootStep);
+
     // Asked before canUseOptimizedPhysicalPlan() for the reason explain() asks it first: the push-down replaced the
     // chain, so the optimizer's physical plan is not what ran (issue #5715).
     if (countPushedDown) {
@@ -846,23 +983,14 @@ public class CypherExecutionPlan {
       profileOutput.append(physicalPlan.getRootOperator().explain(0));
       profileOutput.append(String.format("\nEstimated Cost: %.2f\n", physicalPlan.getTotalEstimatedCost()));
       profileOutput.append(String.format("Estimated Rows: %d\n", physicalPlan.getTotalEstimatedCardinality()));
+      if (!countPushedDown)
+        appendStepsAfterTheOptimizedMatch(profileOutput, executionSteps);
     } else if (!countPushedDown) {
       profileOutput.append("\nExecution Plan (Traditional):\n");
       if (rootStep != null)
         appendStepChain(profileOutput, rootStep);
       else
         profileOutput.append("No execution steps generated\n");
-    }
-
-    // Collect execution steps for structured plan data
-    final List<ExecutionStep> executionSteps = new ArrayList<>();
-    if (rootStep != null) {
-      AbstractExecutionStep current = rootStep;
-      while (current != null) {
-        executionSteps.add(current);
-        current = (AbstractExecutionStep) current.getPrev();
-      }
-      Collections.reverse(executionSteps);
     }
 
     results.setPlan(new OpenCypherExplainExecutionPlan(profileOutput.toString(), executionSteps, endTime - startTime));
