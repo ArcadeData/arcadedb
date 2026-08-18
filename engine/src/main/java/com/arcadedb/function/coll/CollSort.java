@@ -21,12 +21,17 @@ package com.arcadedb.function.coll;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.utility.LongRangeList;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /**
  * coll.sort(list) - Returns a sorted copy of the list using Cypher comparison semantics.
+ * <p>
+ * Sorting a range needs no copy: an ascending arithmetic progression is already sorted and a descending one is its
+ * own reverse, both answered in constant space. Materialising it instead reinstated the heap exhaustion the lazy
+ * range removed (issue #6353, advisory GHSA-xmjm-8q85-g778).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -58,6 +63,8 @@ public class CollSort extends AbstractCollFunction {
     final List<Object> list = asList(args[0]);
     if (list == null)
       return null;
+    if (args[0] instanceof LongRangeList range)
+      return range.getStep() > 0 ? range : range.reversed();
     final List<Object> result = new ArrayList<>(list);
     result.sort(CypherFunctionHelper::cypherCompare);
     return result;

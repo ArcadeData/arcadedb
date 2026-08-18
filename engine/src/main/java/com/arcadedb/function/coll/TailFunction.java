@@ -21,6 +21,7 @@ package com.arcadedb.function.coll;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.utility.LongRangeList;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -31,6 +32,10 @@ import java.util.List;
  * <p>
  * Signature: {@code tail(list :: LIST<ANY>) :: LIST<ANY>}. A non-list argument is a type error, not an
  * empty list (issue #5476); {@code null} propagates to {@code null} (issue #3920).
+ * <p>
+ * A range beheaded is still an arithmetic progression, so a {@link LongRangeList} argument is answered in
+ * constant space. Copying it instead reinstated the heap exhaustion the lazy range removed (issue #6353,
+ * advisory GHSA-xmjm-8q85-g778): {@code tail(range(0, 999999999))} allocated a billion boxed longs.
  */
 public class TailFunction implements StatelessFunction {
   @Override
@@ -54,6 +59,11 @@ public class TailFunction implements StatelessFunction {
     final List<Object> list = CypherFunctionHelper.requireListArgument(args[0], "tail");
     if (list == null)
       return null;
-    return list.size() <= 1 ? Collections.emptyList() : new ArrayList<>(list.subList(1, list.size()));
+    if (list.size() <= 1)
+      return Collections.emptyList();
+    if (args[0] instanceof LongRangeList range)
+      // LongRangeList.subList() returns a range, not a view that walks this one, so nothing is materialised.
+      return range.subList(1, range.size());
+    return new ArrayList<>(list.subList(1, list.size()));
   }
 }
