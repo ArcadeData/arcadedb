@@ -127,7 +127,11 @@ public class Dictionary extends PaginatedComponent {
       final int pageSize)
       throws IOException {
     super(database, name, filePath, DICT_EXT, mode, pageSize, CURRENT_VERSION);
-    if (file.getSize() == 0) {
+    // NO COMMITTED PAGE, SO PAGE 0 HAS TO BE CREATED. THE SAME QUESTION AS reload()'s, ASKED OF THE SAME SOURCE (ISSUE #6351):
+    // pageCount, WHICH THE SUPER CONSTRUCTOR HAS JUST DERIVED FROM THE FILE SIZE. ON THE BRAND NEW FILE THIS CONSTRUCTOR IS FOR
+    // THEY GIVE THE SAME ANSWER; THEY PART ONLY ON A FILE HOLDING LESS THAN ONE WHOLE PAGE, WHERE THERE IS NO COMPLETE PAGE 0 TO
+    // KEEP AND THE HEADER PAGE IS WHAT THAT FILE NEEDS.
+    if (pageCount.get() == 0) {
       // NEW FILE, CREATE HEADER PAGE
       final MutablePage header = database.getTransaction().addPage(new PageId(database, file.getFileId(), 0), pageSize);
       updateCounters(header);
@@ -467,13 +471,24 @@ public class Dictionary extends PaginatedComponent {
   }
 
   public void reload() throws IOException {
-    if (file.getSize() == 0) {
-      // No header page on disk. Creating it commits a transaction, and the commit resolves this file id
-      // against the schema - which has not registered this component yet when the load path builds it,
-      // so committing here fails with "File with id '0' was not found" and the database cannot be
-      // opened at all. The creation is deferred to createHeaderPageIfMissing(), which LocalSchema calls
-      // once the component is registered. The in-RAM dictionary is already empty, which is the correct
-      // state for an empty file.
+    // NOTHING COMMITTED, SO THERE IS NOTHING TO READ. ASKED OF pageCount AND NOT OF THE FILE'S SIZE (ISSUE #6351), FOR THE SAME
+    // REASON THE LOOP BELOW COUNTS WITH pageCount: THE FILE IS NOT THE COMMITTED STATE. A COMMIT ADVANCES pageCount AND HANDS
+    // THE PAGE TO THE FLUSH THREAD, SO UNTIL THAT THREAD GETS TO IT THE FILE IS SHORTER THAN THE COUNT CLAIMS - AND WHILE THE
+    // DICTIONARY'S FIRST PAGE IS IN FLIGHT THE FILE IS STILL EMPTY WITH ONE PAGE ALREADY COMMITTED. RETURNING THERE DOES NOT
+    // MERELY LOAD NOTHING: THIS IS THE REPAIR PATH (ROLLBACK, REPLICATION APPLY, updateName()'s OWN catch), SO LEAVING entries
+    // UNTOUCHED LEAVES THE THING BEING REPAIRED IN PLACE - A ROLLED-BACK RENAME SURVIVING IN RAM WITH NO PAGE EVER REWRITTEN -
+    // AND IT SKIPS THE WHOLE LOOP BELOW, TRUNCATION GUARD INCLUDED.
+    //
+    // A PAGE THE COUNT CLAIMS IS STILL REACHABLE IN THAT WINDOW: PageManager.loadPage LOOKS IN THE FLUSH QUEUE BEFORE IT LOOKS
+    // AT THE FILE, AND BY THE TIME A PAGE LEAVES THE QUEUE THE FILE COVERS IT.
+    //
+    // ON THE LOAD PATH THE TWO SOURCES AGREE BY CONSTRUCTION - PaginatedComponent's CONSTRUCTOR DERIVES pageCount FROM THE FILE
+    // SIZE - SO THE CASE THIS GUARD WAS WRITTEN FOR IS UNCHANGED: NO HEADER PAGE ON DISK. CREATING IT COMMITS A TRANSACTION, AND
+    // THE COMMIT RESOLVES THIS FILE ID AGAINST THE SCHEMA - WHICH HAS NOT REGISTERED THIS COMPONENT YET WHEN THE LOAD PATH
+    // BUILDS IT, SO COMMITTING HERE FAILS WITH "File with id '0' was not found" AND THE DATABASE CANNOT BE OPENED AT ALL. THE
+    // CREATION IS DEFERRED TO createHeaderPageIfMissing(), WHICH LocalSchema CALLS ONCE THE COMPONENT IS REGISTERED. THE IN-RAM
+    // DICTIONARY IS ALREADY EMPTY, WHICH IS THE CORRECT STATE FOR A DICTIONARY WITH NOTHING COMMITTED.
+    if (pageCount.get() == 0) {
       return;
 
     } else {
@@ -561,13 +576,20 @@ public class Dictionary extends PaginatedComponent {
   }
 
   /**
-   * Writes the header page when the dictionary file is empty, which happens when the database was killed
-   * before the page reached disk. Must be called only after the component has been registered in the
+   * Writes the header page when the dictionary has no committed page, which happens when the database was
+   * killed before the page reached disk. Must be called only after the component has been registered in the
    * schema: the write commits a transaction whose second phase resolves this file id, so an earlier call
    * fails with {@code SchemaException: File with id '0' was not found}.
    */
   public void createHeaderPageIfMissing() throws IOException {
-    if (file.getSize() > 0)
+    // THE SAME QUESTION AS reload()'s, ASKED OF THE SAME SOURCE (ISSUE #6351). THIS RUNS AT OPEN, RIGHT AFTER THE LOAD
+    // CONSTRUCTOR DERIVED pageCount FROM THE FILE SIZE, SO ON EVERY DATABASE WHOSE FILE HOLDS WHOLE PAGES THE ANSWER IS THE ONE
+    // THE FILE SIZE GAVE. THEY PART ON A FILE HOLDING LESS THAN ONE WHOLE PAGE - KILLED MID-WRITE - WHERE THE OLD CHECK SAW
+    // BYTES AND LEFT THE STUB UNREPAIRED, WHILE THE COUNT SAYS WHAT IS TRUE: NO PAGE IS COMMITTED, AND WRITING PAGE 0 OVER THOSE
+    // BYTES IS WHAT MAKES THE FILE READABLE AGAIN. reload() ALREADY TREATS THAT FILE AS AN EMPTY PAGE 0 (ITS FLOOR OF 1 PLUS
+    // createIfNotExists), SO THIS ONLY MAKES THE ON-DISK FILE AGREE WITH THE IN-RAM VIEW INSTEAD OF LEAVING IT TO THE FIRST
+    // APPEND.
+    if (pageCount.get() > 0)
       return;
 
     database.transaction(() -> {
