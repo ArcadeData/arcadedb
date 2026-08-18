@@ -46,9 +46,14 @@ import java.util.function.Supplier;
  * shape is left on ANY node by a DDL that throws after creating a file without publishing it.
  * <p>
  * Nothing reads these files: no query, index or replication path resolves a file no schema component references, so
- * the impact is wasted disk. This pass therefore only REPORTS. It never deletes: a file whose reference this walk
- * simply does not know how to follow would be data, and taking that risk to reclaim disk is the wrong trade. What to
- * do about a finding is an operator decision, taken with the node stopped.
+ * the impact is wasted disk. This pass itself only REPORTS and never deletes anything - it is a {@code scan}, not a
+ * remover. What to do about a finding is an operator decision. Issue #6189 gives the operator a tool for exactly one
+ * of the three shapes below, {@link Kind#NO_SCHEMA_COMPONENT}, through {@code CHECK DATABASE FIX RECLAIM
+ * UNREFERENCED FILES} ({@link DatabaseChecker#setReclaimUnreferencedFiles}): the one shape a raw file delete can
+ * never leave a dangling schema reference behind, because nothing in the schema names it. The other two shapes are
+ * schema components, and reclaiming them safely means unregistering the component, not only deleting its file -
+ * already possible today with {@code DROP BUCKET} / the index tooling the finding's reason names, just not wired
+ * into an automated FIX because doing so risks the schema-consistency guarantee this pass buys nothing to replace.
  * <p>
  * <b>The three shapes it can prove</b>, and it deliberately proves nothing else:
  * <ol>
@@ -74,13 +79,34 @@ import java.util.function.Supplier;
 public class UnreferencedFiles {
 
   /**
+   * Which of the three shapes {@link #walk} can prove a finding is, for a caller that needs to tell them apart
+   * rather than only read the human-phrased {@link UnreferencedFile#reason()} (issue #6189).
+   * <p>
+   * Only {@link #NO_SCHEMA_COMPONENT} is safe for an automated remover to act on without a live-schema check of its
+   * own: by construction NOTHING in the schema's registries names that file id, so dropping it can never leave a
+   * dangling schema reference behind. {@link #UNOWNED_BUCKET} and {@link #UNOWNED_INDEX} both name a file that IS a
+   * registered schema component - merely one no type claims - so removing the file without also unregistering the
+   * component would leave the schema pointing at nothing. Those two stay operator-actioned through the ordinary
+   * {@code DROP BUCKET} / index tooling the finding's reason already names, not through a raw file delete.
+   */
+  public enum Kind {
+    /** What an abandoned instalment sequence leaves on a follower: the file exists and no schema component was ever built for it. */
+    NO_SCHEMA_COMPONENT,
+    /** A {@link LocalBucket} component that exists but that no type's bucket list, or external-property pairing, claims. */
+    UNOWNED_BUCKET,
+    /** An automatic index whose files exist but that no type references. */
+    UNOWNED_INDEX
+  }
+
+  /**
    * One file this node holds that nothing claims.
    *
    * @param fileId   the file id, which is what a removal or a support request has to name
    * @param fileName the file name on disk, relative to the database directory
-   * @param reason   which of the three shapes above this is, phrased for an operator
+   * @param kind     which of the three shapes above this is, for a caller that needs to branch on it
+   * @param reason   the same classification, phrased for an operator
    */
-  public record UnreferencedFile(int fileId, String fileName, String reason) {
+  public record UnreferencedFile(int fileId, String fileName, Kind kind, String reason) {
     @Override
     public String toString() {
       return fileName + " (fileId=" + fileId + ", " + reason + ")";
@@ -103,8 +129,8 @@ public class UnreferencedFiles {
     // "did my repair work?" answerable by comparing them.
     final TreeMap<Integer, UnreferencedFile> found = new TreeMap<>();
 
-    walk(database, (fileId, file, reason) -> found.put(fileId,
-        new UnreferencedFile(fileId, file.getFileName(), reason.get())));
+    walk(database, (fileId, file, kind, reason) -> found.put(fileId,
+        new UnreferencedFile(fileId, file.getFileName(), kind, reason.get())));
 
     return new ArrayList<>(found.values());
   }
@@ -123,7 +149,7 @@ public class UnreferencedFiles {
    */
   public static long count(final DatabaseInternal database) {
     final long[] count = { 0 };
-    walk(database, (fileId, file, reason) -> ++count[0]);
+    walk(database, (fileId, file, kind, reason) -> ++count[0]);
     return count[0];
   }
 
@@ -214,7 +240,7 @@ public class UnreferencedFiles {
       final Component component = localSchema.getFileByIdIfExists(fileId);
       if (component == null) {
         reported.set(fileId);
-        consumer.accept(fileId, file,
+        consumer.accept(fileId, file, Kind.NO_SCHEMA_COMPONENT,
             () -> "the file exists on this node but no schema component was ever built for it, which is the state a "
                 + "replicated schema change leaves behind when it delivers a file and is then abandoned");
         continue;
@@ -226,7 +252,7 @@ public class UnreferencedFiles {
           && bucket.getPurpose() == LocalBucket.Purpose.PRIMARY
           && !InternalBucketNaming.isDerivedFromAnOwner(bucket.getName(), owners)) {
         reported.set(fileId);
-        consumer.accept(fileId, file, () -> "bucket '" + bucket.getName() + "' belongs to no type");
+        consumer.accept(fileId, file, Kind.UNOWNED_BUCKET, () -> "bucket '" + bucket.getName() + "' belongs to no type");
       }
     }
 
@@ -236,7 +262,7 @@ public class UnreferencedFiles {
   /** Receives one unclaimed file. The reason is deferred so a counting consumer never pays for it. */
   @FunctionalInterface
   private interface UnreferencedFileConsumer {
-    void accept(int fileId, ComponentFile file, Supplier<String> reason);
+    void accept(int fileId, ComponentFile file, Kind kind, Supplier<String> reason);
   }
 
   /**
@@ -313,7 +339,7 @@ public class UnreferencedFiles {
           continue;
 
         reported.set(fileId);
-        consumer.accept(fileId, file, () -> "index '" + index.getName() + "' is referenced by no type");
+        consumer.accept(fileId, file, Kind.UNOWNED_INDEX, () -> "index '" + index.getName() + "' is referenced by no type");
       }
     }
   }

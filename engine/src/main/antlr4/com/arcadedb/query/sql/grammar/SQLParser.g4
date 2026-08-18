@@ -1106,6 +1106,9 @@ checkDatabaseStatement
       // Issue #6090: opt-in reclaim of ORPHAN EDGE RECORDS (edge records no vertex's edge list references).
       // Deliberately its own clause rather than part of FIX - see DatabaseChecker.setDeleteOrphanEdgeRecords.
       (DELETE ORPHANS)?
+      // Issue #6189: opt-in reclaim of files this node holds that no schema component was ever built for.
+      // Deliberately its own clause too - see DatabaseChecker.setReclaimUnreferencedFiles.
+      (RECLAIM UNREFERENCED FILES)?
       (COMPRESS)?
     ;
 
@@ -1703,6 +1706,9 @@ identifier
     | ADDBUCKET
     | REMOVEBUCKET
     | ORPHANS
+    | RECLAIM
+    | UNREFERENCED
+    | FILES
     | FORCE
     | OPTIMIZE
     | INVERSE
