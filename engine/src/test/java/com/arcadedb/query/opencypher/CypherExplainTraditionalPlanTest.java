@@ -145,7 +145,11 @@ class CypherExplainTraditionalPlanTest {
         "MATCH (n:Person {name: 'Dave'}) DELETE n", "DELETE",
         "MERGE (n:Person {name: 'Erin'}) RETURN n", "MERGE",
         "FOREACH (i IN range(1, 3) | CREATE (:Person {name: 'foreach'}))", "FOREACH",
-        "MATCH (a:Person {name: 'Dave'}), (b:Person {name: 'Alice'}) CREATE (a)-[:KNOWS]->(b)", "CREATE");
+        "MATCH (a:Person {name: 'Dave'}), (b:Person {name: 'Alice'}) CREATE (a)-[:KNOWS]->(b)", "CREATE",
+        // A CALL is the one step whose body is a plan of its own, so it is the one that could do eager work -
+        // opening a cursor, taking a lock - while being built rather than while being pulled.
+        "MATCH (n:Person {name: 'Dave'}) CALL { WITH n SET n.age = 77 RETURN n AS m } RETURN m", "CALL",
+        "CALL db.labels() YIELD label RETURN label", "CALL");
 
     for (final Map.Entry<String, String> write : writesAndTheirStep.entrySet()) {
       assertThat(explain(write.getKey(), Map.of()))

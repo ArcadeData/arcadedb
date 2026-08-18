@@ -817,6 +817,10 @@ public class CypherExecutionPlan {
    * would fail the same way when run, and naming the failure beats both raising it - which would leave the user
    * with no plan and no reason - and swallowing it into a log line nobody has enabled (issue #6323). The stack
    * trace still goes to the log, since only the message belongs in a plan.
+   * <p>
+   * The message tells the caller nothing running the same statement would not: {@link #execute()} builds this very
+   * chain and lets what it throws reach the client. EXPLAIN needs no privilege beyond running the query it
+   * describes, so there is no audience here that could not have obtained the same message by asking directly.
    */
   private void appendPlanBuildFailure(final StringBuilder output, final Exception cause) {
     LogManager.instance().log(this, Level.FINE, "Error on building the execution plan to describe it", cause);
