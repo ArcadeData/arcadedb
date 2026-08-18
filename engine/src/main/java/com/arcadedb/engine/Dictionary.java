@@ -505,10 +505,29 @@ public class Dictionary extends PaginatedComponent {
           page = database.getPageManager()
               .getImmutablePage(new PageId(database, file.getFileId(), pageNumber), pageSize, false, pageNumber == 0);
         } catch (final IllegalArgumentException e) {
-          throw new DatabaseMetadataException(
-              "Schema dictionary of database '" + database.getName() + "' is truncated: page " + pageNumber + " of " + totalPages
-                  + " is missing. Reading on would silently renumber every name stored after it", e);
+          throw new DatabaseMetadataException(truncatedMessage(pageNumber, totalPages, "is missing"), e);
         }
+
+        // AND THE READ ANSWERING IS NOT THE SAME FACT AS THE PAGE BEING THERE (ISSUE #6341). THE GUARD ABOVE ASKS THE PAGE MANAGER,
+        // WHICH REFUSES ONLY A PAGE PAST THE END OF THE FILE - IT CANNOT REFUSE A HOLE *INSIDE* IT, AND A HOLE IS EXACTLY WHAT THE
+        // SCENARIO THIS CLASS NAMES PRODUCES: A PARTIAL REPLICATION REPLAY WRITES PAGE N WITHOUT THE ONES BEFORE IT, AND WRITING AT
+        // OFFSET N * pageSize EXTENDS THE FILE OVER THE SKIPPED PAGES RATHER THAN LEAVING IT SHORT. THOSE PAGES THEN READ BACK AS
+        // ZEROES, AND A ZERO PAGE DECLARES A CONTENT SIZE OF ZERO - SO THE LOOP BELOW READS NOTHING FROM IT AND EVERY NAME AFTER IT
+        // COMES BACK WITH AN ID LOWER BY HOWEVER MANY THE SKIPPED PAGE HELD. SILENTLY, WHICH IS THE ONE OUTCOME THIS CLASS EXISTS
+        // TO PREVENT.
+        //
+        // EVERY DICTIONARY PAGE EVER WRITTEN CARRIES THE LEGACY COUNTER (updateCounters(), ON BOTH addPage() AND
+        // resetPageForRewrite()), SO A CONTENT SIZE BELOW IT IS NOT A LEGAL EMPTY PAGE: IT IS A PAGE NOBODY WROTE. THAT IS A
+        // STATEMENT ABOUT THE BYTES, NOT ABOUT WHETHER A READ HAPPENED TO SUCCEED, WHICH IS WHY IT ALSO COVERS AN INVENTED OR
+        // OTHERWISE UNWRITTEN IMAGE REACHING HERE BY ANY OTHER ROUTE.
+        //
+        // PAGE 0 IS DELIBERATELY EXEMPT, AND IT IS THE ONE PAGE THAT CAN BE: ITS createIfNotExists ABOVE MATERIALISES PAGE 0 OF A
+        // FILE SHORTER THAN ONE PAGE (KILLED MID-WRITE), WHICH IS WHAT THE SINGLE-PAGE READER DID AND WHAT KEEPS SUCH A DATABASE
+        // OPENABLE. THERE IS NOTHING AFTER IT TO RENUMBER.
+        if (page == null)
+          throw new DatabaseMetadataException(truncatedMessage(pageNumber, totalPages, "is missing"));
+        if (pageNumber > 0 && page.getContentSize() < DICTIONARY_HEADER_SIZE)
+          throw new DatabaseMetadataException(truncatedMessage(pageNumber, totalPages, "was never written"));
 
         page.setBufferPosition(DICTIONARY_HEADER_SIZE);
         while (page.getBufferPosition() < page.getContentSize())
@@ -529,6 +548,16 @@ public class Dictionary extends PaginatedComponent {
 
       this.entries = new Entries(names, size, newDictionaryMap);
     }
+  }
+
+  /**
+   * One wording for both ways a claimed page can fail to be readable content - it is past the end of the file, or it is a hole
+   * inside it - because they are the same fact to whoever reads the message: the dictionary cannot be loaded without moving ids
+   * that are already written inside records.
+   */
+  private String truncatedMessage(final int pageNumber, final int totalPages, final String what) {
+    return "Schema dictionary of database '" + database.getName() + "' is truncated: page " + pageNumber + " of " + totalPages
+        + " " + what + ". Reading on would silently renumber every name stored after it";
   }
 
   /**

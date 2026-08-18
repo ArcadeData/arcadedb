@@ -3262,3 +3262,53 @@ that path keys on is unaffected.
 [#6319](https://github.com/ArcadeData/arcadedb/issues/6319)
 [#6320](https://github.com/ArcadeData/arcadedb/issues/6320)
 [#6314](https://github.com/ArcadeData/arcadedb/issues/6314)
+
+### A repair pass that fails anywhere but its batch commit no longer abandons its transaction (#6342)
+
+Every repair pass of `GraphDatabaseChecker` - the vertex arm, the edge arm and the orphaned-edge-segment
+reclaim - opened a transaction of its own and committed it as the LAST statement of its `try`, with a
+`finally` that filled in the returned counters and nothing else. So the ONE failure that was already safe was
+a batch commit that throws: `LocalDatabase.commit()` disposes its own context in a `finally` whether or not
+the write succeeded, which is what `CheckDatabaseRepairBatchFailureTest` pins. Every OTHER way the body could
+throw - a scan that fails, an unreadable page, an `IllegalStateException` out of a repair - left the pass's
+own transaction open on the thread.
+
+What that costs depends on who is underneath. `CHECK DATABASE` arrives through the HTTP handler with a
+transaction already open, so the pass's own is NESTED on top of it: the handler's cleanup `rollback()` -
+running because of the very exception that caused this - then popped the abandoned nested transaction and
+left the handler's, which is the opposite of what it intended, and the caller was left holding work it
+believes it has just discarded. Embedded, with nothing underneath, the next user of that thread inherited an
+in-flight transaction from a repair that had already failed.
+
+The answer is not `commit()` in a `finally`, and not acting on `database.isTransactionActive()`: under an
+outer transaction that question answers "yes" for somebody else's, so cleaning up on that evidence rolls back
+work the pass never made. `RepairTransaction` - introduced for the bucket repairs of #6320 and now shared by
+all four passes - tracks ownership explicitly, dropping it before each batch commit and taking it back after,
+so the cleanup can only ever touch a transaction the pass itself opened and still holds. A pass that fails
+part-way now rolls back the batch in flight and keeps the ones already committed, which is the semantics
+#6128 gave these repairs in the first place.
+
+### The schema dictionary's truncation guard now reads the bytes, not the outcome of a page read (#6341)
+
+A dictionary page the component's page count claims but that is not really there must stop the load: an empty
+page contributes zero names, so every name after it comes back with an id lower by however many the missing
+page held, and those ids are written inside records. Silently renumbering them is the one outcome that class
+exists to prevent.
+
+The guard inferred "the page is not there" from the page manager refusing the read, and the page manager
+refuses only a page past the END of the file. It cannot refuse a hole INSIDE it - and a hole is exactly what
+the scenario the guard names produces. A partial replication replay writes page N without the ones before it,
+and writing at offset `N * pageSize` extends the file over every page it skipped rather than leaving the file
+short. Those pages read back as zeroes, a zero page declares a content size of zero, and the load took that
+for a legal empty page: no error, no names from it, and every name after it renumbered. Reproduced by
+shipping one replicated dictionary page one further along than the follower expected.
+
+Every dictionary page ever written carries the four-byte legacy counter, on the append path and on the
+whole-file rewrite alike, so a content size below it is not a legal empty page - it is a page nobody wrote.
+`reload()` now says so, which is a statement about the bytes rather than about whether a read happened to
+succeed, and therefore also covers an unwritten image reaching it by any other route. Page 0 keeps its one
+deliberate exemption: materialising it for a file shorter than one page is what keeps a database killed
+mid-write openable, and there is nothing before it to renumber.
+
+[#6342](https://github.com/ArcadeData/arcadedb/issues/6342)
+[#6341](https://github.com/ArcadeData/arcadedb/issues/6341)
