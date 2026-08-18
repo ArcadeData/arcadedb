@@ -1115,10 +1115,9 @@ public class MathExpression extends SimpleNode {
 
   /**
    * A compound arithmetic expression is a literal one only when every one of its operands is. A subclass that keeps
-   * its operands outside {@link #childExpressions} - an array literal, a CASE, the arithmetic parenthesis of
-   * {@code (1) = 0} - would inherit the {@code false} an empty operand list gives, which is the safe answer but a
-   * missed fold; each of those overrides this and answers for itself. A node this walker cannot see into is never
-   * mistaken for a literal.
+   * its operands outside {@link #childExpressions} - an array literal, a CASE - would inherit the {@code false} an
+   * empty operand list gives, which is the safe answer but a missed fold; each of those overrides this and answers
+   * for itself. A node this walker cannot see into is never mistaken for a literal.
    *
    * @see Expression#isLiteral(boolean)
    */
