@@ -34,7 +34,6 @@ import java.util.concurrent.Future;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -213,8 +212,8 @@ class QueryEngineManagerPoolTest {
    * signal in the server console without spam if the queue saturates briefly. The metric
    * counter still tallies every fallback for dashboards. This test:
    * <ol>
-   *   <li>Resets the throttle's last-warn timestamp via reflection so a previous test in the
-   *       same JVM cannot suppress the WARNING we want to observe.</li>
+   *   <li>Reopens the throttle so a previous test in the same JVM cannot suppress the WARNING we
+   *       want to observe.</li>
    *   <li>Swaps in a capture logger via {@link com.arcadedb.log.LogManager#setLogger} so we
    *       see the WARNING regardless of how the production logger is configured.</li>
    *   <li>Drives a saturation event and asserts the WARNING text is present.</li>
@@ -226,13 +225,9 @@ class QueryEngineManagerPoolTest {
   void saturationLogsThrottledWarning() throws Exception {
     final ExecutorService executor = QueryEngineManager.getInstance().getExecutorService();
 
-    // Reset the throttle so this test does not depend on test ordering.
-    final java.lang.reflect.Field throttleField =
-        QueryEngineManager.class.getDeclaredField("lastSaturationWarnMs");
-    throttleField.setAccessible(true);
-    final AtomicLong throttle =
-        (AtomicLong) throttleField.get(QueryEngineManager.getInstance());
-    throttle.set(0L);
+    // Reset the throttle so this test does not depend on test ordering. Through the pool's own seam rather than by
+    // reflecting on a private field, which a rename would break with no compile error to say so (issue #6324, item 4).
+    QueryEngineManager.getInstance().resetSaturationWarningThrottle();
 
     // Read the pool geometry before swapping the logger, so that the swap is the last thing that
     // happens before the try: nothing between it and the finally can throw and strand the

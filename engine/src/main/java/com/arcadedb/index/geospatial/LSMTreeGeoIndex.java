@@ -509,16 +509,14 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
     LogManager.instance().log(this, Level.INFO, "Building geospatial index '%s'...", getName());
 
     db.scanBucket(bucketName, record -> {
-      db.getIndexer().addToIndex(LSMTreeGeoIndex.this, record.getIdentity(), (Document) record);
+      final Document source = IndexInternal.buildSourceRecord(db, record);
+      db.getIndexer().addToIndex(LSMTreeGeoIndex.this, record.getIdentity(), source);
       total.incrementAndGet();
 
-      if (total.get() % buildIndexBatchSize == 0) {
-        db.getWrappedDatabaseInstance().commit();
-        db.getWrappedDatabaseInstance().begin();
-      }
+      IndexInternal.commitBuildBatch(db, total.get(), buildIndexBatchSize);
 
       if (callback != null)
-        callback.onDocumentIndexed((Document) record, total.get());
+        callback.onDocumentIndexed(source, total.get());
 
       return true;
     });

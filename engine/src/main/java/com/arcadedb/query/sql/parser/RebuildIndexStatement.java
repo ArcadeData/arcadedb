@@ -105,16 +105,17 @@ public class RebuildIndexStatement extends DDLStatement {
     final Database database = context.getDatabase();
 
     // THE REFUSAL OF #2097 IS GONE FROM HERE, and one mechanism is left where there were two (issue #6303, note b).
-    // It tested the DatabaseContext.asyncMode thread-local; the barrier below tests thread IDENTITY
+    // It tested the DatabaseContext.perThreadBucketSelection thread-local; the barrier below tests thread IDENTITY
     // (isCurrentThreadOneOfMyWorkers). Two spellings of one question that agreed while the only thread with the flag
-    // set was a worker - and they were never asking the same question. asyncMode means "pick a bucket per thread so
-    // concurrent asynchronous writers do not compete for the same pages"; identity means "is this the thread that
+    // set was a worker - and they were never asking the same question. perThreadBucketSelection means "pick a
+    // bucket per thread so concurrent asynchronous writers do not compete for the same pages"; identity means
+    // "is this the thread that
     // would have to dequeue my own marker". Only the second one has anything to do with whether the barrier can be
     // satisfied.
     //
     // Since #6303 they disagree, which is what makes the difference concrete: a command dispatched with
-    // awaitResponse=false runs on AsyncCommandPool, which sets asyncMode (it writes concurrently, so it wants the
-    // per-thread bucket) and is NOT a worker (so the barrier CAN be satisfied). Keeping the flag check here would go
+    // awaitResponse=false runs on AsyncCommandPool, which sets perThreadBucketSelection (it writes concurrently, so
+    // it wants the per-thread bucket) and is NOT a worker (so the barrier CAN be satisfied). Keeping the check would
     // on refusing exactly the operation this issue set out to give back.
     //
     // A rebuild that reaches a worker some other way is still refused - by the barrier below, in the same terms and

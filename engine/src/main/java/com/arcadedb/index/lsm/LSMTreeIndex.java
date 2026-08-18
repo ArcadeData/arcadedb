@@ -936,7 +936,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       final long startTime = System.currentTimeMillis();
 
       db.scanBucket(db.getSchema().getBucketById(metadata.associatedBucketId).getName(), record -> {
-        db.getIndexer().addToIndex(LSMTreeIndex.this, record.getIdentity(), (Document) record);
+        final Document source = IndexInternal.buildSourceRecord(db, record);
+        db.getIndexer().addToIndex(LSMTreeIndex.this, record.getIdentity(), source);
         total.incrementAndGet();
 
         // Periodic progress logging
@@ -947,14 +948,10 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
               name, total.get(), rate);
         }
 
-        if (total.get() % buildIndexBatchSize == 0) {
-          // CHUNK OF 100K
-          db.getWrappedDatabaseInstance().commit();
-          db.getWrappedDatabaseInstance().begin();
-        }
+        IndexInternal.commitBuildBatch(db, total.get(), buildIndexBatchSize);
 
         if (callback != null)
-          callback.onDocumentIndexed((Document) record, total.get());
+          callback.onDocumentIndexed(source, total.get());
 
         return true;
       }, (rid, exception) -> {

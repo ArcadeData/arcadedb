@@ -644,7 +644,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     final List<String> propNames = getPropertyNames();
 
     final boolean async =
-        DatabaseContext.INSTANCE.getContext(type.getSchema().getEmbedded().getDatabase().getDatabasePath()).asyncMode;
+        DatabaseContext.INSTANCE.getContext(type.getSchema().getEmbedded().getDatabase().getDatabasePath()).perThreadBucketSelection;
 
     final int bucketIndex = type.getBucketIndexByKeys(propNames, keys, async);
 

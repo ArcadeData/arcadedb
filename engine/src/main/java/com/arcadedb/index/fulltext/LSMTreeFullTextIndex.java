@@ -1290,16 +1290,14 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
           typeName + getPropertyNames());
 
       db.scanBucket(bucketName, record -> {
-        db.getIndexer().addToIndex(LSMTreeFullTextIndex.this, record.getIdentity(), (Document) record);
+        final Document source = IndexInternal.buildSourceRecord(db, record);
+        db.getIndexer().addToIndex(LSMTreeFullTextIndex.this, record.getIdentity(), source);
         total.incrementAndGet();
 
-        if (total.get() % buildIndexBatchSize == 0) {
-          db.getWrappedDatabaseInstance().commit();
-          db.getWrappedDatabaseInstance().begin();
-        }
+        IndexInternal.commitBuildBatch(db, total.get(), buildIndexBatchSize);
 
         if (callback != null)
-          callback.onDocumentIndexed((Document) record, total.get());
+          callback.onDocumentIndexed(source, total.get());
 
         return true;
       }, (rid, exception) -> {

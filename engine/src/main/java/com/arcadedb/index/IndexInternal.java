@@ -18,8 +18,13 @@
  */
 package com.arcadedb.index;
 
+import com.arcadedb.database.BasicDatabase;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.Component;
 import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.Type;
@@ -38,7 +43,85 @@ import java.util.Map;
 public interface IndexInternal extends Index {
   enum INDEX_STATUS {UNAVAILABLE, AVAILABLE, COMPACTION_SCHEDULED, COMPACTION_IN_PROGRESS}
 
+  /**
+   * The {@code buildIndexBatchSize} that says "this build may not commit anything": it is sharing a transaction it
+   * did not open, so the records it is indexing are the caller's uncommitted work and committing them is the
+   * caller's decision, not the build's (issue #6324, item 1).
+   *
+   * @see #commitBuildBatch(DatabaseInternal, long, int)
+   */
+  int BUILD_WITHOUT_CHUNKED_COMMIT = 0;
+
   long build(int buildIndexBatchSize, BuildIndexCallback callback);
+
+  /**
+   * The batch size a scan-based build may be given, which is {@code batchSize} only when the build is going to open
+   * the transaction it runs in.
+   * <p>
+   * Written once, and asked BEFORE the build opens anything, because after that point a transaction is always active
+   * and the question can no longer be put. A transaction already open on this thread is a caller's; the build joins
+   * it so its scan can see what that caller has written (issue #6324, item 1), and a build that shares a transaction
+   * may not commit it.
+   */
+  static int buildBatchSizeFor(final BasicDatabase database, final int batchSize) {
+    return database.isTransactionActive() ? BUILD_WITHOUT_CHUNKED_COMMIT : batchSize;
+  }
+
+  /**
+   * The chunked commit every scan-based {@link #build(int, BuildIndexCallback)} performs: once every
+   * {@code buildIndexBatchSize} records the build's transaction is committed and reopened, so indexing a large bucket
+   * does not accumulate every entry of it in one transaction.
+   * <p>
+   * Written once and shared by all four scan-based builds because the condition under which it must NOT run is the
+   * subtle half, and four copies of it were four chances to get it wrong. It must not run when the build is sharing a
+   * transaction opened by a caller - a {@code CREATE INDEX} inside an open transaction, which is where the records
+   * being indexed are the caller's own uncommitted writes (issue #6324, item 1). Committing there would publish
+   * whatever else that transaction has done, halfway through a DDL statement the caller has not finished, and would
+   * leave the caller holding a transaction object that has already been popped. The builders signal it by passing
+   * {@link #BUILD_WITHOUT_CHUNKED_COMMIT}, which {@link #buildBatchSizeFor} decides.
+   * <p>
+   * A non-positive batch size is treated the same way rather than as a modulo by zero, which is what the four copies
+   * did with a batch size of 0.
+   *
+   * @param database            the database whose build transaction is being chunked
+   * @param processedRecords    how many records the build has indexed so far
+   * @param buildIndexBatchSize records per chunk, or {@link #BUILD_WITHOUT_CHUNKED_COMMIT} to never commit
+   */
+  static void commitBuildBatch(final DatabaseInternal database, final long processedRecords,
+      final int buildIndexBatchSize) {
+    if (buildIndexBatchSize <= 0 || processedRecords % buildIndexBatchSize != 0)
+      return;
+    database.getWrappedDatabaseInstance().commit();
+    database.getWrappedDatabaseInstance().begin();
+  }
+
+  /**
+   * The version of {@code scanned} a scan-based build must index: the transaction's own written copy when it has one,
+   * the page image the scan handed over otherwise.
+   * <p>
+   * A bucket scan reads bytes off pages, and an UPDATE inside a transaction does not touch the page until commit -
+   * it is parked as a deferred update and serialized in the first commit phase, precisely so that repeatedly updating
+   * the same record does not rewrite the page each time. So a build sharing the caller's transaction (issue #6324,
+   * item 1) sees the record's OLD content and would index a key the record no longer has, while the commit-time
+   * serialization removes that same key directly on the index and the build's staged entry is replayed on top of it -
+   * leaving the stale key behind for good. Asking the transaction closes the gap at the only place the two views can
+   * disagree.
+   * <p>
+   * Costs nothing when there is nothing to correct: with no transaction, or none that wrote this record, it is one
+   * hash lookup returning null and the scanned record is used as-is.
+   *
+   * @param database the database whose transaction may hold a newer copy
+   * @param scanned  the record as the bucket scan produced it
+   */
+  static Document buildSourceRecord(final DatabaseInternal database, final Record scanned) {
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx != null) {
+      final Record written = tx.getWrittenRecord(scanned.getIdentity());
+      if (written instanceof Document document)
+        return document;
+    }
+    return (Document) scanned;
+  }
 
   boolean compact() throws IOException, InterruptedException;
 

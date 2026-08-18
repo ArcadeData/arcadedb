@@ -173,36 +173,44 @@ public class TruncateTypeStatement extends DDLStatement {
    * {@code dropIndex} is a committed schema change and nothing later can undo it. A subsequent retry/run re-drops
    * and re-empties them.
    * <p>
-   * The rebuild survives the rollback that a failure triggers, and has to: {@code TypeIndexBuilder.create()} goes
-   * through {@code LocalSchema.recordFileChanges}, which persists the schema itself and wraps each per-bucket build
-   * in its own {@code joinCurrent=false} transaction - neither of which the surrounding transaction can take back.
-   * The {@code begin()} below is only there because the build path expects a transaction context to nest from.
+   * The rebuild survives the rollback that a failure triggers, and has to: the {@code dropIndex} above is a committed
+   * schema change that nothing later can undo, so a rebuild discarded with the failing transaction would leave the
+   * type carrying an EMPTY index over records that are all still there.
    *
    * @return the failure to carry on with: the one passed in, or the first rebuild failure when there was none.
    */
   private RuntimeException rebuildIndexes(final Database db, final Schema schema, final List<IndexDefinition> indexDefs,
       RuntimeException deletionFailure) {
     if (indexDefs.isEmpty())
+      // Nothing to rebuild, so the deletion transaction is left exactly as it was for the caller to decide.
       return deletionFailure;
 
-    // Index builds observe disk state rather than the in-flight deletes pending in the current transaction, so
-    // commit + begin makes the empty buckets visible to the upcoming build; otherwise the recreated index would be
-    // populated with the records just logically deleted but not yet flushed.
-    if (deletionFailure == null && db.isTransactionActive()) {
+    // CLOSE OUT THE DELETION TRANSACTION FIRST, in whichever direction the outcome calls for: commit when the deletes
+    // are good, so the build sees the empty buckets instead of repopulating the index with records that are logically
+    // deleted but not yet flushed; roll back when they are not, so it sees the state that is going to survive.
+    //
+    // Either way the rebuild must not run INSIDE a transaction whose fate somebody else is about to decide, because a
+    // build's entries now commit with the transaction it runs in (issue #6324, item 1): a rebuild left in the failing
+    // one would be built and then thrown away with it, leaving the type with the empty index the committed drop had
+    // already reduced it to. Deciding it here is also what leaves TruncateRecordDeleter with no transaction of its
+    // own to close, which is the point.
+    if (db.isTransactionActive()) {
       try {
-        db.commit();
-        db.begin();
+        if (deletionFailure == null)
+          db.commit();
+        else
+          db.rollback();
       } catch (final RuntimeException e) {
-        deletionFailure = e;
+        if (deletionFailure == null)
+          deletionFailure = e;
+        else
+          deletionFailure.addSuppressed(e);
       }
     }
 
-    if (!db.isTransactionActive())
-      db.begin();
-
     // Every definition is attempted, and one that cannot be recreated does not take the others with it. Each
-    // create() commits on its own, so abandoning the loop at the first failure would leave the type missing indexes
-    // that had nothing wrong with them - the opposite of what rebuilding on failure at all is for.
+    // create() opens and commits its own transaction, so abandoning the loop at the first failure would leave the
+    // type missing indexes that had nothing wrong with them - the opposite of what rebuilding on failure at all is for.
     for (final IndexDefinition def : indexDefs) {
       try {
         recreateIndex(schema, def);

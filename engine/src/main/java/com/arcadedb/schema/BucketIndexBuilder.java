@@ -126,8 +126,18 @@ public class BucketIndexBuilder extends IndexBuilder<Index> {
         metadata.typeIndexName = indexName;
       }
 
+      // Read before the transactions below, while the answer can still be "there is none" (issue #6324, item 1):
+      // whether the build joins the caller's transaction, and - if it does - that it may not commit it.
+      final boolean joinCallerTransaction = indexType.buildCanShareCallerTransaction();
+      final int buildBatchSize = joinCallerTransaction ? IndexInternal.buildBatchSizeFor(database, batchSize) : batchSize;
+
       return schema.recordFileChanges(() -> {
         final AtomicReference<Index> result1 = new AtomicReference<>();
+
+        // TWO TRANSACTIONS, for the reasons spelled out at the same split in TypeIndexBuilder#create: the component
+        // is created and COMMITTED on its own, because the schema entry that names it is written regardless of what
+        // the caller's transaction does; the build then joins the caller's transaction, because a scan reads the
+        // transaction it runs in and that is the only way it sees records the caller has written and not committed.
         database.transaction(() -> {
 
           Bucket bucket = null;
@@ -140,7 +150,7 @@ public class BucketIndexBuilder extends IndexBuilder<Index> {
           }
 
           final Index index = schema.createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize, nullStrategy,
-              callback, propertyNames, null, batchSize, metadata);
+              callback, propertyNames, null, buildBatchSize, metadata, false);
           result1.set(index);
 
           schema.saveConfiguration();
@@ -151,6 +161,19 @@ public class BucketIndexBuilder extends IndexBuilder<Index> {
             ((IndexInternal) indexToRemove).drop();
           }
         });
+
+        database.transaction(() -> buildCreatedIndex(result1.get(), buildBatchSize), joinCallerTransaction, maxAttempts,
+            null, error -> {
+          // The FULL removal, not just the component's own drop(): unlike a failure inside the creation transaction -
+          // which rolls the whole thing back before anything is registered - the component here is already committed
+          // and attached to its type, so leaving it behind would answer lookups with an empty index. This is the same
+          // cleanup LocalSchema.createBucketIndex did when the build still ran inside it (issue #6324, item 1); an
+          // index that could not be built must be GONE, and the caller told so.
+          final Index indexToRemove = result1.get();
+          if (indexToRemove != null && schema.existsIndex(indexToRemove.getName()))
+            schema.dropIndex(indexToRemove.getName());
+        });
+
         return result1.get();
       });
     }

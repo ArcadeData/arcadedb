@@ -126,6 +126,25 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
     };
   }
 
+  /**
+   * A script routes as a WHOLE, on whether ANY statement in it is DDL: the statements share one transaction and one
+   * thread, so a script cannot be half on a worker and half off it, and the DDL half is what dictates where both can
+   * run (issue #6324, item 5).
+   * <p>
+   * Unlike plain {@code sql} this parse is NOT free - there is no script statement cache, so
+   * {@link #parseScript(String, DatabaseInternal)} parses here and the execution parses again - which is why the
+   * caller asks only once a cheap textual filter has established that a DDL verb appears in the text at all
+   * ({@code DatabaseAsyncExecutorImpl.mayContainDDL}). A script that mentions none cannot contain a DDL statement and
+   * is answered without parsing anything.
+   */
+  @Override
+  public DDLClassification classifyDDL(final String query) {
+    for (final Statement statement : parseScript(query, database))
+      if (statement instanceof DDLStatement)
+        return DDLClassification.DDL;
+    return DDLClassification.NOT_DDL;
+  }
+
   public static List<Statement> parseScript(final String script, final DatabaseInternal database) {
     try {
       return new SQLAntlrParser(database).parseScript(script);

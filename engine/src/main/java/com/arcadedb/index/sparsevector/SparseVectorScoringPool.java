@@ -20,12 +20,8 @@ package com.arcadedb.index.sparsevector;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.utility.DedicatedThreadPool;
 
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.RunnableFuture;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
@@ -77,7 +73,7 @@ import java.util.logging.Level;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public final class SparseVectorScoringPool {
+public final class SparseVectorScoringPool extends DedicatedThreadPool {
 
   // Lazy-init via the initialization-on-demand holder idiom. The pool only allocates its
   // ThreadPoolExecutor when something actually calls {@link #getInstance()} - which today is
@@ -89,9 +85,6 @@ public final class SparseVectorScoringPool {
   private static final class Holder {
     static final SparseVectorScoringPool INSTANCE = new SparseVectorScoringPool();
   }
-
-  /** Floor for the auto-sized thread count when {@code SPARSE_VECTOR_SCORING_POOL_THREADS=0}. */
-  private static final int DEFAULT_THREADS_FLOOR = 2;
 
   /**
    * How much caller-side concurrency is treated as enough to keep the pool busy without help:
@@ -134,109 +127,61 @@ public final class SparseVectorScoringPool {
    */
   private static final ThreadLocal<Boolean> POOL_THREAD = new ThreadLocal<>();
 
-  private final ThreadPoolExecutor executor;
   /** Workers claimed by in-flight range fan-outs; see {@link #tryReserveWorkers(int)}. */
-  private final AtomicInteger      reservedWorkers      = new AtomicInteger();
+  private final AtomicInteger reservedWorkers         = new AtomicInteger();
   /** Caller-thread top-K calls in flight JVM-wide, split or not; see {@link #queryStarted()}. */
-  private final AtomicInteger      inFlightQueries      = new AtomicInteger();
+  private final AtomicInteger inFlightQueries         = new AtomicInteger();
   /** Top-K calls running on a worker, i.e. the per-bucket fan-out. Occupy capacity, never split. */
-  private final AtomicInteger      poolThreadQueries    = new AtomicInteger();
+  private final AtomicInteger poolThreadQueries       = new AtomicInteger();
   /** Cumulative queries that were split into RID ranges rather than run on the caller thread. */
-  private final AtomicLong         splitQueries         = new AtomicLong();
-  private final AtomicLong         callerRunCount       = new AtomicLong();
-  // Throttle for the WARNING log emitted on saturation: at most one entry per minute. Same
-  // shape as the QueryEngineManager pool's throttle - operators see one nudge in the console
-  // when scoring starts queueing badly and can correlate against {@link #getPoolStats}.
-  // Millisecond precision is plenty for a 60 000 ms window. Initialised to 0L (not
-  // {@code Long.MIN_VALUE}) so the {@code now - last} subtraction does not overflow on the
-  // first saturation event.
-  private static final long        SATURATION_WARN_INTERVAL_MS = 60_000L;
-  private final AtomicLong         lastSaturationWarnMs = new AtomicLong(0L);
-  private final AtomicLong         lastExplicitSplitWarnMs = new AtomicLong(0L);
+  private final AtomicLong    splitQueries            = new AtomicLong();
+  private final AtomicLong    lastExplicitSplitWarnMs = new AtomicLong(0L);
 
   private SparseVectorScoringPool() {
-    // 0 = auto-size to available cores (with a floor of {@link #DEFAULT_THREADS_FLOOR}). Any
-    // explicit positive value wins, so an operator can pin the pool size to e.g. half the cores
-    // on a box that also runs Gremlin / Polyglot scripts that compete for CPU. Negative values
-    // are coerced to the floor for safety; the configuration validator already rejects them at
-    // GlobalConfiguration parse time, but the coercion here makes test-side bypasses safe too.
-    // A negative configured value silently falling back to a default is exactly the kind of
-    // misconfiguration that hides bad sizing - log it at WARNING so operators see something
-    // when their setting did not stick.
+    // Pool construction, the counted-and-throttled saturation warning and the PoolStats all come from
+    // DedicatedThreadPool (issue #6324, item 4). Caller-runs rather than a RejectedExecutionException: the
+    // alternative would force every caller to implement a fallback path of its own, which is more error-prone than
+    // doing it once, and a fan-out that degrades to single-threaded still returns a correct top-K.
+    super("ArcadeDB-SparseVectorScorer-", resolveThreads(), resolveQueueSize(), SaturationPolicy.CALLER_RUNS,
+        (body, name) -> new Thread(() -> {
+          POOL_THREAD.set(Boolean.TRUE);
+          body.run();
+        }, name), "Sparse-vector scoring pool",
+        "the fan-out degrades to single-threaded per chunk but still returns a correct top-K",
+        GlobalConfiguration.SPARSE_VECTOR_SCORING_POOL_THREADS, GlobalConfiguration.SPARSE_VECTOR_SCORING_QUEUE_SIZE);
+  }
+
+  /**
+   * 0 = auto-size to available cores (with a floor of {@link #DEFAULT_THREADS_FLOOR}). Any explicit positive value
+   * wins, so an operator can pin the pool size to e.g. half the cores on a box that also runs Gremlin / Polyglot
+   * scripts that compete for CPU. Negative values are coerced for safety; the configuration validator already rejects
+   * them at GlobalConfiguration parse time, but the coercion here makes test-side bypasses safe too.
+   * <p>
+   * A negative configured value silently falling back to a default is exactly the kind of misconfiguration that hides
+   * bad sizing, so it is reported at WARNING and an operator whose setting did not stick sees something. Static
+   * because it is an argument to the super constructor, and so runs before there is a pool to log against.
+   */
+  private static int resolveThreads() {
     final int configuredThreads = GlobalConfiguration.SPARSE_VECTOR_SCORING_POOL_THREADS.getValueAsInteger();
     if (configuredThreads < 0)
-      LogManager.instance().log(this, Level.WARNING,
+      LogManager.instance().log(SparseVectorScoringPool.class, Level.WARNING,
           "Sparse-vector scoring pool: negative configured thread count (%d), falling back to auto-size (max(%d, cores))",
           configuredThreads, DEFAULT_THREADS_FLOOR);
-    final int threads = configuredThreads > 0
-        ? configuredThreads
-        : Math.max(DEFAULT_THREADS_FLOOR, Runtime.getRuntime().availableProcessors());
+    return autoSizeThreads(configuredThreads);
+  }
+
+  /** The queue counterpart of {@link #resolveThreads()}, reporting a configured value that did not stick the same way. */
+  private static int resolveQueueSize() {
     final int configuredQueueSize = GlobalConfiguration.SPARSE_VECTOR_SCORING_QUEUE_SIZE.getValueAsInteger();
     if (configuredQueueSize < 0)
-      LogManager.instance().log(this, Level.WARNING,
-          "Sparse-vector scoring pool: negative configured queue size (%d), falling back to default 1024",
-          configuredQueueSize);
-    final int queueSize = configuredQueueSize > 0 ? configuredQueueSize : 1024;
-    final AtomicInteger workerSeq = new AtomicInteger();
-
-    final ThreadPoolExecutor pool = new ThreadPoolExecutor(
-        threads, threads,
-        60L, TimeUnit.SECONDS,
-        new LinkedBlockingQueue<>(queueSize),
-        r -> {
-          final Thread t = new Thread(() -> {
-            POOL_THREAD.set(Boolean.TRUE);
-            r.run();
-          }, "ArcadeDB-SparseVectorScorer-" + workerSeq.incrementAndGet());
-          t.setDaemon(true);
-          return t;
-        },
-        // CallerRunsPolicy with a fallback counter and throttled WARNING. When the queue is full
-        // we run the task on the submitter; the alternative (throwing RejectedExecutionException)
-        // would force every caller to also implement a fallback path, which is more error-prone
-        // than just doing it once here. The log line nudges operators that the pool needs to
-        // grow; sizing knobs return alongside the dispatch wiring (see follow-up #4085).
-        (task, exec) -> {
-          final long fallbacks = callerRunCount.incrementAndGet();
-          final long now = System.currentTimeMillis();
-          final long last = lastSaturationWarnMs.get();
-          if (now - last > SATURATION_WARN_INTERVAL_MS && lastSaturationWarnMs.compareAndSet(last, now)) {
-            LogManager.instance().log(this, Level.WARNING,
-                "Sparse-vector scoring pool saturated: queue full (capacity=%d, threads=%d), running task on caller thread (cumulative caller-runs fallbacks=%d).",
-                exec.getQueue().remainingCapacity() + exec.getQueue().size(), exec.getMaximumPoolSize(), fallbacks);
-          }
-          if (!exec.isShutdown())
-            task.run();
-          else if (task instanceof RunnableFuture<?> future)
-            // #4961: a task rejected because the pool is shut down would otherwise be neither run
-            // nor completed, leaving any caller blocked in an untimed Future.get() hanging forever.
-            future.cancel(false);
-        });
-    pool.allowCoreThreadTimeOut(true);
-    this.executor = pool;
+      LogManager.instance().log(SparseVectorScoringPool.class, Level.WARNING,
+          "Sparse-vector scoring pool: negative configured queue size (%d), falling back to default %d",
+          configuredQueueSize, DEFAULT_QUEUE_SIZE);
+    return queueSizeOrDefault(configuredQueueSize);
   }
 
   public static SparseVectorScoringPool getInstance() {
     return Holder.INSTANCE;
-  }
-
-  /**
-   * The dedicated executor. Callers that fork query work for parallel scoring should submit
-   * here; the executor's bounded queue + caller-runs rejection policy handles back-pressure
-   * automatically, so callers do not need a "if pool is full, do it inline" branch of their own.
-   */
-  public ExecutorService getExecutorService() {
-    return executor;
-  }
-
-  /**
-   * Configured number of threads for parallel scoring fan-out. Callers can read this to size
-   * a single query's split count - forking more chunks than the pool has threads is wasteful;
-   * forking fewer leaves cores idle. Returns the configured ceiling, not the live worker count
-   * ({@link ThreadPoolExecutor#getPoolSize()} may be lower if no scoring has happened yet).
-   */
-  public int getMaxParallelism() {
-    return executor.getMaximumPoolSize();
   }
 
   /**
@@ -386,7 +331,7 @@ public final class SparseVectorScoringPool {
       return;
     final long now = System.currentTimeMillis();
     final long last = lastExplicitSplitWarnMs.get();
-    if (now - last > SATURATION_WARN_INTERVAL_MS && lastExplicitSplitWarnMs.compareAndSet(last, now))
+    if (now - last > WARN_THROTTLE_INTERVAL_MS && lastExplicitSplitWarnMs.compareAndSet(last, now))
       LogManager.instance().log(this, Level.WARNING,
           "Sparse-vector top-K split into %d ranges by an explicit %s=%d with %d queries in flight (including this one) on a "
               + "%d-thread pool. The adaptive default (0) would have kept this query on its caller thread, and past a handful of "
@@ -440,33 +385,4 @@ public final class SparseVectorScoringPool {
     return reservedWorkers.get();
   }
 
-  public PoolStats getPoolStats() {
-    return new PoolStats(
-        executor.getPoolSize(),
-        executor.getActiveCount(),
-        executor.getQueue().size(),
-        executor.getQueue().remainingCapacity(),
-        executor.getCompletedTaskCount(),
-        callerRunCount.get());
-  }
-
-  /**
-   * Snapshot of the scoring pool's load at one instant. Same shape as
-   * {@link com.arcadedb.query.QueryEngineManager.PoolStats} so a single dashboard can render
-   * both. Sustained growth in {@code callerRunFallbacks} signals that scoring is queueing
-   * faster than the pool can drain it - bump
-   * {@link GlobalConfiguration#SPARSE_VECTOR_SCORING_POOL_THREADS} or
-   * {@link GlobalConfiguration#SPARSE_VECTOR_SCORING_QUEUE_SIZE} to absorb the burst.
-   */
-  public record PoolStats(int poolSize, int activeThreads, int queueDepth, int queueCapacityRemaining,
-                          long completedTasks, long callerRunFallbacks) {
-  }
-
-  /**
-   * Best-effort shutdown for tests and tooling. Production lifecycle relies on the daemon-thread
-   * default: workers die when the JVM exits, no explicit close is required.
-   */
-  public void close() {
-    executor.shutdownNow();
-  }
 }

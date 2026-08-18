@@ -386,7 +386,8 @@ public class HashIndex implements IndexInternal {
       final long startTime = System.currentTimeMillis();
 
       db.scanBucket(db.getSchema().getBucketById(metadata.associatedBucketId).getName(), record -> {
-        db.getIndexer().addToIndex(HashIndex.this, record.getIdentity(), (Document) record);
+        final Document source = IndexInternal.buildSourceRecord(db, record);
+        db.getIndexer().addToIndex(HashIndex.this, record.getIdentity(), source);
         total.incrementAndGet();
 
         if (total.get() % 10_000 == 0) {
@@ -396,13 +397,10 @@ public class HashIndex implements IndexInternal {
               name, total.get(), rate);
         }
 
-        if (total.get() % buildIndexBatchSize == 0) {
-          db.getWrappedDatabaseInstance().commit();
-          db.getWrappedDatabaseInstance().begin();
-        }
+        IndexInternal.commitBuildBatch(db, total.get(), buildIndexBatchSize);
 
         if (callback != null)
-          callback.onDocumentIndexed((Document) record, total.get());
+          callback.onDocumentIndexed(source, total.get());
 
         return true;
       }, (rid, exception) -> {

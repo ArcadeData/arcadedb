@@ -20,6 +20,7 @@ package com.arcadedb.schema;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.serializer.json.JSONObject;
@@ -365,5 +366,23 @@ public abstract class IndexBuilder<T extends Index> {
 
   public JSONObject getUserMetadata() {
     return userMetadata;
+  }
+
+  /**
+   * Populates an index that was created EMPTY - the second half of the two-transaction split of issue #6324, item 1.
+   * The comment at the build loop in {@link TypeIndexBuilder#create()} says why the two halves cannot share one
+   * transaction.
+   * <p>
+   * The status step is what the split costs. Creating an index without building it parks it at {@code UNAVAILABLE},
+   * so nothing can read a half-populated index, while {@code build()} insists on starting from {@code AVAILABLE} and
+   * puts it back there itself. The window in between is invisible: both halves run under the schema's write lock,
+   * inside {@code recordFileChanges}.
+   */
+  protected void buildCreatedIndex(final Index index, final int buildBatchSize) {
+    final IndexInternal internal = (IndexInternal) index;
+    if (!internal.setStatus(new IndexInternal.INDEX_STATUS[] { IndexInternal.INDEX_STATUS.UNAVAILABLE },
+        IndexInternal.INDEX_STATUS.AVAILABLE))
+      throw new IndexException("Cannot build the index '" + index.getName() + "' because it is not available");
+    internal.build(buildBatchSize, callback);
   }
 }

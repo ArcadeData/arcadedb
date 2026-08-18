@@ -409,6 +409,11 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     if (replaced != null)
       existingTypeIndex.drop();
 
+    // Read here because below this line there is always a transaction, and both answers depend on there not being one
+    // yet (issue #6324, item 1): whether the build joins the caller's, and - if it does - that it may not commit it.
+    final boolean joinCallerTransaction = indexType.buildCanShareCallerTransaction();
+    final int buildBatchSize = joinCallerTransaction ? IndexInternal.buildBatchSizeFor(database, batchSize) : batchSize;
+
     final TypeIndex created;
     // The barrier of #6281, paid at the top of this method, covers what the async side wrote BEFORE the build. This
     // covers what it would write DURING it (issue #6303, item 2), and only the first half was ever here:
@@ -430,13 +435,31 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
         } else
           for (int idx = 0; idx < buckets.size(); ++idx) {
             final int finalIdx = idx;
+
+            // TWO TRANSACTIONS, and the split is the whole of issue #6324, item 1.
+            //
+            // The COMPONENT is created in a transaction of its OWN, always. recordFileChanges writes the schema entry
+            // that names this index as soon as this callback returns, whatever the caller's transaction goes on to
+            // do, so the index FILE has to be committed on the same terms: leaving its first page inside a caller's
+            // transaction that later rolls back would leave the schema pointing at a file with no pages, which fails
+            // on the next write with "the file is invalid". Committing it also keeps the index usable from a NESTED
+            // transaction, which cannot see an outer transaction's uncommitted pages.
             database.transaction(() -> {
 
               final LocalBucket bucket = (LocalBucket) buckets.get(finalIdx);
 
-              indexes[finalIdx] = createBucketIndex(schema, type, keyTypes, bucket);
+              indexes[finalIdx] = createBucketIndex(schema, type, keyTypes, bucket, false, buildBatchSize);
 
             }, false, maxAttempts, null, null);
+
+            // The BUILD joins the caller's transaction when there is one, because a scan reads the transaction it
+            // runs in: the pages that transaction has modified first, the committed ones underneath. That is what
+            // lets it see records the caller has written and not yet committed - `INSERT INTO V SET id = 7;
+            // CREATE INDEX ON V (id)` in one transaction used to end with the record present and NO entry for it,
+            // in neither the scan nor the index - and it makes the entries commit, or roll back, with the records
+            // they describe. The vector families opt out; INDEX_TYPE#buildCanShareCallerTransaction says why.
+            database.transaction(() -> buildCreatedIndex(indexes[finalIdx], buildBatchSize), joinCallerTransaction,
+                maxAttempts, null, null);
           }
 
         return null;
@@ -561,14 +584,14 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
   }
 
   protected Index createBucketIndex(final LocalSchema schema, final LocalDocumentType type, final Type[] keyTypes,
-      final LocalBucket bucket) {
-    return createBucketIndex(schema, type, keyTypes, bucket, true);
+      final LocalBucket bucket, final boolean build) {
+    return createBucketIndex(schema, type, keyTypes, bucket, build, batchSize);
   }
 
   protected Index createBucketIndex(final LocalSchema schema, final LocalDocumentType type, final Type[] keyTypes,
-      final LocalBucket bucket, final boolean build) {
+      final LocalBucket bucket, final boolean build, final int buildBatchSize) {
     return schema.createBucketIndex(type, keyTypes, bucket, metadata.typeName, indexType, unique, pageSize, nullStrategy, callback,
-        metadata.propertyNames.toArray(new String[0]), null, batchSize,
+        metadata.propertyNames.toArray(new String[0]), null, buildBatchSize,
         metadata, build);
   }
 
