@@ -64,6 +64,17 @@ public class CostModel {
   }
 
   /**
+   * Estimates the cost of a scan whose row count is already known, for the scans that are not one type's worth of
+   * records - a label disjunction visits every type any alternative accepts (issue #6363).
+   *
+   * @param rows the number of records the scan will visit
+   * @return estimated cost
+   */
+  public double estimateScanCostForRows(final long rows) {
+    return rows * SCAN_COST_PER_ROW;
+  }
+
+  /**
    * Estimates the cost of an index seek operation.
    *
    * @param typeName the type name
