@@ -39,8 +39,7 @@ public class VertexIterator extends ResettableIteratorBase<Vertex> {
       if (currentPosition.get() < currentContainer.getUsed())
         return true;
 
-      currentContainer = currentContainer.getPrevious();
-      if (currentContainer == null)
+      if (moveToPreviousChunk() == null)
         break;
 
       currentPosition.set(MutableEdgeSegment.CONTENT_START_POSITION);
