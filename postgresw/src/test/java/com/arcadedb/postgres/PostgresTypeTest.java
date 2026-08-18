@@ -1797,7 +1797,7 @@ class PostgresTypeTest {
     assertThat(PostgresType.ARRAY_DOUBLE.code).isEqualTo(1022);
     assertThat(PostgresType.ARRAY_TEXT.code).isEqualTo(1009);
     assertThat(PostgresType.ARRAY_BOOLEAN.code).isEqualTo(1000);
-    assertThat(PostgresType.ARRAY_CHAR.code).isEqualTo(1003);
+    assertThat(PostgresType.ARRAY_CHAR.code).isEqualTo(1002);
     assertThat(PostgresType.ARRAY_JSON.code).isEqualTo(199);
   }
 

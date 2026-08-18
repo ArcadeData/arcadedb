@@ -72,6 +72,7 @@ import com.arcadedb.utility.Pair;
 import java.io.EOFException;
 import java.io.IOException;
 import java.net.Socket;
+import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -108,6 +109,12 @@ public class PostgresNetworkExecutor extends Thread {
   public static final String PG_SERVER_VERSION = "12.0";
 
   private static final int                                            BUFFER_LENGTH    = 32 * 1024;
+  /**
+   * The cap PostgreSQL itself puts on a startup packet ({@code PQ_STARTUP_MSG_LIMIT} in {@code pqcomm.c}).
+   */
+  private static final int                                            MAX_STARTUP_MESSAGE_LENGTH = 10000;
+  /** How often {@link #waitForAMessage} looks for the client's next pre-authentication message. */
+  private static final int                                            WAIT_FOR_MESSAGE_POLL_MS   = 100;
   private static final Map<Long, Pair<Long, PostgresNetworkExecutor>> ACTIVE_SESSIONS  = new ConcurrentHashMap<>();
   /** Bind-message parameter length denoting a NULL value (wire value -1, read unsigned). */
   private static final long                                           NULL_PARAM_LENGTH = 0xFFFFFFFFL;
@@ -122,10 +129,11 @@ public class PostgresNetworkExecutor extends Thread {
   private final Map<String, Object>         connectionProperties  = new HashMap<>();
   private final Set<String>                 ignoreQueriesAppNames = new HashSet<>(//
       List.of("dbvis", "Database Navigator - Pool"));
+  // "SELECT oid, typname FROM pg_type" used to sit here too, so a client that builds its OID-to-name map up
+  // front got an empty one (issue #5290). PostgresTypeCatalog answers it now.
   private final Set<String>                 ignoreQueries         = new HashSet<>(//
       List.of(//
-          "select distinct PRIVILEGE_TYPE as PRIVILEGE_NAME from INFORMATION_SCHEMA.USAGE_PRIVILEGES order by PRIVILEGE_TYPE asc",//
-          "SELECT oid, typname FROM pg_type"));
+          "select distinct PRIVILEGE_TYPE as PRIVILEGE_NAME from INFORMATION_SCHEMA.USAGE_PRIVILEGES order by PRIVILEGE_TYPE asc"));
 
   private volatile boolean shutdown = false;
 
@@ -153,6 +161,31 @@ public class PostgresNetworkExecutor extends Thread {
     this.server = server;
     this.channel = new ChannelBinaryServer(socket, server.getConfiguration());
     this.database = database;
+
+    // Bound the pre-authentication window (issue #6377). One thread and one file descriptor are committed
+    // per accepted connection, before anyone has proved who they are, and the listener caps neither; without
+    // a read timeout a client that connects and then says nothing - or trickles bytes arbitrarily slowly -
+    // holds both for as long as it likes. Lifted back to infinite once the database is open (see
+    // markAuthenticated), because an authenticated client is expected to keep a long-lived, often idle
+    // connection between statements. This is the same setSoTimeout(NETWORK_SOCKET_TIMEOUT)-then-
+    // setSoTimeout(0) idiom RedisNetworkExecutor (#5912) and BoltNetworkExecutor (#5978) already use.
+    final int handshakeTimeout = GlobalConfiguration.NETWORK_SOCKET_TIMEOUT.getValueAsInteger();
+    if (handshakeTimeout > 0)
+      channel.socket.setSoTimeout(handshakeTimeout);
+  }
+
+  /**
+   * Lifts the pre-authentication read timeout armed in the constructor (issue #6377).
+   */
+  private void markAuthenticated() {
+    try {
+      channel.socket.setSoTimeout(0);
+    } catch (final SocketException e) {
+      // setSoTimeout() only throws on an already-broken/closed socket: there is nothing left to hold open in
+      // that case, so logging and moving on - rather than failing the whole authentication - is safe. The
+      // connection dies on its next read or write either way.
+      LogManager.instance().log(this, Level.FINE, "PSQL: unable to lift the idle read timeout after authentication", e);
+    }
   }
 
   public void close() {
@@ -165,18 +198,28 @@ public class PostgresNetworkExecutor extends Thread {
   public void run() {
     ProtocolContext.set("postgres");
     try {
-      if (!readStartupMessage(true))
+      try {
+        if (!readStartupMessage(true))
+          return;
+
+        writeMessage("request for password", () -> channel.writeUnsignedInt(3), 'R', 8);
+
+        waitForAMessage();
+
+        if (!readMessage("password", (type, length) -> userPassword = readString(), 'p'))
+          return;
+
+        if (!openDatabase())
+          return;
+      } catch (final PostgresProtocolException e) {
+        // A client that never finished the handshake is a non-event: it gets no error message it could read
+        // anyway, and the connection is closed by the enclosing finally.
+        LogManager.instance().log(this, Level.FINE, "PSQL: connection closed before authentication completed: %s", e,
+            e.getMessage());
         return;
+      }
 
-      writeMessage("request for password", () -> channel.writeUnsignedInt(3), 'R', 8);
-
-      waitForAMessage();
-
-      if (!readMessage("password", (type, length) -> userPassword = readString(), 'p'))
-        return;
-
-      if (!openDatabase())
-        return;
+      markAuthenticated();
 
       writeMessage("authentication ok", () -> channel.writeUnsignedInt(0), 'R', 8);
 
@@ -523,6 +566,7 @@ public class PostgresNetworkExecutor extends Thread {
       final long engineStart = System.nanoTime();
       final ResultSet resultSet;
       final String upperCaseText = query.query.toUpperCase(Locale.ENGLISH);
+      final PostgresSystemQuery systemQuery = PostgresSystemQuery.parse(query.query);
       if (upperCaseText.startsWith("SET ")) {
         setConfiguration(query.query);
         resultSet = new IteratorResultSet(createResultSet("STATUS", "Setting ignored").iterator());
@@ -530,12 +574,9 @@ public class PostgresNetworkExecutor extends Thread {
           upperCaseText.startsWith("RELEASE ") ||
           upperCaseText.startsWith("ROLLBACK TO ")) {
         resultSet = new IteratorResultSet(Collections.emptyIterator());
-      } else if ("SELECT VERSION()".equalsIgnoreCase(query.query) ||
-          "SELECT PG_CATALOG.VERSION()".equalsIgnoreCase(query.query))
-        resultSet = new IteratorResultSet(createResultSet("version", buildServerVersionString()).iterator());
-      else if ("SELECT CURRENT_SCHEMA()".equalsIgnoreCase(query.query) ||
-          "SELECT PG_CATALOG.CURRENT_SCHEMA()".equalsIgnoreCase(query.query))
-        resultSet = new IteratorResultSet(createResultSet("current_schema", database.getName()).iterator());
+      } else if (systemQuery != null)
+        resultSet = new IteratorResultSet(
+            createResultSet(systemQuery.columnName, systemQueryValue(systemQuery.function)).iterator());
       else if ("SHOW TRANSACTION ISOLATION LEVEL".equals(upperCaseText)) {
         final Database.TRANSACTION_ISOLATION_LEVEL dbIsolationLevel = database.getTransactionIsolationLevel();
         final String level = dbIsolationLevel.name().replace('_', ' ');
@@ -678,7 +719,7 @@ public class PostgresNetworkExecutor extends Thread {
    * @return A list of results if this is a pg_type query we handle, null otherwise
    */
   private List<Result> handlePgTypeQuery(final String query) {
-    final String upperQuery = query.toUpperCase();
+    final String upperQuery = query.toUpperCase(Locale.ENGLISH);
 
     // Check if this is a pg_type/pg_catalog query
     if (!upperQuery.contains("PG_TYPE") && !upperQuery.contains("PG_CATALOG")) {
@@ -689,105 +730,22 @@ public class PostgresNetworkExecutor extends Thread {
       LogManager.instance().log(this, Level.INFO, "PSQL: handling pg_type query: %s (thread=%s)",
           query, Thread.currentThread().getId());
 
-    // Handle common JDBC driver queries for array type information
-    // Query pattern: SELECT e.typdelim, e.typname FROM pg_catalog.pg_type t, pg_catalog.pg_type e WHERE t.oid = <oid> AND t.typelem = e.oid
-    // or: SELECT typelem FROM pg_type WHERE oid = <oid>
-    // or: SELECT ... FROM pg_type WHERE typname = '<name>'
-
-    // Extract OID from the query if present
-    Pattern oidPattern = Pattern.compile("(?:t\\.oid|oid)\\s*=\\s*(\\d+)", Pattern.CASE_INSENSITIVE);
-    Matcher oidMatcher = oidPattern.matcher(query);
-
-    if (oidMatcher.find()) {
-      int oid = Integer.parseInt(oidMatcher.group(1));
-
-      // Map array type OIDs to their element type information
-      // PostgreSQL array types and their element types:
-      // 1007 = int4[] -> 23 = int4, 1009 = text[] -> 25 = text, etc.
-      String elemTypeName = null;
-      String typDelim = ",";
-      int elemOid = 0;
-
-      switch (oid) {
-        case 1007 -> { elemTypeName = "int4"; elemOid = 23; }      // int4[]
-        case 1009 -> { elemTypeName = "text"; elemOid = 25; }      // text[]
-        case 1016 -> { elemTypeName = "int8"; elemOid = 20; }      // int8[]
-        case 1021 -> { elemTypeName = "float4"; elemOid = 700; }   // float4[]
-        case 1022 -> { elemTypeName = "float8"; elemOid = 701; }   // float8[]
-        case 1000 -> { elemTypeName = "bool"; elemOid = 16; }      // bool[]
-        case 1003 -> { elemTypeName = "char"; elemOid = 18; }      // char[]
-        case 199 -> { elemTypeName = "json"; elemOid = 114; }      // json[]
-        case 1043 -> { elemTypeName = "varchar"; elemOid = 0; }    // varchar (not an array)
-        default -> { elemTypeName = "text"; elemOid = 25; }        // Default to text for unknown arrays
-      }
-
-      // Determine what columns the query is requesting
-      final Map<String, Object> map = new HashMap<>();
-
-      if (upperQuery.contains("TYPELEM")) {
-        map.put("typelem", elemOid);
-      }
-      if (upperQuery.contains("TYPDELIM")) {
-        map.put("typdelim", typDelim);
-      }
-      if (upperQuery.contains("TYPNAME") || upperQuery.contains("E.TYPNAME")) {
-        map.put("typname", elemTypeName);
-      }
-      if (upperQuery.contains("TYPARRAY")) {
-        // typarray is the OID of the array type for this scalar type
-        // For scalar types, return the corresponding array OID
-        map.put("typarray", oid);
-      }
-      if (upperQuery.contains("TYPTYPE")) {
-        map.put("typtype", "b"); // 'b' = base type
-      }
-      if (upperQuery.contains("TYPINPUT")) {
-        map.put("typinput", "array_in");
-      }
-
-      // Only return a result if we matched an array type and have data to return
-      if (!map.isEmpty() && elemOid > 0) {
-        final Result result = new ResultInternal(map);
-        return Collections.singletonList(result);
-      }
-    }
-
-    // Handle query by type name pattern
-    Pattern namePattern = Pattern.compile("typname\\s*=\\s*'([^']+)'", Pattern.CASE_INSENSITIVE);
-    Matcher nameMatcher = namePattern.matcher(query);
-    if (nameMatcher.find()) {
-      String typeName = nameMatcher.group(1);
-
-      // Map common type names to their OIDs
-      final Map<String, Object> map = new HashMap<>();
-      switch (typeName.toLowerCase()) {
-        case "_int4" -> { map.put("oid", 1007); map.put("typelem", 23); }
-        case "_int8" -> { map.put("oid", 1016); map.put("typelem", 20); }
-        case "_text" -> { map.put("oid", 1009); map.put("typelem", 25); }
-        case "_float4" -> { map.put("oid", 1021); map.put("typelem", 700); }
-        case "_float8" -> { map.put("oid", 1022); map.put("typelem", 701); }
-        case "_bool" -> { map.put("oid", 1000); map.put("typelem", 16); }
-        case "int4" -> { map.put("oid", 23); map.put("typelem", 0); }
-        case "int8" -> { map.put("oid", 20); map.put("typelem", 0); }
-        case "text" -> { map.put("oid", 25); map.put("typelem", 0); }
-        case "varchar" -> { map.put("oid", 1043); map.put("typelem", 0); }
-        default -> {
-          // Return empty result for unknown types
-          return Collections.emptyList();
-        }
-      }
-
-      if (!map.isEmpty()) {
-        map.put("typname", typeName);
-        map.put("typdelim", ",");
-        final Result result = new ResultInternal(map);
-        return Collections.singletonList(result);
-      }
-    }
+    final List<Result> rows = toResults(PostgresTypeCatalog.resolve(query));
+    if (rows != null)
+      return rows;
 
     // For other pg_type queries we don't specifically handle, return empty result
     // This prevents errors from trying to query non-existent tables
     return Collections.emptyList();
+  }
+
+  private static List<Result> toResults(final List<Map<String, Object>> rows) {
+    if (rows == null)
+      return null;
+    final List<Result> results = new ArrayList<>(rows.size());
+    for (final Map<String, Object> row : rows)
+      results.add(new ResultInternal(row));
+    return results;
   }
 
   /**
@@ -1720,6 +1678,7 @@ public class PostgresNetworkExecutor extends Thread {
       }
 
       final String upperCaseText = portal.query.toUpperCase(Locale.ENGLISH);
+      final PostgresSystemQuery systemQuery = PostgresSystemQuery.parse(portal.query);
 
       if (portal.query.isEmpty() ||//
           (ignoreQueriesAppNames.contains(connectionProperties.get("application_name")) &&//
@@ -1734,11 +1693,8 @@ public class PostgresNetworkExecutor extends Thread {
       } else if (upperCaseText.startsWith("SET ")) {
         setConfiguration(portal.query);
         portal.ignoreExecution = true;
-      } else if ("SELECT VERSION()".equals(upperCaseText) || "SELECT PG_CATALOG.VERSION()".equals(upperCaseText)) {
-        createResultSet(portal, "version", buildServerVersionString());
-
-      } else if ("SELECT CURRENT_SCHEMA()".equals(upperCaseText) || "SELECT PG_CATALOG.CURRENT_SCHEMA()".equals(upperCaseText)) {
-        createResultSet(portal, "current_schema", database.getName());
+      } else if (systemQuery != null) {
+        createResultSet(portal, systemQuery.columnName, systemQueryValue(systemQuery.function));
 
       } else if ("SHOW TRANSACTION ISOLATION LEVEL".equals(upperCaseText)) {
         final Database.TRANSACTION_ISOLATION_LEVEL dbIsolationLevel = database.getTransactionIsolationLevel();
@@ -1939,6 +1895,21 @@ public class PostgresNetworkExecutor extends Thread {
     connectionProperties.put(parts[0], parts[1]);
   }
 
+  /**
+   * The value of an emulated system-information function (issue #5290). {@code current_schema} answers the
+   * database name rather than PostgreSQL's {@code public}, and {@code current_database} answers the same
+   * name: ArcadeDB has one namespace per database, so the distinction PostgreSQL draws between a catalog
+   * and a schema inside it has nothing on this side to map onto, and a client using either to qualify a
+   * name needs the one name that works.
+   */
+  private String systemQueryValue(final PostgresSystemQuery.Function function) {
+    return switch (function) {
+      case VERSION -> buildServerVersionString();
+      case CURRENT_SCHEMA, CURRENT_DATABASE, CURRENT_CATALOG -> database.getName();
+      case CURRENT_USER, SESSION_USER, CURRENT_ROLE, USER -> userName;
+    };
+  }
+
   private String buildServerVersionString() {
     return "PostgreSQL " + PG_SERVER_VERSION + " (ArcadeDB " + Constants.getRawVersion() + ")";
   }
@@ -2003,6 +1974,14 @@ public class PostgresNetworkExecutor extends Thread {
   private boolean readStartupMessage(final boolean no2ssl) {
     try {
       final long len = channel.readUnsignedInt();
+      // The declared length used to be read and then ignored, so the parameter loop below ran until the
+      // client chose to stop it and every pair it sent was retained (issue #6377). PostgreSQL rejects an
+      // over-long startup packet outright rather than counting what is inside it, and this does the same:
+      // one rule bounds the pair count, the total bytes and the time spent reading them, and it is the
+      // client's own declared length that is being held to, not a limit invented here.
+      if (len < 8 || len > MAX_STARTUP_MESSAGE_LENGTH)
+        throw new PostgresProtocolException("Invalid startup message length " + len);
+
       final long protocolVersion = channel.readUnsignedInt();
       if (protocolVersion == 80877103) {
         // REQUEST FOR SSL, NOT SUPPORTED
@@ -2040,35 +2019,56 @@ public class PostgresNetworkExecutor extends Thread {
       }
 
       if (len > 8) {
-        while (readNextByte() != 0) {
-          reuseLastByte();
-
-          final String paramName = readString();
-          final String paramValue = readString();
-
-          switch (paramName) {
-          case "user":
-            userName = paramValue;
-            break;
-          case "database":
-            databaseName = paramValue;
-            break;
-          case "options":
-            // DEPRECATED, IGNORE IT
-            break;
-          case "replication":
-            // NOT SUPPORTED, IGNORE IT
-            break;
-          }
-
-          connectionProperties.put(paramName, paramValue);
-        }
+        final byte[] body = new byte[(int) (len - 8)];
+        channel.readBytes(body);
+        readStartupParameters(body);
       }
     } catch (final IOException e) {
       setErrorInTx();
       throw new PostgresProtocolException("Error on parsing startup message", e);
     }
     return true;
+  }
+
+  /**
+   * Reads the {@code name\0value\0...\0} parameter section of a startup message out of the bytes the
+   * message declared, rather than off the socket until the client sends a terminator (issue #6377).
+   */
+  private void readStartupParameters(final byte[] body) {
+    int pos = 0;
+    while (pos < body.length && body[pos] != 0) {
+      final int nameEnd = indexOfTerminator(body, pos);
+      final String paramName = new String(body, pos, nameEnd - pos, DatabaseFactory.getDefaultCharset());
+      pos = nameEnd + 1;
+
+      final int valueEnd = indexOfTerminator(body, pos);
+      final String paramValue = new String(body, pos, valueEnd - pos, DatabaseFactory.getDefaultCharset());
+      pos = valueEnd + 1;
+
+      switch (paramName) {
+      case "user":
+        userName = paramValue;
+        break;
+      case "database":
+        databaseName = paramValue;
+        break;
+      case "options":
+        // DEPRECATED, IGNORE IT
+        break;
+      case "replication":
+        // NOT SUPPORTED, IGNORE IT
+        break;
+      }
+
+      connectionProperties.put(paramName, paramValue);
+    }
+  }
+
+  private static int indexOfTerminator(final byte[] body, final int from) {
+    for (int i = from; i < body.length; i++)
+      if (body[i] == 0)
+        return i;
+    throw new PostgresProtocolException("Unterminated string in startup message");
   }
 
   /**
@@ -2215,11 +2215,28 @@ public class PostgresNetworkExecutor extends Thread {
     return nextByte = channel.readUnsignedByte();
   }
 
+  /**
+   * Waits for the client's next pre-authentication message to show up, bounded by the same handshake timeout
+   * as the socket reads around it (issue #6377). {@link #readMessage} deliberately does not block - it
+   * returns false when no byte is available yet - so the pre-auth sequence has to see input arrive before it
+   * reads. Unbounded, this loop was the hole the socket timeout could not close: a client that connected,
+   * sent a startup message and then went silent pinned this thread here forever, and no read was ever
+   * outstanding on the socket for a timeout to interrupt.
+   */
   private void waitForAMessage() {
+    final int handshakeTimeout = GlobalConfiguration.NETWORK_SOCKET_TIMEOUT.getValueAsInteger();
+    final long deadline = handshakeTimeout > 0 ? System.currentTimeMillis() + handshakeTimeout : Long.MAX_VALUE;
+
     while (!channel.inputHasData()) {
+      if (shutdown)
+        throw new PostgresProtocolException("Connection closed while waiting for the authentication handshake");
+      if (System.currentTimeMillis() > deadline)
+        throw new PostgresProtocolException("Timeout waiting for the client to complete the authentication handshake");
+
       try {
-        Thread.sleep(100);
-      } catch (final InterruptedException interruptedException) {
+        Thread.sleep(WAIT_FOR_MESSAGE_POLL_MS);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
         throw new PostgresProtocolException("Error on reading from the channel");
       }
     }
@@ -2374,9 +2391,15 @@ public class PostgresNetworkExecutor extends Thread {
   /**
    * Session commands such as {@code SET search_path TO "$user", public} are handled by the protocol itself and never
    * reach the SQL engine, so their double quotes must be left alone.
+   * <p>
+   * The emulated system-information queries are in the same category, and for the same reason: rewriting the
+   * quotes in {@code SELECT current_schema() AS "schema"} left an alias in back-ticks that
+   * {@link PostgresSystemQuery} no longer recognised, and the query fell through to a SQL engine that has no
+   * such function (issue #5290).
    */
   private static boolean isSessionCommand(final String queryText) {
-    return queryText.regionMatches(true, 0, "SET ", 0, 4) || queryText.regionMatches(true, 0, "SHOW ", 0, 5);
+    return queryText.regionMatches(true, 0, "SET ", 0, 4) || queryText.regionMatches(true, 0, "SHOW ", 0, 5)
+        || PostgresSystemQuery.parse(queryText) != null;
   }
 
   private void emptyQueryResponse() {

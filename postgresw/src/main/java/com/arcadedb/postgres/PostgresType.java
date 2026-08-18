@@ -51,28 +51,36 @@ import java.util.stream.StreamSupport;
  * Represents PostgreSQL data types and provides serialization/deserialization functionality.
  */
 public enum PostgresType {
-  SMALLINT(21, Short.class, 2, value -> Short.parseShort(value)),
-  INTEGER(23, Integer.class, 4, value -> Integer.parseInt(value)),
-  LONG(20, Long.class, 8, value -> Long.parseLong(value)),
-  REAL(700, Float.class, 4, value -> Float.parseFloat(value)),
-  DOUBLE(701, Double.class, 8, value -> Double.parseDouble(value)),
-  CHAR(18, Character.class, 1, value -> value.charAt(0)),
-  BOOLEAN(16, Boolean.class, 1, value -> parseBooleanText(value)),
-  DATE(1082, Date.class, 4, value -> parseDateText(value)),
-  TIMESTAMP(1114, LocalDateTime.class, 8, value -> parseTimestampText(value)),
-  VARCHAR(1043, String.class, -1, value -> value),
-  TEXT(25, String.class, -1, value -> value),
-  BPCHAR(1042, String.class, -1, value -> value),
-  JSON(114, JSONObject.class, -1, PostgresType::parseJsonText),
+  // The three catalog columns after the OID are pg_type's own: typname, typelem (the element type of an
+  // array, 0 for a scalar) and typarray (the array type built on a scalar, 0 for an array). They are the
+  // answer this protocol gives a client that enumerates or looks up pg_type (issue #5290), so they hold
+  // PostgreSQL's real names and OIDs rather than anything ArcadeDB-specific: a client resolves the OID it
+  // was handed in RowDescription against them, and a name that is not Postgres' name resolves to nothing.
+  SMALLINT(21, "int2", 0, 1005, Short.class, 2, value -> Short.parseShort(value)),
+  INTEGER(23, "int4", 0, 1007, Integer.class, 4, value -> Integer.parseInt(value)),
+  LONG(20, "int8", 0, 1016, Long.class, 8, value -> Long.parseLong(value)),
+  REAL(700, "float4", 0, 1021, Float.class, 4, value -> Float.parseFloat(value)),
+  DOUBLE(701, "float8", 0, 1022, Double.class, 8, value -> Double.parseDouble(value)),
+  CHAR(18, "char", 0, 1002, Character.class, 1, value -> value.charAt(0)),
+  BOOLEAN(16, "bool", 0, 1000, Boolean.class, 1, value -> parseBooleanText(value)),
+  DATE(1082, "date", 0, 1182, Date.class, 4, value -> parseDateText(value)),
+  TIMESTAMP(1114, "timestamp", 0, 1115, LocalDateTime.class, 8, value -> parseTimestampText(value)),
+  VARCHAR(1043, "varchar", 0, 1015, String.class, -1, value -> value),
+  TEXT(25, "text", 0, 1009, String.class, -1, value -> value),
+  BPCHAR(1042, "bpchar", 0, 1014, String.class, -1, value -> value),
+  JSON(114, "json", 0, 199, JSONObject.class, -1, PostgresType::parseJsonText),
   // Adding array types with PostgreSQL array type codes
-  ARRAY_INT(1007, Collection.class, -1, value -> parseArrayFromString(value, Integer::parseInt)),
-  ARRAY_CHAR(1003, Collection.class, -1, value -> parseArrayFromString(value, s -> s.charAt(0))),
-  ARRAY_LONG(1016, Collection.class, -1, value -> parseArrayFromString(value, Long::parseLong)),
-  ARRAY_REAL(1021, Collection.class, -1, value -> parseArrayFromString(value, Float::parseFloat)),
-  ARRAY_DOUBLE(1022, Collection.class, -1, value -> parseArrayFromString(value, Double::parseDouble)),
-  ARRAY_TEXT(1009, Collection.class, -1, value -> parseArrayFromString(value, s -> s)),
-  ARRAY_JSON(199, Collection.class, -1, value -> parseArrayFromString(value, s -> s)),
-  ARRAY_BOOLEAN(1000, Collection.class, -1, value -> parseArrayFromString(value, Boolean::parseBoolean));
+  ARRAY_INT(1007, "_int4", 23, 0, Collection.class, -1, value -> parseArrayFromString(value, Integer::parseInt)),
+  // 1002 is "char"[], the array of the single-byte CHAR (OID 18) this enum pairs it with. It used to be
+  // declared as 1003, which in PostgreSQL is name[] - an unrelated type - so a client resolving the OID
+  // this protocol announced for a list of characters was told a type ArcadeDB never produces (issue #5290).
+  ARRAY_CHAR(1002, "_char", 18, 0, Collection.class, -1, value -> parseArrayFromString(value, s -> s.charAt(0))),
+  ARRAY_LONG(1016, "_int8", 20, 0, Collection.class, -1, value -> parseArrayFromString(value, Long::parseLong)),
+  ARRAY_REAL(1021, "_float4", 700, 0, Collection.class, -1, value -> parseArrayFromString(value, Float::parseFloat)),
+  ARRAY_DOUBLE(1022, "_float8", 701, 0, Collection.class, -1, value -> parseArrayFromString(value, Double::parseDouble)),
+  ARRAY_TEXT(1009, "_text", 25, 0, Collection.class, -1, value -> parseArrayFromString(value, s -> s)),
+  ARRAY_JSON(199, "_json", 114, 0, Collection.class, -1, value -> parseArrayFromString(value, s -> s)),
+  ARRAY_BOOLEAN(1000, "_bool", 16, 0, Collection.class, -1, value -> parseArrayFromString(value, Boolean::parseBoolean));
 
   private static final Map<Integer, PostgresType> CODE_MAP = Arrays.stream(values())
       .collect(Collectors.toMap(type -> type.code, type -> type));
@@ -169,15 +177,34 @@ public enum PostgresType {
   }
 
   public final  int                      code;
+  /** pg_type.typname, the name PostgreSQL itself gives {@link #code}. */
+  public final  String                   typeName;
+  /** pg_type.typelem: the OID of the element type for an array type, 0 for a scalar. */
+  public final  int                      elementCode;
+  /** pg_type.typarray: the OID of the array type built on a scalar, 0 for an array type. */
+  public final  int                      arrayCode;
   public final  Class<?>                 cls;
   public final  int                      size;
   private final Function<String, Object> textParser;
 
-  PostgresType(final int code, final Class<?> cls, final int size, Function<String, Object> textParser) {
+  PostgresType(final int code, final String typeName, final int elementCode, final int arrayCode, final Class<?> cls,
+      final int size, Function<String, Object> textParser) {
     this.code = code;
+    this.typeName = typeName;
+    this.elementCode = elementCode;
+    this.arrayCode = arrayCode;
     this.cls = cls;
     this.size = size;
     this.textParser = textParser;
+  }
+
+  /**
+   * Returns the type carrying the given OID, or null when this protocol has no such type. Unlike
+   * {@code deserializeAsText}/{@code deserializeAsBinary}, which reject an unknown OID, a catalog lookup
+   * for a type ArcadeDB cannot produce is a legitimate answer of "no row" rather than an error.
+   */
+  public static PostgresType byCode(final int code) {
+    return CODE_MAP.get(code);
   }
 
   /**
