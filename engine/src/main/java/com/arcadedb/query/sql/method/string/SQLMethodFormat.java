@@ -23,6 +23,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 import com.arcadedb.utility.DateUtils;
+import com.arcadedb.utility.StringUtils;
 
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -43,14 +44,14 @@ public class SQLMethodFormat extends AbstractSQLMethod {
   @Override
   public Object execute(final Object value, final Identifiable iRecord, final CommandContext context, final Object[] params) {
 
-    // TRY TO RESOLVE AS DYNAMIC VALUE
-    String format = (String) getParameterValue(iRecord, params[0].toString());
-    if (format == null)
-      // USE STATIC ONE
-      format = params[0].toString();
+    if (params[0] == null)
+      return null;
 
-    if (format == null)
-      throw new IllegalArgumentException("Format was null");
+    // TRY TO RESOLVE AS DYNAMIC VALUE. The resolved field may hold anything, so it is rendered rather than cast:
+    // a non-STRING field used to answer a ClassCastException here (issue #6389).
+    final Object resolved = getParameterValue(iRecord, params[0].toString());
+    // USE STATIC ONE WHEN THE FIELD DOES NOT RESOLVE
+    final String format = resolved != null ? resolved.toString() : params[0].toString();
 
     if (isCollectionOfDates(value)) {
       final List<String> result = new ArrayList<String>();
@@ -64,7 +65,7 @@ public class SQLMethodFormat extends AbstractSQLMethod {
     } else if (DateUtils.isDate(value)) {
       return DateUtils.format(value, format, params.length > 1 ? (String) params[1] : null);
     }
-    return value != null ? format.formatted(value) : null;
+    return value != null ? StringUtils.format(NAME, format, value) : null;
   }
 
   private boolean isCollectionOfDates(final Object value) {

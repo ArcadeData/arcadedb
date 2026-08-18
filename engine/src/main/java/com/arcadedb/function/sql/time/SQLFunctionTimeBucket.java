@@ -50,8 +50,18 @@ public class SQLFunctionTimeBucket extends SQLFunctionConfigurableAbstract {
     if (params.length < 2)
       throw new IllegalArgumentException("time_bucket() requires 2 parameters: interval and timestamp");
 
+    if (params[0] == null || params[1] == null)
+      return null;
+
     final String interval = params[0].toString();
     final long intervalMs = parseInterval(interval);
+
+    // A zero-width (or negative) bucket has no boundary to truncate to: '0s' used to reach the division below and
+    // throw ArithmeticException: / by zero (issue #6388).
+    if (intervalMs <= 0)
+      throw new IllegalArgumentException(
+          "time_bucket() interval '" + interval + "' must be a positive amount of time, but resolves to " + intervalMs
+              + "ms");
 
     final long timestampMs = toEpochMs(params[1]);
 

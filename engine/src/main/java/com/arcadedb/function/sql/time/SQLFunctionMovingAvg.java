@@ -61,8 +61,10 @@ public class SQLFunctionMovingAvg extends SQLAggregatedFunction {
     if (windowSize < 0)
       windowSize = parseWindow(params[1]);
 
-    if (params[0] instanceof Number number)
-      values.add(number.doubleValue());
+    // A NON-NUMERIC, NON-NULL VALUE IS A CLIENT-FACING TYPE ERROR, NOT A SILENTLY DROPPED SAMPLE (#6390).
+    final Number value = requireNumericOrNull(params[0]);
+    if (value != null)
+      values.add(value.doubleValue());
 
     return null;
   }
@@ -72,7 +74,7 @@ public class SQLFunctionMovingAvg extends SQLAggregatedFunction {
       final FunctionOptions opts = new FunctionOptions(NAME, rawMap, OPTIONS);
       return opts.getInt("window", -1);
     }
-    return ((Number) arg).intValue();
+    return requireIntArgument(arg, "window_size");
   }
 
   @Override

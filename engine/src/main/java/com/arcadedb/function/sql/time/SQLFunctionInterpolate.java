@@ -144,8 +144,8 @@ public class SQLFunctionInterpolate extends SQLAggregatedFunction {
       }
 
       // Interpolate all nulls between prevIdx and nextIdx
-      final double prevVal = ((Number) result.get(prevIdx)).doubleValue();
-      final double nextVal = ((Number) values.get(nextIdx)).doubleValue();
+      final double prevVal = requireNumericOrNull(result.get(prevIdx)).doubleValue();
+      final double nextVal = requireNumericOrNull(values.get(nextIdx)).doubleValue();
       final long prevTs = timestamps.get(prevIdx);
       final long nextTs = timestamps.get(nextIdx);
       final long tsDelta = nextTs - prevTs;

@@ -58,8 +58,8 @@ public class SQLFunctionCorrelate extends SQLAggregatedFunction {
     if (params[0] == null || params[1] == null)
       return null;
 
-    final double a = ((Number) params[0]).doubleValue();
-    final double b = ((Number) params[1]).doubleValue();
+    final double a = requireNumericOrNull(params[0]).doubleValue();
+    final double b = requireNumericOrNull(params[1]).doubleValue();
 
     n++;
     final double dA = a - meanA;

@@ -795,9 +795,20 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
 
   /**
    * Parse query text into terms, identifying field-prefixed terms (field:value).
-   * For example, "title:java programming" returns:
+   * For example, on an index over (title, content), "title:java programming" returns:
    * - QueryTerm(fieldName="title", value="java")
    * - QueryTerm(fieldName=null, value="programming")
+   * <p>
+   * A colon only introduces a qualifier when the text before it NAMES AN INDEXED PROPERTY. Everything else is
+   * literal text handed to the analyzer, which is what the {@code CONTAINSTEXT} operator behind this path documents
+   * its argument to be - a value to find, not a query language. Splitting unconditionally turned an ordinary literal
+   * carrying a colon (a time, a timestamp, a {@code ns:name}) into a lookup for a qualified key that the corpus
+   * never stored, so it matched nothing at all (issue #6382).
+   * <p>
+   * On a single-property index the qualifier is dropped even when it does name the property: that index stores
+   * unprefixed tokens only (see {@link #put}), so {@code label:java} means the same as {@code java} there. This
+   * mirrors {@code FullTextQueryExecutor.isUnqualified}, which the Lucene-backed executor already applied and this
+   * path did not.
    *
    * @param queryText The raw query string.
    * @return A list of parsed QueryTerms.
@@ -807,6 +818,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     if (queryText == null || queryText.isEmpty())
       return terms;
 
+    final List<String> propertyNames = getPropertyNames();
+    final boolean multiProperty = propertyNames != null && propertyNames.size() > 1;
+
     // Split by whitespace to get individual terms
     final String[] parts = queryText.split("\\s+");
     for (final String part : parts) {
@@ -815,13 +829,12 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
 
       // Check for field:value pattern
       final int colonIdx = part.indexOf(':');
-      if (colonIdx > 0 && colonIdx < part.length() - 1) {
-        // Field-prefixed term
-        final String fieldName = part.substring(0, colonIdx);
-        final String value = part.substring(colonIdx + 1);
-        terms.add(new QueryTerm(fieldName, value));
+      if (colonIdx > 0 && colonIdx < part.length() - 1 && propertyNames != null && propertyNames.contains(
+          part.substring(0, colonIdx))) {
+        // Field-prefixed term: qualified only where qualified keys are stored, i.e. on a multi-property index
+        terms.add(new QueryTerm(multiProperty ? part.substring(0, colonIdx) : null, part.substring(colonIdx + 1)));
       } else {
-        // Unqualified term
+        // Literal text: the analyzer decides how it tokenizes
         terms.add(new QueryTerm(null, part));
       }
     }

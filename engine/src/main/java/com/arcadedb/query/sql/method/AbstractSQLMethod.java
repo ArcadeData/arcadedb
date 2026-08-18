@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.method;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.SQLMethod;
+import com.arcadedb.utility.NumberUtils;
 
 /**
  * @author Johann Sorel (Geomatys)
@@ -95,6 +96,32 @@ public abstract class AbstractSQLMethod implements SQLMethod {
     sb.append(')');
 
     return sb.toString();
+  }
+
+  /**
+   * Reads a character-index argument (a from/to position, a length, a character count) as an int.
+   * <p>
+   * {@code Integer.parseInt(param.toString())} - what every one of these methods used to do - rejects a decimal
+   * literal, so the perfectly ordinary {@code "abcdef".substring(2.5)} answered a NumberFormatException (HTTP 500)
+   * instead of an index, and the #5885 clamps could never run because the parse threw first (issue #6389). A number
+   * is truncated toward zero and saturated into the int range; a string is parsed the same way; anything else is a
+   * typed argument error.
+   *
+   * @param param        the argument value
+   * @param argumentName the argument's name, for the error message
+   *
+   * @return the argument as an int
+   *
+   * @throws IllegalArgumentException if the value cannot be read as a number
+   */
+  protected int indexArgument(final Object param, final String argumentName) {
+    final Integer index = NumberUtils.saturateToIntOrNull(param);
+    if (index != null)
+      return index;
+
+    throw new IllegalArgumentException(
+        getName() + "() requires a numeric <" + argumentName + ">, but received " + NumberUtils.describeRejectedNumber(
+            param));
   }
 
   protected Object getParameterValue(final Identifiable iRecord, final String iValue) {

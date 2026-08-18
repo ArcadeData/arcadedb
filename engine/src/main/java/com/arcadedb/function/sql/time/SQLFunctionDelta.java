@@ -55,7 +55,7 @@ public class SQLFunctionDelta extends SQLAggregatedFunction {
     if (params[0] == null || params[1] == null)
       return null;
 
-    final double value = ((Number) params[0]).doubleValue();
+    final double value = requireNumericOrNull(params[0]).doubleValue();
     final long ts = SQLFunctionRate.toEpochMillis(params[1]);
     count++;
 

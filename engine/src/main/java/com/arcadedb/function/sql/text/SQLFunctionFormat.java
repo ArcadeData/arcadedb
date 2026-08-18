@@ -21,6 +21,7 @@ package com.arcadedb.function.sql.text;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
+import com.arcadedb.utility.StringUtils;
 
 /**
  * Formats content.
@@ -41,11 +42,16 @@ public class SQLFunctionFormat extends SQLFunctionAbstract {
 
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
+    if (params[0] == null)
+      return null;
+
     final Object[] args = new Object[params.length - 1];
 
     System.arraycopy(params, 1, args, 0, args.length);
 
-    return String.format((String) params[0], args);
+    // A pattern that does not match its arguments is a mistake in the query, so it answers a typed error rather than
+    // the raw java.util.Formatter exception it used to leak (issue #6389).
+    return StringUtils.format(NAME, params[0].toString(), args);
   }
 
   public String getSyntax() {

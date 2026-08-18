@@ -44,16 +44,20 @@ public class SQLFunctionBoolOr extends SQLAggregatedFunction {
         or(boolean1);
       else if (MultiValue.isMultiValue(params[0]))
         for (final Object n : MultiValue.getMultiValueIterable(params[0])) {
-          or((Boolean) n);
+          or(requireBooleanOrNull(n));
           if (or != null && or) break; // OR SHORT-CIRCUITS ON TRUE
         }
+      else
+        // A NON-BOOLEAN, NON-NULL, NON-LIST VALUE USED TO FALL THROUGH HERE UNTOUCHED AND RETURN THE ACCUMULATOR,
+        // SO bool_or(5) ANSWERED FOR AN INPUT IT NEVER LOOKED AT (ISSUE #6389).
+        or(requireBooleanOrNull(params[0]));
       return or;
     }
 
     // PER-ROW MULTI-ARG: OR THE ARGUMENTS INTO A LOCAL VARIABLE WITHOUT TOUCHING THE CROSS-ROW ACCUMULATOR.
     Boolean rowOr = null;
     for (int i = 0; i < params.length; ++i) {
-      final Boolean value = (Boolean) params[i];
+      final Boolean value = requireBooleanOrNull(params[i]);
       if (value != null) {
         rowOr = rowOr == null ? value : rowOr || value;
         if (rowOr) break; // OR SHORT-CIRCUITS ON TRUE
