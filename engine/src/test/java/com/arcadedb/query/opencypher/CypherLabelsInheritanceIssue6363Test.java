@@ -132,6 +132,25 @@ class CypherLabelsInheritanceIssue6363Test {
   }
 
   @Test
+  void removingALabelTheVertexDoesNotHaveIsANoOp() {
+    // The counterpart of the refusal below, and the line between them: a label the vertex does not answer to at all
+    // is simply absent, so removing it does nothing and reports nothing - as in Neo4j. Only a label it DOES answer
+    // to, and would keep answering to, is refused. Covers both an unknown label and one whose type exists but this
+    // vertex is not of.
+    database.transaction(() -> database.command("opencypher", "CREATE (:Extra {k:'x9'})"));
+    final String typeBefore = typeOf("m1");
+
+    assertThat(labelsRemoved("MATCH (n:Manager) REMOVE n:NotPresentAtAll")).isEqualTo(0);
+    assertThat(labelsRemoved("MATCH (n:Manager) REMOVE n:Extra")).isEqualTo(0);
+
+    assertThat(typeOf("m1")).isEqualTo(typeBefore);
+    assertThat(labels("MATCH (n {k:'m1'}) RETURN labels(n) AS l")).containsExactly("Employee", "Manager");
+    assertThat(count("MATCH (n:Manager) RETURN count(n) AS c")).isEqualTo(1);
+    // The absent label did not get a type invented for it on the way past.
+    assertThat(database.getSchema().getTypeOrNull("NotPresentAtAll")).isNull();
+  }
+
+  @Test
   void removingAnInheritedLabelIsRefusedRatherThanSilentlyLyingAboutIt() {
     // Manager IS-A Employee in the schema: no type the vertex could be moved to answers 'no' to :Employee while
     // still answering 'yes' to :Manager. Saying so beats a no-op that leaves n:Employee true after REMOVE n:Employee.
