@@ -19,11 +19,13 @@
 package com.arcadedb.query.sql.method.conversion;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 import com.arcadedb.schema.Type;
 
+import java.util.Arrays;
 import java.util.Locale;
 import java.util.logging.Level;
 
@@ -60,10 +62,18 @@ public class SQLMethodConvert extends AbstractSQLMethod {
         LogManager.instance().log(this, Level.SEVERE, "Type for destination type was not found", e);
       }
     } else {
-      final Type arcadeType = Type.valueOf(destType.toUpperCase(Locale.ENGLISH));
-      if (arcadeType != null) {
-        return Type.convert(context.getDatabase(), value, arcadeType.getDefaultJavaType());
+      // Type is an enum: valueOf() throws IllegalArgumentException for an unknown name and NEVER returns null, so the
+      // guard that used to stand here was dead code and an unknown type name escaped as a raw JDK exception. Answer
+      // with a typed parsing error that names the valid types instead (issue #6389).
+      final Type arcadeType;
+      try {
+        arcadeType = Type.valueOf(destType.toUpperCase(Locale.ENGLISH));
+      } catch (final IllegalArgumentException e) {
+        throw new CommandSQLParsingException(
+            "Unknown type '" + destType + "' in convert(): expected one of " + Arrays.toString(Type.values())
+                + " or a fully qualified Java class name", e);
       }
+      return Type.convert(context.getDatabase(), value, arcadeType.getDefaultJavaType());
     }
 
     return null;

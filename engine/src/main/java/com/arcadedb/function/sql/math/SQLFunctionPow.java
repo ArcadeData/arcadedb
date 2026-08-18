@@ -45,7 +45,7 @@ public class SQLFunctionPow extends SQLFunctionMathAbstract {
       throw new IllegalArgumentException("Syntax error: " + getSyntax());
 
     final Object inputValue = params[0];
-    final int powerValue = ((Number) params[1]).intValue();
+    final int powerValue = requireIntArgument(params[1], "power");
 
     if (inputValue == null) {
       result = null;

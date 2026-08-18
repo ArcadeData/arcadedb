@@ -450,7 +450,9 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
         if (s != null)
           sList.put(paramVertexAxisNames[i], s);
         if (c != null)
-          cList.put(paramVertexAxisNames[i], s);
+          // THE CURRENT NODE'S OWN COORDINATE, NOT THE SOURCE'S: cList IS THE POSITION EVERY HEURISTIC BELOW MEASURES
+          // FROM, AND FILLING IT WITH s MADE h(n) CONSTANT OVER THE WHOLE SEARCH (ISSUE #6385).
+          cList.put(paramVertexAxisNames[i], c);
         if (g != null)
           gList.put(paramVertexAxisNames[i], g);
         if (p != null)

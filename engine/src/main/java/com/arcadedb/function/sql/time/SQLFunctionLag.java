@@ -39,6 +39,8 @@ import java.util.List;
 public class SQLFunctionLag extends SQLAggregatedFunction {
   public static final String NAME = "ts.lag";
 
+  private static final String OPPOSITE = "ts.lead";
+
   private final List<Object[]> pairs = new ArrayList<>();
   private int    offset       = 1;
   private Object defaultValue = null;
@@ -62,8 +64,15 @@ public class SQLFunctionLag extends SQLAggregatedFunction {
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
     if (!paramsRead) {
-      if (params.length >= 2)
-        offset = ((Number) params[1]).intValue();
+      if (params.length >= 2 && params[1] != null) {
+        offset = requireIntArgument(params[1], "offset");
+        // A negative offset would read past the other end of the ordered rows and throw
+        // IndexOutOfBoundsException; it is a client-facing argument error (issue #6388).
+        if (offset < 0)
+          throw new IllegalArgumentException(
+              NAME + "() requires a non-negative <offset>, but received " + offset + ". Use " + OPPOSITE
+                  + "() to look the other way");
+      }
       if (params.length >= 4)
         defaultValue = params[3];
       paramsRead = true;
@@ -85,7 +94,14 @@ public class SQLFunctionLag extends SQLAggregatedFunction {
     if (pairs.isEmpty())
       return new ArrayList<>();
 
-    pairs.sort(Comparator.comparing(p -> ((Comparable) p[1])));
+    // The timestamp is optional (getMinArgs() == 1), so rows without one must not NPE the comparator: the sort is
+    // stable, so they keep their arrival order at the end, which is the only order they have (issue #6388).
+    try {
+      pairs.sort(Comparator.comparing(p -> (Comparable) p[1], Comparator.nullsLast(Comparator.naturalOrder())));
+    } catch (final ClassCastException e) {
+      throw new IllegalArgumentException(
+          NAME + "() cannot order the rows: the <timestamp> values are not mutually comparable", e);
+    }
 
     final List<Object> result = new ArrayList<>(pairs.size());
     for (int i = 0; i < pairs.size(); i++)

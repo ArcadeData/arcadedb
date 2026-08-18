@@ -55,7 +55,7 @@ public class SQLFunctionMax extends SQLAggregatedFunction {
             subitem = converted[0];
             max = converted[1];
           }
-          if (max == null || subitem != null && ((Comparable) subitem).compareTo(max) > 0)
+          if (max == null || subitem != null && compareValues(subitem, max) > 0)
             max = subitem;
         }
       } else {
@@ -65,7 +65,7 @@ public class SQLFunctionMax extends SQLAggregatedFunction {
           item = converted[0];
           max = converted[1];
         }
-        if (max == null || item != null && ((Comparable) item).compareTo(max) > 0)
+        if (max == null || item != null && compareValues(item, max) > 0)
           max = item;
       }
     }
@@ -82,7 +82,7 @@ public class SQLFunctionMax extends SQLAggregatedFunction {
           context = casted[0];
           max = casted[1];
         }
-        if (((Comparable<Object>) context).compareTo(max) < 0)
+        if (compareValues(context, max) < 0)
           // BIGGER
           context = max;
       }

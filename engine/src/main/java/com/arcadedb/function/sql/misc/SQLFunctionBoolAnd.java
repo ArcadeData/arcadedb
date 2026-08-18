@@ -44,16 +44,20 @@ public class SQLFunctionBoolAnd extends SQLAggregatedFunction {
         and(boolean1);
       else if (MultiValue.isMultiValue(params[0]))
         for (final Object n : MultiValue.getMultiValueIterable(params[0])) {
-          and((Boolean) n);
+          and(requireBooleanOrNull(n));
           if (and != null && !and) break; // AND SHORT-CIRCUITS ON FALSE
         }
+      else
+        // A NON-BOOLEAN, NON-NULL, NON-LIST VALUE USED TO FALL THROUGH HERE UNTOUCHED AND RETURN THE ACCUMULATOR,
+        // SO bool_and(5) ANSWERED A CONFIDENT `true` FOR AN INPUT IT NEVER LOOKED AT (ISSUE #6389).
+        and(requireBooleanOrNull(params[0]));
       return and;
     }
 
     // PER-ROW MULTI-ARG: AND THE ARGUMENTS INTO A LOCAL VARIABLE WITHOUT TOUCHING THE CROSS-ROW ACCUMULATOR.
     Boolean rowAnd = null;
     for (int i = 0; i < params.length; ++i) {
-      final Boolean value = (Boolean) params[i];
+      final Boolean value = requireBooleanOrNull(params[i]);
       if (value != null) {
         rowAnd = rowAnd == null ? value : rowAnd && value;
         if (!rowAnd) break; // AND SHORT-CIRCUITS ON FALSE

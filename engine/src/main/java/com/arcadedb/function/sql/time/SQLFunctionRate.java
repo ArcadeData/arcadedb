@@ -72,7 +72,7 @@ public class SQLFunctionRate extends SQLAggregatedFunction {
       counterResetDetectionSet = true;
     }
 
-    final double value = ((Number) params[0]).doubleValue();
+    final double value = requireNumericOrNull(params[0]).doubleValue();
     final long ts = toEpochMillis(params[1]);
     samples.add(new long[] { ts, Double.doubleToRawLongBits(value) });
     return null;

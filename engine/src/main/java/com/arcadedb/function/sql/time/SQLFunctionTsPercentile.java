@@ -64,13 +64,13 @@ public class SQLFunctionTsPercentile extends SQLAggregatedFunction {
       return null;
 
     if (!percentileSet && params.length > 1 && params[1] != null) {
-      percentile = ((Number) params[1]).doubleValue();
+      percentile = requireNumeric(params[1], "percentile").doubleValue();
       if (percentile < 0.0 || percentile > 1.0)
         throw new IllegalArgumentException("Percentile must be between 0.0 and 1.0, got: " + percentile);
       percentileSet = true;
     }
 
-    values.add(((Number) params[0]).doubleValue());
+    values.add(requireNumericOrNull(params[0]).doubleValue());
     return null;
   }
 

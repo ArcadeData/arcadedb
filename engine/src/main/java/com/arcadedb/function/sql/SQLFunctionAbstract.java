@@ -21,6 +21,7 @@ package com.arcadedb.function.sql;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.SQLFunction;
+import com.arcadedb.utility.NumberUtils;
 
 /**
  * Abstract class to extend to build Custom SQL Functions.
@@ -84,6 +85,116 @@ public abstract class SQLFunctionAbstract implements SQLFunction {
   @Override
   public SQLFunction config(final Object[] iConfiguredParameters) {
     return this;
+  }
+
+  /**
+   * Validates a value a numeric function is about to accumulate: {@code null} passes through (nulls are skipped,
+   * matching the documented aggregation behavior), a {@link Number} passes through unchanged, and anything else
+   * (STRING, BOOLEAN, a collection, a record, ...) is a client-facing type error naming the function and the type
+   * it got.
+   * <p>
+   * Issue #5799 introduced this for {@code sum()} so a non-numeric element stopped being silently dropped - which
+   * left the accumulator unchanged and made an all-invalid input indistinguishable from an all-null one. Issue
+   * #6390 pulled it up here because every sibling still did a raw {@code (Number)} cast and answered a
+   * ClassCastException (HTTP 500) where {@code sum()} answered a typed error (HTTP 400).
+   *
+   * @param value the value to validate
+   *
+   * @return the value as a {@link Number}, or {@code null}
+   *
+   * @throws IllegalArgumentException if the value is neither null nor a number
+   */
+  protected Number requireNumericOrNull(final Object value) {
+    if (value == null || value instanceof Number)
+      return (Number) value;
+    throw new IllegalArgumentException(
+        getName() + "() requires numeric input, but received a value of type " + value.getClass().getSimpleName());
+  }
+
+  /**
+   * Orders two values the way {@code max()} / {@code min()} need them ordered, answering a typed argument error when
+   * they are not mutually comparable instead of the ClassCastException the raw {@code ((Comparable) a).compareTo(b)}
+   * threw for something as ordinary as {@code max([1, 'a'])} (issue #6389). Numeric widening is the caller's job -
+   * both functions run {@code Type.castComparableNumber} first, so this only ever sees values already brought to a
+   * common numeric class, or values of genuinely different kinds.
+   *
+   * @param left  the value to place
+   * @param right the value to place it against
+   *
+   * @return the sign of the comparison, as {@link Comparable#compareTo}
+   *
+   * @throws IllegalArgumentException if the two values cannot be compared with each other
+   */
+  @SuppressWarnings("unchecked")
+  protected int compareValues(final Object left, final Object right) {
+    try {
+      return ((Comparable<Object>) left).compareTo(right);
+    } catch (final ClassCastException e) {
+      throw new IllegalArgumentException(
+          getName() + "() cannot compare a value of type " + left.getClass().getSimpleName() + " with a value of type "
+              + right.getClass().getSimpleName(), e);
+    }
+  }
+
+  /**
+   * The boolean analogue of {@link #requireNumericOrNull(Object)}: {@code null} passes through, a {@link Boolean}
+   * passes through, anything else is a client-facing type error rather than a ClassCastException - or, worse, a
+   * silently unchanged accumulator that returns a confident answer for input it never looked at (issue #6389).
+   *
+   * @param value the value to validate
+   *
+   * @return the value as a {@link Boolean}, or {@code null}
+   *
+   * @throws IllegalArgumentException if the value is neither null nor a boolean
+   */
+  protected Boolean requireBooleanOrNull(final Object value) {
+    if (value == null || value instanceof Boolean)
+      return (Boolean) value;
+    throw new IllegalArgumentException(
+        getName() + "() requires boolean input, but received a value of type " + value.getClass().getSimpleName());
+  }
+
+  /**
+   * The strict counterpart of {@link #requireNumericOrNull(Object)} for a scalar CONFIGURATION argument - a window
+   * size, a percentile, an offset - where {@code null} is not a value to skip but a missing setting.
+   *
+   * @param value        the argument value
+   * @param argumentName the argument's name, for the error message
+   *
+   * @return the value as a {@link Number}
+   *
+   * @throws IllegalArgumentException if the value is null or not a number
+   */
+  protected Number requireNumeric(final Object value, final String argumentName) {
+    if (value instanceof Number number)
+      return number;
+    throw new IllegalArgumentException(
+        getName() + "() requires a numeric <" + argumentName + ">, but received " + (value == null ?
+            "null" :
+            "a value of type " + value.getClass().getSimpleName()));
+  }
+
+  /**
+   * Reads a scalar CONFIGURATION argument as an int, saturating rather than wrapping: {@code Number.intValue()} on a
+   * value outside the int range silently returns an unrelated number, which for an offset or a window size drives a
+   * degenerate computation that still looks plausible. The {@link com.arcadedb.query.sql.method.AbstractSQLMethod}
+   * side of the same batch takes the same care with character indexes.
+   *
+   * @param value        the argument value
+   * @param argumentName the argument's name, for the error message
+   *
+   * @return the value as an int, saturated to the int range
+   *
+   * @throws IllegalArgumentException if the value is null or not a number
+   */
+  protected int requireIntArgument(final Object value, final String argumentName) {
+    final Integer number = NumberUtils.saturateToIntOrNull(value);
+    if (number != null)
+      return number;
+
+    throw new IllegalArgumentException(
+        getName() + "() requires a numeric <" + argumentName + ">, but received " + NumberUtils.describeRejectedNumber(
+            value));
   }
 
   /**

@@ -238,7 +238,9 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
       res += Math.pow(Math.abs((clist.get(str) != null ? clist.get(str) : 0.0) - (glist.get(str) != null ?
           glist.get(str) : 0.0)), 2);
     }
-    heuristic = Math.sqrt(res);
+    // dFactor scales every other heuristic, including the two-axis EUCLIDEAN next to it; this was the one of the
+    // five N-axis formulas that dropped it. Invisible until #6385, because h(n) was the same number everywhere.
+    heuristic = dFactor * Math.sqrt(res);
     return heuristic;
   }
 

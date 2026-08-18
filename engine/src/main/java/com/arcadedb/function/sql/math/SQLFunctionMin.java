@@ -56,7 +56,7 @@ public class SQLFunctionMin extends SQLAggregatedFunction {
             subitem = converted[0];
             min = converted[1];
           }
-          if (min == null || subitem != null && ((Comparable) subitem).compareTo(min) < 0)
+          if (min == null || subitem != null && compareValues(subitem, min) < 0)
             min = subitem;
         }
       } else {
@@ -66,7 +66,7 @@ public class SQLFunctionMin extends SQLAggregatedFunction {
           item = converted[0];
           min = converted[1];
         }
-        if (min == null || item != null && ((Comparable) item).compareTo(min) < 0)
+        if (min == null || item != null && compareValues(item, min) < 0)
           min = item;
       }
     }
@@ -84,7 +84,7 @@ public class SQLFunctionMin extends SQLAggregatedFunction {
           min = casted[1];
         }
 
-        if (((Comparable<Object>) context).compareTo(min) > 0)
+        if (compareValues(context, min) > 0)
           // MINOR
           context = min;
       }

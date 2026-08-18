@@ -24,6 +24,7 @@ import com.arcadedb.function.sql.FunctionOptions;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.utility.DateUtils;
 
+import java.time.DateTimeException;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
@@ -88,18 +89,44 @@ public class SQLFunctionDate extends SQLFunctionAbstract {
           }
         }
 
-        final DateTimeFormatter formatter = DateUtils.getFormatter(format)
-            .withZone(timezone != null ? ZoneId.of(timezone) : context.getDatabase().getSchema().getZoneId());
+        final DateTimeFormatter formatter = formatterFor(format, timezone, context);
 
         date = LocalDateTime.parse(dateAsString, formatter);
-      } catch (DateTimeParseException e) {
-        // DATE FORMAT NOT CORRECT
+      } catch (final DateTimeParseException e) {
+        // THE VALUE DOES NOT MATCH THE FORMAT: NOT AN ERROR, THE DOCUMENTED ANSWER IS NULL. THE ARGUMENTS THEMSELVES
+        // BEING WRONG IS A DIFFERENT STORY AND IS RAISED BY formatterFor() BELOW.
         return null;
       }
     } else
       return null;
 
     return DateUtils.getDate(date, context.getDatabase().getSerializer().getDateTimeImplementation());
+  }
+
+  /**
+   * Builds the formatter for the requested pattern and zone. A malformed pattern ({@code IllegalArgumentException}
+   * out of {@code appendPattern}) and an unknown zone id ({@code ZoneRulesException}, a {@link DateTimeException} but
+   * NOT a {@link DateTimeParseException}) both escaped the caller's catch and surfaced as raw JDK exceptions - an
+   * HTTP 500 for what is a mistake in the call (issue #6388). They are raised here as a typed client error instead,
+   * deliberately NOT folded into the {@code return null} above: a value that does not match its format is an
+   * ordinary miss, a format that cannot exist is a query to fix.
+   */
+  private static DateTimeFormatter formatterFor(final String format, final String timezone, final CommandContext context) {
+    final DateTimeFormatter formatter;
+    try {
+      formatter = DateUtils.getFormatter(format);
+    } catch (final IllegalArgumentException e) {
+      throw new IllegalArgumentException(NAME + "() received an invalid date format '" + format + "': " + e.getMessage(), e);
+    }
+
+    if (timezone == null)
+      return formatter.withZone(context.getDatabase().getSchema().getZoneId());
+
+    try {
+      return formatter.withZone(ZoneId.of(timezone));
+    } catch (final DateTimeException e) {
+      throw new IllegalArgumentException(NAME + "() received an unknown time zone id '" + timezone + "'", e);
+    }
   }
 
   public String getSyntax() {

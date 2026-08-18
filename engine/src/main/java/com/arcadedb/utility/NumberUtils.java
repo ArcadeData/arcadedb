@@ -77,6 +77,61 @@ public class NumberUtils {
   }
 
   /**
+   * Longest numeric literal {@link #saturateToIntOrNull(Object)} will parse. An int is at most ten digits and a
+   * sign, and a decimal fraction is allowed on top, so this is generous by a wide margin - it exists only so a
+   * pathological literal out of query text cannot make BigDecimal parse megabytes to reach a number that saturates
+   * to the same bound either way (issue #6389).
+   */
+  public static final int MAX_NUMERIC_LITERAL_LENGTH = 64;
+
+  /**
+   * Reads an argument that has to be a whole number - a character index, an offset, a window size - as an int,
+   * saturating rather than wrapping, or answers {@code null} when the value is not a number at all.
+   * <p>
+   * A {@link Number} is truncated toward zero; a string is parsed the same way, including a decimal literal, since
+   * {@code Integer.parseInt} rejecting {@code "2.5"} is what made {@code "abcdef".substring(2.5)} throw
+   * (issue #6389). Returning {@code null} rather than throwing lets each caller name itself and its own argument in
+   * the error, which is the only part of this that differed between the SQL function and SQL method sides.
+   *
+   * @param value the argument value
+   *
+   * @return the value as an int, saturated to the int range, or {@code null} if it is not a number
+   */
+  /**
+   * Renders a rejected argument for an error message without echoing an arbitrarily long literal back into a log or
+   * an HTTP response: past {@link #MAX_NUMERIC_LITERAL_LENGTH} the value is summarised by its length instead.
+   */
+  public static String describeRejectedNumber(final Object value) {
+    if (value == null)
+      return "null";
+    final String text = value.toString();
+    return text.length() <= MAX_NUMERIC_LITERAL_LENGTH ?
+        "'" + text + "'" :
+        "a " + text.length() + "-character literal, over the " + MAX_NUMERIC_LITERAL_LENGTH + " limit";
+  }
+
+  public static Integer saturateToIntOrNull(final Object value) {
+    if (value instanceof Number number)
+      return saturateToInt(number);
+
+    if (!(value instanceof CharSequence))
+      return null;
+
+    final String text = value.toString().trim();
+    try {
+      return Integer.parseInt(text);
+    } catch (final NumberFormatException ignoreAndTryDecimal) {
+      if (text.length() > MAX_NUMERIC_LITERAL_LENGTH)
+        return null;
+      try {
+        return saturateToInt(new BigDecimal(text));
+      } catch (final NumberFormatException notANumber) {
+        return null;
+      }
+    }
+  }
+
+  /**
    * Narrows a numeric value to an int, throwing {@link ArithmeticException} if it does not fit -
    * the strict counterpart to {@link #saturateToInt(Number)}. Use this for parameters where an
    * out-of-range value should fail loudly rather than saturate or wrap, because a saturated/wrapped

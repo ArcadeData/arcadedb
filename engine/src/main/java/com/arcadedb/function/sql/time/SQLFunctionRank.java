@@ -68,7 +68,14 @@ public class SQLFunctionRank extends SQLAggregatedFunction {
     if (pairs.isEmpty())
       return new ArrayList<>();
 
-    pairs.sort(Comparator.comparing(p -> ((Comparable) p[1])));
+    // Same shape as ts.lag/ts.lead: the timestamp is optional, so rows without one keep their arrival order rather
+    // than NPE the comparator, and values that cannot be compared with each other are a typed error (#6389, #6390).
+    try {
+      pairs.sort(Comparator.comparing(p -> (Comparable) p[1], Comparator.nullsLast(Comparator.naturalOrder())));
+    } catch (final ClassCastException e) {
+      throw new IllegalArgumentException(
+          NAME + "() cannot order the rows: the <timestamp> values are not mutually comparable", e);
+    }
 
     final List<Integer> result = new ArrayList<>(pairs.size());
     result.add(1);

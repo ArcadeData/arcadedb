@@ -46,7 +46,14 @@ public class DateUtils {
   public static final  String                                       DATE_TIME_ISO_8601_FORMAT = "yyyy-MM-dd'T'HH:mm:ssZ";
   public static final  long                                         MS_IN_A_DAY               = 24 * 60 * 60 * 1000L; // 86_400_000
   private static final ZoneId                                       UTC_ZONE_ID               = ZoneId.of("UTC");
-  private static       ConcurrentHashMap<String, DateTimeFormatter> CACHED_FORMATTERS         = new ConcurrentHashMap<>();
+  private static final ConcurrentHashMap<String, DateTimeFormatter> CACHED_FORMATTERS         = new ConcurrentHashMap<>();
+  /**
+   * Ceiling on {@link #CACHED_FORMATTERS}. The cache exists for the handful of patterns a schema and the built-in
+   * formats produce, which is why an unbounded map was fine while every key came from inside. The SQL {@code date()}
+   * function passes the CALLER's format straight through, so a client sending distinct patterns could grow it without
+   * bound (issue #6388). Past the ceiling a formatter is still built and returned - it is simply not remembered.
+   */
+  private static final int                                          MAX_CACHED_FORMATTERS     = 1_000;
 
   public static Object dateTime(final Database database, final long timestamp, final ChronoUnit sourcePrecision,
       final Class dateTimeImplementation, final ChronoUnit destinationPrecision) {
@@ -564,9 +571,29 @@ public class DateUtils {
   }
 
   public static DateTimeFormatter getFormatter(final String format) {
-    return CACHED_FORMATTERS.computeIfAbsent(format,
-        f -> new DateTimeFormatterBuilder().appendPattern(f).parseDefaulting(ChronoField.HOUR_OF_DAY, 0)
-            .parseDefaulting(ChronoField.MINUTE_OF_HOUR, 0).parseDefaulting(ChronoField.SECOND_OF_MINUTE, 0).toFormatter());
+    final DateTimeFormatter cached = CACHED_FORMATTERS.get(format);
+    if (cached != null)
+      return cached;
+
+    final DateTimeFormatter formatter = new DateTimeFormatterBuilder().appendPattern(format)
+        .parseDefaulting(ChronoField.HOUR_OF_DAY, 0).parseDefaulting(ChronoField.MINUTE_OF_HOUR, 0)
+        .parseDefaulting(ChronoField.SECOND_OF_MINUTE, 0).toFormatter();
+
+    // Bounded rather than evicting: the working set is a handful of schema formats that all fit, so an LRU would only
+    // add a lock on a hot path to reorder entries nothing ever evicts. A slight overshoot when several threads race
+    // past the check is harmless - the map is capped by intent, not by contract.
+    if (CACHED_FORMATTERS.size() < MAX_CACHED_FORMATTERS)
+      CACHED_FORMATTERS.putIfAbsent(format, formatter);
+
+    return formatter;
+  }
+
+  /**
+   * Number of patterns currently remembered by {@link #getFormatter(String)}. Test-only visibility into the bound
+   * introduced by issue #6388.
+   */
+  public static int getCachedFormatterCount() {
+    return CACHED_FORMATTERS.size();
   }
 
   public static Object getDate(final Object date, final Class dateImplementation) {

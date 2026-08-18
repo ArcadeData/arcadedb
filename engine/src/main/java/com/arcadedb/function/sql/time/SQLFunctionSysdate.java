@@ -23,6 +23,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.utility.DateUtils;
 
+import java.time.DateTimeException;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 
@@ -47,12 +48,23 @@ public class SQLFunctionSysdate extends SQLFunctionAbstract {
     final LocalDateTime now = LocalDateTime.now();
     Object result = now;
 
-    if (params.length > 0) {
-      if (params.length > 1)
-        result = now.atZone(ZoneId.of(params[1].toString()));
+    // The zone is the FIRST argument - `sysdate([<zoneid>])`. Reading params[1] meant the one-argument form the
+    // syntax documents silently dropped the zone and answered server-local time (issue #6388).
+    if (params.length > 0 && params[0] != null) {
+      final String zoneId = params[0].toString();
+      try {
+        result = now.atZone(ZoneId.of(zoneId));
+      } catch (final DateTimeException e) {
+        throw new IllegalArgumentException(NAME + "() received an unknown time zone id '" + zoneId + "'", e);
+      }
     }
 
     return DateUtils.getDate(result, context.getDatabase().getSerializer().getDateTimeImplementation());
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 1;
   }
 
   public String getSyntax() {

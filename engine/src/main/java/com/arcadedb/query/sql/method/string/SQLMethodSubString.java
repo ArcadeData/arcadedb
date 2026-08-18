@@ -48,8 +48,8 @@ public class SQLMethodSubString extends AbstractSQLMethod {
     }
 
     if (params.length > 1) {
-      int from = Integer.parseInt(params[0].toString());
-      int to = Integer.parseInt(params[1].toString());
+      int from = indexArgument(params[0], "from-index");
+      int to = indexArgument(params[1], "to-index");
       final String thisString = value.toString();
       if (from < 0) {
         from = 0;
@@ -66,7 +66,7 @@ public class SQLMethodSubString extends AbstractSQLMethod {
 
       return thisString.substring(from, to);
     } else {
-      int from = Integer.parseInt(params[0].toString());
+      int from = indexArgument(params[0], "from-index");
       final String thisString = value.toString();
       if (from < 0) {
         from = 0;

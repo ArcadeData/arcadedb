@@ -39,6 +39,8 @@ import java.util.List;
 public class SQLFunctionLead extends SQLAggregatedFunction {
   public static final String NAME = "ts.lead";
 
+  private static final String OPPOSITE = "ts.lag";
+
   private final List<Object[]> pairs = new ArrayList<>();
   private int    offset       = 1;
   private Object defaultValue = null;
@@ -62,8 +64,15 @@ public class SQLFunctionLead extends SQLAggregatedFunction {
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
     if (!paramsRead) {
-      if (params.length >= 2)
-        offset = ((Number) params[1]).intValue();
+      if (params.length >= 2 && params[1] != null) {
+        offset = requireIntArgument(params[1], "offset");
+        // A negative offset would read past the other end of the ordered rows and throw
+        // IndexOutOfBoundsException; it is a client-facing argument error (issue #6388).
+        if (offset < 0)
+          throw new IllegalArgumentException(
+              NAME + "() requires a non-negative <offset>, but received " + offset + ". Use " + OPPOSITE
+                  + "() to look the other way");
+      }
       if (params.length >= 4)
         defaultValue = params[3];
       paramsRead = true;
@@ -85,12 +94,24 @@ public class SQLFunctionLead extends SQLAggregatedFunction {
     if (pairs.isEmpty())
       return new ArrayList<>();
 
-    pairs.sort(Comparator.comparing(p -> ((Comparable) p[1])));
+    // The timestamp is optional (getMinArgs() == 1), so rows without one must not NPE the comparator: the sort is
+    // stable, so they keep their arrival order at the end, which is the only order they have (issue #6388).
+    try {
+      pairs.sort(Comparator.comparing(p -> (Comparable) p[1], Comparator.nullsLast(Comparator.naturalOrder())));
+    } catch (final ClassCastException e) {
+      throw new IllegalArgumentException(
+          NAME + "() cannot order the rows: the <timestamp> values are not mutually comparable", e);
+    }
 
     final int size = pairs.size();
     final List<Object> result = new ArrayList<>(size);
-    for (int i = 0; i < size; i++)
-      result.add(i + offset < size ? pairs.get(i + offset)[0] : defaultValue);
+    for (int i = 0; i < size; i++) {
+      // Widened: `i + offset` as an int wraps NEGATIVE for a large offset, which reads as "in range" and then indexes
+      // the list with the wrapped value. The lag() twin cannot hit this - `i - offset` only ever goes further out of
+      // range - so the guard belongs here alone.
+      final long target = (long) i + offset;
+      result.add(target < size ? pairs.get((int) target)[0] : defaultValue);
+    }
 
     return result;
   }

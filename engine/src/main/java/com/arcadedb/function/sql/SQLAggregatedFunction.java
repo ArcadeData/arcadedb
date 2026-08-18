@@ -19,6 +19,9 @@
 package com.arcadedb.function.sql;
 
 import com.arcadedb.function.AggregatedFunction;
+import com.arcadedb.query.sql.executor.MultiValue;
+
+import java.util.function.Consumer;
 
 /**
  * Abstract base class for SQL aggregate functions (count, sum, avg, min, max, etc.).
@@ -40,6 +43,29 @@ import com.arcadedb.function.AggregatedFunction;
  * @see AggregatedFunction
  */
 public abstract class SQLAggregatedFunction extends SQLFunctionConfigurableAbstract implements AggregatedFunction {
+  /**
+   * Feeds one argument's worth of input to a numeric accumulator: a {@link Number} goes straight in, a collection is
+   * unrolled element by element, a null is skipped, and anything else is a client-facing type error.
+   * <p>
+   * That triage is the same three branches in every cross-row numeric aggregate, and #6390 exists precisely because
+   * it was copied per function - {@code sum()} was hardened in #5799 and the copies in {@code avg}, {@code variance}
+   * and {@code percentile} drifted away from it. It lives here so the next hardening reaches all of them.
+   *
+   * @param value       the argument to accumulate
+   * @param accumulator where each numeric (or null) value is sent
+   */
+  protected void accumulateNumeric(final Object value, final Consumer<Number> accumulator) {
+    if (value instanceof Number number)
+      accumulator.accept(number);
+    else if (MultiValue.isMultiValue(value))
+      for (final Object item : MultiValue.getMultiValueIterable(value))
+        accumulator.accept(requireNumericOrNull(item));
+    else
+      // A non-numeric, non-null, non-list value is a client-facing type error rather than a silently dropped one,
+      // which used to make an all-invalid input indistinguishable from an all-null one (#5799, #6390).
+      accumulator.accept(requireNumericOrNull(value));
+  }
+
 
   protected SQLAggregatedFunction(final String name) {
     super(name);

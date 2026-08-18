@@ -55,16 +55,26 @@ public class SQLFunctionDecode extends SQLFunctionAbstract {
   public Object execute( final Object self, final Identifiable currentRecord, final Object currentResult,
       final Object[] params, final CommandContext context) {
 
+    // A null value decodes to null, mirroring encode() which returns null for anything it cannot turn into bytes.
+    if (params[0] == null || params[1] == null)
+      return null;
+
     final String candidate = params[0].toString();
     final String format = params[1].toString();
 
-    if (SQLFunctionEncode.FORMAT_BASE64.equalsIgnoreCase(format)) {
-      return Base64.getDecoder().decode(candidate);
-    } else if (SQLFunctionEncode.FORMAT_BASE64URL.equalsIgnoreCase(format)) {
-      final int padding = candidate.length() % 4 == 2 ? 2 : (candidate.length() % 4 == 3 ? 1 : 0);
-      return Base64.getDecoder().decode(candidate.replace('-','+').replace('_','/') + "=".repeat(padding));
-    } else {
-      throw new CommandSQLParsingException("Unknown format :" + format);
+    try {
+      if (SQLFunctionEncode.FORMAT_BASE64.equalsIgnoreCase(format)) {
+        return Base64.getDecoder().decode(candidate);
+      } else if (SQLFunctionEncode.FORMAT_BASE64URL.equalsIgnoreCase(format)) {
+        final int padding = candidate.length() % 4 == 2 ? 2 : (candidate.length() % 4 == 3 ? 1 : 0);
+        return Base64.getDecoder().decode(candidate.replace('-', '+').replace('_', '/') + "=".repeat(padding));
+      } else {
+        throw new CommandSQLParsingException("Unknown format :" + format);
+      }
+    } catch (final IllegalArgumentException e) {
+      // The JDK decoder rejects malformed input with a bare IllegalArgumentException whose message names an offset
+      // and nothing else; say which function and which format refused it (issue #6389).
+      throw new IllegalArgumentException(NAME + "() cannot decode the value as " + format + ": " + e.getMessage(), e);
     }
   }
 

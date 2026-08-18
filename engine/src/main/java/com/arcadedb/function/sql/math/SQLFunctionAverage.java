@@ -52,12 +52,7 @@ public class SQLFunctionAverage extends SQLAggregatedFunction {
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
     if (params.length == 1) {
-      if (params[0] instanceof Number number)
-        sum(number);
-      else if (MultiValue.isMultiValue(params[0]))
-        for (final Object n : MultiValue.getMultiValueIterable(params[0]))
-          sum((Number) n);
-
+      accumulateNumeric(params[0], this::sum);
       return getResult();
     }
 
@@ -66,7 +61,7 @@ public class SQLFunctionAverage extends SQLAggregatedFunction {
     Number rowSum = null;
     int rowTotal = 0;
     for (int i = 0; i < params.length; ++i) {
-      final Number value = (Number) params[i];
+      final Number value = requireNumericOrNull(params[i]);
       if (value != null) {
         rowTotal++;
         rowSum = rowSum == null ? value : Type.increment(rowSum, value);

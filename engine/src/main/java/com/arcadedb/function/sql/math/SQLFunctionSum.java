@@ -91,18 +91,6 @@ public class SQLFunctionSum extends SQLAggregatedFunction {
     }
   }
 
-  /**
-   * Validates a single aggregated value: {@code null} passes through (nulls are skipped, matching the documented
-   * behavior), a {@link Number} passes through unchanged, and anything else (STRING, BOOLEAN, ...) is a client-facing
-   * type error rather than being silently ignored - see issue #5799.
-   */
-  private static Number requireNumericOrNull(final Object value) {
-    if (value == null || value instanceof Number)
-      return (Number) value;
-    throw new IllegalArgumentException(
-        NAME + "() requires numeric input, but received a value of type " + value.getClass().getSimpleName());
-  }
-
   public String getSyntax() {
     return "sum(<field> [,<field>*])";
   }
