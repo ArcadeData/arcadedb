@@ -20,6 +20,7 @@ package com.arcadedb.index;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.schema.DocumentType;
@@ -27,6 +28,8 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -338,6 +341,15 @@ class Issue6359SuperTypeIndexPropagationTest extends TestHelper {
         .as("the subtype is as unlinked as the refusal left it").isEmpty();
     assertThat(database.getSchema().getType("Super").getSubTypes())
         .as("and so is the super type, on the other side of the same link").isEmpty();
+
+    // AND the indexes the propagation had already committed go with it. This refusal comes AFTER the propagation
+    // succeeded, so the sub-indexes exist and are attached to the super type's wrapper by the time it is raised;
+    // leaving them would point the super type's index at buckets belonging to a type that is no longer its subtype.
+    final List<Integer> subBucketIds = database.getSchema().getType("Sub").getBuckets(false).stream()
+        .map(Bucket::getFileId).toList();
+    for (final IndexInternal sub : ((TypeIndex) database.getSchema().getIndexByName("Super[k]")).getIndexesOnBuckets())
+      assertThat(subBucketIds).as("no propagated sub-index survives the refusal that followed it")
+          .doesNotContain(sub.getAssociatedBucketId());
 
     // The refusal took nothing away permanently: a subtype the partition IS suitable for still links.
     database.transaction(() -> {

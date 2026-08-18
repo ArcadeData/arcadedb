@@ -1998,6 +1998,12 @@ public class LocalDocumentType implements DocumentType {
       // inherited partition the suitability check rejects for this subtype (#5637) - and a refusal that left the link
       // standing would hand back a type that IS a subtype, with none of what being one implies. Only the propagation
       // path used to roll it back, so the other two left it half applied.
+      //
+      // Every sub-index the propagation attaches is recorded HERE, outside the propagation's own block, because the
+      // steps that can refuse do not all come before it: a strategy the subtype cannot take (#5637) is raised AFTER
+      // the indexes are committed and attached to the super type's wrapper, so a cleanup scoped to the propagation
+      // would unlink the type and leave the super type's index pointing at buckets that are no longer its subtype's.
+      final List<Index> created = new ArrayList<>();
       try {
 
         // IF THE NEWLY-LINKED SUPERTYPE HAS ANY EXTERNAL PROPERTY (OWN OR INHERITED), THIS SUBTYPE MUST OWN PAIRED
@@ -2030,7 +2036,6 @@ public class LocalDocumentType implements DocumentType {
           // creation and never reaches toBuild, so a cleanup keyed on toBuild alone would leave it behind, committed
           // and attached to a type relationship unlinkSuperType has just undone. Reachable whenever a super type
           // carries both a vector index and an ordinary one.
-          final List<Index> created = new ArrayList<>();
           final List<Index> toBuild = new ArrayList<>();
 
           try {
@@ -2097,17 +2102,9 @@ public class LocalDocumentType implements DocumentType {
                   IndexBuilder.buildCreatedIndex(subIndex, IndexBuilder.BUILD_BATCH_SIZE, true, null);
               }, true);
           } catch (final RuntimeException e) {
-            // EVERY sub-index this propagation made goes, not only the ones that still had a build outstanding - see
-            // the note on the two lists above. Done here rather than from the transaction's error callback because
-            // that callback is NOT reached on every failure: a NeedRetryException or a DuplicatedKeyException raised
-            // inside a JOINED transaction is rethrown immediately by LocalDatabase.transaction (issue #661 - retrying
-            // would roll back a transaction it does not own), skipping the callback entirely. And a duplicate is
-            // exactly what this build can hit, since it now sees the caller's own pending writes.
-            for (final Index subIndex : created)
-              IndexBuilder.dropPartiallyBuiltIndex(schema, subIndex);
-
-            // The LINK is handed back by the guard around the whole block, not from here. Every failure shape reaches
-            // it, not only IndexException. The build joins the caller's transaction now, so it can
+            // The indexes and the LINK are both handed back by the guard around the whole block, not from here: this
+            // is not the only step that can refuse after they exist. What is left here is naming which super type's
+            // propagation the failure came out of - for every failure shape, not only IndexException. The build joins the caller's transaction now, so it can
             // fail with a DuplicatedKeyException raised on the caller's own pending writes or with a NeedRetryException
             // - neither of which is an IndexException, and both of which used to reach the caller with no line saying
             // which super type's propagation they came out of.
@@ -2131,6 +2128,15 @@ public class LocalDocumentType implements DocumentType {
           setBucketSelectionStrategy(superType.getBucketSelectionStrategy().copy(), false);
 
       } catch (final RuntimeException e) {
+        // EVERY sub-index the propagation made goes, not only the ones that still had a build outstanding, and not
+        // only when the propagation is what refused. Done from here rather than from a transaction's error callback
+        // because that callback is NOT reached on every failure: a NeedRetryException or a DuplicatedKeyException
+        // raised inside a JOINED transaction is rethrown immediately by LocalDatabase.transaction (issue #661 -
+        // retrying would roll back a transaction it does not own), skipping the callback entirely. And a duplicate is
+        // exactly what the build can hit, since it now sees the caller's own pending writes.
+        for (final Index subIndex : created)
+          IndexBuilder.dropPartiallyBuiltIndex(schema, subIndex);
+
         // THE LINK GOES BACK, and for the propagation path that is what makes the refusal reach the caller at all:
         // LocalDatabase.transaction retries a DuplicatedKeyException once (#4959), and on that retry this method
         // would find the super type ALREADY in superTypes, return early without propagating anything, and let the
