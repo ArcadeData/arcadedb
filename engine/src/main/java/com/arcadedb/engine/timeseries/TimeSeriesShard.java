@@ -956,18 +956,30 @@ public class TimeSeriesShard implements AutoCloseable {
    * Validates both halves of this shard - the mutable bucket's pages and the sealed store's blocks - and returns
    * one line per problem, empty when there is none, together with what the two halves hold (issue #6340).
    * <p>
-   * <b>The locks are what make the answer worth having.</b> Every counter checked on either side is reconciled
-   * against the bytes it describes, and both are maintained live: an append raises the mutable header's sample
-   * count and a compaction moves rows from one half to the other. Reading them without holding anything would
-   * report a healthy shard as damaged whenever a write landed between the counter and the walk, which is the
-   * failure mode that makes a check nobody trusts. {@link #appendLock} first and then the compaction READ lock,
-   * the order {@link #appendSamples(TimeSeriesRowSource)} takes them in and the one that keeps this free of the
-   * inversion the class comment warns about; queries are unaffected, since they take the same read lock.
+   * <b>Two windows, and which work goes in which is the whole design here.</b>
    * <p>
-   * The sample and block totals are taken inside that same window, which is why they are returned from here rather
-   * than read off the shard afterwards: a compaction landing in between moves rows from the mutable half to the
-   * sealed one, so a total gathered separately describes neither the state the walk checked nor any other single
-   * instant.
+   * The SHORT window holds {@link #appendLock} and then the compaction READ lock - the order
+   * {@link #appendSamples(TimeSeriesRowSource)} takes them in, and the one that keeps this free of the inversion
+   * the class comment warns about. It covers the mutable bucket's check and BOTH totals. It has to: the mutable
+   * header's counters are raised by every append and recomputed by every compaction, so reconciling them against
+   * the pages without holding anything would report a healthy shard as damaged whenever a write landed in
+   * between, and a total taken outside it would describe neither the state the walk checked nor any other single
+   * instant, since a compaction moves rows from one half to the other. That window is bounded by the mutable
+   * bucket's page count and reads page headers only.
+   * <p>
+   * The sealed store's check runs OUTSIDE both, under nothing but its own {@code directoryLock} read lock, which
+   * it takes itself. That is the expensive half - it CRC32s the whole {@code .ts.sealed} file - and holding the
+   * append lock across it would stall ingestion on this shard for the length of a sequential read of the largest
+   * file the type owns. It does not need them: a sealed block is immutable once written, and every path that
+   * mutates the file ({@code appendBlock}, {@code commitTempCompactionFile}, {@code truncateBefore},
+   * {@code downsampleBlocks}, {@code truncateToBlockCount}, {@code installSealedFileBytes}) takes that same
+   * directory WRITE lock, so the read lock alone already excludes all of them. Layering the shard's locks on top
+   * bought no consistency and cost writers the whole scan.
+   * <p>
+   * The consequence, stated rather than left to be discovered: a compaction may run between the two windows, so
+   * the sealed store the second half checks can hold blocks the totals did not count. That is the right trade -
+   * the totals are a report of what was there and the findings are a verdict on what is there, and a compaction
+   * moving rows between two halves that are BOTH being reported cannot invent or lose a sample.
    * <p>
    * Each problem is prefixed with which half of the shard it came from, because the two are different files with
    * different formats and different repairs: the mutable bucket is replicated page-by-page under HA while the
@@ -975,6 +987,8 @@ public class TimeSeriesShard implements AutoCloseable {
    */
   public IntegrityReport checkIntegrity() throws IOException {
     final List<String> problems = new ArrayList<>();
+    final long samples;
+    final long sealedBlocks;
 
     appendLock.lock();
     try {
@@ -982,17 +996,20 @@ public class TimeSeriesShard implements AutoCloseable {
       try {
         for (final String problem : mutableBucket.checkIntegrity())
           problems.add("mutable bucket: " + problem);
-        for (final String problem : sealedStore.checkIntegrity())
-          problems.add("sealed store: " + problem);
 
-        return new IntegrityReport(problems, mutableBucket.getSampleCount() + sealedStore.getTotalSampleCount(),
-            sealedStore.getBlockCount());
+        samples = mutableBucket.getSampleCount() + sealedStore.getTotalSampleCount();
+        sealedBlocks = sealedStore.getBlockCount();
       } finally {
         compactionLock.readLock().unlock();
       }
     } finally {
       appendLock.unlock();
     }
+
+    for (final String problem : sealedStore.checkIntegrity())
+      problems.add("sealed store: " + problem);
+
+    return new IntegrityReport(problems, samples, sealedBlocks);
   }
 
   public TimeSeriesBucket getMutableBucket() {

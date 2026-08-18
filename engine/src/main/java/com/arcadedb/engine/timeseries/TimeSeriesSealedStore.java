@@ -1673,9 +1673,12 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         return problems;
       }
 
-      final ByteBuffer headerBuf = ByteBuffer.allocate(HEADER_SIZE);
-      indexChannel.read(headerBuf, 0);
-      headerBuf.flip();
+      // Through readBytes() rather than a bare indexChannel.read(): a FileChannel may legally return fewer bytes
+      // than asked for - not merely theoretical on a network filesystem - and the buffer's untouched tail is
+      // zeros. Anywhere else that costs a retry; HERE it would turn "the read came up short" into a header or a
+      // CRC that does not match, which is a false accusation of corruption made by the very code whose job is to
+      // tell corruption from health. readBytes() loops and throws at a real end of file.
+      final ByteBuffer headerBuf = ByteBuffer.wrap(readBytes(0, HEADER_SIZE));
 
       final int magic = headerBuf.getInt();
       if (magic != MAGIC_VALUE) {
@@ -1771,10 +1774,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         // Both sides therefore come from the file: the bytes from blockStart, and the CRC from where the writer
         // put it, immediately after the data.
         final int blockSize = (int) (endOfData - blockStart);
-        final ByteBuffer storedCrcBuf = ByteBuffer.allocate(4);
-        indexChannel.read(storedCrcBuf, endOfData);
-        storedCrcBuf.flip();
-        final int storedCRC = storedCrcBuf.getInt();
+        final int storedCRC = ByteBuffer.wrap(readBytes(endOfData, 4)).getInt();
 
         final CRC32 crc = new CRC32();
         crc.update(readBytes(blockStart, blockSize));

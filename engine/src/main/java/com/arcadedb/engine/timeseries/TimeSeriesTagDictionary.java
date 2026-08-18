@@ -653,6 +653,10 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
 
     final int capacity = pageSize - BasePage.PAGE_HEADER_SIZE - DATA_ENTRIES_OFFSET;
     int entries = 0;
+    // Whether every page page 0 announces was walked to its end. The total below is a statement about ALL of them,
+    // so a walk that stopped partway cannot make it: what it counted is a prefix, and reporting a prefix as the
+    // whole restates one finding as two.
+    boolean walkedEveryEntry = true;
 
     for (int pageNumber = 1; pageNumber <= declaredPages; pageNumber++) {
       final BasePage page = database.getPageManager()
@@ -660,6 +664,7 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
       if (page == null) {
         problems.add("page 0 declares " + declaredPages + " data page(s) but page " + pageNumber
             + " is not in the file: every id stored on it is unresolvable");
+        walkedEveryEntry = false;
         break;
       }
 
@@ -668,6 +673,7 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
       if (pageEntries < 0 || pageUsed < 0 || pageUsed > capacity) {
         problems.add("data page " + pageNumber + " declares " + pageEntries + " entries over " + pageUsed
             + " byte(s), which a page of capacity " + capacity + " cannot hold");
+        walkedEveryEntry = false;
         continue;
       }
 
@@ -680,12 +686,14 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
         if (offset + 2 > pageUsed) {
           problems.add("data page " + pageNumber + " declares " + pageEntries + " entries but only " + walked
               + " fit in the " + pageUsed + " byte(s) it declares as used");
+          walkedEveryEntry = false;
           break;
         }
         final int length = page.readShort(DATA_ENTRIES_OFFSET + offset) & 0xFFFF;
         if (length > TimeSeriesBucket.MAX_STRING_BYTES || offset + 2 + length > pageUsed) {
           problems.add("entry " + walked + " of data page " + pageNumber + " declares a length of " + length
               + " byte(s), which runs past the " + pageUsed + " byte(s) the page declares as used");
+          walkedEveryEntry = false;
           break;
         }
         offset += 2 + length;
@@ -694,7 +702,7 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
       entries += walked;
     }
 
-    if (entries != declaredEntries)
+    if (walkedEveryEntry && entries != declaredEntries)
       problems.add("page 0 declares " + declaredEntries + " entries but its " + declaredPages
           + " data page(s) hold " + entries + ": the ids above " + entries + " resolve to nothing");
 

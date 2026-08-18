@@ -1093,11 +1093,16 @@ public class TimeSeriesBucket extends PaginatedComponent {
     long samples = 0;
     long minTs = Long.MAX_VALUE;
     long maxTs = Long.MIN_VALUE;
+    // Whether every page page 0 announces was actually read. The three totals below are statements about ALL of
+    // them, so a walk that stopped at page N cannot make any of them: what it accumulated is a prefix, and
+    // reporting a prefix as the whole restates one finding as four.
+    boolean walkedEveryPage = true;
     for (int pageNumber = 1; pageNumber <= dataPageCount; pageNumber++) {
       final BasePage dataPage = readPageIfPresent(pageNumber);
       if (dataPage == null) {
         problems.add("page 0 declares " + dataPageCount + " data page(s) but page " + pageNumber
             + " is not in the file: the samples it should hold are unreadable");
+        walkedEveryPage = false;
         break;
       }
 
@@ -1105,6 +1110,8 @@ public class TimeSeriesBucket extends PaginatedComponent {
       if (maxSamplesPerPage > 0 && count > maxSamplesPerPage) {
         problems.add("data page " + pageNumber + " declares " + count + " sample(s), more than the "
             + maxSamplesPerPage + " a " + pageSize + "-byte page holds at this type's " + rowSize + "-byte stride");
+        // The count is not usable, so neither is any total it would go into.
+        walkedEveryPage = false;
         continue;
       }
 
@@ -1117,6 +1124,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
       if (pageMinTs > pageMaxTs) {
         problems.add("data page " + pageNumber + " declares min timestamp " + pageMinTs + " above its max timestamp "
             + pageMaxTs);
+        walkedEveryPage = false;
         continue;
       }
       if (pageMinTs < minTs)
@@ -1124,6 +1132,9 @@ public class TimeSeriesBucket extends PaginatedComponent {
       if (pageMaxTs > maxTs)
         maxTs = pageMaxTs;
     }
+
+    if (!walkedEveryPage)
+      return problems;
 
     if (samples != declaredSamples)
       problems.add("page 0 declares " + declaredSamples + " sample(s) but its " + dataPageCount
