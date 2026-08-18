@@ -1117,9 +1117,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // #6320: how many pages of repairs one transaction of this pass may accumulate before committing and opening the
     // next. Read once - it is a database-scoped setting and cannot change under a running check - and read here rather
     // than kept in a field because a bucket outlives any number of checks.
-    final RepairTransaction repairTx = new RepairTransaction(fix ?
-            database.getConfiguration().getValueAsInteger(GlobalConfiguration.CHECK_DATABASE_REPAIR_BATCH_PAGES) :
-            0);
+    final RepairTransaction repairTx = new RepairTransaction(database,
+            fix ? RepairTransaction.configuredBatchPages(database) : 0);
 
     if (!fix)
       return checkInternal(verboseLevel, false, repairTx);
@@ -1476,88 +1475,6 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     stats.put("totalErrors", totals.totalErrors);
 
     return stats;
-  }
-
-  /**
-   * The transaction one run of {@link #check(int, boolean)} makes its repairs in, and the only thing that knows
-   * whether that run still OWNS one (#6320).
-   * <p>
-   * <b>The batching.</b> {@link #commitBatchIfFull} commits the repairs made so far and opens the next transaction
-   * once they have dirtied {@code batchPages} pages - the same accounting
-   * {@code GraphDatabaseChecker.commitRepairBatchIfFull} makes over the graph repairs, against the same setting,
-   * {@link GlobalConfiguration#CHECK_DATABASE_REPAIR_BATCH_PAGES}. #6294 bounded the orphaned-chunk sweep with a memory
-   * budget of its own and stopped when it was spent, leaving the rest for the next {@code FIX}; the record repairs of
-   * the same method - four force-deletes in the per-slot loop, each taking its record's page plus every page its chain
-   * touches - were bounded by nothing at all and could reach the {@code OutOfMemoryError} of #4653 through the other
-   * loop. Bounding them the same way would have been the wrong half of the answer twice over: what is scarce is ONE
-   * pool (the transaction's page copies), so two budgets over it cannot both be right; and a repair that stops when the
-   * pool is spent leaves an operator running {@code FIX} over and over to converge. Committing instead gives the pool
-   * back, so one run repairs everything a bucket has wrong, with the memory bounded throughout.
-   * <p>
-   * PAGES, not repairs: the WAL entry carries page images, and how many records a repair touched says nothing about
-   * how many distinct pages it dirtied. {@code TransactionContext.getModifiedPages()} counts modified and new pages,
-   * which is what the entry will hold - and under HA what a Raft entry must stay below (#6128).
-   * <p>
-   * A SOFT ceiling, checked BETWEEN units of repair work and never inside one: a transaction can exceed it by whatever
-   * the unit in flight dirties (a chain repair walking a very long chain). It never interrupts a repair half-way,
-   * which is the property that makes a partial run safe - every record is either repaired or untouched. Set the
-   * configuration to 0 to get the single all-or-nothing transaction back, memory cost included.
-   * <p>
-   * <b>Why ownership is a field and not {@code database.isTransactionActive()}</b>, which is the subtle half: that
-   * question asks whether ANY transaction is on the thread, and the answer is yes for the caller's own whenever this
-   * check runs nested inside one - which through HTTP is every production run. A batch commit that throws has already
-   * disposed its context ({@code LocalDatabase.commit} pops it in a {@code finally} whether or not the write
-   * succeeded), so from that moment this run owns nothing and what is on the thread belongs to the caller. Cleaning
-   * "the" transaction up on that evidence would roll back work this class never made - the other buckets a
-   * {@code CHECK DATABASE FIX} already repaired into the same command transaction, or anything else the caller was
-   * holding (PR review on #6320). Tracked explicitly instead, so the cleanup can only ever touch a transaction this
-   * run opened and still holds.
-   *
-   * @author Luca Garulli (l.garulli@arcadedata.com)
-   */
-  private final class RepairTransaction {
-    private final int     batchPages;
-    private       boolean owned;
-
-    private RepairTransaction(final int batchPages) {
-      this.batchPages = batchPages;
-    }
-
-    /** Opens the transaction the repairs are made in, nested inside whatever the caller has open. */
-    private void begin() {
-      database.begin();
-      owned = true;
-    }
-
-    private void commitBatchIfFull() {
-      if (!owned || batchPages <= 0)
-        return;
-      if (database.getTransaction().getModifiedPages() < batchPages)
-        return;
-
-      // Ownership is dropped BEFORE the commit and taken back after it, and that order is the whole point: see the
-      // class comment. Between these two lines this run owns nothing, which is exactly the state a throwing commit
-      // leaves behind - and the state finish() must not act on.
-      owned = false;
-      database.commit();
-      database.begin();
-      owned = true;
-    }
-
-    /**
-     * Ends the transaction this run opened, if it still holds one. A repair left half-applied is never committed: the
-     * batches before it stay, which is the semantics #6128 gave the graph repairs, and the batch in flight goes back.
-     */
-    private void finish(final boolean completed) {
-      if (!owned)
-        return;
-
-      owned = false;
-      if (completed)
-        database.commit();
-      else
-        database.rollback();
-    }
   }
 
   /**
