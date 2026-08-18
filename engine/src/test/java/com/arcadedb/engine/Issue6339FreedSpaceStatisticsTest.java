@@ -23,6 +23,8 @@ import com.arcadedb.database.BucketPageLayoutTestSupport;
 import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
@@ -236,6 +238,36 @@ class Issue6339FreedSpaceStatisticsTest extends BucketPageLayoutTestSupport {
         .as("the pages the deletes emptied must take the new records back")
         .isLessThan(pagesAfterTheLoad * 3 / 2);
     assertThat(countRecords(TYPE)).as("and nothing may be lost on the way").isEqualTo(records);
+    checkDatabase();
+  }
+
+  /**
+   * The other way into the same accounting: {@code CHECK DATABASE ... COMPRESS} walks every page of every bucket and
+   * compresses it with {@code forceWipeOut}, which the commit path never does. Because that walk measures each page it
+   * touches, it also REPAIRS a free-space entry that has drifted - which is what this asserts, by planting a wrong one
+   * first. Without the plant the assertion would hold whether or not the compression reported anything, since the
+   * pages a commit leaves behind are already packed and already accounted.
+   */
+  @Test
+  void checkDatabaseCompressRemeasuresThePagesItWalks() {
+    database.transaction(() -> database.getSchema().createDocumentType(TYPE, 1).createProperty("v", Type.STRING));
+
+    final LocalBucket bucket = bucketOf(TYPE);
+    sealFirstPage(TYPE);
+    assertThat(bucket.getFreeSpaceHintForPage(0)).as("a page a spill has sealed has nothing left to offer")
+        .isEqualTo(-1);
+
+    // Tell the allocator page 0 is half empty. It is not: the spill took its last byte.
+    final JSONArray planted = new JSONArray();
+    planted.put(new JSONObject().put("id", 0).put("free", wholeUsablePage(bucket) / 2));
+    bucket.setPageStatistics(planted);
+    assertThat(bucket.getFreeSpaceHintForPage(0)).as("the fixture must really have planted a wrong entry").isPositive();
+
+    database.command("sql", "check database compress").close();
+
+    assertThat(bucket.getFreeSpaceHintForPage(0))
+        .as("the compress walked page 0 and must have replaced the drifted entry with what it measured")
+        .isEqualTo(-1);
     checkDatabase();
   }
 
