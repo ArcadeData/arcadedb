@@ -37,6 +37,7 @@ import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.DocumentType;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -447,12 +448,15 @@ public class SetStep extends AbstractExecutionStep {
     // The RID the write is about to displace: the live one, not the one the row happened to carry.
     final RID originalRid = vertex.getIdentity();
 
-    // Get existing labels and add new ones
-    final List<String> existingLabels = Labels.getLabels(vertex);
-    final List<String> allLabels = new ArrayList<>(existingLabels);
+    // The labels the new type has to be built from are the vertex's OWN labels, not every label it answers to: an
+    // inherited one comes back through the hierarchy, and naming it in the composite instead of the subtype that
+    // carries it would move the vertex out of that subtype (issue #6363). A label the vertex already answers to -
+    // its own, or one it inherits - is already present and adds nothing.
+    final DocumentType currentType = vertex.getType();
+    final List<String> allLabels = new ArrayList<>(Labels.getOwnLabels(vertex));
     int newLabelsCount = 0;
     for (final String label : item.getLabels())
-      if (!allLabels.contains(label)) {
+      if (!currentType.instanceOf(label) && !allLabels.contains(label)) {
         allLabels.add(label);
         newLabelsCount++;
       }

@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
@@ -34,6 +35,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Schema;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -260,28 +263,41 @@ public class RemoveStep extends AbstractExecutionStep {
     // have been resolved by the caller - and it costs one map lookup that is skipped until a label write happens.
     vertex = replacements.resolve(vertex);
 
-    final List<String> currentLabels = Labels.getLabels(vertex);
+    // The reduced type is rebuilt from the vertex's OWN labels: an inherited one is carried by the subtype that
+    // remains and must not be listed alongside it, or the vertex would be moved out of that subtype (issue #6363).
+    final DocumentType currentType = vertex.getType();
+    final List<String> currentLabels = Labels.getOwnLabels(vertex);
     final List<String> labelsToRemove = item.getLabels();
-
-    // Check how many of the labels to remove actually exist on the vertex
-    int removedLabelsCount = 0;
-    for (final String label : labelsToRemove)
-      if (currentLabels.contains(label))
-        removedLabelsCount++;
-    if (removedLabelsCount == 0)
-      return;
 
     // Compute remaining labels
     final List<String> remainingLabels = new ArrayList<>(currentLabels);
     remainingLabels.removeAll(labelsToRemove);
 
+    // Count the labels the vertex actually carries - a label it does not have is a no-op, exactly as in Neo4j.
+    // A label it only answers to through a type it keeps is a different matter: no type it could be moved to
+    // answers 'no' to that label and 'yes' to the subtype implying it, so the removal is refused rather than
+    // reported as done and silently not done.
+    final Schema schema = context.getDatabase().getSchema();
+    int removedLabelsCount = 0;
+    for (final String label : labelsToRemove) {
+      if (!currentType.instanceOf(label))
+        continue;
+      if (Labels.impliedBy(schema, remainingLabels, label))
+        throw new CommandSemanticException("Cannot remove label '" + label + "' from a vertex of type '"
+            + currentType.getName() + "': the type inherits that label from its hierarchy, so the vertex would still "
+            + "answer to it. Drop the label from the type hierarchy with SQL (ALTER TYPE), or remove the inheriting "
+            + "label too");
+      removedLabelsCount++;
+    }
+    if (removedLabelsCount == 0)
+      return;
+
     final String newTypeName;
     if (remainingLabels.isEmpty()) {
       newTypeName = "V";
-      context.getDatabase().getSchema().getOrCreateVertexType("V");
+      schema.getOrCreateVertexType("V");
     } else {
-      newTypeName = Labels.ensureCompositeType(
-          context.getDatabase().getSchema(), remainingLabels);
+      newTypeName = Labels.ensureCompositeType(schema, remainingLabels);
     }
 
     if (vertex.getTypeName().equals(newTypeName))

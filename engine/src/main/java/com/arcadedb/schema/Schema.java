@@ -167,6 +167,22 @@ public interface Schema {
 
   DocumentType getType(String typeName);
 
+  /**
+   * Returns the type with the given name, or {@code null} when the schema does not have it.
+   * <p>
+   * The non-throwing companion of {@link #getType(String)}, for the many callers that can tolerate an absent type and
+   * had to spell it {@code existsType(name) ? getType(name) : null} - two probes of the same map, and an exception
+   * used as control flow if they forgot the guard. The default implementation is exactly that pair, so an
+   * out-of-tree {@link Schema} keeps working; the built-in schemas answer with a single lookup.
+   *
+   * @param typeName name of the type to look up
+   *
+   * @return the type, or {@code null} if no type with that name exists
+   */
+  default DocumentType getTypeOrNull(final String typeName) {
+    return existsType(typeName) ? getType(typeName) : null;
+  }
+
   void dropType(String typeName);
 
   String getTypeNameByBucketId(int bucketId);

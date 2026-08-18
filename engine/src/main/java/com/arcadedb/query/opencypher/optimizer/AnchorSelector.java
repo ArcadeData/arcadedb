@@ -144,6 +144,12 @@ public class AnchorSelector {
    * @return anchor selection with cost estimate
    */
   private AnchorSelection evaluateNode(final LogicalNode node, final LogicalPlan plan) {
+    // A label disjunction is served by NodeByLabelDisjunctionScan, which visits every type any alternative accepts
+    // and cannot be driven by an index. Costing it here from the first label alone described a scan that never runs
+    // (issue #6363), so the estimate is summed over exactly the types that scan will walk.
+    if (node.isLabelDisjunction() && node.getLabels().size() > 1)
+      return evaluateDisjunctionNode(node);
+
     final String variable = node.getVariable();
     final String label = node.getFirstLabel();
 
@@ -322,6 +328,20 @@ public class AnchorSelector {
         cost,
         typeCount
     );
+  }
+
+  /**
+   * Costs a label-disjunction anchor as the multi-type scan it will actually be: the record count summed over every
+   * vertex type an alternative accepts, subtypes included and each counted once. Property predicates are left to the
+   * Filter above the anchor - {@code IndexSelectionRule} builds a {@code NodeByLabelDisjunctionScan} for this node
+   * whatever this method decides about indexes, so claiming a seek here would only mis-price the plan it produces.
+   *
+   * @param node the disjunction node being evaluated as an anchor
+   * @return the anchor selection for a full scan of every matching type
+   */
+  private AnchorSelection evaluateDisjunctionNode(final LogicalNode node) {
+    final long rows = statisticsProvider.getMatchingVertexCardinality(node.getLabels(), true);
+    return new AnchorSelection(node.getVariable(), node, costModel.estimateScanCostForRows(rows), rows);
   }
 
   /**
