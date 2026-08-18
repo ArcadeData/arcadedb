@@ -57,7 +57,7 @@ public class SQLFunctionDuration extends SQLFunctionAbstract {
     // A java.time.Duration is an exact amount of time, so it accepts only units with an exact length. Weeks have one
     // (7 days) and are converted; years and months do not - their length depends on which year or month - and used to
     // reach Duration.of() as an unsupported estimated unit, which threw UnsupportedTemporalTypeException (issue #6388).
-    if (unit == ChronoUnit.WEEKS)
+    if (unit == ChronoUnit.WEEKS) {
       try {
         return Duration.ofDays(Math.multiplyExact(amount, 7));
       } catch (final ArithmeticException e) {
@@ -66,6 +66,7 @@ public class SQLFunctionDuration extends SQLFunctionAbstract {
         throw new IllegalArgumentException(
             NAME + "() cannot build a duration of " + amount + " weeks: the amount overflows the range of a duration", e);
       }
+    }
 
     // DAYS is the one estimated unit Duration.of() accepts (as exactly 24 hours); every other one - YEARS, MONTHS -
     // it rejects, which is precisely the set to refuse here with an explanation rather than let through.
@@ -80,13 +81,13 @@ public class SQLFunctionDuration extends SQLFunctionAbstract {
   private static long getAmount(final Object param) {
     if (param instanceof Number number)
       return number.longValue();
-    else if (param instanceof String string)
+    else if (param instanceof String string) {
       try {
         return Long.parseLong(string.trim());
       } catch (final NumberFormatException e) {
         throw new IllegalArgumentException(NAME + "() received an amount '" + string + "' that is not a number", e);
       }
-    else
+    } else
       throw new IllegalArgumentException("amount '" + param + "' not a number or a string");
   }
 

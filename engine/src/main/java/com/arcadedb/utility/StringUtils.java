@@ -26,6 +26,13 @@ import java.util.IllegalFormatException;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class StringUtils {
+  /**
+   * Widest field a {@code %<width>s}-style conversion may ask for in a user-supplied format. Deliberately generous -
+   * a padded report column is nowhere near it - and the point is only that {@code format('%99999999s', 'x')} must not
+   * turn eight characters of query text into a 100MB string (issue #6389).
+   */
+  public static final int MAX_FORMAT_WIDTH = 1_000_000;
+
   protected StringUtils() {
   }
 
@@ -53,13 +60,6 @@ public class StringUtils {
 
     return false;
   }
-
-  /**
-   * Widest field a {@code %<width>s`-style} conversion may ask for in a user-supplied format. Deliberately generous -
-   * a padded report column is nowhere near it - and the point is only that {@code format('%99999999s', 'x')} must not
-   * turn eight characters of query text into a 100MB string (issue #6389).
-   */
-  public static final int MAX_FORMAT_WIDTH = 1_000_000;
 
   /**
    * Applies a user-supplied {@link java.util.Formatter} pattern, answering a typed argument error for everything the
