@@ -71,7 +71,7 @@ public class SQLMethodConvert extends AbstractSQLMethod {
       } catch (final IllegalArgumentException e) {
         throw new CommandSQLParsingException(
             "Unknown type '" + destType + "' in convert(): expected one of " + Arrays.toString(Type.values())
-                + " or a fully qualified Java class name");
+                + " or a fully qualified Java class name", e);
       }
       return Type.convert(context.getDatabase(), value, arcadeType.getDefaultJavaType());
     }

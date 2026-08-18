@@ -62,6 +62,17 @@ class Issue6389FunctionArgumentTest extends TestHelper {
         .hasMessageContaining("STRING key");
   }
 
+  /**
+   * A null key is rejected rather than turned into a null entry. The raw cast used to produce {@code (String) null}
+   * and store it silently, so a mistyped call built a map with a key nobody can name.
+   */
+  @Test
+  void mapRejectsANullKey() {
+    assertThatThrownBy(() -> database.query("sql", "SELECT map(null,'a') AS m").next())
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("STRING key");
+  }
+
   @Test
   void asMapConvertsANonStringKey() {
     try (final ResultSet rs = database.query("sql", "SELECT [1,2,3,4].asMap() AS m")) {
@@ -134,6 +145,10 @@ class Issue6389FunctionArgumentTest extends TestHelper {
   void formatWidthCeilingHasNoBypass() {
     // Width behind a precision: the argument is truncated to one character, then padded back out to two million.
     assertThatThrownBy(() -> database.query("sql", "SELECT format('%2000000.1s','x') AS f").next())
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("limit");
+    // The same shape on a numeric conversion, where the width is large enough to be an OutOfMemoryError.
+    assertThatThrownBy(() -> database.query("sql", "SELECT format('%2000000000.1f', 3.14) AS f").next())
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("limit");
     // '<' reuses the previous argument; the width follows it.
