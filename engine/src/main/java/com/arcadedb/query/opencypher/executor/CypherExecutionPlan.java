@@ -136,6 +136,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.query.sql.parser.ExplainResultSet;
+import com.arcadedb.log.LogManager;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -147,6 +148,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
+import java.util.logging.Level;
 
 /**
  * Execution plan for a Cypher query.
@@ -704,6 +706,9 @@ public class CypherExecutionPlan {
     explainOutput.append("OpenCypher Native Execution Plan\n");
     explainOutput.append("=================================\n\n");
 
+    // The chain described below, kept so a client reading the plan as data sees what the text shows.
+    List<ExecutionStep> describedSteps = Collections.emptyList();
+
     // The push-down is asked FIRST because execute() asks it first: it replaces the whole chain, so a query it
     // claims never reaches the optimizer, and describing that query by the physical plan the optimizer built for it
     // names a plan the engine does not run. That gap predates this issue, which widens it by routing the plainest
@@ -714,6 +719,7 @@ public class CypherExecutionPlan {
       explainOutput.append("Execution Plan:\n");
       appendStepChain(explainOutput, countPushDown);
       explainOutput.append("\n");
+      describedSteps = stepChainOf(countPushDown);
     }
 
     if (canUseOptimizedPhysicalPlan()) {
@@ -725,13 +731,80 @@ public class CypherExecutionPlan {
       explainOutput.append("\n");
       explainOutput.append(String.format("Total Estimated Cost: %.2f\n", physicalPlan.getTotalEstimatedCost()));
       explainOutput.append(String.format("Total Estimated Rows: %d\n", physicalPlan.getTotalEstimatedCardinality()));
+      if (countPushDown == null)
+        describedSteps = stepChainOf(stepsForDescription());
     } else if (countPushDown == null) {
       explainOutput.append("Using Traditional Execution (Non-Optimized)\n\n");
-      explainOutput.append("Reason: Query pattern not yet supported by optimizer\n");
-      explainOutput.append("Execution will use step-by-step interpretation\n");
+      explainOutput.append("Reason: Query pattern not yet supported by optimizer\n\n");
+      describedSteps = appendTraditionalPlan(explainOutput);
     }
 
-    return new ExplainResultSet(new OpenCypherExplainExecutionPlan(explainOutput.toString()));
+    return new ExplainResultSet(new OpenCypherExplainExecutionPlan(explainOutput.toString(), describedSteps, -1));
+  }
+
+  /**
+   * Describes what the traditional path would run, and returns the chain it described.
+   * <p>
+   * EXPLAIN used to stop at the reason above, which left the one command whose entire purpose is inspecting a plan
+   * WITHOUT running it strictly less informative than PROFILE - and PROFILE is no workaround for a slow query, nor
+   * for a writing one, since it executes (issue #6323). The steps are the ones {@link #execute()} builds, and they
+   * are built and never pulled: construction reads the schema, the work is all in {@code syncPull}.
+   * <p>
+   * A UNION is answered branch by branch, so it is described branch by branch: each sub-plan describes the chain it
+   * would run, which for a branch the optimizer claims is that branch's own answer.
+   */
+  private List<ExecutionStep> appendTraditionalPlan(final StringBuilder output) {
+    if (unionSubqueryPlans != null && !unionSubqueryPlans.isEmpty()) {
+      output.append("Execution Plan:\n");
+      output.append("+ UNION").append(unionRemoveDuplicates ? "" : " ALL")
+          .append(" (").append(unionSubqueryPlans.size()).append(" queries)\n");
+
+      final List<ExecutionStep> allSteps = new ArrayList<>();
+      for (int i = 0; i < unionSubqueryPlans.size(); i++) {
+        output.append("  Branch ").append(i + 1).append(":\n");
+        final StringBuilder branchOutput = new StringBuilder();
+        allSteps.addAll(unionSubqueryPlans.get(i).appendTraditionalPlan(branchOutput));
+        output.append(branchOutput.toString().indent(2));
+      }
+      return allSteps;
+    }
+
+    final AbstractExecutionStep rootStep = stepsForDescription();
+    if (rootStep == null) {
+      output.append("Execution will use step-by-step interpretation\n");
+      return Collections.emptyList();
+    }
+
+    output.append("Execution Plan:\n");
+    appendStepChain(output, rootStep);
+    return stepChainOf(rootStep);
+  }
+
+  /**
+   * The step chain this query would run, built only to be described, or null when the statement produces none.
+   * A failure to build is reported as the description rather than as a failed EXPLAIN: the query would fail the
+   * same way when run, and saying so is more useful than a plan-less error.
+   */
+  private AbstractExecutionStep stepsForDescription() {
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+    context.setInputParameters(parameters);
+    setupFunctionResolver(context);
+    try {
+      return canUseOptimizedPhysicalPlan() ? buildExecutionStepsWithOptimizer(context) : buildExecutionSteps(context);
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.FINE, "Error on building the execution plan to describe it", e);
+      return null;
+    }
+  }
+
+  /** A step chain as a first-step-first list, which is the order it is read in and the reverse of how it is linked. */
+  private static List<ExecutionStep> stepChainOf(final AbstractExecutionStep rootStep) {
+    final List<ExecutionStep> stepChain = new ArrayList<>();
+    for (AbstractExecutionStep current = rootStep; current != null; current = (AbstractExecutionStep) current.getPrev())
+      stepChain.add(current);
+    Collections.reverse(stepChain);
+    return stepChain;
   }
 
   /**
@@ -754,13 +827,8 @@ public class CypherExecutionPlan {
 
   /** Appends a step chain first-step-first, which is the order it is read in and the reverse of how it is linked. */
   private static void appendStepChain(final StringBuilder output, final AbstractExecutionStep rootStep) {
-    final List<AbstractExecutionStep> stepChain = new ArrayList<>();
-    for (AbstractExecutionStep current = rootStep; current != null; current = (AbstractExecutionStep) current.getPrev())
-      stepChain.add(current);
-    Collections.reverse(stepChain);
-
-    for (final AbstractExecutionStep step : stepChain) {
-      output.append(step.prettyPrint(0, 2));
+    for (final ExecutionStep step : stepChainOf(rootStep)) {
+      output.append(((AbstractExecutionStep) step).prettyPrint(0, 2));
       output.append("\n");
     }
   }
@@ -855,15 +923,7 @@ public class CypherExecutionPlan {
     }
 
     // Collect execution steps for structured plan data
-    final List<ExecutionStep> executionSteps = new ArrayList<>();
-    if (rootStep != null) {
-      AbstractExecutionStep current = rootStep;
-      while (current != null) {
-        executionSteps.add(current);
-        current = (AbstractExecutionStep) current.getPrev();
-      }
-      Collections.reverse(executionSteps);
-    }
+    final List<ExecutionStep> executionSteps = stepChainOf(rootStep);
 
     results.setPlan(new OpenCypherExplainExecutionPlan(profileOutput.toString(), executionSteps, endTime - startTime));
     // Surface the CRUD-count accumulator built up by the mutation steps during the profiled run,

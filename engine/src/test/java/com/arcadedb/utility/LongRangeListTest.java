@@ -21,6 +21,8 @@ package com.arcadedb.utility;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
@@ -108,6 +110,34 @@ class LongRangeListTest {
     assertThat(list.indexOf(9)).isEqualTo(3);
     assertThat(list.indexOf(10L)).isEqualTo(-1);
     assertThat(list.lastIndexOf(9L)).isEqualTo(3);
+  }
+
+  /**
+   * {@code indexOf} answers the {@link List} contract, which is {@code equals()}, and no {@code Long} equals a
+   * {@code BigInteger} or a {@code BigDecimal}. Truncating them to a long said otherwise, and said it wrongly:
+   * every value congruent to an element modulo 2^64 answered as that element.
+   */
+  @Test
+  void indexOfRejectsTheTypesThatNoElementCanEqual() {
+    final LongRangeList list = new LongRangeList(0L, 3L, 5); // 0, 3, 6, 9, 12
+    assertThat(list.indexOf(BigInteger.valueOf(9))).isEqualTo(-1);
+    assertThat(list.indexOf(new BigDecimal("9"))).isEqualTo(-1);
+    assertThat(list.indexOf(BigInteger.ONE.shiftLeft(64).add(BigInteger.valueOf(9)))).isEqualTo(-1);
+    assertThat(list.contains(BigInteger.valueOf(9))).isFalse();
+  }
+
+  /** Membership by value, which is what a caller whose own equality coerces numerically needs (issue #6323). */
+  @Test
+  void containsLongAnswersByValue() {
+    final LongRangeList list = new LongRangeList(0L, 3L, 5); // 0, 3, 6, 9, 12
+    assertThat(list.containsLong(9L)).isTrue();
+    assertThat(list.containsLong(12L)).isTrue();
+    assertThat(list.containsLong(10L)).isFalse();
+    assertThat(list.containsLong(15L)).isFalse();
+    assertThat(list.containsLong(-3L)).isFalse();
+    assertThat(new LongRangeList(10L, -2L, 6).containsLong(0L)).isTrue();  // 10, 8, 6, 4, 2, 0
+    assertThat(new LongRangeList(10L, -2L, 6).containsLong(-2L)).isFalse();
+    assertThat(new LongRangeList(Long.MIN_VALUE, 1L, 10).containsLong(Long.MAX_VALUE)).isFalse();
   }
 
   /** The distance from the start overflows a long: the lookup must not wrap around into a false positive. */
