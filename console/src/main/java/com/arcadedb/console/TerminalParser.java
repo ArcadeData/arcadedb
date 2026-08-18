@@ -32,6 +32,10 @@ import java.util.Locale;
  * <p>
  * The line comment marker depends on the language in use: SQL uses `--`, while Cypher, Gremlin and Mongo use `//`. This matters
  * because a double dash is a legal undirected relationship in Cypher (`(a) -- (b)`) and a double slash is a division in SQL.
+ * <p>
+ * A semicolon inside a JSON object literal is not a separator either, so the open braces are counted while scanning. The count
+ * never goes below zero: an unbalanced closing brace is a typo in one command and must not change how the following ones are
+ * split (issue #6392).
  */
 public class TerminalParser extends DefaultParser {
   private static final String SQL_LINE_COMMENT   = "--";
@@ -151,7 +155,10 @@ public class TerminalParser extends DefaultParser {
           current.append(c);
         } else if (c == '}') {
           final int prevDepth = braceDepth;
-          braceDepth--;
+          // A CLOSING BRACE WITH NOTHING OPEN IS JUST TEXT: LETTING THE DEPTH GO NEGATIVE WOULD STOP EVERY FOLLOWING SEMICOLON
+          // FROM SEPARATING THE COMMANDS FOR THE REST OF THE TEXT (ISSUE #6392)
+          if (braceDepth > 0)
+            braceDepth--;
           current.append(c);
 
           // Check if we just closed all braces and there's more content after newlines

@@ -185,9 +185,10 @@ public class Console {
       if (value.startsWith("-D")) {
         // SETTING
         final String keyValue = value.substring(2);
-        final int separatorPos = keyValue.indexOf('=');
-        final String key = separatorPos < 0 ? keyValue : keyValue.substring(0, separatorPos);
-        final String propertyValue = separatorPos < 0 ? "" : keyValue.substring(separatorPos + 1);
+        final String[] pair = splitKeyValue(keyValue);
+        // ON THE COMMAND LINE A SETTING WITH NO '=' AT ALL IS THE SAME AS ONE WITH AN EMPTY VALUE
+        final String key = pair == null ? keyValue : pair[0];
+        final String propertyValue = pair == null ? "" : pair[1];
         if (key.isEmpty())
           System.err.println("Ignoring malformed system property argument '" + value + "': missing key");
         else {
@@ -310,14 +311,19 @@ public class Console {
   }
 
   private void executeSet(final String line) {
-    final String[] parts = line.split("=");
-    if (parts.length != 2)
+    // THE VALUE IS EVERYTHING AFTER THE FIRST '=': IT CAN CONTAIN FURTHER SEPARATORS AND IT CAN BE EMPTY (ISSUE #6392)
+    final String[] pair = splitKeyValue(line);
+    if (pair == null)
       throw new ConsoleException("Invalid syntax for SET, use SET <name> = <value>");
+    if (pair[0].isBlank())
+      // SAY WHICH HALF IS MISSING, LIKE THE `-D<key>=<value>` PATH ALREADY DOES
+      throw new ConsoleException("Invalid syntax for SET: missing name, use SET <name> = <value>");
 
-    final String key = parts[0].trim();
-    final String value = parts[1].trim();
+    final String key = pair[0].trim();
+    final String value = pair[1].trim();
 
-    switch (key.toLowerCase()) {
+    // THE SETTING NAMES ARE ASCII, SO THE CASE MUST FOLD IN ENGLISH: WITH A TURKISH DEFAULT LOCALE `LIMIT` WOULD NOT MATCH
+    switch (key.toLowerCase(Locale.ENGLISH)) {
     case "limit" -> {
       limit = Integer.parseInt(value);
       outputLine(3, "Set new limit to %d", limit);
@@ -1171,6 +1177,20 @@ public class Console {
   private String getPrompt() {
     final String databaseName = databaseProxy != null ? databaseProxy.getName() : null;
     return PROMPT.formatted(databaseName != null ? "{" + databaseName + "}" : "");
+  }
+
+  /**
+   * Splits a `&lt;key&gt;=&lt;value&gt;` pair on the FIRST '=' only, so a value that contains further separators (a connection
+   * string, a base64 padding, a date pattern) is kept whole and an empty value is a value, not a missing one. Returns null when
+   * there is no separator at all, leaving to the caller the choice between rejecting the input and reading it as an empty value.
+   * Shared by the `-D&lt;key&gt;=&lt;value&gt;` arguments (issue #5928) and by the SET command (issue #6392), which used to
+   * disagree on the rule.
+   */
+  static String[] splitKeyValue(final String pair) {
+    final int separatorPos = pair.indexOf('=');
+    if (separatorPos < 0)
+      return null;
+    return new String[] { pair.substring(0, separatorPos), pair.substring(separatorPos + 1) };
   }
 
   private static boolean setGlobalConfiguration(final String key, final String value, final boolean printError) {
