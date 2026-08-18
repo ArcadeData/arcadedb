@@ -3914,6 +3914,12 @@ public class SelectExecutionPlanner {
    * {@code String.contains} - while a condition on BOTH was pushed down and then answered by the first one alone, with the
    * second dropped from the filter as well (issue #6414, item 2). {@link FetchFromIndexStep} turns the claimed conditions
    * into the positional key the index expects.
+   * <p>
+   * At most ONE condition per index property is claimed - the inner loop breaks after the first match - so a second
+   * condition on the same property stays in the residual filter and is answered by {@code String.contains} rather than by
+   * the index's analyzer. The positional key has one slot per property and cannot express two texts for one: within a
+   * property the terms of a single query text are OR-ed, while the {@code AND} between two conditions wants both. Serving
+   * it means one lookup per CONDITION rather than per property, which is issue #6427.
    *
    * @param context
    * @param index

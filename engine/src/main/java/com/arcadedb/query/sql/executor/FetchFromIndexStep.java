@@ -366,6 +366,10 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
    * conditions on the same property. A single-property index takes this path too and produces the same one-element key it
    * always did (issue #6414, item 2).
    * <p>
+   * The already-filled-slot case is reachable only when one document property is indexed twice under different modifiers
+   * ({@code (m by key, m by value)}), since the planner claims at most one condition per index property; two conditions on
+   * one property leave the second in the residual filter instead, with the semantics gap that is issue #6427.
+   * <p>
    * A condition whose right side evaluates to {@code null} makes the whole block match NOTHING rather than leaving its
    * property unconstrained. The two readings share one slot - a {@code null} slot is exactly how the key says "this property
    * is not constrained" - so folding a null-valued condition into it would silently drop the condition instead of failing

@@ -147,6 +147,33 @@ class Issue6414ContainsTextMultiPropertyIndexTest extends TestHelper {
   }
 
   /**
+   * Pins what a SECOND condition on an already-claimed property does today, which issue #6427 exists to change. The
+   * planner claims one condition per index property, so this one is answered by the index and that one by the residual
+   * {@code String.contains} - the last place where the same operator still means two things in one query. The
+   * assertions are a record of the current answer, not an endorsement of it: the third is the one #6427 will flip.
+   */
+  @Test
+  void aSecondConditionOnTheSamePropertyIsStillAnsweredByTheRowFilter() {
+    createArticles("CREATE INDEX ON Article6414 (title, content) FULL_TEXT");
+    database.transaction(() -> database.command("sql",
+        "INSERT INTO Article6414 SET id = 'e', title = 'java concurrency', content = 'threads'"));
+
+    database.transaction(() -> {
+      // The index answers 'java'; the row filter answers 'concurrency' as a substring, and agrees here.
+      assertThat(idsMatching(
+          "SELECT id FROM Article6414 WHERE title CONTAINSTEXT 'java' AND title CONTAINSTEXT 'concurrency'"))
+          .containsExactly("e");
+      // A second condition that matches nothing still empties the result: it is checked, just not by the index.
+      assertThat(idsMatching(
+          "SELECT id FROM Article6414 WHERE title CONTAINSTEXT 'java' AND title CONTAINSTEXT 'zzz'")).isEmpty();
+      // #6427: the index is case-insensitive and the row filter is not, so the two conditions disagree about the same
+      // word. Once a second condition reaches the index this becomes 'e'.
+      assertThat(idsMatching(
+          "SELECT id FROM Article6414 WHERE title CONTAINSTEXT 'java' AND title CONTAINSTEXT 'CONCURRENCY'")).isEmpty();
+    });
+  }
+
+  /**
    * The BM25 similarity reaches the index through a different scoring path (type-wide corpus statistics), which has to
    * read the same positional key.
    */
