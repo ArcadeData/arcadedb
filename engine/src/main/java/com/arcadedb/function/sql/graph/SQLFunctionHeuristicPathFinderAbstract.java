@@ -19,8 +19,12 @@
 package com.arcadedb.function.sql.graph;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.SQLFunction;
 import com.arcadedb.function.sql.math.SQLFunctionMathAbstract;
 
 import java.util.HashSet;
@@ -60,6 +64,12 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
   protected double              paramDFactor                = 1.0;
   protected String              paramCustomHeuristicFormula = "";
 
+  /**
+   * The function named by {@link #PARAM_CUSTOM_HEURISTIC_FORMULA}, resolved once when the options are bound rather than
+   * once per visited node. Non-null exactly when {@link #paramHeuristicFormula} is {@link SQLHeuristicFormula#CUSTOM}.
+   */
+  protected SQLFunction         customHeuristicFunction;
+
   protected              CommandContext context;
   protected final        List<Vertex>   route = new LinkedList<>();
   protected static final float          MIN   = 0f;
@@ -89,6 +99,49 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
 
   protected abstract double getHeuristicCost(final Vertex node, final Vertex parent, final Vertex target,
                                              CommandContext context);
+
+  /**
+   * Resolves the SQL function named by the {@code customHeuristicFormula} option and remembers it, so an unknown name is a
+   * failure of the query that supplied it rather than a silently ignored option (issue #6414).
+   *
+   * @param functionName the SQL function name, optionally library-qualified ({@code library.function})
+   * @param ctx          the command context, used to reach the SQL query engine of the current database
+   */
+  protected void bindCustomHeuristicFunction(final String functionName, final CommandContext ctx) {
+    final String trimmed = functionName == null ? "" : functionName.trim();
+    if (trimmed.isEmpty())
+      throw new CommandSQLParsingException(
+          "Option '" + PARAM_CUSTOM_HEURISTIC_FORMULA + "' for function '" + getName() + "' must name a function");
+
+    try {
+      customHeuristicFunction = ((SQLQueryEngine) ctx.getDatabase().getQueryEngine("sql")).getFunction(trimmed);
+    } catch (final CommandExecutionException e) {
+      throw new CommandSQLParsingException(
+          "Option '" + PARAM_CUSTOM_HEURISTIC_FORMULA + "' for function '" + getName() + "' names an unknown function '" + trimmed
+              + "'", e);
+    }
+    paramCustomHeuristicFormula = trimmed;
+    paramHeuristicFormula = SQLHeuristicFormula.CUSTOM;
+  }
+
+  /**
+   * Computes h(n) by invoking the user function bound by {@link #bindCustomHeuristicFunction}. The function receives
+   * {@code (currentVertex, parentVertex, targetVertex, sourceVertex, depth, dFactor)} and must answer a number: unlike the
+   * built-in formulas it owns h(n) entirely, so no axis is read and no tie-breaker is added on top of its answer.
+   */
+  protected double getCustomHeuristicCost(final Vertex node, final Vertex parent, final Vertex target, final long depth,
+                                          final CommandContext ctx) {
+    final Object result = customHeuristicFunction.execute(null, node, null,
+        new Object[] { node, parent, target, paramSourceVertex, depth, paramDFactor }, ctx);
+
+    if (result instanceof Number number)
+      return number.doubleValue();
+
+    throw new CommandExecutionException(
+        "Custom heuristic function '" + paramCustomHeuristicFormula + "' must return a number, returned: " + (result == null ?
+            "null" :
+            result + " (" + result.getClass().getSimpleName() + ")"));
+  }
 
   protected LinkedList<RID> getPath() {
     final LinkedList<RID> result = new LinkedList<>();

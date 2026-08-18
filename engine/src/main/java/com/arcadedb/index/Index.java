@@ -82,7 +82,31 @@ public interface Index {
 
   String getTypeName();
 
+  /**
+   * The property names this index is defined on, in index order. A name can carry the modifier that says HOW the property is
+   * indexed - {@code "tags by item"}, {@code "map by key"}, {@code "map by value"} - which is part of the stored name, not of
+   * the document property: use {@link #basePropertyName} to get back the property a query names.
+   */
   List<String> getPropertyNames();
+
+  /**
+   * Strips the {@code by key} / {@code by value} / {@code by item} modifier an index property name can carry, leaving the
+   * document property it indexes. {@code "obj.hd by item"} answers {@code "obj.hd"}; a name with no modifier answers itself.
+   * <p>
+   * The distinction matters wherever an index property name meets a name the user wrote: a query says {@code obj.hd}, the
+   * index calls the same thing {@code obj.hd by item}, and comparing the two spellings directly silently matches nothing.
+   */
+  static String basePropertyName(final String indexProperty) {
+    if (indexProperty == null)
+      return null;
+    if (indexProperty.endsWith(" by key"))
+      return indexProperty.substring(0, indexProperty.length() - 7);
+    if (indexProperty.endsWith(" by value"))
+      return indexProperty.substring(0, indexProperty.length() - 9);
+    if (indexProperty.endsWith(" by item"))
+      return indexProperty.substring(0, indexProperty.length() - 8);
+    return indexProperty;
+  }
 
   String getName();
 

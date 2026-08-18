@@ -25,7 +25,6 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
-import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
@@ -181,6 +180,10 @@ public class FullTextSearch {
   /**
    * Executes the literal-token lookup used by {@link TypeIndex#get(Object[])} while keeping BM25 scores comparable across bucket
    * indexes. Lucene boolean/wildcard syntax is intentionally not interpreted on this path.
+   * <p>
+   * A POSITIONAL key over a multi-property index (see {@link LSMTreeFullTextIndex#splitPositionalKey}) is a conjunction over
+   * the properties it constrains, so it is answered as one type-wide lookup per property, intersected. The corpus statistics
+   * stay type-wide within each of those lookups, which is what keeps the scores comparable (issue #6414).
    */
   public static IndexCursor searchSimple(final TypeIndex typeIndex, final Object[] keys, final int limit) {
     final List<LSMTreeFullTextIndex> bucketIndexes = getBucketIndexes(typeIndex);
@@ -190,7 +193,14 @@ public class FullTextSearch {
       throw new IllegalArgumentException("searchSimple requires a BM25 full-text index");
 
     final int effectiveLimit = limit < 1 ? -1 : limit;
-    final Map<String, Float> scoringTokens = bucketIndexes.get(0).getSimpleQueryTokenBoosts(keys);
+
+    final List<Object[]> perProperty = LSMTreeFullTextIndex.splitPositionalKey(typeIndex.getPropertyNames(), keys);
+    if (perProperty != null)
+      return LSMTreeFullTextIndex.rankedCursor(
+          LSMTreeFullTextIndex.intersectPerProperty(perProperty, key -> searchSimple(typeIndex, key, -1)), keys,
+          effectiveLimit);
+
+    final Map<String, Float> scoringTokens = bucketIndexes.getFirst().getSimpleQueryTokenBoosts(keys);
     final BM25ScoringContext scoringContext = createScoringContext(bucketIndexes,
         scanDocumentFrequencies(bucketIndexes, scoringTokens));
     final Map<RID, Float> allResults = new HashMap<>();
@@ -198,7 +208,7 @@ public class FullTextSearch {
       mergeCursor(allResults,
           ftIndex.scoreBM25WithContext(null, scoringTokens, keys, effectiveLimit, scoringContext));
 
-    return rankedCursor(allResults, keys, effectiveLimit);
+    return LSMTreeFullTextIndex.rankedCursor(allResults, keys, effectiveLimit);
   }
 
   /**
@@ -323,20 +333,6 @@ public class FullTextSearch {
     }
   }
 
-  private static IndexCursor rankedCursor(final Map<RID, Float> scores, final Object[] keys, final int limit) {
-    final List<IndexCursorEntry> entries = new ArrayList<>(scores.size());
-    for (final Map.Entry<RID, Float> score : scores.entrySet())
-      entries.add(new IndexCursorEntry(keys, score.getKey(), score.getValue()));
-
-    entries.sort((left, right) -> {
-      final int scoreComparison = Float.compare(right.floatScore, left.floatScore);
-      return scoreComparison != 0 ? scoreComparison :
-          left.record.getIdentity().compareTo(right.record.getIdentity());
-    });
-    if (limit > -1 && entries.size() > limit)
-      return new TempIndexCursor(entries.subList(0, limit));
-    return new TempIndexCursor(entries);
-  }
 
   private static RID canonicalRID(final RID rid) {
     return rid instanceof final FullTextPostingRID posting ?

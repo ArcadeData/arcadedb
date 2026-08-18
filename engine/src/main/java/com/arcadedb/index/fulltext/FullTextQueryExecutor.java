@@ -21,6 +21,7 @@ package com.arcadedb.index.fulltext;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.RID;
 import com.arcadedb.function.text.TextLevenshteinDistance;
+import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.IndexException;
@@ -473,15 +474,35 @@ public class FullTextQueryExecutor {
   }
 
   /**
-   * Returns true when a parsed query field denotes the "unqualified" target rather than a real, field-qualified clause. A term is
-   * unqualified when the parser left it on the {@link #DEFAULT_FIELD} sentinel, or when it is qualified with the sole property of a
-   * single-property index: such an index stores only unprefixed postings, so {@code field:term} and {@code term} are equivalent
-   * there. This is what lets a non-colliding sentinel be used without breaking single-property {@code content:term} queries.
+   * Returns true when a parsed query field denotes the "unqualified" target rather than a real, field-qualified clause. See
+   * {@link #isUnqualified(List, String)}, which owns the rule for both query paths.
    */
   private boolean isUnqualified(final String field) {
+    return isUnqualified(propertyNames, field);
+  }
+
+  /**
+   * The one place the "is this qualifier really a field?" rule lives, consulted by both full-text query paths: this
+   * Lucene-backed executor and the direct {@code get()} lookup in {@link LSMTreeFullTextIndex#parseQueryTerms}.
+   * <p>
+   * A term is unqualified when the parser left it on the {@link #DEFAULT_FIELD} sentinel, or when it is qualified with the
+   * sole property of a single-property index: such an index stores only unprefixed postings (see
+   * {@link LSMTreeFullTextIndex#put}), so {@code field:term} and {@code term} are equivalent there. This is what lets a
+   * non-colliding sentinel be used without breaking single-property {@code content:term} queries. The property is compared
+   * by its BASE name, since {@code obj.hd} is what a query can write for a property the index calls {@code obj.hd by item}.
+   * <p>
+   * Issue #6382 existed because the two paths had encoded this rule separately and drifted: the executor had it and the
+   * direct path did not, so a single-property index answered nothing for any literal containing a colon. Both now call
+   * here, so there is nothing left to drift (issue #6414, item 4).
+   *
+   * @param propertyNames the indexed property names, in index order
+   * @param field         the field a parsed query term is qualified with, or null/empty for none
+   */
+  static boolean isUnqualified(final List<String> propertyNames, final String field) {
     if (field == null || field.isEmpty() || DEFAULT_FIELD.equals(field))
       return true;
-    return propertyNames.size() == 1 && propertyNames.get(0).equals(field);
+    return propertyNames != null && propertyNames.size() == 1 && Index.basePropertyName(propertyNames.getFirst())
+        .equals(field);
   }
 
   /**

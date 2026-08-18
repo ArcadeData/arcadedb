@@ -291,8 +291,8 @@
         },
         {
           "name": "astar",
-          "syntax": "astar(<sourceVertex>, <destinationVertex>, <weightEdgeFieldName>, [<options>]) \n // options  : {direction:\"OUT\",edgeTypeNames:[] , vertexAxisNames:[] , parallel : false , tieBreaker:true,maxDepth:99999,dFactor:1.0,customHeuristicFormula:'custom_Function_Name_here'  }",
-          "description": "astar(<sourceVertex>, <destinationVertex>, <weightEdgeFieldName>, [<options>]) \n // options  : {direction:\"OUT\",edgeTypeNames:[] , vertexAxisNames:[] , parallel : false , tieBreaker:true,maxDepth:99999,dFactor:1.0,customHeuristicFormula:'custom_Function_Name_here'  }",
+          "syntax": "astar(<sourceVertex>, <destinationVertex>, <weightEdgeFieldName>, [<options>]) \n // options  : {direction:\"OUT\",edgeTypeNames:[] , vertexAxisNames:[] , parallel : false , tieBreaker:true,maxDepth:99999,dFactor:1.0,heuristicFormula:'MANHATTAN',customHeuristicFormula:'custom_Function_Name_here'  }\n // customHeuristicFormula names a SQL function called as fn(currentVertex, parentVertex, targetVertex, sourceVertex, depth, dFactor) and returning h(n) as a number",
+          "description": "astar(<sourceVertex>, <destinationVertex>, <weightEdgeFieldName>, [<options>]) \n // options  : {direction:\"OUT\",edgeTypeNames:[] , vertexAxisNames:[] , parallel : false , tieBreaker:true,maxDepth:99999,dFactor:1.0,heuristicFormula:'MANHATTAN',customHeuristicFormula:'custom_Function_Name_here'  }\n // customHeuristicFormula names a SQL function called as fn(currentVertex, parentVertex, targetVertex, sourceVertex, depth, dFactor) and returning h(n) as a number",
           "since": "sql"
         },
         {
