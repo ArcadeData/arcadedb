@@ -4309,12 +4309,24 @@ public class CypherExecutionPlan {
    *   <li>OUT direction: edge OUT = source node (node[i]), edge IN = target node (node[i+1])</li>
    *   <li>IN direction: edge OUT = target node (node[i+1]), edge IN = source node (node[i])</li>
    *   <li>BOTH direction: cannot determine mapping → conservative (not disjoint)</li>
+   *   <li>a hop that can span more than one edge: the mapping describes the whole path, not one edge
+   *   → conservative (not disjoint)</li>
    * </ul>
    */
   private boolean areHopsDisjointByEndpointLabels(final PathPattern patternI, final int hopI,
       final PathPattern patternJ, final int hopJ) {
-    final Direction dirI = patternI.getRelationship(hopI).getDirection();
-    final Direction dirJ = patternJ.getRelationship(hopJ).getDirection();
+    final RelationshipPattern relI = patternI.getRelationship(hopI);
+    final RelationshipPattern relJ = patternJ.getRelationship(hopJ);
+
+    // A variable-length hop's endpoint patterns constrain its first and last edge only: everything in
+    // between starts and ends at a node the pattern says nothing about, so proving the declared endpoints
+    // disjoint proves nothing about those edges. Only a hop pinned to a single edge can be argued about
+    // this way; the type proof above stays valid, since every edge of the hop must match its type list.
+    if (spansMoreThanOneEdge(relI) || spansMoreThanOneEdge(relJ))
+      return false;
+
+    final Direction dirI = relI.getDirection();
+    final Direction dirJ = relJ.getDirection();
 
     // BOTH direction: can't determine which node is the edge's OUT/IN vertex
     if (dirI == Direction.BOTH || dirJ == Direction.BOTH)
@@ -4332,6 +4344,14 @@ public class CypherExecutionPlan {
 
     // If the IN vertex labels are type-disjoint, the edges are different
     return nodeLabelsAreTypeDisjoint(edgeInI, edgeInJ);
+  }
+
+  /** Whether the hop can bind more than one edge, so its declared endpoints are not one edge's endpoints. */
+  private static boolean spansMoreThanOneEdge(final RelationshipPattern rel) {
+    if (!rel.isVariableLength())
+      return false;
+    final Integer maxHops = rel.getMaxHops();
+    return maxHops == null || maxHops > 1;
   }
 
   /**

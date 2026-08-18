@@ -141,6 +141,34 @@ class CypherMatchClauseUniquenessIssue6310Test extends TestHelper {
         .isEmpty();
   }
 
+  /**
+   * A variable-length hop's declared endpoints are the endpoints of the whole path, not of any one edge it
+   * binds: everything between the first and the last edge starts and ends at a node the pattern says nothing
+   * about. So {@code (x:C)-[*1..2]->(y:A)} and {@code (p:E)-[]->(q:A)} look endpoint-disjoint on their written
+   * ends - no vertex is both a {@code :C} and an {@code :E} - while the second edge of every path the first
+   * one walks is exactly an edge the second part matches.
+   */
+  @Test
+  void aVariableLengthHopMayNotBorrowAnEdgeFromAnotherPart() {
+    // 4 paths x 3 (:E)-[]->(:A) edges, less the 4 pairings in which they are the same edge.
+    assertThat(rows("MATCH (x:C)-[*1..2]->(y:A), (p:E)-[]->(q:A) RETURN x.n AS a, p.n AS c")).hasSize(8);
+    assertThat(rows(
+        "CALL { MATCH (x:C)-[*1..2]->(y:A), (p:E)-[]->(q:A) RETURN x.n AS a, p.n AS c } RETURN a, c")).hasSize(8);
+  }
+
+  @Test
+  void aShortestPathPartIsHeldToTheSameRule() {
+    assertThat(rows("MATCH p1 = shortestPath((x:C)-[*1..2]->(y:A)), (p:E)-[]->(q:A) RETURN x.n AS a, p.n AS c"))
+        .hasSize(8);
+  }
+
+  @Test
+  void aSingleEdgeVariableLengthHopKeepsTheEndpointProof() {
+    // Capped at one edge, so its written endpoints ARE the edge's and the proof applies again - here it
+    // proves nothing (both ends are :E -> :A), and uniqueness still removes the 3 same-edge pairings.
+    assertThat(rows("MATCH (x:E)-[*1..1]->(y:A), (p:E)-[]->(q:A) RETURN x.n AS a, p.n AS c")).hasSize(6);
+  }
+
   // ---------------------------------------------------------------------------------------------------------
   // The rule stops at the clause boundary, and the fast path it costs must not be paid where it is not owed.
   // ---------------------------------------------------------------------------------------------------------
@@ -182,6 +210,15 @@ class CypherMatchClauseUniquenessIssue6310Test extends TestHelper {
     assertThat(rows("CALL { MATCH (x:V)-[r1:BASE]->(:V), (y:V)-[r2:SUB]->(:V) RETURN x.n AS a, y.n AS c } RETURN a, c"))
         .isEmpty();
     assertThat(rows("MATCH (x:V)-[r1:BASE]->(:V), (y:V)-[r2:SUB]->(:V) RETURN x.n AS a, y.n AS c")).isEmpty();
+  }
+
+  @Test
+  void aTypeDisjointVariableLengthHopStillMatches() {
+    // The type proof survives the variable length - every edge of a [:R*1..2] hop is an :R - so an :S hop
+    // next to it keeps the fast path and the clause matches in full.
+    database.command("opencypher", "MATCH (a:A {n:'a1'}) CREATE (a)-[:S]->(:D {n:'d1'})");
+    assertThat(rows("MATCH (n0:A)-[:S]->(:D), (x:C)-[:R*1..2]->(y:A) RETURN n0.n AS a, x.n AS c"))
+        .containsExactlyInAnyOrder("a1|c1", "a1|c2", "a1|c2", "a1|c3");
   }
 
   @Test
