@@ -58,6 +58,11 @@ import java.util.stream.Stream;
 public class AlgoClique extends AbstractAlgoProcedure {
   public static final String NAME = "algo.clique";
 
+  /**
+   * Heap cost of a {@code StackFrame} object and the deque slot holding it, on top of the bit sets it references.
+   */
+  private static final long STACK_FRAME_OVERHEAD_BYTES = 64L;
+
   @Override
   public String getName() {
     return NAME;
@@ -223,11 +228,6 @@ public class AlgoClique extends AbstractAlgoProcedure {
 
     return results.stream();
   }
-
-  /**
-   * Heap cost of a {@code StackFrame} object and the deque slot holding it, on top of the bit sets it references.
-   */
-  private static final long STACK_FRAME_OVERHEAD_BYTES = 64L;
 
   private static final class StackFrame {
     BitSet R;
