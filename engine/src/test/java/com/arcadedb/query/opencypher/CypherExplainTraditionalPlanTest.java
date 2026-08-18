@@ -175,6 +175,13 @@ class CypherExplainTraditionalPlanTest {
         .contains("Branch 2:")
         .contains("n:Person")
         .contains("n:Company");
+
+    // A UNION has no plan of its own to be optimized or not - each branch is planned separately, and here both
+    // branches are the optimizer's. Claiming the optimizer was not used contradicted the branches underneath.
+    assertThat(plan)
+        .contains("Using Per-Branch Planning (UNION)")
+        .doesNotContain("Query pattern not yet supported by optimizer");
+    assertThat(plan.split("OPTIMIZED MATCH", -1)).as("both branches report the optimizer they actually use").hasSize(3);
   }
 
   /**

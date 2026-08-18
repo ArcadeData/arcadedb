@@ -738,17 +738,29 @@ public class CypherExecutionPlan {
         describedSteps = stepChainOf(stepsForDescription());
         appendStepsAfterTheOptimizedMatch(explainOutput, describedSteps);
       }
+    } else if (isUnion()) {
+      // A UNION has no plan of its own to be optimized or not: the planner leaves its physicalPlan null and plans
+      // each branch on its own, so a branch below can perfectly well be the optimizer's while the union is not.
+      // Saying "not yet supported by optimizer" here contradicted the `+ OPTIMIZED MATCH` printed underneath it.
+      explainOutput.append("Using Per-Branch Planning (UNION)\n\n");
+      explainOutput.append("Reason: each branch of a UNION is planned on its own - see the branches below\n\n");
+      describedSteps = appendPlanDescription(explainOutput);
     } else if (countPushDown == null) {
       explainOutput.append("Using Traditional Execution (Non-Optimized)\n\n");
       explainOutput.append("Reason: Query pattern not yet supported by optimizer\n\n");
-      describedSteps = appendTraditionalPlan(explainOutput);
+      describedSteps = appendPlanDescription(explainOutput);
     }
 
     return new ExplainResultSet(new OpenCypherExplainExecutionPlan(explainOutput.toString(), describedSteps, -1));
   }
 
+  /** Whether this plan is a UNION, which has no plan of its own: it runs the plan of each of its branches. */
+  private boolean isUnion() {
+    return unionSubqueryPlans != null && !unionSubqueryPlans.isEmpty();
+  }
+
   /**
-   * Describes what the traditional path would run, and returns the chain it described.
+   * Describes the chain this plan would run, and returns it.
    * <p>
    * EXPLAIN used to stop at the reason above, which left the one command whose entire purpose is inspecting a plan
    * WITHOUT running it strictly less informative than PROFILE - and PROFILE is no workaround for a slow query, nor
@@ -758,8 +770,8 @@ public class CypherExecutionPlan {
    * A UNION is answered branch by branch, so it is described branch by branch: each sub-plan describes the chain it
    * would run, which for a branch the optimizer claims is that branch's own answer.
    */
-  private List<ExecutionStep> appendTraditionalPlan(final StringBuilder output) {
-    if (unionSubqueryPlans != null && !unionSubqueryPlans.isEmpty()) {
+  private List<ExecutionStep> appendPlanDescription(final StringBuilder output) {
+    if (isUnion()) {
       output.append("Execution Plan:\n");
       output.append("+ UNION").append(unionRemoveDuplicates ? "" : " ALL")
           .append(" (").append(unionSubqueryPlans.size()).append(" queries)\n");
@@ -768,7 +780,7 @@ public class CypherExecutionPlan {
       for (int i = 0; i < unionSubqueryPlans.size(); i++) {
         output.append("  Branch ").append(i + 1).append(":\n");
         final StringBuilder branchOutput = new StringBuilder();
-        allSteps.addAll(unionSubqueryPlans.get(i).appendTraditionalPlan(branchOutput));
+        allSteps.addAll(unionSubqueryPlans.get(i).appendPlanDescription(branchOutput));
         output.append(branchOutput.toString().indent(2));
       }
       return allSteps;
