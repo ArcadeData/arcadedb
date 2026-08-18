@@ -23,6 +23,8 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
+import com.arcadedb.function.sql.graph.SQLFunctionMove;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.AggregationContext;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -30,11 +32,12 @@ import com.arcadedb.query.sql.executor.FunctionAggregationContext;
 import com.arcadedb.query.sql.executor.IndexableSQLFunction;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.SQLFunction;
-import com.arcadedb.function.sql.graph.SQLFunctionMove;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 public class FunctionCall extends SimpleNode {
@@ -407,8 +410,80 @@ public class FunctionCall extends SimpleNode {
       param.extractSubQueries(collector);
   }
 
+  /**
+   * A statement containing this call can have its execution plan cached and reused across executions when the call
+   * targets a {@link SQLFunction#isDeterministic() deterministic} built-in and every argument is itself cacheable -
+   * the same requirement {@link SimpleNode#isCacheable()} places on a plain expression tree. Resolved purely against
+   * the built-in registry (see {@link #isDeterministicFunction()}): a name this cannot resolve - a user-defined
+   * function, or any dotted/namespaced call - is conservatively not cacheable, exactly as before this marker
+   * existed. See issue #6190.
+   */
   public boolean isCacheable() {
-    return isGraphFunction();
+    if (isGraphFunction())
+      return true;
+
+    if (!isDeterministicFunction())
+      return false;
+
+    for (final Expression param : params)
+      if (!param.isCacheable())
+        return false;
+
+    return true;
+  }
+
+  /**
+   * Whether this call, and every argument it is applied to, is fixed at parse time: the call targets a
+   * {@link SQLFunction#isDeterministic() deterministic} built-in and each argument is either a literal
+   * ({@link Expression#isLiteral()}) or itself such a call, recursively. Used only to widen constant folding
+   * ({@link BinaryCondition#isAlwaysTrue}/{@code isAlwaysFalse}) to admit a deterministic call over constants
+   * ({@code WHERE 1 = abs(-1)}) without ever invoking the function merely to classify the expression - resolving
+   * {@link #isDeterministicFunction()} reads a marker, it does not call {@link #execute}. Deliberately narrower than
+   * {@link #isEarlyCalculated(CommandContext)}, which admits any function (issue #6179); this is the "constant-
+   * folding sibling" issue #6190 reserves {@link Expression#isLiteral()} from becoming.
+   */
+  public boolean isFoldable() {
+    if (!isDeterministicFunction())
+      return false;
+
+    for (final Expression param : params)
+      if (!param.isFoldable())
+        return false;
+
+    return true;
+  }
+
+  /**
+   * Determinism is a property of the function's NAME, not of any particular call site or instance - so the answer
+   * is memoized per name here rather than re-resolved (and, for a class-registered built-in, reflectively
+   * re-instantiated) on every {@link #isCacheable()}/{@link #isFoldable()} check, both of which run on every
+   * execution of a statement containing this call, cache hit or not. Safe for the life of the JVM: the built-in
+   * registry {@link #resolveDeterministic(String)} reads is the process-wide {@link DefaultSQLFunctionFactory}
+   * singleton, populated once at construction and never mutated at runtime.
+   */
+  private static final Map<String, Boolean> DETERMINISTIC_FUNCTIONS = new ConcurrentHashMap<>();
+
+  /**
+   * Resolves this call's target purely against the built-in {@link DefaultSQLFunctionFactory} registry - the same
+   * static lookup {@link com.arcadedb.query.sql.SQLQueryEngine#getFunction(String)} consults first, before falling
+   * back to a database-scoped user function library or the unified {@link com.arcadedb.function.FunctionRegistry} of
+   * stateless functions - so both {@link #isCacheable()} and {@link #isFoldable()} can answer without a
+   * {@link CommandContext}. A built-in cannot be shadowed by a same-named user function (the database-scoped lookup
+   * only runs when this one misses), so the two never disagree on a resolvable name. A name this registry does not
+   * hold - a user-defined function, or any function reached only through the unified registry - is conservatively
+   * treated as not deterministic.
+   */
+  private boolean isDeterministicFunction() {
+    return DETERMINISTIC_FUNCTIONS.computeIfAbsent(name.getStringValue().toLowerCase(Locale.ENGLISH), FunctionCall::resolveDeterministic);
+  }
+
+  private static boolean resolveDeterministic(final String lowercaseName) {
+    try {
+      final SQLFunction function = DefaultSQLFunctionFactory.getInstance().getFunctionInstance(lowercaseName);
+      return function != null && function.isDeterministic();
+    } catch (final CommandExecutionException e) {
+      return false;
+    }
   }
 
   private boolean isGraphFunction() {

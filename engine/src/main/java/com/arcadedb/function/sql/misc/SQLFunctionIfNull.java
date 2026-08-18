@@ -94,4 +94,12 @@ public class SQLFunctionIfNull extends SQLFunctionAbstract {
   public String getSyntax() {
     return "Syntax error: ifnull(<field|value>, <return_value_if_null> [,<return_value_if_not_null>])";
   }
+
+  /**
+   * A pure selection among its arguments (issue #6190).
+   */
+  @Override
+  public boolean isDeterministic() {
+    return true;
+  }
 }

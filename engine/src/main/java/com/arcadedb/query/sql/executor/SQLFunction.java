@@ -63,4 +63,23 @@ public interface SQLFunction extends RecordFunction {
    */
   @Override
   String getSyntax();
+
+  /**
+   * Whether two calls to this function with the same arguments always return the same result and never read or
+   * write anything outside those arguments - no wall clock, no random source, no counter, no schema/index/record
+   * lookup keyed on something other than a literal argument.
+   * <p>
+   * Defaults to {@code false}. The planner uses this to decide, without ever invoking the function, whether a call
+   * over constant arguments can be folded at plan time ({@code WHERE 1 = abs(-1)}), whether a statement containing
+   * the call can have its execution plan cached and reused across executions, and whether a call in an indexed
+   * equality can be evaluated once at plan time instead of once per invocation site. Getting this wrong in the
+   * {@code true} direction is silent and reaches user data - a function that reads the clock, a random source, or
+   * database state would be baked into a cached plan or invoked at the wrong time - so a function (built-in or
+   * user-defined) opts in explicitly rather than being assumed pure. See issue #6190.
+   *
+   * @return {@code true} only when the function is a pure, total function of its arguments alone
+   */
+  default boolean isDeterministic() {
+    return false;
+  }
 }

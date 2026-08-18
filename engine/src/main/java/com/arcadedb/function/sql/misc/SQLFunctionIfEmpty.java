@@ -99,4 +99,12 @@ public class SQLFunctionIfEmpty extends SQLFunctionAbstract {
   public String getSyntax() {
     return "Syntax error: ifempty(<field|value>, <return_value_if_empty> [,<return_value_if_not_empty>])";
   }
+
+  /**
+   * A pure selection among its arguments (issue #6190).
+   */
+  @Override
+  public boolean isDeterministic() {
+    return true;
+  }
 }

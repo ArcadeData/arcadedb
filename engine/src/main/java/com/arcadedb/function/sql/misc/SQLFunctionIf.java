@@ -87,4 +87,12 @@ public class SQLFunctionIf extends SQLFunctionAbstract {
   public String getSyntax() {
     return "if(<field|value|expression>, <return_value_if_true> [,<return_value_if_false>])";
   }
+
+  /**
+   * A pure selection among its arguments (issue #6190).
+   */
+  @Override
+  public boolean isDeterministic() {
+    return true;
+  }
 }

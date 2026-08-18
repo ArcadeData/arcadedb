@@ -394,6 +394,20 @@ public class BaseExpression extends MathExpression {
     return identifier != null && identifier.isLiteral(allowInputParameters);
   }
 
+  /**
+   * @see Expression#isFoldable()
+   */
+  boolean isFoldableFunctionCall() {
+    // a modifier applied to the call's result (`abs(-1).append('x')`) is no longer a bare call
+    if (modifier != null)
+      return false;
+
+    if (expression != null)
+      return expression.isFoldable();
+
+    return identifier != null && identifier.isFoldableFunctionCall();
+  }
+
   @Override
   public boolean isExpand() {
     if (identifier != null)

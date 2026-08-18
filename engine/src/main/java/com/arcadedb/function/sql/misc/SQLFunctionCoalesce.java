@@ -79,4 +79,12 @@ public class SQLFunctionCoalesce extends SQLFunctionAbstract {
   public String getSyntax() {
     return "Returns the first not-null parameter or null if all parameters are null. Syntax: coalesce(<field|value> [,<field|value>]*)";
   }
+
+  /**
+   * A pure selection among its arguments (issue #6190).
+   */
+  @Override
+  public boolean isDeterministic() {
+    return true;
+  }
 }

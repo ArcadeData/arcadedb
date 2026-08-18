@@ -84,4 +84,12 @@ public class SQLFunctionPow extends SQLFunctionMathAbstract {
   public Object getResult() {
     return result;
   }
+
+  /**
+   * Pure math over its two arguments (issue #6190).
+   */
+  @Override
+  public boolean isDeterministic() {
+    return true;
+  }
 }

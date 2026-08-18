@@ -73,4 +73,12 @@ public class SQLFunctionStrcmpci extends SQLFunctionAbstract {
   public String getSyntax() {
     return "strcmpci(<arg1>, <arg2>)";
   }
+
+  /**
+   * A pure comparison of its two arguments alone (issue #6190).
+   */
+  @Override
+  public boolean isDeterministic() {
+    return true;
+  }
 }
