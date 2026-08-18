@@ -125,14 +125,38 @@ class Issue6389FunctionArgumentTest extends TestHelper {
         .hasMessageContaining("limit");
   }
 
+  /**
+   * Both halves of a `%<width>.<precision>s` allocate, and `<` is a Formatter flag - reuse the previous argument -
+   * not a conversion character. Measuring only the last number read, and stopping the scan at `<`, each let a field
+   * far over the ceiling through the check the ceiling exists for.
+   */
+  @Test
+  void formatWidthCeilingHasNoBypass() {
+    // Width behind a precision: the argument is truncated to one character, then padded back out to two million.
+    assertThatThrownBy(() -> database.query("sql", "SELECT format('%2000000.1s','x') AS f").next())
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("limit");
+    // '<' reuses the previous argument; the width follows it.
+    assertThatThrownBy(() -> database.query("sql", "SELECT format('%s%<2000000s','x') AS f").next())
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("limit");
+    // And an argument index still is not a field size, so an ordinary reference is not mistaken for one.
+    try (final ResultSet rs = database.query("sql", "SELECT format('%2000000$s','x','y') AS f")) {
+      assertThatThrownBy(rs::next).isInstanceOf(IllegalArgumentException.class).hasMessageNotContaining("limit");
+    }
+  }
+
   @Test
   void formatStillFormats() {
     try (final ResultSet rs = database.query("sql",
-        "SELECT format('%s-%05d','a',7) AS f, format('%1$s%1$s','z') AS g, format('100%%') AS h")) {
+        "SELECT format('%s-%05d','a',7) AS f, format('%1$s%1$s','z') AS g, format('100%%') AS h, "
+            + "format('%10.3s|','abcdef') AS i, format('%s%<s','q') AS j")) {
       final var row = rs.next();
       assertThat(row.<String>getProperty("f")).isEqualTo("a-00007");
       assertThat(row.<String>getProperty("g")).isEqualTo("zz");
       assertThat(row.<String>getProperty("h")).isEqualTo("100%");
+      assertThat(row.<String>getProperty("i")).isEqualTo("       abc|");
+      assertThat(row.<String>getProperty("j")).isEqualTo("qq");
     }
   }
 

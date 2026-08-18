@@ -96,17 +96,24 @@ public class StringUtils {
   /**
    * Rejects a conversion whose width or precision exceeds {@link #MAX_FORMAT_WIDTH}. Scans the pattern once rather
    * than compiling a regex: this runs per formatted value.
+   * <p>
+   * A specifier is {@code %[argument_index$][flags][width][.precision]conversion}, and BOTH the width and the
+   * precision size an allocation, so the largest number the specifier names is what is measured. Checking only the
+   * last one read let {@code %2000000.1s} through - the argument is truncated to one character and then padded back
+   * out to a two-million-character field.
    */
   private static void checkFormatWidth(final String caller, final String format) {
     for (int i = 0; i < format.length(); i++) {
       if (format.charAt(i) != '%')
         continue;
 
-      // Skip the argument index, the flags, then read the width - and, past a '.', the precision - as plain digits.
-      // A number too long to be an int is over the ceiling by definition, so digits are counted rather than parsed.
+      // Skip the argument index and the flags, then read the width - and, past a '.', the precision - as plain
+      // digits. A number too long to be an int is over the ceiling by definition, so digits are counted rather than
+      // parsed.
       int j = i + 1;
       long number = 0;
       int digits = 0;
+      long widest = 0;
       while (j < format.length()) {
         final char c = format.charAt(j);
         if (c >= '0' && c <= '9') {
@@ -114,24 +121,39 @@ public class StringUtils {
             number = number * 10 + (c - '0');
           else
             number = Long.MAX_VALUE;
-        } else if (c == '$' || c == '.') {
-          // '$' closed an argument index and '.' opens the precision: either way the digits read so far were not a
-          // width, so start counting again.
+        } else if (c == '$') {
+          // The digits just read were an argument index, which allocates nothing: discard them.
           number = 0;
           digits = 0;
-        } else if (c != '-' && c != '#' && c != '+' && c != ' ' && c != '0' && c != ',' && c != '(') {
+        } else if (c == '.') {
+          // The digits just read were the width, and the precision starts now. The width still has to be measured -
+          // it is what the truncated argument is padded out to.
+          widest = Math.max(widest, number);
+          number = 0;
+          digits = 0;
+        } else if (!isFormatFlag(c)) {
           // Not a flag either: the conversion character, so the specifier ends here.
           break;
         }
         j++;
       }
+      widest = Math.max(widest, number);
 
-      if (number > MAX_FORMAT_WIDTH)
+      if (widest > MAX_FORMAT_WIDTH)
         throw new IllegalArgumentException(
-            caller + "() format '" + format + "' asks for a field of " + number + " characters, over the " + MAX_FORMAT_WIDTH
+            caller + "() format '" + format + "' asks for a field of " + widest + " characters, over the " + MAX_FORMAT_WIDTH
                 + " limit");
 
       i = j;
     }
+  }
+
+  /**
+   * The {@link java.util.Formatter} flag set, {@code '<'} (reuse the previous argument) included. Leaving that one
+   * out made the scanner above mistake it for the conversion character and stop before it ever reached the width, so
+   * {@code %s%<2000000s} bypassed the ceiling entirely.
+   */
+  private static boolean isFormatFlag(final char c) {
+    return c == '-' || c == '#' || c == '+' || c == ' ' || c == '0' || c == ',' || c == '(' || c == '<';
   }
 }
