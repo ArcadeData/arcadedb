@@ -943,6 +943,43 @@ public class TimeSeriesShard implements AutoCloseable {
     }
   }
 
+  /**
+   * Validates both halves of this shard - the mutable bucket's pages and the sealed store's blocks - and returns
+   * one line per problem, empty when there is none (issue #6340).
+   * <p>
+   * <b>The locks are what make the answer worth having.</b> Every counter checked on either side is reconciled
+   * against the bytes it describes, and both are maintained live: an append raises the mutable header's sample
+   * count and a compaction moves rows from one half to the other. Reading them without holding anything would
+   * report a healthy shard as damaged whenever a write landed between the counter and the walk, which is the
+   * failure mode that makes a check nobody trusts. {@link #appendLock} first and then the compaction READ lock,
+   * the order {@link #appendSamples(TimeSeriesRowSource)} takes them in and the one that keeps this free of the
+   * inversion the class comment warns about; queries are unaffected, since they take the same read lock.
+   * <p>
+   * Each problem is prefixed with which half of the shard it came from, because the two are different files with
+   * different formats and different repairs: the mutable bucket is replicated page-by-page under HA while the
+   * sealed store is derived and rebuilt locally by each node's own compaction.
+   */
+  public List<String> checkIntegrity() throws IOException {
+    final List<String> problems = new ArrayList<>();
+
+    appendLock.lock();
+    try {
+      compactionLock.readLock().lock();
+      try {
+        for (final String problem : mutableBucket.checkIntegrity())
+          problems.add("mutable bucket: " + problem);
+        for (final String problem : sealedStore.checkIntegrity())
+          problems.add("sealed store: " + problem);
+      } finally {
+        compactionLock.readLock().unlock();
+      }
+    } finally {
+      appendLock.unlock();
+    }
+
+    return problems;
+  }
+
   public TimeSeriesBucket getMutableBucket() {
     return mutableBucket;
   }

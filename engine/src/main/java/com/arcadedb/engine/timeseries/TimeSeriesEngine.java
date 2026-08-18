@@ -707,6 +707,34 @@ public class TimeSeriesEngine implements AutoCloseable {
     return total;
   }
 
+  /**
+   * Validates every file this type stores data in - each shard's mutable bucket and sealed store, plus the shared
+   * tag dictionary - and returns one line per problem, empty when there is none (issue #6340).
+   * <p>
+   * This is what {@code CHECK DATABASE} calls, and until it existed the tool had no reference to TimeSeries at
+   * all: the checker walks record buckets and indexes, and a TimeSeries type has neither - its mutable data lives
+   * in {@code .tstb}/{@code .tstd} components registered with the schema as files rather than as a type's record
+   * buckets, and its compacted data in {@code .ts.sealed} files outside the paginated layer entirely. Every other
+   * storage component in the engine was covered; these three formats, each with its own magic, header and (for the
+   * sealed store) CRCs, were not.
+   * <p>
+   * Each line names the shard it came from, since a type has as many of each file as it has shards and an operator
+   * acting on a finding needs to know which one to act on.
+   */
+  public List<String> checkIntegrity() throws IOException {
+    final List<String> problems = new ArrayList<>();
+
+    for (final TimeSeriesShard shard : shards)
+      for (final String problem : shard.checkIntegrity())
+        problems.add("shard " + shard.getShardIndex() + " " + problem);
+
+    if (tagDictionary != null)
+      for (final String problem : tagDictionary.checkIntegrity())
+        problems.add("tag dictionary: " + problem);
+
+    return problems;
+  }
+
   public int getShardCount() {
     return shardCount;
   }

@@ -106,6 +106,24 @@ public abstract class PaginatedComponent extends Component {
           "Component '" + name + "' was built with page size " + pageSize + " but its file '" + file.getFilePath()
               + "' has page size " + file.getPageSize());
 
+    // The third and last fact baked into a component file's name - 'name.fileId.pageSize.vVersion.ext' - and so the
+    // third guard of the same set (issue #6340). It decides how the pages are INTERPRETED where the other two decide
+    // where they are: a LocalBucket version selects the record-header layout, a TimeSeriesBucket version selects
+    // whether a TAG column is a 4-byte dictionary id or an inline string, and reading one as the other is a
+    // misinterpretation of real bytes rather than an exception - the same failure shape as the page size.
+    //
+    // THIS IS A TRIPWIRE AND NOT A COMPATIBILITY GATE, and the difference is worth stating because #6314 had to
+    // work through it twice: every load constructor passes the version ComponentFactory parsed OFF THE FILE NAME
+    // straight through, and every creation path bakes the version it was given into the name it generates, so a
+    // component and its file agree by construction whatever build wrote the file. An old database therefore cannot
+    // trip this. What can is a component that re-derived its version from somewhere other than its file - claiming
+    // CURRENT_VERSION for a file whose name says otherwise, which is exactly the defect #6314 removed from the two
+    // TimeSeries factory handlers and exactly what nobody should reintroduce.
+    if (file.getVersion() != version)
+      throw new IllegalStateException(
+          "Component '" + name + "' was built with version " + version + " but its file '" + file.getFilePath()
+              + "' has version " + file.getVersion());
+
     final long fileSize = file.getSize();
     if (fileSize == 0)
       // NEW FILE, CREATE HEADER PAGE
