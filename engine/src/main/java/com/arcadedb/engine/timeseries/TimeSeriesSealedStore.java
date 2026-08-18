@@ -137,7 +137,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     // describe the block whether this process wrote it or found it on disk (issue #6360 item 3). They used to be
     // assigned by loadDirectory ALONE, which left every entry this process wrote holding zero in both, and the
     // only thing keeping that from being read was crcValidated short-circuiting the two readers below.
-    long           blockStartOffset; // file offset where the block's metadata begins
+    final long     blockStartOffset; // file offset where the block's metadata begins
     int            storedCRC;        // CRC32 over metadata + compressed columns, as stored after the data
     volatile boolean crcValidated;   // true once the CRC has been checked (volatile: read without lock)
     // Coarsest granularity (ms) this block has already been downsampled to; 0 = raw / never downsampled.
@@ -146,8 +146,19 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     // re-touch an already-coarse block once before re-marking it; that is harmless and self-healing.
     long           downsampledGranularityMs;
 
+    /**
+     * {@code blockStartOffset} is a CONSTRUCTOR PARAMETER and not a field a caller may forget (#6360 item 3): every
+     * one of the three sites that builds an entry - {@code appendBlock}, {@code writeNewBlockToFile} and
+     * {@code loadDirectory} - knows the offset before it builds one, and the previous shape, where only the last of
+     * them assigned it afterwards, is exactly how two of the three came to hold zero.
+     * <p>
+     * {@code crcValidated} starts FALSE for the same reason. A block this process wrote is byte-for-byte what it
+     * computed the CRC over, so re-reading it buys nothing - but that shortcut is granted by
+     * {@link #recordWrittenCRC(int)}, together with the CRC it is a shortcut for, so a write path that forgets to
+     * record one cannot silently inherit the other.
+     */
     BlockEntry(final long minTs, final long maxTs, final int sampleCount, final int columnCount,
-        final double[] mins, final double[] maxs, final double[] sums) {
+        final double[] mins, final double[] maxs, final double[] sums, final long blockStartOffset) {
       this.minTimestamp = minTs;
       this.maxTimestamp = maxTs;
       this.sampleCount = sampleCount;
@@ -156,10 +167,19 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       this.columnMins = mins;
       this.columnMaxs = maxs;
       this.columnSums = sums;
-      // A block this process just wrote is byte-for-byte what it computed the CRC over, so nothing is bought by
-      // reading it back. Since #6360 this is an OPTIMISATION and no longer load-bearing: the two fields above are
-      // populated on the write paths too, so a caller that clears this flag gets a correct validation rather than
-      // a comparison against zero.
+      this.blockStartOffset = blockStartOffset;
+      this.crcValidated = false;
+    }
+
+    /**
+     * Records the CRC32 this block was written with, and that it therefore needs no reading back to be trusted.
+     * <p>
+     * The two go together deliberately: setting the flag without the CRC is the #6360 defect (a reader that then
+     * validates compares against zero), and setting the CRC without the flag only costs a redundant read. One call
+     * does both, so there is no way to do half of it.
+     */
+    void recordWrittenCRC(final int crc) {
+      this.storedCRC = crc;
       this.crcValidated = true;
     }
   }
@@ -265,11 +285,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       indexFile.write(metaBuf.array(), 0, metaBuf.limit());
       offset += metaSize;
 
-      final BlockEntry entry = new BlockEntry(minTs, maxTs, sampleCount, colCount, columnMins, columnMaxs, columnSums);
+      // #6360 item 3: the offset is given to the entry rather than patched onto it afterwards, so the entry
+      // describes where its block is no matter which side of a restart wrote it.
+      final BlockEntry entry = new BlockEntry(minTs, maxTs, sampleCount, colCount, columnMins, columnMaxs, columnSums,
+          blockStart);
       entry.tagDistinctValues = tagDistinctValues;
-      // #6360 item 3: recorded HERE and not only in loadDirectory, so the entry describes where its block is and
-      // what CRC guards it no matter which side of a restart wrote it.
-      entry.blockStartOffset = blockStart;
       // Write compressed column data
       for (int c = 0; c < colCount; c++) {
         entry.columnOffsets[c] = offset;
@@ -280,7 +300,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       }
 
       // Write block CRC32
-      entry.storedCRC = (int) crc.getValue();
+      entry.recordWrittenCRC((int) crc.getValue());
       final ByteBuffer crcBuf = ByteBuffer.allocate(4);
       crcBuf.putInt(entry.storedCRC);
       crcBuf.flip();
@@ -1120,18 +1140,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           // Compute stats for numeric columns
           final TimeSeriesCodec codec = columns.get(c).getCompressionHint();
           if (codec == TimeSeriesCodec.GORILLA_XOR || codec == TimeSeriesCodec.SIMPLE8B) {
-            double min = Double.MAX_VALUE, max = -Double.MAX_VALUE, sum = 0;
-            for (final Object v : chunkValues) {
-              final double d = ColumnDefinition.numericValueOf(v);
-              if (d < min)
-                min = d;
-              if (d > max)
-                max = d;
-              sum += d;
-            }
-            mins[c] = min;
-            maxs[c] = max;
-            sums[c] = sum;
+            final double[] stats = reduceNumericStats(chunkValues);
+            mins[c] = stats[0];
+            maxs[c] = stats[1];
+            sums[c] = stats[2];
           }
         }
       }
@@ -1322,11 +1334,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     tempFile.write(metaBuf.array(), 0, metaBuf.limit());
     dataOffset += metaSize;
 
-    final BlockEntry newEntry = new BlockEntry(minTs, maxTs, sampleCount, colCount, columnMins, columnMaxs, columnSums);
-    newEntry.tagDistinctValues = tagDistinctValues;
     // #6360 item 3: the temp file becomes the live file by an atomic move, so an offset into it is the offset the
     // block will have - exactly as the column offsets set below already are.
-    newEntry.blockStartOffset = blockStart;
+    final BlockEntry newEntry = new BlockEntry(minTs, maxTs, sampleCount, colCount, columnMins, columnMaxs, columnSums,
+        blockStart);
+    newEntry.tagDistinctValues = tagDistinctValues;
     for (int c = 0; c < colCount; c++) {
       newEntry.columnOffsets[c] = dataOffset;
       newEntry.columnSizes[c] = compressedCols[c].length;
@@ -1335,7 +1347,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       dataOffset += compressedCols[c].length;
     }
 
-    newEntry.storedCRC = (int) crc.getValue();
+    newEntry.recordWrittenCRC((int) crc.getValue());
     final ByteBuffer crcBuf = ByteBuffer.allocate(4);
     crcBuf.putInt(newEntry.storedCRC);
     crcBuf.flip();
@@ -1863,16 +1875,21 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         // latent only because crcValidated short-circuits them. Now that every write path fills them in, the
         // comparison is meaningful for every entry, and a mismatch means the directory in memory would read a
         // different block than the one the file holds here.
-        if (entry.blockStartOffset != blockStart)
+        final boolean offsetsAgree = entry.blockStartOffset == blockStart;
+        if (!offsetsAgree)
           problems.add("block " + i + ": the directory in memory places it at offset " + entry.blockStartOffset
               + " but the file has it at " + blockStart);
         if (crcMatches && entry.storedCRC != storedCRC)
           problems.add("block " + i + " (offset " + blockStart + "): the directory in memory holds CRC 0x"
               + Integer.toHexString(entry.storedCRC) + " but the file stores 0x" + Integer.toHexString(storedCRC));
 
-        // Only when the bytes are the bytes that were written: decoding a block that already failed its CRC turns
-        // one finding into a page of them, all of them consequences of the one already reported.
-        if (options.deep() && crcMatches)
+        // Two preconditions, and skipping the decode when either fails is what keeps ONE fault reading as one
+        // finding. A block that already failed its CRC decodes to noise, every line of it a consequence of the
+        // failure already reported. And a directory that disagrees about where the block STARTS disagrees about
+        // where its columns are - checkBlockContent slices them at entry.columnOffsets[c] minus this blockStart -
+        // so it would report wrong statistics, or an undecodable block, for a block whose real problem is the
+        // offset mismatch reported two lines above.
+        if (options.deep() && crcMatches && offsetsAgree)
           checkBlockContent(i, entry, blockStart, blockBytes, tsColIdx, problems);
 
         blockStart = endOfData + 4;
@@ -2045,6 +2062,40 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /**
+   * Reduces one numeric column to the {@code {min, max, sum}} triple a block declares for it.
+   * <p>
+   * ONE definition, shared by the two write paths that produce the triple ({@link #downsampleBlocks} and
+   * {@code TimeSeriesShard}'s compaction) and by the DEEP check that verifies it. It used to be three copies of the
+   * same loop, and the failure mode of letting them drift belongs squarely to the checker: a verification reducing
+   * differently from the writer reports a healthy block as damaged, which is the one thing an integrity check must
+   * never do.
+   */
+  static double[] reduceNumericStats(final double[] values) {
+    double min = Double.MAX_VALUE;
+    double max = -Double.MAX_VALUE;
+    double sum = 0;
+    for (final double d : values) {
+      if (d < min)
+        min = d;
+      if (d > max)
+        max = d;
+      sum += d;
+    }
+    return new double[] { min, max, sum };
+  }
+
+  /**
+   * {@link #reduceNumericStats(double[])} over the boxed values a write path holds, unboxed exactly the way
+   * {@link #compressColumn} unboxes them so the statistics describe the bytes that get written.
+   */
+  static double[] reduceNumericStats(final Object[] values) {
+    final double[] unboxed = new double[values.length];
+    for (int i = 0; i < values.length; i++)
+      unboxed[i] = ColumnDefinition.numericValueOf(values[i]);
+    return reduceNumericStats(unboxed);
+  }
+
+  /**
    * Reconciles one numeric column's decoded values against the min/max/sum the block declares for it - the numbers
    * the aggregation push-down answers from without decompressing anything.
    */
@@ -2061,16 +2112,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     if (Double.isNaN(entry.columnMins[colIdx]) || values.length == 0)
       return;
 
-    double min = Double.MAX_VALUE;
-    double max = -Double.MAX_VALUE;
-    double sum = 0;
-    for (final double v : values) {
-      if (v < min)
-        min = v;
-      if (v > max)
-        max = v;
-      sum += v;
-    }
+    final double[] stats = reduceNumericStats(values);
+    final double min = stats[0];
+    final double max = stats[1];
+    final double sum = stats[2];
 
     if (min != entry.columnMins[colIdx])
       problems.add(where + " declares min " + entry.columnMins[colIdx] + " for column '" + column.getName()
@@ -2528,9 +2573,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         }
       }
 
-      final BlockEntry entry = new BlockEntry(minTs, maxTs, sampleCount, colCount, mins, maxs, sums);
+      final BlockEntry entry = new BlockEntry(minTs, maxTs, sampleCount, colCount, mins, maxs, sums, pos);
       entry.tagDistinctValues = blockTagDistinctValues;
-      entry.blockStartOffset = pos;
       long dataPos = tagEndPos;
       for (int c = 0; c < colCount; c++) {
         entry.columnOffsets[c] = dataPos;
@@ -2543,8 +2587,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       if (indexChannel.read(crcBuf, dataPos) < 4)
         throw new IOException("Unexpected end of sealed store: missing block CRC32");
       crcBuf.flip();
+      // Read from the file rather than recorded from a write, so the flag stays false: this is the one path whose
+      // block has to be verified before it is trusted.
       entry.storedCRC = crcBuf.getInt();
-      entry.crcValidated = false;
 
       dataPos += 4; // skip CRC
 

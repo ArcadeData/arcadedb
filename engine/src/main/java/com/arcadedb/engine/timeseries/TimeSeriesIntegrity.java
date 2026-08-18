@@ -49,8 +49,40 @@ public final class TimeSeriesIntegrity {
    * sample. The full argument is on {@code DatabaseChecker.checkTimeSeries}.
    */
   public record Options(boolean deep, boolean fix) {
-    /** The default: look at everything, change nothing. */
+    /** The default: the whole default tier, changing nothing. */
     public static final Options REPORT_ONLY = new Options(false, false);
+    private static final Options DEEP        = new Options(true, false);
+    private static final Options FIX         = new Options(false, true);
+    private static final Options DEEP_FIX    = new Options(true, true);
+
+    /**
+     * The four combinations by name, so no caller writes two positional booleans.
+     * <p>
+     * A record is positional and the compiler accepts {@code new Options(fix, deep)} as readily as the right order,
+     * which on a REPAIR command is a swap with consequences and no symptom: a run asked to decode would silently
+     * rewrite headers, and a run asked to repair would silently decline to. Naming the combinations removes the
+     * only place the mistake could be made.
+     */
+    public static Options of(final boolean deep, final boolean fix) {
+      if (deep)
+        return fix ? DEEP_FIX : DEEP;
+      return fix ? FIX : REPORT_ONLY;
+    }
+
+    /** Decode every sealed block and reconcile it against its own metadata, changing nothing. */
+    public static Options deepOnly() {
+      return DEEP;
+    }
+
+    /** Repair the derived bookkeeping, without the decoding tier. */
+    public static Options fixOnly() {
+      return FIX;
+    }
+
+    /** Both tiers: decode everything, and repair what is derived. */
+    public static Options deepAndFix() {
+      return DEEP_FIX;
+    }
   }
 
   /**

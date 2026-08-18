@@ -828,18 +828,10 @@ public class TimeSeriesShard implements AutoCloseable {
 
           final TimeSeriesCodec codec = columns.get(c).getCompressionHint();
           if (codec == TimeSeriesCodec.GORILLA_XOR || codec == TimeSeriesCodec.SIMPLE8B) {
-            double min = Double.MAX_VALUE, max = -Double.MAX_VALUE, sum = 0;
-            for (final Object v : chunkValues) {
-              final double d = ColumnDefinition.numericValueOf(v);
-              if (d < min)
-                min = d;
-              if (d > max)
-                max = d;
-              sum += d;
-            }
-            mins[c] = min;
-            maxs[c] = max;
-            sums[c] = sum;
+            final double[] stats = TimeSeriesSealedStore.reduceNumericStats(chunkValues);
+            mins[c] = stats[0];
+            maxs[c] = stats[1];
+            sums[c] = stats[2];
           }
         }
       }
@@ -974,7 +966,11 @@ public class TimeSeriesShard implements AutoCloseable {
    * compaction read lock is released BEFORE the commit, because a leader's commit waits for the active recording
    * session and a compaction holding one is waiting for that lock. A compaction slipping into that gap makes the
    * commit fail with a {@link ConcurrentModificationException}, which is reported as a repair that did not land
-   * rather than retried - the next {@code CHECK DATABASE FIX} finds the same counters and the operator is told so.
+   * rather than retried. That is where this DEPARTS from {@code appendSamples}, which retries such a conflict three
+   * times, and the difference is required rather than incidental: an append retries the SAME rows, while the
+   * counters this writes were computed by a page walk the winning compaction has just invalidated, so a retry would
+   * write numbers that no longer describe the pages. The next {@code CHECK DATABASE FIX} walks again and finds
+   * whatever is true then; the operator is told to run it.
    * <p>
    * The sealed store's check runs OUTSIDE both, under nothing but its own {@code directoryLock}, which it takes
    * itself. That is the expensive half - it CRC32s the whole {@code .ts.sealed} file - and holding the append lock
@@ -996,8 +992,8 @@ public class TimeSeriesShard implements AutoCloseable {
   public IntegrityReport checkIntegrity(final TimeSeriesIntegrity.Options options) throws IOException {
     final List<String> problems = new ArrayList<>();
     final List<String> repairs = new ArrayList<>();
-    // Not final: the CME arm below leaves the shard unmeasured, and reporting zero for a shard whose repair raced a
-    // compaction is honest - the run is telling the operator to run it again.
+    // Not final: the CME arm below re-reads them, because the values taken inside a transaction that then rolled
+    // back describe a state that never existed.
     long samples = 0;
     long sealedBlocks = 0;
 
@@ -1020,8 +1016,6 @@ public class TimeSeriesShard implements AutoCloseable {
         final TimeSeriesIntegrity.Outcome mutableOutcome = mutableBucket.checkIntegrity(options);
         for (final String problem : mutableOutcome.problems())
           problems.add("mutable bucket: " + problem);
-        for (final String repair : mutableOutcome.repairs())
-          repairs.add("mutable bucket: " + repair);
 
         samples = mutableBucket.getSampleCount() + sealedStore.getTotalSampleCount();
         sealedBlocks = sealedStore.getBlockCount();
@@ -1037,6 +1031,12 @@ public class TimeSeriesShard implements AutoCloseable {
           else
             db.commit();
         }
+
+        // Merged only once the transaction carrying them has committed. A repair the commit lost is not a repair,
+        // and a report that both counted it and told the operator to run the check again would contradict itself.
+        // The CME arm below is therefore reached with this list untouched, which is the point.
+        for (final String repair : mutableOutcome.repairs())
+          repairs.add("mutable bucket: " + repair);
       } catch (final ConcurrentModificationException e) {
         if (db.isTransactionActive() && ownTransaction)
           db.rollback();
@@ -1046,10 +1046,18 @@ public class TimeSeriesShard implements AutoCloseable {
           throw new IOException("Failed to check TimeSeries shard " + shardIndex, e);
         problems.add("mutable bucket: the header repair could not be applied because a compaction rewrote page 0 "
             + "while the check was running; run the check again");
+        // The totals were read INSIDE the transaction just rolled back, so they describe the repaired header that
+        // never landed. Re-read them from what survived, under the append lock this still holds.
+        samples = mutableBucket.getSampleCount() + sealedStore.getTotalSampleCount();
+        sealedBlocks = sealedStore.getBlockCount();
+      } catch (final IOException e) {
+        if (db.isTransactionActive() && ownTransaction)
+          db.rollback();
+        throw e;
       } catch (final Exception e) {
         if (db.isTransactionActive() && ownTransaction)
           db.rollback();
-        throw e instanceof IOException io ? io : new IOException("Failed to check TimeSeries shard " + shardIndex, e);
+        throw new IOException("Failed to check TimeSeries shard " + shardIndex, e);
       } finally {
         if (readLockHeld)
           compactionLock.readLock().unlock();

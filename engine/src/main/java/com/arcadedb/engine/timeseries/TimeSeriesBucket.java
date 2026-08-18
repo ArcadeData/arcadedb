@@ -350,9 +350,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
 
     flushDataPageHeader(dataPage, samplesInPage, pageMinTs, pageMaxTs);
 
-    headerPage.writeLong(HEADER_SAMPLE_COUNT_OFFSET, totalSamples);
-    headerPage.writeLong(HEADER_MIN_TS_OFFSET, minTs);
-    headerPage.writeLong(HEADER_MAX_TS_OFFSET, maxTs);
+    writeHeaderCounters(headerPage, totalSamples, minTs, maxTs);
   }
 
   /**
@@ -923,9 +921,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
           maxTs = pMax;
       }
     }
-    headerPage.writeLong(HEADER_SAMPLE_COUNT_OFFSET, sampleCount);
-    headerPage.writeLong(HEADER_MIN_TS_OFFSET, minTs);
-    headerPage.writeLong(HEADER_MAX_TS_OFFSET, maxTs);
+    writeHeaderCounters(headerPage, sampleCount, minTs, maxTs);
     // Keep HEADER_DATA_PAGE_COUNT unchanged so cleared pages can be reused by new inserts
   }
 
@@ -940,9 +936,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
   public void clearDataPages() throws IOException {
     final TransactionContext tx = database.getTransaction();
     final MutablePage headerPage = tx.getPageToModify(new PageId(database, fileId, 0), pageSize, false);
-    headerPage.writeLong(HEADER_SAMPLE_COUNT_OFFSET, 0L);
-    headerPage.writeLong(HEADER_MIN_TS_OFFSET, Long.MAX_VALUE);
-    headerPage.writeLong(HEADER_MAX_TS_OFFSET, Long.MIN_VALUE);
+    writeHeaderCounters(headerPage, 0L, Long.MAX_VALUE, Long.MIN_VALUE);
     headerPage.writeInt(HEADER_DATA_PAGE_COUNT, 0);
     // Physical pages are not touched: committing a single header page is O(1) regardless
     // of how many data pages were previously allocated, preventing OOM on large datasets.
@@ -1191,8 +1185,20 @@ public class TimeSeriesBucket extends PaginatedComponent {
    * waits for the active recording session, and a compaction holding one is waiting for that very lock.
    */
   void repairHeaderCounters(final long samples, final long minTs, final long maxTs) throws IOException {
-    final MutablePage headerPage = database.getWrappedDatabaseInstance().getTransaction()
-        .getPageToModify(new PageId(database, fileId, 0), pageSize, false);
+    writeHeaderCounters(database.getWrappedDatabaseInstance().getTransaction()
+        .getPageToModify(new PageId(database, fileId, 0), pageSize, false), samples, minTs, maxTs);
+  }
+
+  /**
+   * Writes page 0's three derived counters: how many samples the data pages hold and the timestamp span they cover.
+   * <p>
+   * ONE definition (#6360), and it is the check that made it worth having. {@link #checkIntegrity} reconciles
+   * against exactly these three, and its repair claimed to write them "the same way" the maintenance paths do -
+   * a claim that was a comment and is now the same call. An empty bucket gets the sentinels an empty span is
+   * spelled with, here rather than at four call sites that each had to remember them.
+   */
+  private static void writeHeaderCounters(final MutablePage headerPage, final long samples, final long minTs,
+      final long maxTs) {
     headerPage.writeLong(HEADER_SAMPLE_COUNT_OFFSET, samples);
     headerPage.writeLong(HEADER_MIN_TS_OFFSET, samples > 0 ? minTs : Long.MAX_VALUE);
     headerPage.writeLong(HEADER_MAX_TS_OFFSET, samples > 0 ? maxTs : Long.MIN_VALUE);
@@ -1204,9 +1210,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
     headerPage.writeInt(HEADER_MAGIC_OFFSET, MAGIC_VALUE);
     headerPage.writeByte(HEADER_FORMAT_VERSION_OFFSET, (byte) CURRENT_VERSION);
     headerPage.writeShort(HEADER_COLUMN_COUNT_OFFSET, (short) columns.size());
-    headerPage.writeLong(HEADER_SAMPLE_COUNT_OFFSET, 0L);
-    headerPage.writeLong(HEADER_MIN_TS_OFFSET, Long.MAX_VALUE);
-    headerPage.writeLong(HEADER_MAX_TS_OFFSET, Long.MIN_VALUE);
+    writeHeaderCounters(headerPage, 0L, Long.MAX_VALUE, Long.MIN_VALUE);
     headerPage.writeByte(HEADER_COMPACTION_FLAG, (byte) 0);
     headerPage.writeLong(HEADER_COMPACTION_WATERMARK, 0L);
     headerPage.writeInt(HEADER_DATA_PAGE_COUNT, 0);

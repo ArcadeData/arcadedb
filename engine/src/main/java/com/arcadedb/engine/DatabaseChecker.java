@@ -706,7 +706,7 @@ public class DatabaseChecker {
 
     stepBegin("Checking TimeSeries", timeSeriesTypes.size());
 
-    final TimeSeriesIntegrity.Options options = new TimeSeriesIntegrity.Options(deep, fix);
+    final TimeSeriesIntegrity.Options options = TimeSeriesIntegrity.Options.of(deep, fix);
     final Set<String> corrupted = new LinkedHashSet<>();
     long totalShards = 0;
     long totalSamples = 0;

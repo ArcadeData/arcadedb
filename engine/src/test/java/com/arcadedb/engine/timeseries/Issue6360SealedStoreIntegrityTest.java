@@ -126,7 +126,7 @@ class Issue6360SealedStoreIntegrityTest {
   }
 
   private static List<String> problems(final TimeSeriesSealedStore store, final boolean deep) throws IOException {
-    return store.checkIntegrity(new TimeSeriesIntegrity.Options(deep, false)).problems();
+    return store.checkIntegrity(deep ? TimeSeriesIntegrity.Options.deepOnly() : TimeSeriesIntegrity.Options.REPORT_ONLY).problems();
   }
 
   /**
@@ -149,6 +149,28 @@ class Issue6360SealedStoreIntegrityTest {
       final List<Object[]> rows = store.scanRange(Long.MIN_VALUE, Long.MAX_VALUE, null, null);
       assertThat(rows).hasSize(64);
     }
+  }
+
+  /**
+   * ITEM 3, at the level the class invariant lives at. A block entry is handed its offset by the constructor, so a
+   * future write path cannot build one without deciding where its block is, and the "already verified" flag is
+   * granted only by {@code recordWrittenCRC} - together with the CRC it is a shortcut for. Setting the flag without
+   * the CRC is precisely the defect this issue fixed, and it is now unreachable by construction rather than by
+   * every write path remembering.
+   */
+  @Test
+  void aBlockEntryIsTrustedOnlyOnceItsWrittenCRCIsRecorded() {
+    final double[] stats = { Double.NaN, Double.NaN, 1.0 };
+    final TimeSeriesSealedStore.BlockEntry entry =
+        new TimeSeriesSealedStore.BlockEntry(1_000L, 2_000L, 4, 3, stats, stats, stats, 27L);
+
+    assertThat(entry.blockStartOffset).isEqualTo(27L);
+    assertThat(entry.crcValidated).as("not trusted until the CRC it would be trusted against is known").isFalse();
+
+    entry.recordWrittenCRC(0x0BADF00D);
+
+    assertThat(entry.storedCRC).isEqualTo(0x0BADF00D);
+    assertThat(entry.crcValidated).isTrue();
   }
 
   /**
@@ -342,7 +364,7 @@ class Issue6360SealedStoreIntegrityTest {
       assertThat(reported.problems()).anyMatch(p -> p.contains("global min timestamp -1"));
       assertThat(reported.repairs()).as("a report-only run changes nothing").isEmpty();
 
-      final TimeSeriesIntegrity.Outcome fixed = store.checkIntegrity(new TimeSeriesIntegrity.Options(false, true));
+      final TimeSeriesIntegrity.Outcome fixed = store.checkIntegrity(TimeSeriesIntegrity.Options.fixOnly());
       assertThat(fixed.repairs()).anyMatch(r -> r.contains("rewrote the header from the block directory: 2 block(s)"));
     }
 
@@ -377,7 +399,7 @@ class Issue6360SealedStoreIntegrityTest {
       assertThat(problems(store, false)).anyMatch(p -> p.contains("37 byte(s) follow the last readable block")
           && p.contains("a block whose write did not complete"));
 
-      final TimeSeriesIntegrity.Outcome fixed = store.checkIntegrity(new TimeSeriesIntegrity.Options(false, true));
+      final TimeSeriesIntegrity.Outcome fixed = store.checkIntegrity(TimeSeriesIntegrity.Options.fixOnly());
       assertThat(fixed.repairs()).anyMatch(r -> r.contains("dropped 37 byte(s)"));
     }
 
@@ -417,7 +439,7 @@ class Issue6360SealedStoreIntegrityTest {
     try (final TimeSeriesSealedStore store = open()) {
       assertThat(store.getBlockCount()).as("the damaged block is already out of reach").isEqualTo(1);
 
-      final TimeSeriesIntegrity.Outcome fixed = store.checkIntegrity(new TimeSeriesIntegrity.Options(false, true));
+      final TimeSeriesIntegrity.Outcome fixed = store.checkIntegrity(TimeSeriesIntegrity.Options.fixOnly());
       assertThat(fixed.problems()).anyMatch(p -> p.contains("follow the last readable block")
           && p.contains("a complete block whose magic was overwritten"));
       assertThat(fixed.repairs()).noneMatch(r -> r.contains("dropped"));
@@ -450,7 +472,7 @@ class Issue6360SealedStoreIntegrityTest {
     }
 
     try (final TimeSeriesSealedStore store = open()) {
-      final TimeSeriesIntegrity.Outcome fixed = store.checkIntegrity(new TimeSeriesIntegrity.Options(true, true));
+      final TimeSeriesIntegrity.Outcome fixed = store.checkIntegrity(TimeSeriesIntegrity.Options.deepAndFix());
       assertThat(fixed.problems()).anyMatch(p -> p.contains("CRC mismatch"));
       assertThat(fixed.repairs()).isEmpty();
     }
