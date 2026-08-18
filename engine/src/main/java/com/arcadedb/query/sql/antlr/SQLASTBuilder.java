@@ -6096,14 +6096,39 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       final List<SQLParser.IdentifierContext> settingKeys = ctx.identifier().subList(firstSettingKeyIndex, ctx.identifier().size());
       final List<SQLParser.ExpressionContext> settingValues = ctx.expression();
 
+      final Set<String> seenKeys = new HashSet<>();
       for (int i = 0; i < settingKeys.size() && i < settingValues.size(); i++) {
-        final Expression key = new Expression((Identifier) visit(settingKeys.get(i)));
+        final Identifier keyId = (Identifier) visit(settingKeys.get(i));
         final Expression value = (Expression) visit(settingValues.get(i));
-        stmt.settings.put(key, value);
+        putSetting(stmt.settings, seenKeys, keyId, value, "REBUILD INDEX");
       }
     }
 
     return stmt;
+  }
+
+  /**
+   * Adds one {@code WITH} setting to a DDL statement's {@code Map<Expression, Expression> settings}, refusing a
+   * duplicate key. Shared by every statement that carries such a map - {@code REBUILD INDEX}, {@code REBUILD TYPE},
+   * {@code IMPORT DATABASE}, {@code EXPORT DATABASE} and {@code BACKUP DATABASE} - so a repeated setting is treated
+   * the same way whichever of the five statements it is written in (issue #6409, item 2). Before this, only
+   * {@code REBUILD TYPE} refused a repeat; the other four silently accepted it, last one wins.
+   * <p>
+   * The dedup key is the LOWERCASED setting name, not {@link Expression} identity: identity is case-sensitive
+   * (issue #6401), so {@code batchSize} and {@code BATCHSIZE} would otherwise land as two separate map entries even
+   * though every reader recognises a setting with {@code equalsIgnoreCase}.
+   * <p>
+   * The key itself is always built as {@code new Expression(Identifier)} - never the raw-{@code value} shape
+   * {@code IMPORT}/{@code EXPORT}/{@code BACKUP DATABASE} used to use (issue #6409, item 1) - so every reader can
+   * recover the setting name the same way: {@code entry.getKey().toString()}.
+   */
+  private static void putSetting(final Map<Expression, Expression> settings, final Set<String> seenKeys, final Identifier keyId,
+      final Expression value, final String statementName) {
+    final String keyName = keyId.getStringValue().toLowerCase(Locale.ENGLISH);
+    if (!seenKeys.add(keyName))
+      throw new CommandSQLParsingException(
+          statementName + " WITH clause has duplicate setting '" + keyId.getStringValue() + "'. Each setting must appear at most once.");
+    settings.put(new Expression(keyId), value);
   }
 
   /**
@@ -6134,19 +6159,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     stmt.typeName = (Identifier) visit(bodyCtx.typeName);
     stmt.polymorphic = bodyCtx.POLYMORPHIC() != null;
     if (bodyCtx.WITH() != null) {
-      // Track which settingKey strings we've already seen so a duplicate (e.g. WITH batchSize=1, batchSize=2)
-      // doesn't silently shadow the first via Map.put. Bare Expression equality on the key would only catch
-      // exact AST matches; using the lowercased identifier string also catches case variants.
       final Set<String> seenKeys = new HashSet<>();
       for (int i = 0; i < bodyCtx.settingValue.size(); i++) {
         final Identifier keyId = (Identifier) visit(bodyCtx.settingKey.get(i));
-        final String keyName = keyId.getStringValue().toLowerCase(Locale.ENGLISH);
-        if (!seenKeys.add(keyName))
-          throw new CommandSQLParsingException(
-              "REBUILD TYPE WITH clause has duplicate setting '" + keyId.getStringValue()
-                  + "'. Each setting must appear at most once.");
         final Expression value = (Expression) visit(bodyCtx.settingValue.get(i));
-        stmt.settings.put(new Expression(keyId), value);
+        putSetting(stmt.settings, seenKeys, keyId, value, "REBUILD TYPE");
       }
     }
     return stmt;
@@ -7545,16 +7562,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     // Parse WITH settings
     if (importCtx.settingList() != null) {
+      final Set<String> seenKeys = new HashSet<>();
       for (final SQLParser.SettingContext settingCtx : importCtx.settingList().setting()) {
         final Identifier key = (Identifier) visit(settingCtx.identifier());
         final Expression value = (Expression) visit(settingCtx.expression());
-
-        // Store as Expression with key/value
-        // ImportDatabaseStatement uses .execute() on the value Expression
-        final Expression keyExpr = new Expression();
-        keyExpr.value = key.getStringValue();
-
-        stmt.settings.put(keyExpr, value);
+        putSetting(stmt.settings, seenKeys, key, value, "IMPORT DATABASE");
       }
     }
 
@@ -7578,16 +7590,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     // Parse WITH settings
     if (exportCtx.settingList() != null) {
+      final Set<String> seenKeys = new HashSet<>();
       for (final SQLParser.SettingContext settingCtx : exportCtx.settingList().setting()) {
         final Identifier key = (Identifier) visit(settingCtx.identifier());
         final Expression value = (Expression) visit(settingCtx.expression());
-
-        // Store as Expression with key/value
-        // ExportDatabaseStatement uses .execute() on the value Expression
-        final Expression keyExpr = new Expression();
-        keyExpr.value = key.getStringValue();
-
-        stmt.settings.put(keyExpr, value);
+        putSetting(stmt.settings, seenKeys, key, value, "EXPORT DATABASE");
       }
     }
 
@@ -7634,16 +7641,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     // Parse WITH settings
     if (backupCtx.settingList() != null) {
+      final Set<String> seenKeys = new HashSet<>();
       for (final SQLParser.SettingContext settingCtx : backupCtx.settingList().setting()) {
         final Identifier key = (Identifier) visit(settingCtx.identifier());
         final Expression value = (Expression) visit(settingCtx.expression());
-
-        // Store as Expression with key/value
-        // BackupDatabaseStatement uses .execute() on the value Expression, so no need to extract .value
-        final Expression keyExpr = new Expression();
-        keyExpr.value = key.getStringValue();
-
-        stmt.settings.put(keyExpr, value);
+        putSetting(stmt.settings, seenKeys, key, value, "BACKUP DATABASE");
       }
     }
 

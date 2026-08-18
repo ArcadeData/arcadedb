@@ -96,19 +96,11 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
         for (Map.Entry<Expression, Expression> entry : settings.entrySet()) {
           final String stringValue = entry.getValue().execute((Identifiable) null, context).toString();
 
-          // THE KEY IS A STRING HELD IN Expression.value, AND Expression.toString() RENDERS A STRING QUOTED, SO
-          // MATCHING ON toString() SILENTLY MATCHED NOTHING AND EVERY 'WITH ...' SETTING WAS DROPPED - INCLUDING
-          // encryptionKey, WHICH MEANT A BACKUP ASKED TO BE ENCRYPTED WAS WRITTEN IN CLEAR. READ THE RAW VALUE, AS
-          // ExportDatabaseStatement ALREADY DOES
-          final Object rawKey = entry.getKey().value;
-          if (rawKey == null)
-            // NO FALLBACK TO Expression.toString() HERE ON PURPOSE. THAT IS THE BUGGY MATCH THIS BLOCK EXISTS TO FIX,
-            // AND FALLING BACK TO IT WOULD MEAN A FUTURE PARSER CHANGE THAT STOPPED POPULATING value SILENTLY
-            // RESURRECTED THE CLEARTEXT-ARCHIVE DEFECT INSTEAD OF FAILING
-            throw new CommandExecutionException(
-                "Cannot read the name of a backup setting from the parsed statement: " + entry.getKey());
-
-          final String settingName = rawKey.toString();
+          // The key is now always built as new Expression(Identifier) - never the raw-value shape that made
+          // toString() render nothing and silently drop every 'WITH ...' setting, encryptionKey included, which
+          // meant a backup asked to be encrypted was written in clear (issue #6409, item 1; SQLASTBuilder#putSetting
+          // is the one place all five WITH-settings statements build this key now).
+          final String settingName = entry.getKey().toString();
           try {
             switch (settingName) {
             case "encryptionAlgorithm" -> clazz.getMethod("setEncryptionAlgorithm", String.class)

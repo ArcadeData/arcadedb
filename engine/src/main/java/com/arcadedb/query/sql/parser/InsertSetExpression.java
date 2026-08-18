@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.parser;
 
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * Created by luigidellaquila on 19/02/15.
@@ -50,5 +51,26 @@ public class InsertSetExpression {
 
   public Expression getRight() {
     return right;
+  }
+
+  /**
+   * {@link InsertBody#equals(Object)} carries {@code setExpressions} - a {@code List<InsertSetExpression>} - through
+   * {@code Objects.equals()}, and {@code List.equals()} compares it element by element with THIS method, so without
+   * it two parses of the same {@code INSERT ... SET} statement fell back to reference identity and never compared
+   * equal (issue #6409, item 3).
+   */
+  @Override
+  public boolean equals(final Object o) {
+    if (this == o)
+      return true;
+    if (o == null || getClass() != o.getClass())
+      return false;
+    final InsertSetExpression that = (InsertSetExpression) o;
+    return Objects.equals(left, that.left) && Objects.equals(right, that.right);
+  }
+
+  @Override
+  public int hashCode() {
+    return Objects.hash(left, right);
   }
 }

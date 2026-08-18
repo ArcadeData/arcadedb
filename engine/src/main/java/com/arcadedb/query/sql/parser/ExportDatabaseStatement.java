@@ -93,7 +93,7 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
       final Map<String, String> settingsToString = new HashMap<>();
       for (final Map.Entry<Expression, Expression> entry : settings.entrySet()) {
         final Object executedValue = entry.getValue().execute((Identifiable) null, context);
-        settingsToString.put(entry.getKey().value.toString(), executedValue != null ? executedValue.toString() : entry.getValue().toString());
+        settingsToString.put(entry.getKey().toString(), executedValue != null ? executedValue.toString() : entry.getValue().toString());
       }
       clazz.getMethod("setSettings", Map.class).invoke(exporter, settingsToString);
 
