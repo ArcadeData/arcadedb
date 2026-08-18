@@ -43,17 +43,26 @@ public class MapExpression implements Expression {
 
   @Override
   public Object evaluate(final Result result, final CommandContext context) {
+    return evaluateWith(value -> OpenCypherQueryEngine.getExpressionEvaluator().evaluate(value, result, context));
+  }
+
+  /**
+   * Build the map, delegating every value evaluation to the supplied evaluator. Shared with
+   * {@code ExpressionEvaluator}, which resolves the values through itself so aggregation overrides apply: it used
+   * to carry its own copy of this loop, which skipped the single-entry fast path below and so answered the same
+   * expression with a different Map implementation depending on whether it sat under an aggregation (issue #6354).
+   */
+  public Object evaluateWith(final SubEvaluator subEvaluator) {
     // Fast path for single-entry maps (common for duration({seconds: value}))
     if (entries.size() == 1) {
       final Map.Entry<String, Expression> entry = entries.entrySet().iterator().next();
-      final Object value = OpenCypherQueryEngine.getExpressionEvaluator().evaluate(entry.getValue(), result, context);
-      return CollectionUtils.singletonMap(entry.getKey(), value);
+      return CollectionUtils.singletonMap(entry.getKey(), subEvaluator.evaluate(entry.getValue()));
     }
 
     // Standard path for multi-entry maps
     final Map<String, Object> map = new LinkedHashMap<>();
     for (final Map.Entry<String, Expression> entry : entries.entrySet())
-      map.put(entry.getKey(), OpenCypherQueryEngine.getExpressionEvaluator().evaluate(entry.getValue(), result, context));
+      map.put(entry.getKey(), subEvaluator.evaluate(entry.getValue()));
     return map;
   }
 

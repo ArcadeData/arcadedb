@@ -20,6 +20,7 @@ package com.arcadedb.function.coll;
 
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.utility.LongRangeList;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -27,6 +28,10 @@ import java.util.List;
 /**
  * coll.remove(list, index, [count]) - Returns a new list with element(s) removed starting at the given index.
  * If count is not provided, removes one element.
+ * <p>
+ * Removing a prefix or a suffix of a range leaves an arithmetic progression, so those two cases are answered in
+ * constant space rather than by copying a list that costs no heap while it stays lazy (issue #6353). Cutting out
+ * of the middle does not: the result is two progressions, which a Cypher LIST cannot be, so it is materialised.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -69,6 +74,14 @@ public class CollRemove extends AbstractCollFunction {
     if (args.length > 2 && args[2] == null)
       return null;
     final int count = args.length > 2 ? ((Number) args[2]).intValue() : 1;
+    if (args[0] instanceof LongRangeList range) {
+      // The loop below stops at the end of the list, so it removes min(count, size - index) elements.
+      final int removed = Math.min(Math.max(count, 0), range.size() - index);
+      if (index == 0)
+        return range.subList(removed, range.size());
+      if (index + removed >= range.size())
+        return range.subList(0, index);
+    }
     final List<Object> result = new ArrayList<>(list);
     for (int i = 0; i < count && index < result.size(); i++)
       result.remove(index);

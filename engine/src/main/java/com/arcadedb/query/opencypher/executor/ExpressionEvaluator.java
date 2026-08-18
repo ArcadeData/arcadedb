@@ -37,13 +37,10 @@ import com.arcadedb.query.opencypher.ast.MapExpression;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.ArrayList;
-import java.util.Collection;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -165,97 +162,27 @@ public class ExpressionEvaluator {
     return function.execute(args, context);
   }
 
+  /**
+   * Evaluates an arithmetic expression, resolving both operands through this evaluator so that an inline
+   * aggregator sees the pre-computed overrides, then handing the values to the operator semantics that live on
+   * the AST node. This method used to carry a verbatim copy of those sixty-odd lines - null propagation, {@code ||}
+   * strict typing, list and string concatenation, temporal arithmetic, numeric promotion - so a fix could land on
+   * one path and not the other (issue #6354). Only the two operand evaluations below belong here.
+   */
   private Object evaluateArithmetic(final ArithmeticExpression expression, final Result result,
       final CommandContext context) {
-    final Object leftValue = evaluate(expression.getLeft(), result, context);
-    final Object rightValue = evaluate(expression.getRight(), result, context);
-
-    if (leftValue == null || rightValue == null)
-      return null;
-
-    // GQL / Cypher 25 concatenation operator || (strict typing, no implicit coercion, issue #5298).
-    if (expression.getOperator() == ArithmeticExpression.Operator.CONCAT)
-      return ArithmeticExpression.concatenate(leftValue, rightValue);
-
-    // List concatenation/append for + operator (must be checked before string concatenation).
-    // Coerce List/Collection/array (incl. primitive arrays from numeric-array parameters, issue #4284) to a List.
-    if (expression.getOperator() == ArithmeticExpression.Operator.ADD) {
-      final List<Object> leftList = MultiValue.getMultiValueAsList(leftValue);
-      final List<Object> rightList = MultiValue.getMultiValueAsList(rightValue);
-      if (leftList != null && rightList != null) {
-        final List<Object> combined = new ArrayList<>(leftList);
-        combined.addAll(rightList);
-        return combined;
-      }
-      if (leftList != null) {
-        final List<Object> appended = new ArrayList<>(leftList);
-        appended.add(rightValue);
-        return appended;
-      }
-      if (rightList != null) {
-        final List<Object> prepended = new ArrayList<>();
-        prepended.add(leftValue);
-        prepended.addAll(rightList);
-        return prepended;
-      }
-    }
-
-    // String concatenation for + operator
-    if (expression.getOperator() == ArithmeticExpression.Operator.ADD
-        && (leftValue instanceof String || rightValue instanceof String))
-      return leftValue.toString() + rightValue.toString();
-
-    // Temporal arithmetic with pre-evaluated values
-    if (!(leftValue instanceof Number) || !(rightValue instanceof Number)) {
-      final Object temporalResult = ArithmeticExpression.evaluateTemporalArithmetic(
-          leftValue, rightValue, expression.getOperator());
-      if (temporalResult != null)
-        return temporalResult;
-      throw new IllegalArgumentException(
-          "Arithmetic operations require numeric operands, got: " + leftValue.getClass().getSimpleName()
-              + " and " + rightValue.getClass().getSimpleName());
-    }
-
-    final Number leftNum = (Number) leftValue;
-    final Number rightNum = (Number) rightValue;
-
-    final boolean useInteger = isInteger(leftNum) && isInteger(rightNum)
-        && expression.getOperator() != ArithmeticExpression.Operator.POWER;
-
-    if (useInteger)
-      return ArithmeticExpression.integerArithmetic(expression.getOperator(), leftNum.longValue(), rightNum.longValue());
-
-    final double l = leftNum.doubleValue();
-    final double r = rightNum.doubleValue();
-    return switch (expression.getOperator()) {
-      case ADD -> l + r;
-      case SUBTRACT -> l - r;
-      case MULTIPLY -> l * r;
-      case DIVIDE -> l / r; // IEEE 754: 0.0/0.0=NaN, x/0.0=±Infinity
-      case MODULO -> r != 0 ? l % r : Double.NaN;
-      case POWER -> Math.pow(l, r);
-      case CONCAT -> throw new IllegalStateException("CONCAT is handled before numeric arithmetic");
-    };
-  }
-
-  private static boolean isInteger(final Number num) {
-    return num instanceof Integer || num instanceof Long || num instanceof Short || num instanceof Byte;
+    return ArithmeticExpression.apply(expression.getOperator(), evaluate(expression.getLeft(), result, context),
+        evaluate(expression.getRight(), result, context));
   }
 
   private Object evaluateList(final ListExpression expression, final Result result,
       final CommandContext context) {
-    final List<Object> values = new ArrayList<>();
-    for (final Expression element : expression.getElements())
-      values.add(evaluate(element, result, context));
-    return values;
+    return expression.evaluateWith(element -> evaluate(element, result, context));
   }
 
   private Object evaluateMap(final MapExpression expression, final Result result,
       final CommandContext context) {
-    final LinkedHashMap<String, Object> map = new LinkedHashMap<>();
-    for (final Map.Entry<String, Expression> entry : expression.getEntries().entrySet())
-      map.put(entry.getKey(), evaluate(entry.getValue(), result, context));
-    return map;
+    return expression.evaluateWith(value -> evaluate(value, result, context));
   }
 
   /**

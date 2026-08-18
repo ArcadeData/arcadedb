@@ -94,9 +94,28 @@ public class ArithmeticExpression implements Expression {
 
   @Override
   public Object evaluate(final Result result, final CommandContext context) {
-    final Object leftValue = left.evaluate(result, context);
-    final Object rightValue = right.evaluate(result, context);
+    return apply(operator, left.evaluate(result, context), right.evaluate(result, context));
+  }
 
+  /**
+   * Applies an arithmetic operator to two already evaluated operands.
+   * <p>
+   * This is the single definition of what the Cypher arithmetic operators mean: null propagation, {@code ||}
+   * strict typing (issue #5298), list concatenation and append (issue #4284), string concatenation, temporal
+   * arithmetic and numeric promotion. Operand <i>evaluation</i> deliberately stays at each call site, because
+   * {@code ExpressionEvaluator} resolves sub-expressions through itself so that an inline aggregator sees the
+   * overrides {@code AggregationStep} / {@code GroupByAggregationStep} install (issue #4100) - and that two-line
+   * difference is the entire reason a second copy of this method existed there. The rest of it was duplicated
+   * verbatim, so every one of those semantics was a place where a fix could land on one path and not the other:
+   * exactly the arrangement that hid the list-slice heap exhaustion until issue #6323. See issue #6354.
+   *
+   * @param operator   the operator to apply
+   * @param leftValue  the already evaluated left operand
+   * @param rightValue the already evaluated right operand
+   *
+   * @return the result of the operation, or {@code null} when either operand is {@code null}
+   */
+  public static Object apply(final Operator operator, final Object leftValue, final Object rightValue) {
     // Handle null values
     if (leftValue == null || rightValue == null)
       return null;
@@ -132,18 +151,16 @@ public class ArithmeticExpression implements Expression {
     if (operator == Operator.ADD && (leftValue instanceof String || rightValue instanceof String))
       return leftValue.toString() + rightValue.toString();
 
-    // Temporal arithmetic: date/time ± duration, duration ± duration, duration * number
-    final Object temporalResult = evaluateTemporalArithmetic(leftValue, rightValue, operator);
-    if (temporalResult != null)
-      return temporalResult;
-
-    // Numeric operations
-    if (!(leftValue instanceof Number) || !(rightValue instanceof Number))
+    // Numeric operations. Temporal arithmetic - date/time ± duration, duration ± duration, duration * number -
+    // is tried first, but only when an operand is not a Number: no temporal type is a Number, so every temporal
+    // combination has at least one non-numeric operand and two numbers can never reach it.
+    if (!(leftValue instanceof Number leftNum) || !(rightValue instanceof Number rightNum)) {
+      final Object temporalResult = evaluateTemporalArithmetic(leftValue, rightValue, operator);
+      if (temporalResult != null)
+        return temporalResult;
       throw new IllegalArgumentException(
           "Arithmetic operations require numeric operands, got: " + leftValue.getClass().getSimpleName() + " and " + rightValue.getClass().getSimpleName());
-
-    final Number leftNum = (Number) leftValue;
-    final Number rightNum = (Number) rightValue;
+    }
 
     // Determine result type (preserve integer if possible)
     final boolean useInteger = isInteger(leftNum) && isInteger(rightNum) && operator != Operator.POWER;
@@ -337,7 +354,7 @@ public class ArithmeticExpression implements Expression {
     return null; // Not a temporal arithmetic operation
   }
 
-  private boolean isInteger(final Number num) {
+  private static boolean isInteger(final Number num) {
     return num instanceof Integer || num instanceof Long || num instanceof Short || num instanceof Byte;
   }
 

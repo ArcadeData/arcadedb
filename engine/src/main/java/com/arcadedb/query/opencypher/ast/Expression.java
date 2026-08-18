@@ -55,4 +55,19 @@ public interface Expression {
    * Get the string representation of this expression.
    */
   String getText();
+
+  /**
+   * How a composite expression evaluates one of its own sub-expressions.
+   * <p>
+   * An expression that is more than the sum of its operands - a CASE, a list or map literal, an arithmetic
+   * operation - has two callers: {@link #evaluate(Result, CommandContext)}, which resolves operands directly, and
+   * {@code ExpressionEvaluator}, which resolves them through itself so an inline aggregator sees the pre-computed
+   * overrides {@code AggregationStep} installs (issue #4100). Only the operand resolution differs, so it is
+   * passed in and everything else - the part that says what the expression MEANS - is written once. Writing it
+   * twice is what let a fix land on one path and not the other (issues #6323, #6354).
+   */
+  @FunctionalInterface
+  interface SubEvaluator {
+    Object evaluate(Expression expression);
+  }
 }

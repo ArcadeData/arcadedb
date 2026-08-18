@@ -22,6 +22,7 @@ import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
+import com.arcadedb.utility.LongRangeList;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -29,6 +30,11 @@ import java.util.List;
 
 /**
  * reverse() function - reverses a string or list.
+ * <p>
+ * A range read backwards is still an arithmetic progression, so a {@link LongRangeList} argument is answered in
+ * constant space by {@link LongRangeList#reversed()}. Copying it instead reinstated the heap exhaustion the lazy
+ * range removed (issue #6353, advisory GHSA-xmjm-8q85-g778): {@code reverse(range(0, 999999999))} allocated a
+ * billion boxed longs.
  */
 public class ReverseFunction implements StatelessFunction {
   @Override
@@ -55,6 +61,8 @@ public class ReverseFunction implements StatelessFunction {
       final String str = (String) args[0];
       return new StringBuilder(str).reverse().toString();
     }
+    if (args[0] instanceof LongRangeList range)
+      return range.reversed();
     // Accept List/Collection/array (incl. primitive arrays from numeric-array parameters, issue #4284).
     final List<Object> list = MultiValue.getMultiValueAsList(args[0]);
     if (list != null) {

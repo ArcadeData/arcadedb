@@ -19,6 +19,7 @@
 package com.arcadedb.function.coll;
 
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.utility.LongRangeList;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -59,6 +60,9 @@ public class CollToSet extends AbstractCollFunction {
     final List<Object> list = asList(args[0]);
     if (list == null)
       return null;
+    if (args[0] instanceof LongRangeList range)
+      // The step of a range is never zero, so no element repeats: the set IS the range (issue #6353).
+      return range;
     return new ArrayList<>(new LinkedHashSet<>(list));
   }
 }
