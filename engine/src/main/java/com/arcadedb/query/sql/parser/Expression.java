@@ -198,6 +198,28 @@ public class Expression extends SimpleNode {
     return false;
   }
 
+  /**
+   * Whether the expression is {@link #isLiteral() a literal}, or a bare call to a
+   * {@link com.arcadedb.query.sql.executor.SQLFunction#isDeterministic() deterministic} built-in whose own arguments
+   * are each foldable in turn ({@code abs(-1)}, {@code coalesce(null, 1)}, {@code abs(pow(2, 3))}).
+   * <p>
+   * This is the "constant-folding sibling" that {@link #isLiteral()}'s own javadoc reserves {@code isLiteral} from
+   * becoming: it never invokes the function to decide, it only consults the marker issue #6190 adds
+   * ({@link FunctionCall#isFoldable()}), so it stays safe to call on a statement that is not going to fold at all.
+   * Deliberately narrower than {@link #isEarlyCalculated(CommandContext)} in the same way {@link #isLiteral()} is -
+   * a method call ({@code 'x'.append('y')}), a call whose result depends on an input parameter, or a call this
+   * cannot resolve as a built-in (a user-defined function) is never foldable, whatever its arguments are.
+   *
+   * @see #isLiteral()
+   * @see FunctionCall#isFoldable()
+   */
+  public boolean isFoldable() {
+    if (isLiteral())
+      return true;
+
+    return mathExpression instanceof BaseExpression baseExpression && baseExpression.isFoldableFunctionCall();
+  }
+
   public Identifier getDefaultAlias() {
     final Identifier identifier;
     if (isBaseIdentifier()) {

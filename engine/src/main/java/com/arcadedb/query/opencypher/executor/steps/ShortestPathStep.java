@@ -830,7 +830,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
       builder.append(" [ALL]");
     }
     if (context.isProfiling()) {
-      builder.append(" (").append(getCostFormatted()).append(")");
+      builder.append(" (").append(getCostFormatted());
       if (rowCount > 0)
         builder.append(", ").append(getRowCountFormatted());
       builder.append(")");

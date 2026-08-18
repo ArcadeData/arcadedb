@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.fulltext;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
@@ -44,6 +45,18 @@ import static org.assertj.core.api.Assertions.within;
  */
 class FullTextBM25CompactionTest extends TestHelper {
 
+  /**
+   * Automatic compaction scheduling off, so this test owns the reservation {@link #forceCompaction()} asserts on
+   * (issue #6324, item 2). The 601 inserts below take the mutable index well past
+   * {@code INDEX_COMPACTION_MIN_PAGES_SCHEDULE}, so the engine schedules a compaction of its own while they run, and
+   * whenever that reservation is still outstanding the test's own {@code scheduleCompaction()} loses the CAS and
+   * {@code compact()} finds nothing to do.
+   */
+  @Override
+  protected void beginTest() {
+    database.getConfiguration().setValue(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE, 0);
+  }
+
   private Map<String, Float> searchScores(final String query) {
     final Map<String, Float> scores = new HashMap<>();
     final ResultSet rs = database.query("sql",
@@ -61,7 +74,12 @@ class FullTextBM25CompactionTest extends TestHelper {
     for (final Index bucketIndex : typeIndex.getIndexesOnBuckets()) {
       if (bucketIndex instanceof LSMTreeFullTextIndex ftIndex) {
         try {
-          ((IndexInternal) ftIndex).scheduleCompaction();
+          // scheduleCompaction() is a RESERVATION - AVAILABLE -> COMPACTION_SCHEDULED by CAS, plus a refusal while
+          // page flushing is suspended - and compact() does nothing at all without it. Asserted rather than discarded
+          // (issue #6324, item 2): a lost reservation used to surface as "the full-text index should have compacted",
+          // which sends the next reader to look at compaction rather than at whatever took the reservation.
+          assertThat(((IndexInternal) ftIndex).scheduleCompaction())
+              .as("compaction must be reserved on '%s' before it can run", ftIndex.getName()).isTrue();
           compacted |= ftIndex.compact();
         } catch (final Exception e) {
           throw new RuntimeException(e);

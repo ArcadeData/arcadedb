@@ -72,4 +72,13 @@ public class SQLFunctionDecode extends SQLFunctionAbstract {
   public String getSyntax() {
     return "decode(<value>, <format>)";
   }
+
+  /**
+   * A pure base64/base64url decode of its string argument - unlike {@link SQLFunctionEncode}, it never dereferences
+   * a RID (issue #6190).
+   */
+  @Override
+  public boolean isDeterministic() {
+    return true;
+  }
 }

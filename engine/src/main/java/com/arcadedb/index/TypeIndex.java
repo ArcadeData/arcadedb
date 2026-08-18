@@ -431,11 +431,12 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
-  public long build(final int buildIndexBatchSize, final BuildIndexCallback callback) {
+  public long build(final int buildIndexBatchSize, final boolean sharesCallerTransaction,
+      final BuildIndexCallback callback) {
     checkIsValid();
     long total = 0;
     for (final IndexInternal index : indexesOnBuckets)
-      total += index.build(buildIndexBatchSize, callback);
+      total += index.build(buildIndexBatchSize, sharesCallerTransaction, callback);
     return total;
   }
 
@@ -644,7 +645,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     final List<String> propNames = getPropertyNames();
 
     final boolean async =
-        DatabaseContext.INSTANCE.getContext(type.getSchema().getEmbedded().getDatabase().getDatabasePath()).asyncMode;
+        DatabaseContext.INSTANCE.getContext(type.getSchema().getEmbedded().getDatabase().getDatabasePath()).perThreadBucketSelection;
 
     final int bucketIndex = type.getBucketIndexByKeys(propNames, keys, async);
 

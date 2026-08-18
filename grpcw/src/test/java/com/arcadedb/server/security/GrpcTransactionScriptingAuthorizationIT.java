@@ -41,6 +41,7 @@ import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
+import io.grpc.StatusRuntimeException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -48,6 +49,7 @@ import org.junit.jupiter.api.Test;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for GHSA-p29f-345w-4qwf: the gRPC external-transaction command path let a read-only user escalate to
@@ -139,17 +141,20 @@ public class GrpcTransactionScriptingAuthorizationIT extends BaseGraphServerTest
     assertThat(tx.getTransactionId()).as("reader can open an external transaction").isNotEmpty();
 
     try {
-      // Step 2: run the escalation script on the transaction's dedicated thread.
-      final ExecuteCommandResponse response = stub.executeCommand(ExecuteCommandRequest.newBuilder()
+      // Step 2: run the escalation script on the transaction's dedicated thread. A command failure now
+      // surfaces as a gRPC error status through GrpcErrorMapper rather than an in-band success=false
+      // response (issue #6192).
+      final ExecuteCommandRequest request = ExecuteCommandRequest.newBuilder()
           .setDatabase(getDatabaseName())
           .setCredentials(credentials(READER_USER, READER_PWD))
           .setTransaction(TransactionContext.newBuilder().setTransactionId(tx.getTransactionId()).build())
           .setLanguage("js")
           .setCommand(PoC_SCRIPT)
-          .build());
+          .build();
 
-      assertThat(response.getSuccess())
-          .as("scripting gate must reject LANGUAGE js for a reader inside an external transaction").isFalse();
+      assertThatThrownBy(() -> stub.executeCommand(request))
+          .as("scripting gate must reject LANGUAGE js for a reader inside an external transaction")
+          .isInstanceOf(StatusRuntimeException.class);
     } finally {
       rollbackQuietly(stub, tx.getTransactionId());
     }
@@ -171,15 +176,19 @@ public class GrpcTransactionScriptingAuthorizationIT extends BaseGraphServerTest
 
     try {
       // The record-level gate is the same null-user no-op, so an ordinary SQL write inside the transaction must be
-      // denied too - the escalation above is only the most severe consequence of the missing binding.
-      final ExecuteCommandResponse response = stub.executeCommand(ExecuteCommandRequest.newBuilder()
+      // denied too - the escalation above is only the most severe consequence of the missing binding. The denial
+      // now surfaces as a gRPC error status through GrpcErrorMapper rather than an in-band success=false
+      // response (issue #6192).
+      final ExecuteCommandRequest request = ExecuteCommandRequest.newBuilder()
           .setDatabase(getDatabaseName())
           .setCredentials(credentials(READER_USER, READER_PWD))
           .setTransaction(TransactionContext.newBuilder().setTransactionId(tx.getTransactionId()).build())
           .setCommand("INSERT INTO " + VERTEX1_TYPE_NAME + " SET tag = '" + marker + "'")
-          .build());
+          .build();
 
-      assertThat(response.getSuccess()).as("reader must be denied a write inside an external transaction").isFalse();
+      assertThatThrownBy(() -> stub.executeCommand(request))
+          .as("reader must be denied a write inside an external transaction")
+          .isInstanceOf(StatusRuntimeException.class);
     } finally {
       rollbackQuietly(stub, tx.getTransactionId());
     }

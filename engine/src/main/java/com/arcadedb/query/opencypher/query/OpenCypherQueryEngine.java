@@ -146,6 +146,22 @@ public class OpenCypherQueryEngine implements QueryEngine {
     }
   }
 
+  /**
+   * Free, and that is why Cypher can answer it (issue #6324, item 5): the parse is a {@code CypherStatementCache}
+   * lookup that the execution about to follow repeats with the same key - the same argument that lets SQL answer.
+   * <p>
+   * Before this, {@code CREATE INDEX} dispatched with {@code awaitResponse=false} worked in SQL and was refused in
+   * Cypher, because the routing was SQL's private knowledge. The four Cypher DDL statements -
+   * {@code CREATE}/{@code DROP INDEX} and {@code CREATE}/{@code DROP CONSTRAINT} - are exactly the ones that reach
+   * the index builder, and so exactly the ones that have to run off the async workers.
+   */
+  @Override
+  public DDLClassification classifyDDL(final String query) {
+    return database.getCypherStatementCache().get(query) instanceof CypherDDLStatement ?
+        DDLClassification.DDL :
+        DDLClassification.NOT_DDL;
+  }
+
   @Override
   public ResultSet query(final String query, final ContextConfiguration configuration, final Map<String, Object> parameters) {
     try {

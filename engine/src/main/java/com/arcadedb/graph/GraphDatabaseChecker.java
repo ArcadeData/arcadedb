@@ -24,6 +24,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.engine.RepairTransaction;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
@@ -49,19 +50,24 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.it)
  */
 public class GraphDatabaseChecker {
-  private final DatabaseInternal database;
-  private final GraphEngine      graphEngine;
+  private final DatabaseInternal  database;
+  private final GraphEngine       graphEngine;
   /**
-   * Modified-page budget of one repair transaction (issue #6128) - see {@link #commitRepairBatchIfFull()}. Read
-   * once per checker rather than per repaired record: it is a database-scoped setting, and re-reading it inside the
-   * repair loops would put a configuration lookup on the per-record path for a value that cannot change under it.
+   * The transaction every pass of this checker makes its repairs in, and the only thing that knows whether the pass
+   * running right now still OWNS one (issue #6342). Shared with {@code LocalBucket.check(fix)} - see
+   * {@link RepairTransaction} for the batching rule and for why ownership cannot be asked of the thread.
+   * <p>
+   * ONE per checker rather than one per pass: the three passes never overlap ({@link #finishPass} clears the
+   * ownership flag before any other can begin one), and its budget is a database-scoped setting read once here rather
+   * than per repaired record, which would put a configuration lookup on the per-record path for a value that cannot
+   * change under a running check.
    */
-  private final int              repairBatchPages;
+  private final RepairTransaction repairTx;
   /**
    * Adjacency-entry budget of {@link AdjacencyProbeCache} (issue #6062), read once per checker for the same reason
-   * as {@link #repairBatchPages}: it is a database-scoped setting and cannot change under a running check.
+   * as {@link #repairTx}'s own budget: it is a database-scoped setting and cannot change under a running check.
    */
-  private final int              adjacencyCacheEntries;
+  private final int               adjacencyCacheEntries;
 
   // Progress reporting (issue #5372): the step identity (name/index/totalSteps) is assigned by the caller
   // (DatabaseChecker owns the step plan); this class emits within-step done/total, throttled to integer
@@ -77,8 +83,7 @@ public class GraphDatabaseChecker {
   public GraphDatabaseChecker(DatabaseInternal database) {
     this.database = database;
     this.graphEngine = database.getGraphEngine();
-    this.repairBatchPages = database.getConfiguration()
-        .getValueAsInteger(GlobalConfiguration.CHECK_DATABASE_REPAIR_BATCH_PAGES);
+    this.repairTx = new RepairTransaction(database, RepairTransaction.configuredBatchPages(database));
     this.adjacencyCacheEntries = database.getConfiguration()
         .getValueAsInteger(GlobalConfiguration.CHECK_DATABASE_ADJACENCY_CACHE_ENTRIES);
   }
@@ -201,7 +206,8 @@ public class GraphDatabaseChecker {
     long orphans = 0;
     long reclaimed = 0;
 
-    database.begin();
+    beginPass();
+    boolean completed = false;
     try {
       // PHASE 1: walk every vertex's chains and mark every reachable segment. LongHashSet keyed by position
       // per bucket keeps the footprint primitive-sized (same approach as the external-property orphan scan).
@@ -279,15 +285,17 @@ public class GraphDatabaseChecker {
         for (final String warning : report.warnings)
           LogManager.instance().log(this, Level.WARNING, "- " + warning);
 
-      database.commit();
-      progressComplete();
+      completed = true;
 
     } finally {
       stats.put("orphanedEdgeSegments", orphans);
       stats.put("orphanedEdgeSegmentsReclaimed", reclaimed);
       stats.put("warnings", report.warnings);
       stats.put("totalWarnings", report.totalWarnings);
+      finishPass(completed);
     }
+
+    progressComplete();
     return stats;
   }
 
@@ -390,15 +398,37 @@ public class GraphDatabaseChecker {
    * FAILURE PATH: a batch commit that throws propagates to the caller and leaves no transaction open on the
    * thread - {@code commit()} disposes its context even when the write fails, so the checker does not have to roll
    * back after it. Batches already committed stay committed, which is the semantic change stated above. Pinned by
-   * {@code CheckDatabaseRepairBatchFailureTest}.
+   * {@code CheckDatabaseRepairBatchFailureTest}. Every OTHER way the body of a pass can throw is what
+   * {@link #finishPass} exists for (issue #6342).
    */
   private void commitRepairBatchIfFull() {
-    if (repairBatchPages <= 0)
-      return;
-    if (database.getTransaction().getModifiedPages() < repairBatchPages)
-      return;
-    database.commit();
-    database.begin();
+    repairTx.commitBatchIfFull();
+  }
+
+  /**
+   * Opens the transaction ONE pass makes its repairs in, nested inside whatever the caller has open.
+   * <p>
+   * Every pass of this class - {@link #checkVertices}, {@link #checkEdges} and
+   * {@link #reclaimOrphanedEdgeSegments} - is bracketed by this and {@link #finishPass}, and the pairing is the whole
+   * of issue #6342: the passes used to commit as the LAST statement of their {@code try}, with a {@code finally} that
+   * filled in the returned counters and nothing else, so any exception raised in the body before that line left the
+   * transaction the pass had opened OPEN on the thread. Under the HTTP handler, which always has one of its own open,
+   * the handler's cleanup {@code rollback()} then popped the pass's nested transaction and left the handler's -
+   * exactly backwards. Embedded, with no outer transaction, the next user of the thread inherited an in-flight
+   * transaction from a repair that had already failed.
+   */
+  private void beginPass() {
+    repairTx.begin();
+  }
+
+  /**
+   * Ends the transaction the pass opened, if it still holds one: committing it when the pass ran to its end, rolling
+   * the batch in flight back when it did not. See {@link RepairTransaction} for why "still holds one" is a flag rather
+   * than {@code database.isTransactionActive()} - under an outer transaction that question answers yes for someone
+   * else's.
+   */
+  private void finishPass(final boolean completed) {
+    repairTx.finish(completed);
   }
 
   /**
@@ -581,7 +611,8 @@ public class GraphDatabaseChecker {
 
     final Map<String, Object> stats = new HashMap<>();
 
-    database.begin();
+    beginPass();
+    boolean completed = false;
     try {
       // The connectivity check of ONE vertex: shared by the type-wide scan and the RECORD-scoped enumeration.
       final Consumer<Record> checkConnectivity = record -> {
@@ -685,7 +716,7 @@ public class GraphDatabaseChecker {
         for (final String warning : report.warnings)
           LogManager.instance().log(this, Level.WARNING, "- " + warning);
 
-      database.commit();
+      completed = true;
 
     } finally {
       putRepairCounters(stats, autoFix.get(), report.prunedDanglingEntries, reconnectedEdges);
@@ -699,6 +730,7 @@ public class GraphDatabaseChecker {
       stats.put("totalCorruptedRecords", report.totalCorrupted);
       stats.put("missingReferences", missingReferences);
       stats.put("missingReferenceErrors", missingReferenceErrors);
+      finishPass(completed);
     }
 
     return stats;
@@ -1545,7 +1577,8 @@ public class GraphDatabaseChecker {
 
     final Map<String, Object> stats = new HashMap<>();
 
-    database.begin();
+    beginPass();
+    boolean completed = false;
 
     try {
       // The endpoint check of ONE edge: shared by the type-wide scan and the RECORD-scoped enumeration.
@@ -1779,7 +1812,7 @@ public class GraphDatabaseChecker {
         for (final String warning : report.warnings)
           LogManager.instance().log(this, Level.WARNING, "- " + warning);
 
-      database.commit();
+      completed = true;
 
     } finally {
       // Same sum as the vertex arm, and prunedDanglingEntries is structurally ZERO here: pruning happens in
@@ -1804,6 +1837,7 @@ public class GraphDatabaseChecker {
       stats.put("totalCorruptedRecords", report.totalCorrupted);
       stats.put("missingReferences", missingReferences);
       stats.put("missingReferenceErrors", missingReferenceErrors);
+      finishPass(completed);
     }
 
     return stats;

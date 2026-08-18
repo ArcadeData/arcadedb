@@ -402,7 +402,7 @@ class CypherUncorrelatedSubqueryCountPushDownIssue5686Test extends TestHelper {
     fixtures.put(BooleanCoercionExpression.class, new BooleanCoercionExpression(planted()));
     fixtures.put(ComparisonExpression.class,
         new ComparisonExpression(planted(), ComparisonExpression.Operator.EQUALS, literal()));
-    fixtures.put(InExpression.class, new InExpression(planted(), List.of(literal()), false));
+    fixtures.put(InExpression.class, new InExpression(planted(), List.of(literal())));
     fixtures.put(IsNullExpression.class, new IsNullExpression(planted(), false));
     fixtures.put(IsTypedExpression.class, new IsTypedExpression(planted(), "STRING", null, false, false));
     fixtures.put(LabelCheckExpression.class, new LabelCheckExpression(planted(), "L", "p:L"));

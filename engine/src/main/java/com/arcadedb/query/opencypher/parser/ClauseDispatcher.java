@@ -178,7 +178,7 @@ class ClauseDispatcher {
         : null;
 
     final List<ReturnClause.ReturnItem> starItems = new ArrayList<>();
-    starItems.add(new ReturnClause.ReturnItem(new VariableExpression("*"), "*"));
+    starItems.add(ReturnClause.ReturnItem.star());
     final WithClause implicitWith = new WithClause(starItems, false, null, orderBy, skipExpr, limitExpr);
     builder.addWith(implicitWith);
   }

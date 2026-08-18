@@ -1274,7 +1274,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * single-property index would store untokenized raw values. So the scan is performed here, indexing through {@code this}.
    */
   @Override
-  public long build(final int buildIndexBatchSize, final BuildIndexCallback callback) {
+  public long build(final int buildIndexBatchSize, final boolean sharesCallerTransaction,
+      final BuildIndexCallback callback) {
     final DatabaseInternal db = underlyingIndex.getMutableIndex().getDatabase();
     final String typeName = getTypeName();
     if (typeName == null)
@@ -1290,16 +1291,14 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
           typeName + getPropertyNames());
 
       db.scanBucket(bucketName, record -> {
-        db.getIndexer().addToIndex(LSMTreeFullTextIndex.this, record.getIdentity(), (Document) record);
+        final Document source = IndexInternal.buildSourceRecord(db, record, sharesCallerTransaction);
+        db.getIndexer().addToIndex(LSMTreeFullTextIndex.this, record.getIdentity(), source);
         total.incrementAndGet();
 
-        if (total.get() % buildIndexBatchSize == 0) {
-          db.getWrappedDatabaseInstance().commit();
-          db.getWrappedDatabaseInstance().begin();
-        }
+        IndexInternal.commitBuildBatch(db, total.get(), buildIndexBatchSize, sharesCallerTransaction);
 
         if (callback != null)
-          callback.onDocumentIndexed((Document) record, total.get());
+          callback.onDocumentIndexed(source, total.get());
 
         return true;
       }, (rid, exception) -> {

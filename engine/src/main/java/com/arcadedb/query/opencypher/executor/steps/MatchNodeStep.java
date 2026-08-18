@@ -476,86 +476,21 @@ public class MatchNodeStep extends AbstractExecutionStep {
         return Collections.emptyIterator();
       }
 
-      // Multiple labels - the iteration semantics depend on whether the labels are combined
-      // with OR (disjunction, e.g. (n:A|B)) or AND (conjunction, e.g. (n:A:B)).
-      final boolean disjunction = pattern.isLabelDisjunction();
-      final List<Iterator<Identifiable>> iterators = new ArrayList<>();
-      for (final DocumentType type : context.getDatabase().getSchema().getTypes()) {
-        if (type instanceof VertexType) {
-          boolean matches;
-          if (disjunction) {
-            matches = false;
-            for (final String label : labels) {
-              if (type.instanceOf(label)) {
-                matches = true;
-                break;
-              }
-            }
-          } else {
-            matches = true;
-            for (final String label : labels) {
-              if (!type.instanceOf(label)) {
-                matches = false;
-                break;
-              }
-            }
-          }
-          if (matches) {
-            @SuppressWarnings("unchecked") final Iterator<Identifiable> iter =
-                (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(type.getName(), false);
-            iterators.add(iter);
-          }
-        }
-      }
-      return new ChainedIterator(iterators);
-    } else {
-      // No label specified - iterate ALL vertex types
-      // Get all vertex types from schema and chain their iterators
-      final List<Iterator<Identifiable>> iterators = new ArrayList<>();
-
-      for (final DocumentType type : context.getDatabase().getSchema().getTypes()) {
-        // Only include vertex types (not edge types or document types)
-        if (type instanceof VertexType) {
-          @SuppressWarnings("unchecked") final Iterator<Identifiable> iter =
-              (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(type.getName(), false);
-          iterators.add(iter);
-        }
-      }
-
-      // Chain all iterators together
-      return new ChainedIterator(iterators);
-    }
-  }
-
-  /**
-   * Iterator that chains multiple iterators together.
-   */
-  private static class ChainedIterator implements Iterator<Identifiable> {
-    private final List<Iterator<Identifiable>> iterators;
-    private       int                          currentIndex = 0;
-
-    public ChainedIterator(final List<Iterator<Identifiable>> iterators) {
-      this.iterators = iterators;
+      // Multiple labels - the iteration semantics depend on whether the labels are combined with OR
+      // (disjunction, e.g. (n:A|B)) or AND (conjunction, e.g. (n:A:B)). Which types that selects is decided by
+      // Labels, the one place that knows what a disjunction means, so a node pattern is scanned the same way
+      // wherever it is written - here as the anchor of a MATCH, or as the start of a pattern comprehension,
+      // which used to take the first label and nothing else (issues #6338, #6352).
+      @SuppressWarnings("unchecked") final Iterator<Identifiable> labelled =
+          (Iterator<Identifiable>) (Object) Labels.iterateMatchingVertices(context.getDatabase(), labels,
+              pattern.isLabelDisjunction());
+      return labelled;
     }
 
-    @Override
-    public boolean hasNext() {
-      while (currentIndex < iterators.size()) {
-        if (iterators.get(currentIndex).hasNext()) {
-          return true;
-        }
-        currentIndex++;
-      }
-      return false;
-    }
-
-    @Override
-    public Identifiable next() {
-      if (!hasNext()) {
-        throw new NoSuchElementException();
-      }
-      return iterators.get(currentIndex).next();
-    }
+    // No label specified - iterate ALL vertex types, which is the same rule with nothing to satisfy.
+    @SuppressWarnings("unchecked") final Iterator<Identifiable> everyVertex =
+        (Iterator<Identifiable>) (Object) Labels.iterateMatchingVertices(context.getDatabase(), labels, false);
+    return everyVertex;
   }
 
   private Iterator<Identifiable> tryPartitionPrunedIterator(final DocumentType type, final String label) {
@@ -815,16 +750,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
     final List<String> labels = resolveEffectiveLabels(currentResult);
     if (labels.size() <= 1)
       return true; // Single label already filtered by iterator
-    if (pattern.isLabelDisjunction()) {
-      for (final String label : labels)
-        if (Labels.hasLabel(vertex, label))
-          return true;
-      return false;
-    }
-    for (final String label : labels)
-      if (!Labels.hasLabel(vertex, label))
-        return false;
-    return true;
+    return Labels.matches(vertex, labels, pattern.isLabelDisjunction());
   }
 
   /**
@@ -837,19 +763,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
   }
 
   private boolean matchesAllLabelsBound(final Vertex vertex, final Result currentResult) {
-    final List<String> labels = resolveEffectiveLabels(currentResult);
-    if (labels.isEmpty())
-      return true;
-    if (pattern.isLabelDisjunction()) {
-      for (final String label : labels)
-        if (Labels.hasLabel(vertex, label))
-          return true;
-      return false;
-    }
-    for (final String label : labels)
-      if (!Labels.hasLabel(vertex, label))
-        return false;
-    return true;
+    return Labels.matches(vertex, resolveEffectiveLabels(currentResult), pattern.isLabelDisjunction());
   }
 
   /**

@@ -19,7 +19,9 @@ download, i.e. the longest-running thing the HA layer does, and it no longer par
 | Pool | Module | Purpose | Sizing | Saturation policy |
 |---|---|---|---|---|
 | `QueryEngineManager` JVM-wide pool | `engine` | Query-time parallelism: graph algorithms (`parallelForRange`), parallel index scans, anything that forks query work | `arcadedb.queryParallelismPoolThreads` (default `max(2, CPU)`) | Bounded queue (`arcadedb.queryParallelismQueueSize`, default 1024), caller-runs rejection, throttled WARNING (60s window) |
-| `SparseVectorScoringPool` | `engine` | Reserved for per-segment parallel scoring of `LSM_SPARSE_VECTOR` top-K (dispatch wiring deferred to issue #4085) | Hardcoded `max(2, CPU)` threads, 1024 queue; lazy-init via Holder idiom | Bounded queue, caller-runs, throttled WARNING |
+| `SparseVectorScoringPool` | `engine` | Reserved for per-segment parallel scoring of `LSM_SPARSE_VECTOR` top-K (dispatch wiring deferred to issue #4085) | `arcadedb.sparseVectorScoringPoolThreads` (default `max(2, CPU)`), 1024 queue; lazy-init via Holder idiom | Bounded queue, caller-runs, throttled WARNING |
+| `ParallelScanProducerPool` | `engine` | The BLOCKING producer tasks of a parallel bucket scan (`FetchFromTypeExecutionStep.syncPullParallel`) | `arcadedb.parallelScanProducerPoolThreads` (default `max(2, CPU)`) | **Deviation:** unbounded queue and NO caller-runs - caller-runs on a blocking producer is the #4948 self-deadlock. Back-pressure comes from each query's bounded RESULT queue; `queue_depth` is the saturation signal |
+| `AsyncCommandPool` | `engine` | Commands dispatched with `awaitResponse=false` that parse to DDL, which cannot run on an async worker (#6303 item 3) | `arcadedb.asyncCommandPoolThreads` (default `max(2, CPU)`), `arcadedb.asyncCommandQueueSize` (default 1024) | Bounded queue, caller-runs **even on a shut-down pool** (there is no future to cancel and the submitter has already counted the command as in flight), throttled WARNING |
 | `DatabaseAsyncExecutor` | `engine` | Per-database async ops (background scheduled tasks, async commit) | `arcadedb.asyncWorkerThreads` (default `CPU - 1`, min 1) | Bounded queue (`arcadedb.asyncOperationsQueueSize`, default 1024) |
 | `PageManagerFlushThread` | `engine` | Dedicated single thread for paginated-component page writes | 1 thread | Backpressure via `arcadedb.maxRAMForPageRamUsageInMB` |
 | `TransactionManager` Timer | `engine` | Periodic WAL housekeeping | Timer thread | n/a |
@@ -54,10 +56,31 @@ Used sparingly, only for publish-side serialization:
 - Studio surfaces these via the "Executor Pools" card on the Server tab (live numbers).
 - A sustained non-zero `caller_run_fallbacks` indicates pool saturation; the engine logs a throttled WARNING the first time and at most once per 60 s afterward.
 
+## The shared base: `com.arcadedb.utility.DedicatedThreadPool`
+
+The four JVM-wide pools above all extend it (issue #6324, item 4). It owns the `ThreadPoolExecutor` construction, the
+`PoolStats` record the metrics binder reads, and the caller-runs rejection policy with its throttled saturation
+WARNING - all three of which used to exist as four near-identical copies whose wording had already drifted apart.
+
+What a subclass supplies to `super(...)`: the thread-name prefix, the thread count (`autoSizeThreads(configured)` is
+the shared "explicit setting, else cores, floor 2"), the queue capacity (`queueSizeOrDefault`, or `UNBOUNDED_QUEUE`), a
+`SaturationPolicy`, a `WorkerFactory` (`DedicatedThreadPool::plainWorker`, or a lambda that sets a per-worker
+thread-local or subclasses `Thread` so the pool's threads are recognizable by type), the sentence the pool names itself
+by in its warning, what the caller-runs fallback costs ITS callers, and the settings the warning tells the operator to
+raise.
+
+The constructor refuses the two combinations that cannot mean anything: an unbounded queue with a rejection policy
+(it never rejects) and a bounded queue with `SaturationPolicy.NONE` (it must say what happens to a task it refuses).
+That is the checklist below being enforced rather than remembered.
+
+Each pool's REASONS stay in its own class javadoc - why blocking producers may not share a pool with non-blocking
+compute, why dispatched DDL cannot run on an async worker, why a sparse-vector fan-out must not nest.
+
 ## When adding new parallelism to engine code
 
 1. Pick the right home pool (`QueryEngineManager` for query-time, `SparseVectorScoringPool` if scoping to sparse vectors, etc.). If none fits, justify a new pool and add a `PoolMetrics` binding for it.
-2. Bounded queue + caller-runs rejection so the system degrades to single-threaded under load instead of throwing `RejectedExecutionException` to callers.
-3. Throttled WARNING on saturation (60-second window matching the existing pools) so operators notice without getting spammed.
-4. Wire the pool into `PoolMetrics` so the Studio "Executor Pools" card shows it.
-5. If using the JDK common ForkJoinPool is unavoidable in the short term, tag the call site with a `NOTE (concurrency)` comment pointing at this skill so the migration stays tracked.
+2. Extend `DedicatedThreadPool` rather than building a `ThreadPoolExecutor` by hand. It gives points 2-3 below by construction.
+3. Bounded queue + caller-runs rejection so the system degrades to single-threaded under load instead of throwing `RejectedExecutionException` to callers. A deviation (as `ParallelScanProducerPool` has) must be argued in the class javadoc.
+4. Throttled WARNING on saturation (60-second window, `WARN_THROTTLE_INTERVAL_MS`) so operators notice without getting spammed.
+5. Wire the pool into `PoolMetrics` so the Studio "Executor Pools" card shows it.
+6. If using the JDK common ForkJoinPool is unavoidable in the short term, tag the call site with a `NOTE (concurrency)` comment pointing at this skill so the migration stays tracked.

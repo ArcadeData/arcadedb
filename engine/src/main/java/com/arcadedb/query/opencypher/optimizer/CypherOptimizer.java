@@ -130,11 +130,22 @@ public class CypherOptimizer {
   /**
    * Optimizes the Cypher query and produces a physical execution plan.
    *
-   * @return optimized physical plan
+   * @return optimized physical plan, or {@code null} when the pattern is not one the physical
+   * operators can represent, in which case the caller falls back to the ordinary pipeline
    */
   public PhysicalPlan optimize() {
     // 1. Build logical plan from AST
     final LogicalPlan logicalPlan = buildLogicalPlan();
+
+    // 1a. A variable written in more than one pattern accumulates the labels of every occurrence, and
+    // the merged set can be one no physical operator represents: a conjunction, whose composite type
+    // name a vertex carrying a third label does not extend; a disjunction crossed with a further
+    // label; or no label at all, which would scan the type "V" the schema does not have and answer
+    // nothing. The planner's AST-level guard sees the occurrences one at a time and admits a query
+    // whose merged sets it never looked at, so the decision is taken here - declining hands the query
+    // to the ordinary pipeline, which evaluates the labels one by one (issue #6322).
+    if (!logicalPlan.hasRepresentableLabelSets())
+      return null;
 
     // 2. Collect runtime statistics
     final List<String> typeNames = extractTypeNames(logicalPlan);

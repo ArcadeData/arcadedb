@@ -3219,3 +3219,127 @@ distinction as a `Kind` enum alongside its human-phrased reason, so a caller can
 the sentence.
 
 [#6189](https://github.com/ArcadeData/arcadedb/issues/6189)
+
+## An update that shrinks onto a chunk boundary frees the chunks it drops, and one `FIX` clears the backlog (#6319, #6320, #6314)
+
+### Ordinary updates leaked continuation chunks (#6319)
+
+A record too big for its page is stored as a chain of chunks, and an update rewrites the chain it already
+has. Which chunk is the last one, and which chunks are therefore no longer needed, were decided by two
+different comparisons: the chain was CUT whenever the new content ended at or before the chunk being
+written, and the tail was FREED only when it ended strictly before it. Content ending exactly ON a chunk
+boundary fell between them - cut, and freed by nothing. The chunks past the cut kept their slots and their
+pointers to one another, reachable from no record, for the life of the bucket.
+
+That is not a corner case to be hit by luck. A chain grown one field at a time has a boundary exactly where
+that field's bytes were appended, so a record that later loses a field lands on one by construction:
+
+```
+records still stored as a chain across the shrink round : 7359
+orphaned chunks they left behind                        : 14719     (every one of them, its whole tail)
+```
+
+Measured on a scaled-down `CRUDTest.multiUpdatesOverlap`; at full scale the same workload carried 243821
+orphans in a bucket of 1545495 chunk slots. Both decisions now come from the same condition, and the same
+run leaks nothing. Existing backlogs are reclaimed by `CHECK DATABASE FIX`, which #6294 taught to find them.
+
+### `CHECK DATABASE FIX` bounds the memory of every repair it makes, and finishes in one run (#6320)
+
+#6294 bounded the orphaned-chunk sweep with a memory budget of its own, because the transaction a repair
+runs in keeps a copy of every page it modifies. The RECORD repairs of the same pass - the force-deletes of
+records whose slot offset, size or chunk chain cannot be read, each taking its record's page plus every page
+its chain touches - were bounded by nothing, and could reach the `OutOfMemoryError` of #4653 through the
+other loop.
+
+A second budget would have been the wrong answer twice over: what is scarce is ONE pool, so two bounds over
+it cannot both be right, and a repair that STOPS when the pool is spent leaves an operator running `FIX`
+over and over to converge. The mechanism that gives the pool back already existed for the graph repairs
+(`arcadedb.checkDatabaseRepairBatchPages`, #6128) and now bounds every bucket repair as well: records,
+dangling placeholder pointers and orphaned chunks alike. One run repairs everything a bucket has wrong, with
+the memory bounded throughout, and the sweep no longer leaves a backlog for the next `FIX`.
+
+**Behaviour change worth scripting around.** A bucket repair is no longer all-or-nothing. It used to join
+whatever transaction the caller had open - through HTTP a command always arrives with one - so nothing was
+durable until the whole command finished and a mid-run failure rolled back everything. Each bucket now
+repairs in a transaction of its own, committed in batches, so a run that fails part-way leaves the batches
+before it applied. That is the same trade #6128 made for the graph repairs and the reason the memory is
+bounded at all; the counters in the report say what was done, and a re-run continues from there. Setting
+`arcadedb.checkDatabaseRepairBatchPages` to 0 restores the single all-or-nothing transaction, memory cost
+included.
+
+The batch is taken between whole units of repair work and never inside one, so no record is ever left
+half-repaired, and the counter `count(*)` answers from is invalidated when a repair STARTS rather than only
+when it ends - a batch that has committed has really removed those records, and the counter must not go on
+serving the number from before it.
+
+### A component must believe its own file about how to address it (#6314)
+
+`PaginatedComponent` turns a page number into a file offset with a page size it is CONSTRUCTED with, while
+the file's real page size is baked into its name. The two TimeSeries components discarded the value parsed
+off the name and re-derived it from the live `arcadedb.bucketDefaultPageSize` instead, so a database whose
+configuration changed between two runs reopened its `.tstb`/`.tstd` files at a stride they were never
+written with. Nothing downstream could catch it - the page manager resolves a page with the caller's page
+size - so the failure was a misaligned read of real bytes rather than an error, with the component's page
+count computed from the wrong divisor on top of it. Both now pass the parsed page size and version through,
+as every other component's factory handler already did, and the agreement is asserted once in
+`PaginatedComponent` next to the file-id check #6283 added.
+
+The by-id `FileManager.getOrCreateFile` had the mirror of #6283's hazard on the other key: an id already
+registered handed back whatever file was registered under it, without ever looking at the path it was asked
+for. Its one production caller, the HA follower's file-creation path, already checked exactly this itself
+(#6063); the check now belongs to the API, throwing the same `SchemaException` so the quarantine-and-resync
+that path keys on is unaffected.
+
+[#6319](https://github.com/ArcadeData/arcadedb/issues/6319)
+[#6320](https://github.com/ArcadeData/arcadedb/issues/6320)
+[#6314](https://github.com/ArcadeData/arcadedb/issues/6314)
+
+### A repair pass that fails anywhere but its batch commit no longer abandons its transaction (#6342)
+
+Every repair pass of `GraphDatabaseChecker` - the vertex arm, the edge arm and the orphaned-edge-segment
+reclaim - opened a transaction of its own and committed it as the LAST statement of its `try`, with a
+`finally` that filled in the returned counters and nothing else. So the ONE failure that was already safe was
+a batch commit that throws: `LocalDatabase.commit()` disposes its own context in a `finally` whether or not
+the write succeeded, which is what `CheckDatabaseRepairBatchFailureTest` pins. Every OTHER way the body could
+throw - a scan that fails, an unreadable page, an `IllegalStateException` out of a repair - left the pass's
+own transaction open on the thread.
+
+What that costs depends on who is underneath. `CHECK DATABASE` arrives through the HTTP handler with a
+transaction already open, so the pass's own is NESTED on top of it: the handler's cleanup `rollback()` -
+running because of the very exception that caused this - then popped the abandoned nested transaction and
+left the handler's, which is the opposite of what it intended, and the caller was left holding work it
+believes it has just discarded. Embedded, with nothing underneath, the next user of that thread inherited an
+in-flight transaction from a repair that had already failed.
+
+The answer is not `commit()` in a `finally`, and not acting on `database.isTransactionActive()`: under an
+outer transaction that question answers "yes" for somebody else's, so cleaning up on that evidence rolls back
+work the pass never made. `RepairTransaction` - introduced for the bucket repairs of #6320 and now shared by
+all four passes - tracks ownership explicitly, dropping it before each batch commit and taking it back after,
+so the cleanup can only ever touch a transaction the pass itself opened and still holds. A pass that fails
+part-way now rolls back the batch in flight and keeps the ones already committed, which is the semantics
+#6128 gave these repairs in the first place.
+
+### The schema dictionary's truncation guard now reads the bytes, not the outcome of a page read (#6341)
+
+A dictionary page the component's page count claims but that is not really there must stop the load: an empty
+page contributes zero names, so every name after it comes back with an id lower by however many the missing
+page held, and those ids are written inside records. Silently renumbering them is the one outcome that class
+exists to prevent.
+
+The guard inferred "the page is not there" from the page manager refusing the read, and the page manager
+refuses only a page past the END of the file. It cannot refuse a hole INSIDE it - and a hole is exactly what
+the scenario the guard names produces. A partial replication replay writes page N without the ones before it,
+and writing at offset `N * pageSize` extends the file over every page it skipped rather than leaving the file
+short. Those pages read back as zeroes, a zero page declares a content size of zero, and the load took that
+for a legal empty page: no error, no names from it, and every name after it renumbered. Reproduced by
+shipping one replicated dictionary page one further along than the follower expected.
+
+Every dictionary page ever written carries the four-byte legacy counter, on the append path and on the
+whole-file rewrite alike, so a content size below it is not a legal empty page - it is a page nobody wrote.
+`reload()` now says so, which is a statement about the bytes rather than about whether a read happened to
+succeed, and therefore also covers an unwritten image reaching it by any other route. Page 0 keeps its one
+deliberate exemption: materialising it for a file shorter than one page is what keeps a database killed
+mid-write openable, and there is nothing before it to renumber.
+
+[#6342](https://github.com/ArcadeData/arcadedb/issues/6342)
+[#6341](https://github.com/ArcadeData/arcadedb/issues/6341)

@@ -137,6 +137,24 @@ public class ComponentFile {
     return version;
   }
 
+  /**
+   * The mode this file is open in, which selects the {@code RandomAccessFile} open string and nothing else.
+   * <p>
+   * Exposed (issue #6340) so that a component built on an <em>already-registered</em> file can take every file
+   * property from that file rather than four from the file and one from a guess. The id, the page size and the
+   * version already had accessors, and each of them is now taken from the file by the callers in that position
+   * (issues #6283 and #6314); the mode was the only one left with nothing to read it back out of, which is why
+   * {@code TimeSeriesTagDictionary}'s build-on-an-existing-file constructor had to hard-code {@code READ_WRITE}.
+   * <p>
+   * It is a property OF THE FILE and not of the component asking: {@link FileManager} opens every file it scans
+   * with the database's own mode and {@link FileManager#getOrCreateFile} hands a registered file back instead of
+   * reopening it, so this is the mode a second view is going to get whatever it asks for - which is precisely why
+   * that method now refuses to hand back a file open in a different one.
+   */
+  public MODE getMode() {
+    return mode;
+  }
+
   public long calculateChecksum() throws IOException {
     final CRC32 crc = new CRC32();
     final String fileContent = FileUtils.readFileAsString(osFile);

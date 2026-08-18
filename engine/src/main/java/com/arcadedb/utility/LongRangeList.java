@@ -18,6 +18,7 @@
  */
 package com.arcadedb.utility;
 
+import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.AbstractList;
 import java.util.Iterator;
@@ -110,13 +111,29 @@ public class LongRangeList extends AbstractList<Long> implements RandomAccess {
   /**
    * O(1) lookup: an element belongs to the range when its distance from the start is an exact multiple of the
    * step and the resulting index falls inside the range.
+   * <p>
+   * Only the integral boxed types are accepted, because this implements {@link List#indexOf(Object)}, whose
+   * contract is {@code equals()} and {@code Long.valueOf(5).equals(Double.valueOf(5.0))} is false. A caller whose
+   * own equality coerces numerically - Cypher's {@code =} does, so {@code IN} does - converts the value itself and
+   * asks {@link #containsLong(long)} instead.
    */
   @Override
   public int indexOf(final Object o) {
-    if (!(o instanceof Number number) || o instanceof Double || o instanceof Float)
+    if (!(o instanceof Number number) || o instanceof Double || o instanceof Float || o instanceof BigInteger
+        || o instanceof BigDecimal)
       return -1;
 
-    final long value = number.longValue();
+    return indexOfLong(number.longValue());
+  }
+
+  /**
+   * O(1) membership by value: whether {@code value} is one of {@code start + i * step} for {@code 0 <= i < size}.
+   */
+  public boolean containsLong(final long value) {
+    return indexOfLong(value) > -1;
+  }
+
+  private int indexOfLong(final long value) {
     final long distance;
     try {
       distance = Math.subtractExact(value, start);
