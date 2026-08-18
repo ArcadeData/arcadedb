@@ -40,7 +40,6 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngine;
-import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.StringUtils;
 import com.arcadedb.schema.DocumentType;
@@ -647,8 +646,10 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         // caller passing awaitResponse=false asked not to wait for.
         return false;
 
-      return QueryEngineManager.getInstance().getEngine(task.language, database).classifyDDL(task.command)
-          == QueryEngine.DDLClassification.DDL;
+      // database.getQueryEngine and not QueryEngineManager.getEngine: the former caches the reusable engines per
+      // database, so classifying costs a map lookup rather than a fresh engine object per dispatched command, on the
+      // submitting thread of a caller that asked not to wait for anything.
+      return database.getQueryEngine(task.language).classifyDDL(task.command) == QueryEngine.DDLClassification.DDL;
 
     } catch (final Exception e) {
       LogManager.instance()

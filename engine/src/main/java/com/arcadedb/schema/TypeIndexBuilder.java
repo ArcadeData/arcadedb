@@ -409,10 +409,9 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     if (replaced != null)
       existingTypeIndex.drop();
 
-    // Read here because below this line there is ALWAYS a transaction, and the answer is about there not being one
-    // yet: a build shares a transaction only when the caller already had one open and this index family can use it
-    // (issue #6324, item 1).
-    final boolean sharesCallerTransaction = indexType.buildCanShareCallerTransaction() && database.isTransactionActive();
+    // Asked here because below this line there is ALWAYS a transaction, and the answer is about the one that was
+    // already there (issue #6324, item 1). See IndexBuilder#buildSharesCallerTransaction.
+    final boolean sharesCallerTransaction = buildSharesCallerTransaction();
 
     final TypeIndex created;
     // The barrier of #6281, paid at the top of this method, covers what the async side wrote BEFORE the build. This
@@ -436,11 +435,24 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
           for (int idx = 0; idx < buckets.size(); ++idx) {
             final int finalIdx = idx;
 
+            if (!sharesCallerTransaction) {
+              // ONE TRANSACTION, exactly as before issue #6324: with nothing of anybody else's to see, creating and
+              // building in one go is both simpler and one commit per bucket cheaper.
+              database.transaction(() -> {
+
+                final LocalBucket bucket = (LocalBucket) buckets.get(finalIdx);
+
+                indexes[finalIdx] = createBucketIndex(schema, type, keyTypes, bucket, true);
+
+              }, false, maxAttempts, null, null);
+              continue;
+            }
+
             // TWO TRANSACTIONS, and the split is the whole of issue #6324, item 1.
             //
-            // The COMPONENT is created in a transaction of its OWN, always. recordFileChanges writes the schema entry
-            // that names this index as soon as this callback returns, whatever the caller's transaction goes on to
-            // do, so the index FILE has to be committed on the same terms: leaving its first page inside a caller's
+            // The COMPONENT is created in a transaction of its OWN. recordFileChanges writes the schema entry that
+            // names this index as soon as this callback returns, whatever the caller's transaction goes on to do, so
+            // the index FILE has to be committed on the same terms: leaving its first page inside a caller's
             // transaction that later rolls back would leave the schema pointing at a file with no pages, which fails
             // on the next write with "the file is invalid". Committing it also keeps the index usable from a NESTED
             // transaction, which cannot see an outer transaction's uncommitted pages.
@@ -452,14 +464,13 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
 
             }, false, maxAttempts, null, null);
 
-            // The BUILD joins the caller's transaction when there is one, because a scan reads the transaction it
-            // runs in: the pages that transaction has modified first, the committed ones underneath. That is what
-            // lets it see records the caller has written and not yet committed - `INSERT INTO V SET id = 7;
-            // CREATE INDEX ON V (id)` in one transaction used to end with the record present and NO entry for it,
-            // in neither the scan nor the index - and it makes the entries commit, or roll back, with the records
-            // they describe. The vector families opt out; INDEX_TYPE#buildCanShareCallerTransaction says why.
-            database.transaction(() -> buildCreatedIndex(indexes[finalIdx], sharesCallerTransaction),
-                sharesCallerTransaction, maxAttempts, null, null);
+            // The BUILD then joins the caller's transaction, because a scan reads the transaction it runs in: the
+            // pages that transaction has modified first, the committed ones underneath. That is what lets it see
+            // records the caller has written and not yet committed - `INSERT INTO V SET id = 7;
+            // CREATE INDEX ON V (id)` in one transaction used to end with the record present and NO entry for it, in
+            // neither the scan nor the index - and it makes the entries commit, or roll back, with the records they
+            // describe.
+            database.transaction(() -> buildCreatedIndex(indexes[finalIdx], true), true, maxAttempts, null, null);
           }
 
         return null;

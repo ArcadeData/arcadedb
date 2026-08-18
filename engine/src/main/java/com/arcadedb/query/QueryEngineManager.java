@@ -63,12 +63,16 @@ public class QueryEngineManager extends DedicatedThreadPool {
     // operators can cap or expand without rebuild; the previous hardcoded {@code max(2, cpuCount)}
     // is preserved as the default behaviour when the knob is left at its default of 0.
     //
-    // Bound the queue so a runaway producer can't OOM the JVM. Caller-runs gives graceful degradation: when the
+    // Bound the queue so a runaway producer can't OOM the JVM, and caller-runs gives graceful degradation: when the
     // queue saturates, the submitter - which was going to block waiting for the result anyway - runs the task
     // itself, so the query loses parallelism but never fails. The construction, the counted-and-throttled
     // saturation warning and the PoolStats all come from DedicatedThreadPool (issue #6324, item 4).
+    //
+    // Sized through the shared queueSizeOrDefault, so a configured 0 falls back to the documented 1024 the way it
+    // does on the other pools, rather than to the max(1, ...) this class used to apply - which collapsed the queue
+    // to a single slot on the very setting meant to size it.
     super("ArcadeDB-QueryWorker-", autoSizeThreads(GlobalConfiguration.QUERY_PARALLELISM_POOL_THREADS.getValueAsInteger()),
-        Math.max(1, GlobalConfiguration.QUERY_PARALLELISM_QUEUE_SIZE.getValueAsInteger()),
+        queueSizeOrDefault(GlobalConfiguration.QUERY_PARALLELISM_QUEUE_SIZE.getValueAsInteger()),
         SaturationPolicy.CALLER_RUNS, DedicatedThreadPool::plainWorker, "Query parallelism pool",
         "the query loses its parallelism but never fails",
         GlobalConfiguration.QUERY_PARALLELISM_POOL_THREADS, GlobalConfiguration.QUERY_PARALLELISM_QUEUE_SIZE);

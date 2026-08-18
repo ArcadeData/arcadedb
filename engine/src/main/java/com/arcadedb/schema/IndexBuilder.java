@@ -19,6 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
@@ -366,6 +367,29 @@ public abstract class IndexBuilder<T extends Index> {
 
   public JSONObject getUserMetadata() {
     return userMetadata;
+  }
+
+  /**
+   * Whether the build about to run should share the transaction already open on this thread - the decision issue
+   * #6324 item 1 is about, written once here so a third {@link IndexBuilder} subclass cannot get it subtly different.
+   * <p>
+   * Two conditions, and the second is the one that is easy to get wrong. The index family has to be able to use a
+   * shared transaction at all ({@link Schema.INDEX_TYPE#buildCanShareCallerTransaction}); and the open transaction has
+   * to actually HOLD uncommitted work, because that is the entire reason for sharing it. An EMPTY transaction has
+   * nothing for the scan to see, so joining it buys nothing and costs the build its chunked commit - and empty is
+   * exactly what a transaction opened as scaffolding looks like. {@code DatabaseAsyncExecutorImpl.runCommand} opens
+   * one around every dispatched command because {@code requiresActiveTx()} defaults to true, so without this test a
+   * {@code CREATE INDEX} sent with {@code awaitResponse=false} - the case issue #6303 item 3 and #6324 item 5 exist
+   * to make work - would build the whole index in one uncommitted transaction, whatever batch size it was given.
+   * <p>
+   * Asked BEFORE the build opens anything, because afterwards there is always a transaction and the answer is always
+   * yes.
+   */
+  protected boolean buildSharesCallerTransaction() {
+    if (indexType == null || !indexType.buildCanShareCallerTransaction() || !database.isTransactionActive())
+      return false;
+    final TransactionContext tx = database.getTransactionIfExists();
+    return tx != null && tx.hasChanges();
   }
 
   /**

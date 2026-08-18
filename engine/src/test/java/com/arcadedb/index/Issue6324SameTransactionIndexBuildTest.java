@@ -19,7 +19,9 @@
 package com.arcadedb.index;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -237,5 +239,101 @@ class Issue6324SameTransactionIndexBuildTest extends TestHelper {
     // A legal one still rebuilds, so the guard above is not simply refusing everything.
     database.command("sql", "REBUILD INDEX `V[id]` WITH batchSize = 1").close();
     assertThat(database.getSchema().getIndexByName("V[id]").get(new Object[] { 1 }).hasNext()).isTrue();
+  }
+
+  /**
+   * An EMPTY open transaction is not a reason to share it, and this is the case that makes the distinction matter.
+   * <p>
+   * {@code DatabaseAsyncExecutorImpl.runCommand} opens a transaction around every dispatched command, because
+   * {@code requiresActiveTx()} defaults to true. Keying the decision on "is a transaction active" alone would
+   * therefore make a {@code CREATE INDEX} sent with {@code awaitResponse=false} - the case #6303 item 3 and #6324
+   * item 5 exist to make work - share a transaction that holds nothing, and silently give up the chunked commit its
+   * batch size is meant to guarantee: one uncommitted transaction from the first record to the last. Sharing is
+   * asked of what the transaction CONTAINS, not of whether one exists.
+   */
+  @Test
+  @Timeout(60)
+  void anEmptyOpenTransactionIsNotSharedSoTheBuildKeepsItsChunkedCommit() {
+    database.transaction(() -> database.getSchema().createDocumentType("V", 1).createProperty("id", Type.INTEGER));
+    database.transaction(() -> {
+      for (int i = 0; i < 40; i++) {
+        final MutableDocument v = database.newDocument("V");
+        v.set("id", i);
+        v.save();
+      }
+    });
+
+    // Open, write nothing, build. The build must NOT join: with a batch size of 10 over 40 committed records it
+    // chunk-commits, which it can only do on a transaction of its own.
+    database.begin();
+    final TransactionContext outer = ((DatabaseInternal) database).getTransactionIfExists();
+    assertThat(outer.hasChanges()).as("precondition: the transaction the build is offered is empty").isFalse();
+
+    database.getSchema().buildTypeIndex("V", new String[] { "id" }).withType(Schema.INDEX_TYPE.LSM_TREE)
+        .withUnique(true).withBatchSize(10).create();
+
+    assertThat(((DatabaseInternal) database).getTransactionIfExists().hasChanges())
+        .as("a build that did not join left the caller's transaction as empty as it found it").isFalse();
+    database.commit();
+
+    final Index index = database.getSchema().getIndexByName("V[id]");
+    assertThat(index.countEntries()).isEqualTo(40);
+    for (int i = 0; i < 40; i++)
+      assertThat(index.get(new Object[] { i }).hasNext()).as("id " + i).isTrue();
+  }
+
+  /**
+   * A build that fails must not leave a registered, {@code AVAILABLE}, half-populated index behind - and the failure
+   * that gets there is a {@link com.arcadedb.exception.DuplicatedKeyException} raised mid-scan, which is exactly what
+   * a unique build can now hit, since it sees the caller's own pending writes.
+   * <p>
+   * The path matters: inside a JOINED transaction {@code LocalDatabase.transaction} rethrows a retryable exception
+   * immediately rather than calling the error callback (issue #661 - retrying would roll back a transaction it does
+   * not own), so a cleanup hung off that callback never runs.
+   */
+  @Test
+  @Timeout(60)
+  void aBuildThatFailsOnACallersDuplicateLeavesNoIndexBehind() {
+    database.transaction(() -> database.getSchema().createDocumentType("V", 1).createProperty("id", Type.INTEGER));
+
+    assertThatThrownBy(() -> database.transaction(() -> {
+      for (int i = 0; i < 2; i++) {
+        final MutableDocument v = database.newDocument("V");
+        v.set("id", 7);
+        v.save();
+      }
+      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "V", "id");
+    })).isInstanceOf(Exception.class);
+
+    assertThat(database.getSchema().existsIndex("V[id]"))
+        .as("an index that could not be built must be gone, not registered and empty").isFalse();
+  }
+
+  /**
+   * The same through {@code BucketIndexBuilder}, which is the path that actually lacked the cleanup: it has no
+   * try/catch of its own around the build, unlike {@code TypeIndexBuilder}, so it was relying entirely on the
+   * transaction's error callback - the one {@code LocalDatabase.transaction} skips for a retryable exception raised
+   * inside a joined transaction (issue #661). This is how {@code CHECK DATABASE ... FIX} rebuilds a damaged index.
+   */
+  @Test
+  @Timeout(60)
+  void aBucketIndexBuildThatFailsOnACallersDuplicateLeavesNoIndexBehind() {
+    database.transaction(() -> database.getSchema().createDocumentType("V", 1).createProperty("id", Type.INTEGER));
+
+    assertThatThrownBy(() -> database.transaction(() -> {
+      for (int i = 0; i < 2; i++) {
+        final MutableDocument v = database.newDocument("V");
+        v.set("id", 7);
+        v.save();
+      }
+      database.getSchema().buildBucketIndex("V", "V_0", new String[] { "id" })
+          .withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true).create();
+    })).isInstanceOf(Exception.class);
+
+    assertThat(database.getSchema().existsIndex("V[id]"))
+        .as("the half-built sub-index must be dropped, not left registered and AVAILABLE").isFalse();
+    assertThat(database.getSchema().getIndexes())
+        .as("and it must not survive under its own bucket name either")
+        .noneMatch(i -> i.getName().startsWith("V_0_"));
   }
 }
