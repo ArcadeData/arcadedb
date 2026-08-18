@@ -308,6 +308,118 @@ class PostgresCatalogTest {
     assertThat(names(answer.rows, "relname")).containsExactly("Author");
   }
 
+  // ---------------------------------------------------------------- the remaining families and clauses
+
+  @Test
+  void theDatabaseListNamesOnlyTheConnectedDatabase() {
+    // Enumerating the server's databases is not something an emulated catalog should hand out, and a
+    // PostgreSQL connection is bound to one database anyway.
+    final PostgresCatalog.Answer answer = resolve("SELECT datname, encoding FROM pg_database");
+
+    assertThat(names(answer.rows, "datname")).containsExactly(database.getName());
+    assertThat(answer.rows.get(0)).containsEntry("encoding", 6);
+  }
+
+  @Test
+  void theRoleListNamesOnlyTheConnectedUser() {
+    assertThat(names(resolve("SELECT rolname FROM pg_roles").rows, "rolname")).containsExactly(USER);
+    assertThat(names(resolve("SELECT usename FROM pg_user").rows, "usename")).containsExactly(USER);
+  }
+
+  @Test
+  void theCollationListIsAnswered() {
+    final PostgresCatalog.Answer answer = resolve(
+        "SELECT COLLATION_SCHEMA, COLLATION_NAME FROM INFORMATION_SCHEMA.COLLATIONS");
+
+    assertThat(answer.rows).hasSize(1);
+    assertThat(answer.rows.get(0)).containsEntry("collation_name", "default");
+  }
+
+  @Test
+  void theViewListIsEmptyBecauseThereAreNoViewsToReport() {
+    // An empty answer is a real answer, and it still describes its own columns.
+    final PostgresCatalog.Answer answer = resolve("SELECT viewname FROM pg_views");
+
+    assertThat(answer.rows).isEmpty();
+    assertThat(answer.columns.keySet()).containsExactly("viewname");
+  }
+
+  @Test
+  void aQualifiedStarExpandsToThatRelationsColumns() {
+    final PostgresCatalog.Answer answer = resolve("SELECT n.* FROM pg_catalog.pg_namespace n");
+
+    assertThat(answer.columns.keySet()).containsExactly("oid", "nspname", "nspowner", "nspacl");
+  }
+
+  @Test
+  void orderByFollowsTheClientsDirectionAndOrdinal() {
+    assertThat(names(resolve("SELECT relname FROM pg_class ORDER BY relname DESC").rows, "relname"))
+        .containsExactly("Author", "Article");
+    assertThat(names(resolve("SELECT relname FROM pg_class ORDER BY 1 DESC").rows, "relname"))
+        .containsExactly("Author", "Article");
+    // An ORDER BY this catalog cannot resolve leaves the rows in the order it built them, by name, rather
+    // than declining a query whose data is perfectly answerable.
+    assertThat(names(resolve("SELECT relname FROM pg_class ORDER BY pg_relation_size(oid)").rows, "relname"))
+        .containsExactly("Article", "Author");
+  }
+
+  @Test
+  void limitTruncatesTheAnswer() {
+    assertThat(resolve("SELECT relname FROM pg_class ORDER BY relname LIMIT 1").rows).hasSize(1);
+  }
+
+  @Test
+  void distinctCollapsesRowsThatProjectTheSameValues() {
+    // One row per type, but the projection keeps only the schema they share.
+    final PostgresCatalog.Answer answer = resolve("SELECT DISTINCT nspname FROM pg_namespace n, pg_class c");
+
+    assertThat(answer.rows).hasSize(1);
+  }
+
+  @Test
+  void aSetOperationOrAGroupByIsDeclined() {
+    // Both change what the rows are, and answering the half this catalog understands would be answering a
+    // different question.
+    assertThat(resolveRaw("SELECT relname FROM pg_class UNION SELECT nspname FROM pg_namespace")).isSameAs(
+        PostgresCatalog.DECLINED);
+    assertThat(resolveRaw("SELECT relkind FROM pg_class GROUP BY relkind")).isSameAs(PostgresCatalog.DECLINED);
+    assertThat(resolveRaw("SELECT relname FROM pg_class LIMIT ALL")).isSameAs(PostgresCatalog.DECLINED);
+  }
+
+  @Test
+  void aStatementThatIsNotASelectIsNotAnsweredButIsNotSwallowedEither() {
+    // A DDL statement naming an emulated relation is still not this class's business, but one naming a user
+    // type - even a type called pg_something - must reach the SQL engine untouched.
+    assertThat(resolveRaw("INSERT INTO pg_class SET relname = 'x'")).isSameAs(PostgresCatalog.DECLINED);
+    assertThat(resolveRaw("CREATE DOCUMENT TYPE pg_notes")).isNull();
+  }
+
+  @Test
+  void aBoundParameterWithNoLiteralFormLeavesItsPredicateUnread() {
+    // A null parameter cannot be written inline, so the predicate around it is not read - and an unreadable
+    // predicate does not remove rows.
+    final PostgresCatalog.Answer answer = resolveRaw("SELECT relname FROM pg_class WHERE relname LIKE $1",
+        (Object) null);
+
+    assertThat(names(answer.rows, "relname")).containsExactly("Article", "Author");
+  }
+
+  @Test
+  void theColumnsOfAnAnswerAreTypedFromItsValues() {
+    final PostgresCatalog.Answer answer = resolve("SELECT relname, oid, relhasindex FROM pg_class");
+
+    assertThat(answer.columns.get("relname")).isEqualTo(PostgresType.VARCHAR);
+    assertThat(answer.columns.get("oid")).isEqualTo(PostgresType.INTEGER);
+    assertThat(answer.columns.get("relhasindex")).isEqualTo(PostgresType.BOOLEAN);
+  }
+
+  @Test
+  void anExpressionWithNoAliasIsAnnouncedTheWayPostgresWouldNameIt() {
+    final PostgresCatalog.Answer answer = resolve("SELECT relname, current_database(), 1 + 1 FROM pg_class");
+
+    assertThat(answer.columns.keySet()).containsExactly("relname", "current_database", "?column?");
+  }
+
   // ---------------------------------------------------------------- helpers
 
   private PostgresCatalog.Answer resolve(final String query, final Object... parameters) {
