@@ -95,7 +95,7 @@ public class SubqueryStep extends AbstractExecutionStep {
     // user-defined SQL function (DEFINE FUNCTION): SQLFunctionDefinition.execute runs the definition as a full
     // "sqlscript" command, which can itself CREATE/UPDATE/DELETE. Such a call reads as read-only here and skips
     // the refresh below, which can reintroduce #4182/#6362-style staleness for that one narrow shape. Tracked as
-    // a known limitation (issue #6395 review) rather than fixed here: closing it properly needs the same
+    // a known limitation (issue #6362 review, filed as #6418) rather than fixed here: closing it properly needs the same
     // whole-statement, every-expression-position walk isReadOnly() itself would need, and this flag also backs
     // HA leader routing (issue #6094) - not a change to make inside an unrelated bug-fix batch under time
     // pressure.
