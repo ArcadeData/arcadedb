@@ -27,8 +27,8 @@ import com.arcadedb.graphql.parser.AbstractField;
 import com.arcadedb.graphql.parser.Argument;
 import com.arcadedb.graphql.parser.Directive;
 import com.arcadedb.graphql.parser.Directives;
-import com.arcadedb.graphql.parser.Field;
 import com.arcadedb.graphql.parser.FieldDefinition;
+import com.arcadedb.graphql.parser.FieldWithAlias;
 import com.arcadedb.graphql.parser.ObjectTypeDefinition;
 import com.arcadedb.graphql.parser.Selection;
 import com.arcadedb.graphql.parser.SelectionSet;
@@ -53,13 +53,16 @@ public class GraphQLResultSet implements ResultSet {
   private final ObjectTypeDefinition returnType;
 
   private static class Projection {
-    final String               name;
+    final String               name;      // output key: the alias when present, otherwise the field name
+    final String               fieldName; // real field/property name to resolve, ignoring any alias
     final AbstractField        field;
     final ObjectTypeDefinition type;
     final List<Selection>      set;
 
-    private Projection(final String name, final Field field, final ObjectTypeDefinition type, final List<Selection> set) {
+    private Projection(final String name, final String fieldName, final AbstractField field, final ObjectTypeDefinition type,
+        final List<Selection> set) {
       this.name = name;
+      this.fieldName = fieldName;
       this.field = field;
       this.type = type;
       this.set = set;
@@ -92,17 +95,22 @@ public class GraphQLResultSet implements ResultSet {
     // ADD ALL THE TYPE FIELDS AUTOMATICALLY
     for (final FieldDefinition fieldDefinition : type.getFieldDefinitions()) {
       final ObjectTypeDefinition subType = schema.getTypeFromField(fieldDefinition);
-      projections.add(new Projection(fieldDefinition.getName(), null, subType, null));
+      projections.add(new Projection(fieldDefinition.getName(), fieldDefinition.getName(), null, subType, null));
     }
     return mapProjections(current, projections);
   }
 
   private GraphQLResult mapBySelections(final Result current, final List<Selection> definedProjections) {
     final List<Projection> projections = new ArrayList<>(definedProjections.size());
-    for (final Selection fieldDefinition : definedProjections) {
-      final SelectionSet set = fieldDefinition.getField().getSelectionSet();
+    for (final Selection selection : definedProjections) {
+      // A selection written as `alias: field` parses into fieldWithAlias (name = the real field,
+      // alias carried by Selection.getName()); an unaliased selection parses into field instead.
+      final FieldWithAlias aliasedField = selection.getFieldWithAlias();
+      final AbstractField  field = aliasedField != null ? aliasedField : selection.getField();
+      final String         fieldName = aliasedField != null ? aliasedField.getName() : selection.getName();
+      final SelectionSet   set = aliasedField != null ? aliasedField.getSelectionSet() : selection.getField().getSelectionSet();
       projections.add(
-          new Projection(fieldDefinition.getName(), fieldDefinition.getField(), null, set != null ? set.getSelections() : null));
+          new Projection(selection.getName(), fieldName, field, null, set != null ? set.getSelections() : null));
     }
     return mapProjections(current, projections);
   }
@@ -169,19 +177,20 @@ public class GraphQLResultSet implements ResultSet {
 
     for (final Projection entry : projections) {
       final String projName = entry.name;
+      final String realName = entry.fieldName;
 
-      Object projectionValue = current.getProperty(projName);
+      Object projectionValue = current.getProperty(realName);
 
       if (projectionValue == null && current.getElement().isPresent())
         // PROPERTY NOT FOUND IN PROJECTION, TRY DIRECTLY FROM THE ELEMENT (E.G. CYPHER RETURN)
-        projectionValue = current.getElement().get().get(projName);
+        projectionValue = current.getElement().get().get(realName);
 
       if (projectionValue == null) {
         // TRY THE FIELD FIRST
         projectionValue = evaluateDirectives(current, entry.field);
         if (projectionValue == null) {
           // SEARCH IN THE SCHEMA
-          final AbstractField fieldDefinition = returnType.getFieldDefinitionByName(projName);
+          final AbstractField fieldDefinition = returnType.getFieldDefinitionByName(realName);
           projectionValue = evaluateDirectives(current, fieldDefinition);
         }
       }

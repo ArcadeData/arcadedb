@@ -31,7 +31,6 @@ import org.junit.jupiter.api.Test;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class SQLMethodValuesTest extends TestHelper {
   private SQLMethod function;
@@ -91,14 +90,11 @@ class SQLMethodValuesTest extends TestHelper {
 
       Object result = function.execute(doc, null, null, null);
 
-      // Note: The implementation has a bug on line 51 - it wraps values in List.of()
-      // This test verifies current behavior: returns nested list with ALL document properties
-      // including internal fields like RID, type marker ("d"), type name
+      // Flat collection of the document's property values (toMap() also carries the internal
+      // fields RID, type marker "d", type name), not wrapped in an extra one-element list.
       assertThat(result).isInstanceOf(Collection.class);
-      Collection<?> values = (Collection<?>) result;
-      assertThat(values).hasSize(1); // Bug: wrapped in extra List.of()
-      // The single element is actually a Collection of all document properties
-      assertThat(values.iterator().next()).isInstanceOf(Collection.class);
+      final Collection<Object> values = (Collection<Object>) result;
+      assertThat(values).containsExactlyInAnyOrder("Alice", 30, doc.getIdentity().toString(), "d", "Person");
     });
   }
 
@@ -126,11 +122,10 @@ class SQLMethodValuesTest extends TestHelper {
 
     assertThat(result).isInstanceOf(List.class);
     List<?> flattenedValues = (List<?>) result;
-    // Bug on line 51: wraps each document's values in List.of(), so we get 2 Collections instead of 4+ values
-    assertThat(flattenedValues).hasSize(2);
-    // Each element is a Collection containing all properties (including internal ones)
-    assertThat(flattenedValues.get(0)).isInstanceOf(Collection.class);
-    assertThat(flattenedValues.get(1)).isInstanceOf(Collection.class);
+    // Each document contributes its own (unwrapped) toMap() values: name, age plus the 3
+    // internal fields (RID, type marker, type name) = 5 values per document.
+    assertThat(flattenedValues).hasSize(10);
+    assertThat((List<Object>) flattenedValues).contains("Alice", 30, "Bob", 25);
   }
 
   // NEW TESTS - Result object handling
@@ -160,28 +155,25 @@ class SQLMethodValuesTest extends TestHelper {
 
   @Test
   void withCollectionOfMixedMapAndString() {
-    // This should handle gracefully - strings return null, maps return values
+    // Scalar elements (e.g. plain strings) have no values of their own: they are skipped rather
+    // than crashing the whole collection.
     List<Object> mixed = List.of(
         Map.of("key1", "value1"),
-        "some string",  // This will return null from execute()
+        "some string",
         Map.of("key2", "value2")
     );
 
-    // Current implementation throws NullPointerException on line 56
-    // because execute("some string") returns null, and flatMap tries to call .stream() on null
-    assertThatThrownBy(() -> function.execute(mixed, null, null, null))
-        .isInstanceOf(NullPointerException.class)
-        .hasMessageContaining("Cannot invoke \"java.util.Collection.stream()\"");
+    final Object result = function.execute(mixed, null, null, null);
+    assertThat(result).isEqualTo(List.of("value1", "value2"));
   }
 
   @Test
   void withCollectionOfUnsupportedTypes() {
     List<Object> unsupported = List.of(42, true, "text");
 
-    // All these return null, which causes NullPointerException in flatMap when calling .stream()
-    assertThatThrownBy(() -> function.execute(unsupported, null, null, null))
-        .isInstanceOf(NullPointerException.class)
-        .hasMessageContaining("Cannot invoke \"java.util.Collection.stream()\"");
+    // Every element is a scalar with no values: they are all skipped, yielding an empty list.
+    final Object result = function.execute(unsupported, null, null, null);
+    assertThat(result).isEqualTo(List.of());
   }
 
   @Test
@@ -225,14 +217,33 @@ class SQLMethodValuesTest extends TestHelper {
       product2.save();
     });
 
-    // Current implementation fails when list() returns documents because of the bugs
-    // list() creates a collection, and .values() on that collection tries to process Documents
-    // which triggers the wrapping bug and eventually causes NullPointerException
-    assertThatThrownBy(() -> {
-      ResultSet resultSet = database.query("sql",
-          "SELECT list(name, price).values() AS allValues FROM Product");
-      resultSet.next();
-    }).isInstanceOf(NullPointerException.class);
+    // list(name, price) builds a list of scalars (e.g. ["Laptop", 999]); .values() on a
+    // collection of scalars has nothing to recurse into, so it no longer NPEs - it yields an
+    // empty list per row instead.
+    try (ResultSet resultSet = database.query("sql",
+        "SELECT list(name, price).values() AS allValues FROM Product")) {
+      while (resultSet.hasNext())
+        assertThat(resultSet.next().<List<Object>>getProperty("allValues")).isEqualTo(List.of());
+    }
+  }
+
+  // Regression tests for issue #6387
+
+  @Test
+  void withCollectionContainingScalarAndNullDoesNotThrow() {
+    final List<Object> mixed = Arrays.asList(Map.of("a", 1), null, "scalar", 42, Map.of("b", 2));
+
+    final Object result = function.execute(mixed, null, null, null);
+    assertThat(result).isEqualTo(List.of(1, 2));
+  }
+
+  @Test
+  void withSQLScalarCollectionDoesNotThrow() {
+    // SELECT [1,2,3].values() -- a collection of scalars has no values, so this used to NPE
+    try (final ResultSet resultSet = database.query("sql", "SELECT [1,2,3].values() AS vals")) {
+      final Result record = resultSet.next();
+      assertThat(record.<List<Object>>getProperty("vals")).isEqualTo(List.of());
+    }
   }
 
   @Test

@@ -81,6 +81,8 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       key = list.toArray();
 
     final int limit = params[2] instanceof Number n ? n.intValue() : Integer.parseInt(params[2].toString());
+    if (limit <= 0)
+      return new ArrayList<>(0);
 
     // Optional 4th parameter. Either:
     //   - a number: efSearch (backward-compatible positional form)

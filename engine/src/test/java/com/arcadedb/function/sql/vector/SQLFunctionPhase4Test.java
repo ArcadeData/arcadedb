@@ -324,7 +324,11 @@ class SQLFunctionPhase4Test extends TestHelper {
   }
 
   @Test
-  void sparseVectorDotDimensionMismatch() {
+  void sparseVectorDotAllowsDifferentInferredDimensions() {
+    // Issue #6391: a dot product only needs the indices the two vectors have in common (it is
+    // implicitly 0 over every non-overlapping index), so differing inferred dimensions must not
+    // throw - the sibling functions (sparseCosine, sparseNeighbors, ...) never imposed this
+    // restriction either.
     final SQLFunctionVectorSparseDot function = new SQLFunctionVectorSparseDot();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
@@ -332,11 +336,8 @@ class SQLFunctionPhase4Test extends TestHelper {
     final SparseVector v1 = new SparseVector(new int[] { 0 }, new float[] { 0.5f }, 3);
     final SparseVector v2 = new SparseVector(new int[] { 0 }, new float[] { 0.5f }, 5);
 
-    assertThatThrownBy(() -> function.execute(null, null, null,
-        new Object[] { v1, v2 },
-        context))
-        .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("dimensions");
+    final Object result = function.execute(null, null, null, new Object[] { v1, v2 }, context);
+    assertThat((Float) result).isEqualTo(0.25f);
   }
 
   @Test

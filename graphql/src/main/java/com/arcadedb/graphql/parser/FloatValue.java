@@ -19,6 +19,8 @@
 /* ParserGeneratorCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.graphql.parser;
 
+import java.math.BigDecimal;
+
 public class FloatValue extends AbstractValue {
   protected String stringValue;
 
@@ -28,7 +30,7 @@ public class FloatValue extends AbstractValue {
 
   @Override
   public Object getValue() {
-    return stringValue;
+    return new BigDecimal(stringValue);
   }
 
   @Override
