@@ -22,6 +22,7 @@ import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
+import com.arcadedb.server.network.PreAuthConnectionGate;
 import com.arcadedb.server.network.ServerSocketFactory;
 
 import java.io.IOException;
@@ -35,6 +36,8 @@ public class RedisNetworkListener extends Thread {
   private volatile     boolean             active          = true;
   private static final int                 protocolVersion = -1;
   private              ClientConnected     callback;
+  /** Bounds how many accepted connections can sit un-authenticated at once (issue #6412). */
+  private final        PreAuthConnectionGate preAuthGate = new PreAuthConnectionGate("Redis wrapper");
 
   public interface ClientConnected {
     void connected();
@@ -58,11 +61,30 @@ public class RedisNetworkListener extends Thread {
         try {
           final Socket socket = serverSocket.accept();
 
+          // One thread and one file descriptor are committed here, before the client has proved anything: past
+          // the cap the socket is closed straight away rather than being given either (issue #6412).
+          final PreAuthConnectionGate.Ticket ticket = preAuthGate.accept();
+          if (ticket == null) {
+            preAuthGate.logRefusal(this, socket.getRemoteSocketAddress());
+            try {
+              socket.close();
+            } catch (final IOException e) {
+              // IGNORE IT: THE CONNECTION IS BEING DROPPED ANYWAY
+            }
+            continue;
+          }
+
           socket.setPerformancePreferences(0, 2, 1);
 
-          // CREATE A NEW PROTOCOL INSTANCE
-          final RedisNetworkExecutor connection = new RedisNetworkExecutor(server, socket);
-          connection.start();
+          try {
+            // CREATE A NEW PROTOCOL INSTANCE
+            final RedisNetworkExecutor connection = new RedisNetworkExecutor(server, socket, ticket);
+            connection.start();
+          } catch (final Exception e) {
+            // The executor never started, so nothing will hand the permit back for it.
+            ticket.release();
+            throw e;
+          }
 
           if (callback != null)
             callback.connected();

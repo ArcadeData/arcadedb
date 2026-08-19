@@ -84,7 +84,6 @@ class PostgresTypeResolutionPathTest {
    *       tell them apart and answers DATE for either.
    *   <li>DECIMAL: neither DOUBLE (lossy) nor VARCHAR is right; the fix is a NUMERIC (OID 1700) entry with a
    *       binary encoder.
-   *   <li>BINARY: neither VARCHAR nor _char is right; the fix is a BYTEA (OID 17) entry.
    * </ul>
    * Removing an entry here is the intended way to land one of those fixes.
    */
@@ -95,7 +94,6 @@ class PostgresTypeResolutionPathTest {
     KNOWN_DISAGREEMENTS.put(Type.BYTE, new PathDisagreement(PostgresType.SMALLINT, PostgresType.INTEGER));
     KNOWN_DISAGREEMENTS.put(Type.DATETIME, new PathDisagreement(PostgresType.TIMESTAMP, PostgresType.DATE));
     KNOWN_DISAGREEMENTS.put(Type.DECIMAL, new PathDisagreement(PostgresType.DOUBLE, PostgresType.VARCHAR));
-    KNOWN_DISAGREEMENTS.put(Type.BINARY, new PathDisagreement(PostgresType.VARCHAR, PostgresType.ARRAY_CHAR));
   }
 
   private record PathDisagreement(PostgresType schemaPath, PostgresType valuePath) {
@@ -147,7 +145,7 @@ class PostgresTypeResolutionPathTest {
     // Only the primitive byte[] carries Type.BINARY's blob meaning; a Byte[] is an array of small integers, and
     // Byte elements already resolve to int4 everywhere else (getTypeForValue, getArrayTypeForElementType).
     assertThat(PostgresType.getTypeForValue(new Byte[] { 1, 2 })).isEqualTo(PostgresType.ARRAY_INT);
-    assertThat(PostgresType.getTypeForValue(new byte[] { 1, 2 })).isEqualTo(PostgresType.ARRAY_CHAR);
+    assertThat(PostgresType.getTypeForValue(new byte[] { 1, 2 })).isEqualTo(PostgresType.BYTEA);
   }
 
   @Test

@@ -22,6 +22,7 @@ import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
+import com.arcadedb.server.network.PreAuthConnectionGate;
 import com.arcadedb.server.network.ServerSocketFactory;
 
 import java.io.IOException;
@@ -29,8 +30,10 @@ import java.net.*;
 import java.util.logging.Level;
 
 public class PostgresNetworkListener extends Thread {
-  private final    ArcadeDBServer      server;
-  private final    ServerSocketFactory socketFactory;
+  private final    ArcadeDBServer         server;
+  private final    ServerSocketFactory    socketFactory;
+  /** Bounds how many accepted connections can sit un-authenticated at once (issue #6412). */
+  private final    PreAuthConnectionGate  preAuthGate     = new PreAuthConnectionGate("PSQL");
   private          ServerSocket        serverSocket;
   private volatile boolean             active          = true;
   private final    int                 protocolVersion = -1;
@@ -55,12 +58,33 @@ public class PostgresNetworkListener extends Thread {
         try {
           final Socket socket = serverSocket.accept();
 
+          // One thread and one file descriptor are committed here, before the client has proved anything: past
+          // the cap the socket is closed straight away rather than being given either (issue #6412). The refusal
+          // is a close and not an ErrorResponse because writing one would be an I/O the refused peer could stall,
+          // on the accept thread, which is the one thing that must never be stallable.
+          final PreAuthConnectionGate.Ticket ticket = preAuthGate.accept();
+          if (ticket == null) {
+            preAuthGate.logRefusal(this, socket.getRemoteSocketAddress());
+            try {
+              socket.close();
+            } catch (final IOException e) {
+              // IGNORE IT: THE CONNECTION IS BEING DROPPED ANYWAY
+            }
+            continue;
+          }
+
           socket.setPerformancePreferences(0, 2, 1);
 
-          // CREATE A NEW PROTOCOL INSTANCE
-          // TODO: OPEN A DATABASE
-          final PostgresNetworkExecutor connection = new PostgresNetworkExecutor(server, socket, null);
-          connection.start();
+          try {
+            // CREATE A NEW PROTOCOL INSTANCE
+            // TODO: OPEN A DATABASE
+            final PostgresNetworkExecutor connection = new PostgresNetworkExecutor(server, socket, null, ticket);
+            connection.start();
+          } catch (final Exception e) {
+            // The executor never started, so nothing will hand the permit back for it.
+            ticket.release();
+            throw e;
+          }
 
         } catch (final Exception e) {
           if (active)

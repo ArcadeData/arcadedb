@@ -272,7 +272,8 @@ class PostgresTypeTest {
 
   @Test
   void getTypeForValueByteArray() {
-    assertThat(PostgresType.getTypeForValue(new byte[]{1, 2, 3})).isEqualTo(PostgresType.ARRAY_CHAR);
+    // A byte[] is a blob, not an array of one-byte characters (issue #6411).
+    assertThat(PostgresType.getTypeForValue(new byte[]{1, 2, 3})).isEqualTo(PostgresType.BYTEA);
   }
 
   @Test
@@ -369,7 +370,7 @@ class PostgresTypeTest {
 
   @Test
   void getTypeFromArcadeBinary() {
-    assertThat(PostgresType.getTypeFromArcade(Type.BINARY)).isEqualTo(PostgresType.VARCHAR);
+    assertThat(PostgresType.getTypeFromArcade(Type.BINARY)).isEqualTo(PostgresType.BYTEA);
   }
 
   @Test
@@ -2014,5 +2015,116 @@ class PostgresTypeTest {
     assertThatThrownBy(() -> PostgresType.deserialize(PostgresType.DATE.code, 0,
         "1716138311000".getBytes()))
         .isInstanceOf(DateTimeParseException.class);
+  }
+
+  // ==================== BYTEA Tests (issue #6411) ====================
+
+  @Test
+  void byteaCarriesPostgresOwnCatalogIdentity() {
+    // The OID, name and array type PostgreSQL itself uses: a client resolves the OID it was handed in
+    // RowDescription against these, so anything else resolves to a different type or to nothing.
+    assertThat(PostgresType.BYTEA.code).isEqualTo(17);
+    assertThat(PostgresType.BYTEA.typeName).isEqualTo("bytea");
+    assertThat(PostgresType.BYTEA.arrayCode).isEqualTo(1001);
+    assertThat(PostgresType.BYTEA.elementCode).isEqualTo(0);
+    assertThat(PostgresType.BYTEA.isArrayType()).isFalse();
+    // Announced with its own OID rather than collapsed to varchar, which is what makes a client call
+    // getBytes() on it instead of decoding arbitrary bytes as text.
+    assertThat(PostgresType.BYTEA.isNativeScalarType()).isTrue();
+    assertThat(PostgresType.BYTEA.hasBinaryEncoding()).isTrue();
+  }
+
+  @Test
+  void serializeAsTextByteArrayUsesTheHexFormat() {
+    Binary buffer = new Binary();
+    PostgresType.BYTEA.serializeAsText(PostgresType.BYTEA, buffer, new byte[] { 0x00, 0x01, (byte) 0xFF, 0x7F });
+    buffer.flip();
+    int length = buffer.getInt();
+    byte[] data = new byte[length];
+    buffer.getByteBuffer().get(data);
+    assertThat(new String(data)).isEqualTo("\\x0001ff7f");
+  }
+
+  @Test
+  void serializeAsTextEmptyByteArrayIsTheEmptyHexString() {
+    Binary buffer = new Binary();
+    PostgresType.BYTEA.serializeAsText(PostgresType.BYTEA, buffer, new byte[0]);
+    buffer.flip();
+    int length = buffer.getInt();
+    byte[] data = new byte[length];
+    buffer.getByteBuffer().get(data);
+    assertThat(new String(data)).isEqualTo("\\x");
+  }
+
+  @Test
+  void getTypeForValueArcadeBinary() {
+    assertThat(PostgresType.getTypeForValue(new Binary(new byte[] { 1, 2 }))).isEqualTo(PostgresType.BYTEA);
+  }
+
+  @Test
+  void serializeAsTextArcadeBinaryUsesTheHexFormat() {
+    Binary buffer = new Binary();
+    PostgresType.BYTEA.serializeAsText(PostgresType.BYTEA, buffer, new Binary(new byte[] { 0x0A, 0x0B }));
+    buffer.flip();
+    int length = buffer.getInt();
+    byte[] data = new byte[length];
+    buffer.getByteBuffer().get(data);
+    assertThat(new String(data)).isEqualTo("\\x0a0b");
+  }
+
+  @Test
+  void serializeAsBinaryByteArrayIsTheRawBytes() {
+    Binary buffer = new Binary();
+    PostgresType.BYTEA.serializeAsBinary(PostgresType.BYTEA, buffer, new byte[] { 1, 2, 3 });
+    buffer.flip();
+    assertThat(buffer.getInt()).isEqualTo(3);
+    byte[] data = new byte[3];
+    buffer.getByteBuffer().get(data);
+    assertThat(data).isEqualTo(new byte[] { 1, 2, 3 });
+  }
+
+  @Test
+  void deserializeByteaFromHexText() {
+    Object result = PostgresType.deserialize(PostgresType.BYTEA.code, 0, "\\x0001ff7f".getBytes());
+    assertThat(result).isInstanceOf(byte[].class);
+    assertThat((byte[]) result).isEqualTo(new byte[] { 0x00, 0x01, (byte) 0xFF, 0x7F });
+  }
+
+  @Test
+  void deserializeByteaFromEscapeText() {
+    // The pre-9.0 output format, which PostgreSQL still accepts on input and some clients still send.
+    Object result = PostgresType.deserialize(PostgresType.BYTEA.code, 0, "ab\\000\\\\c".getBytes());
+    assertThat((byte[]) result).isEqualTo(new byte[] { 'a', 'b', 0, '\\', 'c' });
+  }
+
+  @Test
+  void deserializeByteaFromBinary() {
+    final byte[] payload = new byte[] { 5, 6, 7 };
+    Object result = PostgresType.deserialize(PostgresType.BYTEA.code, 1, payload);
+    assertThat((byte[]) result).isEqualTo(payload);
+  }
+
+  @Test
+  void deserializeByteaRejectsMalformedHex() {
+    assertThatThrownBy(() -> PostgresType.deserialize(PostgresType.BYTEA.code, 0, "\\x0".getBytes()))
+        .isInstanceOf(PostgresProtocolException.class);
+    assertThatThrownBy(() -> PostgresType.deserialize(PostgresType.BYTEA.code, 0, "\\xzz".getBytes()))
+        .isInstanceOf(PostgresProtocolException.class);
+  }
+
+  @Test
+  void byteaRoundTripsThroughItsOwnTextFormat() {
+    final byte[] payload = new byte[256];
+    for (int i = 0; i < payload.length; i++)
+      payload[i] = (byte) i;
+
+    Binary buffer = new Binary();
+    PostgresType.BYTEA.serializeAsText(PostgresType.BYTEA, buffer, payload);
+    buffer.flip();
+    int length = buffer.getInt();
+    byte[] data = new byte[length];
+    buffer.getByteBuffer().get(data);
+
+    assertThat((byte[]) PostgresType.deserialize(PostgresType.BYTEA.code, 0, data)).isEqualTo(payload);
   }
 }

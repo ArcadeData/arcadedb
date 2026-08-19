@@ -61,7 +61,7 @@ public class PostgresTypeCatalog {
    * pg_type columns this catalog can produce. A projection naming anything outside this set is declined
    * whole rather than answered with holes in it.
    */
-  private static final List<String> COLUMNS = List.of(//
+  static final List<String> COLUMNS = List.of(//
       "oid", "typname", "typelem", "typarray", "typdelim", "typtype", "typcategory", "typlen", "typinput",//
       "typnotnull", "typbasetype", "typnamespace", "typrelid");
 
@@ -274,7 +274,7 @@ public class PostgresTypeCatalog {
     return null;
   }
 
-  private static Object columnValue(final PostgresType type, final String column) {
+  static Object columnValue(final PostgresType type, final String column) {
     return switch (column) {
       case "oid" -> type.code;
       case "typname" -> type.typeName;
