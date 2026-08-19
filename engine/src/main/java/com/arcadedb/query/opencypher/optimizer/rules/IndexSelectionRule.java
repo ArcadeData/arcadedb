@@ -123,7 +123,7 @@ public class IndexSelectionRule implements OptimizationRule {
               anchor.getPropertyValue(),
               index.getIndexName(),
               index.getPropertyNames(),
-              List.of(anchor.getPropertyValue()),
+              rootSeek.keyValues(),
               anchor.getEstimatedCost() / anchor.getDisjunctionIndexSeeks().size(),
               anchor.getEstimatedCardinality() / anchor.getDisjunctionIndexSeeks().size()
           ));

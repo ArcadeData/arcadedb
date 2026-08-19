@@ -132,16 +132,15 @@ public class NodeByLabelDisjunctionIndexSeek extends AbstractPhysicalOperator {
     final String indent = getIndent(depth);
     sb.append(indent).append("+ NodeByLabelDisjunctionIndexSeek");
     sb.append("(").append(variable).append(")");
-    sb.append(" [seeks=");
-    for (int i = 0; i < perRootSeeks.size(); i++) {
-      if (i > 0)
-        sb.append(", ");
-      final NodeIndexSeek seek = perRootSeeks.get(i);
-      sb.append(seek.getLabel()).append("[").append(seek.getIndexName()).append("]");
-    }
+    sb.append(" [roots=").append(perRootSeeks.size());
     sb.append(", cost=").append(String.format(Locale.US, "%.2f", estimatedCost));
     sb.append(", rows=").append(estimatedCardinality);
     sb.append("]\n");
+    // Each root's own NodeIndexSeek already renders its index, resolved key columns and per-root cost/rows -
+    // nested here rather than summarized, so the key values a composite index resolved (issue #6397 review) are
+    // visible in EXPLAIN/PROFILE exactly as they would be for a plain (non-disjunction) index seek.
+    for (final NodeIndexSeek seek : perRootSeeks)
+      sb.append(seek.explain(depth + 1));
     return sb.toString();
   }
 

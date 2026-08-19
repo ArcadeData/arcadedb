@@ -355,15 +355,19 @@ public class AnchorSelector {
 
   /**
    * Attempts to cost a label disjunction as a union of per-root index seeks (issue #6397's suggested shape).
-   * Only a single equality predicate on the disjunction's own variable is considered - an IN-list or a range
-   * predicate on a disjunction anchor is a separate, still-unaddressed limitation the issue calls out but does
-   * not ask this fix to close.
+   * Every equality predicate on the disjunction's own variable is tried in turn - not only the first one a
+   * {@code HashMap} happens to iterate to first - mirroring the loop-over-every-candidate approach the plain
+   * (non-disjunction) equality branch of {@link #evaluateNode} already uses, so whether a disjunction with several
+   * equality predicates gets seeked does not depend on hash-iteration order. An IN-list or a range predicate on a
+   * disjunction anchor is a separate, still-unaddressed limitation the issue calls out but does not ask this fix
+   * to close.
    * <p>
-   * All-or-nothing: the first root with no usable index for the predicate aborts the whole attempt back to the
-   * ordinary scan, matching the rule {@code IndexSelectionRule} enforces when it builds the operator.
+   * All-or-nothing per predicate: a predicate with even one non-indexed root is skipped in favour of the next
+   * candidate predicate, matching the rule {@code IndexSelectionRule} enforces when it builds the operator. Only
+   * when no predicate at all resolves on every root does this fall back to the ordinary scan.
    *
-   * @return the disjunction-seek anchor, or {@code null} when no equality predicate applies or at least one root
-   * has no usable index
+   * @return the disjunction-seek anchor, or {@code null} when no equality predicate has a usable index on every
+   * root
    */
   private AnchorSelection tryDisjunctionIndexSeek(final LogicalNode node, final LogicalPlan plan) {
     final String variable = node.getVariable();
@@ -379,40 +383,52 @@ public class AnchorSelector {
     if (equalityPredicates.isEmpty())
       return null;
 
-    // Only the first predicate drives the seek, mirroring the "no index" filtered-scan branch of evaluateNode.
-    final Map.Entry<String, Object> predicate = equalityPredicates.entrySet().iterator().next();
-    final String propertyName = predicate.getKey();
-    final Object propertyValue = predicate.getValue();
-
     final List<DocumentType> roots = statisticsProvider.getMatchingVertexRootTypes(node.getLabels(), true);
     if (roots.isEmpty())
       return null;
 
-    final List<AnchorSelection.DisjunctionIndexSeek> seeks = new ArrayList<>(roots.size());
-    boolean allUnique = true;
+    for (final Map.Entry<String, Object> predicate : equalityPredicates.entrySet()) {
+      final String propertyName = predicate.getKey();
+      final Object propertyValue = predicate.getValue();
 
-    for (final DocumentType root : roots) {
-      final String typeName = root.getName();
-      final IndexStatistics indexStats = findIndexForProperty(statisticsProvider.getIndexesForType(typeName), propertyName);
-      if (indexStats == null)
-        return null; // all-or-nothing: one non-seekable root loses the whole disjunction back to the scan
+      final List<AnchorSelection.DisjunctionIndexSeek> seeks = new ArrayList<>(roots.size());
+      boolean allUnique = true;
+      boolean everyRootIndexed = true;
 
-      seeks.add(new AnchorSelection.DisjunctionIndexSeek(typeName, indexStats));
-      allUnique &= indexStats.isUnique();
+      for (final DocumentType root : roots) {
+        final String typeName = root.getName();
+        final IndexStatistics indexStats = findIndexForProperty(statisticsProvider.getIndexesForType(typeName), propertyName);
+        if (indexStats == null) {
+          everyRootIndexed = false;
+          break; // all-or-nothing for this predicate: try the next candidate predicate instead
+        }
+
+        // Per-root prefix values (issue #6397 review): a composite index's extra columns, and therefore how far
+        // the seek's prefix reaches, can differ from root to root, exactly as collectKeyPrefixValues already
+        // accounts for in the single-type equality branch above.
+        final List<Object> keyValues = collectKeyPrefixValues(indexStats, equalityPredicates, propertyValue);
+        seeks.add(new AnchorSelection.DisjunctionIndexSeek(typeName, indexStats, keyValues));
+        allUnique &= indexStats.isUnique();
+      }
+
+      if (!everyRootIndexed)
+        continue;
+
+      // Same selectivity heuristic as the single-type equality seek: a unique key resolves to ~one row, a
+      // non-unique one is assumed 10% selective. Applied to the total scan size rather than per root, since the
+      // per-root subtree counts are not otherwise collected for a disjunction's roots.
+      final long totalRows = statisticsProvider.getMatchingVertexCardinality(node.getLabels(), true);
+      final double selectivity = allUnique ? 0.001 : 0.1;
+      final long estimatedRows = Math.max(seeks.size(), (long) (totalRows * selectivity));
+
+      double totalCost = 0;
+      for (final AnchorSelection.DisjunctionIndexSeek seek : seeks)
+        totalCost += costModel.estimateIndexSeekCost(seek.typeName(), propertyName, selectivity);
+
+      return new AnchorSelection(variable, node, propertyName, propertyValue, seeks, totalCost, estimatedRows);
     }
 
-    // Same selectivity heuristic as the single-type equality seek: a unique key resolves to ~one row, a
-    // non-unique one is assumed 10% selective. Applied to the total scan size rather than per root, since the
-    // per-root subtree counts are not otherwise collected for a disjunction's roots.
-    final long totalRows = statisticsProvider.getMatchingVertexCardinality(node.getLabels(), true);
-    final double selectivity = allUnique ? 0.001 : 0.1;
-    final long estimatedRows = Math.max(seeks.size(), (long) (totalRows * selectivity));
-
-    double totalCost = 0;
-    for (final AnchorSelection.DisjunctionIndexSeek seek : seeks)
-      totalCost += costModel.estimateIndexSeekCost(seek.typeName(), propertyName, selectivity);
-
-    return new AnchorSelection(variable, node, propertyName, propertyValue, seeks, totalCost, estimatedRows);
+    return null;
   }
 
   /**
