@@ -1137,6 +1137,14 @@ public enum GlobalConfiguration {
 
   NETWORK_SOCKET_TIMEOUT("arcadedb.network.socketTimeout", SCOPE.SERVER, "TCP/IP Socket timeout (in ms)", Integer.class, 30000),
 
+  NETWORK_MAX_PREAUTH_CONNECTIONS("arcadedb.network.maxPreAuthConnections", SCOPE.SERVER, """
+      Maximum number of connections a binary wire-protocol listener (Postgres, Redis, BOLT) may hold in the phase
+      before authentication. Each accepted socket costs one thread and one file descriptor before the client has
+      proved who it is, and the handshake timeout (arcadedb.network.socketTimeout) only bounds how long each one
+      may stay there, not how many there can be. Past this cap the listener closes further connections
+      immediately and goes back to accepting. The cap is per listener, so a flood against one protocol cannot use
+      up the budget that lets clients of another log in. 0 means unlimited.""", Integer.class, 500),
+
   NETWORK_USE_SSL("arcadedb.ssl.enabled", SCOPE.SERVER, "Use SSL for client connections", Boolean.class, false),
 
   NETWORK_SSL_KEYSTORE("arcadedb.ssl.keyStore", SCOPE.SERVER, "Path where the SSL certificates are stored", String.class, null),

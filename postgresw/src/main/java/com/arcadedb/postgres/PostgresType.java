@@ -69,6 +69,12 @@ public enum PostgresType {
   TEXT(25, "text", 0, 1009, String.class, -1, value -> value),
   BPCHAR(1042, "bpchar", 0, 1014, String.class, -1, value -> value),
   JSON(114, "json", 0, 199, JSONObject.class, -1, PostgresType::parseJsonText),
+  // The type PostgreSQL has for a blob, and the only honest answer for a byte[] (issue #6411). A byte[] used
+  // to be typed as "char"[] (OID 1002) by getTypeForValue and as varchar (OID 1043) by getTypeFromArcade, so
+  // a BINARY column's OID depended on whether the result set happened to be empty - and neither answer was
+  // right: an array of one-byte characters makes the client decode arbitrary bytes as text, which for any
+  // non-UTF-8 payload loses data rather than merely looking odd.
+  BYTEA(17, "bytea", 0, 1001, byte[].class, -1, PostgresType::parseByteaText),
   // Adding array types with PostgreSQL array type codes
   ARRAY_INT(1007, "_int4", 23, 0, Collection.class, -1, value -> parseArrayFromString(value, Integer::parseInt)),
   // 1002 is "char"[], the array of the single-byte CHAR (OID 18) this enum pairs it with. It used to be
@@ -105,6 +111,93 @@ public enum PostgresType {
     if (!trimmed.isEmpty() && trimmed.charAt(0) == '[')
       return new JSONArray(trimmed).toList();
     return new JSONObject(value);
+  }
+
+  /**
+   * Parses the text representation of a bytea. PostgreSQL emits the hex format {@code \x<hexdigits>} for any
+   * server version from 9.0 on - which is what this protocol announces - but still accepts the older escape
+   * format on input, and some clients still send it, so both are read here.
+   */
+  private static byte[] parseByteaText(final String value) {
+    if (value == null)
+      throw new PostgresProtocolException("Cannot parse null BYTEA text value");
+
+    if (value.length() >= 2 && value.charAt(0) == '\\' && (value.charAt(1) == 'x' || value.charAt(1) == 'X')) {
+      final int digits = value.length() - 2;
+      if (digits % 2 != 0)
+        throw new PostgresProtocolException("Invalid hex BYTEA text value: odd number of digits");
+
+      final byte[] bytes = new byte[digits / 2];
+      for (int i = 0; i < bytes.length; i++) {
+        final int high = Character.digit(value.charAt(2 + i * 2), 16);
+        final int low = Character.digit(value.charAt(3 + i * 2), 16);
+        if (high < 0 || low < 0)
+          throw new PostgresProtocolException("Invalid hex BYTEA text value: not a hex digit");
+        bytes[i] = (byte) ((high << 4) | low);
+      }
+      return bytes;
+    }
+
+    return parseByteaEscapeText(value);
+  }
+
+  /**
+   * Decodes the pre-9.0 bytea escape format: a backslash introduces either another backslash or a three-digit
+   * octal byte, and everything else stands for itself.
+   */
+  private static byte[] parseByteaEscapeText(final String value) {
+    final byte[] bytes = new byte[value.length()];
+    int len = 0;
+    for (int i = 0; i < value.length(); i++) {
+      final char c = value.charAt(i);
+      if (c != '\\') {
+        bytes[len++] = (byte) c;
+        continue;
+      }
+
+      if (i + 1 >= value.length())
+        throw new PostgresProtocolException("Invalid escaped BYTEA text value: trailing backslash");
+
+      final char next = value.charAt(++i);
+      if (next == '\\') {
+        bytes[len++] = (byte) '\\';
+        continue;
+      }
+
+      if (i + 2 >= value.length())
+        throw new PostgresProtocolException("Invalid escaped BYTEA text value: truncated octal escape");
+
+      int octal = 0;
+      for (int digit = 0; digit < 3; digit++) {
+        final int parsed = Character.digit(value.charAt(i + digit), 8);
+        if (parsed < 0)
+          throw new PostgresProtocolException("Invalid escaped BYTEA text value: not an octal digit");
+        octal = octal * 8 + parsed;
+      }
+      i += 2;
+      bytes[len++] = (byte) octal;
+    }
+    return Arrays.copyOf(bytes, len);
+  }
+
+  /** Renders bytes in the {@code \x<hexdigits>} form PostgreSQL 9.0 and later emit. */
+  private static String toByteaText(final byte[] bytes) {
+    final StringBuilder buffer = new StringBuilder(2 + bytes.length * 2);
+    buffer.append("\\x");
+    for (final byte b : bytes) {
+      buffer.append(Character.forDigit((b >> 4) & 0xF, 16));
+      buffer.append(Character.forDigit(b & 0xF, 16));
+    }
+    return buffer.toString();
+  }
+
+  /** The bytes behind a value announced as bytea, or null when the value is not one. */
+  private static byte[] byteaValueOf(final Object value) {
+    if (value instanceof byte[] bytes)
+      return bytes;
+    if (value instanceof Binary binary)
+      return binary.toByteArray();
+    return null;
   }
 
   private static Boolean parseBooleanText(final String value) {
@@ -307,8 +400,8 @@ public enum PostgresType {
         }
       }
       return PostgresType.ARRAY_TEXT;
-    } else if (val instanceof byte[]) {
-      return PostgresType.ARRAY_CHAR;
+    } else if (val instanceof byte[] || val instanceof Binary) {
+      return PostgresType.BYTEA;
     } else if (val.getClass().isArray()) {
       // Handle Java arrays
       // Shorts and boxed bytes widen to int4[]: getArrayTypeForElementType answers ARRAY_INT for a Short or a
@@ -430,7 +523,7 @@ public enum PostgresType {
       case STRING -> PostgresType.VARCHAR;
       case DATETIME, DATETIME_MICROS, DATETIME_NANOS, DATETIME_SECOND -> PostgresType.TIMESTAMP;
       case DATE -> PostgresType.DATE;
-      case BINARY -> PostgresType.VARCHAR; // No direct binary type, use VARCHAR
+      case BINARY -> PostgresType.BYTEA;
       case LIST -> PostgresType.ARRAY_TEXT;
       case ARRAY_OF_SHORTS, ARRAY_OF_INTEGERS -> PostgresType.ARRAY_INT;
       case ARRAY_OF_LONGS -> PostgresType.ARRAY_LONG;
@@ -453,6 +546,7 @@ public enum PostgresType {
   @SuppressWarnings("unchecked")
   public void serializeAsText(final PostgresType pgType, final Binary typeBuffer, final Object value) {
     String serializedValue = null;
+    final byte[] byteaValue = pgType == BYTEA ? byteaValueOf(value) : null;
     if (value == null && pgType.code == BOOLEAN.code) {
       serializedValue = "0";
     } else if (pgType == JSON && value != null && (value instanceof Collection<?> || value.getClass().isArray())) {
@@ -460,6 +554,10 @@ public enum PostgresType {
       // instead of a Postgres array literal, so the payload matches the announced OID.
       serializedValue = serializeCollectionAsJson(
           value instanceof Collection<?> collection ? collection : convertPrimitiveArrayToCollection(value));
+    } else if (byteaValue != null) {
+      // A blob announced as bytea travels as \x<hex> (issue #6411), not as the {1,2,3} array literal the
+      // generic byte[] handling below would produce for it.
+      serializedValue = toByteaText(byteaValue);
     } else if (value instanceof Collection<?> collection) {
       // Handle array serialization
       serializedValue = serializeArrayToString(collection, pgType);
@@ -526,6 +624,16 @@ public enum PostgresType {
     case BOOLEAN -> {
       typeBuffer.putInt(1);
       typeBuffer.putByte((byte) (toBooleanValue(value) ? 1 : 0));
+    }
+    case BYTEA -> {
+      // bytea binary format is the raw bytes, with no framing of its own beyond the length prefix.
+      final byte[] bytes = byteaValueOf(value);
+      if (bytes == null) {
+        serializeAsText(pgType, typeBuffer, value);
+        return;
+      }
+      typeBuffer.putInt(bytes.length);
+      typeBuffer.putByteArray(bytes);
     }
     case CHAR -> {
       // Postgres "char" (OID 18) is a single byte on the wire.
@@ -852,6 +960,7 @@ public enum PostgresType {
         }
         yield LocalDateTime.ofEpochSecond(secs, nanos, ZoneOffset.UTC);
       }
+      case BYTEA -> valueAsBytes.clone();
       case CHAR -> (char) buffer.get();
       case BOOLEAN -> buffer.get() == 1;
       case JSON -> {
@@ -948,7 +1057,8 @@ public enum PostgresType {
    * strings and breaks typed parameter comparisons.
    */
   public boolean isNativeScalarType() {
-    return this == SMALLINT ||
+    return this == BYTEA ||
+        this == SMALLINT ||
         this == INTEGER ||
         this == LONG ||
         this == REAL ||

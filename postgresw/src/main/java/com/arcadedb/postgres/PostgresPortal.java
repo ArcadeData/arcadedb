@@ -38,6 +38,11 @@ public class PostgresPortal {
   public boolean                   isExpectingResult;
   public boolean                   executed             = false;
   public boolean                   rowDescriptionSent   = false;
+  /**
+   * True when the query is about the emulated system catalog and could not be answered at Parse time because
+   * its filters are bound parameters, whose values only arrive with the Bind message (issue #6412).
+   */
+  public boolean                   catalogQuery         = false;
 
   public PostgresPortal(final String query, String language) {
     this.query = query;
