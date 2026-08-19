@@ -1134,13 +1134,15 @@ public class MergeStep extends AbstractExecutionStep {
    * @return created vertex
    */
   private Vertex createVertex(final NodePattern nodePattern, final Result result) {
-    final List<String> labels = nodePattern.hasLabels()
-        ? nodePattern.getLabels()
-        : List.of("Vertex");
-
-    // Get or create the appropriate type (composite if multiple labels)
-    final String typeName = Labels.ensureCompositeType(
-        context.getDatabase().getSchema(), labels);
+    // No label written: land in the reserved sentinel directly, bypassing ensureCompositeType - see
+    // CreateStep.createVertex for why (issue #6395 review).
+    final String typeName;
+    if (nodePattern.hasLabels()) {
+      typeName = Labels.ensureCompositeType(context.getDatabase().getSchema(), nodePattern.getLabels());
+    } else {
+      typeName = Labels.NO_LABEL_TYPE;
+      context.getDatabase().getSchema().getOrCreateVertexType(Labels.NO_LABEL_TYPE);
+    }
 
     final MutableVertex vertex = context.getDatabase().newVertex(typeName);
 

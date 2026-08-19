@@ -298,8 +298,11 @@ public class RemoveStep extends AbstractExecutionStep {
 
     final String newTypeName;
     if (remainingLabels.isEmpty()) {
-      newTypeName = "V";
-      schema.getOrCreateVertexType("V");
+      // The same reserved sentinel CreateStep/MergeStep use for "no labels", rather than a second, differently
+      // named type meaning the same thing (issue #6395: a node stripped of its last label used to land in "V"
+      // while one created unlabelled landed in "Vertex", so the two collided with neither and with each other).
+      newTypeName = Labels.NO_LABEL_TYPE;
+      schema.getOrCreateVertexType(Labels.NO_LABEL_TYPE);
     } else {
       newTypeName = Labels.ensureCompositeType(schema, remainingLabels);
     }

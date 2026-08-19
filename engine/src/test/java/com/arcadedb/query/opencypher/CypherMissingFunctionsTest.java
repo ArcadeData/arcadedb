@@ -436,9 +436,12 @@ class CypherMissingFunctionsTest {
 
   @Test
   void collToSetNonListArgument() {
+    // A non-list argument is the caller's mistake, so since issue #6403 coll.* raises the same
+    // CommandSemanticException (HTTP 400) the Cypher list builtins do, with their "Type mismatch" wording,
+    // rather than the CommandExecutionException (HTTP 500) it used to raise with its own wording.
     assertThatThrownBy(() -> database.query("opencypher", "RETURN coll.toSet('not a list') AS result").hasNext())
-        .isInstanceOf(CommandExecutionException.class)
-        .hasMessageContaining("coll.toSet() requires a list argument");
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("Type mismatch: coll.toSet() expects a LIST<ANY> argument but got STRING");
   }
 
   @Test
@@ -536,9 +539,10 @@ class CypherMissingFunctionsTest {
 
   @Test
   void collPairsMinNonListArgument() {
+    // Same reclassification as coll.toSet above (issue #6403).
     assertThatThrownBy(() -> database.query("opencypher", "RETURN coll.pairsMin('not a list') AS result").hasNext())
-        .isInstanceOf(CommandExecutionException.class)
-        .hasMessageContaining("coll.pairsMin() requires a list argument");
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("Type mismatch: coll.pairsMin() expects a LIST<ANY> argument but got STRING");
   }
 
   @Test

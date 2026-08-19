@@ -31,8 +31,6 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.WorkGuard;
 
-import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.IntStream;
@@ -212,10 +210,7 @@ public class AlgoArticleRank extends AbstractAlgoProcedure {
 
   private Stream<Result> executeWithOLTP(final Database db, final double dampingFactor,
       final int maxIterations, final double tolerance, final WorkGuard guard) {
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
+    final List<Vertex> vertices = loadVertices(db, null, newMemoryBudget(db));
     if (vertices.isEmpty())
       return Stream.empty();
 

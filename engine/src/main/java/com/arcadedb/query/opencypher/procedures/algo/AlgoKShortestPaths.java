@@ -32,7 +32,6 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.PriorityQueue;
@@ -96,10 +95,8 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
+    final MemoryBudget memory = newMemoryBudget(db);
+    final List<Vertex> vertices = loadVertices(db, null, memory);
 
     final int n = vertices.size();
     if (n == 0)
@@ -117,7 +114,7 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
     // dense formulation is a client error naming the node count and the budget, rather than an
     // OutOfMemoryError. The two spur masks beside it are nodeCount-sized and allocated once for the whole call
     // (see below), so they are a rounding error next to the matrix and are priced with it rather than apart.
-    newMemoryBudget(db).reserve(saturatingSum(matrixBytes(n, n, DOUBLE_BYTES), matrixBytes(2, n, BOOLEAN_BYTES)),
+    memory.reserve(saturatingSum(matrixBytes(n, n, DOUBLE_BYTES), matrixBytes(2, n, BOOLEAN_BYTES)),
         "the weight matrix and the spur masks",
         "a double matrix of " + n + " x " + n + " nodes and two boolean masks of " + n + " nodes");
 

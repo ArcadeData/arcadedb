@@ -18,6 +18,7 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.query.opencypher.LoadCSVRowContext;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.ast.WithClause;
@@ -242,6 +243,9 @@ public class WithStep extends AbstractExecutionStep {
         result.setProperty(item.getOutputName(), value);
       }
     }
+
+    // The LOAD CSV file()/linenumber() pair describes the row, not the projection, so it survives one (issue #6402).
+    LoadCSVRowContext.carryOver(inputResult, result);
 
     return result;
   }

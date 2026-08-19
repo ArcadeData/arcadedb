@@ -4,6 +4,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -12,6 +13,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -191,10 +193,9 @@ class OpenCypherCreateTest {
 
   @Test
   void createWithoutLabel() {
-    database.getSchema().createVertexType("Vertex");
-
     database.transaction(() -> {
-      // Create vertex without label (should default to "Vertex")
+      // Create vertex without label: lands in the reserved sentinel rather than a name a query could also
+      // have written as a real label (issue #6395), so labels(n) correctly answers [] for it too.
       final ResultSet result = database.command("opencypher", "CREATE (n {name: 'Test'}) RETURN n");
 
       assertThat((Object) result).isNotNull();
@@ -202,8 +203,12 @@ class OpenCypherCreateTest {
 
       final Result r = result.next();
       final Vertex v = (Vertex) r.toElement();
-      assertThat(v.getTypeName()).isEqualTo("Vertex");
+      assertThat(v.getTypeName()).isEqualTo(Labels.NO_LABEL_TYPE);
       assertThat((String) v.get("name")).isEqualTo("Test");
+
+      final ResultSet labels = database.query("opencypher",
+          "MATCH (n {name: 'Test'}) RETURN labels(n) AS l");
+      assertThat((List<Object>) labels.next().getProperty("l")).isEmpty();
     });
   }
 

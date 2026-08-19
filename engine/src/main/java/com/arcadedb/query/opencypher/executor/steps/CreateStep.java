@@ -371,15 +371,18 @@ public class CreateStep extends AbstractExecutionStep {
   private Vertex createVertex(final NodePattern nodePattern, final Result currentResult) {
     final long startVertex = context.isProfiling() ? System.nanoTime() : 0;
 
-    final List<String> labels = nodePattern.hasLabels()
-        ? nodePattern.getLabels()
-        : List.of("Vertex");
-
-    // Get or create the appropriate type (composite if multiple labels)
-    final String typeName = Labels.ensureCompositeType(
-        context.getDatabase().getSchema(),
-        labels
-    );
+    // No label written: land in the reserved sentinel directly, bypassing ensureCompositeType - that method's
+    // job is turning USER-WRITTEN labels into a type name, and it refuses one literally equal to the sentinel
+    // (issue #6395 review: CREATE (:`~NO_LABEL~`) must not be able to land a vertex on the same type an
+    // unlabelled CREATE does). Passing the sentinel through it as though it were a written label would collide
+    // with that guard on every unlabelled CREATE.
+    final String typeName;
+    if (nodePattern.hasLabels()) {
+      typeName = Labels.ensureCompositeType(context.getDatabase().getSchema(), nodePattern.getLabels());
+    } else {
+      typeName = Labels.NO_LABEL_TYPE;
+      context.getDatabase().getSchema().getOrCreateVertexType(Labels.NO_LABEL_TYPE);
+    }
 
     final MutableVertex vertex = context.getDatabase().newVertex(typeName);
 

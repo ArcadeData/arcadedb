@@ -18,7 +18,8 @@
  */
 package com.arcadedb.function.coll;
 
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.utility.LongRangeList;
 
@@ -58,23 +59,25 @@ public class CollRemove extends AbstractCollFunction {
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length < 2)
-      throw new CommandExecutionException("coll.remove() requires at least 2 arguments (list, index)");
+    checkArity(args);
     final List<Object> list = asList(args[0]);
     if (list == null)
       return null;
-    if (args[1] == null)
+    final Number indexArg = CypherFunctionHelper.requireNumberArgument(args[1], getName());
+    if (indexArg == null)
       return null;
 
-    final int index = ((Number) args[1]).intValue();
+    final int index = indexArg.intValue();
     if (index < 0)
-      throw new CommandExecutionException("coll.remove() does not support negative index: " + index);
+      throw new CommandSemanticException(getName() + "() does not support negative index: " + index);
     if (index >= list.size())
-      throw new CommandExecutionException("coll.remove() index " + index + " is out of range for list of size " + list.size());
-    if (args.length > 2 && args[2] == null)
+      throw new CommandSemanticException(getName() + "() index " + index + " is out of range for list of size " + list.size());
+    final Number countArg = args.length > 2 ? CypherFunctionHelper.requireNumberArgument(args[2], getName()) : null;
+    if (args.length > 2 && countArg == null)
       return null;
-    final int count = args.length > 2 ? ((Number) args[2]).intValue() : 1;
-    if (args[0] instanceof LongRangeList range) {
+    final int count = countArg != null ? countArg.intValue() : 1;
+    final LongRangeList range = asRange(list);
+    if (range != null) {
       // The loop below stops at the end of the list, so it removes min(count, size - index) elements.
       final int removed = Math.min(Math.max(count, 0), range.size() - index);
       if (index == 0)

@@ -21,12 +21,14 @@ package com.arcadedb.integration.importer;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.integration.TestHelper;
+import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -69,7 +71,11 @@ class Neo4jImporterLabelCharactersIT {
 
   /**
    * A node with no labels used to throw NullPointerException out of the schema pass, before the vertex pass could
-   * reach its "skip it" branch. Such nodes now land in the root {@code Node} type rather than being lost.
+   * reach its "skip it" branch. Such nodes now land in the reserved root type rather than being lost - the same
+   * sentinel Cypher's own unlabelled nodes use ({@link Labels#NO_LABEL_TYPE}), not a literal {@code Node}: that
+   * name is exactly the kind of ordinary label a real graph might also want to write, and leaked as a phantom
+   * label onto every imported node - {@code labels(n)} answered {@code ["Node", "Person"]} rather than
+   * {@code ["Person"]} - independently of, and before, issue #6395.
    */
   @Test
   void importNodesWithoutLabels() throws Exception {
@@ -84,8 +90,12 @@ class Neo4jImporterLabelCharactersIT {
     try (final Database db = new DatabaseFactory(DATABASE_PATH).open()) {
       assertThat(db.getSchema().existsType("Person")).isTrue();
       assertThat(db.countType("Person", false)).isEqualTo(1L);
-      // The three unlabelled nodes are kept on the root type instead of being dropped.
-      assertThat(db.countType("Node", false)).isEqualTo(3L);
+      // The three unlabelled nodes are kept on the reserved root type instead of being dropped, and are
+      // invisible to labels() - unlike a literal "Node" type, this name can never collide with a real label.
+      assertThat(db.countType(Labels.NO_LABEL_TYPE, false)).isEqualTo(3L);
+      final List<Object> labels = db.query("opencypher", "MATCH (n {name: 'NoLabel'}) RETURN labels(n) AS l")
+          .next().getProperty("l");
+      assertThat(labels).isEmpty();
     }
   }
 

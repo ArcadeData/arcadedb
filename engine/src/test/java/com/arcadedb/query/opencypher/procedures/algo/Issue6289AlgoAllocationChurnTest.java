@@ -153,8 +153,9 @@ class Issue6289AlgoAllocationChurnTest {
   void kShortestPathsPricesTwoNodeSizedMasksRatherThanASquareOne() {
     // The reservation follows the allocation: what is held beside the weight matrix is two boolean[nodeCount]
     // masks for the whole call, not a nodeCount x nodeCount matrix per spur node. On this graph that is
-    // 501 x 501 doubles plus two 501-entry masks.
-    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 100L);
+    // 501 x 501 doubles plus two 501-entry masks. The budget has to admit the loaded graph, priced since #6317
+    // at 501 x OLTP_VERTEX_BYTES, and still refuse the ~2 MB matrix, which 100 KB does.
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 100_000L);
 
     final int n = CHAIN_HOPS * 2 + 1 + PADDING_NODES;
     assertThatThrownBy(() -> drain("""

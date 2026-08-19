@@ -132,7 +132,8 @@ class Issue6263AlgoWorkingMemoryBudgetTest {
         .as("the working set of the call is the sum of its components, not its largest one")
         .hasStackTraceContaining(
             "the embedding matrices would need 8448 bytes (2 matrices of 4 nodes x embeddingDimension=128)")
-        .hasStackTraceContaining("on top of the 14240 bytes this call already reserved")
+        // 14624 rather than 14240: since #6317 the graph itself is priced, and the 4-node fixture costs 384 bytes.
+        .hasStackTraceContaining("on top of the 14624 bytes this call already reserved")
         .hasStackTraceContaining("more than the 20000 bytes allowed");
   }
 
@@ -169,7 +170,8 @@ class Issue6263AlgoWorkingMemoryBudgetTest {
 
     assertThatThrownBy(() -> drain("CALL algo.hashgnn({seed: 42}) YIELD node RETURN node"))
         .hasStackTraceContaining("the embedding matrix would need 4224 bytes (4 nodes x embeddingDimension=128)")
-        .hasStackTraceContaining("on top of the 4352 bytes this call already reserved");
+        // 4736 rather than 4352: the 384 bytes of the loaded graph, priced since #6317.
+        .hasStackTraceContaining("on top of the 4736 bytes this call already reserved");
   }
 
   @Test
@@ -191,7 +193,8 @@ class Issue6263AlgoWorkingMemoryBudgetTest {
     assertThatThrownBy(() -> drain("CALL algo.graphsage({layers: 2, seed: 42}) YIELD node RETURN node"))
         .hasStackTraceContaining("the layer matrices would need 69760 bytes "
             + "(4 nodes x embeddingDimension=64 plus a projection of 64 x 128)")
-        .hasStackTraceContaining("on top of the 2176 bytes this call already reserved");
+        // 2560 rather than 2176: the 384 bytes of the loaded graph, priced since #6317.
+        .hasStackTraceContaining("on top of the 2560 bytes this call already reserved");
   }
 
   // ── The square matrices, which no knob sizes at all ──────────────────────
@@ -201,7 +204,9 @@ class Issue6263AlgoWorkingMemoryBudgetTest {
     // Floyd-Warshall's matrix is nodeCount x nodeCount with no parameter involved: 800 MB at 10 000 nodes. The
     // procedure documents itself as suitable "up to a few thousand vertices", which until now was advice
     // rather than a bound.
-    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 100L);
+    // 500 rather than 100: since #6317 the graph is the first thing reserved, and the 4-node fixture costs 384
+    // bytes, so a budget below that refuses the load and never reaches the matrix this test is about.
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 500L);
 
     assertThatThrownBy(() -> drain("CALL algo.apsp() YIELD source, target, distance RETURN distance"))
         .hasStackTraceContaining("the distance matrix would need 256 bytes (4 x 4 nodes)")
@@ -212,7 +217,7 @@ class Issue6263AlgoWorkingMemoryBudgetTest {
   void simRankRejectsSimilarityMatricesLargerThanTheBudget() {
     // A question about two nodes that allocates two full nodeCount x nodeCount matrices, because the
     // similarity of one pair is defined recursively over every pair.
-    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 100L);
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 500L);
 
     assertThatThrownBy(() -> drain("""
         MATCH (a:Node {name: 'A'}), (c:Node {name: 'C'}) \
@@ -224,7 +229,7 @@ class Issue6263AlgoWorkingMemoryBudgetTest {
 
   @Test
   void maxFlowRejectsCapacityMatricesLargerThanTheBudget() {
-    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 100L);
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 500L);
 
     assertThatThrownBy(() -> drain("""
         MATCH (a:Node {name: 'A'}), (c:Node {name: 'C'}) \
@@ -236,7 +241,7 @@ class Issue6263AlgoWorkingMemoryBudgetTest {
 
   @Test
   void kShortestPathsRejectsTheWeightMatrixLargerThanTheBudget() {
-    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 100L);
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 500L);
 
     assertThatThrownBy(() -> drain("""
         MATCH (a:Node {name: 'A'}), (c:Node {name: 'C'}) \
@@ -257,7 +262,7 @@ class Issue6263AlgoWorkingMemoryBudgetTest {
     // `terminalNodes` is a list, so unlike every other knob in the package it has no numeric form to validate:
     // its length sizes a terminals x nodeCount pair of tables, and nothing bounds it - not even the node count,
     // since repeating the same vertex is accepted. Two terminals over 4 nodes are 128 + 96 bytes.
-    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 100L);
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 500L);
 
     assertThatThrownBy(() -> drain("""
         MATCH (a:Node {name: 'A'}), (c:Node {name: 'C'}) \

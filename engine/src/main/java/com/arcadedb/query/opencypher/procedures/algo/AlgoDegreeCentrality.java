@@ -24,8 +24,6 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.List;
 import java.util.stream.Stream;
 
@@ -82,10 +80,7 @@ public class AlgoDegreeCentrality extends AbstractAlgoProcedure {
     final String dirArg = args.length > 1 ? extractString(args[1], "direction") : "BOTH";
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
+    final List<Vertex> vertices = loadVertices(db, null, newMemoryBudget(db));
 
     final int n = vertices.size();
     if (n == 0)

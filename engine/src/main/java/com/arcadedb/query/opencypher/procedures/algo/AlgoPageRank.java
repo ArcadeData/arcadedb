@@ -33,7 +33,6 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.IntStream;
@@ -150,10 +149,7 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
   private Stream<Result> executeWithOLTP(final Database db, final double dampingFactor,
       final int maxIterations, final double tolerance, final String weightProperty,
       final Vertex.DIRECTION direction, final WorkGuard guard) {
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> vertIter = getAllVertices(db, null);
-    while (vertIter.hasNext())
-      vertices.add(vertIter.next());
+    final List<Vertex> vertices = loadVertices(db, null, newMemoryBudget(db));
     if (vertices.isEmpty())
       return Stream.empty();
 

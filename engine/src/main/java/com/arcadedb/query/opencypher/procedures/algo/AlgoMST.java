@@ -29,8 +29,6 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.WorkGuard;
 
-import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.IntStream;
@@ -103,10 +101,8 @@ public class AlgoMST extends AbstractAlgoProcedure {
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
+    final MemoryBudget memory = newMemoryBudget(db);
+    final List<Vertex> vertices = loadVertices(db, null, memory);
 
     final int n = vertices.size();
     if (n == 0)
@@ -127,7 +123,6 @@ public class AlgoMST extends AbstractAlgoProcedure {
     // The budget is consulted as pass 1 counts rather than once it is done. Both refuse the same calls, but a
     // check afterwards first pays in full for a traversal it will throw away - the same argument that puts
     // algo.steinerTree's reservation ahead of its adjacency build.
-    final MemoryBudget memory = newMemoryBudget(db);
     final long maxEdges = memory.capacityFor(EDGE_BYTES);
 
     // Collect edges — two passes to allocate primitive arrays without reallocation. Ghost edges are

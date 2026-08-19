@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
@@ -63,6 +64,33 @@ public final class Labels {
   public static final String LABEL_SEPARATOR = "~";
 
   /**
+   * The type a vertex created with no labels lands in, and the one type a supertype walk never reports as a label.
+   * <p>
+   * Before this, "no labels" was represented by a type named {@code V} or {@code Vertex} - names drawn from the
+   * same namespace users write labels from, so the two meanings collided. A node whose only label was genuinely
+   * {@code V} matched {@code (n:V)} (the type system does not distinguish "this vertex's type is called V" from
+   * "this vertex was tagged V") and then reported {@code labels(n) = []}, because {@link #getLabels} filtered the
+   * name to answer the other question. Adding a label to such a node rebuilt its composite from the label set
+   * {@link #getOwnLabels} computed, which the same filter had emptied, so {@code SET n:Extra} silently dropped the
+   * original label instead of keeping it alongside the new one (issue #6395, the corner issue #6363 deliberately
+   * left alone).
+   * <p>
+   * Reserved by construction rather than by convention: {@link #LABEL_SEPARATOR} already cannot appear inside a
+   * single label (it is how a composite name is told apart from one), so wrapping the sentinel in it - as opposed
+   * to picking an ordinary-looking word like {@code V} - means no label a query writes can ever equal this name,
+   * and the filter in {@link #isBaseVertexTypeName} needs no exception for a real label happening to share it.
+   * <p>
+   * Also the type the imported-from-Neo4j graph's unlabelled nodes land in, and the common supertype every
+   * imported label type extends (see {@code Neo4jImporter}): a shared root lets one polymorphic query reach
+   * every vertex the import produced regardless of its label, which is worth keeping - the mistake was giving
+   * that root a name ({@code Node}) that a real schema might also want to use as an ordinary label, and that the
+   * label walk did not know to filter away from an ancestor position. Filtering this sentinel at every depth of
+   * the walk, not only at the vertex's own type, is what makes a shared root safe to keep: {@code Person EXTENDS
+   * ~NO_LABEL~} reports {@code ["Person"]}, not {@code ["NO_LABEL", "Person"]}.
+   */
+  public static final String NO_LABEL_TYPE = LABEL_SEPARATOR + "NO_LABEL" + LABEL_SEPARATOR;
+
+  /**
    * Private constructor to prevent instantiation.
    */
   private Labels() {
@@ -86,11 +114,11 @@ public final class Labels {
    * </ul>
    *
    * @param labels list of label names (duplicates are ignored)
-   * @return composite type name, or "V" if labels is null/empty
+   * @return composite type name, or {@link #NO_LABEL_TYPE} if labels is null/empty
    */
   public static String getCompositeTypeName(final List<String> labels) {
     if (labels == null || labels.isEmpty())
-      return "V";
+      return NO_LABEL_TYPE;
     if (labels.size() == 1)
       return labels.get(0);
 
@@ -106,8 +134,8 @@ public final class Labels {
 
   /**
    * Every label a vertex answers to: its own type name and each of its ancestors', sorted alphabetically, with the
-   * synthetic composite names left out. A node whose own type is the base {@code V}/{@code Vertex} carries no label
-   * at all and answers with an empty list.
+   * synthetic composite names and {@link #NO_LABEL_TYPE} left out. A node whose own type is the sentinel carries
+   * no label at all and answers with an empty list.
    * <p>
    * The set this returns is exactly the set {@link #hasLabel} says yes to, which is the invariant Cypher promises and
    * the one this used to break (issue #6363): the rule was "supertypes are the labels, unless there are none", written
@@ -135,8 +163,8 @@ public final class Labels {
   public static List<String> getLabels(final DocumentType type) {
     final String typeName = type.getName();
 
-    // If the vertex was created without labels, it has the base "Vertex" type
-    // In Cypher, unlabeled nodes have an empty label list
+    // A vertex created without labels lands in NO_LABEL_TYPE, and in Cypher an unlabelled node has an empty
+    // label list.
     if (isBaseVertexTypeName(typeName))
       return List.of();
 
@@ -148,19 +176,30 @@ public final class Labels {
 
     final Set<String> labels = new TreeSet<>();
     collectLabels(type, labels);
-    return new ArrayList<>(labels);
+    return List.copyOf(labels);
   }
 
   /**
-   * Adds {@code type}'s label to {@code out} unless the type is a synthetic composite, then recurses into its
-   * supertypes.
+   * Adds {@code type}'s label to {@code out} unless the type is a synthetic composite or the sentinel, then
+   * recurses into its supertypes.
    * <p>
-   * The base vertex name is filtered at the entry point only, never here: {@code V} is a perfectly ordinary label
-   * that a query may write - the openCypher TCK does, in {@code (b:U:V:W:X:Y:Z)} - and a supertype called {@code V}
-   * is one a node genuinely answers to.
+   * Unlike {@code V}/{@code Vertex} before issue #6395, {@link #NO_LABEL_TYPE} is filtered at every depth, not
+   * only at the vertex's own type: it is reserved by construction (its name can never be a real label, see the
+   * field's own javadoc), so there is no ordinary-label reading to preserve for it the way there was for a
+   * genuine supertype named {@code V} - the openCypher TCK writes exactly that in {@code (b:U:V:W:X:Y:Z)}, and
+   * with {@code V} no longer a sentinel it is reported like any other label.
    */
   private static void collectLabels(final DocumentType type, final Set<String> out) {
     final List<DocumentType> superTypes = type.getSuperTypes();
+    if (isBaseVertexTypeName(type.getName())) {
+      // The sentinel is never a label, however deep in the hierarchy it appears - unlike V/Vertex before it, it
+      // is not a name a query can ever have written, so there is no ordinary-label reading to preserve here the
+      // way there is one for a genuine supertype named V (issue #6395). Recurse past it rather than stopping: a
+      // type that extends it may still extend something else worth reporting.
+      for (int i = 0; i < superTypes.size(); i++)
+        collectLabels(superTypes.get(i), out);
+      return;
+    }
     if (!isLabelComposite(type, superTypes))
       out.add(type.getName());
     for (int i = 0; i < superTypes.size(); i++)
@@ -193,7 +232,7 @@ public final class Labels {
 
     final Set<String> labels = new TreeSet<>();
     collectOwnLabels(type, labels);
-    return new ArrayList<>(labels);
+    return List.copyOf(labels);
   }
 
   /**
@@ -202,6 +241,14 @@ public final class Labels {
    */
   private static void collectOwnLabels(final DocumentType type, final Set<String> out) {
     final List<DocumentType> superTypes = type.getSuperTypes();
+    if (isBaseVertexTypeName(type.getName())) {
+      // Symmetric with collectLabels: a composite that happens to inherit the sentinel through one of its own
+      // supertypes (the Neo4j importer's shared root, reached through a label type) must not have it show
+      // through a relabelling's own-label set either.
+      for (int i = 0; i < superTypes.size(); i++)
+        collectOwnLabels(superTypes.get(i), out);
+      return;
+    }
     if (!isLabelComposite(type, superTypes)) {
       out.add(type.getName());
       return;
@@ -236,12 +283,11 @@ public final class Labels {
   }
 
   /**
-   * Whether a type name is the base vertex type a node lands in when it carries no label at all: such a node is a
-   * Cypher node with an empty label list. Asked of the node's own type only - a supertype with the same name is a
-   * label the node was given and answers to, and is reported like any other.
+   * Whether a type name is {@link #NO_LABEL_TYPE}, the type a node lands in when it carries no label at all: such
+   * a node is a Cypher node with an empty label list.
    */
   private static boolean isBaseVertexTypeName(final String typeName) {
-    return "V".equals(typeName) || "Vertex".equals(typeName);
+    return NO_LABEL_TYPE.equals(typeName);
   }
 
   /**
@@ -447,17 +493,32 @@ public final class Labels {
    * <p>
    * Duplicate labels are automatically ignored, matching Neo4j's behavior
    * (GitHub issue #3264).
+   * <p>
+   * A label literally equal to {@link #NO_LABEL_TYPE} is refused rather than created: {@link #LABEL_SEPARATOR}
+   * makes the sentinel unwritable as one label among several (it can never survive {@link #isLabelComposite}'s
+   * name match), but a single-label {@code CREATE (:`~NO_LABEL~`)} bypasses that entirely and would otherwise
+   * land the vertex on the sentinel type itself - the exact {@code V}/{@code Vertex} collision this class exists
+   * to close, reopened under a name a query merely has to spell correctly instead of guess (issue #6395 review).
+   * Every write path that can introduce a new label - {@code CreateStep}, {@code MergeStep}, {@code SetStep}'s
+   * {@code SET n:Label}, and the {@code merge.node} procedure - creates its type through this one method, so the
+   * guard here closes all of them at once.
    *
    * @param schema the database schema
    * @param labels list of labels for the vertex (duplicates are ignored)
    * @return the type name to use (composite type name if multiple unique labels)
+   *
+   * @throws CommandSemanticException when {@code labels} contains {@link #NO_LABEL_TYPE}
    */
   public static String ensureCompositeType(final Schema schema, final List<String> labels) {
     if (labels == null || labels.isEmpty())
-      return "V";
+      return NO_LABEL_TYPE;
 
     // Deduplicate and sort labels using TreeSet
     final Set<String> uniqueLabels = new TreeSet<>(labels);
+
+    if (uniqueLabels.contains(NO_LABEL_TYPE))
+      throw new CommandSemanticException(
+          "'" + NO_LABEL_TYPE + "' is a reserved type name and cannot be used as a label");
 
     // Handle single label case (including after deduplication)
     if (uniqueLabels.size() == 1) {

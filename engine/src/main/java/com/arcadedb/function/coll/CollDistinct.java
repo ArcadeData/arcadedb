@@ -18,7 +18,6 @@
  */
 package com.arcadedb.function.coll;
 
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.utility.LongRangeList;
 
@@ -55,12 +54,12 @@ public class CollDistinct extends AbstractCollFunction {
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length != 1)
-      throw new CommandExecutionException("coll.distinct() requires exactly 1 argument");
+    checkArity(args);
     final List<Object> list = asList(args[0]);
     if (list == null)
       return null;
-    if (args[0] instanceof LongRangeList range)
+    final LongRangeList range = asRange(list);
+    if (range != null)
       // The step of a range is never zero, so no element repeats: the distinct list IS the range (issue #6353).
       return range;
     return new ArrayList<>(new LinkedHashSet<>(list));
