@@ -144,6 +144,14 @@ class PostgresTypeTest {
   }
 
   @Test
+  void getTypeForValueLocalDate() {
+    // Matches getTypeFromArcade(Type.DATE) (issue #6447): Type.DATE's runtime representation defaults to
+    // LocalDate (GlobalConfiguration.DATE_IMPLEMENTATION), not java.util.Date, so a sampled value from a
+    // default-configured database used to fall through every branch here to the generic VARCHAR default.
+    assertThat(PostgresType.getTypeForValue(LocalDate.now())).isEqualTo(PostgresType.DATE);
+  }
+
+  @Test
   void getTypeForValueLocalDateTime() {
     assertThat(PostgresType.getTypeForValue(LocalDateTime.now())).isEqualTo(PostgresType.TIMESTAMP);
   }

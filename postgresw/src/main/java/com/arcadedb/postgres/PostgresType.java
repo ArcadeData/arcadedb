@@ -579,6 +579,11 @@ public enum PostgresType {
       };
     } else if (val instanceof Date) {
       return PostgresType.DATE;
+    } else if (val instanceof LocalDate) {
+      // Type.DATE's runtime representation is configurable per database (GlobalConfiguration.DATE_IMPLEMENTATION)
+      // and defaults to LocalDate, not Date - so a sampled value from a default-configured database never hit
+      // the Date branch above and fell all the way through to VARCHAR, disagreeing with the schema path's DATE.
+      return PostgresType.DATE;
     } else if (val instanceof LocalDateTime) {
       return PostgresType.TIMESTAMP;
     }

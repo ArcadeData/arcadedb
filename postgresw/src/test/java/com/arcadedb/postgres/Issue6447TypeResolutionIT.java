@@ -175,6 +175,44 @@ public class Issue6447TypeResolutionIT extends PostgresWireProtocolTestBase {
     }
   }
 
+  @Test
+  void aDatetimePropertyRoundTripsAsTimestampWhenDateTimeImplementationIsJavaUtilDate() throws Exception {
+    // Type.DATETIME's runtime representation defaults to LocalDateTime, which the value path already told
+    // apart from DATE before this fix (that's what the previous test exercises). java.util.Date is the
+    // *other* supported representation, and it is ALSO Type.DATE's default - so with this configuration a
+    // sampled value alone genuinely cannot disambiguate, and PostgresNetworkExecutor.isDeclaredAsDatetime
+    // (the mechanism this PR adds) is what makes the populated-row case answer correctly instead of "date".
+    try (final Connection connection = openJdbcConnection()) {
+      try (final Statement configure = connection.createStatement()) {
+        configure.execute("ALTER DATABASE dateTimeImplementation `java.util.Date`");
+      }
+      createTestType(connection);
+
+      try (final Statement insert = connection.createStatement()) {
+        insert.execute("INSERT INTO Types6447 SET id = 1, whenHappened = '2026-08-19 12:34:56'");
+      }
+
+      final String typeFromRow;
+      try (final PreparedStatement select = connection.prepareStatement("SELECT whenHappened FROM Types6447 WHERE id = 1");
+          final ResultSet resultSet = select.executeQuery()) {
+        assertThat(resultSet.next()).isTrue();
+        typeFromRow = resultSet.getMetaData().getColumnTypeName(1);
+      }
+
+      final String typeFromSchema;
+      try (final PreparedStatement select = connection.prepareStatement("SELECT whenHappened FROM Types6447 WHERE id = 2");
+          final ResultSet resultSet = select.executeQuery()) {
+        assertThat(resultSet.next()).isFalse();
+        typeFromSchema = resultSet.getMetaData().getColumnTypeName(1);
+      }
+
+      assertThat(typeFromRow)
+          .as("without isDeclaredAsDatetime, a java.util.Date-backed DATETIME sample resolves to plain date")
+          .isEqualTo("timestamp");
+      assertThat(typeFromSchema).isEqualTo(typeFromRow);
+    }
+  }
+
   private void createTestType(final Connection connection) throws Exception {
     try (final Statement statement = connection.createStatement()) {
       statement.execute("CREATE DOCUMENT TYPE Types6447 IF NOT EXISTS");
