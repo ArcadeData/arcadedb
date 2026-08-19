@@ -75,6 +75,13 @@ class Issue6401NodeIdentityTest extends AbstractParserTest {
    * {@code CaseExpression} never populates, so it OVER-matched: two structurally different {@code CASE WHEN}
    * expressions compared equal to each other. The rest is a representative spread of statement and expression
    * shapes rather than an exhaustive walk of the ~67 {@code getIdentityElements()} overrides.
+   * <p>
+   * Issue #6442, item 2 flagged this corpus as still not exhaustive and asked for exactly this kind of widening
+   * pass the next time it comes up - not a full audit, one batch of previously-unexercised shapes. This batch
+   * added {@code MATCH}, {@code CREATE EDGE}, {@code CREATE INDEX}, {@code LET}, {@code CONTAINS}, {@code
+   * INSTANCEOF} and {@code IF}; none of the seven surfaced a defect. That is a real (if less exciting) outcome
+   * of the recipe, not a reason to stop following it - the next widening pass is still the same one query at a
+   * time, on whichever shapes remain unexercised (window functions and less-common SQL extensions per the issue).
    */
   @Test
   void equalNodesAnswerEqualHashCodes() {
@@ -103,7 +110,17 @@ class Issue6401NodeIdentityTest extends AbstractParserTest {
         "REBUILD TYPE Foo WITH batchSize = 100, repartition = true", //
         "IMPORT DATABASE http://foo.bar WITH forceDatabaseCreate = true", //
         "EXPORT DATABASE file://foo.bar WITH format = 'graphml'", //
-        "BACKUP DATABASE file://foo.bar WITH compressionLevel = 5" }) {
+        "BACKUP DATABASE file://foo.bar WITH compressionLevel = 5", //
+        // Widened per issue #6442, item 2: MATCH patterns, CREATE EDGE/INDEX, LET, CONTAINS, INSTANCEOF and IF
+        // were not exercised by any query above. None of these five turned up a defect, so the corpus grew but
+        // no fix was needed for this batch - see the class javadoc for the recipe if a future widening finds one.
+        "MATCH { type: 'V', as: foo}-E->{ type: 'V', as: bar} RETURN foo, bar", //
+        "CREATE EDGE Friend FROM #1:1 TO #1:2 SET since = 2020", //
+        "CREATE INDEX ON Foo (bar, baz) UNIQUE", //
+        "SELECT FROM V LET $temp = (SELECT FROM E)", //
+        "SELECT FROM V WHERE tags CONTAINS 'x'", //
+        "SELECT FROM V WHERE a INSTANCEOF 'V'", //
+        "IF (1 = 1) { SELECT FROM V; }" }) {
       final SimpleNode one = checkRightSyntax(query);
       final SimpleNode other = checkRightSyntax(query);
 
