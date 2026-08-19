@@ -123,14 +123,21 @@ class CypherCountPushDownLabelIssue6322Test extends TestHelper {
     assertThat(scalarOf(query)).isEqualTo(1);
   }
 
-  /** {@code tryDetectStarCountStar}: the central variable's label is the type the operator enumerates. */
+  /**
+   * {@code tryDetectStarCountStar}: the central variable's label is the type the operator enumerates.
+   * <p>
+   * The contrasting {@code single} query below leaves both arms unlabelled on purpose: an arm endpoint's own
+   * label is a separate defect (issue #6337, fixed after this test was written) that declines the push-down
+   * regardless of what the central variable's label set looks like, so this comparison keeps that variable out
+   * of the case being tested here.
+   */
   @Test
   void theCentralVariablesLabelSetDeclinesTheStarCountPushDown() {
     final String query = "MATCH (p:Post:Draft)<-[:WROTE]-(:Author), (p)-[:TAGGED]->(:Topic) RETURN count(*) AS c";
     assertThat(explainOf(query)).doesNotContain("COUNT STAR JOIN");
     assertThat(scalarOf(query)).isEqualTo(1);
 
-    final String single = "MATCH (p:Post)<-[:WROTE]-(:Author), (p)-[:TAGGED]->(:Topic) RETURN count(*) AS c";
+    final String single = "MATCH (p:Post)<-[:WROTE]-(), (p)-[:TAGGED]->() RETURN count(*) AS c";
     assertThat(explainOf(single)).contains("COUNT STAR JOIN");
     assertThat(scalarOf(single)).isEqualTo(3);
   }
@@ -138,10 +145,14 @@ class CypherCountPushDownLabelIssue6322Test extends TestHelper {
   /**
    * The central variable is written once per arm, and the operator enumerates one type of central node, so two
    * arms naming different types cannot both be honoured by it.
+   * <p>
+   * The arms are left unlabelled on purpose, for the same reason as {@code single} above: a labelled arm
+   * endpoint declines the push-down on its own (issue #6337), which would make this test pass even if the
+   * central-label-conflict check it is named for stopped working.
    */
   @Test
   void conflictingCentralLabelsDeclineTheStarCountPushDown() {
-    final String query = "MATCH (p:Post)<-[:WROTE]-(:Author), (p:Draft)-[:TAGGED]->(:Topic) RETURN count(*) AS c";
+    final String query = "MATCH (p:Post)<-[:WROTE]-(), (p:Draft)-[:TAGGED]->() RETURN count(*) AS c";
     assertThat(explainOf(query)).doesNotContain("COUNT STAR JOIN");
     assertThat(scalarOf(query)).isEqualTo(1);
   }

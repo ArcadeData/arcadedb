@@ -509,9 +509,35 @@ class GAVEligibilityTest {
     result.close();
   }
 
+  /**
+   * Q7-like: star join with OPTIONAL MATCH arms. The arm endpoints are left unlabelled on purpose: a labelled
+   * endpoint is exactly what issue #6337 now declines the push-down for, since {@code DegreeProductOp.Arm} has
+   * no field to enforce it and silently ignored it before the fix. This test is about the OPTIONAL MATCH
+   * handling of the optimized step, which the unlabelled spelling still reaches; the labelled spelling is
+   * covered by {@link #starJoinQ7WithLabelledArmDeclinesTheOptimizedStep()} below.
+   */
   @Test
   void starJoinQ7OptionalMatchUsesOptimizedStep() {
-    // Q7-like: star join with OPTIONAL MATCH arms
+    final ResultSet result = database.query("opencypher",
+        "PROFILE MATCH ()<-[:HAS_TAG]-(m:Message)-[:HAS_CREATOR]->() OPTIONAL MATCH (m)<-[:LIKES]-() OPTIONAL MATCH (m)<-[:REPLY_OF]-() RETURN count(*) AS count");
+
+    while (result.hasNext())
+      result.next();
+
+    final String planString = result.getExecutionPlan().get().prettyPrint(0, 2);
+    assertThat(planString).contains("COUNT STAR JOIN");
+    result.close();
+  }
+
+  /**
+   * The same Q7-like pattern, with every arm endpoint labelled as the original query (before issue #6337 was
+   * fixed) wrote it. {@code DegreeProductOp} counts degree by edge type and direction alone, with no way to
+   * check a neighbour's type, so a labelled endpoint used to be silently ignored - {@code (:Person)} and
+   * {@code ()} produced the same operator and the same, over-counted, answer. The push-down now declines
+   * instead, leaving the query to the ordinary pipeline, which applies every label.
+   */
+  @Test
+  void starJoinQ7WithLabelledArmDeclinesTheOptimizedStep() {
     final ResultSet result = database.query("opencypher",
         "PROFILE MATCH (:Tag)<-[:HAS_TAG]-(m:Message)-[:HAS_CREATOR]->(:Person) OPTIONAL MATCH (m)<-[:LIKES]-(:Person) OPTIONAL MATCH (m)<-[:REPLY_OF]-(:Comment) RETURN count(*) AS count");
 
@@ -519,7 +545,7 @@ class GAVEligibilityTest {
       result.next();
 
     final String planString = result.getExecutionPlan().get().prettyPrint(0, 2);
-    assertThat(planString).contains("COUNT STAR JOIN");
+    assertThat(planString).doesNotContain("COUNT STAR JOIN");
     result.close();
   }
 
