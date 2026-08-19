@@ -1356,4 +1356,139 @@ class OpenCypherVariableLengthPathTest {
       db.drop();
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // Issue #6368: collect()/UNWIND on a VLP row must not change which upstream SET writes a later
+  // path's nodes observe, compared to the same MATCH+SET returned directly.
+  // ---------------------------------------------------------------------------
+
+  // Issue #6368: a K4 graph where every node is reachable from every other node in 1..4 undirected
+  // hops, so a VLP MATCH from one start node revisits nodes already touched (and SET) while exploring
+  // from an earlier start node. AggregationStep/GroupByAggregationStep used to pull the entire
+  // upstream MATCH+SET in one large fixed batch (10,000 rows), so every VLP path got built - and its
+  // node references frozen - before any SET had run. A plain (non-aggregating) RETURN pulls in much
+  // smaller batches, so by the time a later start node's path revisits an earlier one's node, that
+  // node's own SET has already applied. The two forms must agree.
+  private Database setupIssue6368Graph(final String path) {
+    final Database database = new DatabaseFactory(path).create();
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (n {id: 0, klist: ['v0']})");
+      database.command("opencypher", "CREATE (n {id: 1, klist: ['v1']})");
+      database.command("opencypher", "CREATE (n {id: 2, klist: ['v2']})");
+      database.command("opencypher", "CREATE (n {id: 3, klist: ['v3']})");
+
+      database.command("opencypher", "MATCH (a {id: 0}), (b {id: 1}) CREATE (a)-[:R6368 {id: 101}]->(b)");
+      database.command("opencypher", "MATCH (a {id: 0}), (b {id: 2}) CREATE (a)-[:R6368 {id: 102}]->(b)");
+      database.command("opencypher", "MATCH (a {id: 0}), (b {id: 3}) CREATE (a)-[:R6368 {id: 103}]->(b)");
+      database.command("opencypher", "MATCH (a {id: 1}), (b {id: 2}) CREATE (a)-[:R6368 {id: 106}]->(b)");
+      database.command("opencypher", "MATCH (a {id: 1}), (b {id: 3}) CREATE (a)-[:R6368 {id: 107}]->(b)");
+      database.command("opencypher", "MATCH (a {id: 2}), (b {id: 3}) CREATE (a)-[:R6368 {id: 111}]->(b)");
+    });
+    return database;
+  }
+
+  // Issue #6368: WITH collect(row) AS rows / UNWIND must return the same node properties the same
+  // MATCH+SET returns directly (no collect()/UNWIND in between)
+  @SuppressWarnings("unchecked")
+  @Test
+  void collectUnwindDoesNotChangeVlpNodePropertiesVersusDirectReturn() {
+    final Database direct = setupIssue6368Graph("./target/databases/issue-6368-direct");
+    final Database collectUnwind = setupIssue6368Graph("./target/databases/issue-6368-collect");
+    try {
+      final Result[] directRowHolder = new Result[1];
+      direct.transaction(() -> {
+        final ResultSet rs = direct.command("opencypher", """
+            CALL {
+              MATCH p0 = (n0)-[*1..4]-()
+              SET n0.klist = []
+              RETURN n0, p0
+            }
+            WITH n0, p0
+            WHERE n0.id = 3 AND size(nodes(p0)) = 2 AND nodes(p0)[1].id = 2
+            RETURN n0.id AS n0Id,
+                   [x IN nodes(p0) | {id: x.id, klist: x.klist}] AS pathNodes
+            """);
+        assertThat(rs.hasNext()).as("Direct query must return the filtered row").isTrue();
+        directRowHolder[0] = rs.next();
+      });
+      final Result directRow = directRowHolder[0];
+
+      final Result[] collectRowHolder = new Result[1];
+      collectUnwind.transaction(() -> {
+        final ResultSet rs = collectUnwind.command("opencypher", """
+            CALL {
+              MATCH p0 = (n0)-[*1..4]-()
+              SET n0.klist = []
+              WITH {n0: n0, p0: p0} AS row
+              WITH collect(row) AS rows
+              UNWIND rows AS row
+              RETURN row.n0 AS n0, row.p0 AS p0
+            }
+            WITH n0, p0
+            WHERE n0.id = 3 AND size(nodes(p0)) = 2 AND nodes(p0)[1].id = 2
+            RETURN n0.id AS n0Id,
+                   [x IN nodes(p0) | {id: x.id, klist: x.klist}] AS pathNodes
+            """);
+        assertThat(rs.hasNext()).as("collect()/UNWIND query must return the filtered row").isTrue();
+        collectRowHolder[0] = rs.next();
+      });
+      final Result collectRow = collectRowHolder[0];
+
+      assertThat(((Number) collectRow.getProperty("n0Id")).longValue())
+          .isEqualTo(((Number) directRow.getProperty("n0Id")).longValue());
+
+      final List<Map<String, Object>> directPathNodes = (List<Map<String, Object>>) directRow.getProperty("pathNodes");
+      final List<Map<String, Object>> collectPathNodes = (List<Map<String, Object>>) collectRow.getProperty("pathNodes");
+      assertThat(collectPathNodes)
+          .as("collect()/UNWIND must observe the same node properties as the direct query")
+          .isEqualTo(directPathNodes);
+
+      // Pin down the concrete expected shape too, not just parity between the two forms: node 2's
+      // own SET (as a start node earlier in the traversal) must be visible when node 2 is later
+      // revisited as a path node from a different start node.
+      assertThat(collectPathNodes).hasSize(2);
+      assertThat(((Number) collectPathNodes.get(1).get("id")).longValue()).isEqualTo(2L);
+      assertThat((List<String>) collectPathNodes.get(1).get("klist")).as("node 2's SET must be visible").isEmpty();
+    } finally {
+      direct.drop();
+      collectUnwind.drop();
+    }
+  }
+
+  // Issue #6368: the GROUP BY aggregation path (implicit grouping via a non-aggregated key alongside
+  // collect()) must not change VLP node properties either - GroupByAggregationStep had the same
+  // large-fixed-batch defect as AggregationStep.
+  @SuppressWarnings("unchecked")
+  @Test
+  void groupByCollectDoesNotChangeVlpNodePropertiesVersusDirectReturn() {
+    final Database database = setupIssue6368Graph("./target/databases/issue-6368-groupby");
+    try {
+      final Result[] rowHolder = new Result[1];
+      database.transaction(() -> {
+        final ResultSet rs = database.command("opencypher", """
+            CALL {
+              MATCH p0 = (n0)-[*1..4]-()
+              SET n0.klist = []
+              WITH n0, collect(p0) AS paths
+              UNWIND paths AS p0
+              RETURN n0, p0
+            }
+            WITH n0, p0
+            WHERE n0.id = 3 AND size(nodes(p0)) = 2 AND nodes(p0)[1].id = 2
+            RETURN [x IN nodes(p0) | {id: x.id, klist: x.klist}] AS pathNodes
+            """);
+        assertThat(rs.hasNext()).as("GROUP BY collect() query must return the filtered row").isTrue();
+        rowHolder[0] = rs.next();
+      });
+      final Result row = rowHolder[0];
+
+      final List<Map<String, Object>> pathNodes = (List<Map<String, Object>>) row.getProperty("pathNodes");
+      assertThat(pathNodes).hasSize(2);
+      assertThat(((Number) pathNodes.get(1).get("id")).longValue()).isEqualTo(2L);
+      assertThat((List<String>) pathNodes.get(1).get("klist"))
+          .as("node 2's SET must be visible through the GROUP BY collect() path too").isEmpty();
+    } finally {
+      database.drop();
+    }
+  }
 }

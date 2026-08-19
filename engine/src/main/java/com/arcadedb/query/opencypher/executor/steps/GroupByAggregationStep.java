@@ -52,10 +52,12 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
   private final CypherFunctionFactory functionFactory;
   private final ExpressionEvaluator evaluator;
 
-  // Configurable batch size for streaming aggregation (default: 10,000)
-  private static final int DEFAULT_BATCH_SIZE = 10000;
-  private static final int BATCH_SIZE = Integer.parseInt(
-      System.getProperty("arcadedb.aggregation.batchSize", String.valueOf(DEFAULT_BATCH_SIZE)));
+  // Batch size for pulling from upstream while accumulating aggregation input. See the identical
+  // comment on AggregationStep.CONFIGURED_BATCH_SIZE (issue #6368) for why this defaults to the
+  // caller's own nRecords rather than a large fixed size.
+  private static final String BATCH_SIZE_PROPERTY = "arcadedb.aggregation.batchSize";
+  private static final Integer CONFIGURED_BATCH_SIZE = System.getProperty(BATCH_SIZE_PROPERTY) != null ?
+      Integer.parseInt(System.getProperty(BATCH_SIZE_PROPERTY)) : null;
 
   public GroupByAggregationStep(final ReturnClause returnClause, final CommandContext context,
       final CypherFunctionFactory functionFactory) {
@@ -109,10 +111,10 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
     final List<Result> results;
 
     if (singleKeyPath) {
-      results = aggregateSingleKey(groupingKeys.get(0), aggExpressions, aggOutputNames, aggCount, context);
+      results = aggregateSingleKey(groupingKeys.get(0), aggExpressions, aggOutputNames, aggCount, context, nRecords);
     } else {
       results = aggregateMultiKey(groupingKeys, aggregationItems, complexAggregationItems,
-          aggExpressions, aggOutputNames, aggCount, context);
+          aggExpressions, aggOutputNames, aggCount, context, nRecords);
     }
 
     return new ResultSet() {
@@ -142,14 +144,14 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
    */
   private List<Result> aggregateSingleKey(final GroupingKey groupingKey,
       final FunctionCallExpression[] aggExpressions, final String[] aggOutputNames, final int aggCount,
-      final CommandContext context) {
+      final CommandContext context, final int nRecords) {
 
     // Map: raw grouping value -> array of aggregation functions (indexed, not HashMap)
     // LinkedHashMap preserves insertion order, needed because ORDER BY in WITH clauses
     // may fail to resolve aggregation expressions and fall back to iteration order
     final Map<Object, StatelessFunction[]> groups = new LinkedHashMap<>();
 
-    final ResultSet prevResults = prev.syncPull(context, BATCH_SIZE);
+    final ResultSet prevResults = prev.syncPull(context, CONFIGURED_BATCH_SIZE != null ? CONFIGURED_BATCH_SIZE : nRecords);
 
     while (prevResults.hasNext()) {
       final Result inputRow = prevResults.next();
@@ -214,11 +216,11 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
   private List<Result> aggregateMultiKey(final List<GroupingKey> groupingKeys,
       final List<AggregationItem> aggregationItems, final List<ComplexAggregationItem> complexAggregationItems,
       final FunctionCallExpression[] aggExpressions, final String[] aggOutputNames, final int aggCount,
-      final CommandContext context) {
+      final CommandContext context, final int nRecords) {
 
     final Map<GroupKeyValues, GroupAggregators> groups = new LinkedHashMap<>();
 
-    final ResultSet prevResults = prev.syncPull(context, BATCH_SIZE);
+    final ResultSet prevResults = prev.syncPull(context, CONFIGURED_BATCH_SIZE != null ? CONFIGURED_BATCH_SIZE : nRecords);
 
     while (prevResults.hasNext()) {
       final Result inputRow = prevResults.next();

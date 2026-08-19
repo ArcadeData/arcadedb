@@ -44,10 +44,22 @@ public class AggregationStep extends AbstractExecutionStep {
   private final CypherFunctionFactory functionFactory;
   private final ExpressionEvaluator evaluator;
 
-  // Configurable batch size for streaming aggregation (default: 10,000)
-  private static final int DEFAULT_BATCH_SIZE = 10000;
-  private static final int BATCH_SIZE = Integer.parseInt(
-      System.getProperty("arcadedb.aggregation.batchSize", String.valueOf(DEFAULT_BATCH_SIZE)));
+  // Batch size for pulling from upstream while accumulating aggregation input. By default this
+  // step pulls at the SAME granularity the rest of the plan uses (the nRecords it was asked for),
+  // rather than a large fixed size: a mutating clause upstream of the aggregation (SET/CREATE/
+  // MERGE/DELETE) can be interleaved with a variable-length path traversal that freezes node
+  // references into a path at the moment the path is built (TraversalPath / RowAliases -
+  // propagateUpdate only redirects a row's own top-level aliases, not nodes nested inside a path,
+  // list or map). Pulling one huge batch up front makes this step traverse - and freeze - a later
+  // row's path before an earlier row's write to that very same node has run, permanently baking in
+  // a pre-write value that a non-aggregating pull of the same query would not see (issue #6368: a
+  // bare COLLECT()/UNWIND changed which property values a later WHERE/RETURN observed, purely
+  // because it happened to pull upstream in one 10,000-row batch instead of the usual 100). An
+  // explicit override remains available for callers whose upstream has no side effects and want
+  // fewer round trips.
+  private static final String BATCH_SIZE_PROPERTY = "arcadedb.aggregation.batchSize";
+  private static final Integer CONFIGURED_BATCH_SIZE = System.getProperty(BATCH_SIZE_PROPERTY) != null ?
+      Integer.parseInt(System.getProperty(BATCH_SIZE_PROPERTY)) : null;
 
   public AggregationStep(final ReturnClause returnClause, final CommandContext context,
       final CypherFunctionFactory functionFactory) {
@@ -98,7 +110,7 @@ public class AggregationStep extends AbstractExecutionStep {
     }
 
     // Process all rows, feeding data to aggregators
-    final ResultSet prevResults = prev.syncPull(context, BATCH_SIZE);
+    final ResultSet prevResults = prev.syncPull(context, CONFIGURED_BATCH_SIZE != null ? CONFIGURED_BATCH_SIZE : nRecords);
     Result representativeRow = null;
 
     while (prevResults.hasNext()) {
