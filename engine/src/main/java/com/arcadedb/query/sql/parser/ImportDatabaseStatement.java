@@ -116,18 +116,7 @@ public class ImportDatabaseStatement extends SimpleExecStatement {
     builder.append("IMPORT DATABASE ");
     if (url != null)
       url.toString(params, builder);
-    if (!settings.isEmpty()) {
-      builder.append(" WITH ");
-      boolean first = true;
-      for (final Map.Entry<Expression, Expression> entry : settings.entrySet()) {
-        if (!first)
-          builder.append(", ");
-        first = false;
-        entry.getKey().toString(params, builder);
-        builder.append(" = ");
-        entry.getValue().toString(params, builder);
-      }
-    }
+    appendWithSettings(settings, params, builder);
   }
 
   /**
