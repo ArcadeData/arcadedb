@@ -38,7 +38,7 @@ class OpenCypherCustomFunctionTest extends TestHelper {
   void sqlFunctionInExpression() {
     database.command("sql", "DEFINE FUNCTION math.sum \"SELECT :a + :b\" PARAMETERS [a,b] LANGUAGE sql");
 
-    final ResultSet rs = database.query("opencypher", "RETURN math.sum(3, 5) as result");
+    final ResultSet rs = database.command("opencypher", "RETURN math.sum(3, 5) as result");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<Number>getProperty("result").longValue()).isEqualTo(8L);
   }
@@ -49,7 +49,7 @@ class OpenCypherCustomFunctionTest extends TestHelper {
     database.command("opencypher", "CREATE (:Number {value: 10})");
     database.command("opencypher", "CREATE (:Number {value: 3})");
 
-    final ResultSet rs = database.query("opencypher", "MATCH (n:Number) WHERE n.value > math.threshold() RETURN n.value ORDER BY n.value");
+    final ResultSet rs = database.command("opencypher", "MATCH (n:Number) WHERE n.value > math.threshold() RETURN n.value ORDER BY n.value");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<Number>getProperty("n.value").longValue()).isEqualTo(10L);
     assertThat(rs.hasNext()).isFalse();
@@ -59,7 +59,7 @@ class OpenCypherCustomFunctionTest extends TestHelper {
   void sqlFunctionWithMultipleArgs() {
     database.command("sql", "DEFINE FUNCTION math.add3 \"SELECT :a + :b + :c\" PARAMETERS [a,b,c] LANGUAGE sql");
 
-    final ResultSet rs = database.query("opencypher", "RETURN math.add3(1, 2, 3) as result");
+    final ResultSet rs = database.command("opencypher", "RETURN math.add3(1, 2, 3) as result");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<Number>getProperty("result").longValue()).isEqualTo(6L);
   }
@@ -68,15 +68,18 @@ class OpenCypherCustomFunctionTest extends TestHelper {
   void sqlFunctionReturningNull() {
     database.command("sql", "DEFINE FUNCTION test.returnNull \"SELECT null\" LANGUAGE sql");
 
-    final ResultSet rs = database.query("opencypher", "RETURN test.returnNull() as result");
+    final ResultSet rs = database.command("opencypher", "RETURN test.returnNull() as result");
     assertThat(rs.hasNext()).isTrue();
     assertThat((Object) rs.next().getProperty("result")).isNull();
   }
 
   @Test
   void undefinedFunctionThrowsError() {
+    // command(), not query(): an unresolved dotted name is indistinguishable at parse time from a custom
+    // DEFINE FUNCTION call, so query() now rejects it up front as not idempotent (issue #6418) before ever
+    // trying to resolve it. command() has no such gate and reaches the actual "unknown function" error below.
     assertThatThrownBy(() -> {
-      final ResultSet rs = database.query("opencypher", "RETURN nonexistent.func() as result");
+      final ResultSet rs = database.command("opencypher", "RETURN nonexistent.func() as result");
       rs.hasNext(); // Force query evaluation (queries are lazy)
     })
         .isInstanceOf(CommandExecutionException.class)
@@ -87,7 +90,7 @@ class OpenCypherCustomFunctionTest extends TestHelper {
   void sqlFunctionInListComprehension() {
     database.command("sql", "DEFINE FUNCTION math.double \"SELECT :x * 2\" PARAMETERS [x] LANGUAGE sql");
 
-    final ResultSet rs = database.query("opencypher", "RETURN [x IN range(1,3) | math.double(x)] as result");
+    final ResultSet rs = database.command("opencypher", "RETURN [x IN range(1,3) | math.double(x)] as result");
     assertThat(rs.hasNext()).isTrue();
     final Object result = rs.next().getProperty("result");
     assertThat(result).asList().containsExactly(2L, 4L, 6L);
@@ -97,7 +100,7 @@ class OpenCypherCustomFunctionTest extends TestHelper {
   void callClauseStillWorks() {
     database.command("sql", "DEFINE FUNCTION math.multiply \"SELECT :a * :b\" PARAMETERS [a,b] LANGUAGE sql");
 
-    final ResultSet rs = database.query("opencypher", "CALL math.multiply(4, 2) YIELD result RETURN result");
+    final ResultSet rs = database.command("opencypher", "CALL math.multiply(4, 2) YIELD result RETURN result");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<Number>getProperty("result").longValue()).isEqualTo(8L);
   }
@@ -107,7 +110,7 @@ class OpenCypherCustomFunctionTest extends TestHelper {
     // Define initial function
     database.command("sql", "DEFINE FUNCTION test.value \"SELECT 10\" LANGUAGE sql");
 
-    ResultSet rs = database.query("opencypher", "RETURN test.value() as result");
+    ResultSet rs = database.command("opencypher", "RETURN test.value() as result");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<Number>getProperty("result").longValue()).isEqualTo(10L);
 
@@ -115,7 +118,7 @@ class OpenCypherCustomFunctionTest extends TestHelper {
     database.getSchema().getFunctionLibrary("test").unregisterFunction("value");
     database.command("sql", "DEFINE FUNCTION test.value \"SELECT 20\" LANGUAGE sql");
 
-    rs = database.query("opencypher", "RETURN test.value() as result");
+    rs = database.command("opencypher", "RETURN test.value() as result");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<Number>getProperty("result").longValue()).isEqualTo(20L);
   }
@@ -126,7 +129,7 @@ class OpenCypherCustomFunctionTest extends TestHelper {
   void javaScriptFunctionInExpression() {
     database.command("sql", "DEFINE FUNCTION js.multiply \"return x * y\" PARAMETERS [x,y] LANGUAGE js");
 
-    final ResultSet rs = database.query("opencypher", "RETURN js.multiply(4, 2) as result");
+    final ResultSet rs = database.command("opencypher", "RETURN js.multiply(4, 2) as result");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<Integer>getProperty("result")).isEqualTo(8);
   }
@@ -135,7 +138,7 @@ class OpenCypherCustomFunctionTest extends TestHelper {
   void javaScriptFunctionWithString() {
     database.command("sql", "DEFINE FUNCTION js.greet \"return 'Hello ' + name\" PARAMETERS [name] LANGUAGE js");
 
-    final ResultSet rs = database.query("opencypher", "RETURN js.greet('World') as result");
+    final ResultSet rs = database.command("opencypher", "RETURN js.greet('World') as result");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<String>getProperty("result")).isEqualTo("Hello World");
   }
@@ -146,7 +149,7 @@ class OpenCypherCustomFunctionTest extends TestHelper {
   void defineCypherFunction() {
     database.command("sql", "DEFINE FUNCTION cypher.double \"RETURN $x * 2\" PARAMETERS [x] LANGUAGE cypher");
 
-    final ResultSet rs = database.query("opencypher", "RETURN cypher.double(5) as result");
+    final ResultSet rs = database.command("opencypher", "RETURN cypher.double(5) as result");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<Long>getProperty("result")).isEqualTo(10L);
   }
@@ -155,7 +158,7 @@ class OpenCypherCustomFunctionTest extends TestHelper {
   void defineCypherFunctionWithOpenCypherAlias() {
     database.command("sql", "DEFINE FUNCTION cypher.triple \"RETURN $x * 3\" PARAMETERS [x] LANGUAGE opencypher");
 
-    final ResultSet rs = database.query("opencypher", "RETURN cypher.triple(5) as result");
+    final ResultSet rs = database.command("opencypher", "RETURN cypher.triple(5) as result");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<Long>getProperty("result")).isEqualTo(15L);
   }
@@ -175,7 +178,7 @@ class OpenCypherCustomFunctionTest extends TestHelper {
     final Number nodeId = createResult.next().getProperty("aid");
 
     // Call function that queries graph data
-    final ResultSet rs = database.query("opencypher", "RETURN graph.countNeighbors($nodeId) as neighbors", "nodeId", nodeId);
+    final ResultSet rs = database.command("opencypher", "RETURN graph.countNeighbors($nodeId) as neighbors", "nodeId", nodeId);
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<Long>getProperty("neighbors")).isEqualTo(1L);
   }
@@ -199,7 +202,7 @@ class OpenCypherCustomFunctionTest extends TestHelper {
     database.command("sql", "DEFINE FUNCTION custom.addTen \"SELECT :value + 10\" PARAMETERS [value] LANGUAGE sql");
 
     // Call SQL function from Cypher
-    final ResultSet rs = database.query("opencypher", "RETURN custom.addTen(5) as result");
+    final ResultSet rs = database.command("opencypher", "RETURN custom.addTen(5) as result");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<Number>getProperty("result").longValue()).isEqualTo(15L);
   }
@@ -209,7 +212,7 @@ class OpenCypherCustomFunctionTest extends TestHelper {
     database.command("sql", "DEFINE FUNCTION js.power \"return Math.pow(x, y)\" PARAMETERS [x,y] LANGUAGE js");
 
     // Call JS function from Cypher
-    final ResultSet rs = database.query("opencypher", "RETURN js.power(2, 3) as result");
+    final ResultSet rs = database.command("opencypher", "RETURN js.power(2, 3) as result");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<Integer>getProperty("result")).isEqualTo(8);
   }
@@ -220,7 +223,7 @@ class OpenCypherCustomFunctionTest extends TestHelper {
   void functionWithNoParameters() {
     database.command("sql", "DEFINE FUNCTION test.pi \"SELECT 3.14159\" LANGUAGE sql");
 
-    final ResultSet rs = database.query("opencypher", "RETURN test.pi() as result");
+    final ResultSet rs = database.command("opencypher", "RETURN test.pi() as result");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<Float>getProperty("result")).isEqualTo(3.14159f);
   }
@@ -229,7 +232,7 @@ class OpenCypherCustomFunctionTest extends TestHelper {
   void functionInComplexExpression() {
     database.command("sql", "DEFINE FUNCTION math.square \"SELECT :x * :x\" PARAMETERS [x] LANGUAGE sql");
 
-    final ResultSet rs = database.query("opencypher", "RETURN math.square(3) + math.square(4) as result");
+    final ResultSet rs = database.command("opencypher", "RETURN math.square(3) + math.square(4) as result");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<Long>getProperty("result")).isEqualTo(25L);
   }
@@ -244,7 +247,7 @@ class OpenCypherCustomFunctionTest extends TestHelper {
     // id() returns a Neo4j-compatible Long-encoded RID since issue #4183.
     final Number nodeId = createResult.next().getProperty("nid");
 
-    final ResultSet rs = database.query("opencypher", "RETURN cypher.getLabel($nodeId) as label", "nodeId", nodeId);
+    final ResultSet rs = database.command("opencypher", "RETURN cypher.getLabel($nodeId) as label", "nodeId", nodeId);
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<String>getProperty("label")).isEqualTo("TestNode");
   }
@@ -254,7 +257,7 @@ class OpenCypherCustomFunctionTest extends TestHelper {
     database.command("sql", "DEFINE FUNCTION math.add \"SELECT :a + :b\" PARAMETERS [a,b] LANGUAGE sql");
     database.command("sql", "DEFINE FUNCTION math.sub \"SELECT :a - :b\" PARAMETERS [a,b] LANGUAGE sql");
 
-    final ResultSet rs = database.query("opencypher", "RETURN math.add(10, 5) as sum, math.sub(10, 5) as diff");
+    final ResultSet rs = database.command("opencypher", "RETURN math.add(10, 5) as sum, math.sub(10, 5) as diff");
     assertThat(rs.hasNext()).isTrue();
     final var result = rs.next();
     assertThat(result.<Long>getProperty("sum")).isEqualTo(15);

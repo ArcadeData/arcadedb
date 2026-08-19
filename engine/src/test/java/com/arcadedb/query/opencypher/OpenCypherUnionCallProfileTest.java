@@ -297,8 +297,13 @@ class OpenCypherUnionCallProfileTest {
     // Define a custom SQL function
     database.command("sql", "DEFINE FUNCTION math.add \"SELECT :a + :b AS result\" PARAMETERS [a,b] LANGUAGE sql");
 
-    // Test calling the custom function via Cypher CALL
-    final ResultSet result = database.query("opencypher", "CALL math.add(3, 5)");
+    // Test calling the custom function via Cypher CALL. command(), not query(): a CALL target unresolved
+    // against the built-in registries is indistinguishable at parse time from a custom DEFINE FUNCTION call,
+    // so query() now rejects it as not idempotent (issue #6418). Explicit YIELD/RETURN, not a bare CALL: a
+    // write-classified statement with no RETURN clause is CypherExecutionPlan.execute()'s signal that only
+    // side effects matter (CREATE/SET/DELETE with nothing to project), which swallows a bare CALL's own
+    // implicit output the same way once the CALL itself is no longer misclassified read-only.
+    final ResultSet result = database.command("opencypher", "CALL math.add(3, 5) YIELD value RETURN value");
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
@@ -313,8 +318,9 @@ class OpenCypherUnionCallProfileTest {
     // Define a custom SQL function that returns input
     database.command("sql", "DEFINE FUNCTION my.echo \"SELECT :input AS output\" PARAMETERS [input] LANGUAGE sql");
 
-    // Test calling with string parameter
-    final ResultSet result = database.query("opencypher", "CALL my.echo('Hello World')");
+    // Test calling with string parameter. command(), not query(), and explicit YIELD/RETURN: see
+    // callCustomSQLFunction above.
+    final ResultSet result = database.command("opencypher", "CALL my.echo('Hello World') YIELD value RETURN value");
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
