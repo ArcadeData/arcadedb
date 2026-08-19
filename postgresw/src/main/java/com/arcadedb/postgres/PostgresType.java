@@ -358,6 +358,11 @@ public enum PostgresType {
       throw new PostgresProtocolException("NUMERIC digit count exceeds the supported maximum: " + ndigits);
     if (ndigits * 2 > buffer.remaining())
       throw new PostgresProtocolException("NUMERIC digit count exceeds remaining buffer bytes");
+    // dscale is an unsigned 16-bit field, so this cannot runaway unbounded, but a declared scale wildly beyond
+    // what ndigits could ever back is still a malformed payload rather than one this codec produced - and
+    // setScale below would otherwise pad a BigInteger out to it. Same bound the encode side rejects at.
+    if (dscale > NUMERIC_MAX_DIGITS * NUMERIC_DIGIT_WIDTH)
+      throw new PostgresProtocolException("NUMERIC scale exceeds the supported maximum: " + dscale);
 
     if (ndigits == 0)
       return BigDecimal.ZERO.setScale(dscale);
