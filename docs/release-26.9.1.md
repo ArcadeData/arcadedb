@@ -16,8 +16,12 @@ right - PostgreSQL already has the correct type for this, `NUMERIC` (OID 1700) -
 `PostgresType.NUMERIC` entry with a real binary codec (PostgreSQL's own digit-group-of-4 wire format, not a
 lossy float64 detour), plus a text encoder that renders a `BigDecimal` as a plain decimal string rather than
 `BigDecimal.toString()`'s occasional scientific notation. Both the codec's decode side (attacker-controlled wire
-bytes) and encode side (a `BigDecimal` of unbounded scale, which ArcadeDB itself can produce) reject an
-out-of-range digit count rather than silently wrapping it through the wire format's `int16` header fields.
+bytes) and encode side (a `BigDecimal` of unbounded scale or magnitude, which ArcadeDB itself can produce) reject
+an out-of-range digit count rather than silently wrapping it through the wire format's `int16` header fields, and
+do so before any work proportional to that size runs. The cap - 16,000 total decimal digits - is deliberately
+well under real PostgreSQL's own `NUMERIC` limit (131,072 integer digits, 16,383 fractional): `DECIMAL` has no
+configured precision/scale limit in ArcadeDB, so this is the boundary between "large value real Postgres would
+also accept" and "value this protocol declines" rather than a hard technical ceiling.
 
 `SHORT`/`BYTE` had a narrower bug: the value path widened `Short`/`Byte` to `INTEGER` because there was nowhere
 narrower to point it, while the schema path already answered the correct `SMALLINT` (`int2`). The value path now
