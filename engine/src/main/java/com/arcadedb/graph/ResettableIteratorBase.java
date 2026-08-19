@@ -73,6 +73,32 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
     browsed = 0;
   }
 
+  /**
+   * Hops {@link #currentContainer} to the previous chunk in the edge list, exhausted-entry positioning left to the
+   * caller. Guards against a chunk whose {@code previous} pointer names itself: {@code EdgeLinkedList.containsEdge},
+   * {@code containsVertex}, {@code containsLightEdge} and {@code getFirstEdgeConnectedToVertex} have always broken
+   * out of such a chain, and so, since #6276, has {@link EdgeVertexIterator}. This is that same guard, lifted here
+   * so every chunk-hopping iterator gets it once instead of drifting copies (#6278) - {@link EdgeIterator},
+   * {@link VertexIterator}, {@link RIDIterator} and {@link IteratorFilterBase} all call this instead of hopping
+   * {@code currentContainer} directly.
+   * <p>
+   * On such a chain the corruption ENDS the walk silently, matching every other consumer of this guard: none of
+   * them logs, so a self-loop is reported by {@code CHECK DATABASE} - which is what a corrupted database calls for
+   * a diagnosis - rather than by an ordinary traversal.
+   *
+   * @return the new {@link #currentContainer}, or {@code null} when the walk has reached the head of the list or
+   * ended early on a self-referencing chunk. Callers must not reset {@link #currentPosition} unless this returns
+   * non-null.
+   */
+  protected final EdgeSegment moveToPreviousChunk() {
+    final RID currentIdentity = currentContainer.getIdentity();
+    currentContainer = currentContainer.getPrevious();
+    if (currentContainer != null && currentIdentity != null && currentIdentity.equals(currentContainer.getIdentity()))
+      // THE CHUNK'S "previous" POINTER NAMES ITSELF: STOP INSTEAD OF LOOPING FOREVER
+      currentContainer = null;
+    return currentContainer;
+  }
+
   @Override
   public long countEntries() {
     long total = browsed;
