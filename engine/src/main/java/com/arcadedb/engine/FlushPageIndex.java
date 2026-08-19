@@ -21,6 +21,7 @@ package com.arcadedb.engine;
 import com.arcadedb.database.BasicDatabase;
 
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -64,6 +65,13 @@ import java.util.concurrent.atomic.AtomicInteger;
  * reaches {@code scheduleFlushOfPages} holds the matching read lock, so no page of a database can enter the index
  * while that database is being purged from it. Do not call {@link #removeAllOfDatabase} from anywhere that does not
  * hold that write lock.
+ * <p>
+ * <b>That lock argument only holds within ONE instance (issue #6440).</b> {@code executeInWriteLock}/
+ * {@code executeInReadLock} guard a {@code ReentrantReadWriteLock} FIELD of the {@code LocalDatabase} instance, not
+ * anything keyed by path - so it says nothing about a DIFFERENT instance reopened at the same path, which is exactly
+ * what {@code LocalDatabase.equals()} makes indistinguishable from the one being purged. {@link #removeAllOfDatabase}
+ * therefore matches by reference identity, not {@code equals()}: a same-path sibling's still-pending pages, and its
+ * {@link #pending} counter, must survive a belated cleanup of the instance that has since closed.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -174,10 +182,31 @@ class FlushPageIndex {
    * safe against a concurrent {@link #putAll} from inside this class.
    */
   void removeAllOfDatabase(final BasicDatabase database) {
-    pages.keySet().removeIf(pageId -> database.equals(pageId.getDatabase()));
+    // Reference identity ON PURPOSE (issue #6440), not database.equals(pageId.getDatabase()): LocalDatabase
+    // compares by PATH, so a database reopened at the same path as `database` indexes its pages under a key that
+    // is merely path-equal, not the same instance. A belated cleanup of the OLD instance must not evict pages a
+    // DIFFERENT, still-open instance is waiting to have flushed - that silently drops writes with no error, no
+    // WAL replay to fall back on (they were never written), which is strictly worse than the counter merely
+    // staying nonzero a little longer.
+    pages.keySet().removeIf(pageId -> pageId.getDatabase() == database);
     // Dropped AFTER the pages, never before: the other order would let a page indexed in between survive with a
     // fresh counter that the purge then empties, leaving a count above zero that hangs the close forever.
-    final AtomicInteger counter = pending.remove(database);
+    //
+    // Same identity caveat applies to the counter: `pending` is keyed by path too, so computeIfAbsent() in
+    // counterOf() hands a same-path reopened instance the ORIGINAL instance's still-live counter rather than a
+    // fresh one whenever this method has not run yet for the original. Removing by path (the old
+    // pending.remove(database)) would then let this instance's belated cleanup zero out a counter a different,
+    // still-open instance is actively incrementing - the "backup stamps its t0 over a half-written batch"
+    // failure this class's own javadoc warns about. Matching the STORED key by reference instead means only the
+    // instance that actually created the counter can retire it; a same-path sibling's cleanup leaves a counter
+    // it does not own untouched.
+    AtomicInteger counter = null;
+    for (final Map.Entry<BasicDatabase, AtomicInteger> entry : pending.entrySet())
+      if (entry.getKey() == database) {
+        pending.remove(entry.getKey(), entry.getValue());
+        counter = entry.getValue();
+        break;
+      }
     // A waiter parked on that counter would otherwise sleep out its whole fallback interval for a database that no
     // longer has an entry at all: pendingOf() answers 0 for it from here on, so wake it to observe that (#6199).
     if (counter != null)
