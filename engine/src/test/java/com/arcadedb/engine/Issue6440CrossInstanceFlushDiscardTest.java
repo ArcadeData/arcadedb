@@ -107,6 +107,50 @@ class Issue6440CrossInstanceFlushDiscardTest extends TestHelper {
   }
 
   /**
+   * The map-key-collision twin of the test above (issue #6440 review, fourth pass):
+   * {@link PageManagerFlushThread#removeAllPagesOfDatabase} used to evict {@code pageIndex} entries with
+   * {@code pageIndex.remove(page.getPageId())} - a plain, {@code equals()}-based removal - rather than the
+   * identity-safe {@code removeIfSame} the rest of the pipeline uses. When "closing" has its OWN queued batch at
+   * the exact same {@code (fileId, pageNumber)} "open" later indexes, {@code Map.put()}'s "keep the old key on an
+   * {@code equals()} match" behavior leaves "closing"'s original {@code PageId} as the map's stored key even
+   * though the VALUE is "open"'s live page - so removing by that key, unconditionally, evicted (and left unacked)
+   * a page that was never "closing"'s to begin with.
+   */
+  @Test
+  void closingADatabaseMustNotEvictASamePathSiblingsPageItsOwnQueuedBatchCollidesWith() throws Exception {
+    final String path = "target/databases/" + getClass().getSimpleName() + "-queue-collision";
+    final PageManagerFlushThread flush = detachedFlushThread();
+
+    final Database closing = TestHelper.createDatabase(path);
+    closing.close();
+
+    final Database open = TestHelper.createDatabase(path);
+    try {
+      // "closing" has its own still-queued batch, indexed first so its PageId becomes the map's stored key.
+      final MutablePage closingPage = page((DatabaseInternal) closing, 0);
+      flush.pageIndex.put(closingPage);
+      flush.offerBatch(new PageManagerFlushThread.PagesToFlush(new ArrayList<>(List.of(closingPage))), false);
+
+      // "open" indexes a page at the exact SAME (fileId, pageNumber): the map slot's value becomes open's page,
+      // but the stored key is still closingPage's PageId object (Map.put() on an equals() match).
+      final MutablePage openPage = page((DatabaseInternal) open, 0);
+      flush.pageIndex.put(openPage);
+      assertThat(flush.pageIndex.get(openPage.getPageId())).isSameAs(openPage);
+
+      // "closing"'s belated cleanup runs, walking its OWN queued batch - which still references closingPage.
+      flush.removeAllPagesOfDatabase(closing);
+
+      assertThat(flush.pageIndex.get(openPage.getPageId())).as(
+          "a same-path sibling's live page, sitting at the same map slot as this instance's OWN queued page, "
+              + "must survive this instance's cleanup").isSameAs(openPage);
+      assertThat(flush.pageIndex.hasPendingOf((DatabaseInternal) open)).as(
+          "open's own pending count must be untouched by closing's cleanup of its own, superseded page").isTrue();
+    } finally {
+      open.drop();
+    }
+  }
+
+  /**
    * Defence in depth for the same aliasing, one layer down: {@link FlushPageIndex#removeAllOfDatabase} walks the
    * WHOLE JVM-wide index by path and must not evict a same-path sibling's entry either, even when
    * {@link PageManagerFlushThread#removeAllPagesOfDatabase}'s queue scan above is fixed.

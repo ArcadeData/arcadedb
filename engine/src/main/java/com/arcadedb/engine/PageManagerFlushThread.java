@@ -1571,7 +1571,14 @@ public class PageManagerFlushThread extends Thread {
       if (pagesToFlush.database == database) {
         synchronized (pagesToFlush.pages) {
           for (final MutablePage page : pagesToFlush.pages) {
-            pageIndex.remove(page.getPageId());
+            // removeIfSame (via removeFromFlushIndex), NOT pageIndex.remove(page.getPageId()) (issue #6440
+            // review, fourth pass): that single-key overload is a plain, equals()-based pages.remove(), which
+            // collides across same-path instances exactly like removeAllOfDatabase's bulk purge did before it
+            // was switched to filtering by the VALUE's own PageId - a same-path sibling's live page could be
+            // sitting at this exact (fileId, pageNumber) map slot (retained as THIS page's PageId key by
+            // Map.put()'s "keep the old key on an equals() match" behavior) and get silently evicted, unacked,
+            // by this instance's own cleanup. removeIfSame only ever removes the exact instance indexed here.
+            removeFromFlushIndex(page);
             // The purged page will never be flushed and its content is irrelevant (its database is gone):
             // release its WAL ack so the close-time ack gate (#4928) is not tripped by stale pending counts.
             // Exactly-once against the racing flush loop (which does NOT remove pages from this batch list,
