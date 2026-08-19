@@ -40,6 +40,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.fail;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -554,6 +555,60 @@ class RaftGroupCommitterTest {
       assertThat(index.get()).isEqualTo(999L);
     } finally {
       stallers.shutdownNow();
+      committer.stop();
+    }
+  }
+
+  /**
+   * Regression for issue #6373, a surviving sibling of #5848: the {@code Quorum.ALL} branch of
+   * {@code flushBatch} calls the timeout-less {@code raftClient.io().watch(...)} overload once per
+   * committed entry, with no reference at all to the {@code deadlineNanos} budget the {@code get()}
+   * loop right above it already respects (fixed for #5848 by #6109). A down/partitioned follower
+   * under {@code arcadedb.ha.quorum=all} reaches MAJORITY quickly - so the {@code get()} deadline
+   * gives no protection here - and then blocks the single flusher thread on the {@code ALL_COMMITTED}
+   * watch for as long as the follower stays unreachable, with no bound whatsoever.
+   * <p>
+   * With the fix, the watch shares the same per-batch deadline: it is bounded by
+   * {@code deadlineNanos - System.nanoTime()}, the same remaining budget the entry's {@code get()}
+   * already used, so a stalled ALL confirmation fails fast as {@link MajorityCommittedAllFailedException}
+   * instead of blocking indefinitely.
+   */
+  @Test
+  void allQuorumWatchGivesUpAtTheBatchDeadlineInsteadOfBlockingIndefinitely() throws Exception {
+    final long quorumTimeout = 200; // ms - short deliberately so the bound is easy to observe
+
+    final RaftClientReply majorityReply = mock(RaftClientReply.class);
+    when(majorityReply.isSuccess()).thenReturn(true);
+    when(majorityReply.getLogIndex()).thenReturn(555L);
+
+    final RaftClient client = mock(RaftClient.class, RETURNS_DEEP_STUBS);
+    // MAJORITY is reached quickly - this is the leg #6109 already bounds, and gives no protection here.
+    when(client.async().send(any(Message.class))).thenReturn(CompletableFuture.completedFuture(majorityReply));
+    // A down/partitioned follower: ALL_COMMITTED is never confirmed, on either watch overload.
+    when(client.async().watch(anyLong(), any())).thenReturn(new CompletableFuture<>());
+    when(client.io().watch(anyLong(), any())).thenAnswer(inv -> {
+      new CountDownLatch(1).await(); // blocks until the flusher thread is interrupted by stop()
+      return null;
+    });
+
+    final RaftGroupCommitter committer = new RaftGroupCommitter(client, Quorum.ALL, quorumTimeout);
+    try {
+      final CompletableFuture<Throwable> outcome = CompletableFuture.supplyAsync(() -> {
+        try {
+          committer.submitAndWait(new byte[] { 1, 2, 3 });
+          return null;
+        } catch (final Throwable t) {
+          return t;
+        }
+      });
+
+      // Generous bound, well above quorumTimeout but far below what an unbounded watch() would take
+      // (in production, until the follower comes back; in this test, forever). With the fix the
+      // flusher gives up at roughly one quorumTimeout; without it, this get() itself times out.
+      final Throwable t = outcome.get(3, TimeUnit.SECONDS);
+      assertThat(t).isInstanceOf(MajorityCommittedAllFailedException.class);
+      assertThat(t.getMessage()).contains("ALL quorum");
+    } finally {
       committer.stop();
     }
   }
