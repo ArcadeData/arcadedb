@@ -875,6 +875,26 @@ class PostgresTypeTest {
   }
 
   @Test
+  void deserializeBinaryNumericRejectsOversizedWeight() {
+    // ndigits, dscale and sign are each individually bounded (issue #6447 review), but weight wasn't: a
+    // payload with an extreme weight - within its own short range - combined with a small ndigits and the
+    // max-allowed dscale derives a `scale` far apart from dscale, and setScale would materialize a BigInteger
+    // to bridge that gap. Smaller blast radius than the encode-side DoS this PR already fixed (weight is
+    // capped by its wire width), but the same class of bug the decode side is supposed to defend against.
+    // A digit follows the header only so the buffer-remaining check (ndigits * 2 <= remaining) doesn't reject
+    // this payload first; the weight check itself throws before that digit is ever read.
+    final ByteBuffer buf = ByteBuffer.allocate(10).order(ByteOrder.BIG_ENDIAN);
+    buf.putShort((short) 1);          // ndigits
+    buf.putShort(Short.MAX_VALUE);    // weight: absurd
+    buf.putShort((short) 0x0000);     // sign: positive
+    buf.putShort((short) 0);          // dscale
+    buf.putShort((short) 1);          // digit
+    assertThatThrownBy(() -> PostgresType.deserialize(PostgresType.NUMERIC.code, 1, buf.array()))
+        .isInstanceOf(PostgresProtocolException.class)
+        .hasMessageContaining("weight exceeds");
+  }
+
+  @Test
   void deserializeBinaryNumericRejectsDscaleThatDoesNotMatchTheEncodedPrecision() {
     // ndigits=1, weight=-1, digit=9999 encodes 0.9999 (issue #6447 review): a declared dscale of 0 does not
     // match that precision, so the final setScale(dscale, UNNECESSARY) has no exact answer. This must surface

@@ -385,7 +385,7 @@ public class PostgresNetworkExecutor extends Thread {
         portal.executed = true;
         if (portal.isExpectingResult) {
           portal.cachedResultSet = browseAndCacheResultSet(resultSet, 0);
-          portal.columns = getColumns(portal.cachedResultSet, resolveQueryTargetType(portal.sqlStatement));
+          portal.columns = getColumns(portal.cachedResultSet, resolveQueryTargetType(portal));
           if (portal.columns.isEmpty() && portal.cachedResultSet.isEmpty()) {
             final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(portal.query, portal.language,
                 getParams(portal), portal.sqlStatement);
@@ -484,7 +484,7 @@ public class PostgresNetworkExecutor extends Thread {
               final long serStart = System.nanoTime();
               // A catalog answer already carries the columns it must be announced under.
               if (!portal.catalogQuery || portal.columns == null)
-                portal.columns = getColumns(portal.cachedResultSet, resolveQueryTargetType(portal.sqlStatement));
+                portal.columns = getColumns(portal.cachedResultSet, resolveQueryTargetType(portal));
               if (portal.columns.isEmpty() && portal.cachedResultSet.isEmpty()) {
                 final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(portal.query, portal.language,
                     getParams(portal), portal.sqlStatement);
@@ -503,7 +503,7 @@ public class PostgresNetworkExecutor extends Thread {
         if (portal.isExpectingResult && portal.cachedResultSet != null && !portal.cachedResultSet.isEmpty()) {
           final long serStart = System.nanoTime();
           // Query returned results - send them
-          final Map<String, PostgresType> dataRowColumns = getColumns(portal.cachedResultSet, resolveQueryTargetType(portal.sqlStatement));
+          final Map<String, PostgresType> dataRowColumns = getColumns(portal.cachedResultSet, resolveQueryTargetType(portal));
 
           if (DEBUG)
             LogManager.instance().log(this, Level.INFO,
@@ -891,6 +891,20 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   /**
+   * Memoized on the portal (issue #6447): a portal can be described and executed - possibly executed
+   * repeatedly, for a cursor-based fetch with a LIMIT - several times over its lifetime, and every one of
+   * those calls resolves the same FROM-target type, so it is resolved at most once per portal rather than
+   * once per call.
+   */
+  private DocumentType resolveQueryTargetType(final PostgresPortal portal) {
+    if (!portal.queryTargetTypeResolved) {
+      portal.queryTargetType = resolveQueryTargetType(portal.sqlStatement);
+      portal.queryTargetTypeResolved = true;
+    }
+    return portal.queryTargetType;
+  }
+
+  /**
    * The schema type a SELECT statement's simple FROM target names, or null when the target is not a plain
    * "FROM &lt;type&gt;" (a subquery, a function call, a RID, a MATCH, ...) or does not resolve to a known type.
    * Resolved once per query and passed into {@link #getColumns(List, DocumentType)} as the fallback source for
@@ -919,6 +933,12 @@ public class PostgresNetworkExecutor extends Thread {
    * target names, resolved once by the caller - is the fallback for that (very common) case. Shared lookup
    * behind {@link #getDeclaredListType} and {@link #isDeclaredAsDatetime}, both of which prefer the schema's
    * declared type over a guess made from a single sample value.
+   * <p>
+   * {@code propertyName} is the row's own column name, which for an aliased or computed projection ({@code
+   * SELECT amount AS x FROM Type}) is the alias, not the source property - so the lookup misses and the caller
+   * falls back to a value-only guess for that column. Pre-existing limitation shared with #5289's {@link
+   * #getDeclaredListType}, not something introduced here; resolving an alias back to its source property would
+   * need to walk the SELECT projection's expression tree, which is a materially larger piece of work.
    */
   private Property getDeclaredProperty(final Result row, final String propertyName, final DocumentType queryTargetType) {
     final Document element = row.getElement().orElse(null);

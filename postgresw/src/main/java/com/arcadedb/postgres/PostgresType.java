@@ -372,6 +372,13 @@ public enum PostgresType {
     // setScale below would otherwise pad a BigInteger out to it. Same bound the encode side rejects at.
     if (dscale > NUMERIC_MAX_DIGITS * NUMERIC_DIGIT_WIDTH)
       throw new PostgresProtocolException("NUMERIC scale exceeds the supported maximum: " + dscale);
+    // weight is otherwise unbounded within its short range: a payload with an extreme weight combined with a
+    // small ndigits and the max-allowed dscale derives a `scale` far apart from dscale, and setScale below
+    // would materialize a BigInteger to bridge that gap - the same class of unbounded-materialization risk
+    // putNumericBinary guards against on the encode side, just with a smaller blast radius here because weight
+    // is capped by its own wire width rather than an arbitrary int.
+    if (weight < -NUMERIC_MAX_DIGITS || weight > NUMERIC_MAX_DIGITS)
+      throw new PostgresProtocolException("NUMERIC weight exceeds the supported range: " + weight);
 
     if (ndigits == 0)
       return BigDecimal.ZERO.setScale(dscale);
