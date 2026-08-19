@@ -68,6 +68,47 @@ public final class LabelReplacements {
   }
 
   /**
+   * Returns an independent snapshot of the current replacement state.
+   * <p>
+   * Mirrors {@code QueryStatistics.copy()}: a step that retries its own auto-commit mini-transaction
+   * (issue #6367) needs to undo whatever a failed, rolled-back attempt recorded here before re-running,
+   * exactly as it resets its statistics counters, and for the same reason - {@link #replace} both
+   * writes records (a new vertex, its re-attached edges, the deleted original) and remembers the move
+   * in {@link #vertices}/{@link #edges} in the same call. A transaction rollback undoes the writes but
+   * leaves an untouched Java map still pointing at a vertex that no longer exists, which {@link #resolve}
+   * would then hand back to the retried attempt as if it were live.
+   */
+  public Snapshot copy() {
+    return new Snapshot(new HashMap<>(vertices), new HashMap<>(edges));
+  }
+
+  /**
+   * Restores the replacement state to the given snapshot, discarding any entries recorded since it was
+   * taken - the counterpart of {@code QueryStatistics.restore(snapshot)}.
+   */
+  public void restore(final Snapshot snapshot) {
+    vertices.clear();
+    vertices.putAll(snapshot.vertices);
+    edges.clear();
+    edges.putAll(snapshot.edges);
+  }
+
+  /**
+   * Opaque, immutable capture of {@link #vertices}/{@link #edges} at one point in time. The constructor is
+   * private and {@link #copy()} always defensively copies, so a caller can never hold a snapshot that
+   * changes under it as later replacements are recorded.
+   */
+  public static final class Snapshot {
+    private final Map<RID, Vertex> vertices;
+    private final Map<RID, Edge>   edges;
+
+    private Snapshot(final Map<RID, Vertex> vertices, final Map<RID, Edge> edges) {
+      this.vertices = vertices;
+      this.edges = edges;
+    }
+  }
+
+  /**
    * Follows the replacement chain of a vertex - a node can be relabelled more than once in the same clause - and
    * returns the live record, or the argument itself when it was never replaced.
    */
