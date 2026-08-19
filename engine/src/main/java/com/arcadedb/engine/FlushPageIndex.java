@@ -21,7 +21,6 @@ package com.arcadedb.engine;
 import com.arcadedb.database.BasicDatabase;
 
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -69,14 +68,17 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <b>That lock argument only holds within ONE instance (issue #6440).</b> {@code executeInWriteLock}/
  * {@code executeInReadLock} guard a {@code ReentrantReadWriteLock} FIELD of the {@code LocalDatabase} instance, not
  * anything keyed by path - so it says nothing about a DIFFERENT instance reopened at the same path, which is exactly
- * what {@code LocalDatabase.equals()} makes indistinguishable from the one being purged. {@link #removeAllOfDatabase}
- * therefore matches by reference identity, not {@code equals()}: a same-path sibling's still-pending pages, and its
- * {@link #pending} counter, must survive a belated cleanup of the instance that has since closed.
+ * what {@code LocalDatabase.equals()} makes indistinguishable from the one being purged. {@link #pending} is
+ * therefore keyed by reference identity ({@link IdentityKey}), not {@code equals()}: a same-path sibling's counter
+ * must never be resolved, incremented or zeroed by a DIFFERENT instance, in either direction - {@link #counterOf}
+ * creating (or finding) the wrong instance's entry on insertion is exactly as wrong as {@link #removeAllOfDatabase}
+ * retiring the wrong instance's entry on removal, and a {@code ConcurrentHashMap} keyed directly on
+ * {@code BasicDatabase} cannot tell two {@code equals()}-equal instances apart at either end.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class FlushPageIndex {
-  private final ConcurrentHashMap<PageId, MutablePage>          pages   = new ConcurrentHashMap<>();
+  private final ConcurrentHashMap<PageId, MutablePage> pages = new ConcurrentHashMap<>();
   /**
    * Number of {@link #pages} entries per database. An entry is created with the database's first pending page and
    * dropped by {@link #removeAllOfDatabase} (close/drop), so it is bounded by the number of open databases.
@@ -86,8 +88,35 @@ class FlushPageIndex {
    * which a waiter could resolve a monitor that the signaller has not published yet, and it keeps the signalling
    * path down to the counter the decrement already has in hand. The object never escapes this class - every accessor
    * returns an {@code int} - so no foreign code can hold this monitor.
+   * <p>
+   * Keyed by {@link IdentityKey}, not {@code BasicDatabase} directly (issue #6440): see the class javadoc.
    */
-  private final ConcurrentHashMap<BasicDatabase, AtomicInteger> pending = new ConcurrentHashMap<>();
+  private final ConcurrentHashMap<IdentityKey, AtomicInteger> pending = new ConcurrentHashMap<>();
+
+  /**
+   * Identity-only key for {@link #pending} (issue #6440). {@code LocalDatabase.equals()}/{@code hashCode()} compare
+   * by database PATH, which is exactly wrong here: two different instances open at the same path (a database
+   * closed and immediately reopened - a restore, a re-provision, a test hammering one fixed path) must never share
+   * a counter entry. A manual identity scan on every {@code put()}/{@code putAll()} would put an O(open databases)
+   * walk on the hot commit path just to avoid this; wrapping the key keeps every {@link #pending} access O(1).
+   */
+  private static final class IdentityKey {
+    private final BasicDatabase database;
+
+    IdentityKey(final BasicDatabase database) {
+      this.database = database;
+    }
+
+    @Override
+    public boolean equals(final Object o) {
+      return o instanceof IdentityKey other && other.database == database;
+    }
+
+    @Override
+    public int hashCode() {
+      return System.identityHashCode(database);
+    }
+  }
 
   /** @return the most recent {@link MutablePage} pending for the page, or {@code null} when none is. */
   MutablePage get(final PageId pageId) {
@@ -192,21 +221,11 @@ class FlushPageIndex {
     // Dropped AFTER the pages, never before: the other order would let a page indexed in between survive with a
     // fresh counter that the purge then empties, leaving a count above zero that hangs the close forever.
     //
-    // Same identity caveat applies to the counter: `pending` is keyed by path too, so computeIfAbsent() in
-    // counterOf() hands a same-path reopened instance the ORIGINAL instance's still-live counter rather than a
-    // fresh one whenever this method has not run yet for the original. Removing by path (the old
-    // pending.remove(database)) would then let this instance's belated cleanup zero out a counter a different,
-    // still-open instance is actively incrementing - the "backup stamps its t0 over a half-written batch"
-    // failure this class's own javadoc warns about. Matching the STORED key by reference instead means only the
-    // instance that actually created the counter can retire it; a same-path sibling's cleanup leaves a counter
-    // it does not own untouched.
-    AtomicInteger counter = null;
-    for (final Map.Entry<BasicDatabase, AtomicInteger> entry : pending.entrySet())
-      if (entry.getKey() == database) {
-        pending.remove(entry.getKey(), entry.getValue());
-        counter = entry.getValue();
-        break;
-      }
+    // pending is IdentityKey-keyed (issue #6440), so this can only ever resolve the entry THIS exact instance
+    // created (via counterOf()) - never a same-path sibling's, in either direction: a sibling can no longer have
+    // its live counter zeroed by this instance's belated cleanup, and this instance can no longer resolve (and
+    // thereby retire) a sibling's counter by mistake either.
+    final AtomicInteger counter = pending.remove(new IdentityKey(database));
     // A waiter parked on that counter would otherwise sleep out its whole fallback interval for a database that no
     // longer has an entry at all: pendingOf() answers 0 for it from here on, so wake it to observe that (#6199).
     if (counter != null)
@@ -247,7 +266,7 @@ class FlushPageIndex {
    * so a hypothetical negative behaves like an empty pipeline rather than like a hang.
    */
   int pendingOf(final BasicDatabase database) {
-    final AtomicInteger counter = pending.get(database);
+    final AtomicInteger counter = pending.get(new IdentityKey(database));
     return counter != null ? counter.get() : 0;
   }
 
@@ -261,7 +280,7 @@ class FlushPageIndex {
    * clean close forgets the database instead of pinning it as a map key forever.
    */
   boolean isTracked(final BasicDatabase database) {
-    return pending.containsKey(database);
+    return pending.containsKey(new IdentityKey(database));
   }
 
   /**
@@ -300,7 +319,7 @@ class FlushPageIndex {
     if (maxWaitMillis <= 0)
       return;
 
-    final AtomicInteger counter = pending.get(database);
+    final AtomicInteger counter = pending.get(new IdentityKey(database));
     if (counter == null)
       // NEVER HAD A PENDING PAGE, OR THE DATABASE WAS ALREADY FORGOTTEN: pendingOf() ANSWERS 0, NOTHING TO WAIT FOR
       return;
@@ -313,12 +332,13 @@ class FlushPageIndex {
   }
 
   private AtomicInteger counterOf(final BasicDatabase database) {
-    final AtomicInteger counter = pending.get(database);
-    return counter != null ? counter : pending.computeIfAbsent(database, k -> new AtomicInteger());
+    final IdentityKey key = new IdentityKey(database);
+    final AtomicInteger counter = pending.get(key);
+    return counter != null ? counter : pending.computeIfAbsent(key, k -> new AtomicInteger());
   }
 
   private void release(final BasicDatabase database) {
-    final AtomicInteger counter = pending.get(database);
+    final AtomicInteger counter = pending.get(new IdentityKey(database));
     // The monitor is taken ONLY on the transition to drained, so the hot flush path pays a volatile decrement and a
     // comparison per page exactly as before, and a lock acquisition only on the page that empties the pipeline.
     if (counter != null && counter.decrementAndGet() <= 0)

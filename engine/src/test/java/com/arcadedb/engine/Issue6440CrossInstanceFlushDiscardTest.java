@@ -53,6 +53,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  * in a tight loop: roughly 1 in 8-10 iterations, even with the JVM otherwise idle, pays the full ~2000 ms stall.
  * These tests drive the exact interleaving white-box instead, because - like #6303's - it is a race the public API
  * cannot be made to produce on demand.
+ * <p>
+ * The fix keys {@link FlushPageIndex}'s {@code pending} counter map by reference identity rather than
+ * {@code equals()}, on BOTH ends: {@code counterOf()} (insertion, via {@code put()}/{@code putAll()}) must resolve
+ * a brand-new instance's OWN fresh counter and never a same-path sibling's still-present one, exactly as
+ * {@code removeAllOfDatabase} (removal) must retire only the counter the instance being closed actually created.
+ * Fixing only removal is not enough on its own: a same-path sibling's belated cleanup could otherwise still zero
+ * out a live counter it never should have been able to resolve in the first place.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -123,6 +130,54 @@ class Issue6440CrossInstanceFlushDiscardTest extends TestHelper {
           "a same-path sibling's indexed page must survive removeAllOfDatabase() of a DIFFERENT instance")
           .isSameAs(page);
       assertThat(index.hasPendingOf((DatabaseInternal) open)).isTrue();
+    } finally {
+      open.drop();
+    }
+  }
+
+  /**
+   * The insertion-side twin of the test above: a same-path sibling's counter must never be resolved on the way
+   * IN either. {@code counterOf()} used to be a plain {@code pending.get(database)}/{@code computeIfAbsent}, and
+   * since {@code LocalDatabase.equals()} compares by path, that could hand a brand-new database's FIRST page the
+   * counter object a DIFFERENT, not-yet-fully-forgotten same-path instance created - "closing" here: closed and
+   * drained, so its own counter is back to zero, but its map ENTRY survives until {@code removeAllOfDatabase}
+   * actually runs. If "open"'s first page increments that shared entry instead of a fresh one, "closing"'s
+   * eventual (belated) cleanup then zeroes out "open"'s live, un-flushed count - the same "backup stamps its t0
+   * over a half-written batch" failure this class's own javadoc warns about, just reached from the other side.
+   */
+  @Test
+  void flushIndexCounterOfMustNotAliasASamePathSiblingsCounterOnInsertion() throws Exception {
+    final String path = "target/databases/" + getClass().getSimpleName() + "-counter-recycled";
+
+    final Database closing = TestHelper.createDatabase(path);
+    closing.drop();
+
+    final Database open = TestHelper.createDatabase(path);
+    try {
+      final FlushPageIndex index = new FlushPageIndex();
+
+      // Seed "closing"'s counter WITHOUT going through removeAllOfDatabase, mirroring the real race: its page
+      // arrived and left the pipeline normally (counter created, then decremented back to zero by remove()),
+      // but the counter's MAP ENTRY survives - only removeAllOfDatabase forgets it, and that has not run yet.
+      final MutablePage closingPage = page((DatabaseInternal) closing, 0);
+      index.put(closingPage);
+      index.remove(closingPage.getPageId());
+      assertThat(index.isTracked((DatabaseInternal) closing)).isTrue();
+      assertThat(index.pendingOf((DatabaseInternal) closing)).isZero();
+
+      // "open"'s first page arrives while "closing"'s entry is still present at the same path.
+      final MutablePage openPage = page((DatabaseInternal) open, 1);
+      index.put(openPage);
+
+      assertThat(index.pendingOf((DatabaseInternal) open)).as(
+          "open's own page must increment open's own counter, not a same-path sibling's stale one").isEqualTo(1);
+
+      // "closing"'s belated cleanup finally runs.
+      index.removeAllOfDatabase((DatabaseInternal) closing);
+
+      assertThat(index.pendingOf((DatabaseInternal) open)).as(
+          "a same-path sibling's belated cleanup must not zero out open's live, un-flushed counter").isEqualTo(1);
+      assertThat(index.get(openPage.getPageId())).isSameAs(openPage);
     } finally {
       open.drop();
     }
