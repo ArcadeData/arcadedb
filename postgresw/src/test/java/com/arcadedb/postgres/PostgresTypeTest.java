@@ -23,10 +23,12 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -42,6 +44,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -78,20 +81,31 @@ class PostgresTypeTest {
 
   @Test
   void getTypeForValueShort() {
-    assertThat(PostgresType.getTypeForValue((short) 10)).isEqualTo(PostgresType.INTEGER);
-    assertThat(PostgresType.getTypeForValue(Short.valueOf((short) 10))).isEqualTo(PostgresType.INTEGER);
+    // Matches getTypeFromArcade(Type.SHORT) (issue #6447): widening to INTEGER made a column's OID depend on
+    // whether the result set happened to be empty.
+    assertThat(PostgresType.getTypeForValue((short) 10)).isEqualTo(PostgresType.SMALLINT);
+    assertThat(PostgresType.getTypeForValue(Short.valueOf((short) 10))).isEqualTo(PostgresType.SMALLINT);
   }
 
   @Test
   void getTypeForValueByte() {
-    assertThat(PostgresType.getTypeForValue((byte) 5)).isEqualTo(PostgresType.INTEGER);
-    assertThat(PostgresType.getTypeForValue(Byte.valueOf((byte) 5))).isEqualTo(PostgresType.INTEGER);
+    // Matches getTypeFromArcade(Type.BYTE) (issue #6447): widening to INTEGER made a column's OID depend on
+    // whether the result set happened to be empty.
+    assertThat(PostgresType.getTypeForValue((byte) 5)).isEqualTo(PostgresType.SMALLINT);
+    assertThat(PostgresType.getTypeForValue(Byte.valueOf((byte) 5))).isEqualTo(PostgresType.SMALLINT);
   }
 
   @Test
   void getTypeForValueLong() {
     assertThat(PostgresType.getTypeForValue(100L)).isEqualTo(PostgresType.LONG);
     assertThat(PostgresType.getTypeForValue(Long.valueOf(100L))).isEqualTo(PostgresType.LONG);
+  }
+
+  @Test
+  void getTypeForValueDecimal() {
+    // Matches getTypeFromArcade(Type.DECIMAL) (issue #6447): DOUBLE is lossy for arbitrary-precision
+    // BigDecimal, and VARCHAR makes a client treat the column as text.
+    assertThat(PostgresType.getTypeForValue(new BigDecimal("10.55"))).isEqualTo(PostgresType.NUMERIC);
   }
 
   @Test
@@ -129,6 +143,14 @@ class PostgresTypeTest {
   @Test
   void getTypeForValueDate() {
     assertThat(PostgresType.getTypeForValue(new Date())).isEqualTo(PostgresType.DATE);
+  }
+
+  @Test
+  void getTypeForValueLocalDate() {
+    // Matches getTypeFromArcade(Type.DATE) (issue #6447): Type.DATE's runtime representation defaults to
+    // LocalDate (GlobalConfiguration.DATE_IMPLEMENTATION), not java.util.Date, so a sampled value from a
+    // default-configured database used to fall through every branch here to the generic VARCHAR default.
+    assertThat(PostgresType.getTypeForValue(LocalDate.now())).isEqualTo(PostgresType.DATE);
   }
 
   @Test
@@ -402,8 +424,9 @@ class PostgresTypeTest {
 
   /**
    * The declared-schema path and the value path must agree, otherwise a column's OID would depend on whether
-   * its list happens to be empty. A list of BigDecimal is typed ARRAY_TEXT by getArrayTypeForElementType, so
-   * LIST OF DECIMAL must resolve to ARRAY_TEXT too, despite the scalar DECIMAL mapping to DOUBLE.
+   * its list happens to be empty. A list of BigDecimal is typed ARRAY_TEXT by getArrayTypeForElementType (there
+   * is no ARRAY_NUMERIC), so LIST OF DECIMAL must resolve to ARRAY_TEXT too, despite the scalar DECIMAL mapping
+   * to NUMERIC.
    */
   @Test
   void getTypeFromArcadeListOfDecimalMatchesValuePath() {
@@ -435,7 +458,8 @@ class PostgresTypeTest {
 
   @Test
   void getTypeFromArcadeDecimal() {
-    assertThat(PostgresType.getTypeFromArcade(Type.DECIMAL)).isEqualTo(PostgresType.DOUBLE);
+    // NUMERIC (issue #6447), not the lossy DOUBLE: BigDecimal's whole point is precision float64 doesn't have.
+    assertThat(PostgresType.getTypeFromArcade(Type.DECIMAL)).isEqualTo(PostgresType.NUMERIC);
   }
 
   // ==================== Text Deserialization Tests ====================
@@ -738,6 +762,200 @@ class PostgresTypeTest {
     final byte b = buffer.getByte();
     final Object decoded = PostgresType.deserialize(PostgresType.CHAR.code, 1, new byte[]{b});
     assertThat(decoded).isEqualTo('Z');
+  }
+
+  /**
+   * Round-trips a representative spread of BigDecimal values (issue #6447) through NUMERIC's binary codec:
+   * plain integers, values needing leading-zero-group stripping (0.5), trailing-zero-group stripping (100.5),
+   * fractional leading zeros wider than the significant digits (0.00001005), negatives, zero itself, and a
+   * value whose declared BigDecimal scale is negative (1E+2). {@link BigDecimal#equals} is scale-sensitive, so
+   * both the numeric value and the exact scale are asserted.
+   */
+  @Test
+  void serializeAsBinaryNumericRoundTrip() {
+    for (final BigDecimal value : List.of(
+        new BigDecimal("10.55"), new BigDecimal("0.5"), new BigDecimal("100.5"),
+        new BigDecimal("0.00001005"), new BigDecimal("100"), BigDecimal.ZERO,
+        new BigDecimal("-42.42"), new BigDecimal("123456789.987654321"), new BigDecimal("0.0001"),
+        new BigDecimal("1000000"), new BigDecimal("-0.5"), new BigDecimal("3.14159265358979323846"),
+        new BigDecimal("1E+2"), new BigDecimal("0.00"))) {
+      final Binary buffer = new Binary();
+      PostgresType.NUMERIC.serializeAsBinary(PostgresType.NUMERIC, buffer, value);
+      buffer.flip();
+      final int length = buffer.getInt();
+      final byte[] data = new byte[length];
+      buffer.getByteArray(data);
+
+      final Object decoded = PostgresType.deserialize(PostgresType.NUMERIC.code, 1, data);
+      assertThat(decoded).as("value of %s", value).isInstanceOf(BigDecimal.class);
+      final BigDecimal decimal = (BigDecimal) decoded;
+      assertThat(decimal).as("value of %s", value).isEqualByComparingTo(value.scale() < 0 ? value.setScale(0) : value);
+      assertThat(decimal.scale()).as("scale of %s", value).isEqualTo(Math.max(value.scale(), 0));
+    }
+  }
+
+  @Test
+  void serializeAsBinaryNumericMatchesKnownEncoding() {
+    // Hand-computed against PostgreSQL's own numeric.c layout: header of four int16s (ndigits, weight, sign,
+    // dscale) then ndigits base-10000 digits, most significant first.
+    final Binary buffer = new Binary();
+    PostgresType.NUMERIC.serializeAsBinary(PostgresType.NUMERIC, buffer, new BigDecimal("10.55"));
+    buffer.flip();
+    assertThat(buffer.getInt()).isEqualTo(12); // 4 header shorts + 2 digit shorts
+    assertThat(buffer.getShort()).isEqualTo((short) 2);      // ndigits
+    assertThat(buffer.getShort()).isEqualTo((short) 0);      // weight
+    assertThat(buffer.getShort()).isEqualTo((short) 0x0000); // sign: positive
+    assertThat(buffer.getShort()).isEqualTo((short) 2);      // dscale
+    assertThat(buffer.getShort()).isEqualTo((short) 10);
+    assertThat(buffer.getShort()).isEqualTo((short) 5500);
+  }
+
+  @Test
+  void deserializeBinaryNumericZero() {
+    final ByteBuffer buf = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN);
+    buf.putShort((short) 0);      // ndigits
+    buf.putShort((short) 0);      // weight
+    buf.putShort((short) 0x0000); // sign: positive
+    buf.putShort((short) 2);      // dscale
+    final Object decoded = PostgresType.deserialize(PostgresType.NUMERIC.code, 1, buf.array());
+    assertThat(decoded).isEqualTo(new BigDecimal("0.00"));
+  }
+
+  @Test
+  void deserializeBinaryNumericRejectsNaN() {
+    final ByteBuffer buf = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN);
+    buf.putShort((short) 0);
+    buf.putShort((short) 0);
+    buf.putShort((short) 0xC000); // sign: NaN
+    buf.putShort((short) 0);
+    assertThatThrownBy(() -> PostgresType.deserialize(PostgresType.NUMERIC.code, 1, buf.array()))
+        .isInstanceOf(PostgresProtocolException.class)
+        .hasMessageContaining("NaN");
+  }
+
+  @Test
+  void deserializeBinaryNumericRejectsInvalidSign() {
+    final ByteBuffer buf = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN);
+    buf.putShort((short) 0);
+    buf.putShort((short) 0);
+    buf.putShort((short) 0x1234); // not one of NUMERIC_{POS,NEG,NAN}_SIGN
+    buf.putShort((short) 0);
+    assertThatThrownBy(() -> PostgresType.deserialize(PostgresType.NUMERIC.code, 1, buf.array()))
+        .isInstanceOf(PostgresProtocolException.class)
+        .hasMessageContaining("Invalid NUMERIC sign");
+  }
+
+  @Test
+  void deserializeBinaryNumericRejectsOversizedDigitCount() {
+    // A declared digit count this codec never produces and the (short) buffer cannot possibly back - must be
+    // rejected rather than read out of bounds.
+    final ByteBuffer buf = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN);
+    buf.putShort(Short.MAX_VALUE); // ndigits: absurd
+    buf.putShort((short) 0);
+    buf.putShort((short) 0x0000);
+    buf.putShort((short) 0);
+    assertThatThrownBy(() -> PostgresType.deserialize(PostgresType.NUMERIC.code, 1, buf.array()))
+        .isInstanceOf(PostgresProtocolException.class)
+        .hasMessageContaining("exceeds");
+  }
+
+  @Test
+  void deserializeBinaryNumericRejectsOversizedScale() {
+    // dscale is checked against the same bound the encode side rejects at (issue #6447 review), even though
+    // being an unsigned 16-bit field already caps it - a declared scale this codec could never have produced
+    // is still a malformed payload, not a value setScale should be asked to pad a BigInteger out to.
+    final ByteBuffer buf = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN);
+    buf.putShort((short) 0);              // ndigits
+    buf.putShort((short) 0);              // weight
+    buf.putShort((short) 0x0000);         // sign: positive
+    buf.putShort(Short.MAX_VALUE);        // dscale: absurd
+    assertThatThrownBy(() -> PostgresType.deserialize(PostgresType.NUMERIC.code, 1, buf.array()))
+        .isInstanceOf(PostgresProtocolException.class)
+        .hasMessageContaining("scale exceeds");
+  }
+
+  @Test
+  void deserializeBinaryNumericRejectsOversizedWeight() {
+    // ndigits, dscale and sign are each individually bounded (issue #6447 review), but weight wasn't: a
+    // payload with an extreme weight - within its own short range - combined with a small ndigits and the
+    // max-allowed dscale derives a `scale` far apart from dscale, and setScale would materialize a BigInteger
+    // to bridge that gap. Smaller blast radius than the encode-side DoS this PR already fixed (weight is
+    // capped by its wire width), but the same class of bug the decode side is supposed to defend against.
+    // A digit follows the header only so the buffer-remaining check (ndigits * 2 <= remaining) doesn't reject
+    // this payload first; the weight check itself throws before that digit is ever read.
+    final ByteBuffer buf = ByteBuffer.allocate(10).order(ByteOrder.BIG_ENDIAN);
+    buf.putShort((short) 1);          // ndigits
+    buf.putShort(Short.MAX_VALUE);    // weight: absurd
+    buf.putShort((short) 0x0000);     // sign: positive
+    buf.putShort((short) 0);          // dscale
+    buf.putShort((short) 1);          // digit
+    assertThatThrownBy(() -> PostgresType.deserialize(PostgresType.NUMERIC.code, 1, buf.array()))
+        .isInstanceOf(PostgresProtocolException.class)
+        .hasMessageContaining("weight exceeds");
+  }
+
+  @Test
+  void deserializeBinaryNumericRejectsDscaleThatDoesNotMatchTheEncodedPrecision() {
+    // ndigits=1, weight=-1, digit=9999 encodes 0.9999 (issue #6447 review): a declared dscale of 0 does not
+    // match that precision, so the final setScale(dscale, UNNECESSARY) has no exact answer. This must surface
+    // as the same PostgresProtocolException every other rejection in this codec uses, not a bare JDK
+    // ArithmeticException the caller has no reason to expect from a "deserialize" call.
+    final ByteBuffer buf = ByteBuffer.allocate(10).order(ByteOrder.BIG_ENDIAN);
+    buf.putShort((short) 1);      // ndigits
+    buf.putShort((short) -1);     // weight
+    buf.putShort((short) 0x0000); // sign: positive
+    buf.putShort((short) 0);      // dscale: does not match 0.9999's precision
+    buf.putShort((short) 9999);   // digit
+    assertThatThrownBy(() -> PostgresType.deserialize(PostgresType.NUMERIC.code, 1, buf.array()))
+        .isInstanceOf(PostgresProtocolException.class)
+        .hasMessageContaining("does not match");
+  }
+
+  @Test
+  void serializeAsBinaryNumericRejectsExcessiveScale() {
+    // Unlike deserialize, which only has to reject bytes an attacker sent, serializeAsBinary also has to reject
+    // a BigDecimal ArcadeDB itself produced: an unbounded DECIMAL property scale would otherwise wrap silently
+    // through the header fields' (short) casts and write a self-inconsistent NUMERIC payload.
+    final BigDecimal absurdScale = new BigDecimal(BigInteger.ONE, 16001);
+    final Binary buffer = new Binary();
+    assertThatThrownBy(() -> PostgresType.NUMERIC.serializeAsBinary(PostgresType.NUMERIC, buffer, absurdScale))
+        .isInstanceOf(PostgresProtocolException.class)
+        .hasMessageContaining("scale exceeds");
+  }
+
+  @Test
+  @Timeout(value = 10, unit = TimeUnit.SECONDS)
+  void serializeAsBinaryNumericRejectsExtremeNegativeScaleWithoutMaterializingIt() {
+    // A DECIMAL property has no configured precision limit, and BigDecimal(String) parsing scientific notation
+    // is O(1) - new BigDecimal("1E2000000000") just stores unscaledValue=1, scale=-2000000000, no digits
+    // materialized - so a value with an extreme negative scale reaches this codec from a plain SQL literal.
+    // BigDecimal.setScale(0) from that scale is NOT O(1): it has to build unscaledValue * 10^|scale| as a real
+    // BigInteger. The @Timeout is a hang/OOM detector, not a latency bound: an unfixed version of this check
+    // (bounding the scale only after normalizing) would try to allocate that BigInteger and this test would
+    // hang or run the JVM out of heap rather than fail fast.
+    final BigDecimal extremeNegativeScale = new BigDecimal(BigInteger.ONE, -1_000_000_000);
+    final Binary buffer = new Binary();
+    assertThatThrownBy(() -> PostgresType.NUMERIC.serializeAsBinary(PostgresType.NUMERIC, buffer, extremeNegativeScale))
+        .isInstanceOf(PostgresProtocolException.class)
+        .hasMessageContaining("scale exceeds");
+  }
+
+  @Test
+  @Timeout(value = 10, unit = TimeUnit.SECONDS)
+  void serializeAsBinaryNumericRejectsExtremeMagnitudeWithoutMaterializingItsDigitString() {
+    // The scale check above closes the amplification vector a short scientific-notation literal opens - that
+    // pattern always implies a very negative scale - but says nothing about a value that is simply a great many
+    // literal digits at a small/zero scale, reachable from a compact SQL expression rather than a giant literal.
+    // BigInteger.ONE.shiftLeft(...) builds a value with a huge bitLength in O(1) (it is one set bit), the same
+    // way scientific-notation parsing was O(1) for the scale case - so the @Timeout here is, again, a hang/OOM
+    // detector: an unfixed version of this check would call toString() on the several-hundred-thousand-digit
+    // unscaled value this decodes to and build a proportionally huge digit string before ever reaching the
+    // ndigits check.
+    final BigDecimal extremeMagnitude = new BigDecimal(BigInteger.ONE.shiftLeft(2_500_000), 0);
+    final Binary buffer = new Binary();
+    assertThatThrownBy(() -> PostgresType.NUMERIC.serializeAsBinary(PostgresType.NUMERIC, buffer, extremeMagnitude))
+        .isInstanceOf(PostgresProtocolException.class)
+        .hasMessageContaining("precision exceeds");
   }
 
   @Test
@@ -1149,6 +1367,19 @@ class PostgresTypeTest {
     byte[] data = new byte[length];
     buffer.getByteBuffer().get(data);
     assertThat(new String(data)).isEqualTo("42");
+  }
+
+  @Test
+  void serializeAsTextNumericAvoidsScientificNotation() {
+    // BigDecimal.toString() switches to scientific notation outside a small exponent range (issue #6447):
+    // "1E+10" is not a NUMERIC text value PostgreSQL would emit or a client would expect to parse.
+    Binary buffer = new Binary();
+    PostgresType.NUMERIC.serializeAsText(PostgresType.NUMERIC, buffer, new BigDecimal("1E+10"));
+    buffer.flip();
+    int length = buffer.getInt();
+    byte[] data = new byte[length];
+    buffer.getByteBuffer().get(data);
+    assertThat(new String(data)).isEqualTo("10000000000");
   }
 
   @Test

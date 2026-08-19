@@ -182,7 +182,7 @@ class PostgresTypeCatalogTest {
 
   @Test
   void inputFunctionsAreSpelledTheWayPostgresSpellsThem() {
-    // Synthesising <name> + "in" is right for most types but not for the temporal ones or json, which
+    // Synthesising <name> + "in" is right for most types but not for the temporal ones, json or numeric, which
     // PostgreSQL spells with an underscore.
     final Map<Integer, Object> byOid = new HashMap<>();
     for (final Map<String, Object> row : PostgresTypeCatalog.resolve("SELECT oid, typinput FROM pg_type"))
@@ -193,7 +193,17 @@ class PostgresTypeCatalogTest {
     assertThat(byOid).containsEntry(PostgresType.DATE.code, "date_in");
     assertThat(byOid).containsEntry(PostgresType.TIMESTAMP.code, "timestamp_in");
     assertThat(byOid).containsEntry(PostgresType.JSON.code, "json_in");
+    assertThat(byOid).containsEntry(PostgresType.NUMERIC.code, "numeric_in");
     assertThat(byOid).containsEntry(PostgresType.ARRAY_TEXT.code, "array_in");
+  }
+
+  @Test
+  void numericIsCategorisedAsNumberLikeEveryOtherNumericType() {
+    // issue #6447: NUMERIC used to fall through category()'s default "U" (user-defined) arm, the same bucket
+    // real PostgreSQL uses for json - wrong for a type PostgreSQL itself files under "N" alongside int4/float8.
+    final Map<String, Object> row = PostgresTypeCatalog.resolve("SELECT oid, typcategory FROM pg_type")
+        .stream().filter(r -> r.get("oid").equals(PostgresType.NUMERIC.code)).findFirst().orElseThrow();
+    assertThat(row.get("typcategory")).isEqualTo("N");
   }
 
   @Test

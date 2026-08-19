@@ -28,6 +28,8 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.math.RoundingMode;
 import java.nio.ByteBuffer;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -75,6 +77,11 @@ public enum PostgresType {
   // right: an array of one-byte characters makes the client decode arbitrary bytes as text, which for any
   // non-UTF-8 payload loses data rather than merely looking odd.
   BYTEA(17, "bytea", 0, 1001, byte[].class, -1, PostgresType::parseByteaText),
+  // PostgreSQL's arbitrary-precision decimal (issue #6447). DECIMAL used to be typed as DOUBLE by the schema
+  // path (lossy for a BigDecimal outside float64's range/precision) and as VARCHAR by the value path (forces a
+  // client to treat the column as text) - neither was right, and the two disagreeing meant a column's OID also
+  // depended on whether the result set was empty. NUMERIC is the honest answer PostgreSQL already has for this.
+  NUMERIC(1700, "numeric", 0, 1231, BigDecimal.class, -1, BigDecimal::new),
   // Adding array types with PostgreSQL array type codes
   ARRAY_INT(1007, "_int4", 23, 0, Collection.class, -1, value -> parseArrayFromString(value, Integer::parseInt)),
   // 1002 is "char"[], the array of the single-byte CHAR (OID 18) this enum pairs it with. It used to be
@@ -237,6 +244,184 @@ public enum PostgresType {
     return new BigDecimal(value.toString());
   }
 
+  private static BigDecimal toBigDecimalValue(final Object value) {
+    if (value instanceof BigDecimal bd)
+      return bd;
+    if (value instanceof Number n)
+      return new BigDecimal(n.toString());
+    return new BigDecimal(value.toString());
+  }
+
+  // NUMERIC's binary wire format (PostgreSQL src/backend/utils/adt/numeric.c) is a header of four int16s -
+  // ndigits, weight, sign, dscale - followed by ndigits base-10000 digits, most significant first. weight is
+  // the base-10000 exponent of the first digit, so the decimal point always falls on a 4-decimal-digit
+  // boundary; leading and trailing all-zero digit groups are dropped (weight/dscale carry that information
+  // instead), which is why a value like 0.5 encodes as a single digit [5000] at weight -1 rather than padding
+  // out to whatever precision produced it.
+  private static final int NUMERIC_DIGIT_WIDTH = 4;
+  private static final int NUMERIC_BASE        = 10000;
+  private static final int NUMERIC_POS_SIGN    = 0x0000;
+  private static final int NUMERIC_NEG_SIGN    = 0x4000;
+  private static final int NUMERIC_NAN_SIGN    = 0xC000;
+  // PostgreSQL's own cap (NUMERIC_MAX_RESULT_SCALE-derived) on digit groups in one value; a declared count
+  // above this cannot be a value this codec produced, only a malformed or adversarial payload.
+  private static final int NUMERIC_MAX_DIGITS  = 4000;
+  // The largest bit length a BigInteger with NUMERIC_MAX_DIGITS * NUMERIC_DIGIT_WIDTH (16000) decimal digits
+  // can have: ceil(16000 * log2(10)) = ceil(16000 * 3.321928094887362) = 53151. Any BigInteger past this bound
+  // has more than 16000 decimal digits, guaranteed - checking bitLength() (already computed, effectively O(1))
+  // catches that before putNumericBinary calls toString() on it, which is not.
+  private static final int NUMERIC_MAX_UNSCALED_BITS = 53151;
+
+  /**
+   * Encodes a BigDecimal in PostgreSQL's NUMERIC binary wire format. Unlike {@link #parseNumericBinary}, which
+   * only has to reject bytes an attacker sent, this also has to reject a BigDecimal ArcadeDB itself produced:
+   * a DECIMAL property has no configured precision/scale limit, so a value with a large enough scale would
+   * otherwise silently wrap through the header fields' {@code (short)} casts below and write a self-
+   * inconsistent payload - the {@code putInt} length prefix would stay correct, but a real client decoding the
+   * wrapped {@code ndigits}/{@code weight}/{@code dscale} out of that payload would not agree with it.
+   */
+  private static void putNumericBinary(final Binary typeBuffer, final BigDecimal decimalValue) {
+    // Checked on the RAW scale, before any normalization. BigDecimal(String) parsing scientific notation (e.g.
+    // a plain SQL literal like '1E2000000000' - DECIMAL has no configured precision/scale limit) is itself O(1):
+    // it just stores unscaledValue=1, scale=-2000000000. setScale(0) below is not - going from a very negative
+    // scale up to 0 has to actually materialize unscaledValue * 10^|scale| as a real BigInteger. Rejecting the
+    // raw scale first means that materialization, and the multi-GB allocation it would otherwise trigger, never
+    // starts. -(long) avoids the int overflow of negating Integer.MIN_VALUE.
+    if (decimalValue.scale() < 0 && -(long) decimalValue.scale() > NUMERIC_MAX_DIGITS * NUMERIC_DIGIT_WIDTH)
+      throw new PostgresProtocolException("NUMERIC scale exceeds the supported maximum: " + decimalValue.scale());
+
+    final BigDecimal normalized = decimalValue.scale() < 0 ? decimalValue.setScale(0) : decimalValue;
+    final int dscale = normalized.scale();
+    // Checked before any padding so a value with an absurd scale fails fast instead of first allocating a
+    // proportionally huge digit string.
+    if (dscale < 0 || dscale > NUMERIC_MAX_DIGITS * NUMERIC_DIGIT_WIDTH)
+      throw new PostgresProtocolException("NUMERIC scale exceeds the supported maximum: " + dscale);
+
+    final boolean negative = normalized.signum() < 0;
+    final BigInteger unscaled = normalized.unscaledValue().abs();
+    // Bounds the MAGNITUDE the same way the checks above bound the SCALE: a short scientific-notation literal
+    // like '1E2000000000' is already rejected by the scale check (it always implies a very negative scale),
+    // but a value that is simply a great many literal digits at a small/zero scale - reachable from a compact
+    // SQL expression rather than a giant literal - would otherwise sail past both scale checks and reach the
+    // O(n) toString()/padding work below before the digit-count check further down ever gets a chance to
+    // reject it.
+    if (unscaled.bitLength() > NUMERIC_MAX_UNSCALED_BITS)
+      throw new PostgresProtocolException("NUMERIC precision exceeds the supported maximum: " + unscaled.bitLength() + " bits");
+
+    if (unscaled.equals(BigInteger.ZERO)) {
+      typeBuffer.putInt(8);
+      typeBuffer.putShort((short) 0);
+      typeBuffer.putShort((short) 0);
+      typeBuffer.putShort((short) NUMERIC_POS_SIGN);
+      typeBuffer.putShort((short) dscale);
+      return;
+    }
+
+    // Position the digits so index 0 is the most significant decimal digit and the decimal point sits
+    // `dscale` digits from the right, padding with leading/trailing zeros so both the integer part and the
+    // fractional part are a whole number of 4-digit groups.
+    String digits = unscaled.toString();
+    if (dscale > digits.length())
+      digits = "0".repeat(dscale - digits.length()) + digits;
+    int integerDigitCount = digits.length() - dscale;
+
+    final int fractionPad = (NUMERIC_DIGIT_WIDTH - dscale % NUMERIC_DIGIT_WIDTH) % NUMERIC_DIGIT_WIDTH;
+    digits = digits + "0".repeat(fractionPad);
+
+    final int leadPad = (NUMERIC_DIGIT_WIDTH - integerDigitCount % NUMERIC_DIGIT_WIDTH) % NUMERIC_DIGIT_WIDTH;
+    digits = "0".repeat(leadPad) + digits;
+    integerDigitCount += leadPad;
+
+    final int groupCount = digits.length() / NUMERIC_DIGIT_WIDTH;
+    final int integerGroups = integerDigitCount / NUMERIC_DIGIT_WIDTH;
+
+    final int[] groups = new int[groupCount];
+    for (int i = 0; i < groupCount; i++)
+      groups[i] = Integer.parseInt(digits.substring(i * NUMERIC_DIGIT_WIDTH, (i + 1) * NUMERIC_DIGIT_WIDTH));
+
+    int start = 0;
+    while (start < groupCount - 1 && groups[start] == 0)
+      start++;
+    int end = groupCount - 1;
+    while (end > start && groups[end] == 0)
+      end--;
+
+    final int ndigits = end - start + 1;
+    final int weight = integerGroups - 1 - start;
+
+    // Both fields are about to go through a (short) cast: reject rather than let either wrap silently into a
+    // header that no longer matches the digits actually written.
+    if (ndigits > NUMERIC_MAX_DIGITS)
+      throw new PostgresProtocolException("NUMERIC digit count exceeds the supported maximum: " + ndigits);
+    if (weight < Short.MIN_VALUE || weight > Short.MAX_VALUE)
+      throw new PostgresProtocolException("NUMERIC weight exceeds the supported range: " + weight);
+
+    typeBuffer.putInt(8 + ndigits * 2);
+    typeBuffer.putShort((short) ndigits);
+    typeBuffer.putShort((short) weight);
+    typeBuffer.putShort((short) (negative ? NUMERIC_NEG_SIGN : NUMERIC_POS_SIGN));
+    typeBuffer.putShort((short) dscale);
+    for (int i = 0; i < ndigits; i++)
+      typeBuffer.putShort((short) groups[start + i]);
+  }
+
+  /** Decodes PostgreSQL's NUMERIC binary wire format, the inverse of {@link #putNumericBinary}. */
+  private static BigDecimal parseNumericBinary(final ByteBuffer buffer) {
+    final int ndigits = buffer.getShort() & 0xFFFF;
+    final int weight = buffer.getShort();
+    final int sign = buffer.getShort() & 0xFFFF;
+    final int dscale = buffer.getShort() & 0xFFFF;
+
+    if (sign == NUMERIC_NAN_SIGN)
+      throw new PostgresProtocolException("NaN NUMERIC values are not supported");
+    if (sign != NUMERIC_POS_SIGN && sign != NUMERIC_NEG_SIGN)
+      throw new PostgresProtocolException("Invalid NUMERIC sign: " + sign);
+    if (ndigits > NUMERIC_MAX_DIGITS)
+      throw new PostgresProtocolException("NUMERIC digit count exceeds the supported maximum: " + ndigits);
+    if (ndigits * 2 > buffer.remaining())
+      throw new PostgresProtocolException("NUMERIC digit count exceeds remaining buffer bytes");
+    // dscale is an unsigned 16-bit field, so this cannot runaway unbounded, but a declared scale wildly beyond
+    // what ndigits could ever back is still a malformed payload rather than one this codec produced - and
+    // setScale below would otherwise pad a BigInteger out to it. Same bound the encode side rejects at.
+    if (dscale > NUMERIC_MAX_DIGITS * NUMERIC_DIGIT_WIDTH)
+      throw new PostgresProtocolException("NUMERIC scale exceeds the supported maximum: " + dscale);
+    // weight is otherwise unbounded within its short range: a payload with an extreme weight combined with a
+    // small ndigits and the max-allowed dscale derives a `scale` far apart from dscale, and setScale below
+    // would materialize a BigInteger to bridge that gap - the same class of unbounded-materialization risk
+    // putNumericBinary guards against on the encode side, just with a smaller blast radius here because weight
+    // is capped by its own wire width rather than an arbitrary int.
+    if (weight < -NUMERIC_MAX_DIGITS || weight > NUMERIC_MAX_DIGITS)
+      throw new PostgresProtocolException("NUMERIC weight exceeds the supported range: " + weight);
+
+    if (ndigits == 0)
+      return BigDecimal.ZERO.setScale(dscale);
+
+    BigInteger magnitude = BigInteger.ZERO;
+    for (int i = 0; i < ndigits; i++) {
+      final int digit = buffer.getShort() & 0xFFFF;
+      if (digit >= NUMERIC_BASE)
+        throw new PostgresProtocolException("Invalid NUMERIC digit: " + digit);
+      magnitude = magnitude.multiply(BigInteger.valueOf(NUMERIC_BASE)).add(BigInteger.valueOf(digit));
+    }
+
+    // The digit sequence runs from base-10000 exponent `weight` down to `weight - ndigits + 1`; each step is
+    // NUMERIC_DIGIT_WIDTH decimal digits, so the whole magnitude sits at decimal scale -4*(weight-ndigits+1).
+    final int scale = NUMERIC_DIGIT_WIDTH * (ndigits - 1 - weight);
+    BigDecimal result = new BigDecimal(magnitude, scale);
+    if (sign == NUMERIC_NEG_SIGN)
+      result = result.negate();
+
+    // Trailing zero digit groups are dropped by the encoder, so the scale derived from `weight`/`ndigits` can
+    // be smaller than dscale; padding back up to it is always exact (the dropped digits were zero) - unless the
+    // payload is malformed and dscale does not actually match the precision ndigits/weight encode, in which
+    // case this is a value this codec could never have produced rather than a genuine JVM arithmetic error.
+    try {
+      return result.setScale(dscale, RoundingMode.UNNECESSARY);
+    } catch (final ArithmeticException e) {
+      throw new PostgresProtocolException("NUMERIC dscale does not match the encoded precision: " + dscale);
+    }
+  }
+
   private static boolean toBooleanValue(final Object value) {
     if (value instanceof Boolean b)
       return b;
@@ -358,8 +543,12 @@ public enum PostgresType {
       return PostgresType.REAL;
     } else if (val instanceof Double) {
       return PostgresType.DOUBLE;
-    } else if (val instanceof Integer || val instanceof Short || val instanceof Byte) {
+    } else if (val instanceof Integer) {
       return PostgresType.INTEGER;
+    } else if (val instanceof Short || val instanceof Byte) {
+      // Matches the schema path (Type.SHORT/Type.BYTE -> SMALLINT, issue #6447): widening to INTEGER here made
+      // a column's OID depend on whether the result set happened to be empty.
+      return PostgresType.SMALLINT;
     } else if (val instanceof Long) {
       return PostgresType.LONG;
     } else if (val instanceof Boolean) {
@@ -368,6 +557,8 @@ public enum PostgresType {
       return PostgresType.VARCHAR;
     } else if (val instanceof Character) {
       return PostgresType.CHAR;
+    } else if (val instanceof BigDecimal) {
+      return PostgresType.NUMERIC;
     } else if (val instanceof JSONObject) {
       return PostgresType.JSON;
     } else if (val instanceof Result) {
@@ -442,6 +633,11 @@ public enum PostgresType {
       else
         throw new IllegalStateException("Unexpected value: " + val);
     } else if (val instanceof Date) {
+      return PostgresType.DATE;
+    } else if (val instanceof LocalDate) {
+      // Type.DATE's runtime representation is configurable per database (GlobalConfiguration.DATE_IMPLEMENTATION)
+      // and defaults to LocalDate, not Date - so a sampled value from a default-configured database never hit
+      // the Date branch above and fell all the way through to VARCHAR, disagreeing with the schema path's DATE.
       return PostgresType.DATE;
     } else if (val instanceof LocalDateTime) {
       return PostgresType.TIMESTAMP;
@@ -531,7 +727,7 @@ public enum PostgresType {
       case ARRAY_OF_DOUBLES -> PostgresType.ARRAY_DOUBLE;
       case MAP, EMBEDDED -> PostgresType.JSON;
       case LINK -> PostgresType.VARCHAR;
-      case DECIMAL -> PostgresType.DOUBLE;
+      case DECIMAL -> PostgresType.NUMERIC;
       default -> PostgresType.VARCHAR;
     };
   }
@@ -568,6 +764,10 @@ public enum PostgresType {
     } else if (value instanceof Boolean b) {
       // PostgreSQL BOOL text format is "t"/"f"
       serializedValue = b ? "t" : "f";
+    } else if (value instanceof BigDecimal bd) {
+      // BigDecimal.toString() switches to scientific notation outside a small exponent range (e.g. "1E+10"),
+      // which is not a NUMERIC text value PostgreSQL itself would ever emit or a client would expect to parse.
+      serializedValue = bd.toPlainString();
     } else if (value instanceof Date date) {
       // DATE (OID 1082) expects "YYYY-MM-DD" in text format
       serializedValue = date.toInstant().atZone(ZoneOffset.UTC).format(DateTimeFormatter.ISO_LOCAL_DATE);
@@ -635,6 +835,7 @@ public enum PostgresType {
       typeBuffer.putInt(bytes.length);
       typeBuffer.putByteArray(bytes);
     }
+    case NUMERIC -> putNumericBinary(typeBuffer, toBigDecimalValue(value));
     case CHAR -> {
       // Postgres "char" (OID 18) is a single byte on the wire.
       typeBuffer.putInt(1);
@@ -961,6 +1162,7 @@ public enum PostgresType {
         yield LocalDateTime.ofEpochSecond(secs, nanos, ZoneOffset.UTC);
       }
       case BYTEA -> valueAsBytes.clone();
+      case NUMERIC -> parseNumericBinary(buffer);
       case CHAR -> (char) buffer.get();
       case BOOLEAN -> buffer.get() == 1;
       case JSON -> {
@@ -1063,6 +1265,7 @@ public enum PostgresType {
         this == LONG ||
         this == REAL ||
         this == DOUBLE ||
+        this == NUMERIC ||
         this == CHAR ||
         this == BOOLEAN ||
         this == DATE ||

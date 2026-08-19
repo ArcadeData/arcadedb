@@ -20,6 +20,7 @@ package com.arcadedb.postgres;
 
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.parser.Statement;
+import com.arcadedb.schema.DocumentType;
 
 import java.util.List;
 import java.util.Map;
@@ -38,6 +39,13 @@ public class PostgresPortal {
   public boolean                   isExpectingResult;
   public boolean                   executed             = false;
   public boolean                   rowDescriptionSent   = false;
+  /**
+   * Memoizes {@code PostgresNetworkExecutor.resolveQueryTargetType(sqlStatement)} (issue #6447): a portal can
+   * be described and executed - possibly executed repeatedly, for a cursor-based fetch with a LIMIT - several
+   * times over its lifetime, and the schema type its FROM target names does not change between them.
+   */
+  public DocumentType               queryTargetType;
+  public boolean                    queryTargetTypeResolved = false;
   /**
    * True when the query is about the emulated system catalog and could not be answered at Parse time because
    * its filters are bound parameters, whose values only arrive with the Bind message (issue #6412).
