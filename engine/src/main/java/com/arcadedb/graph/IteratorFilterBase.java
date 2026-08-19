@@ -105,12 +105,11 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
 
       } else {
         // FETCH NEXT CHUNK
-        currentContainer = currentContainer.getPrevious();
-        if (currentContainer != null) {
+        if (moveToPreviousChunk() != null) {
           currentPosition.set(MutableEdgeSegment.CONTENT_START_POSITION);
           lastElementPosition = currentPosition.get();
         } else
-          // END
+          // END (also reached when the chunk's "previous" pointer names itself - see moveToPreviousChunk())
           break;
       }
     }

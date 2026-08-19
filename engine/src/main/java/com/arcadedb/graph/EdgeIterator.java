@@ -82,8 +82,7 @@ public class EdgeIterator extends ResettableIteratorBase<Edge> {
         return true;
       }
 
-      currentContainer = currentContainer.getPrevious();
-      if (currentContainer == null)
+      if (moveToPreviousChunk() == null)
         break;
 
       currentPosition.set(MutableEdgeSegment.CONTENT_START_POSITION);
