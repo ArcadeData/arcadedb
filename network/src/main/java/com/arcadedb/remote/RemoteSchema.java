@@ -70,6 +70,12 @@ public class RemoteSchema implements Schema {
   @Override
   public boolean existsType(final String typeName) {
     checkSchemaIsLoaded();
+    if (types.containsKey(typeName))
+      return true;
+    // Cache miss: the type may have been created by raw DDL through command() (which, unlike the
+    // createXxxType() helpers, does not invalidate this cache) or by another connection/session
+    // entirely. One bounded reload before giving up keeps a genuinely nonexistent type failing fast. Issue #6446.
+    reload();
     return types.containsKey(typeName);
   }
 
@@ -345,7 +351,12 @@ public class RemoteSchema implements Schema {
   public DocumentType getType(final String typeName) {
     checkSchemaIsLoaded();
 
-    final RemoteDocumentType t = types.get(typeName);
+    RemoteDocumentType t = types.get(typeName);
+    if (t == null) {
+      // See existsType() for why a single bounded reload happens here before failing.
+      reload();
+      t = types.get(typeName);
+    }
     if (t == null)
       throw new SchemaException("Type with name '" + typeName + "' was not found");
     return t;
@@ -354,7 +365,13 @@ public class RemoteSchema implements Schema {
   @Override
   public DocumentType getTypeOrNull(final String typeName) {
     checkSchemaIsLoaded();
-    return types.get(typeName);
+    RemoteDocumentType t = types.get(typeName);
+    if (t == null) {
+      // See existsType() for why a single bounded reload happens here before giving up.
+      reload();
+      t = types.get(typeName);
+    }
+    return t;
   }
 
   @Override

@@ -19,6 +19,7 @@
 package com.arcadedb.remote;
 
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
@@ -35,6 +36,8 @@ import java.util.TimeZone;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class RemoteSchemaTest {
@@ -438,6 +441,75 @@ class RemoteSchemaTest {
     assertThat(schema.existsType("Person")).isTrue();
     assertThat(schema.existsType("Knows")).isTrue();
     assertThat(schema.existsType("Readings")).isTrue();
+  }
+
+  // Issue #6446 item 2: a type created via raw DDL through command() (not the createXxxType() helpers,
+  // which force an eager reload()) must still become visible to an already-schema-warm cache, via a
+  // bounded one-shot reload() retry on a cache miss.
+
+  @Test
+  void existsTypeRetriesReloadOnCacheMissAndFindsNewlyCreatedType() {
+    final ResultSet staleRs = buildSchemaResultSet(buildTypeRecord("Person", "vertex"));
+    final ResultSet freshRs = buildSchemaResultSet(buildTypeRecord("Person", "vertex"), buildTypeRecord("Address", "vertex"));
+    when(mockDatabase.command("sql", "select from schema:types")).thenReturn(staleRs, freshRs);
+
+    schema.reload();
+    assertThat(schema.existsType("Person")).isTrue();
+
+    // "Address" was created by raw DDL after the cache warmed up: not yet known to this cache.
+    assertThat(schema.existsType("Address")).isTrue();
+    verify(mockDatabase, times(2)).command("sql", "select from schema:types");
+  }
+
+  @Test
+  void getTypeRetriesReloadOnCacheMissAndFindsNewlyCreatedType() {
+    final ResultSet staleRs = buildSchemaResultSet(buildTypeRecord("Person", "vertex"));
+    final ResultSet freshRs = buildSchemaResultSet(buildTypeRecord("Person", "vertex"), buildTypeRecord("Address", "vertex"));
+    when(mockDatabase.command("sql", "select from schema:types")).thenReturn(staleRs, freshRs);
+
+    schema.reload();
+
+    final DocumentType t = schema.getType("Address");
+    assertThat(t.getName()).isEqualTo("Address");
+    verify(mockDatabase, times(2)).command("sql", "select from schema:types");
+  }
+
+  @Test
+  void getTypeOrNullRetriesReloadOnCacheMissAndFindsNewlyCreatedType() {
+    final ResultSet staleRs = buildSchemaResultSet(buildTypeRecord("Person", "vertex"));
+    final ResultSet freshRs = buildSchemaResultSet(buildTypeRecord("Person", "vertex"), buildTypeRecord("Address", "vertex"));
+    when(mockDatabase.command("sql", "select from schema:types")).thenReturn(staleRs, freshRs);
+
+    schema.reload();
+
+    assertThat(schema.getTypeOrNull("Address")).isNotNull();
+    verify(mockDatabase, times(2)).command("sql", "select from schema:types");
+  }
+
+  @Test
+  void existsTypeStillFailsFastForGenuinelyMissingTypeAfterOneRetry() {
+    final ResultSet staleRs = buildSchemaResultSet(buildTypeRecord("Person", "vertex"));
+    // The retry itself finds the same snapshot again: the type genuinely does not exist anywhere.
+    final ResultSet retryRs = buildSchemaResultSet(buildTypeRecord("Person", "vertex"));
+    when(mockDatabase.command("sql", "select from schema:types")).thenReturn(staleRs, retryRs);
+
+    schema.reload();
+
+    assertThat(schema.existsType("DoesNotExist")).isFalse();
+    // Bounded: checkSchemaIsLoaded()'s initial load, plus exactly one retry - never an unbounded loop.
+    verify(mockDatabase, times(2)).command("sql", "select from schema:types");
+  }
+
+  @Test
+  void getTypeStillThrowsForGenuinelyMissingTypeAfterOneRetry() {
+    final ResultSet staleRs = buildSchemaResultSet(buildTypeRecord("Person", "vertex"));
+    final ResultSet retryRs = buildSchemaResultSet(buildTypeRecord("Person", "vertex"));
+    when(mockDatabase.command("sql", "select from schema:types")).thenReturn(staleRs, retryRs);
+
+    schema.reload();
+
+    assertThatThrownBy(() -> schema.getType("DoesNotExist")).isInstanceOf(SchemaException.class);
+    verify(mockDatabase, times(2)).command("sql", "select from schema:types");
   }
 
   private static ResultInternal buildTypeRecord(final String name, final String typeCode) {

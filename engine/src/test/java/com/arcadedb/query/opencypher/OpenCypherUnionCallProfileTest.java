@@ -299,10 +299,7 @@ class OpenCypherUnionCallProfileTest {
 
     // Test calling the custom function via Cypher CALL. command(), not query(): a CALL target unresolved
     // against the built-in registries is indistinguishable at parse time from a custom DEFINE FUNCTION call,
-    // so query() now rejects it as not idempotent (issue #6418). Explicit YIELD/RETURN, not a bare CALL: a
-    // write-classified statement with no RETURN clause is CypherExecutionPlan.execute()'s signal that only
-    // side effects matter (CREATE/SET/DELETE with nothing to project), which swallows a bare CALL's own
-    // implicit output the same way once the CALL itself is no longer misclassified read-only.
+    // so query() now rejects it as not idempotent (issue #6418).
     final ResultSet result = database.command("opencypher", "CALL math.add(3, 5) YIELD value RETURN value");
 
     assertThat(result.hasNext()).isTrue();
@@ -318,14 +315,58 @@ class OpenCypherUnionCallProfileTest {
     // Define a custom SQL function that returns input
     database.command("sql", "DEFINE FUNCTION my.echo \"SELECT :input AS output\" PARAMETERS [input] LANGUAGE sql");
 
-    // Test calling with string parameter. command(), not query(), and explicit YIELD/RETURN: see
-    // callCustomSQLFunction above.
+    // Test calling with string parameter. command(), not query(): see callCustomSQLFunction above.
     final ResultSet result = database.command("opencypher", "CALL my.echo('Hello World') YIELD value RETURN value");
 
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
     // The SQL function returns a scalar which gets wrapped with "value" property
     assertThat((Object) row.getProperty("value")).isEqualTo("Hello World");
+  }
+
+  @Test
+  void bareCallToWriteClassifiedFunctionSurfacesItsOwnOutput() {
+    // Issue #6446 item 1 regression: a bare CALL (no YIELD/RETURN at all) to a custom DEFINE FUNCTION
+    // is write-classified (issue #6418, since the name is unresolved against any built-in registry) and
+    // used to have its own implicit "yield all columns" output silently discarded by
+    // CypherExecutionPlan.execute()'s "no RETURN clause -> side effects only" shortcut.
+    database.command("sql", "DEFINE FUNCTION math.add \"SELECT :a + :b AS result\" PARAMETERS [a,b] LANGUAGE sql");
+
+    final ResultSet result = database.command("opencypher", "CALL math.add(3, 5)");
+
+    assertThat(result.hasNext()).isTrue();
+    final Result row = result.next();
+    final Object value = row.getProperty("value");
+    assertThat(value).isNotNull();
+    assertThat(((Number) value).intValue()).isEqualTo(8);
+    assertThat(result.hasNext()).isFalse();
+  }
+
+  @Test
+  void bareCallWithYieldStarSurfacesItsOwnOutput() {
+    // Same bug, YIELD * shape: isYieldAll() also owns its projection with no separate RETURN clause.
+    database.command("sql", "DEFINE FUNCTION my.echo \"SELECT :input AS output\" PARAMETERS [input] LANGUAGE sql");
+
+    final ResultSet result = database.command("opencypher", "CALL my.echo('Hello World') YIELD *");
+
+    assertThat(result.hasNext()).isTrue();
+    final Result row = result.next();
+    assertThat((Object) row.getProperty("value")).isEqualTo("Hello World");
+  }
+
+  @Test
+  void writeStatementWithNoReturnStillYieldsNoRows() {
+    // Sanity check the fix didn't broaden past bare CALL: a genuine write statement (CREATE, no CALL
+    // clause at all) with no RETURN clause must still report zero rows, side effects only.
+    database.getSchema().getOrCreateVertexType("NoReturnNode");
+
+    final ResultSet result = database.command("opencypher", "CREATE (n:NoReturnNode {name: 'x'})");
+
+    assertThat(result.hasNext()).isFalse();
+
+    final ResultSet check = database.query("opencypher", "MATCH (n:NoReturnNode) RETURN n.name AS name");
+    assertThat(check.hasNext()).isTrue();
+    assertThat((Object) check.next().getProperty("name")).isEqualTo("x");
   }
 
   // ============================================================
