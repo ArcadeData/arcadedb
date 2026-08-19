@@ -42,6 +42,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Shared entry point for full-text search (BM25 or CLASSIC similarity) over a type's full-text index. Used by the
@@ -52,6 +53,19 @@ public class FullTextSearch {
   // The map-returning search paths expose scores by RID and never read the cursor entry keys, so one shared empty array
   // stands in for them rather than allocating a throwaway per bucket.
   private static final Object[] NO_KEYS           = new Object[0];
+
+  // Test-only: counts how many times scanDocumentFrequencies() has run. Nothing in production reads it; it exists so a
+  // regression test can assert a multi-property conjunction scans document frequencies once for the whole query rather
+  // than once per constrained property (issue #6436).
+  private static final AtomicLong documentFrequencyScanInvocations = new AtomicLong();
+
+  static long getDocumentFrequencyScanInvocationsForTesting() {
+    return documentFrequencyScanInvocations.get();
+  }
+
+  static void resetDocumentFrequencyScanInvocationsForTesting() {
+    documentFrequencyScanInvocations.set(0L);
+  }
 
   private FullTextSearch() {
   }
@@ -195,20 +209,44 @@ public class FullTextSearch {
     final int effectiveLimit = limit < 1 ? -1 : limit;
 
     final List<Object[]> perProperty = LSMTreeFullTextIndex.splitPositionalKey(typeIndex.getPropertyNames(), keys);
-    if (perProperty != null)
+    if (perProperty != null) {
+      // Collect the scoring tokens for EVERY constrained property first, so the corpus statistics that are the same for
+      // all of them - totalDocs, avgDocLength, and each token's document frequency - are computed once for their union,
+      // rather than once per property (issue #6436). Only the per-property posting walk that follows still runs once per
+      // property: it is what intersectPerProperty needs to answer the conjunction, and it is the irreducible work.
+      final LinkedHashMap<String, Float> unionScoringTokens = new LinkedHashMap<>();
+      for (final Object[] propertyKey : perProperty)
+        for (final Map.Entry<String, Float> token : bucketIndexes.getFirst().getSimpleQueryTokenBoosts(propertyKey).entrySet())
+          unionScoringTokens.merge(token.getKey(), token.getValue(), Math::max);
+
+      final BM25ScoringContext scoringContext = createScoringContext(bucketIndexes,
+          scanDocumentFrequencies(bucketIndexes, unionScoringTokens));
+
       return LSMTreeFullTextIndex.rankedCursor(
-          LSMTreeFullTextIndex.intersectPerProperty(perProperty, key -> searchSimple(typeIndex, key, -1)), keys,
-          effectiveLimit);
+          LSMTreeFullTextIndex.intersectPerProperty(perProperty, propertyKey -> scoreAcrossBuckets(bucketIndexes,
+              bucketIndexes.getFirst().getSimpleQueryTokenBoosts(propertyKey), propertyKey, -1, scoringContext)),
+          keys, effectiveLimit);
+    }
 
     final Map<String, Float> scoringTokens = bucketIndexes.getFirst().getSimpleQueryTokenBoosts(keys);
     final BM25ScoringContext scoringContext = createScoringContext(bucketIndexes,
         scanDocumentFrequencies(bucketIndexes, scoringTokens));
+
+    return scoreAcrossBuckets(bucketIndexes, scoringTokens, keys, effectiveLimit, scoringContext);
+  }
+
+  /**
+   * Scores every bucket of the type against one already-built corpus-wide context and merges the per-bucket results into
+   * a single ranked cursor. Shared by {@link #searchSimple}'s single-property path and the per-property lookup a
+   * conjunction runs through {@link LSMTreeFullTextIndex#intersectPerProperty}.
+   */
+  private static IndexCursor scoreAcrossBuckets(final List<LSMTreeFullTextIndex> bucketIndexes,
+      final Map<String, Float> scoringTokens, final Object[] keys, final int limit, final BM25ScoringContext scoringContext) {
     final Map<RID, Float> allResults = new HashMap<>();
     for (final LSMTreeFullTextIndex ftIndex : bucketIndexes)
-      mergeCursor(allResults,
-          ftIndex.scoreBM25WithContext(null, scoringTokens, keys, effectiveLimit, scoringContext));
+      mergeCursor(allResults, ftIndex.scoreBM25WithContext(null, scoringTokens, keys, limit, scoringContext));
 
-    return LSMTreeFullTextIndex.rankedCursor(allResults, keys, effectiveLimit);
+    return LSMTreeFullTextIndex.rankedCursor(allResults, keys, limit);
   }
 
   /**
@@ -309,6 +347,7 @@ public class FullTextSearch {
    */
   private static Map<String, Long> scanDocumentFrequencies(final List<LSMTreeFullTextIndex> bucketIndexes,
       final Map<String, Float> scoringTokens) {
+    documentFrequencyScanInvocations.incrementAndGet();
     final Map<String, Long> documentFrequencies = new HashMap<>();
     for (final String token : scoringTokens.keySet()) {
       long df = 0L;
