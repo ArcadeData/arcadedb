@@ -373,8 +373,10 @@ public class RebuildTypeStatement extends DDLStatement {
     final RebuildTypeStatement result = new RebuildTypeStatement();
     result.typeName = typeName == null ? null : typeName.copy();
     result.polymorphic = polymorphic;
-    for (final Map.Entry<Expression, Expression> e : settings.entrySet())
-      result.settings.put(e.getKey().copy(), e.getValue().copy());
+    // Shallow-copy, matching RebuildIndexStatement/ExportDatabaseStatement/BackupDatabaseStatement/
+    // ImportDatabaseStatement: Expression nodes are effectively immutable post-parse, so there is nothing
+    // for a per-entry deep copy to protect against, and it only doubles the allocations on every copy() call.
+    result.settings.putAll(settings);
     return result;
   }
 
