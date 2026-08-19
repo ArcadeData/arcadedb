@@ -595,6 +595,11 @@ public class PostgresNetworkExecutor extends Thread {
       if (DEBUG)
         LogManager.instance().log(this, Level.INFO, "PSQL: query -> %s ", query);
 
+      // Parsed once, gated on language, and reused below for both the schema-fallback and the target-type
+      // resolution: parseStatement always goes through the SQL engine, so parsing a Cypher/Gremlin/Mongo/
+      // GraphQL query here would be a parse attempt guaranteed to throw and be discarded on every such query.
+      final Statement parsedStatement = "sql".equalsIgnoreCase(query.language) ? parseStatement(query.query) : null;
+
       final long engineStart = System.nanoTime();
       final ResultSet resultSet;
       final String upperCaseText = query.query.toUpperCase(Locale.ENGLISH);
@@ -635,9 +640,10 @@ public class PostgresNetworkExecutor extends Thread {
 
       final long serStart = System.nanoTime();
       Map<String, PostgresType> columns = catalogAnswer != null ? catalogAnswer.columns()
-          : getColumns(cachedResultSet, resolveQueryTargetType(parseStatement(query.query)));
+          : getColumns(cachedResultSet, resolveQueryTargetType(parsedStatement));
       if (columns.isEmpty() && cachedResultSet.isEmpty()) {
-        final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(query.query, query.language, NO_PARAMETERS, null);
+        final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(query.query, query.language, NO_PARAMETERS,
+            parsedStatement);
         if (schemaColumns != null)
           columns = schemaColumns;
       }
@@ -896,11 +902,10 @@ public class PostgresNetworkExecutor extends Thread {
     if (item == null || item.getIdentifier() == null)
       return null;
 
-    try {
-      return database.getSchema().getType(item.getIdentifier().getStringValue());
-    } catch (final Exception e) {
-      return null;
-    }
+    // getTypeOrNull, not getType: the identifier is very often not a registered type name at all (a bucket, a
+    // catalog target, a typo, a RID-producing expression, ...), which getType() reports by throwing - control
+    // flow this resolution runs on every query and so should not pay exception overhead for.
+    return database.getSchema().getTypeOrNull(item.getIdentifier().getStringValue());
   }
 
   /**

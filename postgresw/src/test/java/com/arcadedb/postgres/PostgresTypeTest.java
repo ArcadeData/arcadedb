@@ -23,6 +23,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -43,6 +44,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -873,6 +875,23 @@ class PostgresTypeTest {
   }
 
   @Test
+  void deserializeBinaryNumericRejectsDscaleThatDoesNotMatchTheEncodedPrecision() {
+    // ndigits=1, weight=-1, digit=9999 encodes 0.9999 (issue #6447 review): a declared dscale of 0 does not
+    // match that precision, so the final setScale(dscale, UNNECESSARY) has no exact answer. This must surface
+    // as the same PostgresProtocolException every other rejection in this codec uses, not a bare JDK
+    // ArithmeticException the caller has no reason to expect from a "deserialize" call.
+    final ByteBuffer buf = ByteBuffer.allocate(10).order(ByteOrder.BIG_ENDIAN);
+    buf.putShort((short) 1);      // ndigits
+    buf.putShort((short) -1);     // weight
+    buf.putShort((short) 0x0000); // sign: positive
+    buf.putShort((short) 0);      // dscale: does not match 0.9999's precision
+    buf.putShort((short) 9999);   // digit
+    assertThatThrownBy(() -> PostgresType.deserialize(PostgresType.NUMERIC.code, 1, buf.array()))
+        .isInstanceOf(PostgresProtocolException.class)
+        .hasMessageContaining("does not match");
+  }
+
+  @Test
   void serializeAsBinaryNumericRejectsExcessiveScale() {
     // Unlike deserialize, which only has to reject bytes an attacker sent, serializeAsBinary also has to reject
     // a BigDecimal ArcadeDB itself produced: an unbounded DECIMAL property scale would otherwise wrap silently
@@ -880,6 +899,23 @@ class PostgresTypeTest {
     final BigDecimal absurdScale = new BigDecimal(BigInteger.ONE, 16001);
     final Binary buffer = new Binary();
     assertThatThrownBy(() -> PostgresType.NUMERIC.serializeAsBinary(PostgresType.NUMERIC, buffer, absurdScale))
+        .isInstanceOf(PostgresProtocolException.class)
+        .hasMessageContaining("scale exceeds");
+  }
+
+  @Test
+  @Timeout(value = 10, unit = TimeUnit.SECONDS)
+  void serializeAsBinaryNumericRejectsExtremeNegativeScaleWithoutMaterializingIt() {
+    // A DECIMAL property has no configured precision limit, and BigDecimal(String) parsing scientific notation
+    // is O(1) - new BigDecimal("1E2000000000") just stores unscaledValue=1, scale=-2000000000, no digits
+    // materialized - so a value with an extreme negative scale reaches this codec from a plain SQL literal.
+    // BigDecimal.setScale(0) from that scale is NOT O(1): it has to build unscaledValue * 10^|scale| as a real
+    // BigInteger. The @Timeout is a hang/OOM detector, not a latency bound: an unfixed version of this check
+    // (bounding the scale only after normalizing) would try to allocate that BigInteger and this test would
+    // hang or run the JVM out of heap rather than fail fast.
+    final BigDecimal extremeNegativeScale = new BigDecimal(BigInteger.ONE, -1_000_000_000);
+    final Binary buffer = new Binary();
+    assertThatThrownBy(() -> PostgresType.NUMERIC.serializeAsBinary(PostgresType.NUMERIC, buffer, extremeNegativeScale))
         .isInstanceOf(PostgresProtocolException.class)
         .hasMessageContaining("scale exceeds");
   }

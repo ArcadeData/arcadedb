@@ -276,6 +276,15 @@ public enum PostgresType {
    * wrapped {@code ndigits}/{@code weight}/{@code dscale} out of that payload would not agree with it.
    */
   private static void putNumericBinary(final Binary typeBuffer, final BigDecimal decimalValue) {
+    // Checked on the RAW scale, before any normalization. BigDecimal(String) parsing scientific notation (e.g.
+    // a plain SQL literal like '1E2000000000' - DECIMAL has no configured precision/scale limit) is itself O(1):
+    // it just stores unscaledValue=1, scale=-2000000000. setScale(0) below is not - going from a very negative
+    // scale up to 0 has to actually materialize unscaledValue * 10^|scale| as a real BigInteger. Rejecting the
+    // raw scale first means that materialization, and the multi-GB allocation it would otherwise trigger, never
+    // starts. -(long) avoids the int overflow of negating Integer.MIN_VALUE.
+    if (decimalValue.scale() < 0 && -(long) decimalValue.scale() > NUMERIC_MAX_DIGITS * NUMERIC_DIGIT_WIDTH)
+      throw new PostgresProtocolException("NUMERIC scale exceeds the supported maximum: " + decimalValue.scale());
+
     final BigDecimal normalized = decimalValue.scale() < 0 ? decimalValue.setScale(0) : decimalValue;
     final int dscale = normalized.scale();
     // Checked before any padding so a value with an absurd scale fails fast instead of first allocating a
@@ -383,8 +392,14 @@ public enum PostgresType {
       result = result.negate();
 
     // Trailing zero digit groups are dropped by the encoder, so the scale derived from `weight`/`ndigits` can
-    // be smaller than dscale; padding back up to it is always exact (the dropped digits were zero).
-    return result.setScale(dscale, RoundingMode.UNNECESSARY);
+    // be smaller than dscale; padding back up to it is always exact (the dropped digits were zero) - unless the
+    // payload is malformed and dscale does not actually match the precision ndigits/weight encode, in which
+    // case this is a value this codec could never have produced rather than a genuine JVM arithmetic error.
+    try {
+      return result.setScale(dscale, RoundingMode.UNNECESSARY);
+    } catch (final ArithmeticException e) {
+      throw new PostgresProtocolException("NUMERIC dscale does not match the encoded precision: " + dscale);
+    }
   }
 
   private static boolean toBooleanValue(final Object value) {
