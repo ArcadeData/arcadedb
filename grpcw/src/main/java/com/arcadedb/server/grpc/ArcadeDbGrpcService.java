@@ -4444,6 +4444,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         Document doc = document;
         builder.putProperties(Property.TYPE_PROPERTY, toGrpcValue(doc.getTypeName()));
       }
+
+      // @cat identifies the record's Java shape (document/vertex/edge), matching what JsonSerializer sends over
+      // HTTP (issue #6404). Sending it removes the client's need to resolve the type through the remote schema -
+      // RemoteGrpcDatabase.lookupByRID() has no result to fall back to when that resolution fails or lags.
+      if (!builder.getPropertiesMap().containsKey(Property.CAT_PROPERTY))
+        builder.putProperties(Property.CAT_PROPERTY, toGrpcValue(document instanceof Vertex ? "v" : document instanceof Edge ? "e" : "d"));
     }
 
     // If this is an Edge and @out/@in are not already in properties, add them
@@ -4510,6 +4516,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           builder.putProperties("@in", toGrpcValue(edge.getIn().getIdentity()));
         }
       }
+
+      // @cat identifies the record's Java shape (document/vertex/edge), matching what JsonSerializer sends over
+      // HTTP (issue #6404). Sending it removes the client's need to resolve the type through the remote schema -
+      // RemoteGrpcDatabase.lookupByRID() has no result to fall back to when that resolution fails or lags.
+      if (!builder.getPropertiesMap().containsKey(Property.CAT_PROPERTY))
+        builder.putProperties(Property.CAT_PROPERTY, toGrpcValue(dbRecord instanceof Vertex ? "v" : dbRecord instanceof Edge ? "e" : "d"));
     }
 
     LogManager.instance().log(this, Level.FINE, "ENC-REC DONE rid=%s type=%s props=%s", builder.getRid(),
