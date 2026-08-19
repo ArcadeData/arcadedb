@@ -78,6 +78,17 @@ public class ImporterSettings {
    */
   public String  onRowError             = "abort";
 
+  /**
+   * Explicit override for whether the importer's remote fetches may reach a private/loopback/link-local host,
+   * resolved by a caller that already validated the URL against its own policy (see {@link
+   * com.arcadedb.integration.importer.Importer#setAllowLocalUrls}). {@code null} (the default) falls back to {@link
+   * com.arcadedb.GlobalConfiguration#SERVER_SECURITY_IMPORT_BLOCK_LOCAL_NETWORKS}. Deliberately absent from {@link
+   * #parseParameter}: unlike every other setting here, this one must never be settable from SQL {@code WITH ...}
+   * syntax, or any client able to run {@code IMPORT DATABASE} could self-authorize past the SSRF guard regardless of
+   * server configuration (issue #6474).
+   */
+  public Boolean allowLocalUrls;
+
   public final Map<String, Object> options = new HashMap<>();
 
   public ImporterSettings() {
