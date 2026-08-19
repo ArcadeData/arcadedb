@@ -48,6 +48,13 @@ import java.util.Set;
  * implementation while allowing the cost-based planner to choose the anchor and surrounding joins.
  */
 public class VarLengthExpand extends AbstractPhysicalOperator {
+  public record ExpansionVariables(String source, String relationship, String target, String path) {
+  }
+
+  public record TraversalSpec(RelationshipPattern pattern, Direction direction, boolean reverseResultPath,
+      PathMode pathMode) {
+  }
+
   private final String sourceVariable;
   private final String relationshipVariable;
   private final String targetVariable;
@@ -60,22 +67,24 @@ public class VarLengthExpand extends AbstractPhysicalOperator {
   private Set<String> sameClausePrecedingRelVars;
   private String edgeTrackingVar;
 
-  public VarLengthExpand(final PhysicalOperator child, final String sourceVariable,
-      final String relationshipVariable, final String targetVariable, final String pathVariable,
-      final RelationshipPattern pattern, final Direction direction, final boolean reverseResultPath,
-      final PathMode pathMode, final double estimatedCost, final long estimatedCardinality) {
+  public VarLengthExpand(final PhysicalOperator child, final ExpansionVariables variables,
+      final TraversalSpec traversal, final double estimatedCost, final long estimatedCardinality) {
     super(child, estimatedCost, estimatedCardinality);
+    final RelationshipPattern pattern = traversal != null ? traversal.pattern() : null;
     if (pattern == null || !pattern.isVariableLength())
       throw new IllegalArgumentException("VarLengthExpand requires a variable-length relationship pattern");
 
-    this.sourceVariable = sourceVariable;
-    this.relationshipVariable = relationshipVariable;
-    this.targetVariable = targetVariable;
-    this.pathVariable = pathVariable;
+    if (variables == null)
+      throw new IllegalArgumentException("VarLengthExpand requires variable bindings");
+
+    this.sourceVariable = variables.source();
+    this.relationshipVariable = variables.relationship();
+    this.targetVariable = variables.target();
+    this.pathVariable = variables.path();
     this.pattern = pattern;
-    this.direction = direction;
-    this.reverseResultPath = reverseResultPath;
-    this.pathMode = pathMode;
+    this.direction = traversal.direction();
+    this.reverseResultPath = traversal.reverseResultPath();
+    this.pathMode = traversal.pathMode();
   }
 
   public void setSameClausePrecedingRelVars(final Set<String> sameClausePrecedingRelVars) {

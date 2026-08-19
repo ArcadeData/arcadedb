@@ -723,10 +723,11 @@ public class CypherOptimizer {
         relationship.getEffectiveMinHops(), relationship.getEffectiveMaxHops());
     final double totalCost = CostModel.saturatingAdd(input.getEstimatedCost(), expansionCost);
 
-    final VarLengthExpand expand = new VarLengthExpand(input, sourceVariable,
-        relationship.getVariable(), targetVariable,
-        relationship.getPathVariable(), relationship.getPattern(), direction, reverseResultPath,
-        relationship.getPathMode(), totalCost, outputCardinality);
+    final VarLengthExpand.ExpansionVariables variables = new VarLengthExpand.ExpansionVariables(sourceVariable,
+        relationship.getVariable(), targetVariable, relationship.getPathVariable());
+    final VarLengthExpand.TraversalSpec traversal = new VarLengthExpand.TraversalSpec(relationship.getPattern(),
+        direction, reverseResultPath, relationship.getPathMode());
+    final VarLengthExpand expand = new VarLengthExpand(input, variables, traversal, totalCost, outputCardinality);
     expand.setSameClausePrecedingRelVars(sameClausePrecedingRelVars);
     return expand;
   }
