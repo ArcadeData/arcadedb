@@ -3906,7 +3906,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private void compressPageInternal(final MutablePage page, final boolean forceWipeOut) throws IOException {
     final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
 
-    final List<int[]> orderedRecordContentInPage = getOrderedRecordsInPage(page, recordCountInPage, false);
+    final List<int[]> orderedRecordContentInPage = getOrderedRecordsInPage(page, recordCountInPage, page);
 
     // #6396: the one moment both descriptions of this page's free tail exist at once - what the writes SAID it would
     // be, and what the page HAS. See verifyFreeSpaceClaim; the derivation has to happen BEFORE the defrag below moves
@@ -4151,7 +4151,42 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     return holes;
   }
 
-  private List<int[]> getOrderedRecordsInPage(BasePage page, final short recordCountInPage, final boolean readOnly) {
+  /**
+   * READ-ONLY walk of a page's slot table: returns the {@code {offset, footprint}} of every record the page holds,
+   * ordered by offset, and writes nothing at all.
+   * <p>
+   * #6441: this overload exists so that a caller with nothing but a {@link BasePage} in hand - a statistics scan, a
+   * check - cannot free a slot as a side effect of reading. The repair belongs to
+   * {@link #getOrderedRecordsInPage(BasePage, short, MutablePage)} below, whose signature demands the
+   * {@link MutablePage} the caller already owns.
+   */
+  private List<int[]> getOrderedRecordsInPage(final BasePage page, final short recordCountInPage) {
+    return getOrderedRecordsInPage(page, recordCountInPage, null);
+  }
+
+  /**
+   * The same walk, optionally FREEING the slots it cannot make sense of: a slot deleted by a pre-24.1.1 engine (which
+   * left the record table entry pointing at a zero-length record instead of zeroing it), and a slot whose declared
+   * size cannot fit the page. Both are excluded from the returned list either way; {@code repairOn} decides whether
+   * the record table entry that produced them is also zeroed.
+   * <p>
+   * #6441: the two branches used to be guarded on a {@code readOnly} flag in OPPOSITE directions, so the invalid-size
+   * slot was freed by the statistics scan - which reached {@code database.getTransaction().getPageToModify()} from
+   * inside an ordinary allocation and enlisted an unrelated page into whatever transaction happened to be inserting
+   * a record - and walked past by the compression, the one caller that already holds the page for writing. A
+   * {@code MutablePage} parameter states the same thing the flag was meant to state, except that the compiler
+   * enforces it and there is no silent {@code getPageToModify} upgrade left to reintroduce it.
+   * <p>
+   * Freeing the slot here needs no {@code poisonSlotRebasePage} (unlike the corrupted-record arm of
+   * {@link #deleteRecordInternal}): the only caller is {@link #compressPageInternal}, whose writes are declared
+   * covered by ALL the commit-time merges precisely because the merge re-runs the compression on the page it
+   * re-derived - so the repair is reproduced there rather than lost.
+   *
+   * @param repairOn the page to free unreadable slots on. Must be the very page being walked.
+   */
+  private List<int[]> getOrderedRecordsInPage(final BasePage page, final short recordCountInPage, final MutablePage repairOn) {
+    assert repairOn == null || repairOn == page : "the repair must land on the page being walked";
+
     final List<int[]> orderedRecordContentInPage = new ArrayList<>(DEF_MAX_RECORDS_IN_PAGE);
 
     for (int positionInPage = 0; positionInPage < recordCountInPage; positionInPage++) {
@@ -4165,12 +4200,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
         if (recordSize[0] == 0) {
           // DELETED <24.1.1
-          if (!readOnly) {
+          if (repairOn != null)
             // SET 0 IN THE RECORD TABLE
-            if (!(page instanceof MutablePage))
-              page = database.getTransaction().getPageToModify(page);
-            ((MutablePage) page).writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE, 0L);
-          }
+            freeCorruptedSlot(repairOn, positionInPage);
           continue;
         }
 
@@ -4186,16 +4218,18 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           size = (int) recordSize[0] + (int) recordSize[1];
 
         if (size < 0 || size > getPageSize() - contentHeaderSize) {
-          // INVALID SIZE
+          // INVALID SIZE. Say what was actually done with it: a read-only walk skips it and leaves it for the next
+          // compression, and only the compression deletes it (#6441). The message used to claim the deletion on the
+          // walk that performed none, so an operator reading it was told a record had gone when nothing had.
           LogManager.instance().log(this, Level.SEVERE,
                   "Invalid record size " + size + " for record #" + fileId + ":"
-                          + recordPosition(page.pageId.getPageNumber(), maxRecordsInPage, positionInPage) + ": deleting record");
+                          + recordPosition(page.pageId.getPageNumber(), maxRecordsInPage, positionInPage)
+                          + (repairOn != null ?
+                          ": deleting record" :
+                          ": skipping record (run `CHECK DATABASE COMPRESS` to free the slot)"));
 
-          if (readOnly) {
-            if (!(page instanceof MutablePage))
-              page = database.getTransaction().getPageToModify(page);
-            ((MutablePage) page).writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE, 0L);
-          }
+          if (repairOn != null)
+            freeCorruptedSlot(repairOn, positionInPage);
           continue;
         }
       } catch (Exception e) {
@@ -4210,6 +4244,23 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     orderedRecordContentInPage.sort(Comparator.comparingLong(a -> a[0]));
 
     return orderedRecordContentInPage;
+  }
+
+  /**
+   * Zeroes a record-table entry the compression could not make sense of, and invalidates the cached record count
+   * along with it.
+   * <p>
+   * #6441: this write, like every corrupt-record deletion in {@link #deleteRecordInternal} (see {@link #check}'s own
+   * comment on the same subject), registers no bucket delta - it does not go through the transaction's
+   * insert/delete bookkeeping, because it is a physical-layer repair rather than a semantic one. A record that was
+   * live-counted (inserted and counted this session, not a shape inherited from a pre-24.1.1 database) would
+   * otherwise leave {@code cachedRecordCount} one too high forever: nothing else would ever notice the slot is
+   * gone. Invalidating costs nothing on the common path - this only runs at all when a slot could not be read - and
+   * makes the next {@link #count()} fall through to its own authoritative scan instead of serving a stale number.
+   */
+  private void freeCorruptedSlot(final MutablePage repairOn, final int positionInPage) {
+    repairOn.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE, 0L);
+    cachedRecordCount.set(-1);
   }
 
   /**
@@ -4826,10 +4877,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   /**
    * How many bytes a chunk occupies on the page that holds it: its marker, the {@code INT} declaring the content
    * size, the {@code LONG} pointing at the next chunk, and the content itself. The ONE derivation, called by all three
-   * readers of a page's layout ({@link #contentEndOffset}, {@link #getOrderedRecordsInPage} - and therefore by the
-   * commit-time measurement of {@link #accountCompressedPage}, which sums what the latter returned - and
-   * {@link #getPageOccupiedInBytes}) and by every writer that places a chunk. Shared rather than merely agreed on, so
-   * the write path and the measurement path cannot describe the same bytes differently again (#6358).
+   * readers of a page's layout ({@link #contentEndOffset},
+   * {@link #getOrderedRecordsInPage(BasePage, short, MutablePage)} - and therefore by the commit-time measurement of
+   * {@link #accountCompressedPage}, which sums what the latter returned - and {@link #getPageOccupiedInBytes}) and by
+   * every writer that places a chunk. Shared rather than merely agreed on, so the write path and the measurement path
+   * cannot describe the same bytes differently again (#6358).
    * <p>
    * Before this existed each writer subtracted something of its own: the continuation chunk of a fresh spill left
    * the 12 header bytes out, the extension of an existing chain left the marker out and counted the whole remaining
@@ -5755,7 +5807,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           for (int pageId = 0; pageId < txPageCount - 2; ++pageId) {
             final BasePage page = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageId), pageSize);
             final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
-            final List<int[]> orderedRecordContentInPage = getOrderedRecordsInPage(page, recordCountInPage, true);
+            final List<int[]> orderedRecordContentInPage = getOrderedRecordsInPage(page, recordCountInPage);
 
             // #4958: measure against the usable content region (getMaxContentSize), not the physical
             // page size: the latter overstated the free space of every page by the page header size.
