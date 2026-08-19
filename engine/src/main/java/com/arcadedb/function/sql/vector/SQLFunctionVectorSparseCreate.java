@@ -56,7 +56,7 @@ public class SQLFunctionVectorSparseCreate extends SQLFunctionVectorAbstract {
     try {
       indices = VectorUtils.toIntArray(indicesObj);
     } catch (final IllegalArgumentException e) {
-      throw new CommandSQLParsingException(e.getMessage());
+      throw new CommandSQLParsingException(e.getMessage(), e);
     }
     final float[] values = toFloatArray(valuesObj);
 
