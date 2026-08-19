@@ -315,12 +315,57 @@ class PostgresCatalogExpressionTest {
     assertThat(call.name).isEqualTo("row_number");
     assertThat(call.partitionBy).hasSize(1);
     assertThat(call.orderBy).hasSize(1);
+    assertThat(call.orderByDescending).containsExactly(Boolean.FALSE);
     // Its value is defined by the other rows, so a resolver that was not given one answers UNKNOWN.
     assertThat(parsed.evaluate(new TestResolver())).isSameAs(PostgresCatalogExpression.UNKNOWN);
 
     // A frame specification changes what the function means, so it is declined rather than ignored.
     assertThat(parses("row_number() OVER (ORDER BY attnum ROWS UNBOUNDED PRECEDING)")).isFalse();
     assertThat(parses("row_number() OVER (PARTITION attrelid)")).isFalse();
+  }
+
+  @Test
+  void aWindowOrderByCarriesTheDirectionTheClientWrote() {
+    // The direction decides the numbering, so consuming DESC and forgetting it would number the partition
+    // backwards from what the client asked for - a wrong number rather than no answer.
+    final PostgresCatalogExpression.WindowCall descending = window("row_number() OVER (ORDER BY attnum DESC)");
+    assertThat(descending.orderByDescending).containsExactly(Boolean.TRUE);
+
+    final PostgresCatalogExpression.WindowCall mixed = window(
+        "row_number() OVER (PARTITION BY attrelid ORDER BY attnum DESC, attname ASC)");
+    assertThat(mixed.orderByDescending).containsExactly(Boolean.TRUE, Boolean.FALSE);
+
+    // NULLS FIRST/LAST would reorder the ties this numbering breaks by position, so it is declined.
+    assertThat(parses("row_number() OVER (ORDER BY attnum DESC NULLS LAST)")).isFalse();
+  }
+
+  private static PostgresCatalogExpression.WindowCall window(final String text) {
+    final PostgresCatalogExpression parsed = PostgresCatalogExpression.parse(PostgresCatalogToken.tokenize(text));
+    assertThat(parsed).as("window call did not parse: %s", text).isInstanceOf(
+        PostgresCatalogExpression.WindowCall.class);
+    return (PostgresCatalogExpression.WindowCall) parsed;
+  }
+
+  @Test
+  void aPathologicallyNestedExpressionIsDeclinedRatherThanFatal() {
+    // Any authenticated client can send this, and it is well inside the wire protocol's message budget. An
+    // unbounded parser would recurse until the stack gave out, and a StackOverflowError is an Error, not an
+    // Exception: it would kill the connection thread instead of being answered with an empty result.
+    final int depth = 50_000;
+    final String pathological = "(".repeat(depth) + "1" + ")".repeat(depth);
+
+    assertThat(parses(pathological)).isFalse();
+
+    // The bound is far above anything a real catalog query nests: the JDBC driver's table list reaches four.
+    assertThat(parses("(".repeat(20) + "relname" + ")".repeat(20))).isTrue();
+  }
+
+  @Test
+  void aNumericLiteralThatIsNotANumberIsDeclinedRatherThanReadAsNull() {
+    // The lexer reads "1.2.3" as one numeric token; answering the query with a NULL the client never wrote
+    // would be worse than declining it.
+    assertThat(parses("1.2.3")).isFalse();
+    assertThat(parses("attnum = 1.2.3")).isFalse();
   }
 
   @Test

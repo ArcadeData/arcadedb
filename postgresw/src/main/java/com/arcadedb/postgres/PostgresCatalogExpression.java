@@ -217,12 +217,15 @@ abstract class PostgresCatalogExpression {
     final String                          name;
     final List<PostgresCatalogExpression> partitionBy;
     final List<PostgresCatalogExpression> orderBy;
+    /** One flag per ORDER BY key: the direction it was written with, which decides the numbering. */
+    final List<Boolean>                   orderByDescending;
 
     WindowCall(final String name, final List<PostgresCatalogExpression> partitionBy,
-        final List<PostgresCatalogExpression> orderBy) {
+        final List<PostgresCatalogExpression> orderBy, final List<Boolean> orderByDescending) {
       this.name = name;
       this.partitionBy = partitionBy;
       this.orderBy = orderBy;
+      this.orderByDescending = orderByDescending;
     }
 
     @Override
@@ -563,8 +566,22 @@ abstract class PostgresCatalogExpression {
    * rather than answering part of it.
    */
   static class Parser {
+    /**
+     * How deeply an expression may nest before the query is declined. Every level of parentheses, CASE arm,
+     * function argument or subscript costs one, and a catalog query written by a real client nests a handful
+     * deep - the JDBC driver's table list, the deepest this catalog has to read, reaches four.
+     * <p>
+     * The bound is what keeps "a shape outside the slice is declined" true for <i>every</i> shape: without it
+     * a query with tens of thousands of nested parentheses - well inside the wire protocol's message budget,
+     * and reachable by any authenticated client - would recurse until the stack gave out, and a
+     * StackOverflowError is an Error rather than an Exception, so it would kill the connection thread instead
+     * of being answered with an empty result.
+     */
+    private static final int MAX_DEPTH = 100;
+
     private final List<PostgresCatalogToken> tokens;
     private       int                        position;
+    private       int                        depth;
 
     Parser(final List<PostgresCatalogToken> tokens) {
       this.tokens = tokens;
@@ -601,7 +618,15 @@ abstract class PostgresCatalogExpression {
     }
 
     PostgresCatalogExpression parseExpression() {
-      return parseOr();
+      if (++depth > MAX_DEPTH) {
+        --depth;
+        return null;
+      }
+      try {
+        return parseOr();
+      } finally {
+        --depth;
+      }
     }
 
     private PostgresCatalogExpression parseOr() {
@@ -871,8 +896,13 @@ abstract class PostgresCatalogExpression {
         return new Literal(token.text);
       }
       case NUMBER -> {
+        final Object number = parseNumber(token.text);
+        if (number == null)
+          // Something the lexer read as one numeric token but that is not a number - "1.2.3". Reading it as
+          // SQL NULL would answer the query with a value the client never wrote.
+          return null;
         ++position;
-        return new Literal(parseNumber(token.text));
+        return new Literal(number);
       }
       case QUOTED_IDENTIFIER -> {
         ++position;
@@ -968,6 +998,7 @@ abstract class PostgresCatalogExpression {
 
       final List<PostgresCatalogExpression> partitionBy = new ArrayList<>();
       final List<PostgresCatalogExpression> orderBy = new ArrayList<>();
+      final List<Boolean>                   orderByDescending = new ArrayList<>();
 
       if (skipKeyword("PARTITION")) {
         if (!skipKeyword("BY"))
@@ -988,17 +1019,27 @@ abstract class PostgresCatalogExpression {
           if (key == null)
             return null;
           orderBy.add(key);
-          // A per-key direction would have to be carried into the numbering; nothing this catalog answers
-          // uses one, so it is declined rather than silently ignored.
-          if (peek() != null && (peek().isKeyword("ASC") || peek().isKeyword("DESC")))
+
+          // The direction decides the numbering, so it is carried rather than consumed and forgotten: a key
+          // read as ascending when the client wrote DESC numbers the partition backwards, and a wrong number
+          // in a system catalog is worse than no answer.
+          boolean descending = false;
+          if (peek() != null && (peek().isKeyword("ASC") || peek().isKeyword("DESC"))) {
+            descending = peek().isKeyword("DESC");
             ++position;
+          }
+          // NULLS FIRST/LAST would reorder the ties this numbering breaks by position, so a window that asks
+          // for it is declined rather than numbered by a rule it did not ask for.
+          if (peek() != null && peek().isKeyword("NULLS"))
+            return null;
+          orderByDescending.add(descending);
         } while (skipSymbol(","));
       }
 
       if (!skipSymbol(")"))
         return null;
 
-      return new WindowCall(functionName, partitionBy, orderBy);
+      return new WindowCall(functionName, partitionBy, orderBy, orderByDescending);
     }
 
     private PostgresCatalogExpression parseCase() {

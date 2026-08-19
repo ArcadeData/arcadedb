@@ -966,7 +966,8 @@ public class PostgresCatalog {
             for (int i = 0; i < l.size(); i++) {
               final int comparison = compareValues(l.get(i), r.get(i));
               if (comparison != 0)
-                return comparison;
+                // DESC numbers the partition the other way round, which is the whole point of writing it.
+                return call.orderByDescending.get(i) ? -comparison : comparison;
             }
             return 0;
           });
@@ -1173,6 +1174,9 @@ public class PostgresCatalog {
     if (expression instanceof PostgresCatalogExpression.ColumnReference reference)
       return reference.name;
     if (expression instanceof PostgresCatalogExpression.FunctionCall call)
+      return call.name;
+    if (expression instanceof PostgresCatalogExpression.WindowCall call)
+      // PostgreSQL names an un-aliased window column after its function, exactly as it does a plain call.
       return call.name;
     // PostgreSQL's own name for a column it cannot name from the expression.
     return "?column?";

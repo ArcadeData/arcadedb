@@ -308,6 +308,31 @@ class PostgresCatalogTest {
     assertThat(names(answer.rows, "relname")).containsExactly("Author");
   }
 
+  @Test
+  void aWindowNumbersItsPartitionInTheDirectionTheClientAskedFor() {
+    // The same shape the JDBC driver's column list uses, but ordered the other way round: the numbering has
+    // to follow, or the client is handed numbers that contradict its own ORDER BY.
+    final PostgresCatalog.Answer ascending = resolve(
+        "SELECT a.attname, row_number() OVER (PARTITION BY a.attrelid ORDER BY a.attnum) AS n "
+            + "FROM pg_class c, pg_attribute a WHERE c.relname = 'Article'");
+    assertThat(names(ascending.rows, "attname")).containsExactly("id", "title");
+    assertThat(names(ascending.rows, "n")).containsExactly(1L, 2L);
+
+    final PostgresCatalog.Answer descending = resolve(
+        "SELECT a.attname, row_number() OVER (PARTITION BY a.attrelid ORDER BY a.attnum DESC) AS n "
+            + "FROM pg_class c, pg_attribute a WHERE c.relname = 'Article'");
+    assertThat(names(descending.rows, "attname")).containsExactly("id", "title");
+    assertThat(names(descending.rows, "n")).containsExactly(2L, 1L);
+  }
+
+  @Test
+  void anUnAliasedWindowColumnIsNamedAfterItsFunction() {
+    final PostgresCatalog.Answer answer = resolve(
+        "SELECT row_number() OVER (ORDER BY relname) FROM pg_class");
+
+    assertThat(answer.columns.keySet()).containsExactly("row_number");
+  }
+
   // ---------------------------------------------------------------- the remaining families and clauses
 
   @Test
