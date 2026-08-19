@@ -346,7 +346,7 @@ public class AnchorSelector {
   private AnchorSelection evaluateDisjunctionNode(final LogicalNode node, final LogicalPlan plan) {
     final long rows = statisticsProvider.getMatchingVertexCardinality(node.getLabels(), true);
 
-    final AnchorSelection seek = tryDisjunctionIndexSeek(node, plan);
+    final AnchorSelection seek = tryDisjunctionIndexSeek(node, plan, rows);
     if (seek != null)
       return seek;
 
@@ -366,10 +366,13 @@ public class AnchorSelector {
    * candidate predicate, matching the rule {@code IndexSelectionRule} enforces when it builds the operator. Only
    * when no predicate at all resolves on every root does this fall back to the ordinary scan.
    *
+   * @param totalRows the disjunction's total scan cardinality, already computed by the caller
+   * ({@link StatisticsProvider#getMatchingVertexCardinality}) for its own scan-fallback estimate - passed in
+   * rather than recomputed here, since both calls read the same cached O(1) counters for the same labels.
    * @return the disjunction-seek anchor, or {@code null} when no equality predicate has a usable index on every
    * root
    */
-  private AnchorSelection tryDisjunctionIndexSeek(final LogicalNode node, final LogicalPlan plan) {
+  private AnchorSelection tryDisjunctionIndexSeek(final LogicalNode node, final LogicalPlan plan, final long totalRows) {
     final String variable = node.getVariable();
 
     final Map<String, Object> equalityPredicates = new HashMap<>();
@@ -417,7 +420,6 @@ public class AnchorSelector {
       // Same selectivity heuristic as the single-type equality seek: a unique key resolves to ~one row, a
       // non-unique one is assumed 10% selective. Applied to the total scan size rather than per root, since the
       // per-root subtree counts are not otherwise collected for a disjunction's roots.
-      final long totalRows = statisticsProvider.getMatchingVertexCardinality(node.getLabels(), true);
       final double selectivity = allUnique ? 0.001 : 0.1;
       final long estimatedRows = Math.max(seeks.size(), (long) (totalRows * selectivity));
 

@@ -86,6 +86,11 @@ public class NodeByLabelDisjunctionIndexSeek extends AbstractPhysicalOperator {
         return result;
       }
 
+      // No WorkGuard of its own here: unlike NodeByLabelDisjunctionScan's single unguarded scan loop, every
+      // iteration of the outer while below immediately delegates into one child NodeIndexSeek's own hasNext()/
+      // next(), each of which already runs its own WorkGuard.forCommandDeadline(context) check per record. A
+      // future child added here that does NOT guard itself would reintroduce an unbounded loop, so keep that
+      // invariant in mind before adding one.
       private Result fetchNextUnseen() {
         while (true) {
           if (current == null) {
