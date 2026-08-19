@@ -373,6 +373,26 @@ class OpenCypherUnionCallProfileTest {
   }
 
   @Test
+  void readClassifiedBareCallStillSurfacesItsOwnOutputUnaffectedByTheFix() {
+    // Sanity check the other direction: the swallowing bug only ever existed on the write-classified
+    // path (CypherExecutionPlan.execute()'s hasWriteOps branch). A bare CALL to a registered read-only
+    // procedure (db.labels(), no args) was never broken - the read-only path returns the ResultSet
+    // unfiltered, with no "no RETURN" special-casing at all - and must keep working exactly the same.
+    database.getSchema().getOrCreateVertexType("ReadOnlyCallLabel");
+
+    final ResultSet result = database.command("opencypher", "CALL db.labels()");
+
+    assertThat(result.hasNext()).isTrue();
+    boolean found = false;
+    while (result.hasNext()) {
+      final Result row = result.next();
+      if ("ReadOnlyCallLabel".equals(row.getProperty("label")))
+        found = true;
+    }
+    assertThat(found).isTrue();
+  }
+
+  @Test
   void writeStatementWithNoReturnStillYieldsNoRows() {
     // Sanity check the fix didn't broaden past bare CALL: a genuine write statement (CREATE, no CALL
     // clause at all) with no RETURN clause must still report zero rows, side effects only.
