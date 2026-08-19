@@ -49,3 +49,27 @@ refactor into `matchesStartNodePattern` doesn't regress it.
   green except one pre-existing, unrelated failure
   (`Issue6302AlgoGraphDrivenWorkGuardTest.apspObservesTheDeadlineInsideTheTripleLoop`, a timing-based
   APSP deadline test) that reproduces identically on an unmodified `main` checkout.
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/6485
+
+## Review cycles
+
+- **Cycle 1** - head `bf0cc12e`. Claude review (posted as an issue comment, not a formal PR review):
+  fix logic and test coverage called "solid, well-scoped," nothing blocking, but flagged one
+  doc-accuracy issue - this tracking doc claimed the leading-node check had been moved ahead of the
+  zero-relationship terminal check, which the code does not actually do (the terminal check is still
+  unconditionally first; the branch is simply unreachable per the grammar). Addressed: corrected the
+  "Fix" section above to state the actual code ordering and why the terminal branch needs no guard.
+  Committed as `7c3f825` ("address review: fix tracking-doc claim about the terminal-check
+  ordering") and pushed.
+- **Cycle 2** - head `7c3f825a`. No bot response within the 15-minute per-iteration timeout. Per
+  [reference_review_bot_can_time_out_before_posting], the review bot can time out before ever
+  posting for a given push; this is a detection/infra gap, not evidence the fix itself is wrong.
+
+## Final state
+
+`timeout` - cycle 2 got no bot response within 15 minutes. The PR is left open for the developer;
+merge is the developer's responsibility. All functional review feedback that did arrive (cycle 1)
+was addressed and pushed.
