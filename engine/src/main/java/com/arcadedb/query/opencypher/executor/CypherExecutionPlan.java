@@ -314,6 +314,9 @@ public class CypherExecutionPlan {
       // A bare CALL (no YIELD/RETURN, e.g. a write-classified custom function or write procedure) is its
       // own projection: CallStep already yields its implicit "all columns" row, so a missing RETURN clause
       // here does not mean "side effects only" the way it does for CREATE/SET/DELETE/MERGE/REMOVE. Issue #6446.
+      // Deliberately scoped to a CALL that is the statement's ONLY clause: a CALL chained after other
+      // clauses (e.g. WITH ... CALL proc() YIELD x, or multiple chained CALLs), still with no trailing
+      // RETURN, is a separate, narrower gap left for #6450 rather than widened here.
       final List<ClauseEntry> clauses = statement.getClausesInOrder();
       final boolean bareCallOwnsProjection = clauses.size() == 1 && clauses.get(0).getType() == ClauseEntry.ClauseType.CALL;
 

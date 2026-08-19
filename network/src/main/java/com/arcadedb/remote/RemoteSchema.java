@@ -81,10 +81,12 @@ public class RemoteSchema implements Schema {
   @Override
   public boolean existsType(final String typeName) {
     checkSchemaIsLoaded();
-    if (types.containsKey(typeName))
-      return true;
-    reload();
-    return types.containsKey(typeName);
+    boolean found = types.containsKey(typeName);
+    if (!found) {
+      reload();
+      found = types.containsKey(typeName);
+    }
+    return found;
   }
 
   @Override
