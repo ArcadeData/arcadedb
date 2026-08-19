@@ -136,6 +136,85 @@ class Issue6440CrossInstanceFlushDiscardTest extends TestHelper {
   }
 
   /**
+   * A deeper layer of the same aliasing (issue #6440 review, third pass): {@code removeAllOfDatabase}'s pages
+   * purge used to filter by the RETAINED MAP KEY's database identity, not the indexed page's. {@code PageId}
+   * collides as a map key across same-path instances too ({@code PageId.equals()}/{@code hashCode()} go through
+   * path-based {@code Database.equals()}), and {@code Map.put()} on an {@code equals()}-match keeps the ORIGINAL
+   * key object and only swaps the value - textbook Java {@code Map} behavior. So when "open" indexes a page at
+   * the exact same {@code (fileId, pageNumber)} "closing" used, the map's stored key is still "closing"'s
+   * original {@code PageId}, even though the VALUE is now "open"'s live page. Filtering by that retained key's
+   * database would still evict "open"'s page - the same failure the earlier tests pin, one layer further down.
+   */
+  @Test
+  void flushIndexRemoveAllOfDatabaseMustNotEvictASamePathSiblingsPageOnMapKeyCollision() throws Exception {
+    final String path = "target/databases/" + getClass().getSimpleName() + "-page-collision";
+
+    final Database closing = TestHelper.createDatabase(path);
+    closing.drop();
+
+    final Database open = TestHelper.createDatabase(path);
+    try {
+      final FlushPageIndex index = new FlushPageIndex();
+
+      // Same (fileId, pageNumber) on purpose: this is what makes the two PageIds collide as one map key.
+      final MutablePage closingPage = page((DatabaseInternal) closing, 0);
+      index.put(closingPage);
+      final MutablePage openPage = page((DatabaseInternal) open, 0);
+      index.put(openPage);
+
+      // open's page is the current value at that key - closing's PageId object may still be the stored key.
+      assertThat(index.get(openPage.getPageId())).isSameAs(openPage);
+
+      index.removeAllOfDatabase((DatabaseInternal) closing);
+
+      assertThat(index.get(openPage.getPageId())).as(
+          "a same-path sibling's live page must survive removeAllOfDatabase() of a DIFFERENT instance even when "
+              + "it collided with that instance's page at the same (fileId, pageNumber) map key").isSameAs(openPage);
+    } finally {
+      open.drop();
+    }
+  }
+
+  /**
+   * The counter-accounting half of the same map-key collision: {@code put()}/{@code putAll()}'s "a later TX
+   * superseded a page still queued" branch (issue #4544) used to decrement the INCOMING page's counter whenever
+   * {@code pages.put()} returned a non-null replaced value - correct within one database, wrong across two: the
+   * replaced value can belong to a DIFFERENT same-path instance (the same collision as the test above), and
+   * decrementing the wrong counter phantom-inflates a live sibling's pending count forever while leaving the
+   * instance that actually owned the replaced page one too high.
+   */
+  @Test
+  void flushIndexPutMustReleaseTheReplacedPagesOwnCounterNotTheIncomingPages() throws Exception {
+    final String path = "target/databases/" + getClass().getSimpleName() + "-collision-counters";
+
+    final Database closing = TestHelper.createDatabase(path);
+    closing.drop();
+
+    final Database open = TestHelper.createDatabase(path);
+    try {
+      final FlushPageIndex index = new FlushPageIndex();
+
+      final MutablePage closingPage = page((DatabaseInternal) closing, 0);
+      index.put(closingPage);
+      assertThat(index.pendingOf((DatabaseInternal) closing)).isEqualTo(1);
+
+      // Same (fileId, pageNumber): closingPage's entry is replaced, not added alongside.
+      final MutablePage openPage = page((DatabaseInternal) open, 0);
+      index.put(openPage);
+
+      assertThat(index.pendingOf((DatabaseInternal) open)).as(
+          "open's own freshly-indexed page must still count as pending - it must not have been decremented "
+              + "away just because it happened to replace a different instance's page at the same map key")
+          .isEqualTo(1);
+      assertThat(index.pendingOf((DatabaseInternal) closing)).as(
+          "closing's superseded page must be released from ITS OWN counter, not left permanently inflated")
+          .isEqualTo(0);
+    } finally {
+      open.drop();
+    }
+  }
+
+  /**
    * The insertion-side twin of the test above: a same-path sibling's counter must never be resolved on the way
    * IN either. {@code counterOf()} used to be a plain {@code pending.get(database)}/{@code computeIfAbsent}, and
    * since {@code LocalDatabase.equals()} compares by path, that could hand a brand-new database's FIRST page the

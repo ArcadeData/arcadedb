@@ -797,9 +797,14 @@ public class PageManagerFlushThread extends Thread {
                 // nextPagesToFlush, which therefore still runs. Worth saying because the nesting is deep enough that
                 // a future refactor lifting this block into a helper would silently take that finally with it.
                 if (!db.isOpen()) {
+                  // Both the index entry and the WAL ack are released together (issue #6440 review): releasing
+                  // only the ack would leave pageIndex.pendingOf(db) inflated - "WAL says done, pageIndex says
+                  // pending" - until removeAllPagesOfDatabase's later catch-all gets around to it.
                   synchronized (pagesToFlush.pages) {
-                    for (final MutablePage page : pagesToFlush.pages)
+                    for (final MutablePage page : pagesToFlush.pages) {
+                      removeFromFlushIndex(page);
                       ackWalFileOfAbandonedPage(page);
+                    }
                   }
                   return;
                 }
@@ -813,11 +818,14 @@ public class PageManagerFlushThread extends Thread {
             }
 
             if (!pagesToFlush.database.isOpen()) {
-              // None of this batch will ever be written (issue #6440): ack every page's WAL file rather than
-              // leaving their WALFile.pagesToFlush counters stranded above zero forever.
+              // None of this batch will ever be written (issue #6440): release both the index entry and the WAL
+              // ack for every page, rather than leaving pageIndex.pendingOf() inflated and their
+              // WALFile.pagesToFlush counters stranded above zero forever.
               synchronized (pagesToFlush.pages) {
-                for (final MutablePage page : pagesToFlush.pages)
+                for (final MutablePage page : pagesToFlush.pages) {
+                  removeFromFlushIndex(page);
                   ackWalFileOfAbandonedPage(page);
+                }
               }
               return;
             }

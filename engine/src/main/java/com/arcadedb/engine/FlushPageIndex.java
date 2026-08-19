@@ -149,19 +149,40 @@ class FlushPageIndex {
         lastDatabase = database;
       }
       counter.incrementAndGet();
-      if (pages.put(pageId, page) != null)
-        // REPLACED A COPY THAT WAS ALREADY COUNTED (A LATER TX SUPERSEDING A PAGE STILL QUEUED, ISSUE #4544)
-        counter.decrementAndGet();
+      final MutablePage replaced = pages.put(pageId, page);
+      if (replaced != null)
+        // REPLACED A COPY THAT WAS ALREADY COUNTED (A LATER TX SUPERSEDING A PAGE STILL QUEUED, ISSUE #4544) -
+        // decrementing the REPLACED page's OWN counter, not necessarily this one (issue #6440 review): see
+        // releaseReplacedCounter.
+        releaseReplacedCounter(replaced, database, counter);
     }
   }
 
   /** Indexes a single page. */
   void put(final MutablePage page) {
     final PageId pageId = page.getPageId();
-    final AtomicInteger counter = counterOf(pageId.getDatabase());
+    final BasicDatabase database = pageId.getDatabase();
+    final AtomicInteger counter = counterOf(database);
     counter.incrementAndGet();
-    if (pages.put(pageId, page) != null)
-      counter.decrementAndGet();
+    final MutablePage replaced = pages.put(pageId, page);
+    if (replaced != null)
+      releaseReplacedCounter(replaced, database, counter);
+  }
+
+  /**
+   * Releases the pending count of a page {@link #put}/{@link #putAll} just replaced in {@link #pages} (issue
+   * #4544: a later TX superseding one still queued). {@code Map.put()} on an {@code equals()}-match keeps the
+   * ORIGINAL key object and only swaps the value, so a same-path sibling's stale {@link PageId} can retain the
+   * map slot while its VALUE becomes the new page - the replaced value can therefore belong to a DIFFERENT
+   * instance than the one just inserted, even though {@link PageId#equals} said they were "the same page" (issue
+   * #6440 review). Decrementing the INCOMING page's counter in that case would phantom-increment a live,
+   * un-flushed sibling's count forever, while the replaced page's own (already fully accounted) counter is left
+   * one too high - exactly the aliasing the rest of this class's {@link IdentityKey} keying exists to prevent.
+   */
+  private void releaseReplacedCounter(final MutablePage replaced, final BasicDatabase incomingDatabase,
+      final AtomicInteger incomingCounter) {
+    final BasicDatabase replacedDatabase = replaced.getPageId().getDatabase();
+    (replacedDatabase == incomingDatabase ? incomingCounter : counterOf(replacedDatabase)).decrementAndGet();
   }
 
   /** @return the {@link MutablePage} that was indexed for the page, or {@code null} when none was. */
@@ -213,13 +234,24 @@ class FlushPageIndex {
    * safe against a concurrent {@link #putAll} from inside this class.
    */
   void removeAllOfDatabase(final BasicDatabase database) {
-    // Reference identity ON PURPOSE (issue #6440), not database.equals(pageId.getDatabase()): LocalDatabase
-    // compares by PATH, so a database reopened at the same path as `database` indexes its pages under a key that
-    // is merely path-equal, not the same instance. A belated cleanup of the OLD instance must not evict pages a
-    // DIFFERENT, still-open instance is waiting to have flushed - that silently drops writes with no error, no
-    // WAL replay to fall back on (they were never written), which is strictly worse than the counter merely
-    // staying nonzero a little longer.
-    pages.keySet().removeIf(pageId -> pageId.getDatabase() == database);
+    // Reference identity ON PURPOSE (issue #6440), not database.equals(...): LocalDatabase compares by PATH, so a
+    // database reopened at the same path as `database` indexes its pages under a key that is merely path-equal,
+    // not the same instance. A belated cleanup of the OLD instance must not evict pages a DIFFERENT, still-open
+    // instance is waiting to have flushed - that silently drops writes with no error, no WAL replay to fall back
+    // on (they were never written), which is strictly worse than the counter merely staying nonzero a little
+    // longer.
+    //
+    // Checked against the ENTRY'S VALUE, not the retained map key, and that distinction matters here specifically
+    // (issue #6440 review): Map.put() on an equals()-match keeps the ORIGINAL key object and only replaces the
+    // value - textbook Java Map behavior - so a page this OLD instance indexed at PageId(A, fileId, pageNumber)
+    // and a page a same-path sibling B later indexes at the SAME (fileId, pageNumber) collide as map keys
+    // (PageId.equals()/hashCode() go through path-based Database.equals() too). B's put() then leaves the STORED
+    // key as A's original PageId object with B's page as the value. Filtering by the retained key's database
+    // (pageId.getDatabase() == database) would still match that stale key and evict B's live, un-flushed page -
+    // the exact aliasing this method exists to prevent, just reached one layer down. MutablePage.getPageId() is
+    // the value's OWN field, set when that specific page object was created, so it always names whichever
+    // instance most recently indexed the CURRENT value - immune to which key object the map happened to retain.
+    pages.entrySet().removeIf(entry -> entry.getValue().getPageId().getDatabase() == database);
     // Dropped AFTER the pages, never before: the other order would let a page indexed in between survive with a
     // fresh counter that the purge then empties, leaving a count above zero that hangs the close forever.
     //
