@@ -119,12 +119,15 @@ public class PatternComprehensionExpression implements Expression {
       return;
     }
 
-    // Inline WHERE predicate on the leading node, e.g. [(a WHERE a.v = 1)-[:E]->(x) | x]. Only the
-    // first hop needs the check here: every later hop starts from the previous hop's end node, which
-    // matchesEndPattern already validated, and an uncorrelated start is validated while iterating
-    // candidates in traverseUncorrelatedStart.
-    if (hopIndex == 0 && knownStartVertex == null
-        && !matchesNodeWhereExpression(startVertex, startNodePattern, inlineWhereRow(startNodePattern, currentResult), context))
+    // Label, inline-property and inline-WHERE constraints on the leading node, e.g.
+    // [(a:Company WHERE a.v = 1)-[:E]->(x) | x]. Only the first hop needs the check here: every
+    // later hop starts from the previous hop's end node, which matchesEndPattern already validated,
+    // and an uncorrelated start is validated while iterating candidates in traverseUncorrelatedStart.
+    // A correlated start (the leading node reuses an outer-bound variable) used to skip the label and
+    // inline-property checks entirely and enforce only the WHERE predicate, so a comprehension and
+    // the sibling exists(...) pattern predicate - which enforces all three on a bound start vertex
+    // (issue #5095) - disagreed on the same pattern (issue #6374).
+    if (hopIndex == 0 && knownStartVertex == null && !matchesStartNodePattern(startVertex, startNodePattern, currentResult, context))
       return;
 
     // Add start vertex to path at first hop
@@ -219,6 +222,23 @@ public class PatternComprehensionExpression implements Expression {
     if (!InlineProperties.matches(vertex, startNodePattern.getProperties(), bindings, context))
       return false;
     return matchesNodeWhereExpression(vertex, startNodePattern, whereEvalRow, context);
+  }
+
+  /**
+   * Returns true if a <b>correlated</b> start vertex - the leading node of the pattern reusing a
+   * variable already bound in the outer scope - satisfies the start node pattern's labels, inline
+   * properties and inline {@code WHERE} predicate. Unlike {@link #matchesStartPattern}, the labels
+   * are checked here: the vertex did not come from a label-filtered candidate scan, it is whatever
+   * the outer scope already bound (issue #6374, mirroring {@code PatternPredicateExpression}'s
+   * enforcement of the same rule for {@code exists(...)}, issue #5095).
+   */
+  private boolean matchesStartNodePattern(final Vertex vertex, final NodePattern startNodePattern, final Result bindings,
+      final CommandContext context) {
+    if (!Labels.matches(vertex, startNodePattern.getLabels(), startNodePattern.isLabelDisjunction()))
+      return false;
+    if (!InlineProperties.matches(vertex, startNodePattern.getProperties(), bindings, context))
+      return false;
+    return matchesNodeWhereExpression(vertex, startNodePattern, inlineWhereRow(startNodePattern, bindings), context);
   }
 
   private void traverseVariableLength(final Result baseResult, final CommandContext context,
