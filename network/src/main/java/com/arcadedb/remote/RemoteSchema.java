@@ -55,6 +55,17 @@ import java.util.stream.Collectors;
  * see the previous complete snapshot or the new one, never a partially-built map. Prior to this
  * change, two threads could race on the {@code null}-gated init and hit
  * {@link java.util.ConcurrentModificationException} inside {@link java.util.HashMap#computeIfAbsent}.
+ * <p>
+ * A type/bucket lookup by name that misses the cache (e.g. one created afterward by raw DDL through
+ * {@code command()}, which - unlike the {@code createXxxType()} helpers - does not invalidate this
+ * cache, or by another connection/session entirely) retries with a single {@link #reload()} before
+ * giving up, so a genuinely nonexistent name still fails fast, and a name that exists but was created
+ * after this cache warmed up is found on the very next lookup regardless of timing. A time-based
+ * debounce on that retry was considered and rejected: it can silently suppress the retry for a lookup
+ * that happens to land within the debounce window of an earlier, unrelated reload - exactly the
+ * cross-connection scenario this class exists to fix. A caller that walks many known-nonexistent
+ * names in a hot loop does pay one reload per miss; that cost is bounded per call and was judged
+ * preferable to reintroducing stale reads. Issue #6446.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -72,9 +83,6 @@ public class RemoteSchema implements Schema {
     checkSchemaIsLoaded();
     if (types.containsKey(typeName))
       return true;
-    // Cache miss: the type may have been created by raw DDL through command() (which, unlike the
-    // createXxxType() helpers, does not invalidate this cache) or by another connection/session
-    // entirely. One bounded reload before giving up keeps a genuinely nonexistent type failing fast. Issue #6446.
     reload();
     return types.containsKey(typeName);
   }
@@ -353,7 +361,6 @@ public class RemoteSchema implements Schema {
 
     RemoteDocumentType t = types.get(typeName);
     if (t == null) {
-      // See existsType() for why a single bounded reload happens here before failing.
       reload();
       t = types.get(typeName);
     }
@@ -367,7 +374,6 @@ public class RemoteSchema implements Schema {
     checkSchemaIsLoaded();
     RemoteDocumentType t = types.get(typeName);
     if (t == null) {
-      // See existsType() for why a single bounded reload happens here before giving up.
       reload();
       t = types.get(typeName);
     }
@@ -609,7 +615,11 @@ public class RemoteSchema implements Schema {
   @Override
   public RemoteBucket getBucketByName(final String name) {
     checkSchemaIsLoaded();
-    final RemoteBucket b = buckets.get(name);
+    RemoteBucket b = buckets.get(name);
+    if (b == null) {
+      reload();
+      b = buckets.get(name);
+    }
     if (b == null)
       throw new SchemaException("Bucket '" + name + "' not found");
     return b;
@@ -619,7 +629,12 @@ public class RemoteSchema implements Schema {
   @Override
   public RemoteBucket getBucketByNameIfExists(final String name) {
     checkSchemaIsLoaded();
-    return buckets.get(name);
+    RemoteBucket b = buckets.get(name);
+    if (b == null) {
+      reload();
+      b = buckets.get(name);
+    }
+    return b;
   }
 
   @Deprecated

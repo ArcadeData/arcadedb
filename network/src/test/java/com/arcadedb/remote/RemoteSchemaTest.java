@@ -512,6 +512,60 @@ class RemoteSchemaTest {
     verify(mockDatabase, times(2)).command("sql", "select from schema:types");
   }
 
+  // Reviewer follow-up on #6446: getBucketByName()/getBucketByNameIfExists() shared the exact same
+  // staleness bug as the type accessors (both are rebuilt from the same reload() snapshot) but weren't
+  // covered by the original fix.
+
+  @Test
+  void getBucketByNameRetriesReloadOnCacheMissAndFindsNewlyCreatedBucket() {
+    final ResultSet staleRs = buildSchemaResultSet(buildTypeRecord("Person", "vertex"));
+    final ResultSet freshRs = buildTypeRecordWithBucket("Address", "vertex", "address_bucket");
+    when(mockDatabase.command("sql", "select from schema:types")).thenReturn(staleRs, freshRs);
+
+    schema.reload();
+
+    final Bucket b = schema.getBucketByName("address_bucket");
+    assertThat(b.getName()).isEqualTo("address_bucket");
+    verify(mockDatabase, times(2)).command("sql", "select from schema:types");
+  }
+
+  @Test
+  void getBucketByNameIfExistsRetriesReloadOnCacheMissAndFindsNewlyCreatedBucket() {
+    final ResultSet staleRs = buildSchemaResultSet(buildTypeRecord("Person", "vertex"));
+    final ResultSet freshRs = buildTypeRecordWithBucket("Address", "vertex", "address_bucket");
+    when(mockDatabase.command("sql", "select from schema:types")).thenReturn(staleRs, freshRs);
+
+    schema.reload();
+
+    assertThat(schema.getBucketByNameIfExists("address_bucket")).isNotNull();
+    verify(mockDatabase, times(2)).command("sql", "select from schema:types");
+  }
+
+  @Test
+  void getBucketByNameStillThrowsForGenuinelyMissingBucketAfterOneRetry() {
+    final ResultSet staleRs = buildSchemaResultSet(buildTypeRecord("Person", "vertex"));
+    final ResultSet retryRs = buildSchemaResultSet(buildTypeRecord("Person", "vertex"));
+    when(mockDatabase.command("sql", "select from schema:types")).thenReturn(staleRs, retryRs);
+
+    schema.reload();
+
+    assertThatThrownBy(() -> schema.getBucketByName("does_not_exist")).isInstanceOf(SchemaException.class);
+    verify(mockDatabase, times(2)).command("sql", "select from schema:types");
+  }
+
+  private static ResultSet buildTypeRecordWithBucket(final String typeName, final String typeCode, final String bucketName) {
+    final ResultInternal r = new ResultInternal();
+    r.setProperty("name", typeName);
+    r.setProperty("type", typeCode);
+    r.setProperty("records", 0L);
+    r.setProperty("buckets", List.of(bucketName));
+    r.setProperty("bucketSelectionStrategy", "round-robin");
+    r.setProperty("parentTypes", Collections.emptyList());
+    r.setProperty("properties", Collections.emptyList());
+    r.setProperty("custom", new HashMap<>());
+    return buildSchemaResultSet(r);
+  }
+
   private static ResultInternal buildTypeRecord(final String name, final String typeCode) {
     final ResultInternal r = new ResultInternal();
     r.setProperty("name", name);
