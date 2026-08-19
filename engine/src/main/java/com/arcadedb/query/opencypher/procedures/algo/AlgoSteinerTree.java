@@ -129,7 +129,7 @@ public class AlgoSteinerTree extends AbstractAlgoProcedure {
     // by 2 happens after the product, so the wrap is not avoided by the result fitting an int - and a negative
     // pairCount reached `new int[pairCount]` as a bare NegativeArraySizeException naming nothing.
     final long pairCount = (long) t * (t - 1) / 2;
-    final MemoryBudget memory = newMemoryBudget(db);
+    final MemoryBudget memory = graph.memory();
     memory.reserve(saturatingSum(matrixBytes(t, n, DOUBLE_BYTES), matrixBytes(t, n, INT_BYTES)),
         "the per-terminal Dijkstra tables", t + " terminals x " + n + " nodes");
     // Per pair: the endpoints pU/pV, the weight pW, and the two int arrays the index sort works over (the

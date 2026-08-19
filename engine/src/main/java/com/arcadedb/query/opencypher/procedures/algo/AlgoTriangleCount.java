@@ -94,9 +94,12 @@ public class AlgoTriangleCount extends AbstractAlgoProcedure {
     // Always use BOTH for triangle counting (undirected notion)
     final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH, relTypes);
 
-    // Build neighbor BitSets for fast intersection
+    // Build neighbor BitSets for fast intersection: a nodeCount x nodeCount bit matrix, reserved before the
+    // first BitSet is allocated and built under the checkpoint, because the build is itself O(n²/64) (issue #6375).
+    graph.memory().reserve(bitsetMatrixBytes(n, n), "the neighbour bitsets", n + " x " + n + " nodes");
     final BitSet[] neighborSets = new BitSet[n];
     for (int i = 0; i < n; i++) {
+      guard.checkPeriodically(i);
       neighborSets[i] = new BitSet(n);
       for (final int j : adj[i])
         neighborSets[i].set(j);

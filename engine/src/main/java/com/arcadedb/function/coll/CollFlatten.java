@@ -18,7 +18,7 @@
  */
 package com.arcadedb.function.coll;
 
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.utility.LongRangeList;
 
@@ -55,8 +55,7 @@ public class CollFlatten extends AbstractCollFunction {
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length < 1)
-      throw new CommandExecutionException("coll.flatten() requires at least 1 argument");
+    checkArity(args);
     final List<Object> list = asList(args[0]);
     if (list == null)
       return null;
@@ -65,13 +64,16 @@ public class CollFlatten extends AbstractCollFunction {
     if (args.length > 1) {
       if (args[1] == null)
         return null;
-      if (args[1] instanceof Number)
-        maxDepth = ((Number) args[1]).intValue();
-      else if (args[1] instanceof Boolean)
+      if (args[1] instanceof Boolean)
         maxDepth = (Boolean) args[1] ? 1 : -1;
+      else
+        // A caller mistake here is a client error, exactly like every other argument in the family (issue
+        // #6403) - args[1] used to fall through every branch silently and leave maxDepth at its default instead
+        // of raising, so coll.flatten([[1]], 'x') answered as though depth had been omitted (code review).
+        maxDepth = CypherFunctionHelper.requireNumberArgument(args[1], getName()).intValue();
     }
 
-    if (args[0] instanceof LongRangeList)
+    if (asRange(list) != null)
       // A range holds longs and nothing else, so it is already flat at every depth - including depth 0, where the
       // answer is the input. Copying it materialised a range that costs no heap while it stays lazy (issue #6353).
       return list;

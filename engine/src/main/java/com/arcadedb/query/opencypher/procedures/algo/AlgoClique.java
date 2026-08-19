@@ -58,6 +58,11 @@ import java.util.stream.Stream;
 public class AlgoClique extends AbstractAlgoProcedure {
   public static final String NAME = "algo.clique";
 
+  /**
+   * Heap cost of a {@code StackFrame} object and the deque slot holding it, on top of the bit sets it references.
+   */
+  private static final long STACK_FRAME_OVERHEAD_BYTES = 64L;
+
   @Override
   public String getName() {
     return NAME;
@@ -105,8 +110,12 @@ public class AlgoClique extends AbstractAlgoProcedure {
     final int[][] adjOut = graph.adjacency(Vertex.DIRECTION.OUT, relTypes);
     final int[][] adjIn  = graph.adjacency(Vertex.DIRECTION.IN,  relTypes);
 
+    // A nodeCount x nodeCount bit matrix, reserved before the first BitSet is allocated and built under the
+    // checkpoint, because the build is itself O(n²/64) (issue #6375).
+    graph.memory().reserve(bitsetMatrixBytes(n, n), "the neighbour bitsets", n + " x " + n + " nodes");
     final BitSet[] adj = new BitSet[n];
     for (int i = 0; i < n; i++) {
+      guard.checkPeriodically(i);
       adj[i] = new BitSet(n);
       for (final int j : adjOut[i])
         adj[i].set(j);
@@ -129,7 +138,20 @@ public class AlgoClique extends AbstractAlgoProcedure {
 
     stack.push(new StackFrame(initialR, initialP, initialX));
 
+    // A Bron-Kerbosch frame carries five bit sets of n bits, and the stack is as deep as the largest clique the
+    // search has reached, so at its peak the stack is a second nodeCount x nodeCount structure - larger than the
+    // adjacency matrix above it. Priced at the peak rather than per push: a frame is popped, and the budget never
+    // releases, so charging every push would quote a total nobody is holding (issue #6375).
+    final long frameBytes = saturatingSum(bitsetMatrixBytes(5, n), STACK_FRAME_OVERHEAD_BYTES);
+    int deepest = 1;
+    graph.memory().reserve(frameBytes, "the clique search stack", "1 frame of " + n + " nodes");
+
     while (!stack.isEmpty()) {
+      if (stack.size() > deepest) {
+        graph.memory().reserve(saturatingProduct(stack.size() - deepest, frameBytes), "the clique search stack",
+            stack.size() + " frames of " + n + " nodes");
+        deepest = stack.size();
+      }
       // Maximal-clique enumeration is exponential in the graph in the worst case, and neither `minSize` nor
       // anything else bounds the search - minSize only filters what is reported (issue #6302). One frame costs
       // at least a bit-set scan, so the check needs no throttle.

@@ -32,7 +32,6 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.PriorityQueue;
@@ -152,10 +151,7 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
 
   private Stream<Result> executeWithOLTP(final Database db, final Vertex startNode,
       final String[] relTypes, final String weightProperty, final Vertex.DIRECTION dir) {
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, null);
-    while (iter.hasNext())
-      vertices.add(iter.next());
+    final List<Vertex> vertices = loadVertices(db, null, newMemoryBudget(db));
 
     final int n = vertices.size();
     if (n == 0)

@@ -122,7 +122,7 @@ public class AlgoGraphSAGE extends AbstractAlgoProcedure {
     // of the first layer, whose concatenation is 2 x initDim wide. The node count and the knob are all the
     // estimates need, so they are reserved before the adjacency lists are materialised: a call that cannot
     // afford its matrices should not first pay the O(edges) build.
-    final MemoryBudget memory = newMemoryBudget(db);
+    final MemoryBudget memory = graph.memory();
     memory.reserve(matrixBytes(n, initDim, DOUBLE_BYTES), "the node feature matrix",
         n + " nodes x " + initDim + " initial features");
     // Unconditional since #6264 gave `layers` a minimum of 1: there is no longer a zero-layer call whose layer

@@ -276,6 +276,46 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   /** Heap cost of one {@code double} array element, the entry type of every embedding and distance matrix. */
   protected static final long DOUBLE_BYTES = 8L;
 
+  /** Heap cost of one {@code long} array element, the word type of the {@link java.util.BitSet} neighbour matrices. */
+  protected static final long LONG_BYTES = 8L;
+
+  /**
+   * Estimated heap one OLTP-loaded vertex costs the call, for the structures {@code loadGraph} builds around it:
+   * the {@code List<Vertex>} slot, the {@code HashMap} table slot, the {@code HashMap.Node} and the boxed
+   * {@code Integer} index of the RID index, and the loaded record's own object shell.
+   * <p>
+   * The record's payload is on top of this and is not estimated: it is whatever the user stored. The figure is
+   * therefore a floor, which is the useful direction - it is what the call holds per vertex whatever the data
+   * looks like, and at ten million vertices it is already most of a gigabyte for the index alone (issue #6317).
+   */
+  protected static final long OLTP_VERTEX_BYTES = 96L;
+
+  /**
+   * Heap cost of a {@link java.util.BitSet} object on top of the {@code long[]} of words it wraps: the object
+   * header, the {@code words} reference, the {@code wordsInUse} int, the {@code sizeIsSticky} flag and padding.
+   * <p>
+   * Same order-of-magnitude heuristic as {@link #MATRIX_ROW_OVERHEAD_BYTES}, and it matters for the same reason:
+   * a bit matrix is one BitSet per node, so the wrapper is paid {@code nodeCount} times.
+   */
+  protected static final long BITSET_OVERHEAD_BYTES = 32L;
+
+  /**
+   * Estimated heap footprint of a {@code rows}-long array of {@code new BitSet(bits)}, wrappers and row headers
+   * included, in saturating {@code long} arithmetic.
+   * <p>
+   * {@code new BitSet(bits)} allocates {@code ceil(bits / 64)} longs immediately, whatever the node's real degree
+   * turns out to be, so a {@code BitSet[n]} of {@code new BitSet(n)} is a genuine {@code n²/8}-byte structure -
+   * the {@code nodeCount x nodeCount} shape {@link GlobalConfiguration#CYPHER_ALGO_MAX_WORKING_MEMORY} names in
+   * its own documentation, eight times denser per element than the {@code double[n][n]} matrices and therefore
+   * slipping through to a far larger graph before it exhausts the heap (issue #6375).
+   *
+   * @param rows how many bit sets are allocated, normally the node count
+   * @param bits how many bits each of them is sized for, normally the node count
+   */
+  protected static long bitsetMatrixBytes(final long rows, final long bits) {
+    return saturatingSum(matrixBytes(rows, (bits + 63) / 64, LONG_BYTES), saturatingProduct(rows, BITSET_OVERHEAD_BYTES));
+  }
+
   /**
    * Estimated heap footprint of a {@code new T[rows][columns]} of an element type {@code elementBytes} wide,
    * row headers included, in saturating {@code long} arithmetic.
@@ -482,6 +522,37 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     return GraphEngine.buildRidIndex(vertices);
   }
 
+  /**
+   * Loads every vertex the call will work over, charging each one to the call's budget as it arrives.
+   * <p>
+   * The list, the RID index built beside it and the loaded records are the first allocation of every procedure in
+   * this package and the one no budget priced: a call could be refused for a 64 MB matrix having already
+   * allocated a multi-gigabyte graph to measure it against, and a call that was accepted held that graph for its
+   * whole duration with the budget none the wiser (issue #6317).
+   * <p>
+   * The bound is carried by the walk rather than by a reservation made once the count is known. Both refuse the
+   * same calls, but a check afterwards first pays in full for a traversal it will throw away - the same argument
+   * {@code algo.mst} settled the same way in issue #6300. The refusal itself still goes through
+   * {@link MemoryBudget#reserve}, so there is one place that decides and one shape of message.
+   *
+   * @param db         the database
+   * @param nodeLabels vertex type filter (null = all types)
+   * @param memory     the call's budget
+   */
+  protected List<Vertex> loadVertices(final Database db, final String[] nodeLabels, final MemoryBudget memory) {
+    final long maxVertices = memory.capacityFor(OLTP_VERTEX_BYTES);
+    final List<Vertex> vertices = new ArrayList<>();
+    final Iterator<Vertex> iter = getAllVertices(db, nodeLabels);
+    while (iter.hasNext()) {
+      if (vertices.size() >= maxVertices)
+        memory.reserve(saturatingProduct(vertices.size() + 1L, OLTP_VERTEX_BYTES), "the loaded graph",
+            "at least " + (vertices.size() + 1) + " nodes");
+      vertices.add(iter.next());
+    }
+    memory.reserve(saturatingProduct(vertices.size(), OLTP_VERTEX_BYTES), "the loaded graph", vertices.size() + " nodes");
+    return vertices;
+  }
+
   /** @see GraphEngine#neighborRid(Edge, RID, Vertex.DIRECTION) */
   protected RID neighborRid(final Edge edge, final RID sourceRid, final Vertex.DIRECTION dir) {
     return GraphEngine.neighborRid(edge, sourceRid, dir);
@@ -558,19 +629,19 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
 
   protected GraphData loadGraph(final Database db, final String[] nodeLabels, final String[] relTypes,
       final CommandContext context) {
+    final MemoryBudget memory = newMemoryBudget(db);
     if (nodeLabels == null || nodeLabels.length == 0) {
       final GraphTraversalProvider provider = findProvider(db, relTypes);
       if (provider != null) {
         if (context != null)
           context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
-        return new GraphData(provider, provider.getNodeCount());
+        // A Graph Analytical View is shared, pre-built state this call neither allocates nor frees, so its own
+        // footprint is not the call's to price. What is the call's is the copy adjacency() takes out of it, and
+        // that is reserved there.
+        return new GraphData(provider, provider.getNodeCount(), memory);
       }
     }
-    final List<Vertex> vertices = new ArrayList<>();
-    final Iterator<Vertex> iter = getAllVertices(db, nodeLabels);
-    while (iter.hasNext())
-      vertices.add(iter.next());
-    return new GraphData(vertices, buildRidIndex(vertices));
+    return new GraphData(loadVertices(db, nodeLabels, memory), memory);
   }
 
   /**
@@ -585,19 +656,38 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     private final GraphTraversalProvider provider;
     private final List<Vertex>           vertices;
     private final Map<RID, Integer>      ridToIdx;
+    private final MemoryBudget           memory;
 
-    private GraphData(final GraphTraversalProvider provider, final int nodeCount) {
+    private GraphData(final GraphTraversalProvider provider, final int nodeCount, final MemoryBudget memory) {
       this.provider = provider;
       this.vertices = null;
       this.ridToIdx = null;
       this.nodeCount = nodeCount;
+      this.memory = memory;
     }
 
-    private GraphData(final List<Vertex> vertices, final Map<RID, Integer> ridToIdx) {
+    private GraphData(final List<Vertex> vertices, final MemoryBudget memory) {
+      this(vertices, GraphEngine.buildRidIndex(vertices), memory);
+    }
+
+    private GraphData(final List<Vertex> vertices, final Map<RID, Integer> ridToIdx, final MemoryBudget memory) {
       this.provider = null;
       this.vertices = vertices;
       this.ridToIdx = ridToIdx;
       this.nodeCount = vertices.size();
+      this.memory = memory;
+    }
+
+    /**
+     * The budget this call is spending, already charged for the graph itself.
+     * <p>
+     * An algorithm that reserves a working set of its own takes it from here rather than opening a second budget:
+     * the unit being bounded is the call, and a call that opened one budget per component could exceed the limit
+     * by however many components it happens to have. The graph is the first and usually the largest of them
+     * (issue #6317).
+     */
+    public MemoryBudget memory() {
+      return memory;
     }
 
     public int[][] adjacency(final Vertex.DIRECTION dir, final String... relTypes) {
@@ -605,6 +695,10 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
         // Try zero-allocation NeighborView first
         final NeighborView nv = provider.getNeighborView(dir, relTypes);
         if (nv != null) {
+          long entries = 0;
+          for (int i = 0; i < nodeCount; i++)
+            entries += nv.offsetEnd(i) - nv.offset(i);
+          reserveAdjacency(nodeCount, entries);
           final int[][] adj = new int[nodeCount][];
           final int[] nbrs = nv.neighbors();
           for (int i = 0; i < nodeCount; i++) {
@@ -614,12 +708,47 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
           }
           return adj;
         }
+        // No view to size the copy from, so the rows are priced as they arrive, 1024 nodes at a time. That
+        // interval is a node count, not a byte count: a single supernode's neighbour list is fully materialised
+        // by getNeighborIds() before the next checkpoint has a chance to refuse it, unlike the NeighborView
+        // branch above and the OLTP buildAdjacencyList below, both of which know the exact entry count before
+        // allocating a single row. Narrow in practice - it takes one enormous row rather than many average ones
+        // to matter - and left as a known limitation rather than checkpointed per-row, which would cost a
+        // reservation call per node on every CSR-backed call that lacks a NeighborView (code review, issue #6317).
+        reserveAdjacency(nodeCount, 0);
         final int[][] adj = new int[nodeCount][];
-        for (int i = 0; i < nodeCount; i++)
+        long entries = 0;
+        for (int i = 0; i < nodeCount; i++) {
           adj[i] = provider.getNeighborIds(i, dir, relTypes);
+          entries += adj[i].length;
+          if ((i & 1023) == 1023) {
+            reserveAdjacency(0, entries);
+            entries = 0;
+          }
+        }
+        reserveAdjacency(0, entries);
         return adj;
       }
-      return GraphEngine.buildAdjacencyList(vertices, ridToIdx, dir, relTypes);
+      // buildAdjacencyList counts every entry before it allocates a single row, so the exact footprint is known
+      // at the one moment it is still free to refuse: that count is handed here and reserved before the fill.
+      return GraphEngine.buildAdjacencyList(vertices, ridToIdx, dir, relTypes,
+          entries -> reserveAdjacency(nodeCount, entries));
+    }
+
+    /**
+     * Charges {@code rows} neighbour-row headers and {@code entries} neighbour ids to the call's budget.
+     * <p>
+     * The adjacency is the second unpriced allocation issue #6317 names, and the larger one: 4 bytes per edge
+     * plus a row header per node, with {@code Vertex.DIRECTION.BOTH} materialising each edge twice. An algorithm
+     * that asks for it in two directions - {@code algo.cliques} does - pays for both, which is right: it holds
+     * both at once.
+     */
+    private void reserveAdjacency(final long rows, final long entries) {
+      if (rows == 0 && entries == 0)
+        return;
+      memory.reserve(saturatingSum(saturatingProduct(rows, MATRIX_ROW_OVERHEAD_BYTES),
+              saturatingProduct(entries, INT_BYTES)), "the adjacency list",
+          rows > 0 ? rows + " nodes, " + entries + " edge entries" : entries + " edge entries");
     }
 
     /**

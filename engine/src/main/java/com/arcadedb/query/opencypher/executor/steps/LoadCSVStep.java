@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.executor.steps;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.query.opencypher.LoadCSVRowContext;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.LoadCSVClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
@@ -153,8 +154,7 @@ public class LoadCSVStep extends AbstractExecutionStep {
                   rowValue = fields;
                 }
                 final ResultInternal result = createOutputRow(currentInputRow, rowValue);
-                result.setProperty("__loadCSV_file", currentUrl);
-                result.setProperty("__loadCSV_linenumber", currentLineNumber);
+                LoadCSVRowContext.stamp(result, currentUrl, currentLineNumber);
                 buffer.add(result);
                 continue;
               }

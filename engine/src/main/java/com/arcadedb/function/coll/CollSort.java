@@ -18,7 +18,6 @@
  */
 package com.arcadedb.function.coll;
 
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.utility.LongRangeList;
@@ -58,12 +57,12 @@ public class CollSort extends AbstractCollFunction {
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length != 1)
-      throw new CommandExecutionException("coll.sort() requires exactly 1 argument");
+    checkArity(args);
     final List<Object> list = asList(args[0]);
     if (list == null)
       return null;
-    if (args[0] instanceof LongRangeList range)
+    final LongRangeList range = asRange(list);
+    if (range != null)
       return range.getStep() > 0 ? range : range.reversed();
     final List<Object> result = new ArrayList<>(list);
     result.sort(CypherFunctionHelper::cypherCompare);

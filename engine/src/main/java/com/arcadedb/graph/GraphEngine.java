@@ -60,6 +60,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.LongConsumer;
 import java.util.logging.Level;
 
 /**
@@ -2119,6 +2120,22 @@ public class GraphEngine {
    */
   public static int[][] buildAdjacencyList(final List<Vertex> vertices, final Map<RID, Integer> ridToIdx,
       final Vertex.DIRECTION dir, final String[] relTypes) {
+    return buildAdjacencyList(vertices, ridToIdx, dir, relTypes, null);
+  }
+
+  /**
+   * As {@link #buildAdjacencyList(List, Map, Vertex.DIRECTION, String[])}, with a hook fired between the counting
+   * pass and the allocation.
+   * <p>
+   * The counting pass already establishes the exact number of neighbour entries, and it does so at the one moment
+   * the result is still free: nothing has been allocated yet. That is where a caller bounding its heap wants to
+   * decide, so the total is handed over there rather than after a structure it may refuse has already been built
+   * (issue #6317). A hook that throws aborts the build.
+   *
+   * @param entryCount notified with the total number of neighbour entries about to be allocated; may be null
+   */
+  public static int[][] buildAdjacencyList(final List<Vertex> vertices, final Map<RID, Integer> ridToIdx,
+      final Vertex.DIRECTION dir, final String[] relTypes, final LongConsumer entryCount) {
     final int n = vertices.size();
     final int[] counts = new int[n];
     for (int i = 0; i < n; i++) {
@@ -2139,6 +2156,12 @@ public class GraphEngine {
           GhostEdgeReporter.reportSkipped(rnf);
         }
       }
+    }
+    if (entryCount != null) {
+      long total = 0;
+      for (int i = 0; i < n; i++)
+        total += counts[i];
+      entryCount.accept(total);
     }
     final int[][] adj = new int[n][];
     for (int i = 0; i < n; i++)

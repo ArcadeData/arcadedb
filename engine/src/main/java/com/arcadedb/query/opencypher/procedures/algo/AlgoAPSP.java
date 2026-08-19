@@ -115,7 +115,7 @@ public class AlgoAPSP extends AbstractAlgoProcedure {
     // involved - the graph alone sizes it. Reserved before it is allocated so that a graph too large for
     // Floyd-Warshall is a client error naming the node count and the budget, rather than an OutOfMemoryError
     // that takes the rest of the JVM's work down with it.
-    newMemoryBudget(db).reserve(matrixBytes(n, n, DOUBLE_BYTES), "the distance matrix", n + " x " + n + " nodes");
+    graph.memory().reserve(matrixBytes(n, n, DOUBLE_BYTES), "the distance matrix", n + " x " + n + " nodes");
 
     // Allocate distance matrix: one large contiguous allocation is GC-friendly
     final double[][] dist = new double[n][n];

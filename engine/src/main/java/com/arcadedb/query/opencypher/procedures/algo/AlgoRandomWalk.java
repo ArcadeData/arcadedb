@@ -118,7 +118,7 @@ public class AlgoRandomWalk extends AbstractAlgoProcedure {
     // `steps + 1` is computed in long: at Integer.MAX_VALUE the int form wraps to Integer.MIN_VALUE and the
     // allocation died with a bare NegativeArraySizeException.
     final long walkCapacity = steps + 1L;
-    newMemoryBudget(db).reserve(walkCapacity * INT_BYTES, "the random walk buffer", "steps=" + steps);
+    graph.memory().reserve(walkCapacity * INT_BYTES, "the random walk buffer", "steps=" + steps);
     if (walkCapacity > Integer.MAX_VALUE)
       throw new IllegalArgumentException(getName() + "(): steps=" + steps + " needs " + walkCapacity
           + " walk entries, more than the " + Integer.MAX_VALUE + " a Java array can hold");

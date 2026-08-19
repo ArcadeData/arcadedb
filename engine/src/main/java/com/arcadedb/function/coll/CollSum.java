@@ -20,11 +20,15 @@ package com.arcadedb.function.coll;
 
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.utility.LongRangeList;
 
 import java.util.List;
 
 /**
  * coll.sum(list) - Returns the sum of a list of numbers.
+ * <p>
+ * The sum of an arithmetic progression is {@code n * (first + last) / 2}, so a range is answered without walking it
+ * (issue #6403).
  */
 public class CollSum extends AbstractCollFunction {
   @Override
@@ -54,6 +58,10 @@ public class CollSum extends AbstractCollFunction {
     if (list == null)
       return null;
 
+    final LongRangeList range = asRange(list);
+    if (range != null)
+      return rangeSum(range);
+
     double sum = 0.0;
     for (final Object item : list) {
       final Number number = CypherFunctionHelper.requireNumberArgument(item, getName());
@@ -61,5 +69,17 @@ public class CollSum extends AbstractCollFunction {
         sum += number.doubleValue();
     }
     return sum;
+  }
+
+  /**
+   * The closed form {@code n * (first + last) / 2}, evaluated in {@code double} because that is the type this
+   * function answers in anyway. Both endpoints are widened before they are added: their long sum can overflow even
+   * though each is a long, and a wrapped sum would answer a plausible wrong number rather than fail.
+   */
+  static double rangeSum(final LongRangeList range) {
+    final int size = range.size();
+    if (size == 0)
+      return 0.0;
+    return ((double) range.get(0) + (double) range.get(size - 1)) * size / 2.0;
   }
 }

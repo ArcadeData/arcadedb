@@ -90,8 +90,10 @@ class Issue6300AlgoMSTEdgeBudgetTest {
 
   @Test
   void theEdgeArraysAreRefusedWhenTheyDoNotFitTheBudget() {
-    // 24 bytes per edge, so 100 bytes buys four of them and the fifth is over.
-    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 100L);
+    // The graph is priced first since #6317 - 11 nodes at OLTP_VERTEX_BYTES is 1056 bytes - and what is left
+    // over is what buys edges: 24 bytes each, so the 100 bytes above the graph buy four of them and the fifth
+    // is over.
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1156L);
 
     assertThatThrownBy(() -> drain("CALL algo.mst('w') YIELD source, target RETURN source, target"))
         .as("the edge arrays are the dense working set of an algo.mst call and must be priced like any other")
@@ -104,7 +106,7 @@ class Issue6300AlgoMSTEdgeBudgetTest {
     // The message quotes the count reached, not the graph's total: the walk stops when the budget runs out, so
     // there is no total to quote yet. That is the observable difference between reserving during the counting
     // pass and reserving after it - and it is the whole point of the placement.
-    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 100L);
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1156L);
 
     assertThatThrownBy(() -> drain("CALL algo.mst('w') YIELD source RETURN source"))
         .hasStackTraceContaining("more than 4 edges");
@@ -112,9 +114,10 @@ class Issue6300AlgoMSTEdgeBudgetTest {
 
   @Test
   void aBudgetThatFitsLetsTheCallThrough() {
-    // The counterweight: the reservation must not refuse a graph it can serve. 10 edges at 24 bytes is 240, so
-    // 1 KB is comfortable, and the MST of a path is the path itself - every edge, at its own weight.
-    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1024L);
+    // The counterweight: the reservation must not refuse a graph it can serve. 11 nodes cost 1056 bytes and
+    // 10 edges at 24 bytes is 240, so 4 KB is comfortable, and the MST of a path is the path itself - every
+    // edge, at its own weight.
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 4096L);
 
     final List<Object> rows = drain("CALL algo.mst('w') YIELD source, weight, totalWeight RETURN source, weight, totalWeight");
     assertThat(rows).hasSize(EDGE_COUNT);

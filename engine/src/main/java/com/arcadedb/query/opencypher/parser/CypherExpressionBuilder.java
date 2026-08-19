@@ -2583,7 +2583,7 @@ class CypherExpressionBuilder {
     boolean labelDisjunction = false;
 
     if (ctx.variable() != null) {
-      variable = ctx.variable().getText();
+      variable = ParserUtils.stripBackticks(ctx.variable().getText());
     }
 
     if (ctx.labelExpression() != null) {
@@ -2620,7 +2620,7 @@ class CypherExpressionBuilder {
     Integer maxHops = null;
 
     if (ctx.variable() != null) {
-      variable = ctx.variable().getText();
+      variable = ParserUtils.stripBackticks(ctx.variable().getText());
     }
 
     if (ctx.labelExpression() != null) {
@@ -2635,18 +2635,13 @@ class CypherExpressionBuilder {
         properties = parseMapProperties(ctx.properties().map());
     }
 
-    // Path length (variable-length relationships)
+    // Path length (variable-length relationships), read through the one place that knows what [*] means.
+    // Written as its own copy of the MATCH-side block, this is where [*] lost its normalization to [*1..] and a
+    // pattern comprehension planned it as a single fixed hop (issue #6370).
     if (ctx.pathLength() != null) {
-      final Cypher25Parser.PathLengthContext pathLen = ctx.pathLength();
-      if (pathLen.from != null) {
-        minHops = Integer.parseInt(pathLen.from.getText());
-      }
-      if (pathLen.to != null) {
-        maxHops = Integer.parseInt(pathLen.to.getText());
-      }
-      if (pathLen.single != null) {
-        minHops = maxHops = Integer.parseInt(pathLen.single.getText());
-      }
+      final ParserUtils.PathLength pathLength = ParserUtils.parsePathLength(ctx.pathLength());
+      minHops = pathLength.minHops();
+      maxHops = pathLength.maxHops();
     }
 
     // Direction
@@ -2673,19 +2668,17 @@ class CypherExpressionBuilder {
   }
 
   /**
-   * Extract labels from a labelExpression context.
+   * Extract labels from a labelExpression context, through the same grammar-based walk the MATCH-side builder uses.
+   * <p>
+   * This used to split the raw text on {@code :}, {@code &} and {@code |}, which is a different answer from the one
+   * {@code MATCH} gives for the same pattern: a backtick-quoted label containing a separator was chopped into
+   * pieces, the backticks were kept on every name, and a dynamic {@code $(expression)} label was turned into a
+   * literal label named after its own source text. The two blocks were meant to be copies of each other, and every
+   * way they were not is a way an expression-position pattern answered differently from the identical MATCH
+   * pattern (issues #6370, #6363).
    */
   private List<String> extractLabels(final Cypher25Parser.LabelExpressionContext ctx) {
-    final String text = ctx.getText();
-    final String cleanText = text.replaceAll("^:+", "");
-    final String[] parts = cleanText.split("[:&|]+");
-    final List<String> labels = new ArrayList<>();
-    for (String part : parts) {
-      if (!part.isEmpty()) {
-        labels.add(part);
-      }
-    }
-    return labels;
+    return ParserUtils.extractLabels(ctx);
   }
 
   /**

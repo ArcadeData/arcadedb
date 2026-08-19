@@ -117,7 +117,7 @@ public class AlgoSimRank extends AbstractAlgoProcedure {
     // no knob involved. The node count is all the estimate needs, so the reservation comes before the adjacency
     // lists are materialised: a graph too large for SimRank is then a client error naming the node count and
     // the budget, rather than an OutOfMemoryError paid for after an O(edges) build.
-    newMemoryBudget(db).reserve(saturatingProduct(2L, matrixBytes(n, n, DOUBLE_BYTES)), "the similarity matrices",
+    graph.memory().reserve(saturatingProduct(2L, matrixBytes(n, n, DOUBLE_BYTES)), "the similarity matrices",
         "2 matrices of " + n + " x " + n + " nodes");
 
     // Build IN adjacency list (who points to whom)

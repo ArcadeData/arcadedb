@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.query.opencypher.LoadCSVRowContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
@@ -73,11 +74,33 @@ public class FunctionCallExpression implements Expression {
           final Object[] args = new Object[arguments.size()];
           for (int i = 0; i < args.length; i++)
             args[i] = arguments.get(i).evaluate(result, context);
-          return function.execute(args, context);
+          return invoke(function, args, result, context);
         }
       }
     }
     throw new UnsupportedOperationException("Function evaluation requires StatelessFunction: " + functionName);
+  }
+
+  /**
+   * Runs a resolved Cypher function against pre-evaluated arguments, after publishing whatever state the function
+   * is entitled to read off the row it is being evaluated on.
+   * <p>
+   * A {@code StatelessFunction} is handed arguments and a {@link CommandContext}, never the row, so a function whose
+   * answer is a property of the row - {@code file()} and {@code linenumber()} after {@code LOAD CSV} - can only be
+   * served by the caller publishing it first. Both evaluation paths call this rather than each doing it themselves:
+   * only one of them did, so the same call answered differently in a {@code RETURN} and in a {@code WHERE} of the
+   * same query (issue #6402). Same arrangement as {@code ArithmeticExpression.apply} (issue #6354) - the semantics
+   * live in one place and each path only resolves its inputs.
+   *
+   * @param function the resolved executor
+   * @param args     the already-evaluated arguments
+   * @param result   the row being evaluated, {@code null} when there is none
+   * @param context  the command context handed to the function
+   */
+  public static Object invoke(final StatelessFunction function, final Object[] args, final Result result,
+      final CommandContext context) {
+    LoadCSVRowContext.bind(result, context);
+    return function.execute(args, context);
   }
 
   @Override

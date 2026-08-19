@@ -112,8 +112,17 @@ public class Neo4jImporter {
       .optionalStart().appendLiteral('[').appendZoneRegionId().appendLiteral(']').optionalEnd()
       .optionalEnd()
       .toFormatter();
-  // Vertex type holding the nodes that carry no label, and the super type of every label-derived type.
-  private final static String                         ROOT_NODE_TYPE           = "Node";
+  // Vertex type holding the nodes that carry no label, and the super type of every label-derived type. The
+  // reserved sentinel Cypher's own "no labels" bookkeeping uses (Labels.NO_LABEL_TYPE), not a literal "Node" -
+  // found while fixing issue #6395: "Node" is exactly the kind of ordinary-looking name a real schema might
+  // also want as a genuine label, and Labels.getLabels/getOwnLabels only ever filtered a supertype's name by
+  // exact match against the two names that used to mean "no labels" (V, Vertex) - "Node" was never one of
+  // them, so it leaked as a phantom label onto every node this importer produced (labels(n) reported
+  // ["Node", "Person"] rather than ["Person"]) independently of, and before, that issue. Reusing the sentinel -
+  // now filtered at every depth by construction - keeps the "one query reaches every imported vertex" property
+  // this root exists for while making it invisible to labels() the same way it already is for Cypher's own
+  // unlabelled nodes.
+  private final static String                         ROOT_NODE_TYPE           = Labels.NO_LABEL_TYPE;
 
   // Neo4j ID -> packed ArcadeDB RID mapping, populated during vertex pass.
   // Uses primitive LongLongMap for numeric IDs (common case), falls back to HashMap for non-numeric IDs.

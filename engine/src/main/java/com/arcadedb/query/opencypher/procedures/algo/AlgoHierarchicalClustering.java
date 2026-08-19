@@ -97,9 +97,12 @@ public class AlgoHierarchicalClustering extends AbstractAlgoProcedure {
       return Stream.empty();
     final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH, relTypes);
 
-    // Build neighbor BitSets for Jaccard similarity
+    // Build neighbor BitSets for Jaccard similarity: a nodeCount x nodeCount bit matrix, reserved before the
+    // first BitSet is allocated and built under the checkpoint, because the build is itself O(n²/64) (issue #6375).
+    graph.memory().reserve(bitsetMatrixBytes(n, n), "the neighbour bitsets", n + " x " + n + " nodes");
     final BitSet[] neighborSets = new BitSet[n];
     for (int i = 0; i < n; i++) {
+      guard.checkPeriodically(i);
       neighborSets[i] = new BitSet(n);
       neighborSets[i].set(i); // include self for union calculation
       for (final int j : adj[i])

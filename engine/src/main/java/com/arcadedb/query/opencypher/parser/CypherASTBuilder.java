@@ -1845,21 +1845,11 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         properties = visitProperties(propsCtx);
     }
 
-    // Path length (variable-length relationships)
+    // Path length (variable-length relationships), read through the one place that knows what [*] means.
     if (ctx.pathLength() != null) {
-      final Cypher25Parser.PathLengthContext pathLen = ctx.pathLength();
-      if (pathLen.from != null) {
-        minHops = Integer.parseInt(pathLen.from.getText());
-      }
-      if (pathLen.to != null) {
-        maxHops = Integer.parseInt(pathLen.to.getText());
-      }
-      if (pathLen.single != null) {
-        minHops = maxHops = Integer.parseInt(pathLen.single.getText());
-      }
-      // Bare * with no range: [*] means [*1..] (min=1, max=unbounded)
-      if (minHops == null && maxHops == null)
-        minHops = 1;
+      final ParserUtils.PathLength pathLength = ParserUtils.parsePathLength(ctx.pathLength());
+      minHops = pathLength.minHops();
+      maxHops = pathLength.maxHops();
     }
 
     // Direction

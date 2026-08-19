@@ -20,11 +20,15 @@ package com.arcadedb.function.coll;
 
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.utility.LongRangeList;
 
 import java.util.List;
 
 /**
  * coll.avg(list) - Returns the average of a list of numbers, or null if the list is empty.
+ * <p>
+ * The mean of an arithmetic progression is the midpoint of its endpoints, so a range is answered without walking it
+ * (issue #6403).
  */
 public class CollAvg extends AbstractCollFunction {
   @Override
@@ -53,6 +57,10 @@ public class CollAvg extends AbstractCollFunction {
     final List<Object> list = asList(args[0]);
     if (list == null)
       return null;
+
+    final LongRangeList range = asRange(list);
+    if (range != null)
+      return range.isEmpty() ? null : CollSum.rangeSum(range) / range.size();
 
     double sum = 0.0;
     int count = 0;

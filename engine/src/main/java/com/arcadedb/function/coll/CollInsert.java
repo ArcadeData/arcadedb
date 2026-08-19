@@ -18,7 +18,8 @@
  */
 package com.arcadedb.function.coll;
 
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
@@ -52,18 +53,18 @@ public class CollInsert extends AbstractCollFunction {
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length != 3)
-      throw new CommandExecutionException("coll.insert() requires exactly 3 arguments (list, index, value)");
+    checkArity(args);
     final List<Object> list = asList(args[0]);
     if (list == null)
       return null;
-    if (args[1] == null)
+    final Number indexArg = CypherFunctionHelper.requireNumberArgument(args[1], getName());
+    if (indexArg == null)
       return null;
-    final int index = ((Number) args[1]).intValue();
+    final int index = indexArg.intValue();
     if (index < 0)
-      throw new CommandExecutionException("coll.insert() does not support negative index: " + index);
+      throw new CommandSemanticException(getName() + "() does not support negative index: " + index);
     if (index > list.size())
-      throw new CommandExecutionException("coll.insert() index " + index + " is out of range for list of size " + list.size());
+      throw new CommandSemanticException(getName() + "() index " + index + " is out of range for list of size " + list.size());
     final List<Object> result = new ArrayList<>(list);
     result.add(index, args[2]);
     return result;

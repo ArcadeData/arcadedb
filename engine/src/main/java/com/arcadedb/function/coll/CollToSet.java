@@ -18,51 +18,27 @@
  */
 package com.arcadedb.function.coll;
 
-import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.utility.LongRangeList;
-
-import java.util.ArrayList;
-import java.util.LinkedHashSet;
-import java.util.List;
-
 /**
- * coll.toSet(list) - Returns a unique list backed by a set, i.e. the given list with duplicates removed.
- * Order is not significant to the caller, but the order of first occurrence is preserved so the result is
- * deterministic. Like the rest of the {@code coll.*} namespace, duplicates are recognized by object equality,
- * so {@code coll.toSet([1, 1.0])} keeps both elements.
+ * coll.toSet(list) - the APOC spelling of {@link CollDistinct}, kept because a migrating query catalogue writes it
+ * (issue #6157).
+ * <p>
+ * It is an alias and nothing more: both names answer {@code [1, 2]} for {@code [1, 1, 2]}, both preserve the order
+ * of first occurrence, both recognize duplicates by object equality (so {@code coll.toSet([1, 1.0])} keeps both
+ * elements), and both return a LIST - the name is the only difference. Written as a subclass rather than as a
+ * second copy of the body so there is one implementation to fix: while there were two, every change to one had to
+ * be remembered for the other, and the lazy-range short-circuit of issue #6353 had to be written twice
+ * (issue #6403).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class CollToSet extends AbstractCollFunction {
+public class CollToSet extends CollDistinct {
   @Override
   protected String getSimpleName() {
     return "toSet";
   }
 
   @Override
-  public int getMinArgs() {
-    return 1;
-  }
-
-  @Override
-  public int getMaxArgs() {
-    return 1;
-  }
-
-  @Override
   public String getDescription() {
     return "Returns a unique list from the given list, preserving the order of first occurrence";
-  }
-
-  @Override
-  public Object execute(final Object[] args, final CommandContext context) {
-    checkArity(args);
-    final List<Object> list = asList(args[0]);
-    if (list == null)
-      return null;
-    if (args[0] instanceof LongRangeList range)
-      // The step of a range is never zero, so no element repeats: the set IS the range (issue #6353).
-      return range;
-    return new ArrayList<>(new LinkedHashSet<>(list));
   }
 }

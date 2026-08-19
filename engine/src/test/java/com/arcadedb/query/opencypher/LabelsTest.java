@@ -38,12 +38,13 @@ class LabelsTest extends TestHelper {
 
   @Test
   void getCompositeTypeNameWithNull() {
-    assertThat(Labels.getCompositeTypeName(null)).isEqualTo("V");
+    // Issue #6395: the fallback is the reserved sentinel, not a name a real label could also be.
+    assertThat(Labels.getCompositeTypeName(null)).isEqualTo(Labels.NO_LABEL_TYPE);
   }
 
   @Test
   void getCompositeTypeNameWithEmptyList() {
-    assertThat(Labels.getCompositeTypeName(Collections.emptyList())).isEqualTo("V");
+    assertThat(Labels.getCompositeTypeName(Collections.emptyList())).isEqualTo(Labels.NO_LABEL_TYPE);
   }
 
   @Test
@@ -97,7 +98,7 @@ class LabelsTest extends TestHelper {
   void ensureCompositeTypeWithEmptyList() {
     database.transaction(() -> {
       String typeName = Labels.ensureCompositeType(database.getSchema(), Collections.emptyList());
-      assertThat(typeName).isEqualTo("V");
+      assertThat(typeName).isEqualTo(Labels.NO_LABEL_TYPE);
     });
   }
 

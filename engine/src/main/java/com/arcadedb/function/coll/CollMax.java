@@ -18,14 +18,17 @@
  */
 package com.arcadedb.function.coll;
 
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.utility.LongRangeList;
 
 import java.util.List;
 
 /**
  * coll.max(list) - Returns the maximum value in the list.
+ * <p>
+ * The largest element of an arithmetic progression is one of its two endpoints, so a range is answered without
+ * walking it (issue #6403). See {@link CollMin} for why the constant-space walk left by issue #6353 is not enough.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -52,11 +55,14 @@ public class CollMax extends AbstractCollFunction {
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args.length != 1)
-      throw new CommandExecutionException("coll.max() requires exactly 1 argument");
+    checkArity(args);
     final List<Object> list = asList(args[0]);
     if (list == null || list.isEmpty())
       return null;
+
+    final LongRangeList range = asRange(list);
+    if (range != null)
+      return range.getStep() > 0 ? range.get(range.size() - 1) : range.get(0);
 
     Object max = null;
     for (final Object item : list) {

@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
@@ -68,21 +69,24 @@ class OpenCypherBugFixesTest extends TestHelper {
 
   @Test
   void collRemoveOutOfBoundsThrows() {
-    // Issue #3446: coll.remove([1, 2], 10) should throw an error
+    // Issue #3446: coll.remove([1, 2], 10) should throw an error. An out-of-range index is the caller's mistake,
+    // so since issue #6403 it is a CommandSemanticException (HTTP 400) rather than the CommandExecutionException
+    // (HTTP 500) the family used to raise for every error, arity included.
     assertThatThrownBy(() -> {
       try (final ResultSet rs = database.command("opencypher", "RETURN coll.remove([1, 2], 10) AS result")) {
         rs.next();
       }
-    }).isInstanceOf(CommandExecutionException.class);
+    }).isInstanceOf(CommandSemanticException.class);
   }
 
   @Test
   void collRemoveNegativeIndexThrows() {
+    // Same client-error reclassification as the out-of-bounds case above (issue #6403).
     assertThatThrownBy(() -> {
       try (final ResultSet rs = database.command("opencypher", "RETURN coll.remove([1, 2], -1) AS result")) {
         rs.next();
       }
-    }).isInstanceOf(CommandExecutionException.class);
+    }).isInstanceOf(CommandSemanticException.class);
   }
 
   @Test
