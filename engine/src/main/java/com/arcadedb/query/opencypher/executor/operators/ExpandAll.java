@@ -298,18 +298,7 @@ public class ExpandAll extends AbstractPhysicalOperator {
    * check stays free in the common single-hop case.
    */
   private EdgeIdentitySet collectUsedEdgeRids(final Result row) {
-    if (sameClausePrecedingRelVars == null || sameClausePrecedingRelVars.isEmpty())
-      return null;
-    EdgeIdentitySet used = null;
-    for (final String relVar : sameClausePrecedingRelVars) {
-      final Object val = row.getProperty(relVar);
-      if (val instanceof Edge) {
-        if (used == null)
-          used = new EdgeIdentitySet();
-        used.add(((Edge) val).getIdentity());
-      }
-    }
-    return used;
+    return RelationshipBindings.collectEdgeIdentities(row, sameClausePrecedingRelVars);
   }
 
   @Override

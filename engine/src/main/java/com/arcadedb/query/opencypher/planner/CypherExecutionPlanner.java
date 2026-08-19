@@ -172,7 +172,7 @@ public class CypherExecutionPlanner {
     // Disable optimizer for queries with features not yet fully integrated:
     // - OPTIONAL MATCH (needs special handling)
     // - Complex write operations after MATCH
-    // - Variable-length paths (already work but have known issues)
+    // - Variable-length forms without a native physical capability
     // - Unlabeled nodes (optimizer requires labels for physical operators)
 
     // Collect all labeled variables across all MATCH clauses first.
@@ -190,32 +190,26 @@ public class CypherExecutionPlanner {
       if (match.isOptional())
         return false; // Not yet supported in optimizer
 
-      // Multiple path patterns in a single MATCH (e.g., MATCH (a:X)-[:E1]->(b:Y), (a)<-[:E2]-(c:Z))
-      // are supported when the patterns share variables (the optimizer handles them via join planning).
-      // Disconnected patterns with no shared variables fall through to step-by-step interpretation.
-      if (match.hasPathPatterns() && match.getPathPatterns().size() > 1) {
-        final Set<String> seenVars = new HashSet<>();
-        boolean disconnected = false;
-        for (final PathPattern path : match.getPathPatterns()) {
-          final Set<String> pathVars = new HashSet<>();
-          for (final NodePattern node : path.getNodes())
-            if (node.getVariable() != null)
-              pathVars.add(node.getVariable());
-          if (!seenVars.isEmpty() && Collections.disjoint(seenVars, pathVars)) {
-            disconnected = true;
-            break;
-          }
-          seenVars.addAll(pathVars);
-        }
-        if (disconnected)
-          return false; // Disconnected patterns in single MATCH not supported by optimizer
-      }
+      // Independently planned relationship components cannot evaluate an inline edge expression
+      // that may read a sibling component's bindings. Keep that combined shape on the ordered
+      // traditional evaluator until correlated component planning exists.
+      if (hasDisconnectedPathPatterns(match) && hasInlineRelationshipPredicates(match))
+        return false;
 
       // Check if all nodes have labels, no named path variables, and no unsupported property constraints
       if (match.hasPathPatterns()) {
         for (final PathPattern path : match.getPathPatterns()) {
-          // Named path variables not yet supported (e.g., "p = (a)-[r]->(b)")
-          if (path.hasPathVariable())
+          // shortestPath/allShortestPaths have minimum-distance semantics rather than exhaustive
+          // variable-length expansion and remain an explicit traditional-plan capability.
+          if (path instanceof ShortestPathPattern)
+            return false;
+
+          // The physical operator preserves written order for a named variable-length segment,
+          // including when a selective target makes the optimizer traverse it in reverse. Joining
+          // several independently reordered segments back into one named path is a separate
+          // capability, so retain the traditional plan for that shape.
+          if (path.hasPathVariable()
+              && (path.getRelationshipCount() != 1 || !path.getRelationship(0).isVariableLength()))
             return false;
 
           // Inline relationship property filters (e.g., [r:LINK {w: 1}]) and inline relationship
@@ -225,11 +219,18 @@ public class CypherExecutionPlanner {
           // MatchRelationshipStep applies both filters correctly. See issue #5093.
           for (int ri = 0; ri < path.getRelationshipCount(); ri++) {
             final RelationshipPattern relP = path.getRelationship(ri);
-            if (relP.hasProperties() || relP.hasWhereExpression())
+            if (relP.getPropertiesParameterName() != null)
+              return false;
+            if ((relP.hasProperties() || relP.hasWhereExpression()) && !relP.isVariableLength())
               return false;
           }
 
           for (final NodePattern node : path.getNodes()) {
+            // Dynamic labels are row expressions. The physical scans and expansion target filter
+            // currently accept only static type names, so retain the traditional evaluator.
+            if (node.hasDynamicLabels() || node.hasWhereExpression())
+              return false;
+
             // Anonymous nodes (no variable) with unidirectional edges can't be handled
             // by the optimizer's expansion chain - anchor validation can't re-anchor
             // to a node that has no variable in the LogicalPlan.
@@ -369,6 +370,36 @@ public class CypherExecutionPlanner {
     // both produce correct results regardless of edge type overlap.
 
     return true;
+  }
+
+  private static boolean hasInlineRelationshipPredicates(final MatchClause match) {
+    if (!match.hasPathPatterns())
+      return false;
+    for (final PathPattern path : match.getPathPatterns())
+      for (final RelationshipPattern relationship : path.getRelationships())
+        if (relationship.hasProperties() || relationship.hasWhereExpression())
+          return true;
+    return false;
+  }
+
+  /** Returns true when one MATCH contains path parts with no chain of shared node variables. */
+  private static boolean hasDisconnectedPathPatterns(final MatchClause match) {
+    if (!match.hasPathPatterns() || match.getPathPatterns().size() < 2)
+      return false;
+
+    final List<Set<String>> components = new ArrayList<>();
+    for (final PathPattern path : match.getPathPatterns()) {
+      final Set<String> merged = new HashSet<>();
+      for (final NodePattern node : path.getNodes())
+        if (node.getVariable() != null)
+          merged.add(node.getVariable());
+
+      for (int i = components.size() - 1; i >= 0; i--)
+        if (!Collections.disjoint(components.get(i), merged))
+          merged.addAll(components.remove(i));
+      components.add(merged);
+    }
+    return components.size() > 1;
   }
 
   /**
