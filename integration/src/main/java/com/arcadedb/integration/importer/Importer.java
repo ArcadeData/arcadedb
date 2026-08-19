@@ -47,6 +47,17 @@ public class Importer extends AbstractImporter {
     System.exit(0);
   }
 
+  /**
+   * Overrides {@link com.arcadedb.GlobalConfiguration#SERVER_SECURITY_IMPORT_BLOCK_LOCAL_NETWORKS} for this import.
+   * The server command handler calls this reflectively with the value it already validated the URL against, so the
+   * deep fetch inside {@link SourceDiscovery} cannot land on a stricter-or-looser answer than the pre-check that
+   * accepted the command (issue #6474, mirroring the restore-side fix in #6381/#6449).
+   */
+  public Importer setAllowLocalUrls(final boolean allowLocalUrls) {
+    settings.allowLocalUrls = allowLocalUrls;
+    return this;
+  }
+
   public Map<String, Object> load() {
     source = null;
 
@@ -104,7 +115,7 @@ public class Importer extends AbstractImporter {
       // SKIP IT
       return;
 
-    final SourceDiscovery sourceDiscovery = new SourceDiscovery(url);
+    final SourceDiscovery sourceDiscovery = new SourceDiscovery(url, settings.allowLocalUrls);
 
     if (settings.probeOnly) {
       sourceDiscovery.getSource();

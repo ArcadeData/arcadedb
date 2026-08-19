@@ -75,7 +75,23 @@ public class ImportSecurityValidator {
    * @throws SecurityException if a scheme or address is refused on any hop
    */
   public static HttpURLConnection openRemoteConnection(final String url) throws IOException {
-    final boolean blockLocalNetworks = GlobalConfiguration.SERVER_SECURITY_IMPORT_BLOCK_LOCAL_NETWORKS.getValueAsBoolean();
+    return openRemoteConnection(url, GlobalConfiguration.SERVER_SECURITY_IMPORT_BLOCK_LOCAL_NETWORKS.getValueAsBoolean());
+  }
+
+  /**
+   * Same as {@link #openRemoteConnection(String)}, but with the local-network block decision resolved by the caller
+   * instead of re-derived here from the static {@link GlobalConfiguration#SERVER_SECURITY_IMPORT_BLOCK_LOCAL_NETWORKS}.
+   * <p>
+   * {@code PostServerCommandHandler}'s {@code import database} pre-check gates the command itself on a different key,
+   * {@code SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS}, read from that server's own (possibly per-instance-overridden)
+   * configuration. Without this overload the pre-check and this fetch could disagree - one server enabling the
+   * documented opt-out only on its own configuration would have its pre-check accept a URL that this fetch then
+   * refused anyway, using an entirely different, undocumented-for-this-purpose key (issue #6474, mirroring the
+   * restore-side fix in #6381/#6449).
+   *
+   * @throws SecurityException if a scheme or address is refused on any hop
+   */
+  public static HttpURLConnection openRemoteConnection(final String url, final boolean blockLocalNetworks) throws IOException {
     return SafeHttpFetcher.open(url, address -> blockLocalNetworks && isBlockedAddress(address), "IMPORT DATABASE");
   }
 

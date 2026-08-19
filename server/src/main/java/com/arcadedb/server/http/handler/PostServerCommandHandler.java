@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
@@ -631,6 +632,10 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       try {
         final Class<?> clazz = Class.forName("com.arcadedb.integration.importer.Importer");
         final Object importer = clazz.getConstructor(Database.class, String.class).newInstance(database, url);
+        // SAME BOOLEAN validateClientRestoreImportUrl ALREADY VALIDATED THIS URL AGAINST: THE FETCH INSIDE
+        // SourceDiscovery MUST AGREE WITH THIS SERVER'S OWN CONFIGURATION RATHER THAN FALLING BACK TO THE STATIC
+        // DEFAULT, OR A PER-SERVER OVERRIDE THAT LET THE COMMAND THROUGH WOULD STILL HAVE THE FETCH REFUSE IT (#6474).
+        clazz.getMethod("setAllowLocalUrls", boolean.class).invoke(importer, isRestoreImportLocalUrlsAllowed());
 
         // Set a logger with SSE callback
         final Class<?> loggerClass = Class.forName("com.arcadedb.integration.importer.ConsoleLogger");
@@ -695,8 +700,12 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       return null;
     }
 
-    // Synchronous fallback
-    try (final var rs = database.command("sql", "import database " + url)) {
+    // Synchronous fallback. Threads the same resolved boolean validateClientRestoreImportUrl() already validated
+    // this URL against into the SQL command's execution context, so ImportDatabaseStatement's deep fetch cannot
+    // disagree with the pre-check that accepted the command (#6474, mirroring the setAllowLocalUrls call above).
+    final ContextConfiguration importConfiguration = new ContextConfiguration();
+    importConfiguration.setValue(GlobalConfiguration.SERVER_SECURITY_IMPORT_BLOCK_LOCAL_NETWORKS, !isRestoreImportLocalUrlsAllowed());
+    try (final var rs = database.command("sql", "import database " + url, importConfiguration, Map.of())) {
       // try-with-resources releases the execution-plan state held by the import ResultSet.
     }
     return new ExecutionResponse(200, new JSONObject().put("result", "ok").toString());

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.integration.importer;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.integration.importer.format.CSVImporterFormat;
 import com.arcadedb.integration.importer.format.FormatImporter;
 import com.arcadedb.integration.importer.format.GloVeImporterFormat;
@@ -55,12 +56,24 @@ public class SourceDiscovery {
   private static final String RESOURCE_SEPARATOR = ":::";
   private static final String FILE_PREFIX        = "file://";
   private static final String CLASSPATH_PREFIX   = "classpath://";
-  private              String url;
-  private              long   limitBytes         = 10000000;
-  private              long   limitEntries       = 0;
+  private              String  url;
+  private final        Boolean allowLocalUrls;
+  private              long    limitBytes         = 10000000;
+  private              long    limitEntries       = 0;
 
   public SourceDiscovery(final String url) {
+    this(url, null);
+  }
+
+  /**
+   * @param allowLocalUrls explicit override for whether a remote fetch may reach a private/loopback/link-local host,
+   *                       resolved by a caller that already validated the URL against its own policy (issue #6474).
+   *                       {@code null} (the default via {@link #SourceDiscovery(String)}) falls back to {@link
+   *                       GlobalConfiguration#SERVER_SECURITY_IMPORT_BLOCK_LOCAL_NETWORKS}.
+   */
+  public SourceDiscovery(final String url, final Boolean allowLocalUrls) {
     this.url = url;
+    this.allowLocalUrls = allowLocalUrls;
   }
 
   public SourceSchema getSchema(final ImporterSettings settings,
@@ -117,14 +130,20 @@ public class SourceDiscovery {
     // callback below re-opens the source and MUST go through the same path: it previously built a second raw
     // connection with no validation at all, so a redirect (or a rebind) on that second fetch was entirely unchecked
     // even once the first one was validated (GHSA-4w2m-77c8-83mw).
-    final HttpURLConnection connection = ImportSecurityValidator.openRemoteConnection(urlPath);
+    //
+    // blockLocalNetworks resolves allowLocalUrls once, up front, so both the initial fetch and the reset callback's
+    // re-fetch below agree with each other (and with whatever caller-resolved policy allowLocalUrls carries - #6474).
+    final boolean blockLocalNetworks = allowLocalUrls != null ?
+        !allowLocalUrls : GlobalConfiguration.SERVER_SECURITY_IMPORT_BLOCK_LOCAL_NETWORKS.getValueAsBoolean();
+
+    final HttpURLConnection connection = ImportSecurityValidator.openRemoteConnection(urlPath, blockLocalNetworks);
 
     return getSourceFromContent(new BufferedInputStream(connection.getInputStream()), connection.getContentLengthLong(), resource,
         source -> {
           try {
             connection.disconnect();
 
-            final HttpURLConnection connection1 = ImportSecurityValidator.openRemoteConnection(urlPath);
+            final HttpURLConnection connection1 = ImportSecurityValidator.openRemoteConnection(urlPath, blockLocalNetworks);
 
             if (source.inputStream instanceof GZIPInputStream)
               source.inputStream = new GZIPInputStream(connection1.getInputStream(), 2048);
