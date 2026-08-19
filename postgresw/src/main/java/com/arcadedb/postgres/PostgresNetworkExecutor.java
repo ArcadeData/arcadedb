@@ -595,10 +595,12 @@ public class PostgresNetworkExecutor extends Thread {
       if (DEBUG)
         LogManager.instance().log(this, Level.INFO, "PSQL: query -> %s ", query);
 
-      // Parsed once, gated on language, and reused below for both the schema-fallback and the target-type
-      // resolution: parseStatement always goes through the SQL engine, so parsing a Cypher/Gremlin/Mongo/
-      // GraphQL query here would be a parse attempt guaranteed to throw and be discarded on every such query.
-      final Statement parsedStatement = "sql".equalsIgnoreCase(query.language) ? parseStatement(query.query) : null;
+      // Reused below for both the schema-fallback and the target-type resolution, but only set in the one
+      // branch that reaches database.command(...) below: none of SET/SAVEPOINT/RELEASE/ROLLBACK TO/SHOW/a
+      // system query/BEGIN are valid SQL productions (no bare "SET"/"SHOW" statement exists in SQLParser.g4),
+      // so parsing any of them here would be a guaranteed parse-and-fail on every one of those statements -
+      // exactly the ones connection setup (JDBC drivers, psql, poolers) sends most.
+      Statement parsedStatement = null;
 
       final long engineStart = System.nanoTime();
       final ResultSet resultSet;
@@ -632,6 +634,7 @@ public class PostgresNetworkExecutor extends Thread {
         if (catalogAnswer != null) {
           resultSet = new IteratorResultSet(catalogAnswer.rows().iterator());
         } else {
+          parsedStatement = "sql".equalsIgnoreCase(query.language) ? parseStatement(query.query) : null;
           resultSet = database.command(query.language, query.query, server.getConfiguration());
         }
       }

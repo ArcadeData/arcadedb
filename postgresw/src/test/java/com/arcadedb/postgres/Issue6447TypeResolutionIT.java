@@ -213,6 +213,32 @@ public class Issue6447TypeResolutionIT extends PostgresWireProtocolTestBase {
     }
   }
 
+  @Test
+  void aDatetimePropertyRoundTripsAsTimestampOverTheSimpleQueryProtocolToo() throws Exception {
+    // The previous two tests go through the extended query protocol (PreparedStatement), which is what every
+    // real JDBC/ORM client uses. This forces pgjdbc's simple query protocol instead - the path
+    // PostgresNetworkExecutor.queryCommand() implements, where a review round found the query-target-type
+    // parse being computed unconditionally (before the SET/SHOW/SAVEPOINT/BEGIN dispatch) was both a
+    // performance regression and something worth a dedicated regression test. Same narrow column projection
+    // ("SELECT col FROM Type", not "SELECT * FROM Type") that requires resolveQueryTargetType's fallback.
+    try (final Connection connection = openJdbcConnection(true)) {
+      try (final Statement configure = connection.createStatement()) {
+        configure.execute("ALTER DATABASE dateTimeImplementation `java.util.Date`");
+      }
+      createTestType(connection);
+
+      try (final Statement insert = connection.createStatement()) {
+        insert.execute("INSERT INTO Types6447 SET id = 1, whenHappened = '2026-08-19 12:34:56'");
+      }
+
+      try (final Statement select = connection.createStatement();
+          final ResultSet resultSet = select.executeQuery("SELECT whenHappened FROM Types6447 WHERE id = 1")) {
+        assertThat(resultSet.next()).isTrue();
+        assertThat(resultSet.getMetaData().getColumnTypeName(1)).isEqualTo("timestamp");
+      }
+    }
+  }
+
   private void createTestType(final Connection connection) throws Exception {
     try (final Statement statement = connection.createStatement()) {
       statement.execute("CREATE DOCUMENT TYPE Types6447 IF NOT EXISTS");
@@ -225,12 +251,18 @@ public class Issue6447TypeResolutionIT extends PostgresWireProtocolTestBase {
   }
 
   private Connection openJdbcConnection() throws Exception {
+    return openJdbcConnection(false);
+  }
+
+  private Connection openJdbcConnection(final boolean simpleQueryProtocol) throws Exception {
     Class.forName("org.postgresql.Driver");
     final Properties properties = new Properties();
     properties.setProperty("user", "root");
     properties.setProperty("password", DEFAULT_PASSWORD_FOR_TESTS);
     properties.setProperty("ssl", "false");
     properties.setProperty("sslMode", "disable");
+    if (simpleQueryProtocol)
+      properties.setProperty("preferQueryMode", "simple");
     return DriverManager.getConnection("jdbc:postgresql://localhost:5432/" + getDatabaseName(), properties);
   }
 }
