@@ -65,7 +65,10 @@ import java.util.stream.Collectors;
  * that happens to land within the debounce window of an earlier, unrelated reload - exactly the
  * cross-connection scenario this class exists to fix. A caller that walks many known-nonexistent
  * names in a hot loop does pay one reload per miss; that cost is bounded per call and was judged
- * preferable to reintroducing stale reads. Issue #6446.
+ * preferable to reintroducing stale reads. The same trade-off applies under concurrent misses: several
+ * threads missing at once each still call {@link #reload()} in turn after serializing on its
+ * {@code synchronized} lock - there is no "someone already refreshed since my check" short-circuit -
+ * so N concurrent misses cost N round trips, not one. Issue #6446.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
