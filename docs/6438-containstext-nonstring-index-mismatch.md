@@ -38,3 +38,36 @@ right-hand value with `.toString()` instead of rejecting non-`String` values out
 
 - `mvn -o -pl engine -am test -Dtest=Issue6438ContainsTextNonStringArgumentTest -Dmaven.repo.local=<worktree>/.m2repo`
 - Full `ContainsText*` / full-text index regression suite re-run to confirm no regressions.
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/6477
+
+## Review cycles
+
+- **Cycle 1** (head `34f61f6`): Claude review flagged two items:
+  1. Fully-qualified `java.util.*` names in the new test (style, contradicts `CLAUDE.md`).
+  2. A multivalue (list/array) right-hand side would now be stringified via `List.toString()` into a
+     bracket-notation substring search instead of the old unconditional `false`, with the existing
+     `ContainsTextWithArrayTest.containsTextWithArrayOfStrings` now passing "by coincidence" rather than by design.
+  Both applied: added a `MultiValue.isMultiValue(rightValue)` guard (mirroring `FetchFromIndexStep`'s own guard) so
+  a multivalue right-hand side still answers "no match", fixed the FQNs, and added two more regression tests
+  (`multiValueRightHandSideStillMatchesNothing`, `nullRightHandSideStillMatchesNothing`) per the reviewer's
+  "nice to have" suggestion. Pushed as `2178ae5`.
+- **Cycle 2** (head `2178ae5`): Claude review found the fix itself correct and the new test coverage "more thorough
+  than the minimum needed", but flagged one stale neighboring doc comment: `FetchFromIndexStep.java`'s Javadoc for
+  `processFullTextBlock` said `ContainsTextCondition#evaluate` treats "a non-String value" as never a match, which
+  this PR made false (only `null` and multivalue are never a match now). Applied: reworded that comment. Pushed as
+  `85ee3e4`.
+- **Cycle 3** (head `85ee3e4`): Claude review - "No blocking issues found." One non-blocking observation (whether
+  `docs/<issue>.md` tracking files are the right long-term convention) explicitly framed as "a call for the
+  maintainers on repo convention, not a defect" - no action taken, this file follows the same convention every
+  other tracked issue in this repo's `docs/` directory already uses. **Clean approval, loop ended.**
+
+## Deferred items
+
+None.
+
+## Final state
+
+`clean-approval` after 3 review cycles.
