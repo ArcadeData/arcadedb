@@ -57,6 +57,11 @@ public class MutablePage extends BasePage implements TrackableContent {
    * this class had before issue #5470.
    */
   private static final int     MAX_MODIFIED_RANGES        = 8;
+  /**
+   * No write has stated what free tail this page has: {@link #getFreeSpaceClaim()} has nothing to confront the
+   * commit-time measurement with. Not the same as zero, which is a page a write has sealed.
+   */
+  static final         int     FREE_SPACE_CLAIM_UNKNOWN   = -1;
   private static final byte[]  ZERO_BYTES_ARRAY;
   // Sorted, disjoint and non-adjacent intervals as [from0,to0, from1,to1, ...]. One extra slot is kept free so an
   // insertion can happen before the merge that puts the count back within budget.
@@ -72,6 +77,16 @@ public class MutablePage extends BasePage implements TrackableContent {
   // one could hide a dirtied byte from the coverage proof, which is the very hazard #5596 exists to remove.
   private              int     declaredCoverage           = 0;
   private              int     uncoveredMechanisms        = 0;
+  // Free-space bookkeeping (issue #6396). The free tail this transaction's writes SAY the page has, or
+  // FREE_SPACE_CLAIM_UNKNOWN when no write has said anything about it, plus whether that number is still EXACT: a
+  // write that gives bytes back without reporting them (a delete, an in-place shrink) turns the claim into a lower
+  // bound rather than throwing it away, which keeps the over-reporting direction - the one that hands the allocator
+  // a page with nothing left - checked on every page. Written only by LocalBucket's write paths and only while
+  // assertions are on, and read only by the compression the commit runs on this page, which measures the same
+  // quantity from the page itself and so is the one place able to confront what a writer claimed with what it did.
+  // Plain fields for the same reason the two above are: this image belongs to one transaction and one thread.
+  private              int     freeSpaceClaim             = FREE_SPACE_CLAIM_UNKNOWN;
+  private              boolean freeSpaceClaimIsExact      = false;
   // AtomicReference so the WAL ack can be taken EXACTLY ONCE (#4928 review): the success path, the
   // file-dropped flush branch and the dropped-file batch purge can race on the same page (the flush loop
   // does not remove pages from the batch list), and a double notifyPageFlushed would steal another page's
@@ -105,6 +120,53 @@ public class MutablePage extends BasePage implements TrackableContent {
   @Override
   public MutablePage modify() {
     return this;
+  }
+
+  /**
+   * States, for the free-space check of issue #6396, the free tail this page has once the write in progress has
+   * landed - the very number the write reports to the bucket's free-space statistics, and an EXACT one. The commit
+   * compresses every page a transaction touched and MEASURES the same quantity there, so anything said here is
+   * checked a moment later against what the page actually holds.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  void claimFreeSpace(final int freeTailInPage) {
+    this.freeSpaceClaim = freeTailInPage;
+    this.freeSpaceClaimIsExact = true;
+  }
+
+  /**
+   * Demotes the claim to a LOWER BOUND: the write in progress gives bytes back - a delete (#6339), an in-place
+   * update that shrank - and deliberately does not report them, because the compression the commit runs measures the
+   * packed page anyway. Such a write can only move the free tail outwards, so what a previous write said stops being
+   * the page's tail and stays a floor under it. Kept rather than dropped, because the floor is exactly what rules
+   * out the dangerous direction: a writer claiming MORE free space than the page has.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  void relaxFreeSpaceClaim() {
+    this.freeSpaceClaimIsExact = false;
+  }
+
+  /**
+   * The free tail this transaction's writes claim the page has, or {@link #FREE_SPACE_CLAIM_UNKNOWN} when none of
+   * them stated one. Read together with {@link #isFreeSpaceClaimExact()}, which says whether it is the tail itself
+   * or a floor under it.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  int getFreeSpaceClaim() {
+    return freeSpaceClaim;
+  }
+
+  /**
+   * Whether {@link #getFreeSpaceClaim()} is still the page's free tail rather than a lower bound on it - see
+   * {@link #relaxFreeSpaceClaim()}.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  boolean isFreeSpaceClaimExact() {
+    return freeSpaceClaimIsExact;
   }
 
   public TrackableBinary getTrackable() {

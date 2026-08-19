@@ -189,6 +189,18 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private static final   int                       MAX_PAGES_GATHER_STATS           = 100;
   private static final   long                      MAX_TIMEOUT_GATHER_STATS         = 5000L;
   private static final   int                       GATHER_STATS_MIN_SPACE_PERC      = 10;
+  /**
+   * Whether the free-space claims the write paths make are held against the commit-time measurement (#6396). On
+   * exactly when assertions are - surefire's default, never a production run - because the check IS an assertion:
+   * it costs two field stores per write, and a comparison against a page walk the compression was doing anyway.
+   * <p>
+   * It is gated a second time, by {@code reuseSpaceMode}: {@link #updatePageStatistics} returns before stating a
+   * claim below {@link REUSE_SPACE_MODE#HIGH}, so under a non-default {@code arcadedb.bucketReuseSpaceMode} every
+   * page stays at {@link MutablePage#FREE_SPACE_CLAIM_UNKNOWN} and the check goes quiet. That is right rather than
+   * an oversight - there are no deltas to keep honest when nothing is tracking free space - but it is worth knowing
+   * before wondering why the assertion never fires.
+   */
+  private static final   boolean                   CHECK_FREE_SPACE_CLAIMS          = LocalBucket.class.desiredAssertionStatus();
   private static final   int                       SPARE_SPACE_FOR_GROWTH           = 32;
   protected final        int                       contentHeaderSize;
   private final          int                       maxRecordsInPage;
@@ -1793,6 +1805,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     final MutablePage page = database.getTransaction()
             .getPageToModify(new PageId(database, file.getFileId(), pageId), pageSize, false);
     page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE, 0L);
+    freedWithoutClaiming(page);
 
     database.getTransaction().addDeletedRecord(rid);
   }
@@ -2146,7 +2159,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                   isPlaceHolder ? (-1L * bufferSize) : bufferSize);
           selectedPage.writeByteArray(newRecordPositionInPage + byteWritten, buffer.getContent(), buffer.getContentBeginOffset(),
                   bufferSize);
-          updatePageStatistics(selectedPage.pageId.getPageNumber(), spaceAvailableInCurrentPage, -spaceNeeded);
+          updatePageStatistics(selectedPage, spaceAvailableInCurrentPage, -spaceNeeded);
         }
       } finally {
         selectedPage.endCoveredWrite(previousCoverage);
@@ -2257,7 +2270,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         } else {
           final int byteWritten = selectedPage.writeNumber(newRecordPositionInPage, bufferSize);
           selectedPage.writeByteArray(newRecordPositionInPage + byteWritten, buffer.getContent(), buffer.getContentBeginOffset(), bufferSize);
-          updatePageStatistics(selectedPage.pageId.getPageNumber(), spaceAvailableInCurrentPage, -spaceNeeded);
+          updatePageStatistics(selectedPage, spaceAvailableInCurrentPage, -spaceNeeded);
         }
       } finally {
         selectedPage.endCoveredWrite(previousCoverage);
@@ -2649,7 +2662,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // it against a page this one has moved on from. It is an absolute value, not an increment, so re-stating it
         // corrects the earlier one rather than doubling it.
         if (chunkRegionEnd == page.getMaxContentSize() && body.length != committedChunk.length)
-          updatePageStatistics(pageNumber, chunkRegionEnd - (chunkHeaderPos + committedChunk.length),
+          updatePageStatistics(page, chunkRegionEnd - (chunkHeaderPos + committedChunk.length),
                   committedChunk.length - body.length);
 
         page.writeByteArray(chunkHeaderPos, body, 0, body.length);
@@ -2691,7 +2704,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // #6154: same accounting the write makes, re-derived here against the committed page rather than trusted.
         if (chunkRegionEnd == page.getMaxContentSize()) {
           final int committedChunkEnd = chunkHeaderPos + committedChunk.length;
-          updatePageStatistics(pageNumber, chunkRegionEnd - committedChunkEnd,
+          updatePageStatistics(page, chunkRegionEnd - committedChunkEnd,
                   committedChunkEnd - (existingPos + sizeLen + body.length));
         }
 
@@ -2736,7 +2749,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         if (enlargement > 0) {
           shiftFollowingRecordsRight(page, recordCountInPage, existingPos + slotFootprint, pageOccupiedInBytes,
                   enlargement);
-          updatePageStatistics(pageNumber, freeTailInPage, -enlargement);
+          updatePageStatistics(page, freeTailInPage, -enlargement);
         }
 
         // The check above budgeted the marker at getNumberSpace(); the write below is the only other place that
@@ -2748,6 +2761,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             "the chunk marker took " + markerSizeWritten + " bytes where " + markerSize + " were budgeted";
 
         page.writeByteArray(existingPos + markerSizeWritten, body, 0, body.length);
+
+        // #6396: a slot that spilled as the LAST record of its page eats into the free tail directly, and
+        // slotEnlargementForChunkHead counts that tail as room the slot already has - so the enlargement above is 0
+        // by construction there and reports nothing. How much of the tail the head chunk really took depends on the
+        // COMMITTED page this replay landed on, not on the one the write measured, so it is measured here: the head
+        // chunk ends where it ends, and everything past it is what the page has left.
+        if (lastRecordPositionInPage == existingPos)
+          updatePageStatistics(page, page.getMaxContentSize() - (existingPos + markerSizeWritten + body.length), 0);
+
         return true;
       }
 
@@ -2774,11 +2796,20 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // and only its own content changes: the records that follow simply move, and their offsets are recomputed
         // from THIS page, so the result is the same page a serial execution would have produced. Refuses (false) when
         // the page cannot host the extra bytes anymore, which sends the transaction to a normal retry.
-        return growRecordInPage(page, pageNumber, recordCountInPage, existingPos,
+        return growRecordInPage(page, recordCountInPage, existingPos,
                 getLastRecordPositionInPage(page, recordCountInPage), rs, isPlaceHolder, body, 0, body.length);
 
       final int sizeLen = page.writeNumber(existingPos, isPlaceHolder ? -1L * body.length : body.length);
       page.writeByteArray((int) (existingPos + sizeLen), body, 0, body.length);
+
+      // #6396: the mirror of updateRecordInternal's same-or-shorter branch, and it gives bytes back the same way -
+      // silently, because only the page's LAST record moves the free tail and nothing here knows whether this is it.
+      // Saying so matters MORE on this path than on the live one: rebaseSlots replays every buffered slot onto ONE
+      // page image and compresses it once at the end, so a shrink that stayed quiet would leave the exact claim
+      // ANOTHER slot's replay made (a growth re-flowing the same page) standing over a page it no longer describes.
+      if (sizeLen + body.length < rs[1] + committedSize)
+        freedWithoutClaiming(page);
+
       return true;
 
     } catch (final IOException e) {
@@ -2844,7 +2875,6 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    */
   public boolean rebaseRecordDeleteOnPage(final MutablePage page, final int positionInPage, final byte[] baseBody) {
     try {
-      final int pageNumber = page.getPageId().getPageNumber();
       final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
       final int existingPos = positionInPage < recordCountInPage ? getRecordPositionInPage(page, positionInPage) : 0;
 
@@ -2887,7 +2917,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         final PageAnalysis pageAnalysis = new PageAnalysis(page);
         pageAnalysis.totalRecordsInPage = recordCountInPage;
         getFreeSpaceInPage(pageAnalysis);
-        updatePageStatistics(pageNumber, pageAnalysis.spaceAvailableInCurrentPage, 0);
+        updatePageStatistics(page, pageAnalysis.spaceAvailableInCurrentPage, 0);
       } else
         changesFromLastStats.incrementAndGet();
 
@@ -2923,7 +2953,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
     final int sizeLen = page.writeNumber(contentPos, body.length);
     page.writeByteArray(contentPos + sizeLen, body, 0, body.length);
-    updatePageStatistics(pageNumber, page.getMaxContentSize() - contentPos, -spaceNeeded);
+    updatePageStatistics(page, page.getMaxContentSize() - contentPos, -spaceNeeded);
     return true;
   }
 
@@ -3256,7 +3286,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                 (edgeAppendReplayable ? MutablePage.COVERAGE_EDGE_APPEND_MERGE : 0));
         final boolean grown;
         try {
-          grown = growRecordInPage(page, pageId, recordCountInPage, recordPositionInPage, lastRecordPositionInPage, recordSize,
+          grown = growRecordInPage(page, recordCountInPage, recordPositionInPage, lastRecordPositionInPage, recordSize,
                   isPlaceHolder, buffer.getContent(), buffer.getContentBeginOffset(), bufferSize);
         } finally {
           page.endCoveredWrite(growCoverage);
@@ -3356,7 +3386,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
               } finally {
                 page.endCoveredWrite(shiftCoverage);
               }
-              updatePageStatistics(pageId, freeTailInPage, -slotEnlargement);
+              updatePageStatistics(page, freeTailInPage, -slotEnlargement);
             }
 
             // #6154: the slot's own footprint and the bytes the shift just claimed are already accounted for; the
@@ -3424,6 +3454,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         final int previousCoverage = page.beginCoveredWrite(slotTracked ?
                 MutablePage.COVERAGE_SLOT_MERGE :
                 (edgeAppendReplayable ? MutablePage.COVERAGE_EDGE_APPEND_MERGE : 0));
+        final long footprintBefore = recordSize[0] + recordSize[1];
         try {
           recordSize[1] = page.writeNumber(recordPositionInPage, isPlaceHolder ? -1L * bufferSize : bufferSize);
           final int recordContentPositionInPage = (int) (recordPositionInPage + recordSize[1]);
@@ -3431,6 +3462,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         } finally {
           page.endCoveredWrite(previousCoverage);
         }
+
+        // #6396: an overwrite that is SHORTER than what the slot held gives those bytes back, and - like the delete,
+        // and for the same reason (#6339) - says nothing about them: telling the statistics would cost the
+        // slot-table scan this branch exists to avoid, since only the LAST record of a page moves its free tail and
+        // nothing here knows whether this is it. The compression the commit runs measures the packed page anyway. A
+        // same-size overwrite (the edge-append rewrite, a property changed in place) moves nothing and leaves the
+        // claim exactly as it was.
+        if (bufferSize + recordSize[1] < footprintBefore)
+          freedWithoutClaiming(page);
 
         LogManager.instance()
                 .log(this, Level.FINE, "Updated record %s with the same size or less as before (%s threadId=%d)", null, rid, page,
@@ -3787,6 +3827,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         } finally {
           page.endCoveredWrite(previousCoverage);
         }
+        freedWithoutClaiming(page);
 
         // Track deleted RID to prevent reuse within the same transaction
         database.getTransaction().addDeletedRecord(rid);
@@ -3807,6 +3848,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           slotTx.poisonSlotRebasePage(fileId, pageId);
 
         page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE, 0L);
+        freedWithoutClaiming(page);
       }
 
       LogManager.instance()
@@ -3833,6 +3875,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
         // POINTER = 0 MEANS DELETED
         page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE, 0);
+        freedWithoutClaiming(page);
       }
     }
   }
@@ -3864,6 +3907,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
 
     final List<int[]> orderedRecordContentInPage = getOrderedRecordsInPage(page, recordCountInPage, false);
+
+    // #6396: the one moment both descriptions of this page's free tail exist at once - what the writes SAID it would
+    // be, and what the page HAS. See verifyFreeSpaceClaim; the derivation has to happen BEFORE the defrag below moves
+    // the records.
+    if (CHECK_FREE_SPACE_CLAIMS)
+      verifyFreeSpaceClaim(page, orderedRecordContentInPage);
 
     if (orderedRecordContentInPage.isEmpty()) {
       if (recordCountInPage > 0) {
@@ -3920,6 +3969,87 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
+   * The caller is about to give bytes back on this page - free a slot, overwrite a record with a shorter one - and,
+   * deliberately, will not tell the free-space statistics: the compression the commit runs measures the packed page
+   * anyway, and accounting at the free itself was measured to be worth less than the slot-table scan per freed slot
+   * it costs (#6339). So whatever a previous write claimed about the page's free tail stops being that tail and stays
+   * a floor under it (#6396): the check that follows can no longer demand equality, but it still catches the writer
+   * that claims MORE free space than the page has.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private static void freedWithoutClaiming(final MutablePage page) {
+    if (CHECK_FREE_SPACE_CLAIMS)
+      page.relaxFreeSpaceClaim();
+  }
+
+  /**
+   * The free TAIL of a page: everything past the last record it holds, measured against
+   * {@link BasePage#getMaxContentSize()} - the usable content region, never {@code getAvailableContentSize()}, which
+   * still counts the page header (#4958, #5067). The quantity every write path reports to the free-space statistics,
+   * derived in ONE place so the scan that reads a page it did not write ({@link #gatherPageStatistics}) and the check
+   * that holds the writers to it ({@link #verifyFreeSpaceClaim}) cannot come to describe it differently - which is
+   * the very failure #6396 exists to make loud.
+   *
+   * @param orderedRecordsInPage the page's live records in position order, as {@link #getOrderedRecordsInPage}
+   *                             returns them.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private int freeTailInPage(final BasePage page, final List<int[]> orderedRecordsInPage) {
+    if (orderedRecordsInPage.isEmpty())
+      return page.getMaxContentSize() - contentHeaderSize;
+
+    final int[] lastRecord = orderedRecordsInPage.getLast();
+    return page.getMaxContentSize() - (lastRecord[0] + lastRecord[1]);
+  }
+
+  /**
+   * Holds what a transaction's writes SAID this page's free tail would be against what the page, read here, actually
+   * has (#6396).
+   * <p>
+   * Everything the free-space statistics are told by a write is a delta that write computes about its own bytes,
+   * and nothing observable after a commit depends on it being right: every page a transaction touches is compressed
+   * at commit, {@link #compressPageInternal} MEASURES its free tail there and {@link #accountCompressedPage}
+   * overwrites whatever the deltas had accumulated. So a writer could be - and, until #6154, #6339 and #6358 were
+   * each opened for one, repeatedly was - thousands of bytes wrong without a single red test. Two independent
+   * descriptions of one quantity, and no mechanism keeping them honest.
+   * <p>
+   * This is that mechanism, and it needs no fixture: every commit in every test becomes a check of the write-path
+   * arithmetic. The comparison is an EQUALITY, against the tail the page has BEFORE the defrag - which is exactly
+   * what a write reports, holes and all - rather than against the packed tail {@code accountCompressedPage} goes on
+   * to record, because that one is larger by every hole the compression is about to close and a claim short by the
+   * same amount would slip through it.
+   * <p>
+   * A write that GIVES BYTES BACK and deliberately does not report them - a delete (#6339), an in-place update that
+   * shrank - demotes the claim to a lower bound ({@link #freedWithoutClaiming}) instead of dropping it, so the
+   * equality relaxes to {@code <=} on that page and the over-reporting direction stays checked everywhere. A page no
+   * write has spoken about carries {@link MutablePage#FREE_SPACE_CLAIM_UNKNOWN} and is skipped. If this fires on a
+   * NEW write path, the answer is a corrected delta or that one call, never a widening of the comparison.
+   *
+   * @param orderedRecordContentInPage the page's live records in position order, as the compression read them and
+   *                                   before it moved any of them.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private void verifyFreeSpaceClaim(final MutablePage page, final List<int[]> orderedRecordContentInPage) {
+    final int claimed = page.getFreeSpaceClaim();
+    if (claimed == MutablePage.FREE_SPACE_CLAIM_UNKNOWN)
+      return;
+
+    // The tail the page has right now, through the same derivation gatherPageStatistics measures an unwritten page
+    // with: comparing a claim against a second opinion of the quantity would be the defect this check is for.
+    final int freeTailInPage = freeTailInPage(page, orderedRecordContentInPage);
+
+    final boolean exact = page.isFreeSpaceClaimExact();
+    assert exact ? claimed == freeTailInPage : claimed <= freeTailInPage :
+        "page " + page.getPageId() + " of bucket '" + componentName + "' was reported to the free-space statistics with "
+            + claimed + (exact ? " free bytes" : " free bytes or more") + ", but holds " + freeTailInPage + " ("
+            + orderedRecordContentInPage.size() + " records). A write described bytes it did not write: correct its "
+            + "delta, or call freedWithoutClaiming() if it gives bytes back without reporting them";
+  }
+
+  /**
    * Records, in the free-space statistics, the free tail a page has once {@link #compressPageInternal} has packed it
    * (#6339). The delta convention of {@link #updatePageStatistics} carries an absolute value as
    * {@code (theSpaceThereIs, 0)}, which is what this is: a measurement, not a change - and a page packed to its
@@ -3940,7 +4070,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   private void accountCompressedPage(final MutablePage page, final int contentEndInPage) {
-    updatePageStatistics(page.getPageId().getPageNumber(), page.getMaxContentSize() - contentEndInPage, 0);
+    updatePageStatistics(page, page.getMaxContentSize() - contentEndInPage, 0);
   }
 
   private void wipeOutFreeSpace(final MutablePage page, final short recordCountInPage) throws IOException {
@@ -4583,7 +4713,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // takes ALL of it whenever it takes any, so this lands the page's free space on exactly 0 and drops its entry.
     final int freeTailTakenByHeadChunk = availableSpaceForFirstChunk - slotBytesAlreadyOwned;
     if (freeTailTakenByHeadChunk > 0)
-      updatePageStatistics(firstPage.pageId.getPageNumber(), freeTailTakenByHeadChunk, -freeTailTakenByHeadChunk);
+      updatePageStatistics(firstPage, freeTailTakenByHeadChunk, -freeTailTakenByHeadChunk);
 
     newPosition += INT_SERIALIZED_SIZE;
 
@@ -4685,8 +4815,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       nextPage.writeByteArray(newPosition, content, contentOffset, chunkSize);
 
-      updatePageStatistics(nextPage.pageId.getPageNumber(), freeSpaceBeforeChunk,
-              -chunkFootprint(chunkMarkerSize, chunkSize));
+      updatePageStatistics(nextPage, freeSpaceBeforeChunk, -chunkFootprint(chunkMarkerSize, chunkSize));
 
       bufferSize -= chunkSize;
       contentOffset += chunkSize;
@@ -4829,8 +4958,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // LAST record, which is exactly when its region runs to the maximum content size. In every other case the region
     // is bounded by the neighbour that follows and the tail does not move, so there is nothing to account.
     if (headChunkRegionEnd == currentPage.getMaxContentSize() && chunkSize != previousChunkSize)
-      updatePageStatistics(currentPage.pageId.getPageNumber(), headChunkRoom - previousChunkSize,
-              previousChunkSize - chunkSize);
+      updatePageStatistics(currentPage, headChunkRoom - previousChunkSize, previousChunkSize - chunkSize);
 
     newPosition += INT_SERIALIZED_SIZE;
 
@@ -4858,6 +4986,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // (#6358) - before this, the two allocating branches each guessed at it from what they knew before the write.
       int freeSpaceBeforeChunk = -1;
       int chunkMarkerSize = 0;
+      // #6396: what the reused chunk declared before this iteration rewrote it, so a chunk that comes out SHORTER
+      // can say so. -1 while there is no reused chunk.
+      int chunkSizeBefore = -1;
 
       if (nextChunkPointer > 0) {
         final int chunkPageId = (int) (nextChunkPointer / maxRecordsInPage);
@@ -4879,6 +5010,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
         newPosition = (int) (recordPositionInPage + recordSize[1]);
         chunkSize = nextPage.readInt(newPosition);
+        chunkSizeBefore = chunkSize;
         nextChunkPointer = nextPage.readLong(newPosition + INT_SERIALIZED_SIZE);
 
       } else {
@@ -4976,8 +5108,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // it is one derivation shared with the spill and with the page walk, rather than a subtraction each writer
       // improvised.
       if (freeSpaceBeforeChunk > -1)
-        updatePageStatistics(nextPage.pageId.getPageNumber(), freeSpaceBeforeChunk,
-                -chunkFootprint(chunkMarkerSize, chunkSize));
+        updatePageStatistics(nextPage, freeSpaceBeforeChunk, -chunkFootprint(chunkMarkerSize, chunkSize));
+      else if (chunkSize < chunkSizeBefore)
+        // #6396: the LAST chunk of a record that shrank is rewritten shorter inside the footprint the chain already
+        // owns. It takes nothing, so there is no delta to report - but when that chunk is the last record of its
+        // page it hands bytes back to the free tail, which is the compression's to measure and no longer anything a
+        // previous claim on this page describes.
+        freedWithoutClaiming(nextPage);
 
       // SAVE THE POSITION OF THE POINTER TO THE NEXT CHUNK
       newPosition += INT_SERIALIZED_SIZE;
@@ -5083,7 +5220,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // whose region runs to the page's maximum content size moves the free tail; anywhere else the region is bounded
     // by the neighbour that follows and nothing moves.
     if (chunkRegionEnd == page.getMaxContentSize())
-      updatePageStatistics(pageId, chunkRegionEnd - previousChunkEnd,
+      updatePageStatistics(page, chunkRegionEnd - previousChunkEnd,
               previousChunkEnd - (recordPositionInPage + sizeBytes + bufferSize));
 
     freeChunkChain(rid, chainToFree);
@@ -5131,6 +5268,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       // DELETE THE CHUNK AS RECORD IN THE PAGE
       nextPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + chunkPositionInPage * INT_SERIALIZED_SIZE, 0L);
+      freedWithoutClaiming(nextPage);
 
       if (recordPositionInPage == 0) {
         LogManager.instance()
@@ -5245,7 +5383,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * @return true when the page could host the extra bytes and the record was written; false when the caller has to
    * spill the record out of the page (placeholder or chunk chain) - in that case nothing has been written.
    */
-  private boolean growRecordInPage(final MutablePage page, final int pageNumber, final short recordCountInPage,
+  private boolean growRecordInPage(final MutablePage page, final short recordCountInPage,
                                    final int recordPositionInPage, final int lastRecordPositionInPage, final long[] recordSize,
                                    final boolean isPlaceHolder, final byte[] content, final int contentOffset,
                                    final int contentSize) throws IOException {
@@ -5267,7 +5405,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     recordSize[1] = page.writeNumber(recordPositionInPage, isPlaceHolder ? -1L * contentSize : contentSize);
     page.writeByteArray((int) (recordPositionInPage + recordSize[1]), content, contentOffset, contentSize);
 
-    updatePageStatistics(pageNumber, spaceAvailableInCurrentPage, -additionalSpaceNeeded);
+    updatePageStatistics(page, spaceAvailableInCurrentPage, -additionalSpaceNeeded);
     return true;
   }
 
@@ -5621,11 +5759,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
             // #4958: measure against the usable content region (getMaxContentSize), not the physical
             // page size: the latter overstated the free space of every page by the page header size.
-            int freeSpaceInPage = page.getMaxContentSize() - contentHeaderSize;
-            if (!orderedRecordContentInPage.isEmpty()) {
-              final int[] lastRecord = orderedRecordContentInPage.get(orderedRecordContentInPage.size() - 1);
-              freeSpaceInPage = page.getMaxContentSize() - (lastRecord[0] + lastRecord[1]);
-            }
+            final int freeSpaceInPage = freeTailInPage(page, orderedRecordContentInPage);
 
             final int freeSpacePerc = freeSpaceInPage * 100 / (page.getMaxContentSize() - contentHeaderSize);
 
@@ -5661,6 +5795,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * The overload is gone rather than given a sentinel of its own, because a sentinel nobody passes is a second
    * meaning waiting for the next caller to find by accident.
    *
+   * @param page           the page image this write landed on. Takes the page rather than its number so the two
+   *                       cannot disagree, and so the claim of #6396 can be kept on the very object the commit
+   *                       measures.
    * @param availableSpace free space the page had before this write, measured against
    *                       {@link BasePage#getMaxContentSize()} - never {@code getAvailableContentSize()}, which
    *                       still counts the page header.
@@ -5668,11 +5805,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    *                       and 0 when {@code availableSpace} is a measurement of the settled page rather than a
    *                       change to it (see {@link #accountCompressedPage}).
    */
-  private void updatePageStatistics(final int pageId, final int availableSpace, final int delta) {
+  private void updatePageStatistics(final MutablePage page, final int availableSpace, final int delta) {
     changesFromLastStats.incrementAndGet();
 
     if (reuseSpaceMode.ordinal() < REUSE_SPACE_MODE.HIGH.ordinal())
       return;
+
+    final int pageId = page.getPageId().getPageNumber();
 
     // A page cannot have less than no free space. Under -ea (surefire's default) this is the tripwire that says a
     // write path and the commit-time measurement have stopped describing the same bytes; in production the branches
@@ -5680,6 +5819,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     assert availableSpace >= 0 && availableSpace + delta >= 0 :
         "page " + pageId + " of bucket '" + componentName + "' is reported with " + availableSpace + " free bytes and a delta of "
             + delta;
+
+    // #6396: what this write says the page's free tail is, kept on the page image itself so the commit can hold it
+    // against the measurement it makes on the very same object. Deliberately NOT the entry in freeSpaceInPages: that
+    // map is bucket-wide (a concurrent transaction's write to the same page would be compared against ours), it is
+    // thresholded and evicted (most pages carry no entry at all), and it is also written from outside by
+    // setPageStatistics and gatherPageStatistics, neither of which is a claim any writer made.
+    if (CHECK_FREE_SPACE_CLAIMS)
+      page.claimFreeSpace(availableSpace + delta);
 
     synchronized (freeSpaceInPages) {
       if (availableSpace + delta == 0)
