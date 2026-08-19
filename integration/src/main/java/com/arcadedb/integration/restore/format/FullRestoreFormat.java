@@ -222,7 +222,13 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
       // THAN LETTING HttpURLConnection FOLLOW REDIRECTS ITSELF: A REDIRECT (OR A DNS-REBOUND RE-RESOLUTION) THAT
       // LANDS ON A BLOCKED ADDRESS WOULD OTHERWISE BYPASS THE ONE-SHOT HOST CHECK
       // PostServerCommandHandler.validateClientRestoreImportUrl ALREADY DID BEFORE HANDING OFF THE URL (ISSUE #6381).
-      final boolean allowLocalUrls = GlobalConfiguration.SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS.getValueAsBoolean();
+      //
+      // settings.allowLocalUrls IS SET EXPLICITLY BY A CALLER THAT ALREADY RESOLVED THIS AGAINST ITS OWN
+      // CONFIGURATION (THE SERVER COMMAND HANDLER, AGAINST ITS PER-INSTANCE ContextConfiguration) SO THE FETCH AGREES
+      // WITH WHATEVER PRE-CHECK ALREADY ACCEPTED THE COMMAND. A CLI/EMBEDDED CALLER WITH NO SUCH CONTEXT LEAVES IT
+      // null AND FALLS BACK TO THE STATIC GLOBAL DEFAULT.
+      final boolean allowLocalUrls = settings.allowLocalUrls != null ?
+          settings.allowLocalUrls : GlobalConfiguration.SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS.getValueAsBoolean();
       final HttpURLConnection connection = SafeHttpFetcher.open(settings.inputFileURL,
           address -> !allowLocalUrls && RESERVED_ADDRESSES.isBlocked(address), "RESTORE DATABASE");
 

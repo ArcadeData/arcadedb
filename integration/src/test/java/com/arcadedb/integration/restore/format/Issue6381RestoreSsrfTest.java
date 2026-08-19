@@ -127,4 +127,36 @@ class Issue6381RestoreSsrfTest {
     // reason (it is not a real zip) - never with SecurityException.
     assertThatThrownBy(restore::restoreDatabase).isNotInstanceOf(SecurityException.class);
   }
+
+  /**
+   * {@code RestoreSettings.allowLocalUrls} is what {@code PostServerCommandHandler} sets (reflectively, via
+   * {@code Restore.setAllowLocalUrls}) from its own per-server {@code ContextConfiguration} - a different
+   * configuration source than the static {@link GlobalConfiguration} value. Without this explicit override taking
+   * priority, a server whose operator enabled the setting only on that server's own configuration (not the JVM-wide
+   * static one) would have its pre-check accept a restore that the fetch then refused anyway.
+   */
+  @Test
+  void explicitSettingsOverrideTakesPriorityOverStaticDefault() {
+    // Static default is false (blocked); the explicit per-call override must still allow it.
+    final RestoreSettings allowSettings = new RestoreSettings();
+    allowSettings.format = "full";
+    allowSettings.inputFileURL = baseUrl + "/redirect-to-content";
+    allowSettings.databaseDirectory = databaseDirectory.getPath();
+    allowSettings.allowLocalUrls = true;
+
+    assertThatThrownBy(new FullRestoreFormat(null, allowSettings, new ConsoleLogger(0))::restoreDatabase)
+        .isNotInstanceOf(SecurityException.class);
+
+    // Static default flipped to true; the explicit per-call override must still block it.
+    GlobalConfiguration.SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS.setValue(true);
+    final RestoreSettings blockSettings = new RestoreSettings();
+    blockSettings.format = "full";
+    blockSettings.inputFileURL = baseUrl + "/content";
+    blockSettings.databaseDirectory = databaseDirectory.getPath();
+    blockSettings.allowLocalUrls = false;
+
+    assertThatThrownBy(new FullRestoreFormat(null, blockSettings, new ConsoleLogger(0))::restoreDatabase)
+        .isInstanceOf(SecurityException.class)
+        .hasMessageContaining("127.0.0.1");
+  }
 }
