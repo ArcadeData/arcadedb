@@ -817,8 +817,16 @@ public class Console {
       return true;
 
     for (final String w : parsedLine.words()) {
+      final String trimmedWord = w.trim();
+      if (trimmedWord.isEmpty())
+        // AN EMPTY LINE (OR A LEFTOVER LINE TERMINATOR BETWEEN TWO COMMANDS) SPLITS INTO A BLANK "WORD": SKIP IT SO
+        // LOAD DOES NOT ECHO AN EMPTY PROMPT FOR IT (issue #6372)
+        continue;
+
       if (printCommand)
-        output(3, getPrompt() + w);
+        // USE THE TRIMMED WORD: AN UNTERMINATED LAST COMMAND CARRIES ITS TRAILING NEWLINE AS PART OF THE WORD, WHICH
+        // WOULD OTHERWISE PUSH THE RESULT DOWN BY AN EXTRA BLANK LINE (issue #6372)
+        output(3, getPrompt() + trimmedWord);
 
       if (batchMode) {
         try {

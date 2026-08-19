@@ -185,6 +185,49 @@ class ConsoleTest {
     }
   }
 
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/6372: an empty line in a script loaded with LOAD must not echo an
+   * empty prompt of its own - only the real commands are echoed.
+   */
+  @Test
+  void loadScriptWithEmptyLinesDoesNotEchoEmptyPrompts() throws Exception {
+    assertThat(console.parse("connect " + DB_NAME)).isTrue();
+
+    final File script = new File("./target/issue-6372.sql");
+    try {
+      Files.writeString(script.toPath(), """
+          CREATE DOCUMENT TYPE Loaded;
+
+
+          INSERT INTO Loaded SET id = 1;
+
+          INSERT INTO Loaded SET id = 2
+          """);
+
+      final StringBuilder buffer = new StringBuilder();
+      console.setOutput(output -> buffer.append(output));
+
+      assertThat(console.parse("load " + script.getAbsolutePath())).isTrue();
+
+      final String output = buffer.toString();
+      assertThat(output).doesNotContain("ERROR");
+
+      // ONLY THE 3 REAL COMMANDS (CREATE, INSERT, INSERT) MUST BE ECHOED WITH A PROMPT - THE 3 EMPTY LINES IN
+      // BETWEEN MUST NOT PRODUCE A PROMPT OF THEIR OWN
+      final String marker = "{" + DB_NAME + "}> ";
+      int promptCount = 0;
+      for (int idx = output.indexOf(marker); idx != -1; idx = output.indexOf(marker, idx + marker.length()))
+        ++promptCount;
+      assertThat(promptCount).isEqualTo(3);
+
+      buffer.setLength(0);
+      assertThat(console.parse("select count(*) as count from Loaded")).isTrue();
+      assertThat(buffer.toString()).contains("2");
+    } finally {
+      script.delete();
+    }
+  }
+
   @Test
   void listDatabases() throws Exception {
     assertThat(console.parse("list databases;")).isTrue();
