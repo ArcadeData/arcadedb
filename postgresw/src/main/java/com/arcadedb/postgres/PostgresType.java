@@ -266,6 +266,11 @@ public enum PostgresType {
   // PostgreSQL's own cap (NUMERIC_MAX_RESULT_SCALE-derived) on digit groups in one value; a declared count
   // above this cannot be a value this codec produced, only a malformed or adversarial payload.
   private static final int NUMERIC_MAX_DIGITS  = 4000;
+  // The largest bit length a BigInteger with NUMERIC_MAX_DIGITS * NUMERIC_DIGIT_WIDTH (16000) decimal digits
+  // can have: ceil(16000 * log2(10)) = ceil(16000 * 3.321928094887362) = 53151. Any BigInteger past this bound
+  // has more than 16000 decimal digits, guaranteed - checking bitLength() (already computed, effectively O(1))
+  // catches that before putNumericBinary calls toString() on it, which is not.
+  private static final int NUMERIC_MAX_UNSCALED_BITS = 53151;
 
   /**
    * Encodes a BigDecimal in PostgreSQL's NUMERIC binary wire format. Unlike {@link #parseNumericBinary}, which
@@ -294,6 +299,14 @@ public enum PostgresType {
 
     final boolean negative = normalized.signum() < 0;
     final BigInteger unscaled = normalized.unscaledValue().abs();
+    // Bounds the MAGNITUDE the same way the checks above bound the SCALE: a short scientific-notation literal
+    // like '1E2000000000' is already rejected by the scale check (it always implies a very negative scale),
+    // but a value that is simply a great many literal digits at a small/zero scale - reachable from a compact
+    // SQL expression rather than a giant literal - would otherwise sail past both scale checks and reach the
+    // O(n) toString()/padding work below before the digit-count check further down ever gets a chance to
+    // reject it.
+    if (unscaled.bitLength() > NUMERIC_MAX_UNSCALED_BITS)
+      throw new PostgresProtocolException("NUMERIC precision exceeds the supported maximum");
 
     if (unscaled.equals(BigInteger.ZERO)) {
       typeBuffer.putInt(8);

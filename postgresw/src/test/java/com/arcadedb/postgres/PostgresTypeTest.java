@@ -941,6 +941,24 @@ class PostgresTypeTest {
   }
 
   @Test
+  @Timeout(value = 10, unit = TimeUnit.SECONDS)
+  void serializeAsBinaryNumericRejectsExtremeMagnitudeWithoutMaterializingItsDigitString() {
+    // The scale check above closes the amplification vector a short scientific-notation literal opens - that
+    // pattern always implies a very negative scale - but says nothing about a value that is simply a great many
+    // literal digits at a small/zero scale, reachable from a compact SQL expression rather than a giant literal.
+    // BigInteger.ONE.shiftLeft(...) builds a value with a huge bitLength in O(1) (it is one set bit), the same
+    // way scientific-notation parsing was O(1) for the scale case - so the @Timeout here is, again, a hang/OOM
+    // detector: an unfixed version of this check would call toString() on the several-hundred-thousand-digit
+    // unscaled value this decodes to and build a proportionally huge digit string before ever reaching the
+    // ndigits check.
+    final BigDecimal extremeMagnitude = new BigDecimal(BigInteger.ONE.shiftLeft(2_500_000), 0);
+    final Binary buffer = new Binary();
+    assertThatThrownBy(() -> PostgresType.NUMERIC.serializeAsBinary(PostgresType.NUMERIC, buffer, extremeMagnitude))
+        .isInstanceOf(PostgresProtocolException.class)
+        .hasMessageContaining("precision exceeds");
+  }
+
+  @Test
   void deserializeBinaryVarchar() {
     byte[] data = "hello binary".getBytes();
     Object result = PostgresType.deserialize(PostgresType.VARCHAR.code, 1, data);
