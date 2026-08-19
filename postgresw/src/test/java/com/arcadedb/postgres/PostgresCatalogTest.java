@@ -256,6 +256,20 @@ class PostgresCatalogTest {
   }
 
   @Test
+  void aDecimalColumnReportsBase10PrecisionRadix() {
+    // issue #6447: DECIMAL used to map to DOUBLE, so the flat "every native scalar type answers 2" here was
+    // accidentally correct for it. Now that it maps to NUMERIC, real PostgreSQL reports 10 for that type
+    // specifically - every other native scalar type this catalog emulates is still binary (base 2).
+    database.transaction(() -> database.getSchema().createDocumentType("Invoice6447").createProperty("amount", Type.DECIMAL));
+
+    final PostgresCatalog.Answer answer = resolve(
+        "SELECT column_name, numeric_precision_radix FROM information_schema.columns WHERE table_name = 'Invoice6447'");
+
+    assertThat(answer.rows).hasSize(1);
+    assertThat(answer.rows.get(0)).containsEntry("numeric_precision_radix", 10);
+  }
+
+  @Test
   void aStarProjectionExpandsToTheRelationsColumns() {
     final PostgresCatalog.Answer answer = resolve("SELECT * FROM pg_catalog.pg_namespace");
 

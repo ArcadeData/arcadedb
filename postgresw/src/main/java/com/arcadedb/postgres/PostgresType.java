@@ -267,10 +267,22 @@ public enum PostgresType {
   // above this cannot be a value this codec produced, only a malformed or adversarial payload.
   private static final int NUMERIC_MAX_DIGITS  = 4000;
 
-  /** Encodes a BigDecimal in PostgreSQL's NUMERIC binary wire format. */
+  /**
+   * Encodes a BigDecimal in PostgreSQL's NUMERIC binary wire format. Unlike {@link #parseNumericBinary}, which
+   * only has to reject bytes an attacker sent, this also has to reject a BigDecimal ArcadeDB itself produced:
+   * a DECIMAL property has no configured precision/scale limit, so a value with a large enough scale would
+   * otherwise silently wrap through the header fields' {@code (short)} casts below and write a self-
+   * inconsistent payload - the {@code putInt} length prefix would stay correct, but a real client decoding the
+   * wrapped {@code ndigits}/{@code weight}/{@code dscale} out of that payload would not agree with it.
+   */
   private static void putNumericBinary(final Binary typeBuffer, final BigDecimal decimalValue) {
     final BigDecimal normalized = decimalValue.scale() < 0 ? decimalValue.setScale(0) : decimalValue;
     final int dscale = normalized.scale();
+    // Checked before any padding so a value with an absurd scale fails fast instead of first allocating a
+    // proportionally huge digit string.
+    if (dscale < 0 || dscale > NUMERIC_MAX_DIGITS * NUMERIC_DIGIT_WIDTH)
+      throw new PostgresProtocolException("NUMERIC scale exceeds the supported maximum: " + dscale);
+
     final boolean negative = normalized.signum() < 0;
     final BigInteger unscaled = normalized.unscaledValue().abs();
 
@@ -314,6 +326,13 @@ public enum PostgresType {
 
     final int ndigits = end - start + 1;
     final int weight = integerGroups - 1 - start;
+
+    // Both fields are about to go through a (short) cast: reject rather than let either wrap silently into a
+    // header that no longer matches the digits actually written.
+    if (ndigits > NUMERIC_MAX_DIGITS)
+      throw new PostgresProtocolException("NUMERIC digit count exceeds the supported maximum: " + ndigits);
+    if (weight < Short.MIN_VALUE || weight > Short.MAX_VALUE)
+      throw new PostgresProtocolException("NUMERIC weight exceeds the supported range: " + weight);
 
     typeBuffer.putInt(8 + ndigits * 2);
     typeBuffer.putShort((short) ndigits);

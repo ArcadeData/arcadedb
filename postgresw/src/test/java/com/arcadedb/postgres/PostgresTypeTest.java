@@ -27,6 +27,7 @@ import org.junit.jupiter.api.Test;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -846,6 +847,18 @@ class PostgresTypeTest {
     assertThatThrownBy(() -> PostgresType.deserialize(PostgresType.NUMERIC.code, 1, buf.array()))
         .isInstanceOf(PostgresProtocolException.class)
         .hasMessageContaining("exceeds");
+  }
+
+  @Test
+  void serializeAsBinaryNumericRejectsExcessiveScale() {
+    // Unlike deserialize, which only has to reject bytes an attacker sent, serializeAsBinary also has to reject
+    // a BigDecimal ArcadeDB itself produced: an unbounded DECIMAL property scale would otherwise wrap silently
+    // through the header fields' (short) casts and write a self-inconsistent NUMERIC payload.
+    final BigDecimal absurdScale = new BigDecimal(BigInteger.ONE, 16001);
+    final Binary buffer = new Binary();
+    assertThatThrownBy(() -> PostgresType.NUMERIC.serializeAsBinary(PostgresType.NUMERIC, buffer, absurdScale))
+        .isInstanceOf(PostgresProtocolException.class)
+        .hasMessageContaining("scale exceeds");
   }
 
   @Test
