@@ -936,9 +936,11 @@ public class PostgresNetworkExecutor extends Thread {
    * <p>
    * {@code propertyName} is the row's own column name, which for an aliased or computed projection ({@code
    * SELECT amount AS x FROM Type}) is the alias, not the source property - so the lookup misses and the caller
-   * falls back to a value-only guess for that column. Pre-existing limitation shared with #5289's {@link
-   * #getDeclaredListType}, not something introduced here; resolving an alias back to its source property would
-   * need to walk the SELECT projection's expression tree, which is a materially larger piece of work.
+   * falls back to a value-only guess for that column. The "look up by row column name" pattern is inherited
+   * from #5289's {@link #getDeclaredListType}, which has the identical gap for an empty aliased LIST; the
+   * {@code queryTargetType} fallback added here for #6447 does not close it either. Resolving an alias back to
+   * its source property would need to walk the SELECT projection's expression tree, a materially larger piece
+   * of work than either fix.
    */
   private Property getDeclaredProperty(final Result row, final String propertyName, final DocumentType queryTargetType) {
     final Document element = row.getElement().orElse(null);

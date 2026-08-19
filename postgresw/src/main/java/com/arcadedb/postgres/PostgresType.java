@@ -81,7 +81,7 @@ public enum PostgresType {
   // path (lossy for a BigDecimal outside float64's range/precision) and as VARCHAR by the value path (forces a
   // client to treat the column as text) - neither was right, and the two disagreeing meant a column's OID also
   // depended on whether the result set was empty. NUMERIC is the honest answer PostgreSQL already has for this.
-  NUMERIC(1700, "numeric", 0, 1231, BigDecimal.class, -1, value -> new BigDecimal(value)),
+  NUMERIC(1700, "numeric", 0, 1231, BigDecimal.class, -1, BigDecimal::new),
   // Adding array types with PostgreSQL array type codes
   ARRAY_INT(1007, "_int4", 23, 0, Collection.class, -1, value -> parseArrayFromString(value, Integer::parseInt)),
   // 1002 is "char"[], the array of the single-byte CHAR (OID 18) this enum pairs it with. It used to be
@@ -306,7 +306,7 @@ public enum PostgresType {
     // O(n) toString()/padding work below before the digit-count check further down ever gets a chance to
     // reject it.
     if (unscaled.bitLength() > NUMERIC_MAX_UNSCALED_BITS)
-      throw new PostgresProtocolException("NUMERIC precision exceeds the supported maximum");
+      throw new PostgresProtocolException("NUMERIC precision exceeds the supported maximum: " + unscaled.bitLength() + " bits");
 
     if (unscaled.equals(BigInteger.ZERO)) {
       typeBuffer.putInt(8);
