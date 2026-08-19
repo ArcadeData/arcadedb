@@ -296,7 +296,7 @@ public class PostgresTypeCatalog {
   /**
    * pg_type.typinput, the name of the C function PostgreSQL parses the type's text representation with.
    * Spelled out rather than synthesised from the type name, because PostgreSQL is not consistent about it:
-   * most are {@code <name>in}, but the temporal types and json take an underscore.
+   * most are {@code <name>in}, but the temporal types, json and numeric take an underscore.
    */
   private static String inputFunction(final PostgresType type) {
     if (type.isArrayType())
@@ -305,6 +305,7 @@ public class PostgresTypeCatalog {
       case DATE -> "date_in";
       case TIMESTAMP -> "timestamp_in";
       case JSON -> "json_in";
+      case NUMERIC -> "numeric_in";
       default -> type.typeName + "in";
     };
   }
@@ -315,7 +316,7 @@ public class PostgresTypeCatalog {
       return "A";
     return switch (type) {
       case BOOLEAN -> "B";
-      case SMALLINT, INTEGER, LONG, REAL, DOUBLE -> "N";
+      case SMALLINT, INTEGER, LONG, REAL, DOUBLE, NUMERIC -> "N";
       case DATE, TIMESTAMP -> "D";
       case CHAR, VARCHAR, TEXT, BPCHAR -> "S";
       default -> "U"; // user-defined, which is where PostgreSQL itself files json

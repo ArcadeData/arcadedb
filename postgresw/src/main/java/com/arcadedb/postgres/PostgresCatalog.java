@@ -750,7 +750,7 @@ public class PostgresCatalog {
                 "column_default", defaultValue == null ? null : defaultValue.toString(),//
                 "is_nullable", notNull ? "NO" : "YES", "data_type", pgType.typeName, "udt_catalog", schema,//
                 "udt_schema", "pg_catalog", "udt_name", pgType.typeName, "is_identity", "NO", "is_generated", "NEVER",//
-                "is_updatable", "YES", "numeric_precision_radix", pgType.isNativeScalarType() ? 2 : null);
+                "is_updatable", "YES", "numeric_precision_radix", numericPrecisionRadix(pgType));
 
         // The type row a client joins pg_attribute to in order to name the column's type. It describes the
         // column's own type, which is the only reading of that join that makes sense.
@@ -764,6 +764,19 @@ public class PostgresCatalog {
     }
 
     return rows;
+  }
+
+  /**
+   * information_schema.columns.numeric_precision_radix: 2 for the binary/approximate numeric types PostgreSQL
+   * itself reports it for, but 10 for NUMERIC specifically - it is the one numeric type PostgreSQL stores and
+   * reports precision in base 10 rather than base 2 (issue #6447). DECIMAL used to map to DOUBLE, so the flat
+   * "every native scalar type answers 2" below was accidentally correct for it; now that it maps to NUMERIC,
+   * it needs its own case.
+   */
+  private static Integer numericPrecisionRadix(final PostgresType pgType) {
+    if (pgType == PostgresType.NUMERIC)
+      return 10;
+    return pgType.isNativeScalarType() ? 2 : null;
   }
 
   private static Row databaseRow(final Context context) {

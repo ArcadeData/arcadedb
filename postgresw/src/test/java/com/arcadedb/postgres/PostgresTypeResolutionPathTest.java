@@ -24,6 +24,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.Date;
 import java.util.EnumMap;
@@ -44,7 +45,10 @@ class PostgresTypeResolutionPathTest {
 
   /**
    * A representative value of each Type's default Java type, as the value path would receive it from a stored
-   * record.
+   * record in a database left at its default configuration. DATE and DATETIME are configurable per database
+   * (GlobalConfiguration.DATE_IMPLEMENTATION/DATE_TIME_IMPLEMENTATION) and default to LocalDate/LocalDateTime,
+   * not java.util.Date (issue #6447) - {@link #datetimeValuePathDisagreesWithSchemaWhenConfiguredForJavaUtilDate}
+   * covers the non-default configuration separately, since a single sample per Type can only model one of them.
    */
   private static final Map<Type, Object> SAMPLE_VALUES = new EnumMap<>(Type.class);
 
@@ -55,14 +59,14 @@ class PostgresTypeResolutionPathTest {
     SAMPLE_VALUES.put(Type.LONG, 100L);
     SAMPLE_VALUES.put(Type.FLOAT, 1.5f);
     SAMPLE_VALUES.put(Type.DOUBLE, 2.5d);
-    SAMPLE_VALUES.put(Type.DATETIME, new Date());
+    SAMPLE_VALUES.put(Type.DATETIME, LocalDateTime.now());
     SAMPLE_VALUES.put(Type.STRING, "text");
     SAMPLE_VALUES.put(Type.BINARY, new byte[] { 1, 2 });
     SAMPLE_VALUES.put(Type.LIST, List.of("a", "b"));
     SAMPLE_VALUES.put(Type.MAP, Map.of("k", "v"));
     SAMPLE_VALUES.put(Type.LINK, new RID(1, 1));
     SAMPLE_VALUES.put(Type.BYTE, (byte) 5);
-    SAMPLE_VALUES.put(Type.DATE, new Date());
+    SAMPLE_VALUES.put(Type.DATE, LocalDate.now());
     SAMPLE_VALUES.put(Type.DECIMAL, new BigDecimal("10.55"));
     SAMPLE_VALUES.put(Type.EMBEDDED, new JSONObject());
     SAMPLE_VALUES.put(Type.DATETIME_MICROS, LocalDateTime.now());
@@ -75,30 +79,6 @@ class PostgresTypeResolutionPathTest {
     SAMPLE_VALUES.put(Type.ARRAY_OF_DOUBLES, new double[] { 1.5d, 2.5d });
   }
 
-  /**
-   * Types whose two paths are known to disagree, each pending a fix that is not a missing switch case:
-   * <ul>
-   *   <li>SHORT/BYTE: the value path widens Short/Byte to INTEGER, because PostgresType has no int2[] to pair
-   *       with it; reconciling on SMALLINT changes the OID existing clients already receive for populated rows.
-   *   <li>DATETIME: java.util.Date is the default Java type of both DATE and DATETIME, so the value path cannot
-   *       tell them apart and answers DATE for either.
-   *   <li>DECIMAL: neither DOUBLE (lossy) nor VARCHAR is right; the fix is a NUMERIC (OID 1700) entry with a
-   *       binary encoder.
-   * </ul>
-   * Removing an entry here is the intended way to land one of those fixes.
-   */
-  private static final Map<Type, PathDisagreement> KNOWN_DISAGREEMENTS = new EnumMap<>(Type.class);
-
-  static {
-    KNOWN_DISAGREEMENTS.put(Type.SHORT, new PathDisagreement(PostgresType.SMALLINT, PostgresType.INTEGER));
-    KNOWN_DISAGREEMENTS.put(Type.BYTE, new PathDisagreement(PostgresType.SMALLINT, PostgresType.INTEGER));
-    KNOWN_DISAGREEMENTS.put(Type.DATETIME, new PathDisagreement(PostgresType.TIMESTAMP, PostgresType.DATE));
-    KNOWN_DISAGREEMENTS.put(Type.DECIMAL, new PathDisagreement(PostgresType.DOUBLE, PostgresType.VARCHAR));
-  }
-
-  private record PathDisagreement(PostgresType schemaPath, PostgresType valuePath) {
-  }
-
   @Test
   void everyTypeHasASampleValue() {
     // Guards the table below against silently skipping a Type added to the enum later.
@@ -107,10 +87,10 @@ class PostgresTypeResolutionPathTest {
 
   @Test
   void schemaPathAgreesWithValuePathForEveryType() {
+    // No skips: every Type's two paths now agree for the sample a default-configured database would actually
+    // produce (issue #6447). The one remaining disagreement only a non-default configuration reaches - see
+    // datetimeValuePathDisagreesWithSchemaWhenConfiguredForJavaUtilDate below.
     for (final Type arcadeType : Type.values()) {
-      if (KNOWN_DISAGREEMENTS.containsKey(arcadeType))
-        continue;
-
       final PostgresType fromSchema = PostgresType.getTypeFromArcade(arcadeType);
       final PostgresType fromValue = PostgresType.getTypeForValue(SAMPLE_VALUES.get(arcadeType));
 
@@ -122,14 +102,19 @@ class PostgresTypeResolutionPathTest {
   }
 
   @Test
-  void knownDisagreementsStillDisagree() {
-    // Pins the documented exceptions so that fixing one forces its entry to be removed above rather than leaving
-    // a stale exemption that would mask a regression.
-    KNOWN_DISAGREEMENTS.forEach((arcadeType, expected) -> {
-      assertThat(PostgresType.getTypeFromArcade(arcadeType)).as("schema path of %s", arcadeType).isEqualTo(expected.schemaPath());
-      assertThat(PostgresType.getTypeForValue(SAMPLE_VALUES.get(arcadeType))).as("value path of %s", arcadeType)
-          .isEqualTo(expected.valuePath());
-    });
+  void datetimeValuePathDisagreesWithSchemaWhenConfiguredForJavaUtilDate() {
+    // Type.DATETIME's runtime representation is configurable per database (GlobalConfiguration.
+    // DATE_TIME_IMPLEMENTATION) and java.util.Date is one of the supported alternatives to the LocalDateTime
+    // default. java.util.Date is ALSO Type.DATE's default representation, so a sampled Date value cannot tell
+    // the two apart on its own and getTypeForValue always answers DATE - disagreeing with the schema path's
+    // TIMESTAMP for a DATETIME column. This is not client-visible for a real column, though:
+    // PostgresNetworkExecutor.getColumns() resolves the ambiguity from the schema - either the row's own
+    // element or, for a narrow column projection whose rows carry no element, the query's FROM-target type
+    // (isDeclaredAsDatetime/getDeclaredProperty/resolveQueryTargetType) - the same mechanism already used to
+    // type an empty LIST column from its declared element type (issue #5289). Pinned here, rather than fixed,
+    // because the two *pure* functions have no schema to consult and so are not meant to converge for this one.
+    assertThat(PostgresType.getTypeFromArcade(Type.DATETIME)).isEqualTo(PostgresType.TIMESTAMP);
+    assertThat(PostgresType.getTypeForValue(new Date())).isEqualTo(PostgresType.DATE);
   }
 
   @Test
