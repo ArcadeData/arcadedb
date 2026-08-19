@@ -5148,6 +5148,19 @@ public class CypherExecutionPlan {
 
         final int totalHops = pathPattern.getRelationshipCount();
 
+        // Every non-central node of the arm - the far endpoint and any interior node of a multi-hop
+        // arm alike - is a label the degree product cannot enforce: it counts degree off the arm's
+        // edge types and directions alone, with no field on Arm for a per-hop endpoint type, so
+        // (:Author) and () built the same operator and the same, over-counted, answer. Decline the
+        // push-down rather than silently drop the filter, exactly as the central variable's own label
+        // already does above (issue #6337, the arm-endpoint sibling of #6322).
+        for (int i = 0; i <= totalHops; i++) {
+          if (i == centralNodeIdx)
+            continue;
+          if (pathPattern.getNode(i).hasLabels())
+            return null;
+        }
+
         if (centralNodeIdx == 0) {
           final DegreeProductOp.Arm arm = buildArmForward(pathPattern, 0, totalHops, isOptional);
           if (arm == null) return null;
