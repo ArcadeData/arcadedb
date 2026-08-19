@@ -70,6 +70,26 @@ class ExportDatabaseStatementTestParserTest extends AbstractParserTest {
     assertThat(copy.url).isEqualTo(original.url);
   }
 
+  /**
+   * Regression test for issue #6428, item 1: {@code toString()} only rendered {@code url}, never {@code settings},
+   * so any code path that re-serializes the statement (statement caching keyed on text, query logging, an audit
+   * trail) would silently lose the {@code WITH} clause.
+   */
+  @Test
+  void toStringRoundTripsTheWithSettings() {
+    final SimpleNode parsed = checkSyntax("EXPORT DATABASE file://Movies.graphson.tgz WITH format = 'graphson', overwrite = true",
+        true);
+    final ExportDatabaseStatement original = (ExportDatabaseStatement) parsed;
+
+    final StringBuilder builder = new StringBuilder();
+    original.toString(null, builder);
+    assertThat(builder.toString()).contains("WITH");
+
+    final ExportDatabaseStatement roundTripped = (ExportDatabaseStatement) checkSyntax(builder.toString(), true);
+    assertThat(renderSettings(roundTripped)).isEqualTo(renderSettings(original));
+    assertThat(roundTripped.url).isEqualTo(original.url);
+  }
+
   @Test
   void copyOfAStatementWithoutSettingsKeepsAnEmptyMap() {
     final SimpleNode parsed = checkSyntax("EXPORT DATABASE file://Movies.jsonl.tgz", true);

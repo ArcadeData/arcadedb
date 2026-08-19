@@ -46,6 +46,28 @@ public class Statement extends SimpleNode {
     throw new UnsupportedOperationException("missing implementation in " + getClass().getSimpleName());
   }
 
+  /**
+   * Renders a {@code WITH key = value, ...} clause for the statements that carry a free-form settings map
+   * (REBUILD INDEX, REBUILD TYPE, IMPORT/EXPORT/BACKUP DATABASE). Appends nothing when {@code settings} is empty.
+   * Shared so every one of them stays in sync: before this, {@code EXPORT}/{@code BACKUP DATABASE} and
+   * {@code REBUILD INDEX} silently dropped their {@code WITH} clause when re-rendered to text (issue #6428).
+   */
+  protected static void appendWithSettings(final Map<Expression, Expression> settings, final Map<String, Object> params,
+      final StringBuilder builder) {
+    if (settings.isEmpty())
+      return;
+    builder.append(" WITH ");
+    boolean first = true;
+    for (final Map.Entry<Expression, Expression> entry : settings.entrySet()) {
+      if (!first)
+        builder.append(", ");
+      first = false;
+      entry.getKey().toString(params, builder);
+      builder.append(" = ");
+      entry.getValue().toString(params, builder);
+    }
+  }
+
   public void validate() throws CommandSQLParsingException {
     // NO VALIDATION BY DEFAULT
   }

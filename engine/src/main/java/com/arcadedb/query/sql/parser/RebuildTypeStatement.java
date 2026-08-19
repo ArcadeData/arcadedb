@@ -365,18 +365,7 @@ public class RebuildTypeStatement extends DDLStatement {
     typeName.toString(params, builder);
     if (polymorphic)
       builder.append(" POLYMORPHIC");
-    if (!settings.isEmpty()) {
-      builder.append(" WITH ");
-      boolean first = true;
-      for (final Map.Entry<Expression, Expression> e : settings.entrySet()) {
-        if (!first)
-          builder.append(", ");
-        e.getKey().toString(params, builder);
-        builder.append(" = ");
-        e.getValue().toString(params, builder);
-        first = false;
-      }
-    }
+    appendWithSettings(settings, params, builder);
   }
 
   @Override
