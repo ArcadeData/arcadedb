@@ -18,12 +18,16 @@
  */
 package com.arcadedb.engine;
 
+import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -123,6 +127,84 @@ class Issue6440FlushAckOnClosedDatabaseTest {
     } finally {
       db.drop();
     }
+  }
+
+  /**
+   * The {@link PageManagerFlushThread}-level counterpart of the two tests above: {@code flushPagesFromQueueToDisk}'s
+   * own "database closed before this batch could be processed" branch must ack too, not just {@code flushPage()}
+   * in isolation - the queue-draining loop reaches that branch first and never even calls {@code flushPage()}.
+   */
+  @Test
+  void flushPagesFromQueueToDiskAcksABatchWhoseDatabaseIsAlreadyClosed() throws Exception {
+    final String path = "target/databases/" + getClass().getSimpleName() + "-queue-closed";
+    final Database db = TestHelper.createDatabase(path);
+
+    final File walFileDir = new File(path);
+    final WALFile walFile = new WALFile(new File(walFileDir, "issue6440c.wal").getAbsolutePath());
+    try {
+      final PageManagerFlushThread flush = detachedFlushThread();
+      final MutablePage page = page((DatabaseInternal) db, 0);
+      page.setWALFile(walFile);
+      bumpPendingPagesToFlush(walFile);
+
+      // Indexed and queued while the database is still open, exactly as a real commit does.
+      flush.pageIndex.putAll(new ArrayList<>(List.of(page)));
+      flush.offerBatch(new PageManagerFlushThread.PagesToFlush(new ArrayList<>(List.of(page))), false);
+
+      // The database closes before the (here, manually driven) queue-drain loop gets to this batch.
+      db.close();
+
+      flush.flushPagesFromQueueToDisk(null, 20L);
+
+      assertThat(walFile.getPendingPagesToFlush()).as(
+          "a queued batch whose database closed before it could be processed must still be acked").isZero();
+    } finally {
+      walFile.close();
+    }
+  }
+
+  /**
+   * {@code resumeFlushing()}'s equivalent on the suspend/backup-resume path: a batch deferred while suspended,
+   * whose database closed before the suspension was released, must be acked when the resume finally runs - not
+   * just detached from the deferred backlog and dropped.
+   */
+  @Test
+  void resumeFlushingAcksADeferredBatchWhoseDatabaseIsAlreadyClosed() throws Exception {
+    final String path = "target/databases/" + getClass().getSimpleName() + "-resume-closed";
+    final Database db = TestHelper.createDatabase(path);
+
+    final File walFileDir = new File(path);
+    final WALFile walFile = new WALFile(new File(walFileDir, "issue6440d.wal").getAbsolutePath());
+    try {
+      final PageManagerFlushThread flush = detachedFlushThread();
+      assertThat(flush.setSuspended((Database) db, true)).isTrue();
+
+      final MutablePage page = page((DatabaseInternal) db, 0);
+      page.setWALFile(walFile);
+      bumpPendingPagesToFlush(walFile);
+
+      flush.pageIndex.putAll(new ArrayList<>(List.of(page)));
+      flush.offerBatch(new PageManagerFlushThread.PagesToFlush(new ArrayList<>(List.of(page))), false);
+      // Suspended, so the drain defers this batch instead of writing it.
+      flush.flushPagesFromQueueToDisk(null, 20L);
+      assertThat(flush.hasDeferredBatches((DatabaseInternal) db)).isTrue();
+
+      db.close();
+
+      // The last (only) suspender releasing runs resumeFlushing(db) synchronously on this thread.
+      flush.setSuspended((Database) db, false);
+
+      assertThat(walFile.getPendingPagesToFlush()).as(
+          "a deferred batch whose database closed while suspended must still be acked on resume").isZero();
+    } finally {
+      walFile.close();
+    }
+  }
+
+  private static PageManagerFlushThread detachedFlushThread() {
+    final ContextConfiguration cfg = new ContextConfiguration();
+    cfg.setValue(GlobalConfiguration.PAGE_FLUSH_QUEUE, 8);
+    return new PageManagerFlushThread(PageManager.INSTANCE, cfg);
   }
 
   private static MutablePage page(final DatabaseInternal database, final int pageNumber) {

@@ -98,7 +98,9 @@ class FlushPageIndex {
    * by database PATH, which is exactly wrong here: two different instances open at the same path (a database
    * closed and immediately reopened - a restore, a re-provision, a test hammering one fixed path) must never share
    * a counter entry. A manual identity scan on every {@code put()}/{@code putAll()} would put an O(open databases)
-   * walk on the hot commit path just to avoid this; wrapping the key keeps every {@link #pending} access O(1).
+   * walk on the hot commit path just to avoid this; wrapping the key keeps every {@link #pending} access O(1) at
+   * the cost of one short-lived, non-escaping wrapper per access - cheap enough to scalar-replace under escape
+   * analysis, and strictly less than the {@code AtomicInteger} this same call site already allocates on a miss.
    */
   private static final class IdentityKey {
     private final BasicDatabase database;
