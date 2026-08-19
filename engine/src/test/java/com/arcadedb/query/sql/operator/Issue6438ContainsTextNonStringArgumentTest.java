@@ -22,6 +22,9 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.util.LinkedHashSet;
+import java.util.Set;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -71,8 +74,42 @@ class Issue6438ContainsTextNonStringArgumentTest extends TestHelper {
         idsMatching("SELECT id FROM Unindexed6438b WHERE content CONTAINSTEXT 1999")).isEmpty());
   }
 
-  private java.util.Set<String> idsMatching(final String query) {
-    final java.util.Set<String> ids = new java.util.LinkedHashSet<>();
+  /**
+   * A multivalue right-hand side must keep answering "no match" rather than being stringified via
+   * {@code List.toString()} into a bracket-notation substring search. {@code FetchFromIndexStep.processFullTextBlock}
+   * rejects it the same way (falls back off the index), so the two paths still agree here.
+   */
+  @Test
+  void multiValueRightHandSideStillMatchesNothing() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Unindexed6438c");
+      database.command("sql", "CREATE PROPERTY Unindexed6438c.content STRING");
+      // A row whose content literally contains the bracket-notation rendering of the array, so a regression that
+      // reintroduces List.toString() coercion would turn this into a false match instead of an empty result.
+      database.command("sql", "INSERT INTO Unindexed6438c SET id = 'a', content = 'literally [xyz, abc] here'");
+    });
+
+    database.transaction(() -> assertThat(
+        idsMatching("SELECT id FROM Unindexed6438c WHERE content CONTAINSTEXT ['xyz', 'abc']")).isEmpty());
+  }
+
+  /**
+   * A {@code null} right-hand side still means "no match", unchanged by the coercion to {@code toString()}.
+   */
+  @Test
+  void nullRightHandSideStillMatchesNothing() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Unindexed6438d");
+      database.command("sql", "CREATE PROPERTY Unindexed6438d.content STRING");
+      database.command("sql", "INSERT INTO Unindexed6438d SET id = 'a', content = 'report 2024'");
+    });
+
+    database.transaction(() -> assertThat(
+        idsMatching("SELECT id FROM Unindexed6438d WHERE content CONTAINSTEXT null")).isEmpty());
+  }
+
+  private Set<String> idsMatching(final String query) {
+    final Set<String> ids = new LinkedHashSet<>();
     try (final ResultSet rs = database.query("sql", query)) {
       while (rs.hasNext())
         ids.add(rs.next().getProperty("id"));
