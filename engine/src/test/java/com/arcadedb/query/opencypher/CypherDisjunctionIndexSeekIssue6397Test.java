@@ -26,6 +26,8 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -165,6 +167,33 @@ class CypherDisjunctionIndexSeekIssue6397Test extends TestHelper {
     assertThat(ids(query)).containsExactly("e5");
     // A tag that does not match the id's own row must still be rejected, proving both key columns are live.
     assertThat(ids("MATCH (n:Echo6397|Foxtrot6397 {id: 'e5', tag: 't6'}) RETURN n.id AS k")).isEmpty();
+  }
+
+  /**
+   * Regression for the review of this fix: a composite-index seek that only pins the leading column (a prefix
+   * range, not a single-entry lookup) must not be costed as if the whole key had been resolved. The row estimate
+   * for the prefix-only seek (id alone, {@code selectivity=0.1}) must be strictly higher than for the same
+   * predicate with both columns bound (id + tag, {@code selectivity=0.001}) - both queries visit the same two
+   * types (Echo6397, Foxtrot6397; 40 total rows), so the difference isolates the selectivity the planner picked.
+   * This is a cost-estimate concern only: {@link #compositeIndexOnEveryRootResolvesTheFullKeyNotJustAPrefix}
+   * already covers that both shapes still return the right rows.
+   */
+  @Test
+  void aPrefixOnlyCompositeSeekIsCostedLessSelectivelyThanAFullyResolvedOne() {
+    final String fullKeyPlan = profilePlan("MATCH (n:Echo6397|Foxtrot6397 {id: 'e5', tag: 't5'}) RETURN n.id AS k");
+    final String prefixOnlyPlan = profilePlan("MATCH (n:Echo6397|Foxtrot6397 {id: 'e5'}) RETURN n.id AS k");
+
+    assertThat(prefixOnlyPlan).as("plan\n%s", prefixOnlyPlan).contains("NodeByLabelDisjunctionIndexSeek");
+
+    assertThat(rowsEstimate(fullKeyPlan)).as("full-key plan\n%s", fullKeyPlan).isEqualTo(2L);
+    assertThat(rowsEstimate(prefixOnlyPlan)).as("prefix-only plan\n%s", prefixOnlyPlan).isEqualTo(4L);
+  }
+
+  /** Extracts the outermost {@code rows=N} the NodeByLabelDisjunctionIndexSeek line reports. */
+  private long rowsEstimate(final String plan) {
+    final Matcher matcher = Pattern.compile("NodeByLabelDisjunctionIndexSeek.*?rows=(\\d+)").matcher(plan);
+    assertThat(matcher.find()).as("plan contains a NodeByLabelDisjunctionIndexSeek rows= figure\n%s", plan).isTrue();
+    return Long.parseLong(matcher.group(1));
   }
 
   /**

@@ -395,7 +395,7 @@ public class AnchorSelector {
       final Object propertyValue = predicate.getValue();
 
       final List<AnchorSelection.DisjunctionIndexSeek> seeks = new ArrayList<>(roots.size());
-      boolean allUnique = true;
+      boolean allUniqueWholeKey = true;
       boolean everyRootIndexed = true;
 
       for (final DocumentType root : roots) {
@@ -411,7 +411,11 @@ public class AnchorSelector {
         // accounts for in the single-type equality branch above.
         final List<Object> keyValues = collectKeyPrefixValues(indexStats, equalityPredicates, propertyValue);
         seeks.add(new AnchorSelection.DisjunctionIndexSeek(typeName, indexStats, keyValues));
-        allUnique &= indexStats.isUnique();
+        // Same "wholeKey" condition evaluateNode uses (issue #6397 review): a unique index only resolves to a
+        // single row when every one of its key columns was pinned, not merely when the index happens to be
+        // unique - a prefix seek on a composite key is still a range, however selective.
+        final boolean wholeKey = keyValues.size() == indexStats.getPropertyNames().size();
+        allUniqueWholeKey &= indexStats.isUnique() && wholeKey;
       }
 
       if (!everyRootIndexed)
@@ -420,7 +424,7 @@ public class AnchorSelector {
       // Same selectivity heuristic as the single-type equality seek: a unique key resolves to ~one row, a
       // non-unique one is assumed 10% selective. Applied to the total scan size rather than per root, since the
       // per-root subtree counts are not otherwise collected for a disjunction's roots.
-      final double selectivity = allUnique ? 0.001 : 0.1;
+      final double selectivity = allUniqueWholeKey ? 0.001 : 0.1;
       final long estimatedRows = Math.max(seeks.size(), (long) (totalRows * selectivity));
 
       double totalCost = 0;
