@@ -117,10 +117,11 @@ public class SQLFunctionVectorQuantizeBinary extends SQLFunctionVectorAbstract {
           throw new IllegalArgumentException("Vectors must have same length");
 
         int distance = 0;
-        // Count differing bits
+        // Count differing bits. packed[i]/other.packed[i] are byte: mask to 8 bits before XOR so a
+        // set sign bit (bit 7) does not sign-extend into the upper 24 bits of the int operands, which
+        // would make bitCount() count up to 24 phantom differing bits per byte.
         for (int i = 0; i < Math.min(packed.length, other.packed.length); i++) {
-          // XOR gives 1 for differing bits, count the 1s
-          distance += Integer.bitCount(packed[i] ^ other.packed[i]);
+          distance += Integer.bitCount((packed[i] ^ other.packed[i]) & 0xFF);
         }
 
         return distance;

@@ -28,7 +28,7 @@ public class BooleanValue extends AbstractValue {
 
   @Override
   public Object getValue() {
-    return null;
+    return val;
   }
 
 

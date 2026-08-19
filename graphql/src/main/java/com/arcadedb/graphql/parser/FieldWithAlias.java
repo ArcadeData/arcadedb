@@ -19,24 +19,26 @@
 /* ParserGeneratorCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.graphql.parser;
 
-public class FieldWithAlias extends SimpleNode {
-  Name alias;
-  protected Name         name;
+/**
+ * A selection field written with a GraphQL alias ({@code alias: fieldName}). The alias itself is
+ * carried by the enclosing {@link Selection#getName()} (the parser assigns it there before it knows
+ * whether a colon follows); this node's {@code name} - inherited from {@link AbstractField} - is the
+ * real, aliased-away field name used to resolve the property.
+ */
+public class FieldWithAlias extends AbstractField {
   protected Arguments    arguments;
-  protected Directives   directives;
   protected SelectionSet selectionSet;
-
-  public FieldWithAlias(final Name alias, final int line, final int column, final int tokenId) {
-    this(-1);
-    this.alias = alias;
-  }
 
   public FieldWithAlias(final int id) {
     super(id);
   }
 
-  public String getName() {
-    return name != null ? name.value : null;
+  public Arguments getArguments() {
+    return arguments;
+  }
+
+  public SelectionSet getSelectionSet() {
+    return selectionSet;
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=46c98ffd2c99423a541cd9d46c3fc779 (do not edit this line) */

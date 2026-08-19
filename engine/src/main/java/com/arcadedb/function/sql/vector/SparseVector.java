@@ -137,12 +137,12 @@ public class SparseVector {
   }
 
   /**
-   * Calculate dot product with another sparse vector.
+   * Calculate dot product with another sparse vector. Dimensions are only used to size a dense
+   * expansion ({@link #toDense()}); the dot product itself only needs the indices the two vectors
+   * have in common (it is implicitly 0 over every non-overlapping index), so vectors whose inferred
+   * dimensions differ are still valid operands.
    */
   public float dotProduct(final SparseVector other) {
-    if (this.dimensions != other.dimensions)
-      throw new IllegalArgumentException("Vector dimensions must match: " + this.dimensions + " vs " + other.dimensions);
-
     // Iterate over the smaller vector to optimize
     final Map<Integer, Float> smallerMap = this.getNonZeroCount() <= other.getNonZeroCount() ? this.values : other.values;
     final Map<Integer, Float> largerMap = smallerMap == this.values ? other.values : this.values;

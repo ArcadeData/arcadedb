@@ -20,8 +20,8 @@ package com.arcadedb.function.sql.vector;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.CommandContext;
-import java.util.List;
 
 /**
  * Creates a sparse vector from indices and values arrays.
@@ -52,7 +52,12 @@ public class SQLFunctionVectorSparseCreate extends SQLFunctionVectorAbstract {
     if (indicesObj == null || valuesObj == null)
       return null;
 
-    final int[] indices = toIntArray(indicesObj);
+    final int[] indices;
+    try {
+      indices = VectorUtils.toIntArray(indicesObj);
+    } catch (final IllegalArgumentException e) {
+      throw new CommandSQLParsingException(e.getMessage(), e);
+    }
     final float[] values = toFloatArray(valuesObj);
 
     if (indices.length != values.length)
@@ -75,35 +80,6 @@ public class SQLFunctionVectorSparseCreate extends SQLFunctionVectorAbstract {
       }
 
       return new SparseVector(indices, values, dimensions);
-    }
-  }
-
-  private int[] toIntArray(final Object indices) {
-    if (indices instanceof int[] intArray) {
-      return intArray;
-    } else if (indices instanceof Object[] objArray) {
-      final int[] result = new int[objArray.length];
-      for (int i = 0; i < objArray.length; i++) {
-        if (objArray[i] instanceof Number num) {
-          result[i] = num.intValue();
-        } else {
-          throw new CommandSQLParsingException("Index values must be integers, found: " + objArray[i].getClass().getSimpleName());
-        }
-      }
-      return result;
-    } else if (indices instanceof List<?> list) {
-      final int[] result = new int[list.size()];
-      for (int i = 0; i < list.size(); i++) {
-        final Object elem = list.get(i);
-        if (elem instanceof Number num) {
-          result[i] = num.intValue();
-        } else {
-          throw new CommandSQLParsingException("Index values must be integers, found: " + elem.getClass().getSimpleName());
-        }
-      }
-      return result;
-    } else {
-      throw new CommandSQLParsingException("Indices must be an array or list, found: " + indices.getClass().getSimpleName());
     }
   }
 
