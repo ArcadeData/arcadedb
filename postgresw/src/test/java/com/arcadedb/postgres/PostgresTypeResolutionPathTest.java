@@ -76,24 +76,24 @@ class PostgresTypeResolutionPathTest {
   }
 
   /**
-   * Types whose two paths are known to disagree, each pending a fix that is not a missing switch case:
+   * Types whose two paths are known to disagree when called in isolation, as this test calls them:
    * <ul>
-   *   <li>SHORT/BYTE: the value path widens Short/Byte to INTEGER, because PostgresType has no int2[] to pair
-   *       with it; reconciling on SMALLINT changes the OID existing clients already receive for populated rows.
-   *   <li>DATETIME: java.util.Date is the default Java type of both DATE and DATETIME, so the value path cannot
-   *       tell them apart and answers DATE for either.
-   *   <li>DECIMAL: neither DOUBLE (lossy) nor VARCHAR is right; the fix is a NUMERIC (OID 1700) entry with a
-   *       binary encoder.
+   *   <li>DATETIME: java.util.Date is the default Java type of both DATE and every DATETIME* variant, so
+   *       {@link PostgresType#getTypeForValue} cannot tell them apart from a bare value and always answers DATE.
+   *       This is not client-visible for a real column, though: {@code PostgresNetworkExecutor.getColumns()}
+   *       resolves the ambiguity from the schema before calling getTypeForValue, the same way it already did for
+   *       an empty LIST's element type (issue #5289) - see {@code isDeclaredAsDatetime}/{@code getDeclaredProperty}.
+   *       It stays disagreeing here on purpose: a value with no schema behind it (a computed expression, a
+   *       schemaless document) has no better answer than DATE, so the two pure functions are not meant to
+   *       converge for this one.
    * </ul>
-   * Removing an entry here is the intended way to land one of those fixes.
+   * Removing an entry here is the intended way to land a fix that makes the two functions actually agree - see
+   * SHORT/BYTE (widening to INTEGER) and DECIMAL (DOUBLE/VARCHAR vs NUMERIC), both fixed this way for #6447.
    */
   private static final Map<Type, PathDisagreement> KNOWN_DISAGREEMENTS = new EnumMap<>(Type.class);
 
   static {
-    KNOWN_DISAGREEMENTS.put(Type.SHORT, new PathDisagreement(PostgresType.SMALLINT, PostgresType.INTEGER));
-    KNOWN_DISAGREEMENTS.put(Type.BYTE, new PathDisagreement(PostgresType.SMALLINT, PostgresType.INTEGER));
     KNOWN_DISAGREEMENTS.put(Type.DATETIME, new PathDisagreement(PostgresType.TIMESTAMP, PostgresType.DATE));
-    KNOWN_DISAGREEMENTS.put(Type.DECIMAL, new PathDisagreement(PostgresType.DOUBLE, PostgresType.VARCHAR));
   }
 
   private record PathDisagreement(PostgresType schemaPath, PostgresType valuePath) {

@@ -78,20 +78,31 @@ class PostgresTypeTest {
 
   @Test
   void getTypeForValueShort() {
-    assertThat(PostgresType.getTypeForValue((short) 10)).isEqualTo(PostgresType.INTEGER);
-    assertThat(PostgresType.getTypeForValue(Short.valueOf((short) 10))).isEqualTo(PostgresType.INTEGER);
+    // Matches getTypeFromArcade(Type.SHORT) (issue #6447): widening to INTEGER made a column's OID depend on
+    // whether the result set happened to be empty.
+    assertThat(PostgresType.getTypeForValue((short) 10)).isEqualTo(PostgresType.SMALLINT);
+    assertThat(PostgresType.getTypeForValue(Short.valueOf((short) 10))).isEqualTo(PostgresType.SMALLINT);
   }
 
   @Test
   void getTypeForValueByte() {
-    assertThat(PostgresType.getTypeForValue((byte) 5)).isEqualTo(PostgresType.INTEGER);
-    assertThat(PostgresType.getTypeForValue(Byte.valueOf((byte) 5))).isEqualTo(PostgresType.INTEGER);
+    // Matches getTypeFromArcade(Type.BYTE) (issue #6447): widening to INTEGER made a column's OID depend on
+    // whether the result set happened to be empty.
+    assertThat(PostgresType.getTypeForValue((byte) 5)).isEqualTo(PostgresType.SMALLINT);
+    assertThat(PostgresType.getTypeForValue(Byte.valueOf((byte) 5))).isEqualTo(PostgresType.SMALLINT);
   }
 
   @Test
   void getTypeForValueLong() {
     assertThat(PostgresType.getTypeForValue(100L)).isEqualTo(PostgresType.LONG);
     assertThat(PostgresType.getTypeForValue(Long.valueOf(100L))).isEqualTo(PostgresType.LONG);
+  }
+
+  @Test
+  void getTypeForValueDecimal() {
+    // Matches getTypeFromArcade(Type.DECIMAL) (issue #6447): DOUBLE is lossy for arbitrary-precision
+    // BigDecimal, and VARCHAR makes a client treat the column as text.
+    assertThat(PostgresType.getTypeForValue(new BigDecimal("10.55"))).isEqualTo(PostgresType.NUMERIC);
   }
 
   @Test
@@ -402,8 +413,9 @@ class PostgresTypeTest {
 
   /**
    * The declared-schema path and the value path must agree, otherwise a column's OID would depend on whether
-   * its list happens to be empty. A list of BigDecimal is typed ARRAY_TEXT by getArrayTypeForElementType, so
-   * LIST OF DECIMAL must resolve to ARRAY_TEXT too, despite the scalar DECIMAL mapping to DOUBLE.
+   * its list happens to be empty. A list of BigDecimal is typed ARRAY_TEXT by getArrayTypeForElementType (there
+   * is no ARRAY_NUMERIC), so LIST OF DECIMAL must resolve to ARRAY_TEXT too, despite the scalar DECIMAL mapping
+   * to NUMERIC.
    */
   @Test
   void getTypeFromArcadeListOfDecimalMatchesValuePath() {
@@ -435,7 +447,8 @@ class PostgresTypeTest {
 
   @Test
   void getTypeFromArcadeDecimal() {
-    assertThat(PostgresType.getTypeFromArcade(Type.DECIMAL)).isEqualTo(PostgresType.DOUBLE);
+    // NUMERIC (issue #6447), not the lossy DOUBLE: BigDecimal's whole point is precision float64 doesn't have.
+    assertThat(PostgresType.getTypeFromArcade(Type.DECIMAL)).isEqualTo(PostgresType.NUMERIC);
   }
 
   // ==================== Text Deserialization Tests ====================
@@ -738,6 +751,101 @@ class PostgresTypeTest {
     final byte b = buffer.getByte();
     final Object decoded = PostgresType.deserialize(PostgresType.CHAR.code, 1, new byte[]{b});
     assertThat(decoded).isEqualTo('Z');
+  }
+
+  /**
+   * Round-trips a representative spread of BigDecimal values (issue #6447) through NUMERIC's binary codec:
+   * plain integers, values needing leading-zero-group stripping (0.5), trailing-zero-group stripping (100.5),
+   * fractional leading zeros wider than the significant digits (0.00001005), negatives, zero itself, and a
+   * value whose declared BigDecimal scale is negative (1E+2). {@link BigDecimal#equals} is scale-sensitive, so
+   * both the numeric value and the exact scale are asserted.
+   */
+  @Test
+  void serializeAsBinaryNumericRoundTrip() {
+    for (final BigDecimal value : List.of(
+        new BigDecimal("10.55"), new BigDecimal("0.5"), new BigDecimal("100.5"),
+        new BigDecimal("0.00001005"), new BigDecimal("100"), BigDecimal.ZERO,
+        new BigDecimal("-42.42"), new BigDecimal("123456789.987654321"), new BigDecimal("0.0001"),
+        new BigDecimal("1000000"), new BigDecimal("-0.5"), new BigDecimal("3.14159265358979323846"),
+        new BigDecimal("1E+2"), new BigDecimal("0.00"))) {
+      final Binary buffer = new Binary();
+      PostgresType.NUMERIC.serializeAsBinary(PostgresType.NUMERIC, buffer, value);
+      buffer.flip();
+      final int length = buffer.getInt();
+      final byte[] data = new byte[length];
+      buffer.getByteArray(data);
+
+      final Object decoded = PostgresType.deserialize(PostgresType.NUMERIC.code, 1, data);
+      assertThat(decoded).as("value of %s", value).isInstanceOf(BigDecimal.class);
+      final BigDecimal decimal = (BigDecimal) decoded;
+      assertThat(decimal).as("value of %s", value).isEqualByComparingTo(value.scale() < 0 ? value.setScale(0) : value);
+      assertThat(decimal.scale()).as("scale of %s", value).isEqualTo(Math.max(value.scale(), 0));
+    }
+  }
+
+  @Test
+  void serializeAsBinaryNumericMatchesKnownEncoding() {
+    // Hand-computed against PostgreSQL's own numeric.c layout: header of four int16s (ndigits, weight, sign,
+    // dscale) then ndigits base-10000 digits, most significant first.
+    final Binary buffer = new Binary();
+    PostgresType.NUMERIC.serializeAsBinary(PostgresType.NUMERIC, buffer, new BigDecimal("10.55"));
+    buffer.flip();
+    assertThat(buffer.getInt()).isEqualTo(12); // 4 header shorts + 2 digit shorts
+    assertThat(buffer.getShort()).isEqualTo((short) 2);      // ndigits
+    assertThat(buffer.getShort()).isEqualTo((short) 0);      // weight
+    assertThat(buffer.getShort()).isEqualTo((short) 0x0000); // sign: positive
+    assertThat(buffer.getShort()).isEqualTo((short) 2);      // dscale
+    assertThat(buffer.getShort()).isEqualTo((short) 10);
+    assertThat(buffer.getShort()).isEqualTo((short) 5500);
+  }
+
+  @Test
+  void deserializeBinaryNumericZero() {
+    final ByteBuffer buf = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN);
+    buf.putShort((short) 0);      // ndigits
+    buf.putShort((short) 0);      // weight
+    buf.putShort((short) 0x0000); // sign: positive
+    buf.putShort((short) 2);      // dscale
+    final Object decoded = PostgresType.deserialize(PostgresType.NUMERIC.code, 1, buf.array());
+    assertThat(decoded).isEqualTo(new BigDecimal("0.00"));
+  }
+
+  @Test
+  void deserializeBinaryNumericRejectsNaN() {
+    final ByteBuffer buf = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN);
+    buf.putShort((short) 0);
+    buf.putShort((short) 0);
+    buf.putShort((short) 0xC000); // sign: NaN
+    buf.putShort((short) 0);
+    assertThatThrownBy(() -> PostgresType.deserialize(PostgresType.NUMERIC.code, 1, buf.array()))
+        .isInstanceOf(PostgresProtocolException.class)
+        .hasMessageContaining("NaN");
+  }
+
+  @Test
+  void deserializeBinaryNumericRejectsInvalidSign() {
+    final ByteBuffer buf = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN);
+    buf.putShort((short) 0);
+    buf.putShort((short) 0);
+    buf.putShort((short) 0x1234); // not one of NUMERIC_{POS,NEG,NAN}_SIGN
+    buf.putShort((short) 0);
+    assertThatThrownBy(() -> PostgresType.deserialize(PostgresType.NUMERIC.code, 1, buf.array()))
+        .isInstanceOf(PostgresProtocolException.class)
+        .hasMessageContaining("Invalid NUMERIC sign");
+  }
+
+  @Test
+  void deserializeBinaryNumericRejectsOversizedDigitCount() {
+    // A declared digit count this codec never produces and the (short) buffer cannot possibly back - must be
+    // rejected rather than read out of bounds.
+    final ByteBuffer buf = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN);
+    buf.putShort(Short.MAX_VALUE); // ndigits: absurd
+    buf.putShort((short) 0);
+    buf.putShort((short) 0x0000);
+    buf.putShort((short) 0);
+    assertThatThrownBy(() -> PostgresType.deserialize(PostgresType.NUMERIC.code, 1, buf.array()))
+        .isInstanceOf(PostgresProtocolException.class)
+        .hasMessageContaining("exceeds");
   }
 
   @Test
@@ -1149,6 +1257,19 @@ class PostgresTypeTest {
     byte[] data = new byte[length];
     buffer.getByteBuffer().get(data);
     assertThat(new String(data)).isEqualTo("42");
+  }
+
+  @Test
+  void serializeAsTextNumericAvoidsScientificNotation() {
+    // BigDecimal.toString() switches to scientific notation outside a small exponent range (issue #6447):
+    // "1E+10" is not a NUMERIC text value PostgreSQL would emit or a client would expect to parse.
+    Binary buffer = new Binary();
+    PostgresType.NUMERIC.serializeAsText(PostgresType.NUMERIC, buffer, new BigDecimal("1E+10"));
+    buffer.flip();
+    int length = buffer.getInt();
+    byte[] data = new byte[length];
+    buffer.getByteBuffer().get(data);
+    assertThat(new String(data)).isEqualTo("10000000000");
   }
 
   @Test

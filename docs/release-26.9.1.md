@@ -3,6 +3,37 @@
 This is a living document: fixes, improvements, new features, and breaking changes are collected here as
 they land during the 26.9.1 development cycle, so the release notes are ready at tag time.
 
+## Postgres wire: `SHORT`/`BYTE`, `DATETIME` and `DECIMAL` no longer change type depending on whether a row was sampled (#6447)
+
+A RowDescription column is typed either from a sample value, when the result set has a row, or from the declared
+schema, when it does not - and the two paths have to agree, or a client that prepares against an empty result and
+then re-executes against a populated one sees the column's OID change under it. #6411 fixed this for `BINARY`
+(`bytea`); three more types had the same shape of bug.
+
+`DECIMAL` was the worst of the three: the schema path answered `DOUBLE`, lossy for an arbitrary-precision
+`BigDecimal`, and the value path answered `VARCHAR`, which makes a client treat the column as text. Neither was
+right - PostgreSQL already has the correct type for this, `NUMERIC` (OID 1700) - so both paths now point at a new
+`PostgresType.NUMERIC` entry with a real binary codec (PostgreSQL's own digit-group-of-4 wire format, not a
+lossy float64 detour), plus a text encoder that renders a `BigDecimal` as a plain decimal string rather than
+`BigDecimal.toString()`'s occasional scientific notation.
+
+`SHORT`/`BYTE` had a narrower bug: the value path widened `Short`/`Byte` to `INTEGER` because there was nowhere
+narrower to point it, while the schema path already answered the correct `SMALLINT` (`int2`). The value path now
+answers `SMALLINT` too.
+
+`DATETIME` was different in kind: `java.util.Date` is the default Java runtime type of both `DATE` and every
+`DATETIME*` variant, so a bare sampled value cannot tell them apart and the value path always answered `DATE`.
+Rather than adding a wrapper type just to carry that distinction through a value the executor already has more
+context for, `PostgresNetworkExecutor.getColumns()` now resolves the ambiguity from the schema when the row is
+backed by one - the same mechanism it already used to type an empty `LIST` column from its declared `LIST OF`
+element type (#5289) rather than guessing from a value with nothing to sample.
+
+> [!IMPORTANT]
+> **Behaviour change.** A populated `SHORT`, `BYTE` or `DECIMAL` column now announces `int2` or `numeric` instead
+> of the `int4`/`double`/`varchar` OID it used to. This corrects a client-visible bug (the OID depended on whether
+> the result set happened to be empty), but a client relying on the old, disagreeing OID for a non-empty result
+> sees a different type name and, for `DECIMAL`, a `BigDecimal` instead of a `Double`/`String`.
+
 ## A Cypher node's labels are the ones it answers to, and adding one no longer takes one away (#6363)
 
 `labels()` decided a vertex's labels from a single question - does the type have supertypes - and answered "the

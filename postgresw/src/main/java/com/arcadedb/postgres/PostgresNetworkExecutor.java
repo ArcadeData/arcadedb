@@ -844,6 +844,12 @@ public class PostgresNetworkExecutor extends Thread {
             final PostgresType declaredType = getDeclaredListType(row, p);
             if (declaredType != null)
               pgType = declaredType;
+          } else if (pgType == PostgresType.DATE && isDeclaredAsDatetime(row, p)) {
+            // java.util.Date is the default Java runtime type of both Type.DATE and Type.DATETIME* (issue
+            // #6447), so getTypeForValue cannot tell them apart from the value alone and always answers DATE.
+            // Prefer the schema's declared type when the row is backed by one, the same way the empty-list
+            // case above prefers the declared "LIST OF" over a value-based guess.
+            pgType = PostgresType.TIMESTAMP;
           }
 
           if (pgType.isArrayType() || pgType.isNativeScalarType() || pgType == PostgresType.JSON)
@@ -864,10 +870,12 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   /**
-   * Returns the array type declared by the schema for a LIST property, or null when the row is not a schema
-   * element or the property is not a declared LIST.
+   * Returns the schema property backing {@code propertyName} on {@code row}, or null when the row is not a
+   * schema element or the property is not declared. Shared lookup behind {@link #getDeclaredListType} and
+   * {@link #isDeclaredAsDatetime}, both of which prefer the schema's declared type over a guess made from a
+   * single sample value.
    */
-  private PostgresType getDeclaredListType(final Result row, final String propertyName) {
+  private Property getDeclaredProperty(final Result row, final String propertyName) {
     final Document element = row.getElement().orElse(null);
     if (element == null)
       return null;
@@ -876,11 +884,35 @@ public class PostgresNetworkExecutor extends Thread {
     if (documentType == null)
       return null;
 
-    final Property property = documentType.getPolymorphicPropertyIfExists(propertyName);
+    return documentType.getPolymorphicPropertyIfExists(propertyName);
+  }
+
+  /**
+   * Returns the array type declared by the schema for a LIST property, or null when the row is not a schema
+   * element or the property is not a declared LIST.
+   */
+  private PostgresType getDeclaredListType(final Result row, final String propertyName) {
+    final Property property = getDeclaredProperty(row, propertyName);
     if (property == null || property.getType() != Type.LIST)
       return null;
 
     return PostgresType.getTypeFromArcade(property.getType(), property.getOfType());
+  }
+
+  /**
+   * True when the schema declares {@code propertyName} as one of the DATETIME variants (issue #6447). Used to
+   * disambiguate a sampled {@code java.util.Date} value, which is the default Java runtime type of both
+   * Type.DATE and every Type.DATETIME* and so cannot tell them apart on its own.
+   */
+  private boolean isDeclaredAsDatetime(final Result row, final String propertyName) {
+    final Property property = getDeclaredProperty(row, propertyName);
+    if (property == null)
+      return false;
+
+    return switch (property.getType()) {
+      case DATETIME, DATETIME_MICROS, DATETIME_NANOS, DATETIME_SECOND -> true;
+      default -> false;
+    };
   }
 
   /**
