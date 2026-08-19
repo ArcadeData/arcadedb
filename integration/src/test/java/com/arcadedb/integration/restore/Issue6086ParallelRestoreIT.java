@@ -185,6 +185,10 @@ class Issue6086ParallelRestoreIT {
       }
     });
     server.start();
+    // The archive is served over loopback HTTP by the test server above, not a real remote host: opt in to
+    // SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS the way a trusting operator would, since the default-blocked local
+    // address is exactly what this test's own HttpServer is (issue #6381).
+    GlobalConfiguration.SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS.setValue(true);
     try {
       final String url = "http://localhost:" + server.getAddress().getPort() + "/backup.zip";
       final List<LogLine> log = restore(url, RESTORED_PATH, 8, null);
@@ -197,6 +201,7 @@ class Issue6086ParallelRestoreIT {
       }
     } finally {
       server.stop(0);
+      GlobalConfiguration.SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS.reset();
     }
     TestHelper.checkActiveDatabases();
   }

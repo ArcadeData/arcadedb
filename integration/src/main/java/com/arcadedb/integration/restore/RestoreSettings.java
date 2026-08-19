@@ -48,6 +48,14 @@ public class RestoreSettings {
    * {@link com.arcadedb.GlobalConfiguration#RESTORE_THREADS}.
    */
   public       Integer             restoreThreads;
+  /**
+   * Whether an http(s) input URL may resolve to a local-file, loopback, link-local or private-network address.
+   * {@code null} defers to {@link com.arcadedb.GlobalConfiguration#SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS} (the
+   * default, and what a CLI/embedded invocation with no server gets); a caller that already resolved this against
+   * its own configuration - the server command handler, against its per-instance {@code ContextConfiguration} - sets
+   * it explicitly so the fetch-time check agrees with whatever pre-check already accepted the command (issue #6381).
+   */
+  public       Boolean             allowLocalUrls;
   public final Map<String, String> options              = new HashMap<>();
 
   protected void parseParameters(final String[] args) {

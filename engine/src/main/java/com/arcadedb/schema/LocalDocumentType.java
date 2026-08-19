@@ -1734,6 +1734,10 @@ public class LocalDocumentType implements DocumentType {
         s.updatePolymorphicBucketsCache(false, removedBuckets, removedBucketIds);
     }
 
+    // SYMMETRIC TO addBucketInternal: REBIND THE STRATEGY SO ITS CACHED BUCKET COUNT (E.G. RoundRobinBucketSelectionStrategy.total)
+    // TRACKS THE SHRUNK LIST. WITHOUT THIS THE STRATEGY CAN STILL HAND OUT AN INDEX ONE PAST THE NEW LAST BUCKET (ISSUE #6380).
+    bucketSelectionStrategy.setType(this);
+
     // AUTOMATICALLY DROP THE INDEX ON THE REMOVED BUCKET (INCLUDING INHERITED INDEXES FROM PARENT TYPES)
     final Collection<TypeIndex> existentIndexes = getAllIndexes(true);
 

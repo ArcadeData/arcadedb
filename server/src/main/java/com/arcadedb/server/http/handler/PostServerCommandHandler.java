@@ -420,6 +420,10 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       try {
         final Class<?> clazz = Class.forName("com.arcadedb.integration.restore.Restore");
         final Object restorer = clazz.getConstructor(String.class, String.class).newInstance(url, tempDir.getAbsolutePath());
+        // SAME BOOLEAN validateClientRestoreImportUrl ALREADY VALIDATED THIS URL AGAINST: THE FETCH INSIDE
+        // FullRestoreFormat MUST AGREE WITH THIS SERVER'S OWN CONFIGURATION RATHER THAN FALLING BACK TO THE STATIC
+        // DEFAULT, OR A PER-SERVER OVERRIDE THAT LET THE COMMAND THROUGH WOULD STILL HAVE THE FETCH REFUSE IT.
+        clazz.getMethod("setAllowLocalUrls", boolean.class).invoke(restorer, isRestoreImportLocalUrlsAllowed());
 
         // Set a logger with SSE callback for progress
         final Class<?> loggerClass = Class.forName("com.arcadedb.integration.importer.ConsoleLogger");
@@ -454,6 +458,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     try {
       final Class<?> clazz = Class.forName("com.arcadedb.integration.restore.Restore");
       final Object restorer = clazz.getConstructor(String.class, String.class).newInstance(url, tempDir.getAbsolutePath());
+      clazz.getMethod("setAllowLocalUrls", boolean.class).invoke(restorer, isRestoreImportLocalUrlsAllowed());
       clazz.getMethod("restoreDatabase").invoke(restorer);
     } catch (final ClassNotFoundException | NoSuchMethodException | IllegalAccessException
                    | InstantiationException e) {
@@ -513,7 +518,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
    * private, loopback, link-local, site-local, multicast, wildcard or unresolvable host is rejected.
    */
   private void validateClientRestoreImportUrl(final String url) {
-    if (httpServer.getServer().getConfiguration().getValueAsBoolean(GlobalConfiguration.SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS))
+    if (isRestoreImportLocalUrlsAllowed())
       return;
 
     final URI uri;
@@ -539,6 +544,18 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     if (isBlockedHost(host))
       throw new SecurityException("Restore/import from private, loopback or link-local hosts is blocked. Enable '"
           + GlobalConfiguration.SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS.getKey() + "' to override");
+  }
+
+  /**
+   * The single source of truth for {@link GlobalConfiguration#SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS} on this server
+   * instance, read from the server's own (possibly per-instance-overridden) {@link
+   * com.arcadedb.ContextConfiguration} rather than the static default. {@link #validateClientRestoreImportUrl} and
+   * {@link #performRestore} must agree on this value: the pre-check here decides whether to accept the command at
+   * all, and the actual fetch inside {@code FullRestoreFormat} decides whether to follow it, and letting them read
+   * from two different configuration sources would let one permit what the other refuses on the very same server.
+   */
+  private boolean isRestoreImportLocalUrlsAllowed() {
+    return httpServer.getServer().getConfiguration().getValueAsBoolean(GlobalConfiguration.SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS);
   }
 
   /**

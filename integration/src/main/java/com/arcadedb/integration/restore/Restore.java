@@ -86,6 +86,16 @@ public class Restore {
     return this;
   }
 
+  /**
+   * Overrides {@link com.arcadedb.GlobalConfiguration#SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS} for this restore. The
+   * server command handler calls this reflectively with the value it already validated the URL against, so the
+   * fetch cannot land on a stricter-or-looser answer than the pre-check that accepted the command (issue #6381).
+   */
+  public Restore setAllowLocalUrls(final boolean allowLocalUrls) {
+    settings.allowLocalUrls = allowLocalUrls;
+    return this;
+  }
+
   protected AbstractRestoreFormat createFormatImplementation() {
     switch (settings.format.toLowerCase(Locale.ENGLISH)) {
     case "full":
