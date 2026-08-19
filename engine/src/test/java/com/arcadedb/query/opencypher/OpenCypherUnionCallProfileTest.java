@@ -352,6 +352,24 @@ class OpenCypherUnionCallProfileTest {
     assertThat(result.hasNext()).isTrue();
     final Result row = result.next();
     assertThat((Object) row.getProperty("value")).isEqualTo("Hello World");
+    assertThat(result.hasNext()).isFalse();
+  }
+
+  @Test
+  void bareCallWithExplicitYieldColumnListSurfacesItsOwnOutput() {
+    // Same bug, explicit YIELD column-list shape (no *, no RETURN): still a single-clause CALL
+    // statement, so it's still CallStep's own projection - here filtered to the named column - that
+    // must surface, not the "no RETURN -> side effects only" empty result.
+    database.command("sql", "DEFINE FUNCTION math.add \"SELECT :a + :b AS result\" PARAMETERS [a,b] LANGUAGE sql");
+
+    final ResultSet result = database.command("opencypher", "CALL math.add(3, 5) YIELD value");
+
+    assertThat(result.hasNext()).isTrue();
+    final Result row = result.next();
+    final Object value = row.getProperty("value");
+    assertThat(value).isNotNull();
+    assertThat(((Number) value).intValue()).isEqualTo(8);
+    assertThat(result.hasNext()).isFalse();
   }
 
   @Test
