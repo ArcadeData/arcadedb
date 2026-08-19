@@ -197,6 +197,31 @@ class LabelReplacementsTest {
     });
   }
 
+  @Test
+  void restoreDiscardsReplacementsRecordedAfterTheSnapshot() {
+    database.transaction(() -> {
+      final LabelReplacements replacements = new LabelReplacements();
+      final MutableVertex first = database.newVertex("A").set("name", "first").save();
+      final MutableVertex second = database.newVertex("A").set("name", "second").save();
+
+      final Vertex firstReplacement = replacements.replace(first, "B");
+      final LabelReplacements.Snapshot snapshot = replacements.copy();
+
+      // Simulates issue #6367's finding: a failed, rolled-back MergeStep attempt records a replacement
+      // (here, of `second`) that the retried attempt must not see - the vertex it points at was rolled
+      // back along with everything else that attempt wrote.
+      replacements.replace(second, "C");
+      assertThat(replacements.resolve(second)).isNotSameAs(second);
+
+      replacements.restore(snapshot);
+
+      // The entry recorded before the snapshot survives the restore...
+      assertThat(replacements.resolve(first)).isSameAs(firstReplacement);
+      // ...but the one recorded after it is gone, exactly as if that attempt had never run.
+      assertThat(replacements.resolve(second)).isSameAs(second);
+    });
+  }
+
   private static List<Object> edgeWeights(final Vertex vertex, final Vertex.DIRECTION direction) {
     final List<Object> weights = new ArrayList<>();
     for (final Edge edge : vertex.getEdges(direction))

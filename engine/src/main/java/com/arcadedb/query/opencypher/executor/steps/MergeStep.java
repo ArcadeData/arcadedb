@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
@@ -59,6 +60,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Execution step for MERGE clause.
@@ -179,6 +181,16 @@ public class MergeStep extends AbstractExecutionStep {
    * Executes the MERGE operation: tries to match all, creates if none found.
    * In Cypher, MERGE returns ALL matching elements (one row per match),
    * or creates one element if no match exists.
+   * <p>
+   * Uses {@code database.transaction()} to get the same automatic retry on MVCC conflicts
+   * ({@code NeedRetryException}/{@code ConcurrentModificationException}) that {@code CreateStep}
+   * already has (issue #6367). {@code joinCurrentTx=true} means this joins an already-active
+   * transaction (an explicit {@code BEGIN}, or the HTTP auto-commit wrapper in
+   * {@code DatabaseAbstractHandler}) exactly as the previous raw {@code begin()}/{@code commit()}
+   * did - no behavior change there. The difference is when MERGE owns its transaction outright
+   * (the normal case for an unwrapped autocommit caller, e.g. Bolt's {@code handleRun}): a
+   * transient conflict is now retried up to {@link com.arcadedb.GlobalConfiguration#TX_RETRIES}
+   * instead of propagating on the first attempt.
    *
    * @param inputResult input result from previous step (may be null for standalone MERGE)
    * @return list of results containing matched or created elements
@@ -193,14 +205,27 @@ public class MergeStep extends AbstractExecutionStep {
     if (inputResult != null && hasNullBoundPathVariable(pathPattern, inputResult))
       return List.of();
 
-    // Check if we're already in a transaction
-    final boolean wasInTransaction = context.getDatabase().isTransactionActive();
+    final Database database = context.getDatabase();
+    final QueryStatistics stats = context.getStatistics();
+    final QueryStatistics statsSnapshot = stats.copy();
+    // labelReplacements is step-wide (shared across every row this MergeStep processes, see the field
+    // Javadoc), so only the entries a FAILED attempt of THIS row added must be undone on retry - entries
+    // an earlier, already-committed row recorded are still live and must survive. Snapshotting here,
+    // once per row before the first attempt, and restoring it at the top of every attempt (including the
+    // first, a no-op there) does exactly that.
+    final LabelReplacements.Snapshot labelReplacementsSnapshot = labelReplacements.copy();
+    final AtomicReference<List<Result>> resultsRef = new AtomicReference<>();
 
-    try {
-      // Begin transaction if not already active
-      if (!wasInTransaction) {
-        context.getDatabase().begin();
-      }
+    database.transaction(() -> {
+      // database.transaction retries this block on MVCC/duplicate-key conflict; reset the counters
+      // to the pre-attempt snapshot so a retried attempt does not double-count matches/creations,
+      // mirroring CreateStep.createPatterns().
+      stats.restore(statsSnapshot);
+      // A failed attempt's ON CREATE/ON MATCH SET n:Label (applySetClause's LABELS branch) can call
+      // labelReplacements.replace(), which both writes records and remembers the move. The transaction
+      // rollback undoes the writes; without this, the stale mapping would still point the retried
+      // attempt at a vertex whose creation was just rolled back.
+      labelReplacements.restore(labelReplacementsSnapshot);
 
       // Create base result and copy input properties if present
       final ResultInternal baseResult = new ResultInternal();
@@ -234,19 +259,10 @@ public class MergeStep extends AbstractExecutionStep {
           applySetClause(mergeClause.getOnMatchSet(), (ResultInternal) r, labelReplacements);
       }
 
-      // Commit transaction if we started it
-      if (!wasInTransaction) {
-        context.getDatabase().commit();
-      }
+      resultsRef.set(results);
+    }, true);
 
-      return results;
-    } catch (final Exception e) {
-      // Rollback if we started the transaction
-      if (!wasInTransaction && context.getDatabase().isTransactionActive()) {
-        context.getDatabase().rollback();
-      }
-      throw e;
-    }
+    return resultsRef.get();
   }
 
   /**
