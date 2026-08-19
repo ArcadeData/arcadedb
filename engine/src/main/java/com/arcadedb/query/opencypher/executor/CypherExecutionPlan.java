@@ -311,9 +311,18 @@ public class CypherExecutionPlan {
       // write statement, even if it performed no actual mutation (containsUpdates() is false then).
       final QueryStatistics stats = context.getStatistics();
 
+      // A bare CALL (no YIELD/RETURN, e.g. a write-classified custom function or write procedure) is its
+      // own projection: CallStep already yields its implicit "all columns" row, so a missing RETURN clause
+      // here does not mean "side effects only" the way it does for CREATE/SET/DELETE/MERGE/REMOVE. Issue #6446.
+      // Deliberately scoped to a CALL that is the statement's ONLY clause: a CALL chained after other
+      // clauses (e.g. WITH ... CALL proc() YIELD x, or multiple chained CALLs), still with no trailing
+      // RETURN, is a separate, narrower gap left for #6450 rather than widened here.
+      final List<ClauseEntry> clauses = statement.getClausesInOrder();
+      final boolean bareCallOwnsProjection = clauses.size() == 1 && clauses.get(0).getType() == ClauseEntry.ClauseType.CALL;
+
       // If no RETURN clause (or GQL FINISH was used), return empty results
       // (write side effects still happened). Issue #3365 section 1.3.
-      if (statement.getReturnClause() == null || statement.hasFinishClause()) {
+      if (statement.hasFinishClause() || (statement.getReturnClause() == null && !bareCallOwnsProjection)) {
         final IteratorResultSet empty = new IteratorResultSet(Collections.<Result>emptyList().iterator());
         empty.setStatistics(stats);
         return empty;

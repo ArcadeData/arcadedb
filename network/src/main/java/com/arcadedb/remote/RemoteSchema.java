@@ -55,6 +55,20 @@ import java.util.stream.Collectors;
  * see the previous complete snapshot or the new one, never a partially-built map. Prior to this
  * change, two threads could race on the {@code null}-gated init and hit
  * {@link java.util.ConcurrentModificationException} inside {@link java.util.HashMap#computeIfAbsent}.
+ * <p>
+ * A type/bucket lookup by name that misses the cache (e.g. one created afterward by raw DDL through
+ * {@code command()}, which - unlike the {@code createXxxType()} helpers - does not invalidate this
+ * cache, or by another connection/session entirely) retries with a single {@link #reload()} before
+ * giving up, so a genuinely nonexistent name still fails fast, and a name that exists but was created
+ * after this cache warmed up is found on the very next lookup regardless of timing. A time-based
+ * debounce on that retry was considered and rejected: it can silently suppress the retry for a lookup
+ * that happens to land within the debounce window of an earlier, unrelated reload - exactly the
+ * cross-connection scenario this class exists to fix. A caller that walks many known-nonexistent
+ * names in a hot loop does pay one reload per miss; that cost is bounded per call and was judged
+ * preferable to reintroducing stale reads. The same trade-off applies under concurrent misses: several
+ * threads missing at once each still call {@link #reload()} in turn after serializing on its
+ * {@code synchronized} lock - there is no "someone already refreshed since my check" short-circuit -
+ * so N concurrent misses cost N round trips, not one. Issue #6446.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -70,7 +84,12 @@ public class RemoteSchema implements Schema {
   @Override
   public boolean existsType(final String typeName) {
     checkSchemaIsLoaded();
-    return types.containsKey(typeName);
+    boolean found = types.containsKey(typeName);
+    if (!found) {
+      reload();
+      found = types.containsKey(typeName);
+    }
+    return found;
   }
 
   @Override
@@ -345,7 +364,11 @@ public class RemoteSchema implements Schema {
   public DocumentType getType(final String typeName) {
     checkSchemaIsLoaded();
 
-    final RemoteDocumentType t = types.get(typeName);
+    RemoteDocumentType t = types.get(typeName);
+    if (t == null) {
+      reload();
+      t = types.get(typeName);
+    }
     if (t == null)
       throw new SchemaException("Type with name '" + typeName + "' was not found");
     return t;
@@ -354,7 +377,12 @@ public class RemoteSchema implements Schema {
   @Override
   public DocumentType getTypeOrNull(final String typeName) {
     checkSchemaIsLoaded();
-    return types.get(typeName);
+    RemoteDocumentType t = types.get(typeName);
+    if (t == null) {
+      reload();
+      t = types.get(typeName);
+    }
+    return t;
   }
 
   @Override
@@ -592,7 +620,11 @@ public class RemoteSchema implements Schema {
   @Override
   public RemoteBucket getBucketByName(final String name) {
     checkSchemaIsLoaded();
-    final RemoteBucket b = buckets.get(name);
+    RemoteBucket b = buckets.get(name);
+    if (b == null) {
+      reload();
+      b = buckets.get(name);
+    }
     if (b == null)
       throw new SchemaException("Bucket '" + name + "' not found");
     return b;
@@ -602,7 +634,12 @@ public class RemoteSchema implements Schema {
   @Override
   public RemoteBucket getBucketByNameIfExists(final String name) {
     checkSchemaIsLoaded();
-    return buckets.get(name);
+    RemoteBucket b = buckets.get(name);
+    if (b == null) {
+      reload();
+      b = buckets.get(name);
+    }
+    return b;
   }
 
   @Deprecated

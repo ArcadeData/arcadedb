@@ -186,6 +186,36 @@ class RemoteSchemaIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * Issue #6446 item 2: a type created via raw DDL through command() (as opposed to the createXxxType()
+   * helpers, which force an eager reload() of the schema cache) must still become visible to an
+   * already-schema-warm RemoteDatabase connection - including one that never issued the DDL itself.
+   */
+  @Test
+  void rawDdlThroughCommandIsVisibleToAlreadyWarmSchemaCache() throws Exception {
+    testEachServer(serverIndex -> {
+      try (final RemoteDatabase warmDatabase = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+          BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
+
+        // Warm the schema cache before the type exists, exactly like a long-lived connection would.
+        assertThat(warmDatabase.getSchema().existsType("RawDdlType")).isFalse();
+
+        // A second, independent connection issues the DDL directly, bypassing createVertexType().
+        try (final RemoteDatabase otherDatabase = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+            BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
+          otherDatabase.command("sql", "CREATE VERTEX TYPE RawDdlType");
+        }
+
+        // The already-warm connection must see the new type without ever calling reload() itself.
+        assertThat(warmDatabase.getSchema().existsType("RawDdlType")).isTrue();
+        assertThat(warmDatabase.getSchema().getType("RawDdlType")).isNotNull();
+        assertThat(warmDatabase.getSchema().getTypeOrNull("RawDdlType")).isNotNull();
+
+        warmDatabase.getSchema().dropType("RawDdlType");
+      }
+    });
+  }
+
   @BeforeEach
   public void beginTest() {
     super.beginTest();
