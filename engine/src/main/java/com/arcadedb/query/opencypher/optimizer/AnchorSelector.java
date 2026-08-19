@@ -28,6 +28,7 @@ import com.arcadedb.query.opencypher.optimizer.statistics.CostModel;
 import com.arcadedb.query.opencypher.optimizer.statistics.IndexStatistics;
 import com.arcadedb.query.opencypher.optimizer.statistics.StatisticsProvider;
 import com.arcadedb.query.opencypher.optimizer.statistics.TypeStatistics;
+import com.arcadedb.schema.DocumentType;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -144,11 +145,11 @@ public class AnchorSelector {
    * @return anchor selection with cost estimate
    */
   private AnchorSelection evaluateNode(final LogicalNode node, final LogicalPlan plan) {
-    // A label disjunction is served by NodeByLabelDisjunctionScan, which visits every type any alternative accepts
-    // and cannot be driven by an index. Costing it here from the first label alone described a scan that never runs
-    // (issue #6363), so the estimate is summed over exactly the types that scan will walk.
+    // A label disjunction with no per-root index (issue #6397) is served by NodeByLabelDisjunctionScan, which
+    // visits every type any alternative accepts. Costing it here from the first label alone described a scan
+    // that never runs (issue #6363), so the estimate is summed over exactly the types that scan will walk.
     if (node.isLabelDisjunction() && node.getLabels().size() > 1)
-      return evaluateDisjunctionNode(node);
+      return evaluateDisjunctionNode(node, plan);
 
     final String variable = node.getVariable();
     final String label = node.getFirstLabel();
@@ -331,17 +332,87 @@ public class AnchorSelector {
   }
 
   /**
-   * Costs a label-disjunction anchor as the multi-type scan it will actually be: the record count summed over every
-   * vertex type an alternative accepts, subtypes included and each counted once. Property predicates are left to the
-   * Filter above the anchor - {@code IndexSelectionRule} builds a {@code NodeByLabelDisjunctionScan} for this node
-   * whatever this method decides about indexes, so claiming a seek here would only mis-price the plan it produces.
+   * Costs a label-disjunction anchor. When every root type the disjunction resolves to
+   * ({@link com.arcadedb.query.opencypher.optimizer.statistics.StatisticsProvider#getMatchingVertexRootTypes})
+   * has a usable index on the pattern's equality predicate, the anchor is a union of per-root index seeks
+   * (issue #6397) - all-or-nothing, since a mixed seek/scan union needs an operator that interleaves two access
+   * paths, which is not implemented. Otherwise the anchor is the multi-type scan it will actually be: the record
+   * count summed over every vertex type an alternative accepts, subtypes included and each counted once.
    *
    * @param node the disjunction node being evaluated as an anchor
-   * @return the anchor selection for a full scan of every matching type
+   * @param plan the logical plan (for WHERE-clause predicates on the node's variable)
+   * @return the anchor selection: a disjunction index seek when every root is indexed, otherwise a full scan
    */
-  private AnchorSelection evaluateDisjunctionNode(final LogicalNode node) {
+  private AnchorSelection evaluateDisjunctionNode(final LogicalNode node, final LogicalPlan plan) {
     final long rows = statisticsProvider.getMatchingVertexCardinality(node.getLabels(), true);
+
+    final AnchorSelection seek = tryDisjunctionIndexSeek(node, plan);
+    if (seek != null)
+      return seek;
+
     return new AnchorSelection(node.getVariable(), node, costModel.estimateScanCostForRows(rows), rows);
+  }
+
+  /**
+   * Attempts to cost a label disjunction as a union of per-root index seeks (issue #6397's suggested shape).
+   * Only a single equality predicate on the disjunction's own variable is considered - an IN-list or a range
+   * predicate on a disjunction anchor is a separate, still-unaddressed limitation the issue calls out but does
+   * not ask this fix to close.
+   * <p>
+   * All-or-nothing: the first root with no usable index for the predicate aborts the whole attempt back to the
+   * ordinary scan, matching the rule {@code IndexSelectionRule} enforces when it builds the operator.
+   *
+   * @return the disjunction-seek anchor, or {@code null} when no equality predicate applies or at least one root
+   * has no usable index
+   */
+  private AnchorSelection tryDisjunctionIndexSeek(final LogicalNode node, final LogicalPlan plan) {
+    final String variable = node.getVariable();
+
+    final Map<String, Object> equalityPredicates = new HashMap<>();
+    final Map<String, Object> properties = node.getProperties();
+    if (properties != null)
+      for (final Map.Entry<String, Object> property : properties.entrySet())
+        if (isStaticallySeekable(property.getValue()))
+          equalityPredicates.put(property.getKey(), property.getValue());
+    equalityPredicates.putAll(extractEqualityPredicates(variable, plan));
+
+    if (equalityPredicates.isEmpty())
+      return null;
+
+    // Only the first predicate drives the seek, mirroring the "no index" filtered-scan branch of evaluateNode.
+    final Map.Entry<String, Object> predicate = equalityPredicates.entrySet().iterator().next();
+    final String propertyName = predicate.getKey();
+    final Object propertyValue = predicate.getValue();
+
+    final List<DocumentType> roots = statisticsProvider.getMatchingVertexRootTypes(node.getLabels(), true);
+    if (roots.isEmpty())
+      return null;
+
+    final List<AnchorSelection.DisjunctionIndexSeek> seeks = new ArrayList<>(roots.size());
+    boolean allUnique = true;
+
+    for (final DocumentType root : roots) {
+      final String typeName = root.getName();
+      final IndexStatistics indexStats = findIndexForProperty(statisticsProvider.getIndexesForType(typeName), propertyName);
+      if (indexStats == null)
+        return null; // all-or-nothing: one non-seekable root loses the whole disjunction back to the scan
+
+      seeks.add(new AnchorSelection.DisjunctionIndexSeek(typeName, indexStats));
+      allUnique &= indexStats.isUnique();
+    }
+
+    // Same selectivity heuristic as the single-type equality seek: a unique key resolves to ~one row, a
+    // non-unique one is assumed 10% selective. Applied to the total scan size rather than per root, since the
+    // per-root subtree counts are not otherwise collected for a disjunction's roots.
+    final long totalRows = statisticsProvider.getMatchingVertexCardinality(node.getLabels(), true);
+    final double selectivity = allUnique ? 0.001 : 0.1;
+    final long estimatedRows = Math.max(seeks.size(), (long) (totalRows * selectivity));
+
+    double totalCost = 0;
+    for (final AnchorSelection.DisjunctionIndexSeek seek : seeks)
+      totalCost += costModel.estimateIndexSeekCost(seek.typeName(), propertyName, selectivity);
+
+    return new AnchorSelection(variable, node, propertyName, propertyValue, seeks, totalCost, estimatedRows);
   }
 
   /**

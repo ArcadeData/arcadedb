@@ -42,27 +42,37 @@ public class AnchorSelection {
   private final Object propertyValue;  // For equality index seek
   private final List<Object> keyValues;  // Equality values covering a leading prefix of the index key
   private final List<RangePredicate> rangePredicates;  // For range scan
+  private final List<DisjunctionIndexSeek> disjunctionIndexSeeks;  // For a label-disjunction equality index seek
   private final double estimatedCost;
   private final long estimatedCardinality;
+
+  /**
+   * One root type's contribution to a label-disjunction index seek (issue #6397): the type to seek and the index
+   * on it that resolves the shared equality predicate. {@code propertyName}/{@code propertyValue} on the enclosing
+   * {@link AnchorSelection} are shared across every root - a disjunction anchor has exactly one predicate driving
+   * the seek, evaluated once against each root's own index.
+   */
+  public record DisjunctionIndexSeek(String typeName, IndexStatistics index) {
+  }
 
   // Constructor for full scan (no index)
   public AnchorSelection(final String variable, final LogicalNode node,
                         final double estimatedCost, final long estimatedCardinality) {
-    this(variable, node, false, null, null, null, null, null, estimatedCost, estimatedCardinality);
+    this(variable, node, false, null, null, null, null, null, null, estimatedCost, estimatedCardinality);
   }
 
   // Constructor for equality index seek
   public AnchorSelection(final String variable, final LogicalNode node, final boolean useIndex,
                         final IndexStatistics index, final String propertyName,
                         final double estimatedCost, final long estimatedCardinality) {
-    this(variable, node, useIndex, index, propertyName, null, null, null, estimatedCost, estimatedCardinality);
+    this(variable, node, useIndex, index, propertyName, null, null, null, null, estimatedCost, estimatedCardinality);
   }
 
   // Constructor for equality index seek with value
   public AnchorSelection(final String variable, final LogicalNode node, final boolean useIndex,
                         final IndexStatistics index, final String propertyName, final Object propertyValue,
                         final double estimatedCost, final long estimatedCardinality) {
-    this(variable, node, useIndex, index, propertyName, propertyValue, null, null, estimatedCost, estimatedCardinality);
+    this(variable, node, useIndex, index, propertyName, propertyValue, null, null, null, estimatedCost, estimatedCardinality);
   }
 
   // Constructor for equality index seek covering a prefix of a composite key (issue #5444)
@@ -70,7 +80,7 @@ public class AnchorSelection {
                         final IndexStatistics index, final String propertyName, final Object propertyValue,
                         final List<Object> keyValues,
                         final double estimatedCost, final long estimatedCardinality) {
-    this(variable, node, useIndex, index, propertyName, propertyValue, keyValues, null, estimatedCost, estimatedCardinality);
+    this(variable, node, useIndex, index, propertyName, propertyValue, keyValues, null, null, estimatedCost, estimatedCardinality);
   }
 
   // Constructor for range index scan
@@ -78,13 +88,22 @@ public class AnchorSelection {
                         final IndexStatistics index, final String propertyName,
                         final List<RangePredicate> rangePredicates,
                         final double estimatedCost, final long estimatedCardinality) {
-    this(variable, node, true, index, propertyName, null, null, rangePredicates, estimatedCost, estimatedCardinality);
+    this(variable, node, true, index, propertyName, null, null, rangePredicates, null, estimatedCost, estimatedCardinality);
+  }
+
+  // Constructor for a label-disjunction equality index seek: one seek per root type (issue #6397)
+  public AnchorSelection(final String variable, final LogicalNode node, final String propertyName,
+                        final Object propertyValue, final List<DisjunctionIndexSeek> disjunctionIndexSeeks,
+                        final double estimatedCost, final long estimatedCardinality) {
+    this(variable, node, true, null, propertyName, propertyValue, null, null, disjunctionIndexSeeks, estimatedCost,
+        estimatedCardinality);
   }
 
   // Main constructor
   private AnchorSelection(final String variable, final LogicalNode node, final boolean useIndex,
                          final IndexStatistics index, final String propertyName, final Object propertyValue,
                          final List<Object> keyValues, final List<RangePredicate> rangePredicates,
+                         final List<DisjunctionIndexSeek> disjunctionIndexSeeks,
                          final double estimatedCost, final long estimatedCardinality) {
     this.variable = variable;
     this.node = node;
@@ -95,6 +114,7 @@ public class AnchorSelection {
     this.propertyValue = propertyValue;
     this.keyValues = keyValues == null || keyValues.isEmpty() ? List.of() : List.copyOf(keyValues);
     this.rangePredicates = rangePredicates;
+    this.disjunctionIndexSeeks = disjunctionIndexSeeks == null ? List.of() : List.copyOf(disjunctionIndexSeeks);
     this.estimatedCost = estimatedCost;
     this.estimatedCardinality = estimatedCardinality;
   }
@@ -164,6 +184,24 @@ public class AnchorSelection {
    */
   public List<RangePredicate> getRangePredicates() {
     return rangePredicates;
+  }
+
+  /**
+   * Returns true when this anchor is a label-disjunction equality index seek (issue #6397): every root type the
+   * disjunction resolves to has its own usable index on {@link #getPropertyName()}, so
+   * {@link com.arcadedb.query.opencypher.optimizer.rules.IndexSelectionRule} builds one seek per root instead of
+   * the full {@code NodeByLabelDisjunctionScan}.
+   */
+  public boolean isDisjunctionIndexSeek() {
+    return !disjunctionIndexSeeks.isEmpty();
+  }
+
+  /**
+   * Returns the per-root-type seeks for a label-disjunction index seek. Empty unless
+   * {@link #isDisjunctionIndexSeek()} is true.
+   */
+  public List<DisjunctionIndexSeek> getDisjunctionIndexSeeks() {
+    return disjunctionIndexSeeks;
   }
 
   /**
