@@ -24,6 +24,8 @@ import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.integration.restore.RestoreException;
 import com.arcadedb.integration.restore.RestoreSettings;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.IPAddressBlocklist;
+import com.arcadedb.utility.SafeHttpFetcher;
 
 import java.io.*;
 
@@ -36,18 +38,21 @@ import javax.crypto.spec.PBEKeySpec;
 import javax.crypto.spec.SecretKeySpec;
 
 import java.net.HttpURLConnection;
-import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.security.spec.KeySpec;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 public class FullRestoreFormat extends AbstractRestoreFormat {
+  // SHARED WITH PostServerCommandHandler.isBlockedHost AND ImportSecurityValidator.isBlockedAddress: SEE
+  // IPAddressBlocklist FOR WHY THIS MUST NOT BE A PER-CALLER COPY (GHSA-67m7-7w7g-mpmh).
+  private static final IPAddressBlocklist RESERVED_ADDRESSES = IPAddressBlocklist.defaultReservedRanges();
+
+  private final byte[] BUFFER = new byte[ParallelZipExtractor.BUFFER_SIZE];
+
   private interface RestoreCallback {
     ParallelZipExtractor.ExtractStats restore(ZipInputStream zipFile) throws Exception;
   }
-
-  private final byte[] BUFFER = new byte[ParallelZipExtractor.BUFFER_SIZE];
 
   /**
    * Where the archive is, and how it can be read. Exactly one of the two is set: a local {@code File}, or an already
@@ -213,10 +218,19 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
 
   private RestoreInputSource openInputFile() throws IOException {
     if (settings.inputFileURL.startsWith("http://") || settings.inputFileURL.startsWith("https://")) {
-      final HttpURLConnection connection = (HttpURLConnection) new URL(settings.inputFileURL).openConnection();
-      connection.setRequestMethod("GET");
-      connection.setDoOutput(true);
-      connection.connect();
+      // ROUTE THROUGH THE SAME PER-HOP-REVALIDATING FETCHER `IMPORT DATABASE` USES (ImportSecurityValidator), RATHER
+      // THAN LETTING HttpURLConnection FOLLOW REDIRECTS ITSELF: A REDIRECT (OR A DNS-REBOUND RE-RESOLUTION) THAT
+      // LANDS ON A BLOCKED ADDRESS WOULD OTHERWISE BYPASS THE ONE-SHOT HOST CHECK
+      // PostServerCommandHandler.validateClientRestoreImportUrl ALREADY DID BEFORE HANDING OFF THE URL (ISSUE #6381).
+      //
+      // settings.allowLocalUrls IS SET EXPLICITLY BY A CALLER THAT ALREADY RESOLVED THIS AGAINST ITS OWN
+      // CONFIGURATION (THE SERVER COMMAND HANDLER, AGAINST ITS PER-INSTANCE ContextConfiguration) SO THE FETCH AGREES
+      // WITH WHATEVER PRE-CHECK ALREADY ACCEPTED THE COMMAND. A CLI/EMBEDDED CALLER WITH NO SUCH CONTEXT LEAVES IT
+      // null AND FALLS BACK TO THE STATIC GLOBAL DEFAULT.
+      final boolean allowLocalUrls = settings.allowLocalUrls != null ?
+          settings.allowLocalUrls : GlobalConfiguration.SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS.getValueAsBoolean();
+      final HttpURLConnection connection = SafeHttpFetcher.open(settings.inputFileURL,
+          address -> !allowLocalUrls && RESERVED_ADDRESSES.isBlocked(address), "RESTORE DATABASE");
 
       return new RestoreInputSource(null, connection.getInputStream(), 0);
     }
