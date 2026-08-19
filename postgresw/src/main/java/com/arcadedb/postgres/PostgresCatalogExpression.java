@@ -21,6 +21,7 @@ package com.arcadedb.postgres;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
@@ -618,12 +619,22 @@ abstract class PostgresCatalogExpression {
     }
 
     PostgresCatalogExpression parseExpression() {
+      return guardDepth(this::parseOr);
+    }
+
+    /**
+     * Runs a production under the depth guard {@link #parseExpression} enforces, for the productions that
+     * recurse on themselves directly - {@code parseNot} over a chain of {@code NOT}, {@code parseUnary} over
+     * a chain of unary {@code -}/{@code +} - and so reach the stack the same way nested parentheses do
+     * without ever calling back through {@link #parseExpression}.
+     */
+    private PostgresCatalogExpression guardDepth(final Supplier<PostgresCatalogExpression> production) {
       if (++depth > MAX_DEPTH) {
         --depth;
         return null;
       }
       try {
-        return parseOr();
+        return production.get();
       } finally {
         --depth;
       }
@@ -659,7 +670,7 @@ abstract class PostgresCatalogExpression {
 
     private PostgresCatalogExpression parseNot() {
       if (skipKeyword("NOT")) {
-        final PostgresCatalogExpression operand = parseNot();
+        final PostgresCatalogExpression operand = guardDepth(this::parseNot);
         return operand == null ? null : new Not(operand);
       }
       return parseComparison();
@@ -791,12 +802,12 @@ abstract class PostgresCatalogExpression {
     private PostgresCatalogExpression parseUnary() {
       if (peek() != null && peek().isSymbol("-")) {
         ++position;
-        final PostgresCatalogExpression operand = parseUnary();
+        final PostgresCatalogExpression operand = guardDepth(this::parseUnary);
         return operand == null ? null : new Negate(operand);
       }
       if (peek() != null && peek().isSymbol("+")) {
         ++position;
-        return parseUnary();
+        return guardDepth(this::parseUnary);
       }
       return parsePostfix();
     }

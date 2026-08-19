@@ -361,6 +361,20 @@ class PostgresCatalogExpressionTest {
   }
 
   @Test
+  void aChainOfNotOrUnaryMinusIsBoundedTheSameWayNestedParenthesesAre() {
+    // parseNot() and parseUnary() recurse on themselves directly for a chain of NOT or unary -/+, without
+    // ever calling back through parseExpression() - so the same MAX_DEPTH guard has to be applied at their
+    // own recursion point, not only at parseExpression()'s.
+    assertThat(parses("NOT ".repeat(20) + "relname = 'Article'")).isTrue();
+    assertThat(parses("NOT ".repeat(50_000) + "relname = 'Article'")).isFalse();
+
+    // Space-separated: "--" is a line comment to the lexer, not two unary minuses.
+    assertThat(parses("- ".repeat(20) + "1")).isTrue();
+    assertThat(parses("- ".repeat(50_000) + "1")).isFalse();
+    assertThat(parses("+ ".repeat(50_000) + "1")).isFalse();
+  }
+
+  @Test
   void aNumericLiteralThatIsNotANumberIsDeclinedRatherThanReadAsNull() {
     // The lexer reads "1.2.3" as one numeric token; answering the query with a NULL the client never wrote
     // would be worse than declining it.
