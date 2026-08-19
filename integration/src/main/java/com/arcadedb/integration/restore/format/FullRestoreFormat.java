@@ -44,15 +44,15 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 public class FullRestoreFormat extends AbstractRestoreFormat {
-  private interface RestoreCallback {
-    ParallelZipExtractor.ExtractStats restore(ZipInputStream zipFile) throws Exception;
-  }
-
   // SHARED WITH PostServerCommandHandler.isBlockedHost AND ImportSecurityValidator.isBlockedAddress: SEE
   // IPAddressBlocklist FOR WHY THIS MUST NOT BE A PER-CALLER COPY (GHSA-67m7-7w7g-mpmh).
   private static final IPAddressBlocklist RESERVED_ADDRESSES = IPAddressBlocklist.defaultReservedRanges();
 
   private final byte[] BUFFER = new byte[ParallelZipExtractor.BUFFER_SIZE];
+
+  private interface RestoreCallback {
+    ParallelZipExtractor.ExtractStats restore(ZipInputStream zipFile) throws Exception;
+  }
 
   /**
    * Where the archive is, and how it can be read. Exactly one of the two is set: a local {@code File}, or an already
