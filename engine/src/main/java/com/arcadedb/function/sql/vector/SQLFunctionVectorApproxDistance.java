@@ -131,10 +131,13 @@ public class SQLFunctionVectorApproxDistance extends SQLFunctionVectorAbstract {
     if (q1.length != q2.length)
       throw new CommandSQLParsingException("Quantized vectors must have same length: " + q1.length + " vs " + q2.length);
 
-    // Compute L2 distance: sqrt(sum((q1[i] - q2[i])^2))
+    // Compute L2 distance: sqrt(sum((q1[i] - q2[i])^2)). The codes are signed and order-preserving
+    // (quantizeInt8 stores (byte)(scaled - 128)), so the plain signed difference already matches the
+    // difference between the pre-shift [0,255] values; reinterpreting as unsigned via "& 0xFF" would
+    // instead produce a huge spurious difference for codes straddling the signed/unsigned midpoint.
     double sumSquares = 0.0;
     for (int i = 0; i < q1.length; i++) {
-      final int diff = (q1[i] & 0xFF) - (q2[i] & 0xFF);
+      final int diff = q1[i] - q2[i];
       sumSquares += diff * diff;
     }
 

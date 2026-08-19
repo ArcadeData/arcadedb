@@ -18,18 +18,23 @@
  */
 package com.arcadedb.query.sql.method.collection;
 
+import com.arcadedb.TestHelper;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.SQLMethod;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-class SQLMethodKeysTest {
+class SQLMethodKeysTest extends TestHelper {
 
   private SQLMethod function;
 
@@ -60,5 +65,40 @@ class SQLMethodKeysTest {
   void withNull() {
     Object result = function.execute(null, null, null, null);
     assertThat(result).isNull();
+  }
+
+  // Regression tests for issue #6387
+
+  @Test
+  void withDocumentReturnsFlatListNotNestedOneElementList() {
+    database.transaction(() -> database.getSchema().createDocumentType("Person"));
+
+    database.transaction(() -> {
+      final MutableDocument doc = database.newDocument("Person");
+      doc.set("name", "Alice");
+      doc.set("age", 30);
+      doc.save();
+
+      final Object result = function.execute(doc, null, null, null);
+      assertThat(result).isInstanceOf(List.class);
+      assertThat((List<Object>) result).containsExactlyInAnyOrder("name", "age");
+    });
+  }
+
+  @Test
+  void withCollectionContainingScalarAndNullDoesNotThrow() {
+    final List<Object> mixed = Arrays.asList(Map.of("a", 1), null, "scalar", 42, Map.of("b", 2));
+
+    final Object result = function.execute(mixed, null, null, null);
+    assertThat(result).isEqualTo(List.of("a", "b"));
+  }
+
+  @Test
+  void withSQLScalarCollectionDoesNotThrow() {
+    // SELECT [1,2,3].keys() -- a collection of scalars has no keys, so this used to NPE
+    try (final ResultSet resultSet = database.query("sql", "SELECT [1,2,3].keys() AS keys")) {
+      final Result record = resultSet.next();
+      assertThat(record.<List<Object>>getProperty("keys")).isEqualTo(List.of());
+    }
   }
 }

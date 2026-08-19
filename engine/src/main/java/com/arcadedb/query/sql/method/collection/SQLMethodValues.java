@@ -24,6 +24,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -48,12 +49,20 @@ public class SQLMethodValues extends AbstractSQLMethod {
     if (value instanceof Map map)
       return map.values();
     else if (value instanceof Document document)
-      return List.of(document.toMap().values());
+      return new ArrayList<>(document.toMap().values());
     else if (value instanceof Result result)
       return result.toMap().values();
     else if (value instanceof Collection<?> collection) {
-      final List<Object> result = collection.stream()
-          .flatMap(o -> ((Collection<Object>) execute(o, currentRecord, context, params)).stream()).toList();
+      final List<Object> result = new ArrayList<>();
+      for (final Object o : collection) {
+        if (o instanceof Map || o instanceof Document || o instanceof Result || o instanceof Collection) {
+          final Object values = execute(o, currentRecord, context, params);
+          if (values instanceof Collection<?> valuesCollection)
+            result.addAll(valuesCollection);
+        }
+        // scalar/null elements have no values: skip them rather than recursing into execute(), which
+        // returns null for them
+      }
       return result;
     }
 
