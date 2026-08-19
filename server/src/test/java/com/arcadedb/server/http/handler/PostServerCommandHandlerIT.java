@@ -379,6 +379,49 @@ class PostServerCommandHandlerIT extends BaseGraphServerTest {
   }
 
   /**
+   * Regression test for issue #6474: {@code import database <name> <url>}'s pre-check
+   * ({@code PostServerCommandHandler.validateClientRestoreImportUrl}) and the importer's actual fetch (deep inside
+   * {@code SourceDiscovery}) used to consult two different, independently-configured flags -
+   * {@code SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS} (set on this server's own configuration by {@code
+   * onServerConfiguration} above) and {@code SERVER_SECURITY_IMPORT_BLOCK_LOCAL_NETWORKS} (left at its static
+   * default here, blocking). Before the fix, the pre-check accepted a loopback URL because of the first flag, but
+   * the deep fetch refused it anyway because of the second, unrelated one - a confusing fail-closed divergence, not
+   * an active SSRF hole, but the same class of bug already fixed for {@code restore database} in #6381/#6449.
+   * <p>
+   * This exercises the synchronous (non-SSE) code path specifically, since that is the one that goes through {@code
+   * ImportDatabaseStatement} rather than constructing {@code Importer} directly.
+   */
+  @Test
+  void importDatabaseCommandHonorsTheSameLocalUrlsFlagAtTheFetchLayer() throws Exception {
+    final com.sun.net.httpserver.HttpServer localServer =
+        com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress(java.net.InetAddress.getLoopbackAddress(), 0), 0);
+    try {
+      localServer.createContext("/data", exchange -> {
+        final byte[] body = "not a real export file, only the SSRF gate is under test here".getBytes();
+        exchange.sendResponseHeaders(200, body.length);
+        exchange.getResponseBody().write(body);
+        exchange.close();
+      });
+      localServer.start();
+
+      final String url = "http://127.0.0.1:" + localServer.getAddress().getPort() + "/data";
+
+      // onServerConfiguration() already enabled SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS: the pre-check accepts this
+      // loopback URL. SERVER_SECURITY_IMPORT_BLOCK_LOCAL_NETWORKS is left at its default (blocking) - before the
+      // fix the deep fetch re-derived its own answer from that untouched key and refused the loopback host the
+      // pre-check had just accepted, surfacing as a 403 "blocked ... non-public or restricted address" instead of
+      // whatever error the (deliberately unparsable) content would otherwise cause.
+      final HttpResponse<String> response = executeServerCommand("import database issue6474_import_ssrf_test " + url);
+
+      assertThat(response.statusCode()).as(response.body()).isNotEqualTo(403);
+      assertThat(response.body()).as(response.body()).doesNotContain("non-public or restricted address");
+    } finally {
+      localServer.stop(0);
+      executeServerCommand("drop database issue6474_import_ssrf_test");
+    }
+  }
+
+  /**
    * Helper method to execute server commands consistently
    */
   private HttpResponse<String> executeServerCommand(String command) throws Exception {
