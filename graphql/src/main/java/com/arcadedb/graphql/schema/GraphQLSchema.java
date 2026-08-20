@@ -101,8 +101,8 @@ public class GraphQLSchema {
     final Map<String, Object> arguments = null;
 
     try {
-      final Selection selection = op.getSelectionSet().getSelections().get(0);
-      queryName = selection.getName();
+      final Selection selection = op.getSelectionSet().getSelections().getFirst();
+      queryName = selection.getFieldWithAlias() != null ? selection.getFieldWithAlias().getName() : selection.getName();
 
       // HANDLE INTROSPECTION QUERIES
       if ("__schema".equals(queryName))
@@ -144,6 +144,32 @@ public class GraphQLSchema {
 
       String where = "";
       final Field field = selection.getField();
+      if (field == null && selection.getFieldWithAlias() != null) {
+        // Aliased top-level field — use the FieldWithAlias for arguments and projection
+        final FieldWithAlias aliasField = selection.getFieldWithAlias();
+        final Arguments queryArguments = aliasField.getArguments();
+        if (queryArguments != null)
+          for (final Argument queryArgument : queryArguments.getList()) {
+            final String argName = queryArgument.getName();
+            if (!typeArgumentNames.contains(argName))
+              throw new CommandParsingException("Parameter '" + argName + "' not defined in query");
+            final Object argValue = queryArgument.getValueWithVariable().getValue().getValue();
+            if (where.length() > 0)
+              where += " and ";
+            if ("where".equals(argName))
+              where += argValue;
+            else {
+              where += argName;
+              where += " = ";
+              if (argValue instanceof String)
+                where += """;
+              where += argValue;
+              if (argValue instanceof String)
+                where += """;
+            }
+          }
+        projection = aliasField.getSelectionSet();
+      }
       if (field != null) {
         final Arguments queryArguments = field.getArguments();
         if (queryArguments != null)
