@@ -50,12 +50,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * This harness closes that gap generically. It generates a corpus of MATCH clauses combinatorially - the #6310
  * defect needed three properties to line up at once (two parts, a shared variable, and one part unable to
  * collide with itself), which is the kind of conjunction a hand-written list misses - runs each clause down both
- * planners against one fixture, and asserts the two answers are equal as multisets.
+ * planners against one fixture, and asserts the two answers are equal as multisets. Ordinary
+ * variable-length MATCH patterns are included now that the physical planner can represent them.
  * <h2>How the routing is forced, and why it is verified rather than assumed</h2>
  * The routing is forcible from the query text, so no engine hook is needed: the clause as written goes to the
  * cost-based planner and the same clause wrapped in {@code CALL { ... }} goes to the traditional one. But the
- * cost-based planner declines far more than variable-length hops - two comma-separated parts that share no
- * variable are a Cartesian product it also declines - so a corpus entry cannot be assumed to have exercised
+ * cost-based planner still declines unsupported syntax, so a corpus entry cannot be assumed to have exercised
  * both. {@code EXPLAIN} reports which planner ran, and every pair is classified by it before being compared:
  * a pair that lands on the traditional plan twice is counted as non-differential and
  * {@link #theCorpusActuallyExercisesBothPlanners()} holds the differential count to a floor, so the harness
@@ -160,6 +160,9 @@ class CypherPlannerDifferentialIssue6400Test {
   /** Inline property filters, which the cost-based planner may push into the scan and the other may not. */
   private static final String[] INLINE_FILTERS = { "", " {v: 1}" };
 
+  /** Bounded ranges including the identity path; unbounded routing is covered by the focused #5358 test. */
+  private static final String[] VLP_RANGES = { "*0..0", "*1..1", "*1..2" };
+
   /**
    * One corpus entry: the MATCH clause and the projection that reads its bindings back.
    *
@@ -206,6 +209,14 @@ class CypherPlannerDifferentialIssue6400Test {
               queries.add(new Query("MATCH " + hop("x" + label + filter, "r1" + relType, "y" + farLabel, direction),
                   "x.n AS xn, y.n AS yn"));
 
+    // Variable-length counterparts: all directions, identity/single/multi-hop ranges, and both endpoint labels.
+    for (final String direction : DIRECTIONS)
+      for (final String range : VLP_RANGES)
+        for (final String label : new String[] { ":C", ":E", ":SUBA" })
+          for (final String farLabel : FAR_LABELS)
+            queries.add(new Query("MATCH " + hop("x" + label, "r1:R" + range, "y" + farLabel, direction),
+                "x.n AS xn, y.n AS yn"));
+
     // Two-part patterns sharing a variable, which is where relationship uniqueness across the comma bites
     // (issue #6310) and also the shape the cost-based planner is willing to join.
     for (final String direction : DIRECTIONS)
@@ -221,11 +232,21 @@ class CypherPlannerDifferentialIssue6400Test {
         queries.add(new Query("MATCH " + hop("x" + label, "r1" + relType, "y:E", "->") + ", "
             + hop("p:E", "r2", "q:A", "->"), "x.n AS xn, p.n AS pn"));
 
+    // A variable-length component beside a disconnected fixed hop exercises the post-product
+    // MATCH-clause relationship-uniqueness filter introduced with VarLengthExpand.
+    for (final String range : new String[] { "*0..0", "*1..2" })
+      queries.add(new Query("MATCH " + hop("x:C", "r1:R" + range, "y:A", "->") + ", "
+          + hop("p:E", "r2:R", "q:A", "->"), "x.n AS xn, p.n AS pn"));
+
     // Anonymous hops, which the plan has to bind itself to be able to compare them at all.
     for (final String direction : DIRECTIONS)
       for (final String label : LABELS)
         queries.add(new Query("MATCH " + hop("x" + label, "", "y:E", direction) + ", " + hop("y:E", "", "z:A", "->"),
             "x.n AS xn, z.n AS zn"));
+
+    // Anonymous variable-length relationships still need internal edge tracking when another hop can collide.
+    queries.add(new Query("MATCH " + hop("x:C", ":R*1..2", "y:A", "->") + ", "
+        + hop("p:E", "", "q:A", "->"), "x.n AS xn, p.n AS pn"));
 
     // A WHERE predicate beside the pattern: what the cost-based planner may push into the scan.
     for (final String label : LABELS)

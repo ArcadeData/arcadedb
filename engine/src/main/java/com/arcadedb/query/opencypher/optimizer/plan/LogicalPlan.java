@@ -199,8 +199,10 @@ public class LogicalPlan {
           relPattern.getProperties(),
           relPattern.getMinHops(),
           relPattern.getMaxHops(),
-          null,
-          clauseIndex
+          pathPattern.getEffectivePathMode(),
+          clauseIndex,
+          relPattern,
+          pathPattern.getPathVariable()
       );
       relationships.add(logicalRel);
     }

@@ -74,6 +74,30 @@ class CostModelTest {
   }
 
   @Test
+  void estimateBoundedVariableLengthExpansionAsGeometricSeries() {
+    assertThat(costModel.estimateVariableLengthExpansionFactor(10.0, 1, 3)).isEqualTo(1110.0);
+    assertThat(costModel.estimateVariableLengthExpansionFactor(10.0, 0, 0)).isEqualTo(1.0);
+  }
+
+  @Test
+  void unboundedVariableLengthExpansionUsesAConservativeFinitePlanningHorizon() {
+    assertThat(costModel.estimateVariableLengthExpansionFactor(10.0, 1, Integer.MAX_VALUE))
+        .isEqualTo(111_111_110.0);
+    assertThat(costModel.estimateVariableLengthCardinality(100, 10.0, 1, Integer.MAX_VALUE))
+        .isEqualTo(11_111_111_000L);
+  }
+
+  @Test
+  void variableLengthCardinalityCannotOverflow() {
+    assertThat(costModel.estimateVariableLengthCardinality(Long.MAX_VALUE / 2, 10.0, 1, 3))
+        .isEqualTo(Long.MAX_VALUE);
+    assertThat(costModel.estimateVariableLengthCardinality(100, 10.0, 1, 1_000))
+        .isEqualTo(Long.MAX_VALUE);
+    assertThat(CostModel.saturatingCardinalityProduct(Long.MAX_VALUE / 2, 3))
+        .isEqualTo(Long.MAX_VALUE);
+  }
+
+  @Test
   void estimateExpandIntoCost() {
     final double expandIntoCost = costModel.estimateExpandIntoCost(100);
     assertThat(expandIntoCost).isEqualTo(100.0); // Much cheaper than ExpandAll

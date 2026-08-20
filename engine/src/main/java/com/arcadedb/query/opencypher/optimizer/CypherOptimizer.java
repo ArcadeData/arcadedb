@@ -40,6 +40,8 @@ import com.arcadedb.query.opencypher.executor.operators.GAVExpandInto;
 import com.arcadedb.query.opencypher.executor.operators.GAVFusedChainOperator;
 import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
 import com.arcadedb.query.opencypher.executor.operators.PhysicalOperator;
+import com.arcadedb.query.opencypher.executor.operators.RelationshipUniquenessFilter;
+import com.arcadedb.query.opencypher.executor.operators.VarLengthExpand;
 import com.arcadedb.query.opencypher.optimizer.plan.AnchorSelection;
 import com.arcadedb.query.opencypher.optimizer.plan.LogicalNode;
 import com.arcadedb.query.opencypher.optimizer.plan.LogicalPlan;
@@ -61,6 +63,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -151,9 +154,9 @@ public class CypherOptimizer {
     final List<String> typeNames = extractTypeNames(logicalPlan);
     statisticsProvider.collectStatistics(typeNames);
 
-    // Handle multiple independent MATCH clauses (e.g., MATCH (a:T) MATCH (b:T) CREATE ...)
-    // Each MATCH has a single node pattern — create operators for each and chain with CartesianProduct
-    if (statement.getMatchClauses().size() > 1 && logicalPlan.getRelationships().isEmpty()) {
+    // Handle independent node-only patterns whether they are written as separate MATCH clauses or
+    // comma-separated parts of one MATCH (e.g. MATCH (a:T), (b:T) CREATE ...).
+    if (logicalPlan.getRelationships().isEmpty() && logicalPlan.getNodes().size() > 1) {
       return optimizeMultiMatchIndependent(logicalPlan);
     }
 
@@ -170,27 +173,63 @@ public class CypherOptimizer {
         if (!logicalPlan.isNodeConnected(node.getVariable()))
           isolatedNodes.add(node);
 
-    final Set<String> isolatedVariables = new HashSet<>();
-    for (final LogicalNode node : isolatedNodes)
-      isolatedVariables.add(node.getVariable());
+    AnchorSelection anchor;
+    PhysicalOperator anchorOperator;
+    PhysicalOperator rootOperator;
+    final List<RelationshipComponent> components = relationshipComponents(logicalPlan.getRelationships());
 
-    // 3. Select anchor node (best starting point) among the relationship-connected nodes only
-    AnchorSelection anchor = anchorSelector.selectAnchor(logicalPlan, isolatedVariables);
+    if (components.isEmpty()) {
+      anchor = anchorSelector.selectAnchor(logicalPlan);
+      anchorOperator = createAnchorOperator(anchor);
+      rootOperator = anchorOperator;
+    } else {
+      anchor = null;
+      anchorOperator = null;
+      rootOperator = null;
+      final Set<LogicalRelationship> needsEdgeTracking =
+          computeNeedsEdgeTracking(logicalPlan.getRelationships());
+      final int[] syntheticEdgeVarCounter = { 0 };
+      final Map<Integer, Set<String>> relVarsPerClause = new HashMap<>();
 
-    // 3a. Validate anchor against UNIDIRECTIONAL edge constraints.
-    // UNIDIRECTIONAL edges only store outgoing links on the source vertex,
-    // so reverse traversal (incoming from target) finds nothing. If the selected
-    // anchor would force reverse traversal of a UNIDIRECTIONAL edge, re-select
-    // the source side as anchor instead.
-    anchor = validateAnchorForUnidirectionalEdges(anchor, logicalPlan);
+      // A disconnected relationship component gets its own selective anchor and expansion chain.
+      // The components are combined only after each chain has applied its local constraints.
+      for (final RelationshipComponent component : components) {
+        final Set<String> excludedVariables = new HashSet<>(logicalPlan.getPatternNodes().keySet());
+        excludedVariables.removeAll(component.variables());
 
-    // 4. Create anchor operator (index seek or scan)
-    final PhysicalOperator anchorOperator = createAnchorOperator(anchor);
+        AnchorSelection componentAnchor = anchorSelector.selectAnchor(logicalPlan, excludedVariables);
+        componentAnchor = validateAnchorForUnidirectionalEdges(componentAnchor, logicalPlan,
+            component.relationships(), component.variables());
+        final PhysicalOperator componentAnchorOperator = createAnchorOperator(componentAnchor);
+        final ExpansionPlan expansion = buildExpansionChain(logicalPlan, component.relationships(),
+            componentAnchor, componentAnchorOperator, needsEdgeTracking, syntheticEdgeVarCounter);
 
-    // 5. Build expansion chain (ordered by cardinality)
-    PhysicalOperator rootOperator = anchorOperator;
-    if (!logicalPlan.getRelationships().isEmpty()) {
-      rootOperator = buildExpansionChain(logicalPlan, anchor, anchorOperator);
+        if (anchor == null) {
+          anchor = componentAnchor;
+          anchorOperator = componentAnchorOperator;
+        }
+        expansion.relationshipVariablesByClause().forEach((clause, variables) ->
+            relVarsPerClause.computeIfAbsent(clause, ignored -> new LinkedHashSet<>()).addAll(variables));
+
+        if (rootOperator == null)
+          rootOperator = expansion.root();
+        else {
+          final double joinCost = CostModel.saturatingAdd(rootOperator.getEstimatedCost(),
+              expansion.root().getEstimatedCost());
+          final long cardinality = CostModel.saturatingCardinalityProduct(
+              Math.max(1, rootOperator.getEstimatedCardinality()),
+              Math.max(1, expansion.root().getEstimatedCardinality()));
+          // Expansion operators see relationships bound earlier in their own connected chain. A row
+          // joining two components still has to obey the same MATCH-wide uniqueness rule, so the check
+          // is pushed into the join itself: a conflicting pair is rejected before it is merged into a
+          // row at all, instead of being merged and then discarded by a filter further downstream -
+          // which also keeps a conflicting pair from ever reaching a subsequent component's join.
+          final double cost = CostModel.saturatingAdd(joinCost,
+              CostModel.saturatingMultiply(cardinality, costModel.FILTER_COST_PER_ROW));
+          rootOperator = new CartesianProduct(rootOperator, expansion.root(), cost, cardinality,
+              RelationshipUniquenessFilter.pushdownPredicate(relVarsPerClause));
+        }
+      }
     }
 
     // 5a. Join in any disconnected single-node MATCH clause pattern via CartesianProduct (#5810).
@@ -205,9 +244,10 @@ public class CypherOptimizer {
     // and applied automatically when both endpoints are bound
 
     // 7. Push down filters
-    if (!logicalPlan.getWhereFilters().isEmpty()) {
-      rootOperator = applyFilterPushdown(logicalPlan, rootOperator, anchor.getVariable(), anchorOperator);
-    }
+    if (!logicalPlan.getWhereFilters().isEmpty())
+      rootOperator = components.size() <= 1 ?
+          applyFilterPushdown(logicalPlan, rootOperator, anchor.getVariable(), anchorOperator) :
+          applyFilterPushdown(logicalPlan, rootOperator);
 
     // 8. Fuse consecutive GAVExpandAll operators into a single GAVFusedChainOperator
     // This eliminates ALL intermediate ResultInternal/HashMap/Vertex allocations
@@ -233,8 +273,6 @@ public class CypherOptimizer {
   private PhysicalPlan optimizeMultiMatchIndependent(final LogicalPlan logicalPlan) {
     PhysicalOperator rootOperator = null;
     AnchorSelection firstAnchor = null;
-    double totalCost = 0;
-    long totalCardinality = 1;
 
     for (final LogicalNode node : logicalPlan.getNodes().values()) {
       // Create a temporary single-node plan to use the anchor selector
@@ -248,13 +286,13 @@ public class CypherOptimizer {
         rootOperator = nodeOperator;
       } else {
         // Chain with CartesianProduct
-        totalCardinality *= anchor.getEstimatedCardinality();
-        totalCost += anchor.getEstimatedCost();
-        rootOperator = new CartesianProduct(rootOperator, nodeOperator, totalCost, totalCardinality);
+        final long cardinality = CostModel.saturatingCardinalityProduct(
+            Math.max(1, rootOperator.getEstimatedCardinality()),
+            Math.max(1, nodeOperator.getEstimatedCardinality()));
+        final double cost = CostModel.saturatingAdd(rootOperator.getEstimatedCost(),
+            nodeOperator.getEstimatedCost());
+        rootOperator = new CartesianProduct(rootOperator, nodeOperator, cost, cardinality);
       }
-
-      totalCost += anchor.getEstimatedCost();
-      totalCardinality = Math.max(1, anchor.getEstimatedCardinality());
     }
 
     // Apply filters
@@ -282,8 +320,11 @@ public class CypherOptimizer {
       final AnchorSelection nodeAnchor = anchorSelector.evaluateNodeDirect(node, logicalPlan);
       final PhysicalOperator nodeOperator = createAnchorOperator(nodeAnchor);
 
-      final long cardinality = Math.max(1, rootOperator.getEstimatedCardinality()) * Math.max(1, nodeAnchor.getEstimatedCardinality());
-      final double cost = rootOperator.getEstimatedCost() + nodeAnchor.getEstimatedCost();
+      final long cardinality = CostModel.saturatingCardinalityProduct(
+          Math.max(1, rootOperator.getEstimatedCardinality()),
+          Math.max(1, nodeAnchor.getEstimatedCardinality()));
+      final double cost = CostModel.saturatingAdd(rootOperator.getEstimatedCost(),
+          nodeAnchor.getEstimatedCost());
       rootOperator = new CartesianProduct(rootOperator, nodeOperator, cost, cardinality);
     }
     return rootOperator;
@@ -304,31 +345,76 @@ public class CypherOptimizer {
 
     final Set<LogicalRelationship> needs = new HashSet<>();
     for (final List<LogicalRelationship> clauseRels : byClause.values()) {
-      if (clauseRels.size() <= 1)
-        continue;
-
-      boolean hasUntyped = false;
-      for (final LogicalRelationship rel : clauseRels)
-        if (rel.getTypes().isEmpty()) {
-          hasUntyped = true;
-          break;
-        }
-      if (hasUntyped) {
-        // Untyped hops match any edge type, so every hop in the clause may collide.
-        needs.addAll(clauseRels);
-        continue;
-      }
-
-      final Map<String, List<LogicalRelationship>> byType = new HashMap<>();
-      for (final LogicalRelationship rel : clauseRels)
-        for (final String type : rel.getTypes())
-          byType.computeIfAbsent(type, k -> new ArrayList<>()).add(rel);
-
-      for (final List<LogicalRelationship> sharingType : byType.values())
-        if (sharingType.size() > 1)
-          needs.addAll(sharingType);
+      for (int left = 0; left < clauseRels.size(); left++)
+        for (int right = left + 1; right < clauseRels.size(); right++)
+          if (relationshipTypesMayOverlap(clauseRels.get(left), clauseRels.get(right))) {
+            needs.add(clauseRels.get(left));
+            needs.add(clauseRels.get(right));
+          }
     }
     return needs;
+  }
+
+  /** Edge subtypes overlap their supertypes just as exact type names do (issue #6310). */
+  private boolean relationshipTypesMayOverlap(final LogicalRelationship left,
+      final LogicalRelationship right) {
+    if (left.getTypes().isEmpty() || right.getTypes().isEmpty())
+      return true;
+
+    for (final String leftName : left.getTypes())
+      for (final String rightName : right.getTypes()) {
+        if (leftName.equals(rightName))
+          return true;
+        final var leftType = database.getSchema().getTypeOrNull(leftName);
+        final var rightType = database.getSchema().getTypeOrNull(rightName);
+        if (leftType != null && rightType != null
+            && (leftType.instanceOf(rightName) || rightType.instanceOf(leftName)))
+          return true;
+      }
+    return false;
+  }
+
+  /** Partitions relationship patterns into deterministic node-connected components. */
+  private List<RelationshipComponent> relationshipComponents(final List<LogicalRelationship> relationships) {
+    final LinkedHashSet<LogicalRelationship> remaining = new LinkedHashSet<>(relationships);
+    final List<RelationshipComponent> components = new ArrayList<>();
+
+    while (!remaining.isEmpty()) {
+      final LogicalRelationship seed = remaining.iterator().next();
+      remaining.remove(seed);
+      final List<LogicalRelationship> componentRelationships = new ArrayList<>();
+      final Set<String> variables = new LinkedHashSet<>();
+      componentRelationships.add(seed);
+      variables.add(seed.getSourceVariable());
+      variables.add(seed.getTargetVariable());
+
+      boolean grew;
+      do {
+        grew = false;
+        final var iterator = remaining.iterator();
+        while (iterator.hasNext()) {
+          final LogicalRelationship candidate = iterator.next();
+          if (!variables.contains(candidate.getSourceVariable())
+              && !variables.contains(candidate.getTargetVariable()))
+            continue;
+          iterator.remove();
+          componentRelationships.add(candidate);
+          variables.add(candidate.getSourceVariable());
+          variables.add(candidate.getTargetVariable());
+          grew = true;
+        }
+      } while (grew);
+
+      components.add(new RelationshipComponent(componentRelationships, variables));
+    }
+    return components;
+  }
+
+  private record RelationshipComponent(List<LogicalRelationship> relationships, Set<String> variables) {
+  }
+
+  private record ExpansionPlan(PhysicalOperator root,
+                               Map<Integer, Set<String>> relationshipVariablesByClause) {
   }
 
   /**
@@ -391,18 +477,20 @@ public class CypherOptimizer {
    * kept so the planner behaves as before rather than throwing.
    */
   private AnchorSelection validateAnchorForUnidirectionalEdges(final AnchorSelection anchor,
-      final LogicalPlan logicalPlan) {
+      final LogicalPlan logicalPlan, final List<LogicalRelationship> relationships,
+      final Set<String> componentVariables) {
     // Fast path: without any unidirectional edge, every hop is reversible and any anchor is valid.
-    if (!hasUnidirectionalEdge(logicalPlan))
+    if (!hasUnidirectionalEdge(relationships))
       return anchor;
 
-    if (anchorReachesAllNodes(anchor.getVariable(), logicalPlan))
+    if (anchorReachesAllNodes(anchor.getVariable(), relationships, componentVariables))
       return anchor;
 
     AnchorSelection best = null;
     double lowestCost = Double.MAX_VALUE;
-    for (final LogicalNode node : logicalPlan.getNodes().values()) {
-      if (!anchorReachesAllNodes(node.getVariable(), logicalPlan))
+    for (final String variable : componentVariables) {
+      final LogicalNode node = logicalPlan.getPatternNode(variable);
+      if (node == null || !anchorReachesAllNodes(variable, relationships, componentVariables))
         continue;
       final AnchorSelection candidate = anchorSelector.evaluateNodeDirect(node, logicalPlan);
       if (candidate.getEstimatedCost() < lowestCost) {
@@ -416,12 +504,16 @@ public class CypherOptimizer {
   /**
    * Returns true if any relationship in the pattern uses a unidirectional (non-bidirectional) edge type.
    */
-  private boolean hasUnidirectionalEdge(final LogicalPlan logicalPlan) {
+  private boolean hasUnidirectionalEdge(final List<LogicalRelationship> relationships) {
     final var schema = database.getSchema();
-    for (final LogicalRelationship rel : logicalPlan.getRelationships())
+    for (final LogicalRelationship rel : relationships) {
+      // An untyped hop may select a unidirectional edge, so reverse traversal cannot be proven safe.
+      if (rel.getTypes().isEmpty())
+        return true;
       for (final String edgeTypeName : rel.getTypes())
         if (schema.getTypeOrNull(edgeTypeName) instanceof EdgeType et && !et.isBidirectional())
           return true;
+    }
     return false;
   }
 
@@ -430,7 +522,8 @@ public class CypherOptimizer {
    * direction for unidirectional edges (source→target only) and allowing both directions for
    * bidirectional ones. Returns true when every pattern node is reachable.
    */
-  private boolean anchorReachesAllNodes(final String anchorVar, final LogicalPlan logicalPlan) {
+  private boolean anchorReachesAllNodes(final String anchorVar,
+      final List<LogicalRelationship> relationships, final Set<String> componentVariables) {
     final var schema = database.getSchema();
     final Set<String> visited = new HashSet<>();
     final ArrayDeque<String> queue = new ArrayDeque<>();
@@ -439,12 +532,13 @@ public class CypherOptimizer {
 
     while (!queue.isEmpty()) {
       final String current = queue.poll();
-      for (final LogicalRelationship rel : logicalPlan.getRelationships()) {
+      for (final LogicalRelationship rel : relationships) {
         final String source = rel.getSourceVariable();
         final String target = rel.getTargetVariable();
         final Direction direction = rel.getDirection();
 
-        boolean bidirectional = true;
+        // Without a declared type, the matched edge set may include a unidirectional type.
+        boolean bidirectional = !rel.getTypes().isEmpty();
         for (final String edgeTypeName : rel.getTypes())
           if (schema.getTypeOrNull(edgeTypeName) instanceof EdgeType et && !et.isBidirectional()) {
             bidirectional = false;
@@ -464,7 +558,7 @@ public class CypherOptimizer {
           forwardTo = target;
         }
 
-        final boolean reverseTraversable = bidirectional || direction == Direction.BOTH;
+        final boolean reverseTraversable = bidirectional;
 
         if (current.equals(forwardFrom) && visited.add(forwardTo))
           queue.add(forwardTo);
@@ -473,7 +567,7 @@ public class CypherOptimizer {
       }
     }
 
-    return visited.containsAll(logicalPlan.getNodes().keySet());
+    return visited.containsAll(componentVariables);
   }
 
   /**
@@ -492,15 +586,19 @@ public class CypherOptimizer {
    * Builds the expansion chain by ordering relationships and creating expand operators.
    * Uses JoinOrderRule for ordering and ExpandIntoRule for optimization.
    *
-   * @param logicalPlan    the logical plan
-   * @param anchor         the selected anchor
-   * @param anchorOperator the anchor operator to build upon
+   * @param logicalPlan          the logical plan
+   * @param relationships        relationships in this connected component
+   * @param anchor               the selected anchor
+   * @param anchorOperator       the anchor operator to build upon
+   * @param needsEdgeTracking    relationships whose identity can collide in their MATCH clause
+   * @param syntheticEdgeCounter plan-wide counter for anonymous tracking bindings
    *
-   * @return root operator of the expansion chain
+   * @return root operator and relationship bindings of the expansion chain
    */
-  private PhysicalOperator buildExpansionChain(final LogicalPlan logicalPlan,
-      final AnchorSelection anchor,
-      final PhysicalOperator anchorOperator) {
+  private ExpansionPlan buildExpansionChain(final LogicalPlan logicalPlan,
+      final List<LogicalRelationship> relationships, final AnchorSelection anchor,
+      final PhysicalOperator anchorOperator, final Set<LogicalRelationship> needsEdgeTracking,
+      final int[] syntheticEdgeCounter) {
     // Get optimization rules
     final JoinOrderRule joinOrderRule = (JoinOrderRule) rules.get(3);
     final ExpandIntoRule expandIntoRule = (ExpandIntoRule) rules.get(2);
@@ -512,7 +610,7 @@ public class CypherOptimizer {
     // Order relationships by estimated cardinality
     final List<LogicalRelationship> orderedRels =
         joinOrderRule.orderRelationships(
-            logicalPlan.getRelationships(),
+            relationships,
             anchor.getVariable(),
             boundVariables,
             logicalPlan
@@ -523,9 +621,6 @@ public class CypherOptimizer {
     // clause - cross-clause edge reuse is valid Cypher and must not be blocked.
     PhysicalOperator currentOp = anchorOperator;
     final Map<Integer, Set<String>> relVarsPerClause = new HashMap<>();
-
-    final Set<LogicalRelationship> needsEdgeTracking = computeNeedsEdgeTracking(orderedRels);
-    int syntheticEdgeVarCounter = 0;
 
     for (final LogicalRelationship rel : orderedRels) {
       final Set<String> sameClausePreceding = relVarsPerClause.getOrDefault(
@@ -540,8 +635,21 @@ public class CypherOptimizer {
           && (needsEdgeTracking.contains(rel)
               || CypherVariableUsage.isEdgeVariableReferenced(statement, rel.getVariable()));
 
-      // Check if we should use ExpandInto (both endpoints bound)
-      if (expandIntoRule.shouldUseExpandInto(rel, boundVariables)) {
+      if (rel.isVariableLength()) {
+        currentOp = createVarLengthExpandOperator(rel, currentOp, boundVariables, sameClausePreceding);
+
+        if ((rel.getVariable() == null || rel.getVariable().isEmpty())
+            && needsEdgeTracking.contains(rel)
+            && currentOp instanceof VarLengthExpand expand) {
+          final String synVar = "  anon_e_" + (syntheticEdgeCounter[0]++);
+          expand.setEdgeTrackingVar(synVar);
+          relVarsPerClause
+              .computeIfAbsent(rel.getClauseIndex(), k -> new HashSet<>())
+              .add(synVar);
+        }
+
+        currentOp = addTargetLabelFilter(logicalPlan, rel, currentOp);
+      } else if (expandIntoRule.shouldUseExpandInto(rel, boundVariables)) {
         // Use ExpandInto for bounded patterns
         currentOp = createExpandIntoOperator(rel, currentOp, sameClausePreceding, needsEdgeTracking.contains(rel),
             edgeIsMaterialized);
@@ -551,7 +659,7 @@ public class CypherOptimizer {
         if ((rel.getVariable() == null || rel.getVariable().isEmpty())
             && needsEdgeTracking.contains(rel)
             && currentOp instanceof ExpandInto expandInto) {
-          final String synVar = "  anon_e_" + (syntheticEdgeVarCounter++);
+          final String synVar = "  anon_e_" + (syntheticEdgeCounter[0]++);
           expandInto.setEdgeTrackingVar(synVar);
           relVarsPerClause
               .computeIfAbsent(rel.getClauseIndex(), k -> new HashSet<>())
@@ -565,7 +673,7 @@ public class CypherOptimizer {
         if ((rel.getVariable() == null || rel.getVariable().isEmpty())
             && needsEdgeTracking.contains(rel)
             && currentOp instanceof ExpandAll expand) {
-          final String synVar = "  anon_e_" + (syntheticEdgeVarCounter++);
+          final String synVar = "  anon_e_" + (syntheticEdgeCounter[0]++);
           expand.setEdgeTrackingVar(synVar);
           relVarsPerClause
               .computeIfAbsent(rel.getClauseIndex(), k -> new HashSet<>())
@@ -580,15 +688,54 @@ public class CypherOptimizer {
       boundVariables.add(rel.getSourceVariable());
       boundVariables.add(rel.getTargetVariable());
 
-      // Track named relationship variables for subsequent hops in the same clause
-      if (rel.getVariable() != null && !rel.getVariable().isEmpty()) {
+      // Only relationships whose type domains can overlap need identity tracking. A named variable
+      // may still be materialized because the query reads it, but type-disjoint hops do not belong
+      // in the hot uniqueness checks within or across connected components.
+      if (needsEdgeTracking.contains(rel) && rel.getVariable() != null && !rel.getVariable().isEmpty()) {
         relVarsPerClause
             .computeIfAbsent(rel.getClauseIndex(), k -> new HashSet<>())
             .add(rel.getVariable());
       }
     }
 
-    return currentOp;
+    return new ExpansionPlan(currentOp, relVarsPerClause);
+  }
+
+  /** Builds a depth-first physical expansion for one ordinary variable-length relationship. */
+  private PhysicalOperator createVarLengthExpandOperator(final LogicalRelationship relationship,
+      final PhysicalOperator input, final Set<String> boundVariables,
+      final Set<String> sameClausePrecedingRelVars) {
+    String sourceVariable = relationship.getSourceVariable();
+    String targetVariable = relationship.getTargetVariable();
+    Direction direction = relationship.getDirection();
+    boolean reverseResultPath = false;
+
+    final boolean sourceIsBound = boundVariables.contains(sourceVariable);
+    final boolean targetIsBound = boundVariables.contains(targetVariable);
+    if (targetIsBound && !sourceIsBound) {
+      final String swap = sourceVariable;
+      sourceVariable = targetVariable;
+      targetVariable = swap;
+      direction = reverseDirection(direction);
+      reverseResultPath = true;
+    }
+
+    final long inputCardinality = input.getEstimatedCardinality();
+    final double avgDegree = relationship.getFirstType() != null ?
+        costModel.estimateAverageDegree(relationship.getFirstType()) : DEFAULT_AVG_DEGREE;
+    final long outputCardinality = costModel.estimateVariableLengthCardinality(inputCardinality, avgDegree,
+        relationship.getEffectiveMinHops(), relationship.getEffectiveMaxHops());
+    final double expansionCost = costModel.estimateVariableLengthExpandCost(inputCardinality, avgDegree,
+        relationship.getEffectiveMinHops(), relationship.getEffectiveMaxHops());
+    final double totalCost = CostModel.saturatingAdd(input.getEstimatedCost(), expansionCost);
+
+    final VarLengthExpand.ExpansionVariables variables = new VarLengthExpand.ExpansionVariables(sourceVariable,
+        relationship.getVariable(), targetVariable, relationship.getPathVariable());
+    final VarLengthExpand.TraversalSpec traversal = new VarLengthExpand.TraversalSpec(relationship.getPattern(),
+        direction, reverseResultPath, relationship.getPathMode());
+    final VarLengthExpand expand = new VarLengthExpand(input, variables, traversal, totalCost, outputCardinality);
+    expand.setSameClausePrecedingRelVars(sameClausePrecedingRelVars);
+    return expand;
   }
 
   /**
@@ -1105,6 +1252,8 @@ public class CypherOptimizer {
       expandTargetVariable = ((GAVExpandAll) input).getTargetVariable();
     else if (input instanceof ExpandAll)
       expandTargetVariable = ((ExpandAll) input).getTargetVariable();
+    else if (input instanceof VarLengthExpand)
+      expandTargetVariable = ((VarLengthExpand) input).getTargetVariable();
     else
       expandTargetVariable = rel.getTargetVariable();
 
@@ -1131,6 +1280,10 @@ public class CypherOptimizer {
     }
     if (input instanceof ExpandAll) {
       ((ExpandAll) input).setTargetLabel(targetLabel);
+      return input;
+    }
+    if (input instanceof VarLengthExpand) {
+      ((VarLengthExpand) input).setTargetLabel(targetLabel);
       return input;
     }
 

@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.optimizer.plan;
 
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.PathMode;
+import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 
 import java.util.Collections;
 import java.util.List;
@@ -41,6 +42,8 @@ public class LogicalRelationship {
   private final Integer maxHops;
   private final PathMode pathMode;
   private final int clauseIndex;
+  private final RelationshipPattern pattern;
+  private final String pathVariable;
 
   public LogicalRelationship(final String variable, final String sourceVariable, final String targetVariable,
                             final List<String> types, final Direction direction, final Map<String, Object> properties,
@@ -57,6 +60,14 @@ public class LogicalRelationship {
   public LogicalRelationship(final String variable, final String sourceVariable, final String targetVariable,
                             final List<String> types, final Direction direction, final Map<String, Object> properties,
                             final Integer minHops, final Integer maxHops, final PathMode pathMode, final int clauseIndex) {
+    this(variable, sourceVariable, targetVariable, types, direction, properties, minHops, maxHops,
+        pathMode, clauseIndex, null, null);
+  }
+
+  public LogicalRelationship(final String variable, final String sourceVariable, final String targetVariable,
+                            final List<String> types, final Direction direction, final Map<String, Object> properties,
+                            final Integer minHops, final Integer maxHops, final PathMode pathMode, final int clauseIndex,
+                            final RelationshipPattern pattern, final String pathVariable) {
     this.variable = variable;
     this.sourceVariable = sourceVariable;
     this.targetVariable = targetVariable;
@@ -68,6 +79,8 @@ public class LogicalRelationship {
     this.isVariableLength = minHops != null || maxHops != null;
     this.pathMode = pathMode;
     this.clauseIndex = clauseIndex;
+    this.pattern = pattern;
+    this.pathVariable = pathVariable;
   }
 
   /**
@@ -114,8 +127,29 @@ public class LogicalRelationship {
     return maxHops;
   }
 
+  public int getEffectiveMinHops() {
+    return minHops != null ? Math.max(0, minHops) : 1;
+  }
+
+  public int getEffectiveMaxHops() {
+    return maxHops != null ? maxHops : isVariableLength ? Integer.MAX_VALUE : 1;
+  }
+
   public PathMode getPathMode() {
     return pathMode;
+  }
+
+  /**
+   * Returns the parsed relationship pattern when this relationship came from the AST. The physical
+   * variable-length operator needs the original object because it owns parameterized property maps
+   * and inline WHERE evaluation, neither of which the flattened properties map can represent.
+   */
+  public RelationshipPattern getPattern() {
+    return pattern;
+  }
+
+  public String getPathVariable() {
+    return pathVariable;
   }
 
   public boolean hasTypes() {

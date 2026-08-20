@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.executor.operators;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.EdgeIdentitySet;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.query.opencypher.ast.Direction;
@@ -30,7 +31,6 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.WorkGuard;
-import com.arcadedb.utility.RidHashSet;
 
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -110,7 +110,7 @@ public class ExpandInto extends AbstractPhysicalOperator {
       private       Iterator<Edge> edgeIterator             = null;
       // Edge RIDs already bound by same-clause preceding rel vars in the current input row.
       // Computed once per input row, queried per edge.
-      private       RidHashSet     currentInputUsedEdgeRids = null;
+      private       EdgeIdentitySet currentInputUsedEdgeRids = null;
       private final List<Result>   buffer                   = new ArrayList<>();
       private       int            bufferIndex              = 0;
       private       boolean        finished                 = false;
@@ -265,19 +265,8 @@ public class ExpandInto extends AbstractPhysicalOperator {
    * the input row. Returns null when no relevant binding is present, so the per-edge check stays free
    * in the common single-hop case.
    */
-  private RidHashSet collectUsedEdgeRids(final Result row) {
-    if (sameClausePrecedingRelVars == null || sameClausePrecedingRelVars.isEmpty())
-      return null;
-    RidHashSet used = null;
-    for (final String relVar : sameClausePrecedingRelVars) {
-      final Object val = row.getProperty(relVar);
-      if (val instanceof Edge edge) {
-        if (used == null)
-          used = new RidHashSet();
-        used.add(edge.getIdentity());
-      }
-    }
-    return used;
+  private EdgeIdentitySet collectUsedEdgeRids(final Result row) {
+    return RelationshipBindings.collectEdgeIdentities(row, sameClausePrecedingRelVars);
   }
 
   @Override

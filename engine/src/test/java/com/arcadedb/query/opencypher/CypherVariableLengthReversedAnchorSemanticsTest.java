@@ -37,8 +37,8 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Semantic parity coverage for the indexed-anchor reversal bridge used by the traditional Cypher
- * executor (PRs #5357, #5387, #5393).
+ * Semantic parity coverage for indexed-anchor reversal in variable-length Cypher traversal (PRs
+ * #5357, #5387, #5393 and the physical VarLengthExpand operator).
  * <p>
  * Every test runs the same query twice against the same graph: once anchored on the indexed
  * {@code id} property, which lets the bridge reverse the traversal, and once anchored on the
@@ -180,19 +180,18 @@ class CypherVariableLengthReversedAnchorSemanticsTest {
   }
 
   /**
-   * A named path variable still keeps the optimizer out, so no physical anchor exists and the bridge
-   * cannot engage. The query must return the correct rows through the plain source-first plan; this
-   * pins that a future eligibility change cannot silently reroute it unnoticed.
+   * A named single-segment variable-length path is represented directly by VarLengthExpand. Reversed
+   * traversal must still bind the path in written order.
    */
   @Test
-  void aNamedPathStaysIneligibleForTheBridgeAndCorrect() {
+  void aNamedPathUsesTheIndexedAnchorAndKeepsWrittenOrder() {
     final String namedPath = """
         MATCH p = (n:Node)-[:LINK*]->(hub:Node)
         WHERE hub.id = 'hub'
         RETURN [x IN nodes(p) | x.id] AS ids
         ORDER BY ids""";
 
-    assertThat(planStartsFromAnchor(namedPath)).isFalse();
+    assertThat(planStartsFromAnchor(namedPath)).isTrue();
     assertThat(rows(namedPath)).containsExactly(
         "ids=[a, b, d, hub];", "ids=[a, c, d, hub];", "ids=[b, d, hub];", "ids=[c, d, hub];",
         "ids=[d, hub];", "ids=[hub, a, b, d, hub];", "ids=[hub, a, c, d, hub];");
@@ -240,8 +239,10 @@ class CypherVariableLengthReversedAnchorSemanticsTest {
     try (final ResultSet resultSet = database.query("opencypher", "PROFILE " + query)) {
       while (resultSet.hasNext())
         resultSet.next();
-      final String firstStep = resultSet.getExecutionPlan().orElseThrow().getSteps().get(0).getDescription();
-      return firstStep.contains("(hub:Node)") && firstStep.contains("[index: Node[id]]");
+      final String firstStep = resultSet.getExecutionPlan().orElseThrow().getSteps().getFirst().getDescription();
+      return firstStep.contains("AnchorSelection{variable='hub', useIndex=true")
+          && firstStep.contains("VarLengthExpand(hub)")
+          && firstStep.contains("NodeIndexSeek(hub:Node)");
     }
   }
 

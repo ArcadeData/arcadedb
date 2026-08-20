@@ -363,7 +363,7 @@ public class CypherExecutionPlan {
   private boolean canUseOptimizedPhysicalPlan() {
     return physicalPlan != null && physicalPlan.getRootOperator() != null
         && !statement.hasUnwindBeforeMatch() && !statement.hasSubquery()
-        && !statement.hasWithBeforeMatch() && !statement.hasVariableLengthPath()
+        && !statement.hasWithBeforeMatch()
         && !statement.hasWriteBeforeMatch();
   }
 
