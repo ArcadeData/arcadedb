@@ -391,10 +391,16 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
      * <p>
      * In that double-failure case the caller's {@code begin()} pushes a new nested {@code TransactionContext}
      * (see {@code executeTask()}'s caller-side comment) and the poisoned one this method leaves behind stays
-     * on the per-thread transaction stack underneath it - nothing pops a non-top entry. It is not a permanent
-     * leak: {@code DatabaseContext}'s dead-thread sweep (and a normal database close) rolls back and clears
-     * every entry on the stack, not just the top, once this worker thread eventually ends. Until then it sits
-     * inert (only the stack top is ever read or written by later tasks) at the cost of one small object.
+     * on the per-thread transaction stack underneath it - nothing pops a non-top entry. Not a permanent leak
+     * in the common case: {@code DatabaseContext}'s dead-thread sweep (and a normal database close) rolls
+     * back and clears every entry on the stack, not just the top, once this worker thread eventually ends.
+     * Until then it sits inert (only the stack top is ever read or written by later tasks) at the cost of one
+     * small object. That reclaim itself calls {@code rollback()} again, though, so if the original rollback
+     * failure was persistent (e.g. a disk genuinely full, a corrupted schema dictionary that keeps throwing)
+     * rather than transient, the sweep's own attempt can fail the same way - its own contract is a logged
+     * warning and moving on, not a guarantee, and its own comment already documents that failure mode as
+     * held file locks. A double failure on top of the double failure that got here is out of scope for this
+     * class to solve.
      */
     private boolean closeTransactionBoundaryIfDurabilityPolicyChanged(final boolean currentUseWAL,
         final WALFile.FlushType currentSync) {
