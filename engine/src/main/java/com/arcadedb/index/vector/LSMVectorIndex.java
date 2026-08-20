@@ -6699,12 +6699,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /**
    * Decide whether the inactivity rebuild timer should actually rebuild the graph.
    * <p>
-   * The mutation-driven path ({@link #rebuildGraphBeforeSearch()}) gates on the effective
-   * rebuild threshold so a handful of pending vectors do not trigger a full O(N) rebuild.
-   * The timer path used to arm and fire on {@code pending > 0} alone, so a single insert
-   * into a large settled index cost a full rebuild on the next quiet period (issue #6496).
-   * This method consults the same threshold the search path uses, with a small floor so
-   * a trickle of writes is still eventually absorbed rather than deferred forever.
+   * A rebuild is only expensive - O(current graph size) - once the graph has grown past
+   * {@link #ASYNC_REBUILD_MIN_GRAPH_SIZE}; below that, {@link #rebuildGraphBeforeSearch()} itself
+   * rebuilds synchronously on every threshold check with no threshold gate at all, because doing so
+   * is already fast enough not to matter. The timer used to mirror only the top half of that: it
+   * rebuilt on {@code pending > 0} alone regardless of graph size, so a single insert into a large
+   * settled index cost a full O(N) rebuild on the next quiet period (issue #6496). The fix is not to
+   * gate small graphs too - that would defer a rebuild that was never expensive to begin with, taking
+   * away the guarantee that a handful of buffered vectors get flushed out of the linear-scan delta
+   * buffer promptly - but to apply the same threshold the search path uses, and only where the search
+   * path would also apply it: once the graph is large enough that a rebuild is no longer free.
    *
    * @return {@code true} when pending mutations justify (or exceed) a rebuild
    */
@@ -6712,6 +6716,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final int pending = mutationsSinceSerialize.get();
     if (pending <= 0)
       return false;
+
+    final ImmutableGraphIndex graph = this.graphIndex;
+    if (graph == null || graph.size() < ASYNC_REBUILD_MIN_GRAPH_SIZE)
+      // Small graph (or none yet): a rebuild is cheap regardless of how many mutations are
+      // pending, same as rebuildGraphBeforeSearch()'s unconditional synchronous rebuild for this
+      // case. Any pending mutation is worth flushing promptly.
+      return true;
 
     final int threshold = getEffectiveMutationsBeforeRebuild();
     // Rebuild once the mutation-driven threshold is reached...
@@ -6730,7 +6741,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * Called after each mutation when mutations are below the rebuild threshold.
    * If a timer is already scheduled, it is cancelled and a new one is started,
    * effectively resetting the inactivity window.
-   * When the timer fires, it triggers an async graph rebuild regardless of the mutation count.
+   * When the timer fires, it triggers a rebuild for any pending mutation count on a small graph, or
+   * once pending mutations reach {@link #inactivityRebuildIsWorthIt() a threshold-derived floor} on a
+   * large one (issue #6496) - see that method for why the two cases are treated differently.
    */
   private synchronized void scheduleInactivityRebuild() {
     if (!isValid())
