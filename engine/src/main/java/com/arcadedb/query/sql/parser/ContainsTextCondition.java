@@ -22,6 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.util.ArrayList;
@@ -41,6 +42,15 @@ import java.util.Map;
  * full-text index covers the property, which {@code EXPLAIN} answers - {@code FETCH FROM INDEX} versus a scan - and
  * nothing else. Use {@code SEARCH_INDEX(...)} for the full Lucene query syntax, or {@code LIKE '%..%'} when substring
  * matching is what is wanted.
+ * <p>
+ * The right-hand (search text) side accepts any non-{@code null}, non-multivalue value and compares its
+ * {@link Object#toString()} form, matching what {@code LSMTreeFullTextIndex.get} already does on the index path - a
+ * numeric literal such as {@code CONTAINSTEXT 2024} is a normal search, not a guaranteed non-match, whether or not
+ * the property happens to be indexed (issue #6438). A multivalue (list/array) right-hand side still answers
+ * {@code false} unconditionally, exactly as before - {@code FetchFromIndexStep.processFullTextBlock} rejects it the
+ * same way, via its own {@link MultiValue#isMultiValue(Object)} check - rather than falling into a bracket-notation
+ * string comparison via {@code List.toString()}. The left-hand (searched-in) side is unchanged: it must already be a
+ * {@code String}.
  */
 @SuppressWarnings("ALL")
 public class ContainsTextCondition extends BooleanExpression {
@@ -57,10 +67,10 @@ public class ContainsTextCondition extends BooleanExpression {
       return false;
 
     final Object rightValue = right.execute(currentRecord, context);
-    if (!(rightValue instanceof String))
+    if (rightValue == null || MultiValue.isMultiValue(rightValue))
       return false;
 
-    return ((String) leftValue).contains((String) rightValue);
+    return ((String) leftValue).contains(rightValue.toString());
   }
 
   @Override
@@ -70,10 +80,10 @@ public class ContainsTextCondition extends BooleanExpression {
       return false;
 
     final Object rightValue = right.execute(currentRecord, context);
-    if (!(rightValue instanceof String))
+    if (rightValue == null || MultiValue.isMultiValue(rightValue))
       return false;
 
-    return ((String) leftValue).contains((String) rightValue);
+    return ((String) leftValue).contains(rightValue.toString());
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
