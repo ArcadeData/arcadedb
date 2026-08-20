@@ -4150,8 +4150,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // collectAllowedOrdinals/scoreOrdinal/bruteForceScan - the same walk the issue #3722 shortfall fallback
         // already uses - instead of duplicating it.
         if (allowedRIDs != null && !allowedRIDs.isEmpty()) {
-          final float maxSelectivity = getDatabase().getConfiguration()
-              .getValueAsFloat(GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY);
+          // Clamped to 1.0: the setting is documented as a fraction of the index, and an operator-supplied value
+          // above that would route every allow-list query - however wide - through the ordinal-resolution walk
+          // instead of the graph, which is exactly the pathology this plan exists to avoid on the OTHER side of
+          // the crossover.
+          final float maxSelectivity = Math.min(1f, getDatabase().getConfiguration()
+              .getValueAsFloat(GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY));
           final int availableVectors = Math.min(ordinalMap.length, vectorIndex.size());
           if (maxSelectivity > 0f && allowedRIDs.size() <= availableVectors * maxSelectivity) {
             metrics.incrementPreFilterSearches();
