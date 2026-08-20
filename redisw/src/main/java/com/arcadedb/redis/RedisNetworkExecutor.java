@@ -414,7 +414,7 @@ public class RedisNetworkExecutor extends Thread {
 
   private void decrBy(final List<Object> list) {
     final String k = (String) list.get(1);
-    final int by = list.size() > 2 ? Integer.parseInt((String) list.get(2)) : 1;
+    final long by = list.size() > 2 ? Long.parseLong((String) list.get(2)) : 1L;
 
     Object number = getVariable(k);
     if (number == null) {
@@ -426,7 +426,16 @@ public class RedisNetworkExecutor extends Thread {
         throw new RedisException("Key '" + k + "' is not a number");
     }
 
-    final Number newValue = Type.decrement((Number) number, by);
+    final Number newValue;
+    if (number instanceof Long || number instanceof Integer || number instanceof Short || number instanceof Byte) {
+      try {
+        newValue = Math.subtractExact(((Number) number).longValue(), by);
+      } catch (final ArithmeticException e) {
+        throw new RedisException("ERR increment or decrement would overflow");
+      }
+    } else
+      newValue = Type.decrement((Number) number, by);
+
     setVariable(k, newValue);
     value.append(":");
     value.append(newValue);
@@ -639,9 +648,9 @@ public class RedisNetworkExecutor extends Thread {
       if (decimal)
         by = Double.valueOf((String) list.get(2));
       else
-        by = Integer.valueOf((String) list.get(2));
+        by = Long.valueOf((String) list.get(2));
     } else
-      by = 1;
+      by = 1L;
 
     Object number = getVariable(k);
     if (number == null) {
@@ -653,16 +662,77 @@ public class RedisNetworkExecutor extends Thread {
         throw new RedisException("Key '" + k + "' is not a number");
     }
 
-    final Number newValue = Type.increment((Number) number, by);
+    final Number newValue;
+    if (!decimal && (number instanceof Long || number instanceof Integer || number instanceof Short || number instanceof Byte)) {
+      try {
+        newValue = Math.addExact(((Number) number).longValue(), by.longValue());
+      } catch (final ArithmeticException e) {
+        throw new RedisException("ERR increment or decrement would overflow");
+      }
+    } else
+      newValue = Type.increment((Number) number, by);
+
     setVariable(k, newValue);
-    value.append(newValue instanceof Long ? ":" : "+");
-    value.append(newValue);
+    if (decimal) {
+      final String text = newValue.toString();
+      value.append("$");
+      value.append(text.getBytes(DatabaseFactory.getDefaultCharset()).length);
+      appendCrLf();
+      value.append(text);
+    } else {
+      value.append(newValue instanceof Long ? ":" : "+");
+      value.append(newValue);
+    }
   }
 
   private void set(final List<Object> list) {
     final String k = (String) list.get(1);
     final String v = (String) list.get(2);
+
+    boolean nx = false;
+    boolean xx = false;
+    boolean get = false;
+    for (int i = 3; i < list.size(); i++) {
+      final String opt = ((String) list.get(i)).toUpperCase(Locale.ROOT);
+      switch (opt) {
+      case "NX":
+        if (xx) throw new RedisException("ERR syntax error");
+        nx = true;
+        break;
+      case "XX":
+        if (nx) throw new RedisException("ERR syntax error");
+        xx = true;
+        break;
+      case "GET":
+        get = true;
+        break;
+      case "EX":
+      case "PX":
+      case "EXAT":
+      case "PXAT":
+      case "KEEPTTL":
+        throw new RedisException("ERR unsupported SET option '" + opt + "': ArcadeDB transient keys have no expiry");
+      default:
+        throw new RedisException("ERR syntax error");
+      }
+    }
+
+    final boolean exists = containsVariable(k);
+    if (nx && exists) {
+      value.append("$-1");
+      return;
+    }
+    if (xx && !exists) {
+      value.append("$-1");
+      return;
+    }
+
+    final Object previous = getVariable(k);
     setVariable(k, v);
+    if (get) {
+      respondValue(previous, true);
+      return;
+    }
     value.append("+");
     value.append("OK");
   }
