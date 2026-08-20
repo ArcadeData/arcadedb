@@ -516,13 +516,32 @@ class RaftGroupCommitter {
 
         if (quorum == Quorum.ALL) {
           try {
-            final RaftClientReply watchReply = raftClient.io().watch(
-                reply.getLogIndex(), RaftProtos.ReplicationLevel.ALL_COMMITTED);
+            // Same shared-deadline pattern as the get() above (issue #6373, a surviving sibling of
+            // #5848): the blocking io().watch() overload has no timeout parameter at all, so it must
+            // not be used here - it would turn a stalled ALL confirmation into an unbounded per-entry
+            // wait on this single flusher thread, the exact bug the deadline above already fixed for
+            // the MAJORITY leg. The async overload's future gives the same bound the get() loop uses.
+            final long remainingWatchNanos = deadlineNanos - System.nanoTime();
+            final RaftClientReply watchReply = raftClient.async()
+                .watch(reply.getLogIndex(), RaftProtos.ReplicationLevel.ALL_COMMITTED)
+                .get(remainingWatchNanos, TimeUnit.NANOSECONDS);
             if (!watchReply.isSuccess()) {
               batch.get(i).future.complete(new MajorityCommittedAllFailedException(
                   "ALL quorum not reached after MAJORITY commit at logIndex=" + reply.getLogIndex()));
               continue;
             }
+          } catch (final TimeoutException te) {
+            batch.get(i).future.complete(new MajorityCommittedAllFailedException(
+                "ALL quorum not reached within batch deadline after MAJORITY commit at logIndex=" + reply.getLogIndex(), te));
+            continue;
+          } catch (final InterruptedException ie) {
+            // Rethrow instead of swallowing: this must reach the outer catch (final InterruptedException)
+            // below so the whole remaining batch gets fast-aborted, not just this one entry. Swallowing it
+            // here would clear the interrupt flag and let every later entry in the batch fall through to a
+            // fresh full-length wait - the same unbounded-stall shape issue #6373 fixed for the get() above,
+            // just relocated to the interrupt path.
+            Thread.currentThread().interrupt();
+            throw ie;
           } catch (final Exception e) {
             if (isClientClosed(e))
               clientClosedDetected = true;
