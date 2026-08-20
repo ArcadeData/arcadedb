@@ -227,10 +227,16 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       DatabaseContext.INSTANCE.init(database);
 
       DatabaseContext.INSTANCE.getContext(database.getDatabasePath()).perThreadBucketSelection = true;
-      // Seeds the transaction this thread is about to begin; executeTask() re-applies both on every
-      // task afterwards (#6509), so a later change is picked up without needing this thread respawned.
-      database.getTransaction().setUseWAL(transactionUseWAL);
-      database.setWALFlush(transactionSync);
+      // Seeds the transaction this thread is about to begin; executeTask() re-applies both on every task
+      // afterwards (#6509), so a later change is picked up without needing this thread respawned. Snapshotted
+      // into locals first, same as executeTask(), so a concurrent setTransactionUseWAL()/setTransactionSync()
+      // flip landing between the two reads can't seed one field from the old policy and the other from the
+      // new one - benign here either way (the first task's own boundary check reconciles it), but consistent
+      // with the same reasoning applied there.
+      final boolean           initialUseWAL = transactionUseWAL;
+      final WALFile.FlushType initialSync   = transactionSync;
+      database.getTransaction().setUseWAL(initialUseWAL);
+      database.setWALFlush(initialSync);
       database.getTransaction().begin(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED); // FORCE THE LOWEST LEVEL
       // OF ISOLATION
 
