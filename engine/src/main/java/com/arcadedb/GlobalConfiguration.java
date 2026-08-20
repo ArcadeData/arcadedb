@@ -1094,9 +1094,14 @@ public enum GlobalConfiguration {
 
   VECTOR_INDEX_MAX_PENDING_MUTATIONS("arcadedb.vectorIndex.maxPendingMutations", SCOPE.DATABASE,
       """
-      Hard ceiling on the rebuild threshold computed from rebuildGraphRatio. Pending vectors are held in an \
-      in-memory delta buffer until the next rebuild, so this bounds that buffer's footprint \
-      (RAM = pendingMutations * dimensions * 4 bytes). Set to 0 for no ceiling.""",
+      Hard ceiling on the rebuild threshold computed from rebuildGraphRatio. Set to 0 for no ceiling. \
+      This caps the RATIO-DERIVED term only, and it is read where a rebuild is decided, not where the delta \
+      buffer grows, so it does NOT bound that buffer: writes keep appending between rebuilds regardless, and \
+      rebuilds are asynchronous, so sustained ingest outruns them. Measured with this set to 500, the buffer \
+      reached 45,000 entries, and 42,504 even with the rebuild trigger firing continuously. Note also that \
+      mutationsBeforeRebuild is applied as a floor afterwards, so an explicit value above this ceiling wins. \
+      Size the buffer with mutationsBeforeRebuild and rebuildGraphRatio, and treat its footprint as a \
+      consequence of ingest rate rather than something this setting guarantees.""",
       Integer.class, 50_000),
 
   VECTOR_INDEX_INACTIVITY_REBUILD_TIMEOUT_MS("arcadedb.vectorIndex.inactivityRebuildTimeoutMs", SCOPE.DATABASE,
