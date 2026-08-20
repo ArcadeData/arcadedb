@@ -22,7 +22,6 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
-import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
@@ -39,7 +38,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.assertThatCode;
 
 /**
  * An LSM_VECTOR data file only ever grows: an update appends a new vector plus a tombstone for the one it
@@ -260,10 +259,13 @@ class LSMVectorIndexAutoCompactionTest extends TestHelper {
     database.async().waitCompletion(30_000);
     ((DatabaseAsyncExecutorImpl) database.async()).close();
 
-    // Nothing can run the compaction now. The attempt reports the shutdown to its caller - onAfterCommit is what
-    // turns that into a log line rather than a failed commit - but it must not walk away still holding the index.
-    assertThatThrownBy(() -> ((DatabaseAsyncExecutorImpl) database.async()).compact(index))
-        .isInstanceOf(DatabaseOperationException.class);
+    // Nothing can run the compaction now. Since #6505 the attempt SWALLOWS the shutdown rather than reporting it:
+    // this runs from onAfterCommit, past writeTransactionToWAL(), so letting the exception out crossed the WAL
+    // point of no return and fenced the whole database over a best-effort scheduling hiccup. It logs a warning
+    // instead - but it still must not walk away holding the index, which is what the assertion below is for.
+    assertThatCode(() -> ((DatabaseAsyncExecutorImpl) database.async()).compact(index))
+        .as("a scheduling failure must not escape an onAfterCommit hook and fence the database (#6505)")
+        .doesNotThrowAnyException();
 
     assertThat(index.scheduleCompaction())
         .as("a compaction that was never enqueued must leave the index schedulable")
