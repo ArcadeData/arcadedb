@@ -1,3 +1,4 @@
+/* SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com) */
 /*
  * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
  *
@@ -29,10 +30,14 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.ZoneId;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class JsonLImporterIT {
 
@@ -76,6 +81,51 @@ class JsonLImporterIT {
     db.close();
 
     checkImportedDatabase();
+  }
+
+  @Test
+  void importDatabaseWithErrorAbortMode() throws IOException {
+    // A JSONL file with a malformed vertex (non-existent type) should fail in default "abort" mode (issue #6468)
+    Path jsonlFile = Files.createTempFile("arcadedb-bad-import-", ".jsonl");
+    try {
+      Files.writeString(jsonlFile, ""
+          + "{\"t\":\"info\",\"c\":{\"description\":\"test\",\"exporterVersion\":1,\"dbVersion\":\"25.1.1-SNAPSHOT\",\"dbBuild\":\"\",\"dbTimestamp\":\"\"}}\n"
+          + "{\"t\":\"db\",\"c\":{\"name\":\"test\",\"executedOn\":\"2025-01-01\",\"executedOnTimestamp\":0}}\n"
+          + "{\"t\":\"schema\",\"c\":{\"schemaVersion\":1,\"dbmsVersion\":\"25.1.1-SNAPSHOT\",\"dbmsBuild\":\"\",\"settings\":{\"zoneId\":\"UTC\",\"dateFormat\":\"yyyy-MM-dd\",\"dateTimeFormat\":\"yyyy-MM-dd HH:mm:ss\"},\"types\":{\"Person\":{\"type\":\"v\",\"parents\":[],\"buckets\":[\"Person_0\"],\"properties\":{\"id\":{\"type\":\"INTEGER\",\"custom\":{}}},\"indexes\":{},\"custom\":{}}}}}\n"
+          + "{\"t\":\"v\",\"c\":{\"p\":{\"id\":1},\"r\":\"#6:0\",\"t\":\"Person\",\"o\":[],\"i\":[]}}\n"
+          + "{\"t\":\"v\",\"c\":{\"p\":{\"id\":2},\"r\":\"#6:1\",\"t\":\"NonExistentType\",\"o\":[],\"i\":[]}}\n");
+
+      var importer = new Importer(
+          ("-url " + jsonlFile.toAbsolutePath() + " -database " + DATABASE_PATH + " -forceDatabaseCreate true").split(" "));
+
+      assertThrows(ImportException.class, importer::load);
+    } finally {
+      Files.deleteIfExists(jsonlFile);
+    }
+  }
+
+  @Test
+  void importDatabaseWithErrorSkipMode() throws IOException {
+    // With -onRowError skip, a malformed vertex should be skipped and counted (issue #6468)
+    Path jsonlFile = Files.createTempFile("arcadedb-badskip-import-", ".jsonl");
+    try {
+      Files.writeString(jsonlFile, ""
+          + "{\"t\":\"info\",\"c\":{\"description\":\"test\",\"exporterVersion\":1,\"dbVersion\":\"25.1.1-SNAPSHOT\",\"dbBuild\":\"\",\"dbTimestamp\":\"\"}}\n"
+          + "{\"t\":\"db\",\"c\":{\"name\":\"test\",\"executedOn\":\"2025-01-01\",\"executedOnTimestamp\":0}}\n"
+          + "{\"t\":\"schema\",\"c\":{\"schemaVersion\":1,\"dbmsVersion\":\"25.1.1-SNAPSHOT\",\"dbmsBuild\":\"\",\"settings\":{\"zoneId\":\"UTC\",\"dateFormat\":\"yyyy-MM-dd\",\"dateTimeFormat\":\"yyyy-MM-dd HH:mm:ss\"},\"types\":{\"Person\":{\"type\":\"v\",\"parents\":[],\"buckets\":[\"Person_0\"],\"properties\":{\"id\":{\"type\":\"INTEGER\",\"custom\":{}}},\"indexes\":{},\"custom\":{}}}}}\n"
+          + "{\"t\":\"v\",\"c\":{\"p\":{\"id\":1},\"r\":\"#6:0\",\"t\":\"Person\",\"o\":[],\"i\":[]}}\n"
+          + "{\"t\":\"v\",\"c\":{\"p\":{\"id\":2},\"r\":\"#6:1\",\"t\":\"NonExistentType\",\"o\":[],\"i\":[]}}\n");
+
+      var importer = new Importer(
+          ("-url " + jsonlFile.toAbsolutePath() + " -database " + DATABASE_PATH + " -forceDatabaseCreate true -onRowError skip").split(" "));
+      Map<String, Object> result = importer.load();
+
+      // Should succeed with the error counted and the valid vertex imported
+      assertThat(result).containsEntry("errors", 1L);
+      assertThat(result).containsEntry("createdVertices", 1L);
+    } finally {
+      Files.deleteIfExists(jsonlFile);
+    }
   }
 
   private static void checkImportedDatabase() {
