@@ -439,7 +439,7 @@ public class PostgresNetworkExecutor extends Thread {
       if (errorInTransaction)
         return;
 
-      portal = getPortal(portalName, true);
+      portal = getPortal(portalName, false);
       if (portal == null) {
         writeNoData();
         return;
@@ -476,7 +476,7 @@ public class PostgresNetworkExecutor extends Thread {
           }
           portal.executed = true;
           if (portal.isExpectingResult) {
-            portal.cachedResultSet = browseAndCacheResultSet(resultSet, limit);
+            portal.cachedResultSet = browseAndCacheResultSet(resultSet, 0);
             profile.addEngineNanos(System.nanoTime() - engineStart);
             // Only send RowDescription if not already sent during DESCRIBE
             // But always use columns from actual result for DataRows consistency
@@ -507,10 +507,11 @@ public class PostgresNetworkExecutor extends Thread {
 
           if (DEBUG)
             LogManager.instance().log(this, Level.INFO,
-                "PSQL: executeCommand columns - portal.columns=%s, dataRowColumns=%s, resultSize=%d (thread=%s)",
+                "PSQL: executeCommand columns - portal.columns=%s, dataRowColumns=%s, resultSize=%d, rowsSent=%d (thread=%s)",
                 portal.columns != null ? portal.columns.keySet() : "null",
                 dataRowColumns.keySet(),
                 portal.cachedResultSet.size(),
+                portal.rowsSent,
                 Thread.currentThread().threadId());
 
           // If RowDescription wasn't sent during DESCRIBE (e.g., INSERT with RETURN),
@@ -533,14 +534,33 @@ public class PostgresNetworkExecutor extends Thread {
 
           // Use the columns that were sent in RowDescription for consistency
           final Map<String, PostgresType> columnsToUse = portal.columns != null ? portal.columns : dataRowColumns;
-          writeDataRows(portal.cachedResultSet, columnsToUse, portal.resultFormats);
-          writeCommandComplete(portal.query, portal.cachedResultSet.size());
+
+          // Determine the slice of rows to send in this batch
+          final int totalRows = portal.cachedResultSet.size();
+          final int batchSize = limit > 0 ? Math.min(limit, totalRows - portal.rowsSent) : totalRows - portal.rowsSent;
+          final int batchEnd = portal.rowsSent + batchSize;
+          final List<Result> batchRows = portal.cachedResultSet.subList(portal.rowsSent, batchEnd);
+          writeDataRows(batchRows, columnsToUse, portal.resultFormats);
+          portal.rowsSent = batchEnd;
+
+          final boolean hasMore = portal.rowsSent < totalRows;
+          if (hasMore) {
+            // Portal suspension: more rows remain, send PortalSuspended instead of CommandComplete
+            portalSuspendedResponse();
+          } else {
+            // All rows sent: send CommandComplete
+            writeCommandComplete(portal.query, portal.rowsSent);
+            // Fully consumed, remove portal from map
+            portals.remove(portalName);
+          }
           profile.addSerializationNanos(System.nanoTime() - serStart);
         } else {
           final long serStart = System.nanoTime();
           // Query doesn't return data (INSERT/UPDATE/DELETE without RETURNING) or empty result
           final int affectedRows = portal.cachedResultSet != null ? portal.cachedResultSet.size() : 0;
           writeCommandComplete(portal.query, affectedRows);
+          // No data result, remove portal from map
+          portals.remove(portalName);
           profile.addSerializationNanos(System.nanoTime() - serStart);
         }
       }
@@ -704,12 +724,14 @@ public class PostgresNetworkExecutor extends Thread {
    * <b>Ownership:</b> this method takes ownership of the supplied ResultSet and closes it
    * before returning, in both the natural-exhaustion and the limit-hit paths. The portal
    * keeps only the materialized {@code List<Result>} (see {@code PostgresPortal#cachedResultSet}),
-   * never a reference to the underlying ResultSet. Multi-batch portal-suspension fetching
-   * from a partially-consumed ResultSet is therefore not supported by this implementation -
-   * a follow-up Execute on the same portal re-uses the cached list rather than pulling the
-   * next chunk from the source. This is unchanged behaviour from before the #4197 audit; the
-   * audit only made the close explicit, releasing the execution plan and unblocking parallel-scan
-   * worker threads that would otherwise stay parked on a full bounded queue.
+   * never a reference to the underlying ResultSet. Portal suspension (multi-batch Execute) is
+   * handled by the caller (executeCommand), which caches the full result set and slices it by
+   * {@link PostgresPortal#rowsSent}, sending either {@code PortalSuspended} (more rows remain)
+   * or {@code CommandComplete} (exhausted) — never both. The caller also removes the portal from
+   * the map only when the result is fully consumed.
+   * <p>
+   * Internal callers (describeCommand etc.) continue to use the limit parameter to cap the cache
+   * size and the {@code sendSuspendedOnLimit} flag to control protocol output.
    *
    * @param resultSet           The result set to browse (this method closes it)
    * @param limit               Maximum number of results to cache (0 = unlimited)

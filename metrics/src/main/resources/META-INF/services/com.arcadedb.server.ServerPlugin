@@ -1,2 +1,0 @@
-com.arcadedb.metrics.prometheus.PrometheusMetricsPlugin
-com.arcadedb.metrics.otlp.OtlpMetricsPlugin

@@ -51,6 +51,12 @@ public class PostgresPortal {
    * its filters are bound parameters, whose values only arrive with the Bind message (issue #6412).
    */
   public boolean                   catalogQuery         = false;
+  /**
+   * Number of rows already sent to the client from cachedResultSet. Used for
+   * portal suspension: each Execute with a non-zero max-rows sends the next
+   * batch starting from this offset. Reset to 0 when the portal is reused.
+   */
+  public int                        rowsSent             = 0;
 
   public PostgresPortal(final String query, String language) {
     this.query = query;

@@ -1,5 +1,0 @@
-PARSER_BEGIN(MyParser)
-import javax.annotation.processing.Generated;
-
-@Generated("JavaCC")
-PARSER_END(MyParser)
