@@ -1528,6 +1528,16 @@ public class PageManager extends LockContext {
 
     if (!database.isOpen()) {
       LogManager.instance().log(this, Level.SEVERE, "Cannot flush page %s because the database is closed", page);
+      // The page will never be flushed and its content is irrelevant (the database is closed, or being
+      // dropped): release its WAL ack so the close-time ack gate (#4928) is not tripped by a pending count
+      // that can never be satisfied - flushPage() is never called again for this page once the database is
+      // closed, so without this the page's WALFile.pagesToFlush counter is stranded above zero forever and
+      // TransactionManager.close()'s retry loop burns its whole budget waiting on it (issue #6440). Mirrors
+      // the "file dropped" branch a few lines below and PageManagerFlushThread.removePagesOfFileFromBatch.
+      // takeWALFile makes the release exactly-once against a racing caller of the same page.
+      final WALFile walFile = page.takeWALFile();
+      if (walFile != null)
+        walFile.notifyPageFlushed();
       return;
     }
 
@@ -1559,7 +1569,12 @@ public class PageManager extends LockContext {
       } catch (final DatabaseIsClosedException e) {
         // The database was closed concurrently after the isOpen() check above.
         // The page data has already been written to disk, so we can safely skip
-        // the metadata updates.
+        // the metadata updates - but the WAL ack must still happen (issue #6440): the write above already
+        // succeeded, so skipping just this call (as opposed to the metadata update) would strand the page's
+        // WALFile.pagesToFlush counter above zero forever even though its content is safely on disk.
+        final WALFile walFile = page.takeWALFile();
+        if (walFile != null)
+          walFile.notifyPageFlushed();
       }
 
     } else {

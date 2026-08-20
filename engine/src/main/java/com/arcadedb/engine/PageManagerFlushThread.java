@@ -778,8 +778,13 @@ public class PageManagerFlushThread extends Thread {
                 // assert stays at zero.
                 //
                 // Dropping the batch instead loses nothing: it was not going to be written either way (the same
-                // check further down already refused it), its pageIndex entries were purged by
-                // removeAllPagesOfDatabase, and its content is recovered from the WAL - its ack was never given.
+                // check further down already refused it), and its pageIndex entries were purged by
+                // removeAllPagesOfDatabase. Its ack IS still given here (issue #6440): "recovered from the WAL"
+                // only holds for a plain close(), where the files - and the WAL that protects them - survive.
+                // A drop() deletes them all regardless, so nothing will ever replay this page; withholding the
+                // ack only strands its WALFile.pagesToFlush counter above zero forever, which is exactly what
+                // makes TransactionManager.close()'s retry loop burn its whole budget on a count that can never
+                // be satisfied.
                 //
                 // Under the monitor, and therefore exact: LocalDatabase.close() sets open=false BEFORE the purge
                 // that forgets this bookkeeping, and that purge takes this same monitor. So `isOpen()` true here
@@ -791,8 +796,18 @@ public class PageManagerFlushThread extends Thread {
                 // return drops this batch and nothing else - and it is inside the outer try whose finally clears
                 // nextPagesToFlush, which therefore still runs. Worth saying because the nesting is deep enough that
                 // a future refactor lifting this block into a helper would silently take that finally with it.
-                if (!db.isOpen())
+                if (!db.isOpen()) {
+                  // Both the index entry and the WAL ack are released together (issue #6440 review): releasing
+                  // only the ack would leave pageIndex.pendingOf(db) inflated - "WAL says done, pageIndex says
+                  // pending" - until removeAllPagesOfDatabase's later catch-all gets around to it.
+                  synchronized (pagesToFlush.pages) {
+                    for (final MutablePage page : pagesToFlush.pages) {
+                      removeFromFlushIndex(page);
+                      ackWalFileOfAbandonedPage(page);
+                    }
+                  }
                   return;
+                }
 
                 if (isSuspended(db)) {
                   deferredByDatabase.computeIfAbsent(db, k -> new ConcurrentLinkedQueue<>()).offer(pagesToFlush);
@@ -802,18 +817,32 @@ public class PageManagerFlushThread extends Thread {
               }
             }
 
-            if (!pagesToFlush.database.isOpen())
+            if (!pagesToFlush.database.isOpen()) {
+              // None of this batch will ever be written (issue #6440): release both the index entry and the WAL
+              // ack for every page, rather than leaving pageIndex.pendingOf() inflated and their
+              // WALFile.pagesToFlush counters stranded above zero forever.
+              synchronized (pagesToFlush.pages) {
+                for (final MutablePage page : pagesToFlush.pages) {
+                  removeFromFlushIndex(page);
+                  ackWalFileOfAbandonedPage(page);
+                }
+              }
               return;
+            }
 
             synchronized (pagesToFlush.pages) {
               for (final MutablePage page : pagesToFlush.pages) {
                 if (!pagesToFlush.database.isOpen()) {
                   // Database was closed/dropped concurrently (e.g., during test teardown).
-                  // Clean up remaining pageIndex entries and stop flushing this batch.
+                  // Clean up remaining pageIndex entries and release their WAL acks (issue #6440): none of
+                  // these pages will ever be written either, so withholding the ack only strands
+                  // TransactionManager.close()'s retry loop on a count that can never be satisfied.
                   LogManager.instance().log(this, Level.FINE, "Skipping page flush for closed database '%s'",
                       pagesToFlush.database.getName());
-                  for (final MutablePage remaining : pagesToFlush.pages)
+                  for (final MutablePage remaining : pagesToFlush.pages) {
                     removeFromFlushIndex(remaining);
+                    ackWalFileOfAbandonedPage(remaining);
+                  }
                   break;
                 }
                 try {
@@ -836,8 +865,11 @@ public class PageManagerFlushThread extends Thread {
                   try {
                     pageManager.flushPage(page);
                   } catch (final DatabaseMetadataException e2) {
-                    // FILE DELETED, CONTINUE WITH THE NEXT PAGES (same handling as the primary attempt)
+                    // FILE DELETED, CONTINUE WITH THE NEXT PAGES (same handling as the primary attempt). Unlike
+                    // a genuine I/O failure, there is nothing left to recover this page onto - ack its WAL file
+                    // (issue #6440), mirroring removePagesOfFileFromBatch's existing policy for the same cause.
                     LogManager.instance().log(this, Level.WARNING, "Error on flushing page '%s' to disk", e2, page);
+                    ackWalFileOfAbandonedPage(page);
                   } catch (final IOException e2) {
                     // Double fault: the retry failed too (a fresh interrupt broke the I/O-slot spin, or the disk
                     // genuinely errored). Do NOT let it escape and abort the batch: the remaining pages must
@@ -850,8 +882,11 @@ public class PageManagerFlushThread extends Thread {
                     Thread.interrupted();
                   }
                 } catch (final DatabaseMetadataException e) {
-                  // FILE DELETED, CONTINUE WITH THE NEXT PAGES
+                  // FILE DELETED, CONTINUE WITH THE NEXT PAGES. Unlike a genuine I/O failure, there is nothing
+                  // left to recover this page onto - ack its WAL file (issue #6440), mirroring
+                  // removePagesOfFileFromBatch's existing policy for the same cause.
                   LogManager.instance().log(this, Level.WARNING, "Error on flushing page '%s' to disk", e, page);
+                  ackWalFileOfAbandonedPage(page);
                 } catch (final IOException e) {
                   // #4928: contain a plain I/O failure per page, same policy as the interrupt double-fault
                   // above. Letting it escape aborted the whole batch: the remaining pages were never flushed
@@ -1090,11 +1125,17 @@ public class PageManagerFlushThread extends Thread {
                   // of the process, and every LATER suspension would then be throttled by that much: the drift the
                   // blanket "reset the counter when nothing is deferred anywhere" net existed to absorb. Releasing
                   // it at the source is exact, and per database, so no reset can ever wipe a sibling's live count.
+                  // Its WAL ack is released too (issue #6440): nothing will ever replay it once the database is
+                  // gone, and withholding the ack only strands TransactionManager.close()'s retry loop.
                   if (batch.database.isOpen())
                     pageManager.flushPage(page);
+                  else
+                    ackWalFileOfAbandonedPage(page);
                 } catch (final DatabaseMetadataException e) {
-                  // FILE DELETED, CONTINUE WITH THE NEXT PAGES
+                  // FILE DELETED, CONTINUE WITH THE NEXT PAGES. Nothing left to recover this page onto - ack its
+                  // WAL file (issue #6440), mirroring removePagesOfFileFromBatch's policy for the same cause.
                   LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e, page);
+                  ackWalFileOfAbandonedPage(page);
                 } catch (final InterruptedIOException e) {
                   // Don't drop the deferred dirty page, its WAL entry was already acked: consume the flag and
                   // retry the write once.
@@ -1102,10 +1143,15 @@ public class PageManagerFlushThread extends Thread {
                   Thread.interrupted();
                   try {
                     pageManager.flushPage(page);
-                  } catch (final DatabaseMetadataException | IOException e2) {
-                    // Contain every retry failure (file dropped, re-interrupt, real I/O error): letting it escape
-                    // would skip the unsuspend phases below, leaving the database suspended with batches stranded
-                    // in the deferred map. An unflushed page is recovered from the WAL (its entry was never acked).
+                  } catch (final DatabaseMetadataException e2) {
+                    // File dropped: nothing left to recover this page onto - ack its WAL file (issue #6440).
+                    LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e2, page);
+                    ackWalFileOfAbandonedPage(page);
+                    Thread.interrupted();
+                  } catch (final IOException e2) {
+                    // Contain every retry failure (re-interrupt, real I/O error): letting it escape would skip
+                    // the unsuspend phases below, leaving the database suspended with batches stranded in the
+                    // deferred map. An unflushed page is recovered from the WAL (its entry was never acked).
                     // A fresh re-interrupt set the flag again: clear it so the remaining pages flush cleanly.
                     LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e2, page);
                     Thread.interrupted();
@@ -1261,6 +1307,25 @@ public class PageManagerFlushThread extends Thread {
    */
   void removeFromFlushIndex(final MutablePage page) {
     pageIndex.removeIfSame(page);
+  }
+
+  /**
+   * Releases a page's WAL ack when it will never be written to disk because its file (or database) is gone,
+   * never because a write genuinely failed (issue #6440). {@code takeWALFile()} is exactly-once, so calling
+   * this after a normal successful flush (which already acked the page from inside {@link PageManager#flushPage})
+   * is a safe no-op - the reference was already consumed.
+   * <p>
+   * Mirrors {@link PageManagerFlushThread#removePagesOfFileFromBatch} and {@link PageManager#flushPage}'s own
+   * "file dropped"/"database closed" branches: without this, a page abandoned here for want of a file to write
+   * it to leaves its {@code WALFile.pagesToFlush} counter stranded above zero forever, and
+   * {@code TransactionManager.close()}'s retry loop burns its whole budget waiting on a count that can never be
+   * satisfied. Do NOT call this for a genuine I/O failure (plain {@link java.io.IOException}) - there the file
+   * still exists and the page must stay un-acked so the WAL is preserved for recovery on the next open.
+   */
+  private static void ackWalFileOfAbandonedPage(final MutablePage page) {
+    final WALFile walFile = page.takeWALFile();
+    if (walFile != null)
+      walFile.notifyPageFlushed();
   }
 
   /**
@@ -1495,11 +1560,31 @@ public class PageManagerFlushThread extends Thread {
   }
 
   public void removeAllPagesOfDatabase(final Database database) {
+    // Reference identity ON PURPOSE (issue #6440), not database.equals(pagesToFlush.database): LocalDatabase
+    // compares by PATH, so a database dropped and immediately reopened at the same path (a restore, a
+    // re-provision, or simply a test's @BeforeEach/@AfterEach hammering one fixed path) would otherwise have
+    // THIS scan match the reopened instance's own still-pending batch too - discarding pages that were never
+    // written or acked, permanently stranding the reopened instance's WALFile.pagesToFlush counter and hanging
+    // its own close()/drop() for TransactionManager's whole retry budget. Only the EXACT instance being closed
+    // may have its pages removed here.
     for (final PagesToFlush pagesToFlush : queue.stream().toList())
-      if (database.equals(pagesToFlush.database)) {
+      if (pagesToFlush.database == database) {
         synchronized (pagesToFlush.pages) {
-          for (final MutablePage page : pagesToFlush.pages)
-            pageIndex.remove(page.getPageId());
+          for (final MutablePage page : pagesToFlush.pages) {
+            // removeIfSame (via removeFromFlushIndex), NOT pageIndex.remove(page.getPageId()) (issue #6440
+            // review, fourth pass): that single-key overload is a plain, equals()-based pages.remove(), which
+            // collides across same-path instances exactly like removeAllOfDatabase's bulk purge did before it
+            // was switched to filtering by the VALUE's own PageId - a same-path sibling's live page could be
+            // sitting at this exact (fileId, pageNumber) map slot (retained as THIS page's PageId key by
+            // Map.put()'s "keep the old key on an equals() match" behavior) and get silently evicted, unacked,
+            // by this instance's own cleanup. removeIfSame only ever removes the exact instance indexed here.
+            removeFromFlushIndex(page);
+            // The purged page will never be flushed and its content is irrelevant (its database is gone):
+            // release its WAL ack so the close-time ack gate (#4928) is not tripped by stale pending counts.
+            // Exactly-once against the racing flush loop (which does NOT remove pages from this batch list,
+            // so both paths can visit the same page) via takeWALFile() inside the helper.
+            ackWalFileOfAbandonedPage(page);
+          }
           pagesToFlush.pages.clear();
         }
         // And take the emptied wrapper OUT of the queue rather than leaving it to be polled and skipped. It carries
