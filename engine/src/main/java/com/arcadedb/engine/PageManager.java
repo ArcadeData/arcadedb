@@ -27,6 +27,7 @@ import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseMetadataException;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.PageSnapshotException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.CallableNoReturn;
@@ -1526,10 +1527,14 @@ public class PageManager extends LockContext {
   protected void flushPage(final MutablePage page) throws IOException {
     final DatabaseInternal database = (DatabaseInternal) page.getPageId().getDatabase();
 
-    if (!database.isOpen()) {
-      LogManager.instance().log(this, Level.SEVERE, "Cannot flush page %s because the database is closed", page);
-      // The page will never be flushed and its content is irrelevant (the database is closed, or being
-      // dropped): release its WAL ack so the close-time ack gate (#4928) is not tripped by a pending count
+    if (!database.isOpen() || database.isFencedForRecovery()) {
+      // A fenced database (#5053) is a "close and reopen to run recovery" state: isOpen() is still true, but
+      // every page still queued here will be replayed from the WAL on the mandatory reopen anyway, so writing
+      // it now through this async pipeline is moot - handled exactly like the closed/dropped case below.
+      LogManager.instance()
+          .log(this, Level.SEVERE, "Cannot flush page %s because the database is closed or fenced for recovery", page);
+      // The page will never be flushed and its content is irrelevant (the database is closed, being dropped,
+      // or fenced): release its WAL ack so the close-time ack gate (#4928) is not tripped by a pending count
       // that can never be satisfied - flushPage() is never called again for this page once the database is
       // closed, so without this the page's WALFile.pagesToFlush counter is stranded above zero forever and
       // TransactionManager.close()'s retry loop burns its whole budget waiting on it (issue #6440). Mirrors
@@ -1572,6 +1577,18 @@ public class PageManager extends LockContext {
         // the metadata updates - but the WAL ack must still happen (issue #6440): the write above already
         // succeeded, so skipping just this call (as opposed to the metadata update) would strand the page's
         // WALFile.pagesToFlush counter above zero forever even though its content is safely on disk.
+        final WALFile walFile = page.takeWALFile();
+        if (walFile != null)
+          walFile.notifyPageFlushed();
+      } catch (final DatabaseOperationException e) {
+        // The database was fenced for recovery (#5053) concurrently after the isOpen()/isFencedForRecovery()
+        // check above - the same race the DatabaseIsClosedException catch above handles for a close. Only
+        // swallow it for that reason: getSchema() throws this broad exception type for several unrelated
+        // conditions too, and a genuine one must still propagate to the caller.
+        if (!database.isFencedForRecovery())
+          throw e;
+        // The page data has already been written to disk; recovery on the next open replays it from the WAL
+        // regardless, so the metadata update is skippable exactly like the closed-database case above.
         final WALFile walFile = page.takeWALFile();
         if (walFile != null)
           walFile.notifyPageFlushed();
