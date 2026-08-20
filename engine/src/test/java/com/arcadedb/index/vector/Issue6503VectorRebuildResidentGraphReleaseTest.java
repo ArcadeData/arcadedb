@@ -30,6 +30,7 @@ import org.junit.jupiter.api.TestInfo;
 import java.io.File;
 import java.lang.reflect.Field;
 import java.util.Random;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -38,18 +39,21 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Regression test for issue #6503: a from-scratch graph rebuild keeps the OLD graph (and the shared search cache)
  * resident for the whole build, on top of the new build's own working set (build cache, JVector builder, ordinal
  * map). On the close path that doubling is pure waste - {@code flush()} has already CAS-ed the index to
- * {@code UNAVAILABLE} and {@code close()} has already run {@code releaseBackgroundResources()}, which clears the
- * pooled searchers, so nothing can still be reading either the old graph or the old cache by the time the rebuild
- * starts. Measured in the issue at 50,000 x 128: peak heap 1,700 MB for a rebuild against 959 MB for a first build
- * of the same corpus - a factor of 1.73x that raising {@code -Xmx} does not fix, because both caches size
- * themselves off total heap, not free heap.
+ * {@code UNAVAILABLE} and a closing database does not hand it any more requests, so nothing can still be reading
+ * either the old graph or the old cache by the time the rebuild starts. Measured in the issue at 50,000 x 128:
+ * peak heap 1,700 MB for a rebuild against 959 MB for a first build of the same corpus - a factor of 1.73x that
+ * raising {@code -Xmx} does not fix, because both caches size themselves off total heap, not free heap.
  * <p>
  * {@link LSMVectorIndex#buildGraphFromScratchReleasingResidentGraph(LSMVectorIndex.GraphBuildCallback)} is the
- * fix: it releases the resident graph and search cache before starting, and {@code flush()} now calls it instead
- * of the ordinary {@code buildGraphFromScratch()}. It must not be used anywhere else - an online rebuild
- * ({@code rebuildGraphBeforeSearch()}, {@code startAsyncGraphRebuild()}, an explicit
- * {@code buildVectorGraphNow()}, or {@code compact()}) has to keep serving the old graph to concurrent searches,
- * since none of those gate searches on {@code status}.
+ * fix: it releases the resident graph, the search cache AND the pooled searchers before starting, and
+ * {@code flush()} now calls it instead of the ordinary {@code buildGraphFromScratch()}. All three matter - a
+ * pooled searcher holds the graph it was pooled under, and {@code LocalDatabase.closeDurableParts()} runs
+ * {@code flush()} BEFORE {@code releaseBackgroundResources()}, so on a real close the pool is still populated
+ * when the rebuild starts and would pin the old graph on its own.
+ * <p>
+ * It must not be used anywhere else - an online rebuild ({@code rebuildGraphBeforeSearch()},
+ * {@code startAsyncGraphRebuild()}, an explicit {@code buildVectorGraphNow()}, or {@code compact()}) has to keep
+ * serving the old graph to concurrent searches, since none of those gate searches on {@code status}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -88,11 +92,13 @@ class Issue6503VectorRebuildResidentGraphReleaseTest {
 
         final AtomicReference<Boolean> graphReleasedOnFirstSample = new AtomicReference<>();
         final AtomicReference<Object>  searchCacheOnFirstSample   = new AtomicReference<>();
+        final AtomicInteger            pooledSearchersOnFirstSample = new AtomicInteger(-1);
 
         index.buildGraphFromScratchReleasingResidentGraph((phase, processedNodes, totalNodes, vectorAccesses) -> {
           if (graphReleasedOnFirstSample.get() != null)
             return; // only the first sample matters: it is chronologically the earliest observation point
           graphReleasedOnFirstSample.set(index.getGraphIndex() == null);
+          pooledSearchersOnFirstSample.set(index.getStats().get("pooledGraphSearchers").intValue());
           try {
             searchCacheOnFirstSample.set(searchVectorCacheField(index));
           } catch (final Exception e) {
@@ -108,6 +114,14 @@ class Issue6503VectorRebuildResidentGraphReleaseTest {
             .as("the resident search cache must already be released by the time the rebuild reports its first "
                 + "progress sample")
             .isNull();
+        // Nulling graphIndex alone releases nothing while a pooled searcher still holds the graph it was pooled
+        // under. This is not hypothetical on the path under test: LocalDatabase.closeDurableParts() runs
+        // index.flush() BEFORE index.releaseBackgroundResources(), so on a real database close the pool is still
+        // populated when the rebuild starts, and the old graph would stay reachable through it.
+        assertThat(pooledSearchersOnFirstSample.get())
+            .as("the searcher pool must be emptied too, or every pooled searcher keeps the old graph alive and "
+                + "the release frees nothing")
+            .isZero();
 
         // ...and the rebuild still produces a correct, searchable graph.
         assertThat(index.getGraphIndex()).as("the rebuild must have published a new graph").isNotNull();
