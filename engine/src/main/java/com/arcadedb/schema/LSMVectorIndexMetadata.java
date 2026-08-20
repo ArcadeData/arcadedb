@@ -408,9 +408,7 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
       this.efSearch = metadata.getInt("efSearch");
       // A schema written before efSearchConfigured existed cannot say whether the value was chosen or defaulted,
       // so fall back to the old inference for it. That keeps existing databases behaving exactly as they do now.
-      this.efSearchConfigured = metadata.has("efSearchConfigured")
-          ? metadata.getBoolean("efSearchConfigured")
-          : this.efSearch != 100;
+      this.efSearchConfigured = metadata.getBoolean("efSearchConfigured", this.efSearch != 100);
     }
 
     // metadataFloat, not a cast to Number: the cast raised ClassCastException on a quoted value, which for a
