@@ -32,6 +32,7 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract.NULL_STRATEGY;
 import com.arcadedb.integration.importer.AnalyzedEntity.EntityType;
 import com.arcadedb.integration.importer.AnalyzedSchema;
 import com.arcadedb.integration.importer.ConsoleLogger;
+import com.arcadedb.integration.importer.ImportException;
 import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
 import com.arcadedb.integration.importer.Parser;
@@ -102,10 +103,19 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
           database.begin();
         }
       }
+    } catch (ImportException e) {
+      // A per-record failure in default "abort" mode must fail the whole import loudly (issue #6468): rolling
+      // back the in-flight batch here - instead of committing it below - is what keeps a partial import from
+      // masquerading as a successful one, and the callerTransactionActiveOnEntry guard mirrors
+      // JSONImporterFormat's contract of never discarding a caller's own transaction.
+      if (!context.callerTransactionActiveOnEntry && database.isTransactionActive())
+        database.rollback();
+      throw e;
     } catch (ClassNotFoundException e) {
       throw new RuntimeException(e);
     } finally {
-      database.commit();
+      if (database.isTransactionActive())
+        database.commit();
     }
     context.lastLapOn = System.currentTimeMillis();
   }
@@ -307,6 +317,9 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       context.createdDocuments.incrementAndGet();
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on importing document: %s", e, document);
+      context.errors.incrementAndGet();
+      if (!settings.isSkipOnRowError())
+        throw new ImportException("Error on importing document", e);
     }
   }
 
@@ -325,6 +338,9 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       context.createdVertices.incrementAndGet();
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on importing vertex: %s", e, vertex);
+      context.errors.incrementAndGet();
+      if (!settings.isSkipOnRowError())
+        throw new ImportException("Error on importing vertex", e);
     }
   }
 
@@ -340,6 +356,9 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
       if (newOut == null) {
         LogManager.instance().log(this, Level.SEVERE, "Error on importing edge (out vertex not found): %s", edge);
+        context.errors.incrementAndGet();
+        if (!settings.isSkipOnRowError())
+          throw new ImportException("Error on importing edge: out vertex not found");
         return;
       }
 
@@ -348,6 +367,9 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
       if (newIn == null) {
         LogManager.instance().log(this, Level.SEVERE, "Error on importing edge (in vertex not found): %s", edge);
+        context.errors.incrementAndGet();
+        if (!settings.isSkipOnRowError())
+          throw new ImportException("Error on importing edge: in vertex not found");
         return;
       }
 
@@ -364,6 +386,9 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       context.createdEdges.incrementAndGet();
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on importing edge: %s", e, edge);
+      context.errors.incrementAndGet();
+      if (!settings.isSkipOnRowError())
+        throw new ImportException("Error on importing edge", e);
     }
   }
 
