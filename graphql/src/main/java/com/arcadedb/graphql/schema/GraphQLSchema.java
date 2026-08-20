@@ -29,6 +29,7 @@ import com.arcadedb.graphql.parser.Directives;
 import com.arcadedb.graphql.parser.Document;
 import com.arcadedb.graphql.parser.Field;
 import com.arcadedb.graphql.parser.FieldDefinition;
+import com.arcadedb.graphql.parser.FieldWithAlias;
 import com.arcadedb.graphql.parser.GraphQLParser;
 import com.arcadedb.graphql.parser.InputValueDefinition;
 import com.arcadedb.graphql.parser.ObjectTypeDefinition;
@@ -102,7 +103,8 @@ public class GraphQLSchema {
 
     try {
       final Selection selection = op.getSelectionSet().getSelections().getFirst();
-      queryName = selection.getFieldWithAlias() != null ? selection.getFieldWithAlias().getName() : selection.getName();
+      final FieldWithAlias aliasField = selection.getFieldWithAlias();
+      queryName = aliasField != null ? aliasField.getName() : selection.getName();
 
       // HANDLE INTROSPECTION QUERIES
       if ("__schema".equals(queryName))
@@ -142,65 +144,11 @@ public class GraphQLSchema {
         }
       }
 
-      String where = "";
       final Field field = selection.getField();
-      if (field == null && selection.getFieldWithAlias() != null) {
-        // Aliased top-level field — use the FieldWithAlias for arguments and projection
-        final FieldWithAlias aliasField = selection.getFieldWithAlias();
-        final Arguments queryArguments = aliasField.getArguments();
-        if (queryArguments != null)
-          for (final Argument queryArgument : queryArguments.getList()) {
-            final String argName = queryArgument.getName();
-            if (!typeArgumentNames.contains(argName))
-              throw new CommandParsingException("Parameter '" + argName + "' not defined in query");
-            final Object argValue = queryArgument.getValueWithVariable().getValue().getValue();
-            if (where.length() > 0)
-              where += " and ";
-            if ("where".equals(argName))
-              where += argValue;
-            else {
-              where += argName;
-              where += " = ";
-              if (argValue instanceof String)
-                where += """;
-              where += argValue;
-              if (argValue instanceof String)
-                where += """;
-            }
-          }
-        projection = aliasField.getSelectionSet();
-      }
-      if (field != null) {
-        final Arguments queryArguments = field.getArguments();
-        if (queryArguments != null)
-          for (final Argument queryArgument : queryArguments.getList()) {
-            final String argName = queryArgument.getName();
-            if (!typeArgumentNames.contains(argName))
-              throw new CommandParsingException("Parameter '" + argName + "' not defined in query");
+      final Arguments queryArguments = field != null ? field.getArguments() : aliasField != null ? aliasField.getArguments() : null;
+      projection = field != null ? field.getSelectionSet() : aliasField != null ? aliasField.getSelectionSet() : null;
 
-            final Object argValue = queryArgument.getValueWithVariable().getValue().getValue();
-
-            if (where.length() > 0)
-              where += " and ";
-
-            if ("where".equals(argName)) {
-              where += argValue;
-            } else {
-              where += argName;
-              where += " = ";
-
-              if (argValue instanceof String)
-                where += "\"";
-
-              where += argValue;
-
-              if (argValue instanceof String)
-                where += "\"";
-            }
-          }
-
-        projection = field.getSelectionSet();
-      }
+      final String where = buildWhereClause(queryArguments, typeArgumentNames);
 
       String query = "select from " + from;
       if (!where.isEmpty())
@@ -228,6 +176,42 @@ public class GraphQLSchema {
 
   }
 
+  /**
+   * Builds a SQL {@code where} clause from a GraphQL field's arguments, shared by both the plain-field and
+   * aliased-field dispatch paths so they cannot drift apart the way they did before (issue #6453).
+   */
+  private String buildWhereClause(final Arguments queryArguments, final Set<String> typeArgumentNames) {
+    final StringBuilder where = new StringBuilder();
+
+    if (queryArguments != null)
+      for (final Argument queryArgument : queryArguments.getList()) {
+        final String argName = queryArgument.getName();
+        if (!typeArgumentNames.contains(argName))
+          throw new CommandParsingException("Parameter '" + argName + "' not defined in query");
+
+        final Object argValue = queryArgument.getValueWithVariable().getValue().getValue();
+
+        if (!where.isEmpty())
+          where.append(" and ");
+
+        if ("where".equals(argName)) {
+          where.append(argValue);
+        } else {
+          where.append(argName).append(" = ");
+
+          if (argValue instanceof String)
+            where.append('"');
+
+          where.append(argValue);
+
+          if (argValue instanceof String)
+            where.append('"');
+        }
+      }
+
+    return where.toString();
+  }
+
   private GraphQLResultSet parseNativeQueryDirective(final String language, final Directive directive, final Selection selection, final ObjectTypeDefinition returnType) {
     if (directive.getArguments() == null)
       throw new CommandParsingException(language.toUpperCase(Locale.ENGLISH) + " directive has no `statement` argument");
@@ -236,14 +220,19 @@ public class GraphQLSchema {
     Map<String, Object> arguments = null;
     SelectionSet projection = null;
 
+    final Field field = selection.getField();
+    final FieldWithAlias aliasField = selection.getFieldWithAlias();
+
     for (final Argument argument : directive.getArguments().getList()) {
       if ("statement".equals(argument.getName())) {
         statement = argument.getValueWithVariable().getValue().getValue().toString();
 
-        final Field field = selection.getField();
         if (field != null) {
           arguments = getArguments(field.getArguments());
           projection = field.getSelectionSet();
+        } else if (aliasField != null) {
+          arguments = getArguments(aliasField.getArguments());
+          projection = aliasField.getSelectionSet();
         }
       }
     }
