@@ -66,11 +66,25 @@ by construction - no separate reconciliation step exists that can misalign them.
   package for any other hand-rolled `graph.adjacency(...)` + manual weight-fill that might share
   this defect class, since this was the last converted instance of the #6301 pattern. Not applied
   in this PR - noted here as a follow-up sweep, out of scope for a single-issue fix.
+- Cycle 3, head `385af42c2b6f48825177847e845be468c64b9760`: `claude` review approved with "looks
+  correct and ready to merge pending CI". Two items, both explicitly marked non-blocking/stylistic
+  by the reviewer, so no code change applied: (1) `WorkGuard` construction site differs cosmetically
+  from `AlgoSteinerTree`/`AlgoAPSP` (functionally irrelevant); (2) the reviewer independently
+  grepped `algo.*` for the cycle-2 sweep suggestion and found no other instance of the defect class
+  - the other `weightProperty`-consuming procedures (`AlgoKShortestPaths`, `AlgoLongestPathDAG`,
+  `AlgoDijkstra*`, `AlgoLouvain`, `AlgoMST`, `AlgoMinSpanningArborescence`, `AlgoAStar`,
+  `AlgoPageRank`) read weights directly off the same `Edge` as the neighbour, so they were never
+  exposed. Working tree stayed clean this cycle - **clean approval**, loop exited after 3 cycles.
+
+PR: https://github.com/ArcadeData/arcadedb/pull/6483
+
+Final state: **clean-approval** (3 review cycles, `max-cycles=4`).
 
 ## Deferred / follow-up items
 
-- **Sweep `algo.*` for other hand-rolled adjacency/weight builders.** Suggested by the cycle-2
-  review as a precaution now that maxKCut was the last known holdout of the #6301 defect class
-  (APSP, Bellman-Ford, Steiner tree, kShortestPaths were already converted). Not investigated as
-  part of this issue; worth a follow-up issue/PR if the developer wants the guarantee confirmed
-  across the whole package rather than issue-by-issue.
+- **Sweep `algo.*` for other hand-rolled adjacency/weight builders.** Raised as a precaution by the
+  cycle-2 review, then independently checked by the cycle-3 review, which found no other instance
+  of the defect class among the other `weightProperty`-consuming procedures (see cycle 3 above).
+  Low urgency as a result, but no automated test enforces this invariant package-wide, so a future
+  procedure added without going through `graph.weightedAdjacency(...)` could still reintroduce it.
+  Left as an optional follow-up issue for the developer, not filed here.
