@@ -1,4 +1,21 @@
-/* SPDX-License-Identifier: Apache-2.0 */
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Document;
@@ -22,7 +39,7 @@ import static com.arcadedb.schema.Property.TYPE_PROPERTY;
  * <p>This is mainly used from statements that need to copy of the original data before modifying it,
  * eg. UPDATE ... RETURN BEFORE</p>
  *
- * @author Luigi Dell Aquila (luigi.dellaquila-(at)-gmail.com)
+ * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class CopyRecordContentBeforeUpdateStep extends AbstractExecutionStep {
 
@@ -75,10 +92,12 @@ public class CopyRecordContentBeforeUpdateStep extends AbstractExecutionStep {
   }
 
   /**
-   * Returns a deep copy of {@code value} when it is a {@link List}/{@link Set}/{@link Map} or
-   * {@link Document}/{@link com.arcadedb.database.EmbeddedDocument} (or nests them), so a later in-place
-   * mutation of the live property (e.g. {@code REMOVE coll = val} / {@code REMOVE map[k]} / {@code REMOVE emb.field})
-   * cannot leak into this snapshot (issues #6456, #6517). Scalars, RIDs, and arrays are returned unchanged.
+   * Returns a deep copy of {@code value} when it is a {@link List}/{@link Set}/{@link Map}, an embedded
+   * {@link Document}/{@link com.arcadedb.database.EmbeddedDocument}, or any nesting of them, so a later in-place
+   * mutation of the live property (e.g. {@code REMOVE coll = val}, {@code REMOVE map[k]}, {@code REMOVE emb.field})
+   * cannot leak into this BEFORE snapshot (issues #6456 and #6517). Scalars, RIDs, and arrays are returned unchanged:
+   * {@code MultiValue.remove()} already replaces arrays with a fresh copy rather than mutating them, so they never
+   * share state with the live value.
    */
   private static Object deepCopyMultiValue(final Object value) {
     if (value instanceof Map<?, ?> map) {
@@ -100,8 +119,9 @@ public class CopyRecordContentBeforeUpdateStep extends AbstractExecutionStep {
       return copy;
     }
     if (value instanceof Document document) {
-      // Deep-copy the embedded document via toMap + recursive deep copy so a later in-place field removal
-      // (e.g. REMOVE emb.field) cannot leak into the BEFORE snapshot (issue #6517)
+      // Issue #6517: an embedded Document is shared (not copied) by the BEFORE snapshot, and REMOVE emb.field
+      // mutates it in place via MutableDocument.modify(). Snapshot via toMap() + recursive deep copy so the
+      // BEFORE image keeps the pre-removal state.
       final Map<String, Object> map = document.toMap(false);
       final Map<String, Object> copy = new LinkedHashMap<>(map.size());
       for (final Map.Entry<String, Object> entry : map.entrySet())
