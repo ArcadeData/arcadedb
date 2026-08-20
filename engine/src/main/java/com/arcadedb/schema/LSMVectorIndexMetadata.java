@@ -77,6 +77,13 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
   public int                      maxConnections           = 32;
   public int                      beamWidth                = 100;
   public int                      efSearch                 = 100;  // Search beam width (higher = better recall but slower)
+  /**
+   * Whether {@link #efSearch} was actually configured, as opposed to sitting at its default. The search path used
+   * to infer this by testing {@code efSearch != 100}, which made 100 the one value a user could not ask for: an
+   * index created with {@code "efSearch": 100} was treated as unconfigured and silently given the adaptive beam
+   * instead (issue #6494).
+   */
+  public boolean                  efSearchConfigured       = false;
   public float                    neighborOverflowFactor   = 1.2f;
   public float                    alphaDiversityRelaxation = 1.2f;
   public String                   idPropertyName           = "id";
@@ -119,6 +126,7 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
     copy.maxConnections = maxConnections;
     copy.beamWidth = beamWidth;
     copy.efSearch = efSearch;
+    copy.efSearchConfigured = efSearchConfigured;
     copy.neighborOverflowFactor = neighborOverflowFactor;
     copy.alphaDiversityRelaxation = alphaDiversityRelaxation;
     copy.idPropertyName = idPropertyName;
@@ -320,6 +328,7 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
     if (efSearch < 1)
       throw new IllegalArgumentException("efSearch must be at least 1");
     this.efSearch = efSearch;
+    this.efSearchConfigured = true;
   }
 
   /** Sets the neighbor overflow factor used while building the graph. Typical range 1.0-1.5. */
@@ -395,8 +404,14 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
     if (metadata.has("beamWidth"))
       this.beamWidth = metadata.getInt("beamWidth");
 
-    if (metadata.has("efSearch"))
+    if (metadata.has("efSearch")) {
       this.efSearch = metadata.getInt("efSearch");
+      // A schema written before efSearchConfigured existed cannot say whether the value was chosen or defaulted,
+      // so fall back to the old inference for it. That keeps existing databases behaving exactly as they do now.
+      this.efSearchConfigured = metadata.has("efSearchConfigured")
+          ? metadata.getBoolean("efSearchConfigured")
+          : this.efSearch != 100;
+    }
 
     // metadataFloat, not a cast to Number: the cast raised ClassCastException on a quoted value, which for a
     // hand-edited or hand-restored schema.json meant a failure while OPENING the database. The integer keys above

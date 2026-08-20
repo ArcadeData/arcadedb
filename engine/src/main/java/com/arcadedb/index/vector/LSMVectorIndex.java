@@ -4175,7 +4175,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
             // Explicit efSearch: use fixed beam width (per-query or index default override)
             final int effectiveEfSearch = Math.max(k, efSearch);
             searchResult = searcher.search(ssp, k, effectiveEfSearch, 0.0f, 0.0f, bitsFilter);
-          } else if (metadata.efSearch != 100) {
+          } else if (metadata.efSearchConfigured) {
             // User configured efSearch in index metadata: use their value
             final int effectiveEfSearch = Math.max(k, metadata.efSearch);
             searchResult = searcher.search(ssp, k, effectiveEfSearch, 0.0f, 0.0f, bitsFilter);
@@ -4414,7 +4414,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           final int effectiveEfSearch;
           if (efSearch > 0)
             effectiveEfSearch = Math.max(maxRows, efSearch);
-          else if (metadata.efSearch != 100)
+          else if (metadata.efSearchConfigured)
             effectiveEfSearch = Math.max(maxRows, metadata.efSearch);
           else
             // The doubling is the second multiplication issue #6066 covers. maxRows is already clamped to the
@@ -5604,6 +5604,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // the next restart is barely better than one that was dropped at creation (issue #5639). LSMVectorIndexMetadata
     // reads each of these back, and a value equal to its default round-trips as itself.
     json.put("efSearch", metadata.efSearch);
+    json.put("efSearchConfigured", metadata.efSearchConfigured);
     json.put("neighborOverflowFactor", metadata.neighborOverflowFactor);
     json.put("alphaDiversityRelaxation", metadata.alphaDiversityRelaxation);
     json.put("locationCacheSize", metadata.locationCacheSize);
