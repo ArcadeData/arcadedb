@@ -19,9 +19,11 @@
 package com.arcadedb.index.vector;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.RID;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.Pair;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -80,8 +82,8 @@ class EfSearch100IsRequestableTest extends TestHelper {
     database.transaction(() -> {
       for (int q = 0; q < 20; q++) {
         final float[] query = vectors.get(q * 137 % NUM_VECTORS);
-        final List<com.arcadedb.database.RID> fromMetadata = rids(lsm.findNeighborsFromVector(query, K, -1));
-        final List<com.arcadedb.database.RID> fromExplicit = rids(lsm.findNeighborsFromVector(query, K, 100));
+        final List<RID> fromMetadata = rids(lsm.findNeighborsFromVector(query, K, -1));
+        final List<RID> fromExplicit = rids(lsm.findNeighborsFromVector(query, K, 100));
         assertThat(fromMetadata)
             .as("query %d: the configured efSearch=100 must give the same result as asking for 100 per query", q)
             .isEqualTo(fromExplicit);
@@ -89,10 +91,10 @@ class EfSearch100IsRequestableTest extends TestHelper {
     });
   }
 
-  private static List<com.arcadedb.database.RID> rids(
-      final List<com.arcadedb.utility.Pair<com.arcadedb.database.RID, Float>> hits) {
-    final List<com.arcadedb.database.RID> out = new ArrayList<>(hits.size());
-    for (final com.arcadedb.utility.Pair<com.arcadedb.database.RID, Float> h : hits)
+  private static List<RID> rids(
+      final List<Pair<RID, Float>> hits) {
+    final List<RID> out = new ArrayList<>(hits.size());
+    for (final Pair<RID, Float> h : hits)
       out.add(h.getFirst());
     return out;
   }
