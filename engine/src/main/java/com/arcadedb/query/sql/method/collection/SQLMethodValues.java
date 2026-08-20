@@ -48,11 +48,18 @@ public class SQLMethodValues extends AbstractSQLMethod {
 
     if (value instanceof Map map)
       return map.values();
-    else if (value instanceof Document document)
-      return new ArrayList<>(document.toMap().values());
-    else if (value instanceof Result result)
-      return result.toMap().values();
-    else if (value instanceof Collection<?> collection) {
+    else if (value instanceof Document document) {
+      // Use getPropertyNames() to align with keys() — same order, same set of properties
+      final List<Object> result = new ArrayList<>();
+      for (final String prop : document.getPropertyNames())
+        result.add(document.get(prop));
+      return result;
+    } else if (value instanceof Result result) {
+      final List<Object> result2 = new ArrayList<>();
+      for (final String prop : result.getPropertyNames())
+        result2.add(result.getProperty(prop));
+      return result2;
+    } else if (value instanceof Collection<?> collection) {
       final List<Object> result = new ArrayList<>();
       for (final Object o : collection) {
         if (o instanceof Map || o instanceof Document || o instanceof Result || o instanceof Collection) {
