@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
@@ -130,6 +131,35 @@ class Issue6427ContainsTextSamePropertyTwiceTest extends TestHelper {
     });
   }
 
+  /**
+   * A {@code null}-valued condition makes the whole block unsatisfiable (issue #6414) even when it is the SECOND
+   * condition on a property whose slot already accumulated a value from the first. The null check in
+   * {@code FetchFromIndexStep.processFullTextBlock} runs before the slot-accumulation logic, so a null cannot be
+   * silently folded into (or lost behind) an already-partial {@code List} slot.
+   */
+  @Test
+  void aNullValuedRepeatedConditionOnTheSamePropertyMatchesNothing() {
+    final String type = "Article6427null";
+    createArticles(type, "CREATE INDEX ON " + type + " (title) FULL_TEXT");
+
+    final Map<String, Object> noValue = new HashMap<>();
+    noValue.put("missing", null);
+
+    database.transaction(() -> {
+      assertThat(idsMatching(
+          "SELECT id FROM " + type + " WHERE title CONTAINSTEXT 'java' AND title CONTAINSTEXT :missing", noValue))
+          .isEmpty();
+      // Order does not matter: the null-valued condition short-circuits whether it is claimed first or second.
+      assertThat(idsMatching(
+          "SELECT id FROM " + type + " WHERE title CONTAINSTEXT :missing AND title CONTAINSTEXT 'java'", noValue))
+          .isEmpty();
+      // Sanity: without the null-valued condition, the same two-condition-on-one-property query still matches.
+      assertThat(idsMatching(
+          "SELECT id FROM " + type + " WHERE title CONTAINSTEXT 'java' AND title CONTAINSTEXT 'concurrency'"))
+          .containsExactly("e");
+    });
+  }
+
   @Test
   void theSameHoldsForABM25Index() {
     final String type = "Article6427bm";
@@ -161,8 +191,12 @@ class Issue6427ContainsTextSamePropertyTwiceTest extends TestHelper {
   }
 
   private Set<String> idsMatching(final String query) {
+    return idsMatching(query, Map.of());
+  }
+
+  private Set<String> idsMatching(final String query, final Map<String, Object> parameters) {
     final Set<String> ids = new LinkedHashSet<>();
-    try (final ResultSet rs = database.query("sql", query, Map.of())) {
+    try (final ResultSet rs = database.query("sql", query, parameters)) {
       while (rs.hasNext())
         ids.add(rs.next().getProperty("id"));
     }
