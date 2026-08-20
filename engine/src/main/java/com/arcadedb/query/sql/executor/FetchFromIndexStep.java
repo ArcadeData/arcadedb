@@ -378,7 +378,20 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
    * it. That is what {@link ContainsTextCondition#evaluate} does off the index (a {@code null} value is never a match),
    * what a single-property index already did (an empty query text finds no term), and now what a multi-property one
    * does too.
+   * <p>
+   * The position-resolution loop below matches a condition's field name to an index property by its BASE name only, so
+   * two index properties that share one base name but differ in modifier ({@code m by key} and {@code m by value})
+   * are indistinguishable to it - a condition on {@code m} always resolves to whichever of the two comes FIRST in
+   * {@code properties}. This was already true for a single such condition before issue #6427 (it silently searched only
+   * the first modifier's tokens, never the second); what changes here is that a SECOND {@code m} condition, which used
+   * to make the whole block bail to the generic path, now lands in the same slot as the first and is intersected
+   * against it. Both conditions therefore query the same one modifier property - the other is never consulted - rather
+   * than one condition per modifier. Resolving that would need the position lookup to track which specific index
+   * property the planner associated each claimed condition with, rather than re-deriving it from the field name alone;
+   * that is a distinct, narrower problem than #6427, whose fix is deliberately confined to the same-property,
+   * same-modifier case the issue describes.
    */
+  @SuppressWarnings("unchecked")
   private boolean processFullTextBlock() {
     if (index.getType() != Schema.INDEX_TYPE.FULL_TEXT || additionalRangeCondition != null)
       return false;
@@ -421,6 +434,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       if (existing == null) {
         keys[position] = value;
       } else if (existing instanceof List<?> existingList) {
+        // Safe: the only producer of this list is the `else` branch below, freshly allocated as List<Object>.
         ((List<Object>) existingList).add(value);
       } else {
         final List<Object> values = new ArrayList<>(2);
