@@ -1031,7 +1031,9 @@ public enum GlobalConfiguration {
       """
       Maximum share of the JVM heap (percentage) the auto-sized graph-build cache may use. Only applies when \
       arcadedb.vectorIndex.graphBuildCacheSize is left at 0. A corpus larger than this budget still builds: \
-      the cache evicts instead of holding everything.""",
+      the cache evicts instead of holding everything. Measured against the heap currently AVAILABLE rather than \
+      against the ceiling, so a rebuild that is holding the old graph resident asks for less (issue #6503). \
+      Values above 90 are clamped to 90: no cache is allowed to plan on the whole heap.""",
       Integer.class, 25),
 
   VECTOR_INDEX_SEARCH_CACHE_SIZE("arcadedb.vectorIndex.searchCacheSize", SCOPE.DATABASE,
@@ -1046,8 +1048,10 @@ public enum GlobalConfiguration {
 
   VECTOR_INDEX_SEARCH_CACHE_MAX_HEAP_PERCENT("arcadedb.vectorIndex.searchCacheMaxHeapPercent", SCOPE.DATABASE,
       """
-      Upper bound, as a percentage of the maximum JVM heap, on the RAM an automatically sized per-index search \
-      cache may use (see arcadedb.vectorIndex.searchCacheSize). Ignored when the cache size is set explicitly.""",
+      Upper bound, as a percentage of the JVM heap currently AVAILABLE rather than of the ceiling (issue #6503), \
+      on the RAM an automatically sized per-index search cache may use (see arcadedb.vectorIndex.searchCacheSize). \
+      Ignored when the cache size is set explicitly. Values above 90 are clamped to 90: no cache is allowed to \
+      plan on the whole heap.""",
       Integer.class, 25),
 
   VECTOR_INDEX_SEARCHER_POOL_SIZE("arcadedb.vectorIndex.searcherPoolSize", SCOPE.DATABASE,
@@ -1094,9 +1098,14 @@ public enum GlobalConfiguration {
 
   VECTOR_INDEX_MAX_PENDING_MUTATIONS("arcadedb.vectorIndex.maxPendingMutations", SCOPE.DATABASE,
       """
-      Hard ceiling on the rebuild threshold computed from rebuildGraphRatio. Pending vectors are held in an \
-      in-memory delta buffer until the next rebuild, so this bounds that buffer's footprint \
-      (RAM = pendingMutations * dimensions * 4 bytes). Set to 0 for no ceiling.""",
+      Hard ceiling on the rebuild threshold computed from rebuildGraphRatio. Set to 0 for no ceiling. \
+      This caps the RATIO-DERIVED term only, and it is read where a rebuild is decided, not where the delta \
+      buffer grows, so it does NOT bound that buffer: writes keep appending between rebuilds regardless, and \
+      rebuilds are asynchronous, so sustained ingest outruns them. Measured with this set to 500, the buffer \
+      reached 45,000 entries, and 42,504 even with the rebuild trigger firing continuously. Note also that \
+      mutationsBeforeRebuild is applied as a floor afterwards, so an explicit value above this ceiling wins. \
+      Nothing here bounds the buffer. mutationsBeforeRebuild and rebuildGraphRatio only change how OFTEN a \
+      rebuild drains it, so its peak follows from how much is written between rebuilds.""",
       Integer.class, 50_000),
 
   VECTOR_INDEX_INACTIVITY_REBUILD_TIMEOUT_MS("arcadedb.vectorIndex.inactivityRebuildTimeoutMs", SCOPE.DATABASE,
@@ -1120,6 +1129,37 @@ public enum GlobalConfiguration {
       Concurrent rebuilds are memory-intensive; running too many in parallel can cause OOM kills. \
       Set to 1 to serialize all rebuilds (safest for memory). Higher values trade memory for throughput.""",
       Integer.class, 1),
+
+  VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT("arcadedb.vectorIndex.rebuildMaxHeapPercent", SCOPE.DATABASE,
+      """
+      Share of the currently AVAILABLE heap (percentage) that an online vector graph rebuild's estimated peak \
+      footprint may occupy before the rebuild is deferred instead of attempted. An online rebuild keeps the old \
+      graph resident so searches keep working, and pays for a full new build's working set on top of it, so it \
+      costs roughly 1.7x what building the same corpus from nothing costs. With no gate at all it simply attempts \
+      the rebuild and dies with an OutOfMemoryError when it does not fit. A deferred cycle is not lost: the next \
+      mutation-threshold or inactivity trigger retries it, and pending vectors stay exactly searchable through the \
+      in-memory delta buffer meanwhile, so the cost of deferring is a longer delta scan per query rather than \
+      wrong or missing results. The estimate is deliberately coarse, so the default is generous: it refuses only \
+      when a rebuild is confidently too large, not whenever one looks tight. Applies to online rebuilds only - a \
+      first build, a rebuild on close, an explicit REBUILD INDEX and a COMPACT INDEX are never declined. \
+      Set to 0 to disable the gate and restore the attempt-and-hope behaviour. Values above 90 are clamped to 90: \
+      a rebuild is never allowed to plan on the whole heap, since the request, I/O and GC threads need some too.""",
+      Integer.class, 90),
+
+  VECTOR_INDEX_REBUILD_DEFERRAL_COOLDOWN_MS("arcadedb.vectorIndex.rebuildDeferralCooldownMs", SCOPE.DATABASE,
+      """
+      How long, in milliseconds, an online vector graph rebuild that was deferred for lack of heap \
+      (see arcadedb.vectorIndex.rebuildMaxHeapPercent) waits before another one may be attempted. \
+      A deferral does not consume the pending mutations that triggered it - only a successful build does - so the \
+      trigger condition is still true the instant the deferred cycle ends. Without a cooldown the next search \
+      re-triggers immediately, and since a search checks on every query, a large heap-constrained index would \
+      spawn a rebuild thread, take and release the JVM-wide rebuild permit and log a warning once PER QUERY: \
+      thread churn and lock contention added precisely when the JVM is already short of memory, which works \
+      against the deferral's own purpose. \
+      The wait is not lost time: pending vectors stay exactly searchable through the in-memory delta buffer \
+      throughout, so the cost is a slightly longer delta scan per query, which is what a deferral costs anyway. \
+      Set to 0 to retry as soon as the next trigger fires.""",
+      Integer.class, 30_000),
 
   VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS("arcadedb.vectorIndex.rebuildPermitTimeoutMs", SCOPE.JVM,
       """
