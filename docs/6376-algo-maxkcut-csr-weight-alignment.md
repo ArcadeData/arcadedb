@@ -55,4 +55,22 @@ by construction - no separate reconciliation step exists that can misalign them.
 
 ## Review cycles
 
-(filled in by resolve-issue-with-review Phase 6)
+- Cycle 1, head `bd19c45025cac79867284dec6c7ddc72f8aac577`: `claude` review flagged that this
+  doc's Test section described a stale 3-vertex triangle fixture that no longer matched the
+  actual test (a 4-node star). Fixed by rewriting the Test section to describe the star fixture
+  actually implemented in `Issue6376AlgoMaxKCutWeightAlignmentTest`.
+- Cycle 2, head `31331ed23875c921dc2aad1e6b7feea36534a282`: `claude` review approved the fix and
+  test coverage with no correctness/security/performance concerns. Two minor items: (1) this
+  placeholder text itself, shipped verbatim - fixed by replacing it with real content; (2) a
+  suggestion (explicitly marked non-blocking by the reviewer) to grep the rest of the `algo.*`
+  package for any other hand-rolled `graph.adjacency(...)` + manual weight-fill that might share
+  this defect class, since this was the last converted instance of the #6301 pattern. Not applied
+  in this PR - noted here as a follow-up sweep, out of scope for a single-issue fix.
+
+## Deferred / follow-up items
+
+- **Sweep `algo.*` for other hand-rolled adjacency/weight builders.** Suggested by the cycle-2
+  review as a precaution now that maxKCut was the last known holdout of the #6301 defect class
+  (APSP, Bellman-Ford, Steiner tree, kShortestPaths were already converted). Not investigated as
+  part of this issue; worth a follow-up issue/PR if the developer wants the guarantee confirmed
+  across the whole package rather than issue-by-issue.
