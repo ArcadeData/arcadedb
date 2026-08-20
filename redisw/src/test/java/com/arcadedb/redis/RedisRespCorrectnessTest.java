@@ -238,7 +238,8 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
     // NumberFormatException -> "-ERR For input string". Real Redis accepts any signed 64-bit value.
     try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
       jedis.auth(USER, PASSWORD);
-      jedis.del("incr64");
+      // ArcadeDB Redis wire has no DEL; use SET to initialise the key
+      jedis.set("incr64", "0");
       assertThat(jedis.incrBy("incr64", 3_000_000_000L)).isEqualTo(3_000_000_000L);
       assertThat(jedis.incrBy("incr64", -1_000_000_000L)).isEqualTo(2_000_000_000L);
       assertThat(jedis.decrBy("incr64", 2_000_000_000L)).isZero();
@@ -299,9 +300,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
       sendCommand(socket, "AUTH", USER, PASSWORD);
       readReply(socket); // +OK
 
-      sendCommand(socket, "DEL", "absentKey");
-      readReply(socket); // :0 or whatever
-
+      // ArcadeDB Redis wire has no DEL; absentKey is already absent
       sendCommand(socket, "SET", "absentKey", "v", "XX");
       assertThat(readReply(socket)).isEqualTo("$-1");
 
@@ -354,7 +353,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
     // with a bulk string. readReply() returns "$<len>\r\n<text>" for bulk string frames.
     try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
       jedis.auth(USER, PASSWORD);
-      jedis.del("floatKey");
+      jedis.set("floatKey", "0");
       final String reply = jedis.incrByFloat("floatKey", 3.3);
       assertThat(reply).isEqualTo("3.3");
     }
