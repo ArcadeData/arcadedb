@@ -377,6 +377,16 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         // silently re-stamp the still-open transaction of the outer, suspended task it is nested inside -
         // bypassing the boundary-commit guard entirely rather than merely skipping the commitEvery boundary
         // the way the existing !nested guards below document.
+        //
+        // #6509 review: when forceFreshTransactionAfterBoundaryFailure is set but `message` does not
+        // require an active tx, begin() above is skipped (message does not need it) and this still stamps
+        // the snapshot onto the poisoned transaction from the double-failure branch - `database.getTransaction()`
+        // is that same still-active, half-cleaned one, not the fresh nested one begin() would have created.
+        // Accepted: a task with requiresActiveTx()==false never writes through it, and the stamp simply
+        // means the NEXT task's boundary check sees this poisoned transaction's flags already matching the
+        // current snapshot and does not re-trigger a boundary commit on it - it is left exactly as
+        // untouched-by-writes as it already was, for whatever later commitEvery boundary or begin() call
+        // eventually deals with it.
         if (!nested) {
           database.getTransaction().setUseWAL(currentUseWAL);
           database.setWALFlush(currentSync);
