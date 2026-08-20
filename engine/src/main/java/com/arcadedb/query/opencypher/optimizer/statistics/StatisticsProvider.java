@@ -224,6 +224,51 @@ public class StatisticsProvider {
   }
 
   /**
+   * The subset of {@link Labels#matchingVertexTypes} that has no ancestor also in that set - the minimal list of
+   * types a POLYMORPHIC index seek can be issued against to cover a label disjunction exactly once (issue #6397).
+   * <p>
+   * {@code matches} propagates down the whole subtype chain: if a type is in the matching set, every one of its
+   * subtypes matches too and is therefore already in the set as well. Seeking a root's own polymorphic index -
+   * the same index {@link com.arcadedb.query.opencypher.executor.operators.NodeIndexSeek} already uses for a
+   * plain (non-disjunction) anchor - already reaches every listed descendant of that root, so the roots alone
+   * cover the whole disjunction without a caller having to visit a subtype a second time through its parent.
+   * <p>
+   * A type can have more than one root when it multiply-inherits from two accepted alternatives (a vertex type
+   * declared {@code EXTENDS A, B} where a disjunction accepts both {@code A} and {@code B}): such a type's own
+   * records are then reachable through both roots' polymorphic indexes, so a caller unioning the per-root seeks
+   * must still de-duplicate by RID.
+   *
+   * @param labels      the labels written on the pattern
+   * @param disjunction whether the labels were written as alternatives ({@code A|B}) rather than as a conjunction
+   *
+   * @return the root vertex types to seek, empty when nothing in the schema can match
+   */
+  public List<DocumentType> getMatchingVertexRootTypes(final List<String> labels, final boolean disjunction) {
+    if (database == null)
+      return List.of();
+
+    final List<DocumentType> matching = Labels.matchingVertexTypes(database.getSchema(), labels, disjunction);
+    final Set<DocumentType> matchingSet = new HashSet<>(matching);
+
+    final List<DocumentType> roots = new ArrayList<>();
+    for (final DocumentType type : matching)
+      if (!hasAncestorIn(type, matchingSet))
+        roots.add(type);
+    return roots;
+  }
+
+  /**
+   * Whether any of {@code type}'s supertypes, at any depth, is itself in {@code set}.
+   */
+  private static boolean hasAncestorIn(final DocumentType type, final Set<DocumentType> set) {
+    for (final DocumentType superType : type.getSuperTypes()) {
+      if (set.contains(superType) || hasAncestorIn(superType, set))
+        return true;
+    }
+    return false;
+  }
+
+  /**
    * Calculates the average degree (edges per vertex) for a relationship type.
    * <p>
    * Formula: avgDegree = (2 * edgeCount) / (sourceVertexCount + targetVertexCount)

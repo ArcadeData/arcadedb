@@ -351,8 +351,15 @@ public class CypherOptimizer {
   private List<String> extractTypeNames(final LogicalPlan plan) {
     final List<String> typeNames = new ArrayList<>();
 
-    // Collect vertex type names
+    // Collect vertex type names. A label disjunction (n:A|B) needs every alternative collected, not just the
+    // first: IndexSelectionRule's disjunction-seek path (issue #6397) asks the statistics provider for each
+    // alternative's own indexes, and an alternative never collected here reads back as "no index" regardless
+    // of what the schema actually has.
     for (final LogicalNode node : plan.getNodes().values()) {
+      if (node.isLabelDisjunction()) {
+        typeNames.addAll(node.getLabels());
+        continue;
+      }
       final String label = node.getFirstLabel();
       if (label != null) {
         typeNames.add(label);
