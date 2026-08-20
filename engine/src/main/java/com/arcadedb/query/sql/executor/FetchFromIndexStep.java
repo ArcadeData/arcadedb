@@ -368,8 +368,9 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
    * A property's slot can be filled more than once - two (or more) {@code CONTAINSTEXT} conditions on the same property,
    * which the planner now claims all of, or one document property indexed twice under different modifiers
    * ({@code (m by key, m by value)}). Rather than keeping one value, the slot then holds a {@code List} of them, and
-   * {@link com.arcadedb.index.fulltext.LSMTreeFullTextIndex#get(Object[], int)} expands each list slot into one lookup per
-   * element, intersecting them exactly as it already intersects one lookup per property (issue #6427).
+   * {@link com.arcadedb.index.fulltext.LSMTreeFullTextIndex#splitPositionalKey(java.util.List, Object[])} expands each
+   * list slot into one lookup per element, which {@link com.arcadedb.index.fulltext.LSMTreeFullTextIndex#get(Object[],
+   * int)} intersects exactly as it already intersects one lookup per property (issue #6427).
    * <p>
    * A condition whose right side evaluates to {@code null} makes the whole block match NOTHING rather than leaving its
    * property unconstrained. The two readings share one slot - a {@code null} slot is exactly how the key says "this property
