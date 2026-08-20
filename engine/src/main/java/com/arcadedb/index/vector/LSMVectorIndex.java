@@ -4335,6 +4335,31 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
         final RandomAccessVectorValues vectors = searchVectorValues(ordinalMap);
 
+        // Issue #6502 pre-filter plan: below VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY (see its javadoc for why the
+        // graph walk gets more expensive, not less, as the allow-list narrows), score the allow-list directly via
+        // collectAllowedOrdinals/scoreOrdinal/bruteForceScan - the same walk the issue #3722 shortfall fallback
+        // already uses - instead of duplicating it.
+        if (allowedRIDs != null && !allowedRIDs.isEmpty()) {
+          // Clamped to 1.0: the setting is documented as a fraction of the index, and an operator-supplied value
+          // above that would route every allow-list query - however wide - through the ordinal-resolution walk
+          // instead of the graph, which is exactly the pathology this plan exists to avoid on the OTHER side of
+          // the crossover.
+          final float maxSelectivity = Math.min(1f, getDatabase().getConfiguration()
+              .getValueAsFloat(GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY));
+          // Persisted/graph vectors only, same as the shortfall-budget calculation below - the delta buffer is not
+          // in this count. Under a large buffer relative to the graph this can overstate the allow-list's
+          // selectivity against the true live set and bias toward the graph walk; per the shortfall calculation's
+          // own comment, that only ever costs a missed optimization, never a wrong answer.
+          final int availableVectors = Math.min(ordinalMap.length, vectorIndex.size());
+          if (maxSelectivity > 0f && allowedRIDs.size() <= availableVectors * maxSelectivity) {
+            metrics.incrementPreFilterSearches();
+            final List<Pair<RID, Float>> results = new ArrayList<>(k);
+            mergeWithDeltaScan(queryVectorFloat, k, allowedRIDs, results);
+            bruteForceScan(queryVectorFloat, k, allowedRIDs, results, vectors, ordinalMap);
+            return results;
+          }
+        }
+
         // Only live vectors may enter the result heap. Accepting tombstones lets a query aimed at a deleted
         // neighbourhood fill its beam with them and stop, which is what returned an empty list (issue #5558).
         final Bits bitsFilter = new LiveVectorBitsFilter(allowedRIDs, ordinalMap, vectorIndex);
@@ -4443,12 +4468,22 @@ public class LSMVectorIndex implements Index, IndexInternal {
         final int availableVectors = Math.min(ordinalMap.length, vectorIndex.size());
         final int expectedResults = Math.min(k, availableVectors);
         if (results.size() < expectedResults) {
-          LogManager.instance()
-              .log(this, Level.WARNING,
-                  """
-                  Graph search returned only %d results (expected %d, available %d) for index %s - \
-                  falling back to brute-force scan (graph may need rebuilding)""",
-                  results.size(), expectedResults, availableVectors, indexName);
+          // Issue #6502: see shortfallIsAllowListDriven's javadoc for why this is split.
+          if (shortfallIsAllowListDriven(allowedRIDs, expectedResults))
+            LogManager.instance()
+                .log(this, Level.FINE,
+                    """
+                    Graph search returned only %d results (expected %d, available %d) for index %s - the RID \
+                    allow-list has only %d entries, which is fewer than requested, so completing the answer with a \
+                    brute-force scan of the allow-list is expected, not a sign the graph needs rebuilding""",
+                    results.size(), expectedResults, availableVectors, indexName, allowedRIDs.size());
+          else
+            LogManager.instance()
+                .log(this, Level.WARNING,
+                    """
+                    Graph search returned only %d results (expected %d, available %d) for index %s - \
+                    falling back to brute-force scan (graph may need rebuilding)""",
+                    results.size(), expectedResults, availableVectors, indexName);
           metrics.incrementBruteForceScans();
           bruteForceScan(queryVectorFloat, k, allowedRIDs, results, vectors, ordinalMap);
         }
@@ -4472,6 +4507,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final long elapsed = System.currentTimeMillis() - startTime;
       metrics.addSearchLatency(elapsed);
     }
+  }
+
+  /**
+   * Issue #6502: tells apart the two reasons the issue #3722 shortfall fallback can fire, so the log line does not
+   * blame the graph for a shortfall the allow-list itself made unavoidable. An allow-list narrower than
+   * {@code expectedResults} can never be filled from the graph regardless of graph quality - that is a property of
+   * the filter, and expected. Anything else reaching the fallback (no allow-list, or one wide enough to skip the
+   * pre-filter plan and still come up short) is a genuine sign the graph search underperformed.
+   * <p>
+   * Extracted to a pure, testable predicate rather than left inline: a logic inversion here would silently swap
+   * which condition gets the (rare, expected) FINE line and which keeps the WARNING an operator watches for.
+   */
+  static boolean shortfallIsAllowListDriven(final Set<RID> allowedRIDs, final int expectedResults) {
+    return allowedRIDs != null && !allowedRIDs.isEmpty() && allowedRIDs.size() < expectedResults;
   }
 
   /**
