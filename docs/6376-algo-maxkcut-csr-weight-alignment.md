@@ -26,16 +26,16 @@ by construction - no separate reconciliation step exists that can misalign them.
 
 `Issue6376AlgoMaxKCutWeightAlignmentTest` (engine module), mirroring
 `Issue6301AlgoSteinerTreeWeightAlignmentTest`'s pattern:
-- builds a 3-vertex weighted triangle (X-Y=1.0, X-Z=50.0, Y-Z=1.0) whose maximum 2-cut is uniquely
-  51.0 regardless of local-search starting point or node-processing order (verified analytically:
-  every distinct initial partition converges to 51.0 in the first local-search pass, so the
-  assertion is robust to whichever physical vertex a CSR provider numbers first);
-- runs `algo.maxKCut(2, {weightProperty:'w'})` once with no view (OLTP path) and once with a
-  `GraphAnalyticalView` built over the edge type + weight property (CSR path), both with a fixed
-  seed;
-- asserts `cutWeight == 51.0` in both cases, and that the CSR run actually went through the
-  provider (`CommandContext.CSR_ACCELERATED_VAR`), so the assertion is not vacuously true from an
-  OLTP fallback.
+- builds a star hub H with three unequal leaf weights (H-A=1.0, H-B=10.0, H-C=100.0) plus one
+  extra A-B=5.0 edge that breaks the leaf symmetry a pure star would have (without it, a
+  misassigned weight would just relabel an equally-valued answer and could never expose a
+  misalignment); the unique maximum 2-cut of this graph is 115.0, achieved by grouping {H, A}
+  against {B, C}, independent of seed or which physical vertex a CSR provider numbers first;
+- runs `algo.maxKCut(2, {weightProperty:'w'})` across 10 seeds with no view (OLTP path) and again
+  with a `GraphAnalyticalView` built over the edge type + weight property (CSR path);
+- asserts `cutWeight == 115.0` in both cases, and (in a separate test method) that a CSR run
+  actually went through the provider (`CommandContext.CSR_ACCELERATED_VAR`), so the comparison is
+  not vacuously true from a silent OLTP fallback.
 
 ## Verification
 
