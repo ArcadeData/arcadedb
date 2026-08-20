@@ -4279,7 +4279,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // common case of this directly without reaching here at all. What still lands here is either no allow-list
           // at all (the original issue #3722 degraded-graph case) or one wide enough to skip the pre-filter plan
           // yet still narrower than k, so the two are told apart rather than both blamed on the graph.
-          if (allowedRIDs != null && !allowedRIDs.isEmpty() && allowedRIDs.size() < expectedResults)
+          if (shortfallIsAllowListDriven(allowedRIDs, expectedResults))
             LogManager.instance()
                 .log(this, Level.FINE,
                     """
@@ -4317,6 +4317,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final long elapsed = System.currentTimeMillis() - startTime;
       metrics.addSearchLatency(elapsed);
     }
+  }
+
+  /**
+   * Issue #6502: tells apart the two reasons the issue #3722 shortfall fallback can fire, so the log line does not
+   * blame the graph for a shortfall the allow-list itself made unavoidable. An allow-list narrower than
+   * {@code expectedResults} can never be filled from the graph regardless of graph quality - that is a property of
+   * the filter, and expected. Anything else reaching the fallback (no allow-list, or one wide enough to skip the
+   * pre-filter plan and still come up short) is a genuine sign the graph search underperformed.
+   * <p>
+   * Extracted to a pure, testable predicate rather than left inline: a logic inversion here would silently swap
+   * which condition gets the (rare, expected) FINE line and which keeps the WARNING an operator watches for.
+   */
+  static boolean shortfallIsAllowListDriven(final Set<RID> allowedRIDs, final int expectedResults) {
+    return allowedRIDs != null && !allowedRIDs.isEmpty() && allowedRIDs.size() < expectedResults;
   }
 
   /**
