@@ -51,3 +51,35 @@ negative `watchReply`.
   few hundred ms; before the fix this test hangs past its bounded `outcome.get(3, SECONDS)` and fails
   with a `TimeoutException`.
 - Full `ha-raft` unit test module rerun to confirm no regressions.
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/6486
+
+## Review cycles
+
+- **Cycle 1** - head `bec509a9dc3094e812bf9ccc03f904e0aadec05e` (original PR push). `claude[bot]` review
+  flagged one correctness bug plus two minor nits:
+  - The new inner `catch (final Exception e)` around the `async().watch(...).get(remainingWatchNanos, ...)`
+    call swallowed `InterruptedException` instead of restoring the interrupt flag and letting it reach the
+    outer `catch (final InterruptedException ie)` fast-abort handler, so an interrupt during the `ALL`
+    watch would silently clear the flag and let the rest of the batch fall through to full-length waits -
+    the same unbounded-stall shape this PR was fixing, relocated to the interrupt path. Fixed by adding an
+    explicit `catch (final InterruptedException ie)` before the generic `catch (Exception e)` that restores
+    the flag and rethrows.
+  - Minor: the `TimeoutException` branch dropped the cause when constructing
+    `MajorityCommittedAllFailedException`. Fixed to pass `te` as the cause via the two-arg constructor.
+  - Minor: the regression test still stubbed the now-unused `client.io().watch(...)` overload (dead since
+    the fix moved to `async().watch()`). Removed the dead stub.
+  - Also added `allQuorumWatchSucceedsWithinBudgetReturnsLogIndex`, a happy-path companion test for the
+    `Quorum.ALL` success case (no prior test covered it).
+  - Addressed in commit `476329f95332c34a907a320d30819aab78757ca3`, pushed back to the same branch.
+- **Cycle 2** - head `476329f95332c34a907a320d30819aab78757ca3`. `claude[bot]` review (issue comment
+  `5352530125`, posted 2026-08-20T07:01:15Z) was clean/non-blocking: it confirmed the interrupt-flag fix,
+  approved the new regression + happy-path tests as deterministic and consistent with the file's existing
+  mocking style, and raised only non-blocking notes (comment density, an existing/pre-existing
+  non-cancellation-of-timed-out-futures characteristic, doc-file convention). No code changes were required.
+
+## Final state
+
+`clean-approval` after 2 review cycles. Merge remains the developer's responsibility.
