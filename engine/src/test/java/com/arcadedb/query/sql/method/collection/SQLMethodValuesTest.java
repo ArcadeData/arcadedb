@@ -90,11 +90,11 @@ class SQLMethodValuesTest extends TestHelper {
 
       Object result = function.execute(doc, null, null, null);
 
-      // Flat collection of the document's property values (toMap() also carries the internal
-      // fields RID, type marker "d", type name), not wrapped in an extra one-element list.
+      // Flat collection of the document's declared property values. toMap(false) excludes the
+      // internal fields (RID, type marker "d", type name), so values() aligns with keys().
       assertThat(result).isInstanceOf(Collection.class);
       final Collection<Object> values = (Collection<Object>) result;
-      assertThat(values).containsExactlyInAnyOrder("Alice", 30, doc.getIdentity().toString(), "d", "Person");
+      assertThat(values).containsExactlyInAnyOrder("Alice", 30);
     });
   }
 
@@ -122,9 +122,9 @@ class SQLMethodValuesTest extends TestHelper {
 
     assertThat(result).isInstanceOf(List.class);
     List<?> flattenedValues = (List<?>) result;
-    // Each document contributes its own (unwrapped) toMap() values: name, age plus the 3
-    // internal fields (RID, type marker, type name) = 5 values per document.
-    assertThat(flattenedValues).hasSize(10);
+    // Each document contributes its own (unwrapped) declared-property values: name, age = 2
+    // values per document (metadata fields excluded via toMap(false)).
+    assertThat(flattenedValues).hasSize(4);
     assertThat((List<Object>) flattenedValues).contains("Alice", 30, "Bob", 25);
   }
 
