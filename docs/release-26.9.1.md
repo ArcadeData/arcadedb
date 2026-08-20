@@ -3711,3 +3711,30 @@ task's guard now all catch `Throwable`; in the latter two an escaping `Error` wo
 thread past the point where it clears the in-progress flag, silently stopping every later rebuild of that index.
 
 [#6503](https://github.com/ArcadeData/arcadedb/issues/6503)
+
+## The async executor no longer tears down and respawns its whole worker pool to flip a durability flag (#6509)
+
+`DatabaseAsyncExecutorImpl.setTransactionUseWAL()`/`setTransactionSync()` unconditionally called `createThreads()`,
+which shuts down and respawns every worker thread of the database's async pool - not just the caller's. `GraphBatch`
+calls both setters once per batch session to relax and then restore durability for a bulk load, so opening or
+closing a batch churned the entire pool. Any *other* concurrent user of `database.async()` - another `GraphBatch`,
+an async insert, an index compaction - had its in-flight and queued tasks force-exited mid-flight, surfacing as
+`"Async executor has been shut down"` for callers that had nothing to do with the batch.
+
+#5665 diagnosed this and shipped a cheap interim mitigation (GraphBatch toggling the flags once per batch instead of
+once per flush), explicitly deferring the real fix: `AsyncThread.run()` applied both flags only once, at thread
+start, so respawning the thread was the only way a change could ever become visible to it. A production log (#6505)
+showed the interim mitigation is not enough under real multi-writer concurrency: six threads on one database,
+including a `GraphBatch` import running alongside a `DELETE ... BATCH` loop, produced 2,183 `InterruptedIOException`s
+over about seven hours from the pool teardown interrupting unrelated in-progress LSM compactions, and one of those
+races escalated into fencing the entire database when a commit's `onAfterCommit()` hook tried to schedule a
+compaction at the exact moment the pool was mid-recreate (fixed separately by #6505 hardening the compaction
+scheduler against that specific escalation).
+
+The proper fix, per #5665's own diagnosis: `AsyncThread.executeTask()` now re-applies `transactionUseWAL`/
+`transactionSync` to the worker's transaction before every task, instead of `run()` applying them once. The setters
+are now plain volatile writes with no `createThreads()` call at all, so a changed durability policy is picked up by
+whichever worker runs the next task - and by the commit that follows it - without any thread ever being torn down,
+and without disturbing whatever unrelated work is queued on the rest of the pool.
+
+[#6509](https://github.com/ArcadeData/arcadedb/issues/6509)

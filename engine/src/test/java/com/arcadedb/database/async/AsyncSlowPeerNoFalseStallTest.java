@@ -50,8 +50,8 @@ class AsyncSlowPeerNoFalseStallTest extends TestHelper {
     db.getConfiguration().setValue(GlobalConfiguration.ASYNC_OPERATIONS_QUEUE_SIZE, 2); // CAPACITY 1 PER WORKER
     final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) db.async();
     async.setParallelLevel(2);
-    // Force thread re-creation so the queue size above is picked up regardless of the previous level.
-    async.setTransactionUseWAL(true);
+    // Force thread re-creation (#6509: setTransactionUseWAL() no longer does this) so the queue size above is picked up regardless of the previous level.
+    async.recreateThreadsForTests();
     // 500ms window: the old code threw after ONE flat window (~500ms), the fixed code needs three
     // (1.5s); the slow peer is released after ~700ms, comfortably between the two bounds.
     async.setCheckForStalledQueuesMaxDelay(500);

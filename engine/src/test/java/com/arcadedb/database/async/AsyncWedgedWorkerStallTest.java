@@ -54,8 +54,8 @@ class AsyncWedgedWorkerStallTest extends TestHelper {
     db.getConfiguration().setValue(GlobalConfiguration.ASYNC_OPERATIONS_QUEUE_SIZE, 2);
     final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) db.async();
     async.setParallelLevel(1);
-    // Force thread re-creation so the queue size above is picked up regardless of the previous level.
-    async.setTransactionUseWAL(true);
+    // Force thread re-creation (#6509: setTransactionUseWAL() no longer does this) so the queue size above is picked up regardless of the previous level.
+    async.recreateThreadsForTests();
     async.setCheckForStalledQueuesMaxDelay(50);
 
     final CountDownLatch wedgeStarted = new CountDownLatch(1);

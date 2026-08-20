@@ -43,8 +43,8 @@ class AsyncStallDetectorFalsePositiveTest extends TestHelper {
     db.getConfiguration().setValue(GlobalConfiguration.ASYNC_OPERATIONS_QUEUE_SIZE, 2);
     final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) db.async();
     async.setParallelLevel(1);
-    // Force thread re-creation so the queue size above is picked up regardless of the previous level.
-    async.setTransactionUseWAL(true);
+    // Force thread re-creation (#6509: setTransactionUseWAL() no longer does this) so the queue size above is picked up regardless of the previous level.
+    async.recreateThreadsForTests();
     // 300ms window: the 1.2s head task is 4x the old 2-window false-positive bound, while staying
     // well below the wedged-worker backstop (STALLED_NO_PROGRESS_WINDOWS x 300ms = 3.6s), which
     // must not fire for a single legitimately slow task.

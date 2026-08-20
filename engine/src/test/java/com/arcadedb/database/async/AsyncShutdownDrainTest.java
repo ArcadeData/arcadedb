@@ -46,8 +46,8 @@ class AsyncShutdownDrainTest extends TestHelper {
     db.getConfiguration().setValue(GlobalConfiguration.ASYNC_OPERATIONS_QUEUE_SIZE, 4);
     final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) db.async();
     async.setParallelLevel(1);
-    // Force thread re-creation so the queue size above is picked up regardless of the previous level.
-    async.setTransactionUseWAL(true);
+    // Force thread re-creation (#6509: setTransactionUseWAL() no longer does this) so the queue size above is picked up regardless of the previous level.
+    async.recreateThreadsForTests();
 
     final CountDownLatch blockerStarted = new CountDownLatch(1);
     async.scheduleTask(0, blockerTask(blockerStarted, 10_000), true, 0);
@@ -71,8 +71,8 @@ class AsyncShutdownDrainTest extends TestHelper {
     db.getConfiguration().setValue(GlobalConfiguration.ASYNC_OPERATIONS_QUEUE_SIZE, 2);
     final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) db.async();
     async.setParallelLevel(1);
-    // Force thread re-creation so the queue size above is picked up regardless of the previous level.
-    async.setTransactionUseWAL(true);
+    // Force thread re-creation (#6509: setTransactionUseWAL() no longer does this) so the queue size above is picked up regardless of the previous level.
+    async.recreateThreadsForTests();
 
     final CountDownLatch blockerStarted = new CountDownLatch(1);
     async.scheduleTask(0, blockerTask(blockerStarted, 15_000), true, 0);
@@ -123,8 +123,8 @@ class AsyncShutdownDrainTest extends TestHelper {
       // #5105 review: pin the join timeout small so the <15s bound is self-contained (not coupled to the
       // 10s shutdownJoinTimeoutMs default) - the force-shutdown here is offer -> join -> interrupt -> join.
       async.shutdownJoinTimeoutMs = 2_000;
-      // Force thread re-creation so the parallel level above is picked up.
-      async.setTransactionUseWAL(true);
+      // Force thread re-creation (#6509: setTransactionUseWAL() no longer does this) so the parallel level above is picked up.
+      async.recreateThreadsForTests();
 
       final CountDownLatch blockerStarted = new CountDownLatch(1);
       // Wedged far longer than the 1s close timeout and than the bound below: pre-fix, the unbounded
@@ -173,7 +173,7 @@ class AsyncShutdownDrainTest extends TestHelper {
       async.setParallelLevel(1);
       // #5105 review: pin the join timeout small so the assertion is not coupled to the 10s default.
       async.shutdownJoinTimeoutMs = 2_000;
-      async.setTransactionUseWAL(true);
+      async.recreateThreadsForTests();
 
       final CountDownLatch blockerStarted = new CountDownLatch(1);
       // Signals iff the worker actually receives an interrupt: on the pre-fix code the caller's set flag

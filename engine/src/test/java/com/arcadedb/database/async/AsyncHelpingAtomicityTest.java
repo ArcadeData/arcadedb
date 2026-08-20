@@ -49,8 +49,8 @@ class AsyncHelpingAtomicityTest extends TestHelper {
 
     final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) db.async();
     async.setParallelLevel(2);
-    // Force thread re-creation so the queue size above is picked up regardless of the previous level.
-    async.setTransactionUseWAL(true);
+    // Force thread re-creation (#6509: setTransactionUseWAL() no longer does this) so the queue size above is picked up regardless of the previous level.
+    async.recreateThreadsForTests();
     async.setCommitEvery(1); // EVERY TASK BOUNDARY COMMITS: A NESTED EXECUTION WOULD COMMIT IMMEDIATELY
 
     final List<Throwable> errors = new CopyOnWriteArrayList<>();

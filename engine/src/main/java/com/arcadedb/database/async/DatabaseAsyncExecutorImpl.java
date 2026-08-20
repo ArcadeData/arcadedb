@@ -72,7 +72,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   private volatile AsyncThread[]     executorThreads;
   private final Object               lifecycleLock                 = new Object();
   // #4961: these settings are written by user threads and read by the worker threads, so they must
-  // be volatile or a change applied after createThreads() may never become visible to the workers.
+  // be volatile or a change may never become visible to the workers. parallelLevel only ever changes
+  // via createThreads() (setParallelLevel), which visibility naturally piggybacks on; transactionUseWAL
+  // and transactionSync are read directly by AsyncThread.executeTask() on every task instead (#6509).
   private volatile int               parallelLevel                 = 1;
   private volatile int               commitEvery;
   private volatile int               backPressurePercentage        = 0;
@@ -224,6 +226,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       DatabaseContext.INSTANCE.init(database);
 
       DatabaseContext.INSTANCE.getContext(database.getDatabasePath()).perThreadBucketSelection = true;
+      // Seeds the transaction this thread is about to begin; executeTask() re-applies both on every
+      // task afterwards (#6509), so a later change is picked up without needing this thread respawned.
       database.getTransaction().setUseWAL(transactionUseWAL);
       database.setWALFlush(transactionSync);
       database.getTransaction().begin(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED); // FORCE THE LOWEST LEVEL
@@ -282,6 +286,14 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
         if (message.requiresActiveTx() && !database.isTransactionActive())
           database.begin();
+
+        // #6509: applied per task, not once at thread start (see run()). setTransactionUseWAL()/
+        // setTransactionSync() are plain volatile writes now, so the latest requested durability
+        // policy is picked up here on the very next task and carried into whichever commit follows -
+        // the commitEvery boundary below or the final commit in run() - instead of requiring the
+        // whole pool to be torn down and respawned for the change to become visible.
+        database.getTransaction().setUseWAL(transactionUseWAL);
+        database.setWALFlush(transactionSync);
 
         message.execute(this, database);
 
@@ -375,8 +387,10 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
   @Override
   public void setTransactionUseWAL(final boolean transactionUseWAL) {
+    // #6509: a plain volatile write. AsyncThread.executeTask() re-applies this to the worker's
+    // TransactionContext before every task, so the new value takes effect on the very next task
+    // without tearing down and respawning the whole pool (the #5665 mechanism this replaces).
     this.transactionUseWAL = transactionUseWAL;
-    createThreads(parallelLevel);
   }
 
   @Override
@@ -391,8 +405,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
   @Override
   public void setTransactionSync(final WALFile.FlushType transactionSync) {
+    // #6509: see setTransactionUseWAL() above - same plain-volatile-write treatment.
     this.transactionSync = transactionSync;
-    createThreads(parallelLevel);
   }
 
   public long getCheckForStalledQueuesMaxDelay() {
@@ -442,13 +456,15 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       scheduled = scheduleTask(getBestSlot(), new DatabaseAsyncIndexCompaction(index), false, 0);
     } catch (final DatabaseOperationException e) {
       // #6505: getBestSlot()/scheduleTask throw the SAME "shut down" exception for a genuine terminal close()/
-      // kill() (#4955, the case this was written for) and for the momentary window setTransactionUseWAL()/
-      // setTransactionSync() leaves while createThreads() tears down and respawns the whole pool for an
-      // UNRELATED caller (issue #5665) - the pool is back within milliseconds, but this onAfterCommit hook runs
-      // AFTER writeTransactionToWAL(), so letting the exception escape crossed the WAL point of no return and
-      // fenced the entire database (#5053) over a best-effort scheduling hiccup that had nothing to do with the
-      // committing transaction's data. This finally hands the reservation back exactly like the full-queue case
-      // above: no compaction is lost, it is picked up by the next commit past the threshold.
+      // kill() (#4955, the case this was written for) and for the momentary window createThreads() leaves while
+      // it tears down and respawns the whole pool for an UNRELATED caller (issue #5665 - setTransactionUseWAL()/
+      // setTransactionSync() used to trigger this on every GraphBatch open/close; #6509 removed that path, but
+      // setParallelLevel() still goes through createThreads() and leaves the same momentary window) - the pool
+      // is back within milliseconds, but this onAfterCommit hook runs AFTER writeTransactionToWAL(), so letting
+      // the exception escape crossed the WAL point of no return and fenced the entire database (#5053) over a
+      // best-effort scheduling hiccup that had nothing to do with the committing transaction's data. This finally
+      // hands the reservation back exactly like the full-queue case above: no compaction is lost, it is picked up
+      // by the next commit past the threshold.
       LogManager.instance().log(this, Level.WARNING, "Could not schedule compaction of index '%s': %s", null,
           index, e.getMessage());
     } finally {
@@ -1286,8 +1302,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   }
 
   // Package-private test hook (#5072 review, point 4): rebuilds the worker pool so configuration
-  // changes (e.g. ASYNC_OPERATIONS_QUEUE_SIZE) are picked up deterministically, instead of the
-  // tests relying on setTransactionUseWAL()'s createThreads() side effect.
+  // changes (e.g. ASYNC_OPERATIONS_QUEUE_SIZE) are picked up deterministically. Originally an
+  // alternative to tests relying on setTransactionUseWAL()'s createThreads() side effect; #6509
+  // removed that side effect, making this the only way to force a rebuild from a test.
   void recreateThreadsForTests() {
     createThreads(parallelLevel);
   }
