@@ -44,3 +44,53 @@ with the rest via the existing `intersectPerProperty`.
 ## Verification
 
 - `mvn -o -pl engine -am test -Dtest=Issue6427ContainsTextSamePropertyTwiceTest,Issue6414ContainsTextMultiPropertyIndexTest,Issue6382ContainsTextColonTest,Issue6438ContainsTextNonStringArgumentTest -DexcludedGroups=benchmark,vector`
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/6523
+
+## Review cycles
+
+Ran the full `--max-cycles=4` budget; every cycle's `claude` review carried genuine, minor
+feedback that was addressed with a follow-up commit (no cycle reached a clean approval).
+
+- **Cycle 1** (head `1c33ce82`): review flagged one doc-precision nit - a `{@link}` in
+  `FetchFromIndexStep.processFullTextBlock`'s Javadoc pointed at `LSMTreeFullTextIndex#get(Object[],
+  int)` for the list-slot expansion, when the expansion actually happens in `splitPositionalKey`.
+  Fixed in `d1902efe`.
+- **Cycle 2** (head `d1902efe`): review raised an edge case - a property indexed under two modifiers
+  sharing one base name (e.g. `m by key`, `m by value`) with two repeated `CONTAINSTEXT` conditions on
+  that base name resolves both conditions to the FIRST matching index property only; the other modifier
+  is never queried. Confirmed (via a throwaway experiment, not committed) that this pre-dates #6427 -
+  even a single such condition already only ever queried the first modifier - and that two repeated
+  conditions used to bail to the generic path entirely pre-fix, so this is a net improvement, not a
+  regression. Documented the limitation in a Javadoc/comment (the reviewer's "either a test or a doc
+  note" option) rather than a test, since correctly pinning that interaction needs deeper investigation
+  into MAP `BY KEY`/`BY VALUE` full-text indexing that is out of scope for this bug fix. Also applied
+  the review's mechanical nit, `@SuppressWarnings("unchecked")` on the accumulator cast. Fixed in `0550c622`.
+- **Cycle 3** (head `0550c622`): review confirmed the dual-modifier analysis independently (same
+  conclusion: net improvement, not a regression) and had one style nit - scope
+  `@SuppressWarnings("unchecked")` to the single cast rather than the whole method. Fixed in `1177c751`.
+- **Cycle 4** (head `1177c751`): review was positive overall, with one optional, non-blocking test-
+  coverage suggestion - no test combined a repeated same-property condition with a null-valued repeated
+  condition on that same property. Added
+  `Issue6427ContainsTextSamePropertyTwiceTest.aNullValuedRepeatedConditionOnTheSamePropertyMatchesNothing`.
+  Fixed in `0ab777b3`.
+
+Max-cycles (4) reached after the cycle-4 push; the loop stops there per the skill's constraints rather
+than polling a 5th time. `0ab777b3` (the final head at the time this doc was written) had not yet been
+reviewed when the loop ended.
+
+## Deferred / left to the developer
+
+- Cycle 2's review suggested (optionally) filing a tracking GitHub issue for the dual-modifier
+  (`BY KEY`/`BY VALUE` sharing a base property name) position-resolution limitation, "if you want it
+  discoverable later." Not filed by this automated run - filing new issues is a developer judgment call,
+  and the limitation is already recorded in `FetchFromIndexStep.processFullTextBlock`'s Javadoc. Left for
+  the developer to file if they want a tracking issue.
+
+## Final state
+
+`max-cycles-reached` - every review cycle's feedback was addressed with a commit; none were a clean
+approval outright, and the 4-cycle budget was exhausted before one arrived. Merge remains the developer's
+call.
