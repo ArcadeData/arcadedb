@@ -1789,9 +1789,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       try {
         this.graphIndex = null;
         this.searchVectorCache = null;
-        final GraphSearcherPool searchers = searcherPool;
-        if (searchers != null)
-          searchers.clear();
+        releasePooledSearchers();
       } finally {
         lock.writeLock().unlock();
       }
@@ -2184,6 +2182,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
         try {
           this.ordinalToVectorId = filteredVectorIds;
           this.graphIndex = null;
+          // Nulling the field is not enough to free the graph: a pooled searcher holds the graph it was pooled
+          // under (issue #6503). Normally borrow() drains the pool when it notices the identity moved, but this
+          // path leaves no graph to search, and findNeighborsFromVector() returns on `graphIndex == null` BEFORE
+          // it ever borrows - so nothing would ever drain it, and an index whose vectors were all deleted would
+          // keep its last full graph resident for the life of the index object.
+          releasePooledSearchers();
           mutationsSinceSerialize.addAndGet(-mutationsAtBuildStart);
           this.graphState = deltaVectors.isEmpty() ? GraphState.IMMUTABLE : GraphState.MUTABLE;
         } finally {
@@ -2526,6 +2530,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
       lock.writeLock().lock();
       try {
         this.graphIndex = builtGraph;
+        // Hand the PREVIOUS generation back now rather than at the next search. borrow() drains the pool when it
+        // sees the identity has moved, so this is not a correctness fix - a stale searcher is never handed out -
+        // but "the next search" is not a promise on an index that has just rebuilt and gone quiet, which is the
+        // ordinary shape after an inactivity-timer rebuild. Until that search arrives the pool keeps the whole
+        // old graph reachable, and this is the exact moment heap is tightest: the new graph is live and the
+        // build's working set has not been collected yet (issue #6503).
+        releasePooledSearchers();
         // Track graph rebuild metric
         metrics.incrementGraphRebuildCount();
         // A build got through, so whatever heap shortage deferred the last online attempt is no longer in the
@@ -5906,17 +5917,32 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // that already exists. initializeGraphIndex() already draws exactly this
       // distinction with the same predicate.
       final boolean graphAlreadyOnDisk = graphFile != null && graphFile.hasPersistedGraph();
-      if (vectorIndex.size() > 0 && (graphState == GraphState.MUTABLE
-          || (graphState == GraphState.LOADING && !graphAlreadyOnDisk))) {
+      final boolean needsBuild = vectorIndex.size() > 0 && (graphState == GraphState.MUTABLE
+          || (graphState == GraphState.LOADING && !graphAlreadyOnDisk));
+
+      if (needsBuild && !valid) {
+        // Background resources are already gone, so there is no build pool to run this on - and asking for one
+        // would not fail, it would quietly BUILD one: getOrCreateGraphBuildPool() replaces a shut-down pool, and
+        // nothing would ever shut the replacement down, because the releasing step has already happened
+        // (issue #6518). Skipping costs a rebuild on the next open; building here would cost a leaked pool for
+        // the life of the process. WARNING rather than FINE precisely because this should not be reachable: both
+        // close paths flush BEFORE releasing, so seeing this means a caller inverted them.
+        LogManager.instance().log(this, Level.WARNING,
+            "Not building the graph of vector index %s on flush: its background resources have already been "
+                + "released, so the build has no pool to run on and would leak a new one. The %d pending vectors "
+                + "stay on disk and are re-indexed on the next open. This means flush() was called after "
+                + "releaseBackgroundResources() - both close paths are supposed to do the reverse",
+            indexName, mutationsSinceSerialize.get());
+      } else if (needsBuild) {
         try {
           LogManager.instance()
               .log(this, Level.FINE, "Building graph before close for index: %s (this may take 1-2 minutes for large datasets)",
                   indexName);
           final long startTime = System.currentTimeMillis();
-          // Releases the resident graph and search cache before building the replacement (issue #6503): by this
-          // point status is UNAVAILABLE and releaseBackgroundResources() has already cleared the pooled searchers,
-          // so nothing can still be reading either one, and a from-scratch build otherwise retains both for the
-          // whole build on top of its own working set.
+          // Releases the resident graph, the search cache and the pooled searchers before building the
+          // replacement (issue #6503): status is UNAVAILABLE by this point and a closing database sends no
+          // further requests, so nothing can still be reading them, and a from-scratch build otherwise retains
+          // all three for the whole build on top of its own working set.
           buildGraphFromScratchReleasingResidentGraph(null);
           final long elapsed = System.currentTimeMillis() - startTime;
           LogManager.instance().log(this, Level.FINE, "Graph building completed in %d seconds", elapsed / 1000);
@@ -5933,10 +5959,21 @@ public class LSMVectorIndex implements Index, IndexInternal {
     }
   }
 
+  /**
+   * Flush FIRST, release SECOND - the same order {@code LocalDatabase.closeDurableParts()} uses, and for the
+   * reason stated there: an index whose graceful shutdown is a graph build needs its build pool alive for it.
+   * <p>
+   * The reverse order silently leaked a whole pool (issue #6518). {@link #releaseBackgroundResources()} shuts the
+   * graph-build pool down, and {@link #getOrCreateGraphBuildPool()} treats a shut-down pool as one to REPLACE, so
+   * a {@link #flush()} that followed it built a brand new pool, ran the rebuild on that, and left it running -
+   * nothing shuts a pool down after the release step has already happened. Measured on a dirty 200-vector index:
+   * 17 live worker threads on an index that is closed and marked invalid, with the graph persisted correctly, so
+   * nothing failed and nothing said anything. That is what issue #5418 was filed for, reached through another door.
+   */
   @Override
   public void close() {
-    releaseBackgroundResources();
     flush();
+    releaseBackgroundResources();
   }
 
   /**
@@ -6779,6 +6816,26 @@ public class LSMVectorIndex implements Index, IndexInternal {
       }
       return pool;
     }
+  }
+
+  /**
+   * Drops every pooled searcher, and with them the references they hold to the graph they were pooled under.
+   * <p>
+   * Call this wherever {@link #graphIndex} stops pointing at the graph the pool was populated for. Nulling or
+   * replacing that field frees nothing on its own: a pooled searcher keeps its own reference to the graph, so
+   * the outgoing generation stays reachable until something empties the pool (issue #6503). {@code borrow()}
+   * does empty it on the next search that notices the identity moved, which is why this is a memory concern and
+   * never a correctness one - but "the next search" is not a promise, and on the two paths that call this it is
+   * either far away (an index that rebuilt and went idle) or never (an index emptied of vectors, where the
+   * search path returns before it borrows).
+   * <p>
+   * Cheap enough to call under the write lock: the pool is bounded at a small multiple of the core count, and
+   * closing an on-heap searcher's view is a documented no-op.
+   */
+  private void releasePooledSearchers() {
+    final GraphSearcherPool searchers = searcherPool;
+    if (searchers != null)
+      searchers.clear();
   }
 
   /**
