@@ -2452,8 +2452,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
       }
       if (!unreachableEntries.isEmpty())
         LogManager.instance().log(this, Level.WARNING,
-            "Graph build left %d of %d vectors unreachable for index %s: serving them from the delta scan until the "
-                + "next rebuild", unreachableEntries.size(), finalActiveVectorIds.length, indexName);
+            "Graph build left %d of %d vectors unreachable for index %s: serving them from the delta scan. A later "
+                + "rebuild does not repair this - a Vamana build orphans a fresh set - so the count does not "
+                + "converge downwards", unreachableEntries.size(), finalActiveVectorIds.length, indexName);
 
       // Reacquire write lock to update graph state
       lock.writeLock().lock();
@@ -2470,6 +2471,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
           if (e.vectorId >= deltaSnapshotId)
             remaining.add(e);
 
+        // Entries inserted DURING the rebuild are genuinely pending: a later rebuild incorporates them, so they
+        // must keep the index MUTABLE. Nodes this build left unreachable are not pending work. They are already
+        // in the graph file, the delta scan already serves them, and a rebuild does not remove them - a Vamana
+        // build simply orphans a fresh set, so the count does not converge downwards. Deriving graphState from
+        // both collapses "has unflushed writes" into "has orphans", and flush() - which tests graphState alone,
+        // unlike rebuildGraphBeforeSearch() - then rebuilds the whole graph when a session that built or wrote
+        // closes, with nothing to flush. The mutation counter is already guarded against this same loop above
+        // ("would rebuild itself forever"); the state flag was not.
+        final boolean hasPendingWrites = !remaining.isEmpty();
+
         remaining.addAll(unreachableEntries);
 
         this.deltaVectors = remaining;
@@ -2481,8 +2492,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
         if (mutationsSinceSerialize.get() <= 0)
           cancelInactivityRebuildTimer();
 
-        // Only transition to IMMUTABLE if no new mutations arrived during rebuild
-        this.graphState = remaining.isEmpty() ? GraphState.IMMUTABLE : GraphState.MUTABLE;
+        // Only transition to IMMUTABLE if no new mutations arrived during rebuild. Nodes this build orphaned are
+        // deliberately not consulted here - see hasPendingWrites above.
+        this.graphState = hasPendingWrites ? GraphState.MUTABLE : GraphState.IMMUTABLE;
       } finally {
         lock.writeLock().unlock();
       }
