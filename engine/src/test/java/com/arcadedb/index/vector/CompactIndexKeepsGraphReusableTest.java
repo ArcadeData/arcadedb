@@ -35,26 +35,28 @@ import java.util.Random;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * A persisted vector graph must survive {@code COMPACT INDEX} and stay reusable across reopens.
+ * A persisted vector graph must survive {@code COMPACT INDEX} and stay reusable across reopens, with no
+ * rebuild and no orphaned file left behind by the compaction itself.
  * <p>
- * {@code getOrCreateGraphFile()} built the graph file's path from {@code mutable.getFilePath()}, which already
- * carries the {@code .<fileId>.<pageSize>.v<version>.lsmvecidx} suffix. {@code ComponentFile} derives a
- * component's registered name from its path, so the graph registered as
+ * Two defects compounded here (issue #6495). First, {@code getOrCreateGraphFile()} built the graph file's
+ * path from {@code mutable.getFilePath()}, which already carries the
+ * {@code .<fileId>.<pageSize>.v<version>.lsmvecidx} suffix. {@code ComponentFile} derives a component's
+ * registered name from its path, so the graph registered as
  * {@code <index>.<fileId>.<pageSize>.v<version>.lsmvecidx_vecgraph} while
- * {@code discoverAndLoadGraphFile()} looks for {@code <mutable.getName()>_vecgraph}. The two can never match,
- * so every open failed to find a graph, rebuilt from scratch, and wrote one more file that would never be
- * found either.
+ * {@code discoverAndLoadGraphFile()} looks for {@code <mutable.getName()>_vecgraph}. The two could never
+ * match, so every open failed to find a graph, rebuilt from scratch, and wrote one more file that would
+ * never be found either - unbounded growth on every reopen.
  * <p>
- * Compaction is what exposes it: {@code rewriteDataFileWithLiveEntries()} renames the index, so the graph
- * registered under the pre-compaction name stops matching and the lazy path takes over from there on.
+ * Second, even with that path fixed, compaction itself ({@code rewriteDataFileWithLiveEntries()}) renames
+ * the index but leaves the in-memory {@code graphFile} reference pointing at the file registered under the
+ * pre-compaction name, so the graph the compaction rebuilds gets persisted back into that same
+ * now-unreachable file: correct content, unreachable name. The persist step now drops that stale reference
+ * before it is read, letting {@code getOrCreateGraphFile()} register a fresh file under the CURRENT name -
+ * the one {@code discoverAndLoadGraphFile()} will actually look for - and drops the superseded file the same
+ * way compaction already drops the mutable/compacted components it replaces.
  * <p>
- * Before the fix the file count grows without bound and every reopen rebuilds. This test pins what the path
- * fix achieves: the graph written on the FIRST open after compaction is found again by every later open, so
- * the count stabilises and no further rebuild happens.
- * <p>
- * One orphan remains, the graph registered under the pre-compaction name. Removing it needs the compaction
- * path to re-register the component under the new name, which sits inside a critical section documented as
- * needing its statements kept adjacent, so it is left as a follow-up rather than attempted here.
+ * This test pins the fully closed loop: after {@code COMPACT INDEX}, not even the first reopen has to
+ * rebuild, and the {@code .vecgraph} file count never grows past the one file compaction leaves behind.
  */
 @Tag("vector")
 class CompactIndexKeepsGraphReusableTest {
@@ -89,7 +91,12 @@ class CompactIndexKeepsGraphReusableTest {
       db.close();
     }
 
-    int settledFileCount = -1;
+    // Compaction itself already persists the graph under a name the next open can find: nothing between here
+    // and the first reopen should add or remove a single .vecgraph file.
+    final int settledFileCount = countGraphFiles();
+    assertThat(settledFileCount)
+        .as("COMPACT INDEX must leave exactly one .vecgraph file behind, not one orphan plus a replacement")
+        .isEqualTo(1);
 
     for (int open = 1; open <= REOPENS; open++) {
       try (final DatabaseFactory factory = new DatabaseFactory(DB_PATH)) {
@@ -98,21 +105,16 @@ class CompactIndexKeepsGraphReusableTest {
         final LSMVectorIndex lsm = (LSMVectorIndex) idx.getIndexesOnBuckets()[0];
         waitForGraph(db, lsm);
 
-        if (open > 1)
-          assertThat(lsm.getStats().get("graphRebuildCount"))
-              .as("open %d rebuilt the graph; the one written on the first open after compaction should have "
-                  + "been found and reused", open)
-              .isEqualTo(0L);
+        assertThat(lsm.getStats().get("graphRebuildCount"))
+            .as("open %d rebuilt the graph; the one compaction persisted should have been found and reused",
+                open)
+            .isEqualTo(0L);
         db.close();
       }
 
-      final int now = countGraphFiles();
-      if (open == 1)
-        settledFileCount = now;
-      else
-        assertThat(now)
-            .as("open %d left another .vecgraph behind; after the first open the count must not grow", open)
-            .isEqualTo(settledFileCount);
+      assertThat(countGraphFiles())
+          .as("open %d left another .vecgraph behind; the count must never grow past the settled one", open)
+          .isEqualTo(settledFileCount);
     }
   }
 
