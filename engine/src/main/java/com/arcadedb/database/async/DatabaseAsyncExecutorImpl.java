@@ -285,22 +285,33 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
             .log(this, Level.FINE, "Received async message %s (threadId=%d)", message,
                 Thread.currentThread().getId());
 
-        // #6509 review: useWAL/walFlush are read only at commit time and then govern the WHOLE
-        // accumulated transaction (TransactionContext.commit1stPhase/commit2ndPhase), not per write - so
-        // an already-open transaction that straddles a flag change would silently commit EARLIER tasks
-        // (queued by a caller unrelated to whoever changed the flag) under a durability policy they
-        // never asked for. Before #6509 this could not happen: a flag flip tore down and respawned the
-        // whole pool, and each worker's shutdown path committed its pending transaction under the STILL
-        // original flags before the new thread began a fresh one with the new flags. That "a flag change
-        // always starts a fresh transaction" guarantee is preserved here explicitly instead: if a
-        // transaction is already open and was last stamped with different flags than are current now,
-        // close it out under its own (unmodified) flags before this task touches anything, then let the
-        // check below open a new one that picks up the new flags cleanly. Guarded by !nested for the
-        // same reason as the commitEvery boundary below: a nested commit would commit an enclosing
-        // task's partial writes.
+        // #6509 review: transactionUseWAL/transactionSync are volatile and can be changed concurrently by
+        // ANY other thread calling setTransactionUseWAL()/setTransactionSync() (another GraphBatch
+        // open/close, a direct caller) - exactly the multi-writer scenario this fix is about. Reading them
+        // twice below (once for the boundary check, once for the stamp) would let a flip land in between:
+        // the check would see the transaction's flags still matching the about-to-be-stale value and skip
+        // the boundary commit, then the stamp would apply the NEW value anyway - silently committing
+        // earlier tasks' writes under a policy they never asked for the same way an unguarded flip would,
+        // just through a narrow race instead of a guaranteed ordering. One snapshot, reused for both,
+        // makes the two agree by construction.
+        final boolean           currentUseWAL = transactionUseWAL;
+        final WALFile.FlushType currentSync   = transactionSync;
+
+        // useWAL/walFlush are read only at commit time and then govern the WHOLE accumulated transaction
+        // (TransactionContext.commit1stPhase/commit2ndPhase), not per write - so an already-open
+        // transaction that straddles a flag change would silently commit EARLIER tasks (queued by a caller
+        // unrelated to whoever changed the flag) under a durability policy they never asked for. Before
+        // #6509 this could not happen: a flag flip tore down and respawned the whole pool, and each
+        // worker's shutdown path committed its pending transaction under the STILL original flags before
+        // the new thread began a fresh one with the new flags. That "a flag change always starts a fresh
+        // transaction" guarantee is preserved here explicitly instead: if a transaction is already open and
+        // was last stamped with different flags than the snapshot above, close it out under its own
+        // (unmodified) flags before this task touches anything, then let the check below open a new one
+        // that picks up the new flags cleanly. Guarded by !nested for the same reason as the commitEvery
+        // boundary below: a nested commit would commit an enclosing task's partial writes.
         if (!nested && database.isTransactionActive()) {
           final TransactionContext activeTx = database.getTransaction();
-          if (activeTx.isUseWAL() != transactionUseWAL || activeTx.getWALFlush() != transactionSync) {
+          if (activeTx.isUseWAL() != currentUseWAL || activeTx.getWALFlush() != currentSync) {
             try {
               database.commit();
             } catch (final Throwable e) {
@@ -312,6 +323,15 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
               // if the failure left the database unusable, the begin()/execute() below will fail too,
               // for a reason that legitimately belongs to `message`.
               onError(e);
+              // #6509 review: TransactionContext.commit()'s own failure paths always leave the
+              // transaction inactive (rollback()/reset() run in every catch/finally there), but
+              // LocalDatabase.commit() wraps the call in executeInReadLock(...), so a failure originating
+              // outside TransactionContext (e.g. the read-lock acquisition) is not provably covered by
+              // that guarantee. Made unconditional here rather than relying on it: without this, a
+              // still-active transaction would skip begin() below and the stamp would land on the same
+              // stale, mismatched transaction the boundary commit was trying to close out.
+              if (database.isTransactionActive())
+                database.rollback();
             }
           }
         }
@@ -321,11 +341,18 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
         // Applied per task, not once at thread start (see run()): setTransactionUseWAL()/
         // setTransactionSync() are plain volatile writes now, so the latest requested durability policy
-        // is picked up here - on a transaction that, by the guard above, either just began or was
-        // already running under this same policy - instead of requiring the whole pool to be torn down
-        // and respawned for the change to become visible.
-        database.getTransaction().setUseWAL(transactionUseWAL);
-        database.setWALFlush(transactionSync);
+        // is picked up here - on a transaction that, by the guard above, either just began or was already
+        // running under this same (snapshotted) policy - instead of requiring the whole pool to be torn
+        // down and respawned for the change to become visible. Guarded by !nested for the same reason as
+        // the boundary-commit check above: today `nested` is always false (the helping path defers instead
+        // of nesting), but restamping here unconditionally would, if that ever changed, let a nested task
+        // silently re-stamp the still-open transaction of the outer, suspended task it is nested inside -
+        // bypassing the boundary-commit guard entirely rather than merely skipping the commitEvery boundary
+        // the way the existing !nested guards below document.
+        if (!nested) {
+          database.getTransaction().setUseWAL(currentUseWAL);
+          database.setWALFlush(currentSync);
+        }
 
         message.execute(this, database);
 
