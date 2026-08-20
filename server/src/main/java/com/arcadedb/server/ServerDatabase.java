@@ -690,6 +690,11 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
+  public boolean isFencedForRecovery() {
+    return wrapped.isFencedForRecovery();
+  }
+
+  @Override
   public String toString() {
     return wrapped.toString();
   }

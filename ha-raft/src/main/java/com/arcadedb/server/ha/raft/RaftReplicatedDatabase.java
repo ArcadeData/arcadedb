@@ -1557,6 +1557,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   @Override
+  public boolean isFencedForRecovery() {
+    return proxied.isFencedForRecovery();
+  }
+
+  @Override
   public String toString() {
     return proxied.toString() + "[" + server.getServerName() + "]";
   }
