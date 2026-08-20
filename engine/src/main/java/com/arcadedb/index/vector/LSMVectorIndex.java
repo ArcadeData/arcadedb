@@ -2586,9 +2586,32 @@ public class LSMVectorIndex implements Index, IndexInternal {
         lock.writeLock().unlock();
       }
 
+      // COMPACT INDEX just renamed this index above (rewriteDataFileWithLiveEntries sets indexName to the new
+      // mutable's name), but getOrCreateGraphFile() only derives a fresh path when graphFile is null: left
+      // alone, it would silently overwrite the pre-compaction graph file in place, still registered under a
+      // name discoverAndLoadGraphFile() can no longer find on the next open - the one orphan and one avoidable
+      // rebuild issue #6495's fix otherwise still leaves behind. Dropping the reference here, immediately
+      // before it is read, makes the persist step below register a fresh file under the CURRENT name instead,
+      // so the very next open finds it - zero rebuilds, zero orphans - exactly like the mutable/compacted
+      // components a compaction replaces just above: the stale file is torn down only once its replacement
+      // (gf) actually exists, and outside any lock, because a reader that already captured it must be able to
+      // finish (see dropReplacedComponent()).
+      final LSMVectorIndexGraphFile staleGraphFileFromCompaction = locationIndexAlreadyPublished ? graphFile : null;
+      if (staleGraphFileFromCompaction != null)
+        graphFile = null;
+
       // Persist graph to disk IMMEDIATELY in its own transaction
       // This ensures the graph is available on next database open (fast restart)
       final LSMVectorIndexGraphFile gf = getOrCreateGraphFile();
+      if (staleGraphFileFromCompaction != null) {
+        if (gf != null)
+          dropReplacedComponent(staleGraphFileFromCompaction);
+        else
+          // getOrCreateGraphFile() could not create a replacement: keep serving this session from the stale,
+          // pre-compaction file rather than losing the graph outright. It stays orphaned under its old name,
+          // exactly as before this change, and is picked up again the next time something finds graphFile null.
+          this.graphFile = staleGraphFileFromCompaction;
+      }
       if (gf != null) {
         final int totalNodes = graphIndex.getIdUpperBound();
         LogManager.instance().log(this, Level.FINE, "Writing vector graph to disk for index: %s (nodes=%d)",
