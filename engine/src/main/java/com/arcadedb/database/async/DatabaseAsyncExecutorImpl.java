@@ -302,6 +302,14 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         // runs inside (#5062 review, point 1) - the helping path defers polled tasks back to the run loop
         // instead of nesting, so `nested` is always false today; every `!nested` guard in this method is
         // defense-in-depth should a re-entrant call path ever be reintroduced.
+        //
+        // Deliberately does not touch `count`: a flag-triggered boundary commit here closes a transaction
+        // out of band from the commitEvery cadence, so the NEXT periodic boundary below can land anywhere
+        // from immediately (if `count % commitEvery` was already due) to up to `commitEvery` tasks later -
+        // it is measuring "how many tasks since the last periodic check", not "how many since the
+        // transaction last committed". Harmless: it can only make the next real commit arrive sooner or
+        // later than the nominal cadence, never mix data across a durability-policy boundary (that is what
+        // this whole method exists to prevent) or lose a task.
         final boolean forceFreshTransactionAfterBoundaryFailure =
             !nested && closeTransactionBoundaryIfDurabilityPolicyChanged(currentUseWAL, currentSync);
 
@@ -380,6 +388,13 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
      * IOException), leaving the transaction in a half-cleaned, unknown state; a caller that trusted
      * {@code isTransactionActive()} at that point would skip beginning a fresh transaction and run the next
      * task against that leftover state instead.
+     * <p>
+     * In that double-failure case the caller's {@code begin()} pushes a new nested {@code TransactionContext}
+     * (see {@code executeTask()}'s caller-side comment) and the poisoned one this method leaves behind stays
+     * on the per-thread transaction stack underneath it - nothing pops a non-top entry. It is not a permanent
+     * leak: {@code DatabaseContext}'s dead-thread sweep (and a normal database close) rolls back and clears
+     * every entry on the stack, not just the top, once this worker thread eventually ends. Until then it sits
+     * inert (only the stack top is ever read or written by later tasks) at the cost of one small object.
      */
     private boolean closeTransactionBoundaryIfDurabilityPolicyChanged(final boolean currentUseWAL,
         final WALFile.FlushType currentSync) {
