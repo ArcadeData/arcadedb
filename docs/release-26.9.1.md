@@ -3686,9 +3686,17 @@ behaviour exactly.
 **An online rebuild is now admitted only if it is expected to fit.** Before starting, the estimated peak footprint
 (the graph being built, the build cache, and - for an online rebuild - the graph being replaced) is compared
 against `arcadedb.vectorIndex.rebuildMaxHeapPercent` (default 90) of the available heap. A rebuild that does not
-fit is deferred rather than attempted: the next mutation-threshold or inactivity trigger retries it, pending
-vectors stay exactly searchable through the in-memory delta buffer meanwhile, and the deferral is both logged and
-counted (`rebuildsDeferredForMemory` in the index stats) so an index that never fits does not go stale silently.
+fit is deferred rather than attempted: a later trigger retries it, pending vectors stay exactly searchable through
+the in-memory delta buffer meanwhile, and the deferral is both logged and counted (`rebuildsDeferredForMemory` in
+the index stats) so an index that never fits does not go stale silently.
+
+A deferral leaves its own trigger intact - only a *successful* build consumes the pending mutations - so "a later
+trigger" needs a cooldown to mean anything. A search evaluates the rebuild condition on every query, so without one
+a large heap-constrained index would spawn a rebuild thread, take and release the JVM-wide rebuild permit and log a
+warning once *per query*: thread churn and contention added exactly when the JVM is already short of memory, which
+works against the deferral's own purpose. `arcadedb.vectorIndex.rebuildDeferralCooldownMs` (default 30s, 0 to
+disable) is the minimum gap before another attempt; a completed build clears it, so a stale deferral cannot keep
+gating triggers after the shortage has passed.
 The estimate is deliberately coarse and the default deliberately generous: it refuses only a rebuild that is
 confidently too large. Set the percentage to 0 to restore the previous attempt-and-hope behaviour. Only the online
 path is gated - a first build, a rebuild on close, `REBUILD INDEX` and `COMPACT INDEX` have no later trigger to

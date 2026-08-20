@@ -78,6 +78,8 @@ class Issue6503RebuildAdmissionControlTest {
         GlobalConfiguration.VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT.getDefValue());
     GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE.setValue(
         GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE.getDefValue());
+    GlobalConfiguration.VECTOR_INDEX_REBUILD_DEFERRAL_COOLDOWN_MS.setValue(
+        GlobalConfiguration.VECTOR_INDEX_REBUILD_DEFERRAL_COOLDOWN_MS.getDefValue());
     FileUtils.deleteRecursively(new File(dbPath));
   }
 
@@ -194,6 +196,95 @@ class Issue6503RebuildAdmissionControlTest {
       index.buildVectorGraphNow(null);
       assertThat(index.findNeighborsFromVector(queryVector(), 5, 64)).hasSize(5);
     });
+  }
+
+  /**
+   * A deferral does not consume the mutations that triggered it - only a successful build decrements
+   * {@code mutationsSinceSerialize} - so the trigger condition is true again the instant the deferred cycle ends,
+   * and {@code rebuildGraphBeforeSearch()} evaluates it on EVERY query. Without a cooldown a large,
+   * heap-constrained index therefore spawns a rebuild thread, takes and releases the JVM-wide permit and logs a
+   * WARNING once per search - thread churn and contention added exactly when memory is already tight, which works
+   * against the deferral's own purpose.
+   */
+  @Test
+  void repeatedTriggersWithinTheCooldownDoNotEachAttemptARebuild() {
+    withIndex(index -> {
+      GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE.setValue(UNAFFORDABLE_BUILD_CACHE_SIZE);
+      GlobalConfiguration.VECTOR_INDEX_REBUILD_DEFERRAL_COOLDOWN_MS.setValue(60_000);
+
+      // First trigger: genuinely attempts, and is genuinely declined.
+      triggerAsyncRebuildAndSettle(index);
+      assertThat(index.getStats().get("rebuildsDeferredForMemory"))
+          .as("the first trigger must actually attempt the rebuild and be declined").isEqualTo(1L);
+
+      // Every subsequent trigger inside the cooldown must be skipped before any of the work an attempt costs.
+      for (int i = 0; i < 25; i++)
+        triggerAsyncRebuildAndSettle(index);
+
+      assertThat(index.getStats().get("rebuildsDeferredForMemory"))
+          .as("25 further triggers inside the cooldown must not each spawn a rebuild thread, take the JVM-wide "
+              + "permit and log a warning: a search evaluates this trigger on every query")
+          .isEqualTo(1L);
+    });
+  }
+
+  /** The suppression above must come from the cooldown, not from some other state that stopped triggering. */
+  @Test
+  void withTheCooldownDisabledEveryTriggerAttemptsAgain() {
+    withIndex(index -> {
+      GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE.setValue(UNAFFORDABLE_BUILD_CACHE_SIZE);
+      GlobalConfiguration.VECTOR_INDEX_REBUILD_DEFERRAL_COOLDOWN_MS.setValue(0);
+
+      for (int i = 0; i < 3; i++)
+        triggerAsyncRebuildAndSettle(index);
+
+      assertThat(index.getStats().get("rebuildsDeferredForMemory"))
+          .as("0 disables the cooldown, so each trigger attempts and is declined again - which is also what "
+              + "proves the test above is measuring the cooldown and nothing else")
+          .isEqualTo(3L);
+    });
+  }
+
+  /** A successful build clears the cooldown, so a later shortage is not gated by a stale deferral. */
+  @Test
+  void aSuccessfulBuildClearsTheCooldown() {
+    withIndex(index -> {
+      GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE.setValue(UNAFFORDABLE_BUILD_CACHE_SIZE);
+      GlobalConfiguration.VECTOR_INDEX_REBUILD_DEFERRAL_COOLDOWN_MS.setValue(60_000);
+
+      triggerAsyncRebuildAndSettle(index);
+      assertThat(index.getStats().get("rebuildsDeferredForMemory")).isEqualTo(1L);
+
+      // An explicit rebuild is never declined, and completing one means the shortage is no longer in the way.
+      GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE.setValue(
+          GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE.getDefValue());
+      index.buildVectorGraphNow(null);
+
+      // Back under pressure, the very next trigger must attempt again rather than sit out the original cooldown.
+      GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE.setValue(UNAFFORDABLE_BUILD_CACHE_SIZE);
+      triggerAsyncRebuildAndSettle(index);
+      assertThat(index.getStats().get("rebuildsDeferredForMemory"))
+          .as("a completed build must clear the cooldown a previous deferral set")
+          .isEqualTo(2L);
+    });
+  }
+
+  /**
+   * Drives one online-rebuild trigger the way a search does and waits for the background thread to settle, so the
+   * assertions above read a stable state rather than racing the daemon.
+   */
+  private static void triggerAsyncRebuildAndSettle(final LSMVectorIndex index) {
+    try {
+      final Method start = LSMVectorIndex.class.getDeclaredMethod("startAsyncGraphRebuild");
+      start.setAccessible(true);
+      start.invoke(index);
+    } catch (final ReflectiveOperationException e) {
+      throw new RuntimeException(e);
+    }
+
+    final long deadline = System.currentTimeMillis() + 30_000;
+    while (index.getStats().get("asyncRebuildInProgress") != 0 && System.currentTimeMillis() < deadline)
+      Thread.onSpinWait();
   }
 
   private void withIndex(final java.util.function.Consumer<LSMVectorIndex> body) {

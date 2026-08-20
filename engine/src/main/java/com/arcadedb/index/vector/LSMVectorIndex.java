@@ -249,6 +249,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // This prevents vectorNeighbors queries from blocking for minutes on large indexes.
   private volatile Thread  asyncRebuildThread     = null;
   private volatile boolean asyncRebuildInProgress = false;
+  // When the last online rebuild was declined for lack of heap (issue #6503). A deferral does not consume the
+  // mutations that triggered it - only a successful build does - so without this the trigger is still true the
+  // instant the deferred cycle ends, and rebuildGraphBeforeSearch() runs on EVERY query: one rebuild thread, one
+  // JVM-wide permit acquire and one WARNING per search, precisely when the JVM is already short of memory.
+  private volatile long    lastRebuildDeferralMs  = 0L;
   // Incremented each time a graph build snapshots its start mutation counter. Lets callers (and tests) observe
   // that a build has passed the point after which further mutations are preserved rather than folded into the
   // build's own snapshot (issue #3683).
@@ -2523,6 +2528,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
         this.graphIndex = builtGraph;
         // Track graph rebuild metric
         metrics.incrementGraphRebuildCount();
+        // A build got through, so whatever heap shortage deferred the last online attempt is no longer in the
+        // way: clear the cooldown rather than let a stale deferral keep gating triggers (issue #6503).
+        lastRebuildDeferralMs = 0L;
         // Reset page tracking since we rebuilt from persisted pages
         currentInsertPageNum = -1;
 
@@ -3118,6 +3126,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (asyncRebuildInProgress)
       return; // Another rebuild is already running
 
+    // Still cooling down from a rebuild that did not fit the heap (issue #6503). Checked HERE, before the thread
+    // is spawned, rather than inside admitOnlineRebuild(): the point is to not pay for the attempt at all - no
+    // daemon thread, no JVM-wide permit acquire and release, no O(allocated chunks) getActiveCount() - on a path
+    // that a search reaches on every single query while the trigger condition stays true.
+    if (isCoolingDownFromRebuildDeferral())
+      return;
+
     asyncRebuildInProgress = true;
     final int mutations = mutationsSinceSerialize.get();
 
@@ -3245,6 +3260,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
       return true;
 
     metrics.incrementRebuildsDeferredForMemory();
+    // Start the cooldown BEFORE logging, so the timestamp is set no matter what the log call does.
+    lastRebuildDeferralMs = System.currentTimeMillis();
     LogManager.instance().log(this, Level.WARNING,
         "Deferring the graph rebuild of vector index %s: it needs about %d MB (%d nodes, keeping the old graph "
             + "resident so searches keep working) against %d MB of the %d MB currently available heap that %s "
@@ -3257,6 +3274,42 @@ public class LSMVectorIndex implements Index, IndexInternal {
         GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT.getKey(),
         GlobalConfiguration.VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT.getKey());
     return false;
+  }
+
+  /**
+   * Whether an online rebuild declined for lack of heap is still within its retry cooldown (issue #6503).
+   * <p>
+   * The cooldown exists because a deferral leaves its own trigger intact: {@code mutationsSinceSerialize} is only
+   * decremented by a build that actually ran, so the moment the deferred cycle ends the condition
+   * {@link #rebuildGraphBeforeSearch()} tests is true again - and that method runs on every query. Without a
+   * cooldown a large, heap-constrained index spawns a rebuild thread, acquires and releases the JVM-wide permit
+   * and logs a WARNING once per search, adding thread churn and contention exactly when memory is already tight.
+   * <p>
+   * Nothing is lost by waiting: the pending vectors stay searchable through the delta scan throughout, which is
+   * what a deferral costs in the first place.
+   *
+   * @return true when another attempt must be skipped for now
+   */
+  private boolean isCoolingDownFromRebuildDeferral() {
+    final long deferredAt = lastRebuildDeferralMs;
+    if (deferredAt == 0L)
+      return false; // nothing has been deferred yet
+
+    final long cooldownMs = getDatabase().getConfiguration()
+        .getValueAsLong(GlobalConfiguration.VECTOR_INDEX_REBUILD_DEFERRAL_COOLDOWN_MS);
+    if (cooldownMs <= 0)
+      return false; // cooldown disabled: retry on the next trigger, as before
+
+    final long elapsed = System.currentTimeMillis() - deferredAt;
+    // A backwards clock step would otherwise park the index for as long as the step lasted: treat any negative
+    // elapsed time as "the cooldown is over" rather than trusting the arithmetic.
+    if (elapsed < 0 || elapsed >= cooldownMs)
+      return false;
+
+    LogManager.instance().log(this, Level.FINE,
+        "Skipping the rebuild trigger for vector index %s: still %d ms into the %d ms cooldown from the last "
+            + "rebuild deferred for lack of heap", indexName, elapsed, cooldownMs);
+    return true;
   }
 
   /**

@@ -18,10 +18,14 @@
  */
 package com.arcadedb.index.vector;
 
+import com.arcadedb.log.LogManager;
+
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryPoolMXBean;
 import java.lang.management.MemoryType;
 import java.lang.management.MemoryUsage;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.logging.Level;
 
 /**
  * How much heap a vector-index graph build may ask for, and how much one is going to cost.
@@ -39,6 +43,16 @@ import java.lang.management.MemoryUsage;
  * of the problem being solved. {@link MemoryPoolMXBean#getCollectionUsage()} is the garbage-free reading: it is
  * the pool's occupancy measured immediately after the JVM last collected that pool, so it approximates live
  * retained data rather than allocation since the last GC.
+ * <p>
+ * <b>Two ways that reading can be absent or stale, both of which fail safe.</b> A JVM that has not collected yet,
+ * or a collector/configuration that does not publish a collection usage at all, makes {@link #liveHeapBytes()}
+ * answer {@code -1}; the budget then falls back to the whole ceiling, which is precisely the total-heap behaviour
+ * this class replaces - so the fallback changes nothing rather than degrading anything. It does mean the
+ * improvement is inactive there, which would otherwise be invisible, so it is reported once per JVM at FINE.
+ * And for a generational collector whose old-gen collections are infrequent, the figure reflects the last such
+ * collection rather than current occupancy. That errs toward reporting LESS headroom than really exists, so the
+ * failure direction is a cache sized smaller or a rebuild deferred - never a rebuild admitted that should not
+ * have been.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -53,6 +67,9 @@ final class VectorHeapBudget {
 
   /** Ordinal-to-vector-id map: one int per node, held once per graph generation. */
   private static final long ORDINAL_MAP_BYTES_PER_NODE = Integer.BYTES;
+
+  /** So the fallback above is reported once per JVM rather than on every cache-sizing call. */
+  private static final AtomicBoolean COLLECTION_USAGE_UNAVAILABLE_REPORTED = new AtomicBoolean();
 
   private VectorHeapBudget() {
   }
@@ -89,6 +106,11 @@ final class VectorHeapBudget {
         live = 0L;
       live += Math.max(0L, collectionUsage.getUsed());
     }
+    if (live < 0 && COLLECTION_USAGE_UNAVAILABLE_REPORTED.compareAndSet(false, true))
+      LogManager.instance().log(VectorHeapBudget.class, Level.FINE,
+          "No heap pool on this JVM publishes a collection usage, so vector index heap budgets fall back to the "
+              + "total heap. That is the pre-issue-#6503 behaviour and is safe, but a rebuild holding the old "
+              + "graph resident will not ask for a smaller cache on account of it");
     return live;
   }
 
