@@ -3742,4 +3742,11 @@ the about-to-be-stale value (skipping the boundary commit) while the stamp went 
 reintroducing the same durability-mixing failure through a race instead of a guaranteed ordering. Both reads now
 share one snapshot taken at the top of `executeTask()`, so the check and the stamp always agree.
 
+Worth knowing when tuning `parallelLevel`/queue sizing around concurrent bulk loads: the boundary-forcing commit is
+paid per worker slot, not per database, so two `GraphBatch` sessions (or a batch and a direct caller) that land on
+the *same* slot and keep flipping the durability policy in opposite directions can degrade that slot toward
+`commitEvery=1` - each task forcing its own boundary. Correctness over batching is the right trade, and it is still
+strictly better than the pre-fix full pool teardown, but a workload that provokes this is a sign the workers sharing
+that slot would benefit from more parallelism (raising `parallelLevel`) rather than sharing one.
+
 [#6509](https://github.com/ArcadeData/arcadedb/issues/6509)
