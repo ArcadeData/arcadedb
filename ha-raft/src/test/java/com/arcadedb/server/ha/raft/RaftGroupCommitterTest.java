@@ -584,12 +584,10 @@ class RaftGroupCommitterTest {
     final RaftClient client = mock(RaftClient.class, RETURNS_DEEP_STUBS);
     // MAJORITY is reached quickly - this is the leg #6109 already bounds, and gives no protection here.
     when(client.async().send(any(Message.class))).thenReturn(CompletableFuture.completedFuture(majorityReply));
-    // A down/partitioned follower: ALL_COMMITTED is never confirmed, on either watch overload.
+    // A down/partitioned follower: ALL_COMMITTED is never confirmed. The fixed production code only
+    // calls the async().watch() overload (the timeout-less io().watch() overload this issue was about
+    // is no longer invoked at all), so an uncompleted future here is what drives the deadline-bound wait.
     when(client.async().watch(anyLong(), any())).thenReturn(new CompletableFuture<>());
-    when(client.io().watch(anyLong(), any())).thenAnswer(inv -> {
-      new CountDownLatch(1).await(); // blocks until the flusher thread is interrupted by stop()
-      return null;
-    });
 
     final RaftGroupCommitter committer = new RaftGroupCommitter(client, Quorum.ALL, quorumTimeout);
     try {
@@ -608,6 +606,37 @@ class RaftGroupCommitterTest {
       final Throwable t = outcome.get(3, TimeUnit.SECONDS);
       assertThat(t).isInstanceOf(MajorityCommittedAllFailedException.class);
       assertThat(t.getMessage()).contains("ALL quorum");
+    } finally {
+      committer.stop();
+    }
+  }
+
+  /**
+   * Companion happy-path coverage for the {@code Quorum.ALL} branch touched by the fix above: when the
+   * async watch reply arrives well within the batch deadline, {@code submitAndWait} must return the
+   * dispatched entry's log index rather than treating the shared-deadline bound as a source of failure
+   * by itself.
+   */
+  @Test
+  void allQuorumWatchSucceedsWithinBudgetReturnsLogIndex() throws Exception {
+    final long quorumTimeout = 2_000; // ms - generous; this test exercises the success path, not the deadline
+
+    final RaftClientReply majorityReply = mock(RaftClientReply.class);
+    when(majorityReply.isSuccess()).thenReturn(true);
+    when(majorityReply.getLogIndex()).thenReturn(777L);
+
+    final RaftClientReply allReply = mock(RaftClientReply.class);
+    when(allReply.isSuccess()).thenReturn(true);
+
+    final RaftClient client = mock(RaftClient.class, RETURNS_DEEP_STUBS);
+    when(client.async().send(any(Message.class))).thenReturn(CompletableFuture.completedFuture(majorityReply));
+    // The follower confirms ALL_COMMITTED promptly, well within the batch deadline.
+    when(client.async().watch(anyLong(), any())).thenReturn(CompletableFuture.completedFuture(allReply));
+
+    final RaftGroupCommitter committer = new RaftGroupCommitter(client, Quorum.ALL, quorumTimeout);
+    try {
+      final long logIndex = committer.submitAndWait(new byte[] { 1, 2, 3 });
+      assertThat(logIndex).isEqualTo(777L);
     } finally {
       committer.stop();
     }

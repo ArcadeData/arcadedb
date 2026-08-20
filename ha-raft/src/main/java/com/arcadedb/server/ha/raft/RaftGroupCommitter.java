@@ -532,8 +532,16 @@ class RaftGroupCommitter {
             }
           } catch (final TimeoutException te) {
             batch.get(i).future.complete(new MajorityCommittedAllFailedException(
-                "ALL quorum not reached within batch deadline after MAJORITY commit at logIndex=" + reply.getLogIndex()));
+                "ALL quorum not reached within batch deadline after MAJORITY commit at logIndex=" + reply.getLogIndex(), te));
             continue;
+          } catch (final InterruptedException ie) {
+            // Rethrow instead of swallowing: this must reach the outer catch (final InterruptedException)
+            // below so the whole remaining batch gets fast-aborted, not just this one entry. Swallowing it
+            // here would clear the interrupt flag and let every later entry in the batch fall through to a
+            // fresh full-length wait - the same unbounded-stall shape issue #6373 fixed for the get() above,
+            // just relocated to the interrupt path.
+            Thread.currentThread().interrupt();
+            throw ie;
           } catch (final Exception e) {
             if (isClientClosed(e))
               clientClosedDetected = true;
