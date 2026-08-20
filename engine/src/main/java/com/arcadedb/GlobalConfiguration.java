@@ -1060,6 +1060,19 @@ public enum GlobalConfiguration {
       searcher per query.""",
       Integer.class, 0),
 
+  VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY("arcadedb.vectorIndex.prefilterMaxSelectivity", SCOPE.DATABASE,
+      """
+      Maximum fraction of the index's live vectors that a query's RID allow-list may cover and still take the \
+      pre-filter plan instead of the HNSW graph walk (issue #6502). The graph's Bits filter only rejects a node \
+      once it is popped from the beam - it cannot make the walk itself shrink with a narrower filter - so a \
+      selective allow-list makes the beam admit almost nothing and the walk keeps expanding trying to fill k, \
+      the search space growing smaller in principle and larger in practice: at the limit, 5 candidates cost more \
+      than 20,000. Below this fraction the query instead resolves the allow-list to its ordinals and scores them \
+      directly, which is O(allow-list) and exact by construction. Above it the allow-list barely narrows the \
+      search, the graph walk is already cheap, and resolving every allowed RID up front would cost more than the \
+      walk it replaces. Set to 0 to disable the pre-filter plan and always use the graph walk.""",
+      Float.class, 0.2f),
+
   VECTOR_INDEX_GRAPH_BUILD_PARALLELISM("arcadedb.vectorIndex.graphBuildParallelism", SCOPE.DATABASE,
       """
       Number of threads in the dedicated pool that builds the HNSW graph of a vector index. Graph construction \
