@@ -22,6 +22,8 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.log.LogManager;
+import com.arcadedb.log.Logger;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 import com.arcadedb.utility.Pair;
@@ -33,6 +35,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -59,6 +63,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       not also trip the issue #3722 shortfall fallback it happens to reuse the scan of.</li>
  *   <li>{@link #thePreFilterPlanSeesVectorsStillInTheDeltaBuffer} - an allowed RID ingested after the last graph
  *       build is only in the delta buffer, and the plan has to merge it in like the graph path does.</li>
+ *   <li>{@link #shortfallIsAllowListDrivenClassifiesBothDirections} - direct coverage of the predicate that decides
+ *       whether the issue #3722 shortfall log line is the expected FINE case or the WARNING one, since a logic
+ *       inversion there would otherwise pass the rest of the suite silently.</li>
+ *   <li>{@link #aNarrowAllowListWithThePlanDisabledLogsAtFineNotWarning} - the end-to-end path into that predicate:
+ *       selectivity 0 forces a narrow allow-list past the pre-filter plan and into the shortfall log, which must
+ *       come out at FINE, not the graph-degradation WARNING.</li>
  * </ul>
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -176,6 +186,68 @@ class Issue6502VectorPrefilterTest extends TestHelper {
         .contains(inDelta);
   }
 
+  /**
+   * Direct coverage of {@link LSMVectorIndex#shortfallIsAllowListDriven}, the predicate that decides whether the
+   * issue #3722 shortfall log line comes out at FINE (the allow-list itself made the shortfall unavoidable) or
+   * WARNING (the graph may genuinely need attention). Exercised without a real degraded-graph fixture: JVector's
+   * graph builder is not guaranteed to produce the same structure run to run, so pinning a specific log level on a
+   * "real shortfall" fixture would risk flaking. The predicate is pure and takes no graph state, so testing it
+   * directly is both simpler and deterministic - and it is exactly what would catch a logic inversion silently
+   * swapping the two branches.
+   */
+  @Test
+  void shortfallIsAllowListDrivenClassifiesBothDirections() {
+    final RID a = new RID(1, 0);
+    final RID b = new RID(1, 1);
+    final RID c = new RID(1, 2);
+
+    assertThat(LSMVectorIndex.shortfallIsAllowListDriven(Set.of(a, b), 5))
+        .as("an allow-list narrower than expectedResults is what the pre-filter plan could not fully answer")
+        .isTrue();
+    assertThat(LSMVectorIndex.shortfallIsAllowListDriven(null, 5))
+        .as("no allow-list at all is the original issue #3722 degraded-graph case").isFalse();
+    assertThat(LSMVectorIndex.shortfallIsAllowListDriven(Set.of(), 5))
+        .as("an empty allow-list means \"no filter\", not \"filter to nothing\"").isFalse();
+    assertThat(LSMVectorIndex.shortfallIsAllowListDriven(Set.of(a, b, c), 3))
+        .as("an allow-list at least as wide as expectedResults did not force the shortfall by itself").isFalse();
+    assertThat(LSMVectorIndex.shortfallIsAllowListDriven(Set.of(a, b, c), 2))
+        .as("wider than expectedResults is the same case, comfortably so").isFalse();
+  }
+
+  /**
+   * End-to-end path into the predicate above: disabling the pre-filter plan is the only way to make a narrow
+   * allow-list reach the shortfall log at all (the plan would otherwise answer it directly first), so this pins
+   * that the log level it lands on is FINE, and that the graph-degradation WARNING text does not also fire.
+   */
+  @Test
+  void aNarrowAllowListWithThePlanDisabledLogsAtFineNotWarning() {
+    createSchemaAndData();
+    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY, 0f);
+
+    final LSMVectorIndex index = vectorIndex();
+    final float[] query = embedding(7);
+    final Set<RID> allowed = ridsOf(3, 42, 91); // 3 of 100, narrower than K=5
+
+    final List<String> captured = new CopyOnWriteArrayList<>();
+    final Logger originalLogger = LogManager.instance().getLogger();
+    LogManager.instance().setLogger(new LevelInclusiveCapturingLogger(captured, originalLogger));
+    try {
+      final List<Pair<RID, Float>> results = index.findNeighborsFromVector(query, K, -1, allowed);
+
+      assertThat(results).hasSize(3);
+      assertThat(captured)
+          .as("a shortfall forced purely by allow-list width must log at FINE, saying so")
+          .anyMatch(m -> m != null && m.contains("allow-list has only 3 entries"));
+      assertThat(captured)
+          .as("and must NOT also log the graph-degradation WARNING - only one of the two may fire")
+          .noneMatch(m -> m != null && m.contains("graph may need rebuilding"));
+    } finally {
+      LogManager.instance().setLogger(originalLogger);
+      database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY,
+          GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY.getDefValue());
+    }
+  }
+
   // ------------------------------------------------------------------------------------------------- helpers
 
   private void createSchemaAndData() {
@@ -241,5 +313,57 @@ class Issue6502VectorPrefilterTest extends TestHelper {
     for (int j = 0; j < DIMENSIONS; j++)
       vector[j] = (float) Math.sin(i * 0.37 + j * 0.91) + 2.0f + i * 0.013f;
     return vector;
+  }
+
+  /**
+   * Captures every message regardless of level while still forwarding to the production logger, unlike
+   * {@code LSMVectorIndexBruteForceScanTest}'s {@code CapturingLogger}, which drops anything below WARNING and so
+   * cannot observe the FINE-level branch of the issue #6502 shortfall log.
+   */
+  private static final class LevelInclusiveCapturingLogger implements Logger {
+    private final List<String> captured;
+    private final Logger       delegate;
+
+    LevelInclusiveCapturingLogger(final List<String> captured, final Logger delegate) {
+      this.captured = captured;
+      this.delegate = delegate;
+    }
+
+    private void capture(final String message, final Object... args) {
+      if (message == null)
+        return;
+      String formatted = message;
+      if (args != null && args.length > 0) {
+        try {
+          formatted = message.formatted(args);
+        } catch (final Exception ignored) {
+          // Fall back to the raw template; good enough for substring matching.
+        }
+      }
+      captured.add(formatted);
+    }
+
+    @Override
+    public void log(final Object requester, final Level level, final String message, final Throwable exception,
+        final String context, final Object arg1, final Object arg2, final Object arg3, final Object arg4, final Object arg5,
+        final Object arg6, final Object arg7, final Object arg8, final Object arg9, final Object arg10, final Object arg11,
+        final Object arg12, final Object arg13, final Object arg14, final Object arg15, final Object arg16, final Object arg17) {
+      capture(message, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14, arg15, arg16,
+          arg17);
+      delegate.log(requester, level, message, exception, context, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10,
+          arg11, arg12, arg13, arg14, arg15, arg16, arg17);
+    }
+
+    @Override
+    public void log(final Object requester, final Level level, final String message, final Throwable exception,
+        final String context, final Object... args) {
+      capture(message, args);
+      delegate.log(requester, level, message, exception, context, args);
+    }
+
+    @Override
+    public void flush() {
+      delegate.flush();
+    }
   }
 }
