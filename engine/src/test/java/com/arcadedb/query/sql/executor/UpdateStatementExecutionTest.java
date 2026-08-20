@@ -725,10 +725,11 @@ public class UpdateStatementExecutionTest extends TestHelper {
     // Issue #6517: UPDATE ... REMOVE <embeddedDoc>.<field> ... RETURN BEFORE must snapshot the embedded
     // document BEFORE the in-place field removal, not share the live reference with it.
     final String className = "overridden" + this.className;
-    database.getSchema().createDocumentType(className);
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
+    clazz.createProperty("emb", Type.EMBEDDED);
 
     final MutableDocument doc = database.newDocument(className);
-    final MutableEmbeddedDocument emb = doc.newEmbeddedDocument("emb", "emb");
+    final MutableEmbeddedDocument emb = doc.newEmbeddedDocument(className, "emb");
     emb.set("sub", "foo").set("aaa", "bar");
     doc.save();
 
@@ -745,9 +746,9 @@ public class UpdateStatementExecutionTest extends TestHelper {
 
     final ResultSet persisted = database.query("sql", "SELECT emb FROM " + className);
     assertThat(persisted.hasNext()).isTrue();
-    final Map<String, Object> after = persisted.next().getProperty("emb");
-    assertThat(after.containsKey("sub")).isFalse();
-    assertThat((String) after.get("aaa")).isEqualTo("bar");
+    final EmbeddedDocument after = persisted.next().getProperty("emb");
+    assertThat(after.getPropertyNames().contains("sub")).isFalse();
+    assertThat(after.getString("aaa")).isEqualTo("bar");
     persisted.close();
   }
 

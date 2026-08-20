@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
@@ -92,12 +93,15 @@ public class CopyRecordContentBeforeUpdateStep extends AbstractExecutionStep {
   }
 
   /**
-   * Returns a deep copy of {@code value} when it is a {@link List}/{@link Set}/{@link Map}, an embedded
-   * {@link Document}/{@link com.arcadedb.database.EmbeddedDocument}, or any nesting of them, so a later in-place
-   * mutation of the live property (e.g. {@code REMOVE coll = val}, {@code REMOVE map[k]}, {@code REMOVE emb.field})
-   * cannot leak into this BEFORE snapshot (issues #6456 and #6517). Scalars, RIDs, and arrays are returned unchanged:
-   * {@code MultiValue.remove()} already replaces arrays with a fresh copy rather than mutating them, so they never
-   * share state with the live value.
+   * Returns a deep copy of {@code value} when it is a {@link List}/{@link Set}/{@link Map}, an
+   * {@link EmbeddedDocument}, or any nesting of them, so a later in-place mutation of the live property (e.g.
+   * {@code REMOVE coll = val}, {@code REMOVE map[k]}, {@code REMOVE emb.field}) cannot leak into this BEFORE
+   * snapshot (issues #6456 and #6517). Scalars, RIDs, and arrays are returned unchanged: {@code MultiValue.remove()}
+   * already replaces arrays with a fresh copy rather than mutating them, so they never share state with the live
+   * value. Deliberately checks {@link EmbeddedDocument} rather than the broader {@link Document}: a top-level
+   * {@code Vertex}/{@code Edge} is never itself a property value (graph references are stored by RID), but should
+   * one turn up here it must be returned as-is rather than flattened into a plain {@link Map}, which would strip
+   * its identity and type.
    */
   private static Object deepCopyMultiValue(final Object value) {
     if (value instanceof Map<?, ?> map) {
@@ -118,8 +122,8 @@ public class CopyRecordContentBeforeUpdateStep extends AbstractExecutionStep {
         copy.add(deepCopyMultiValue(o));
       return copy;
     }
-    if (value instanceof Document document) {
-      // Issue #6517: an embedded Document is shared (not copied) by the BEFORE snapshot, and REMOVE emb.field
+    if (value instanceof EmbeddedDocument document) {
+      // Issue #6517: an embedded document is shared (not copied) by the BEFORE snapshot, and REMOVE emb.field
       // mutates it in place via MutableDocument.modify(). Snapshot via toMap() + recursive deep copy so the
       // BEFORE image keeps the pre-removal state.
       final Map<String, Object> map = document.toMap(false);
