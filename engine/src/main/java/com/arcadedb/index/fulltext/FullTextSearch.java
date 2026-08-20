@@ -37,6 +37,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -56,7 +57,9 @@ public class FullTextSearch {
 
   // Test-only: counts how many times scanDocumentFrequencies() has run. Nothing in production reads it; it exists so a
   // regression test can assert a multi-property conjunction scans document frequencies once for the whole query rather
-  // than once per constrained property (issue #6436).
+  // than once per constrained property (issue #6436). A single JVM-wide counter is only safe to assert on because this
+  // module's tests run sequentially in one fork (forkCount=1, no parallel JUnit config); a concurrent test run would
+  // need this reworked into something scoped per-test.
   private static final AtomicLong documentFrequencyScanInvocations = new AtomicLong();
 
   static long getDocumentFrequencyScanInvocationsForTesting() {
@@ -214,17 +217,23 @@ public class FullTextSearch {
       // all of them - totalDocs, avgDocLength, and each token's document frequency - are computed once for their union,
       // rather than once per property (issue #6436). Only the per-property posting walk that follows still runs once per
       // property: it is what intersectPerProperty needs to answer the conjunction, and it is the irreducible work.
+      // Each property's token map is kept keyed by its propertyKey array (the same instance intersectPerProperty hands
+      // back to the lookup below) so the per-property text analysis in getSimpleQueryTokenBoosts runs once, not twice.
       final LinkedHashMap<String, Float> unionScoringTokens = new LinkedHashMap<>();
-      for (final Object[] propertyKey : perProperty)
-        for (final Map.Entry<String, Float> token : bucketIndexes.getFirst().getSimpleQueryTokenBoosts(propertyKey).entrySet())
+      final Map<Object[], Map<String, Float>> tokensByProperty = new IdentityHashMap<>();
+      for (final Object[] propertyKey : perProperty) {
+        final Map<String, Float> propertyTokens = bucketIndexes.getFirst().getSimpleQueryTokenBoosts(propertyKey);
+        tokensByProperty.put(propertyKey, propertyTokens);
+        for (final Map.Entry<String, Float> token : propertyTokens.entrySet())
           unionScoringTokens.merge(token.getKey(), token.getValue(), Math::max);
+      }
 
       final BM25ScoringContext scoringContext = createScoringContext(bucketIndexes,
           scanDocumentFrequencies(bucketIndexes, unionScoringTokens));
 
       return LSMTreeFullTextIndex.rankedCursor(
           LSMTreeFullTextIndex.intersectPerProperty(perProperty, propertyKey -> scoreAcrossBuckets(bucketIndexes,
-              bucketIndexes.getFirst().getSimpleQueryTokenBoosts(propertyKey), propertyKey, -1, scoringContext)),
+              tokensByProperty.get(propertyKey), propertyKey, -1, scoringContext)),
           keys, effectiveLimit);
     }
 
