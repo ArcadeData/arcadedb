@@ -19,9 +19,17 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
+
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static com.arcadedb.schema.Property.TYPE_PROPERTY;
@@ -63,7 +71,7 @@ public class CopyRecordContentBeforeUpdateStep extends AbstractExecutionStep {
               prevValue.setProperty(TYPE_PROPERTY, document.getTypeName());
 
             for (final String propName : result.getPropertyNames())
-              prevValue.setProperty(propName, result.getProperty(propName));
+              prevValue.setProperty(propName, deepCopyMultiValue(result.getProperty(propName)));
 
             updatableResult.previousValue = prevValue;
           } else {
@@ -82,6 +90,49 @@ public class CopyRecordContentBeforeUpdateStep extends AbstractExecutionStep {
         lastFetched.close();
       }
     };
+  }
+
+  /**
+   * Returns a deep copy of {@code value} when it is a {@link List}/{@link Set}/{@link Map}, an
+   * {@link EmbeddedDocument}, or any nesting of them, so a later in-place mutation of the live property (e.g.
+   * {@code REMOVE coll = val}, {@code REMOVE map[k]}, {@code REMOVE emb.field}) cannot leak into this BEFORE
+   * snapshot (issues #6456 and #6517). Scalars, RIDs, and arrays are returned unchanged: {@code MultiValue.remove()}
+   * already replaces arrays with a fresh copy rather than mutating them, so they never share state with the live
+   * value. Deliberately checks {@link EmbeddedDocument} rather than the broader {@link Document}: a top-level
+   * {@code Vertex}/{@code Edge} is never itself a property value (graph references are stored by RID), but should
+   * one turn up here it must be returned as-is rather than flattened into a plain {@link Map}, which would strip
+   * its identity and type.
+   */
+  private static Object deepCopyMultiValue(final Object value) {
+    if (value instanceof Map<?, ?> map) {
+      final Map<Object, Object> copy = new LinkedHashMap<>(map.size());
+      for (final Map.Entry<?, ?> entry : map.entrySet())
+        copy.put(entry.getKey(), deepCopyMultiValue(entry.getValue()));
+      return copy;
+    }
+    if (value instanceof Set<?> set) {
+      final Set<Object> copy = new LinkedHashSet<>(set.size());
+      for (final Object o : set)
+        copy.add(deepCopyMultiValue(o));
+      return copy;
+    }
+    if (value instanceof List<?> list) {
+      final List<Object> copy = new ArrayList<>(list.size());
+      for (final Object o : list)
+        copy.add(deepCopyMultiValue(o));
+      return copy;
+    }
+    if (value instanceof EmbeddedDocument document) {
+      // Issue #6517: an embedded document is shared (not copied) by the BEFORE snapshot, and REMOVE emb.field
+      // mutates it in place via MutableDocument.modify(). Snapshot via toMap() + recursive deep copy so the
+      // BEFORE image keeps the pre-removal state.
+      final Map<String, Object> map = document.toMap(false);
+      final Map<String, Object> copy = new LinkedHashMap<>(map.size());
+      for (final Map.Entry<String, Object> entry : map.entrySet())
+        copy.put(entry.getKey(), deepCopyMultiValue(entry.getValue()));
+      return copy;
+    }
+    return value;
   }
 
   @Override

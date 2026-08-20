@@ -721,6 +721,38 @@ public class UpdateStatementExecutionTest extends TestHelper {
   }
 
   @Test
+  void returnBeforeWithEmbeddedDocRemoveIsNotMutatedByTheRemoval() {
+    // Issue #6517: UPDATE ... REMOVE <embeddedDoc>.<field> ... RETURN BEFORE must snapshot the embedded
+    // document BEFORE the in-place field removal, not share the live reference with it.
+    final String className = "overridden" + this.className;
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
+    clazz.createProperty("emb", Type.EMBEDDED);
+
+    final MutableDocument doc = database.newDocument(className);
+    final MutableEmbeddedDocument emb = doc.newEmbeddedDocument(className, "emb");
+    emb.set("sub", "foo").set("aaa", "bar");
+    doc.save();
+
+    final ResultSet result = database.command("sql",
+        "update " + className + " remove emb.sub RETURN BEFORE");
+    assertThat(result.hasNext()).isTrue();
+    final Result item = result.next();
+    assertThat(item).isNotNull();
+    final Map<String, Object> before = item.getProperty("emb");
+    assertThat((String) before.get("sub")).isEqualTo("foo");
+    assertThat((String) before.get("aaa")).isEqualTo("bar");
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+
+    final ResultSet persisted = database.query("sql", "SELECT emb FROM " + className);
+    assertThat(persisted.hasNext()).isTrue();
+    final EmbeddedDocument after = persisted.next().getProperty("emb");
+    assertThat(after.getPropertyNames().contains("sub")).isFalse();
+    assertThat(after.getString("aaa")).isEqualTo("bar");
+    persisted.close();
+  }
+
+  @Test
   void localDateTimeUpsertWithIndexMicros() throws Exception {
     database.transaction(() -> {
       if (database.getSchema().existsType("Product"))
