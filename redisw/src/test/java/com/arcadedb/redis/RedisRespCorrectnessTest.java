@@ -232,6 +232,134 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
     }
   }
 
+  @Test
+  void incrByAcceptsSigned64BitIncrements() {
+    // INCRBY amount was parsed as 32-bit int before #6466: a 64-bit increment threw
+    // NumberFormatException -> "-ERR For input string". Real Redis accepts any signed 64-bit value.
+    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+      jedis.auth(USER, PASSWORD);
+      jedis.del("incr64");
+      assertThat(jedis.incrBy("incr64", 3_000_000_000L)).isEqualTo(3_000_000_000L);
+      assertThat(jedis.incrBy("incr64", -1_000_000_000L)).isEqualTo(2_000_000_000L);
+      assertThat(jedis.decrBy("incr64", 2_000_000_000L)).isZero();
+    }
+  }
+
+  @Test
+  void incrOverflowReturnsErrorInsteadOfWrapping() throws IOException {
+    // (issue #6466): INCR on Long.MAX_VALUE wrapped silently to Long.MIN_VALUE. Real Redis answers
+    // with an error; the wire reply must be "-ERR ... overflow" and the stored value must be untouched.
+    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      socket.setSoTimeout(10_000);
+
+      sendCommand(socket, "AUTH", USER, PASSWORD);
+      readReply(socket); // +OK
+
+      sendCommand(socket, "SET", "overflowKey", "9223372036854775807"); // Long.MAX_VALUE
+      readReply(socket); // +OK
+
+      sendCommand(socket, "INCR", "overflowKey");
+      final String reply = readReply(socket);
+      assertThat(reply).startsWith("-ERR");
+      assertThat(reply).containsIgnoringCase("overflow");
+
+      // The key must keep its pre-increment value: a failed INCR is a no-op.
+      sendCommand(socket, "GET", "overflowKey");
+      assertThat(readReply(socket)).isEqualTo("$19\r\n9223372036854775807");
+    }
+  }
+
+  @Test
+  void setNxDoesNotOverwriteExistingKey() throws IOException {
+    // (issue #6466): SET k v NX on an existing key returned +OK and overwrote it, so a distributed-lock
+    // client believed it acquired a lock it did not. Real Redis replies with the RESP2 null bulk string.
+    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      socket.setSoTimeout(10_000);
+
+      sendCommand(socket, "AUTH", USER, PASSWORD);
+      readReply(socket); // +OK
+
+      sendCommand(socket, "SET", "lockKey", "1");
+      readReply(socket); // +OK
+
+      sendCommand(socket, "SET", "lockKey", "2", "NX");
+      assertThat(readReply(socket)).isEqualTo("$-1");
+
+      sendCommand(socket, "GET", "lockKey");
+      assertThat(readReply(socket)).isEqualTo("$1\r\n1");
+    }
+  }
+
+  @Test
+  void setXxDoesNotCreateMissingKey() throws IOException {
+    // (issue #6466): XX must only set an existing key; on a missing key real Redis replies nil.
+    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      socket.setSoTimeout(10_000);
+
+      sendCommand(socket, "AUTH", USER, PASSWORD);
+      readReply(socket); // +OK
+
+      sendCommand(socket, "DEL", "absentKey");
+      readReply(socket); // :0 or whatever
+
+      sendCommand(socket, "SET", "absentKey", "v", "XX");
+      assertThat(readReply(socket)).isEqualTo("$-1");
+
+      sendCommand(socket, "GET", "absentKey");
+      assertThat(readReply(socket)).isEqualTo("$-1");
+    }
+  }
+
+  @Test
+  void setGetReturnsPreviousValue() throws IOException {
+    // (issue #6466): SET k v GET must return the previous value (bulk string) instead of +OK.
+    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      socket.setSoTimeout(10_000);
+
+      sendCommand(socket, "AUTH", USER, PASSWORD);
+      readReply(socket); // +OK
+
+      sendCommand(socket, "SET", "prevKey", "old");
+      readReply(socket); // +OK
+
+      sendCommand(socket, "SET", "prevKey", "new", "GET");
+      final String reply = readReply(socket);
+      assertThat(reply).isEqualTo("$3\r\nold");
+
+      sendCommand(socket, "GET", "prevKey");
+      assertThat(readReply(socket)).isEqualTo("$3\r\nnew");
+    }
+  }
+
+  @Test
+  void setWithUnsupportedExpiryOptionIsRejectedInsteadOfSilentlyIgnored() throws IOException {
+    // (issue #6466): EX/PX were silently dropped, so a client setting EX 10 believed the key would
+    // expire. ArcadeDB transient keys have no TTL store, so the honest reply is a clear error.
+    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      socket.setSoTimeout(10_000);
+
+      sendCommand(socket, "AUTH", USER, PASSWORD);
+      readReply(socket); // +OK
+
+      sendCommand(socket, "SET", "ttlKey", "v", "EX", "10");
+      final String reply = readReply(socket);
+      assertThat(reply).startsWith("-ERR");
+      assertThat(reply).containsIgnoringCase("unsupported");
+    }
+  }
+
+  @Test
+  void incrByFloatRepliesWithBulkString() throws IOException {
+    // (issue #6466 minor): INCRBYFLOAT replied with a RESP simple string (+3.3); real Redis replies
+    // with a bulk string. readReply() returns "$<len>\r\n<text>" for bulk string frames.
+    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+      jedis.auth(USER, PASSWORD);
+      jedis.del("floatKey");
+      final String reply = jedis.incrByFloat("floatKey", 3.3);
+      assertThat(reply).isEqualTo("3.3");
+    }
+  }
+
   private static void sendCommand(final Socket socket, final String... args) throws IOException {
     sendRaw(socket, encodeCommand(args));
   }
