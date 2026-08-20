@@ -3644,3 +3644,70 @@ the stored value parses as a date, before and after `APPLY DEFAULTS`, with a sen
 cannot produce. Deliberately not an equality against today's date: the two transactions can straddle midnight.
 
 [#6414](https://github.com/ArcadeData/arcadedb/issues/6414)
+
+## A vector graph rebuild no longer holds two graphs at once on close, and an OOM in one can no longer certify a half-written graph (#6503)
+
+A from-scratch rebuild of an `LSM_VECTOR` graph deliberately keeps the old graph resident so searches keep working,
+and replaces it only at the very end. On top of that it pays for a whole new build's working set: the build cache,
+the JVector builder, the ordinal map. Measured at 50,000 x 128, that is a peak of 1,700 MB for a rebuild against
+959 MB for the first build of the same corpus - a factor of 1.73x. At DEEP-10M in a 24 GB heap the first build
+completes and a second one on top of it dies.
+
+Raising `-Xmx` did not create the headroom, because both of this index's auto-sized caches budgeted themselves off
+*total* heap, so a bigger heap grew them proportionally and the rebuild was no more likely to fit. And nothing
+consulted memory before starting: the only gate was `REBUILD_SEMAPHORE`, which bounds how many rebuilds run at
+once, not how much heap one needs. A rebuild that could not fit was simply attempted.
+
+Four changes, in the order they matter:
+
+**The close path releases the old graph before building the replacement.** By the time `flush()` rebuilds, it has
+already CAS-ed the index to `UNAVAILABLE` and a closing database hands it no further requests, so nothing can
+still be reading the old graph or the shared search cache - holding them for the duration of the build was pure
+waste. This roughly halves peak heap for exactly the case that measurably dies today.
+
+Three references have to go, not one. `graphIndex` and the search cache are the obvious two; the third is the
+searcher pool, because a pooled searcher holds the graph it was pooled under and so pins it however many times
+`graphIndex` is nulled. That is not hypothetical on this path: `LocalDatabase.closeDurableParts()` runs
+`index.flush()` *before* `index.releaseBackgroundResources()`, so on a real database close the pool is still
+populated when the rebuild starts. The release therefore clears the pool itself rather than assuming the caller
+already has.
+
+An *online* rebuild keeps all three, unchanged: `rebuildGraphBeforeSearch()`, an async rebuild, an explicit
+`REBUILD INDEX` and `COMPACT INDEX` do not gate concurrent searches on the index status, so for them the old graph
+is still load-bearing.
+
+**Both caches are now budgeted against the heap actually available**, not against the ceiling. Availability is read
+from `MemoryPoolMXBean.getCollectionUsage()` - the pool's occupancy measured right after the JVM last collected it,
+which approximates live retained data - rather than from `Runtime.freeMemory()`, which counts everything allocated
+since the last GC as used whether it is live or garbage and would collapse the build cache for no reason. When no
+pool publishes a collection usage, the budget falls back to the whole ceiling, which reproduces the previous
+behaviour exactly.
+
+**An online rebuild is now admitted only if it is expected to fit.** Before starting, the estimated peak footprint
+(the graph being built, the build cache, and - for an online rebuild - the graph being replaced) is compared
+against `arcadedb.vectorIndex.rebuildMaxHeapPercent` (default 90) of the available heap. A rebuild that does not
+fit is deferred rather than attempted: a later trigger retries it, pending vectors stay exactly searchable through
+the in-memory delta buffer meanwhile, and the deferral is both logged and counted (`rebuildsDeferredForMemory` in
+the index stats) so an index that never fits does not go stale silently.
+
+A deferral leaves its own trigger intact - only a *successful* build consumes the pending mutations - so "a later
+trigger" needs a cooldown to mean anything. A search evaluates the rebuild condition on every query, so without one
+a large heap-constrained index would spawn a rebuild thread, take and release the JVM-wide rebuild permit and log a
+warning once *per query*: thread churn and contention added exactly when the JVM is already short of memory, which
+works against the deferral's own purpose. `arcadedb.vectorIndex.rebuildDeferralCooldownMs` (default 30s, 0 to
+disable) is the minimum gap before another attempt; a completed build clears it, so a stale deferral cannot keep
+gating triggers after the shortage has passed.
+The estimate is deliberately coarse and the default deliberately generous: it refuses only a rebuild that is
+confidently too large. Set the percentage to 0 to restore the previous attempt-and-hope behaviour. Only the online
+path is gated - a first build, a rebuild on close, `REBUILD INDEX` and `COMPACT INDEX` have no later trigger to
+retry them, so declining one would turn "slower" into "never".
+
+**An `OutOfMemoryError` during the graph persist no longer escapes the handler that refuses the pages.** It is an
+`Error`, not an `Exception`, so it used to walk straight past the `catch (Exception)` around the persist block -
+skipping both the transaction rollback and the `markUnusable()` call that is the only thing stopping the next
+database open from trusting a possibly half-rewritten graph on node-count agreement alone (#6106 is the check that
+exists to prevent exactly that). The persist guard, the async rebuild thread's guard and the inactivity timer
+task's guard now all catch `Throwable`; in the latter two an escaping `Error` would additionally have killed the
+thread past the point where it clears the in-progress flag, silently stopping every later rebuild of that index.
+
+[#6503](https://github.com/ArcadeData/arcadedb/issues/6503)
