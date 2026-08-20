@@ -1159,6 +1159,21 @@ public enum GlobalConfiguration {
       a rebuild is never allowed to plan on the whole heap, since the request, I/O and GC threads need some too.""",
       Integer.class, 90),
 
+  VECTOR_INDEX_REBUILD_DEFERRAL_COOLDOWN_MS("arcadedb.vectorIndex.rebuildDeferralCooldownMs", SCOPE.DATABASE,
+      """
+      How long, in milliseconds, an online vector graph rebuild that was deferred for lack of heap \
+      (see arcadedb.vectorIndex.rebuildMaxHeapPercent) waits before another one may be attempted. \
+      A deferral does not consume the pending mutations that triggered it - only a successful build does - so the \
+      trigger condition is still true the instant the deferred cycle ends. Without a cooldown the next search \
+      re-triggers immediately, and since a search checks on every query, a large heap-constrained index would \
+      spawn a rebuild thread, take and release the JVM-wide rebuild permit and log a warning once PER QUERY: \
+      thread churn and lock contention added precisely when the JVM is already short of memory, which works \
+      against the deferral's own purpose. \
+      The wait is not lost time: pending vectors stay exactly searchable through the in-memory delta buffer \
+      throughout, so the cost is a slightly longer delta scan per query, which is what a deferral costs anyway. \
+      Set to 0 to retry as soon as the next trigger fires.""",
+      Integer.class, 30_000),
+
   VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS("arcadedb.vectorIndex.rebuildPermitTimeoutMs", SCOPE.JVM,
       """
       Maximum time in milliseconds an async vector index rebuild waits to acquire a JVM-wide rebuild permit \
