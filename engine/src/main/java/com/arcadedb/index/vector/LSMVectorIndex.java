@@ -4255,6 +4255,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // the crossover.
           final float maxSelectivity = Math.min(1f, getDatabase().getConfiguration()
               .getValueAsFloat(GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY));
+          // Persisted/graph vectors only, same as the shortfall-budget calculation below - the delta buffer is not
+          // in this count. Under a large buffer relative to the graph this can overstate the allow-list's
+          // selectivity against the true live set and bias toward the graph walk; per the shortfall calculation's
+          // own comment, that only ever costs a missed optimization, never a wrong answer.
           final int availableVectors = Math.min(ordinalMap.length, vectorIndex.size());
           if (maxSelectivity > 0f && allowedRIDs.size() <= availableVectors * maxSelectivity) {
             metrics.incrementPreFilterSearches();
