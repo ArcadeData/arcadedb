@@ -19,8 +19,6 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.RID;
-import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.WorkGuard;
@@ -133,13 +131,16 @@ public class AlgoMaxKCut extends AbstractAlgoProcedure {
     // single-node graph a bare Math.min would hand the local search k = 1, i.e. a "cut" into one
     // partition, which is not the degenerate-but-valid answer to what the caller asked for.
     final int k = Math.max(2, Math.min(rawK, n));
-    final int[][] adj = graph.adjacency(dir, relTypes);
-
-    // Build weighted adjacency (null weightProperty → all weights = 1.0)
-    final double[][] adjW = buildWeightedAdj(graph, adj, dir, relTypes, weightProperty);
+    final WorkGuard guard = newWorkGuard(context);
+    // Neighbours and weights come from a single walk of the same edges (null weightProperty →
+    // all weights = 1.0), so weights[i][j] is guaranteed to be the weight of the edge to
+    // neighbors[i][j] - see GraphData.weightedAdjacency and issue #6301, which converted the other
+    // weighted algorithms off the same hand-rolled parallel array this one used to build.
+    final GraphData.WeightedAdjacency weighted = graph.weightedAdjacency(guard, dir, weightProperty, relTypes);
+    final int[][] adj = weighted.neighbors();
+    final double[][] adjW = weighted.weights();
 
     final Random rng = seed >= 0 ? new Random(seed) : new Random();
-    final WorkGuard guard = newWorkGuard(context);
     int[] bestAssign = new int[n];
     double bestCut = -1.0;
 
@@ -202,38 +203,6 @@ public class AlgoMaxKCut extends AbstractAlgoProcedure {
       r.setProperty("cutWeight", finalCut);
       return (Result) r;
     });
-  }
-
-  /** Builds a parallel weight array for each adjacency list entry. */
-  private double[][] buildWeightedAdj(final GraphData graph,
-      final int[][] adj, final Vertex.DIRECTION dir, final String[] relTypes, final String weightProp) {
-    final int n = graph.nodeCount;
-    final double[][] adjW = new double[n][];
-    for (int i = 0; i < n; i++) {
-      adjW[i] = new double[adj[i].length];
-      Arrays.fill(adjW[i], 1.0);
-    }
-    if (weightProp == null)
-      return adjW;
-
-    // Fill weights from edge properties
-    for (int i = 0; i < n; i++) {
-      final Iterable<Edge> edges = relTypes != null && relTypes.length > 0 ?
-          graph.getVertex(i).getEdges(dir, relTypes) :
-          graph.getVertex(i).getEdges(dir);
-      int pos = 0;
-      for (final Edge e : edges) {
-        final RID nbRid = neighborRid(e, graph.getRID(i), dir);
-        if (nbRid == null || graph.indexOf(nbRid) < 0)
-          continue;
-        if (pos < adjW[i].length) {
-          final Object w = e.get(weightProp);
-          adjW[i][pos] = w instanceof Number num ? num.doubleValue() : 1.0;
-          pos++;
-        }
-      }
-    }
-    return adjW;
   }
 
   private static double computeCutWeight(final int n, final int[][] adj, final double[][] adjW,
