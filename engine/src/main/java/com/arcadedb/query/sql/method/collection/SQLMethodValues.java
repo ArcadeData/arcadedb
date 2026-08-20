@@ -49,7 +49,9 @@ public class SQLMethodValues extends AbstractSQLMethod {
     if (value instanceof Map map)
       return map.values();
     else if (value instanceof Document document)
-      return new ArrayList<>(document.toMap().values());
+      // Use toMap(false) to exclude metadata fields (@rid, @type, @cat) — matches keys()'s
+      // getPropertyNames() which returns only declared property names (issue #6472).
+      return new ArrayList<>(document.toMap(false).values());
     else if (value instanceof Result result)
       return result.toMap().values();
     else if (value instanceof Collection<?> collection) {
