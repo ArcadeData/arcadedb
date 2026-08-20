@@ -300,8 +300,20 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         // task's partial writes.
         if (!nested && database.isTransactionActive()) {
           final TransactionContext activeTx = database.getTransaction();
-          if (activeTx.isUseWAL() != transactionUseWAL || activeTx.getWALFlush() != transactionSync)
-            database.commit();
+          if (activeTx.isUseWAL() != transactionUseWAL || activeTx.getWALFlush() != transactionSync) {
+            try {
+              database.commit();
+            } catch (final Throwable e) {
+              // #6509 review: this commit closes out EARLIER tasks' accumulated work, not `message` -
+              // which has not run yet - so its failure must not be attributed to `message`. Left to the
+              // outer catch below, it would be: `message` would reach completed() in the finally block
+              // there having never reached execute(), which silently discards it instead of running it.
+              // Report the failure and fall through to begin a fresh transaction for `message` instead:
+              // if the failure left the database unusable, the begin()/execute() below will fail too,
+              // for a reason that legitimately belongs to `message`.
+              onError(e);
+            }
+          }
         }
 
         if (message.requiresActiveTx() && !database.isTransactionActive())

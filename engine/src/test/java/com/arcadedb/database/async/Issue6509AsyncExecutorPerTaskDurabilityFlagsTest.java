@@ -29,6 +29,7 @@ import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -173,6 +174,75 @@ class Issue6509AsyncExecutorPerTaskDurabilityFlagsTest extends TestHelper {
         .isEqualTo(1);
 
     assertThat(errors).as("no task may fail").isEmpty();
+  }
+
+  /**
+   * Regression test for a second code-review finding: the boundary-forcing commit added above closes out
+   * EARLIER tasks' work, not the task about to run. If that commit fails (e.g. a genuine
+   * {@code ConcurrentModificationException} under the exact multi-writer contention this fix is about), the
+   * failure must not be attributed to the task that triggered the flag check - which has not executed yet.
+   * Left unguarded, the failure would propagate to {@code executeTask()}'s outer catch, and the task would
+   * still reach {@code completed()} in the {@code finally} there having never reached {@code execute()}:
+   * silent task loss dressed up as success. The fix catches the boundary commit's failure separately,
+   * reports it via {@code onError}, and still attempts the triggering task on a freshly begun transaction.
+   */
+  @Test
+  void failedBoundaryCommitDoesNotSilentlyDropTheTriggeringTask() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    database.getSchema().createDocumentType("BoundaryFailTest");
+
+    final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) db.async();
+    async.setParallelLevel(1);
+    async.recreateThreadsForTests();
+    async.setCommitEvery(1000); // NEVER FIRES NATURALLY IN THIS TEST
+
+    // Fires exactly once, on the FIRST WAL-protected commit only: the boundary commit this test targets.
+    // Any later commit (this test's own cleanup included) must go through unharmed.
+    final AtomicBoolean armed = new AtomicBoolean(true);
+    db.registerCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, () -> {
+      if (armed.compareAndSet(true, false))
+        throw new RuntimeException("injected boundary-commit failure");
+      return null;
+    });
+
+    final List<Throwable> errors = new CopyOnWriteArrayList<>();
+    async.onError(errors::add);
+
+    // Task A: useWAL=true, left uncommitted (commitEvery is huge).
+    async.setTransactionUseWAL(true);
+    createDocumentAndWait(async, "BoundaryFailTest");
+
+    // Task B: the flip. Forces a boundary commit of A's transaction, which the injected callback fails.
+    async.setTransactionUseWAL(false);
+    final AtomicBoolean bExecuted = new AtomicBoolean(false);
+    final CountDownLatch bDone = new CountDownLatch(1);
+    async.scheduleTask(0, new DatabaseAsyncTask() {
+      @Override
+      public void execute(final DatabaseAsyncExecutorImpl.AsyncThread asyncThread, final DatabaseInternal database) {
+        bExecuted.set(true);
+        database.newDocument("BoundaryFailTest").save();
+      }
+
+      @Override
+      public void completed() {
+        bDone.countDown();
+      }
+    }, true, 0);
+    assertThat(bDone.await(5, TimeUnit.SECONDS)).as("task B must reach completed()").isTrue();
+
+    assertThat(errors)
+        .as("the boundary commit's failure must be reported")
+        .hasSize(1);
+    assertThat(bExecuted.get())
+        .as("task B must actually run - not be silently marked completed for a failure that belongs to "
+            + "task A's boundary commit, not to B")
+        .isTrue();
+
+    // Confirm B's write is really there (not just that execute() set a flag): commit it for real and count.
+    async.waitCompletion();
+    assertThat(database.countType("BoundaryFailTest", false))
+        .as("task B's document must actually be persisted")
+        .isEqualTo(1L);
   }
 
   /** Schedules a task that creates one document of the given type and waits for it to run (not commit). */
