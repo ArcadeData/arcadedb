@@ -309,6 +309,15 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         // (unmodified) flags before this task touches anything, then let the check below open a new one
         // that picks up the new flags cleanly. Guarded by !nested for the same reason as the commitEvery
         // boundary below: a nested commit would commit an enclosing task's partial writes.
+        // #6509 review: set only when BOTH the boundary commit AND its rollback fallback fail (e.g.
+        // TransactionContext.rollback() can itself throw - and return without reaching its own reset()
+        // call - on a schema-dictionary reload IOException, line ~439). In that double-failure case
+        // database.isTransactionActive() can still read true over a transaction left in a half-cleaned,
+        // unknown state, and the begin() guard below would then wrongly skip beginning a fresh one for
+        // `message`, running it against that leftover state instead. Forces begin() regardless of the
+        // active-flag reading below when set - see the guard's comment for why that is safe.
+        boolean forceFreshTransactionAfterBoundaryFailure = false;
+
         if (!nested && database.isTransactionActive()) {
           final TransactionContext activeTx = database.getTransaction();
           if (activeTx.isUseWAL() != currentUseWAL || activeTx.getWALFlush() != currentSync) {
@@ -338,15 +347,24 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
                 // repeat the exact bug this whole block exists to close, just one level deeper: `message`
                 // would still reach completed() in the outer finally having never reached execute().
                 // Logged and swallowed instead; `message` still gets its own begin()/execute() attempt
-                // below regardless of whether the transaction ends up active or not.
+                // below regardless of whether the transaction ends up active or not - forced past the
+                // stale still-active read via the flag above, rather than trusted to it.
                 LogManager.instance().log(this, Level.WARNING,
                     "Error rolling back the transaction after a failed durability-boundary commit", rollbackError);
+                forceFreshTransactionAfterBoundaryFailure = database.isTransactionActive();
               }
             }
           }
         }
 
-        if (message.requiresActiveTx() && !database.isTransactionActive())
+        if (message.requiresActiveTx() && (forceFreshTransactionAfterBoundaryFailure || !database.isTransactionActive()))
+          // #6509 review: LocalDatabase.begin() checks isActive() on the CURRENT TransactionContext itself -
+          // when forceFreshTransactionAfterBoundaryFailure is set that reads true (the double-failure case
+          // above), so this deliberately takes the "already active" branch and pushes a NEW nested context
+          // for `message` rather than reusing the poisoned one, exactly as it would for any other caller
+          // that begins a transaction while one is already open. The poisoned transaction is left on the
+          // stack underneath, still there for whatever the next commitEvery boundary or flag flip does with
+          // it, but `message` itself runs isolated from its unknown state either way.
           database.begin();
 
         // Applied per task, not once at thread start (see run()): setTransactionUseWAL()/
