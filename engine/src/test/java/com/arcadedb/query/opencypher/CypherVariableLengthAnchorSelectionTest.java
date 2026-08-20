@@ -101,18 +101,18 @@ class CypherVariableLengthAnchorSelectionTest {
 
     assertThat(plan.getSteps()).isNotEmpty();
     assertThat(plan.getSteps().get(0).getDescription())
-        .contains("MATCH NODE (country:Area)")
-        .contains("[index: Area[id]]")
-        .contains("1 rows");
+        .contains("AnchorSelection{variable='country', useIndex=true")
+        .contains("VarLengthExpand(country)")
+        .contains("NodeIndexSeek(country:Area)");
     assertThat(plan.prettyPrint(0, 2))
-        .contains("Execution Plan (Traditional)")
-        .contains("MATCH NODE (country:Area)")
-        .doesNotContain("Execution Plan (Cost-Based Optimizer)");
+        .contains("Execution Plan (Cost-Based Optimizer)")
+        .contains("VarLengthExpand(country)")
+        .doesNotContain("Execution Plan (Traditional)");
 
     try (ResultSet resultSet = database.query("opencypher", "EXPLAIN " + sourceFirst, parameters)) {
       assertThat(resultSet.getExecutionPlan().orElseThrow().prettyPrint(0, 2))
-          .contains("Using Traditional Execution (Non-Optimized)")
-          .doesNotContain("Using Cost-Based Query Optimizer");
+          .contains("Using Cost-Based Query Optimizer")
+          .doesNotContain("Using Traditional Execution (Non-Optimized)");
     }
   }
 
@@ -131,9 +131,9 @@ class CypherVariableLengthAnchorSelectionTest {
       while (resultSet.hasNext())
         resultSet.next();
       assertThat(resultSet.getExecutionPlan().orElseThrow().getSteps().get(0).getDescription())
-          .contains("MATCH NODE (country:Area)")
-          .contains("[index: Area[id]]")
-          .contains("1 rows");
+          .contains("AnchorSelection{variable='country', useIndex=true")
+          .contains("VarLengthExpand(country)")
+          .contains("NodeIndexSeek(country:Area)");
     }
   }
 
@@ -152,9 +152,9 @@ class CypherVariableLengthAnchorSelectionTest {
       while (resultSet.hasNext())
         resultSet.next();
       assertThat(resultSet.getExecutionPlan().orElseThrow().getSteps().get(0).getDescription())
-          .contains("MATCH NODE (country:Area)")
-          .contains("[index: Area[id]]")
-          .contains("1 rows");
+          .contains("AnchorSelection{variable='country', useIndex=true")
+          .contains("VarLengthExpand(country)")
+          .contains("NodeIndexSeek(country:Area)");
     }
   }
 
@@ -173,9 +173,9 @@ class CypherVariableLengthAnchorSelectionTest {
       assertThat(result.<Long>getProperty("places")).isEqualTo(3L);
       assertThat(resultSet.hasNext()).isFalse();
       assertThat(resultSet.getExecutionPlan().orElseThrow().getSteps().get(0).getDescription())
-          .contains("MATCH NODE (country:Area)")
-          .contains("[index: Area[id]]")
-          .contains("1 rows");
+          .contains("AnchorSelection{variable='country', useIndex=true")
+          .contains("VarLengthExpand(country)")
+          .contains("NodeIndexSeek(country:Area)");
     }
   }
 
@@ -194,9 +194,9 @@ class CypherVariableLengthAnchorSelectionTest {
       assertThat(result.<Long>getProperty("places")).isEqualTo(1L);
       assertThat(resultSet.hasNext()).isFalse();
       assertThat(resultSet.getExecutionPlan().orElseThrow().getSteps().get(0).getDescription())
-          .contains("MATCH NODE (country:Area)")
-          .contains("[index: Area[id]]")
-          .contains("1 rows");
+          .contains("AnchorSelection{variable='country', useIndex=true")
+          .contains("VarLengthExpand(country)")
+          .contains("NodeIndexSeek(country:Area)");
     }
   }
 
@@ -215,9 +215,9 @@ class CypherVariableLengthAnchorSelectionTest {
           .toList())
           .containsExactly("country:2", "region:1");
       assertThat(resultSet.getExecutionPlan().orElseThrow().getSteps().get(0).getDescription())
-          .contains("INDEX SEEK (country:Area)")
-          .contains("[index: Area[id]]")
-          .contains("2 rows");
+          .contains("AnchorSelection{variable='country', useIndex=true")
+          .contains("VarLengthExpand(country)")
+          .contains("NodeIndexSeek(country:Area)");
     }
   }
 
@@ -241,9 +241,9 @@ class CypherVariableLengthAnchorSelectionTest {
       while (resultSet.hasNext())
         resultSet.next();
       assertThat(resultSet.getExecutionPlan().orElseThrow().getSteps().get(0).getDescription())
-          .contains("INDEX SEEK (country:Area)")
-          .contains("[index: Area[id]]")
-          .contains("2 rows");
+          .contains("AnchorSelection{variable='country', useIndex=true")
+          .contains("VarLengthExpand(country)")
+          .contains("NodeIndexSeek(country:Area)");
     }
   }
 
@@ -267,8 +267,8 @@ class CypherVariableLengthAnchorSelectionTest {
       while (resultSet.hasNext())
         resultSet.next();
       assertThat(resultSet.getExecutionPlan().orElseThrow().prettyPrint(0, 2))
-          .contains("MATCH NODE (place:Area)")
-          .doesNotContain("INDEX SEEK (country:Area)");
+          .contains("VarLengthExpand(country)")
+          .contains("NodeIndexSeek(country:Area)");
     }
   }
 
@@ -328,8 +328,8 @@ class CypherVariableLengthAnchorSelectionTest {
     }
 
     assertThat(plan.getSteps().get(0).getDescription())
-        .contains("MATCH NODE (country:Area)")
-        .contains("[index: Area[id]]");
+        .contains("VarLengthExpand(country)")
+        .contains("NodeIndexSeek(country:Area)");
 
     final Result city = rows.stream()
         .filter(row -> "city".equals(row.<String>getProperty("id")))
@@ -357,8 +357,8 @@ class CypherVariableLengthAnchorSelectionTest {
     }
 
     assertThat(plan.getSteps().get(0).getDescription())
-        .contains("MATCH NODE (country:Area)")
-        .contains("[index: Area[id]]");
+        .contains("VarLengthExpand(country)")
+        .contains("NodeIndexSeek(country:Area)");
 
     final Result city = rows.stream()
         .filter(row -> "city".equals(row.<String>getProperty("id")))
@@ -385,8 +385,9 @@ class CypherVariableLengthAnchorSelectionTest {
       while (resultSet.hasNext())
         resultSet.next();
       assertThat(resultSet.getExecutionPlan().orElseThrow().getSteps().get(0).getDescription())
-          .contains("MATCH NODE (place:Area)")
-          .doesNotContain("[index:");
+          .contains("AnchorSelection{variable='place', useIndex=false")
+          .contains("VarLengthExpand(place)")
+          .contains("NodeByLabelScan(place:Area)");
     }
   }
 
@@ -405,8 +406,9 @@ class CypherVariableLengthAnchorSelectionTest {
       while (resultSet.hasNext())
         resultSet.next();
       assertThat(resultSet.getExecutionPlan().orElseThrow().getSteps().get(0).getDescription())
-          .contains("MATCH NODE (place:Area)")
-          .doesNotContain("[index:");
+          .contains("AnchorSelection{variable='place', useIndex=false")
+          .contains("VarLengthExpand(place)")
+          .contains("NodeByLabelScan(place:Area)");
     }
   }
 

@@ -249,25 +249,47 @@ class CypherMatchClauseUniquenessIssue6310Test extends TestHelper {
   }
 
   /**
-   * Which plan runs a clause decides which of the two implementations its uniqueness comes from, so it is
-   * worth pinning rather than assuming. The cost-based optimizer declines every variable-length hop, comma
-   * or no comma - so there is no optimizer-side variable-length path for the guards above to be wrong on,
-   * and a test claiming to cover one would in fact be exercising the traditional plan. A comma clause of
-   * fixed-length hops IS optimized, which is what makes the rest of this class cover both implementations.
-   * <p>
-   * A tripwire, not a preference: when the optimizer does grow variable-length support, this fails, and
-   * whoever adds it is made to answer the uniqueness question on that path too.
+   * Which plan runs a clause decides which implementation supplies its uniqueness, so pin the routing
+   * rather than assuming it. Ordinary variable-length MATCH now uses {@code VarLengthExpand}; when a
+   * comma separates disconnected relationship components, the physical Cartesian product applies the
+   * clause-wide relationship-uniqueness check to each candidate pair before merging it into a row,
+   * rather than merging first and filtering afterward. shortestPath remains a separate traditional
+   * capability.
    */
   @Test
-  void theOptimizerDeclinesVariableLengthHopsButNotCommas() {
+  void theOptimizerRoutesOrdinaryVariableLengthHopsButNotShortestPath() {
     assertThat(planOf("MATCH (x:C)-[*1..2]->(y:A), (p:E)-[]->(q:A) RETURN x.n AS a"))
-        .contains("Traditional Execution");
+        .contains("VarLengthExpand")
+        .contains("RelationshipUniquenessFilter")
+        .doesNotContain("Traditional Execution");
     assertThat(planOf("MATCH p1 = shortestPath((x:C)-[*1..2]->(y:A)), (p:E)-[]->(q:A) RETURN x.n AS a"))
         .contains("Traditional Execution");
     assertThat(planOf("MATCH (x:C)-[*1..2]->(y:A) RETURN x.n AS a"))
-        .contains("Traditional Execution");
+        .contains("VarLengthExpand")
+        .doesNotContain("Traditional Execution");
     assertThat(planOf("MATCH (n0:A)<-[r1]-(:E), (n3:C)-[]->(:E)-[r2]->(n0) RETURN n0.n AS a"))
         .doesNotContain("Traditional Execution");
+  }
+
+  /**
+   * The pushdown check runs incrementally, one join at a time, so a conflict between the FIRST and
+   * THIRD of three disconnected components - never adjacent in the join chain - has to be caught by
+   * the second join carrying the first component's binding forward in its merged row, not by any
+   * single join comparing the two directly.
+   */
+  @Test
+  void uniquenessIsEnforcedAcrossThreeDisconnectedComponents() {
+    database.command("opencypher", "CREATE (:N {n:'x1'})-[:R]->(:N {n:'y1'})");
+    database.command("opencypher", "CREATE (:N {n:'x2'})-[:R]->(:N {n:'y2'})");
+    database.command("opencypher", "CREATE (:N {n:'x3'})-[:R]->(:N {n:'y3'})");
+
+    final String match = "MATCH (a1:N)-[r1:R]->(b1:N), (a2:N)-[r2:R]->(b2:N), (a3:N)-[r3:R]->(b3:N) ";
+
+    assertThat(planOf(match + "RETURN count(*) AS rows")).doesNotContain("Traditional Execution");
+
+    // 3 x 3 x 3 = 27 candidate triples, minus every triple that reuses an edge: only the 3! = 6
+    // permutations where r1, r2 and r3 are pairwise distinct edges survive.
+    assertThat(count(match + "RETURN count(*) AS rows")).isEqualTo(6);
   }
 
   private String planOf(final String query) {

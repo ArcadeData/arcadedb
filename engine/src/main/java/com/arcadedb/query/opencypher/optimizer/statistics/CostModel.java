@@ -45,6 +45,9 @@ public class CostModel {
 
   // Default average degree for graph traversals (when statistics unavailable)
   public static final double DEFAULT_AVG_DEGREE = 10.0;
+  // An unbounded trail has no finite graph-independent estimate. Model enough levels to keep it
+  // substantially more expensive than a fixed hop without poisoning the rest of the plan with MAX_VALUE.
+  public static final int VARIABLE_LENGTH_UNBOUNDED_PLANNING_HORIZON = 8;
 
   private final StatisticsProvider statistics;
 
@@ -138,6 +141,83 @@ public class CostModel {
    */
   public double estimateExpandCost(final long inputCardinality, final double avgDegree) {
     return inputCardinality * avgDegree * EXPAND_COST_PER_ROW;
+  }
+
+  /**
+   * Estimates the number of paths emitted per input vertex for a bounded variable-length
+   * expansion. The geometric series is saturated instead of overflowing. An unbounded trail has
+   * no finite graph-independent estimate, so planning accounts for the first eight levels (or two
+   * levels beyond a larger declared minimum) rather than pretending it is a single hop.
+   */
+  public double estimateVariableLengthExpansionFactor(final double avgDegree, final int minHops,
+      final int maxHops) {
+    final int planningMaxHops;
+    if (maxHops == Integer.MAX_VALUE) {
+      final int beyondMinimum = minHops <= Integer.MAX_VALUE - 2 ? minHops + 2 : Integer.MAX_VALUE;
+      planningMaxHops = Math.max(VARIABLE_LENGTH_UNBOUNDED_PLANNING_HORIZON, beyondMinimum);
+    } else
+      planningMaxHops = maxHops;
+
+    if (planningMaxHops < minHops)
+      return 0.0;
+
+    final double degree = Math.max(0.0, avgDegree);
+    if (degree == 0.0)
+      return minHops == 0 ? 1.0 : 0.0;
+    if (degree == 1.0)
+      return (double) planningMaxHops - minHops + 1.0;
+
+    final double first = Math.pow(degree, minHops);
+    final double terms = (double) planningMaxHops - minHops + 1.0;
+    final double ratioPower = Math.pow(degree, terms);
+    final double total = degree > 1.0 ?
+        first * (ratioPower - 1.0) / (degree - 1.0) :
+        first * (1.0 - ratioPower) / (1.0 - degree);
+    return Double.isFinite(total) ? total : Double.MAX_VALUE;
+  }
+
+  public long estimateVariableLengthCardinality(final long inputCardinality, final double avgDegree,
+      final int minHops, final int maxHops) {
+    return saturatingCardinality(inputCardinality,
+        estimateVariableLengthExpansionFactor(avgDegree, minHops, maxHops));
+  }
+
+  public double estimateVariableLengthExpandCost(final long inputCardinality, final double avgDegree,
+      final int minHops, final int maxHops) {
+    return saturatingMultiply(
+        saturatingMultiply(inputCardinality,
+            estimateVariableLengthExpansionFactor(avgDegree, minHops, maxHops)),
+        EXPAND_COST_PER_ROW);
+  }
+
+  public static long saturatingCardinality(final long cardinality, final double factor) {
+    if (cardinality <= 0 || factor <= 0.0)
+      return 0;
+    if (!Double.isFinite(factor) || factor >= Long.MAX_VALUE / (double) cardinality)
+      return Long.MAX_VALUE;
+    return (long) Math.ceil(cardinality * factor);
+  }
+
+  public static long saturatingCardinalityProduct(final long left, final long right) {
+    if (left <= 0 || right <= 0)
+      return 0;
+    if (left > Long.MAX_VALUE / right)
+      return Long.MAX_VALUE;
+    return left * right;
+  }
+
+  public static double saturatingAdd(final double left, final double right) {
+    if (left == Double.MAX_VALUE || right == Double.MAX_VALUE || left > Double.MAX_VALUE - right)
+      return Double.MAX_VALUE;
+    return left + right;
+  }
+
+  public static double saturatingMultiply(final double left, final double right) {
+    if (left <= 0.0 || right <= 0.0)
+      return 0.0;
+    if (!Double.isFinite(left) || !Double.isFinite(right) || left > Double.MAX_VALUE / right)
+      return Double.MAX_VALUE;
+    return left * right;
   }
 
   /**

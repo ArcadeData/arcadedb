@@ -186,6 +186,12 @@ public class JoinOrderRule implements OptimizationRule {
     // Cost depends on average degree
     final double avgDegree = estimateAverageDegree(rel, logicalPlan);
 
+    if (rel.isVariableLength())
+      return CostModel.saturatingMultiply(
+          costModel.estimateVariableLengthExpansionFactor(avgDegree,
+              rel.getEffectiveMinHops(), rel.getEffectiveMaxHops()),
+          CostModel.EXPAND_COST_PER_ROW);
+
     if (sourceIsBound) {
       // Expand from source
       return avgDegree * costModel.EXPAND_COST_PER_ROW;
