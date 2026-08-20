@@ -428,9 +428,10 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
     // scheduleCompaction() has reserved the index (AVAILABLE -> COMPACTION_SCHEDULED) and only the compaction
     // itself gives that back. So when nothing is going to run it, hand it back here: a full worker queue answers
-    // false without throwing, and a shut-down executor throws out of getBestSlot()/scheduleTask. Leaving it
-    // reserved would be permanent - every later attempt, an explicit COMPACT INDEX included, needs the same
-    // AVAILABLE -> SCHEDULED move - so the index would silently stop compacting until the database is reopened.
+    // false without throwing, and a shut-down (or, per the catch below, transiently recreating) executor throws
+    // out of getBestSlot()/scheduleTask. Leaving it reserved would be permanent - every later attempt, an
+    // explicit COMPACT INDEX included, needs the same AVAILABLE -> SCHEDULED move - so the index would silently
+    // stop compacting until the database is reopened.
     boolean scheduled = false;
     try {
       // No back-pressure (0) on purpose, unlike the user-facing async entry points. Both callers of this method are
@@ -439,6 +440,17 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       // finished. A full queue instead makes the offer below give up, the finally hands the slot back, and the next
       // commit past the threshold schedules again - both gates are level-triggered, so no compaction is lost.
       scheduled = scheduleTask(getBestSlot(), new DatabaseAsyncIndexCompaction(index), false, 0);
+    } catch (final DatabaseOperationException e) {
+      // #6505: getBestSlot()/scheduleTask throw the SAME "shut down" exception for a genuine terminal close()/
+      // kill() (#4955, the case this was written for) and for the momentary window setTransactionUseWAL()/
+      // setTransactionSync() leaves while createThreads() tears down and respawns the whole pool for an
+      // UNRELATED caller (issue #5665) - the pool is back within milliseconds, but this onAfterCommit hook runs
+      // AFTER writeTransactionToWAL(), so letting the exception escape crossed the WAL point of no return and
+      // fenced the entire database (#5053) over a best-effort scheduling hiccup that had nothing to do with the
+      // committing transaction's data. This finally hands the reservation back exactly like the full-queue case
+      // above: no compaction is lost, it is picked up by the next commit past the threshold.
+      LogManager.instance().log(this, Level.WARNING, "Could not schedule compaction of index '%s': %s", null,
+          index, e.getMessage());
     } finally {
       if (!scheduled)
         index.setStatus(new IndexInternal.INDEX_STATUS[] { IndexInternal.INDEX_STATUS.COMPACTION_SCHEDULED },
