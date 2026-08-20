@@ -1857,6 +1857,7 @@ public class TransactionContext implements Transaction {
 
     boolean committed = false;
     boolean walAppended = false;
+    Throwable commitFailureCause = null;
     try {
       if (database.getMode() == ComponentFile.MODE.READ_ONLY)
         throw new TransactionException("Cannot commit changes because the database is open in read-only mode");
@@ -1928,12 +1929,18 @@ public class TransactionContext implements Transaction {
       committed = true;
 
     } catch (final ConcurrentModificationException e) {
+      commitFailureCause = e;
       throw e;
     } catch (final TransactionException e) {
       // Already a first-class transaction error (e.g. the recovery fence): rethrow as-is instead of
       // double-wrapping it in a generic "Transaction error on commit" (#5053 review, same as phase 1).
+      commitFailureCause = e;
       throw e;
     } catch (final Exception e) {
+      commitFailureCause = e;
+      // #6505: kept at FINE - most callers land here through an ordinary, retryable failure - but the finally
+      // below logs this SAME cause at SEVERE alongside fenceForRecovery when it also crossed the WAL point of
+      // no return, so the one commit failure serious enough to fence the whole database is never invisible.
       LogManager.instance()
           .log(this, Level.FINE, "Unknown exception during commit (threadId=%d)", e, Thread.currentThread().getId());
       throw new TransactionException("Transaction error on commit", e);
@@ -1942,23 +1949,9 @@ public class TransactionContext implements Transaction {
         resetAndFireCallbacks();
       else if (walAppended) {
         if (database.getEmbedded() instanceof LocalDatabase localDatabase)
-          // #5053 review: the transaction IS durable (its WAL record survives and recovery will replay it)
-          // but its pages may not all be published - the live state and the WAL may diverge. Fence BEFORE
-          // reset() releases the file locks: the volatile write is then visible to any transaction that was
-          // blocked on these locks, so no conflicting WAL record for the same page versions can follow. The
-          // orphaned record's pages were never flush-acked, so the ack-gated close (#4928) preserves the
-          // WAL and the lock file, and reopening the database replays it.
-          //
-          // DELIBERATELY WIDE (covers every failure from the append to the end of the try, not just
-          // publishPages): a mid-publish failure can leave SOME pages visible and others not - a partial
-          // publication no boolean flag can distinguish from a complete one - and post-publish failures
-          // (page counters, onAfterCommit) leave component metadata that recovery replay also repairs.
-          // Under-fencing risks exactly the divergence this exists to prevent; the cost (a restart after an
-          // exceptional post-append failure) is the acceptable side.
-          localDatabase.fenceForRecovery("commit of tx " + txId + " failed after its WAL append");
-        // The transaction reached the WAL: it is (or may be) durable and recovery replays it, so the RIDs
-        // optimistically assigned to records created in this transaction remain valid. Release resources
-        // without touching user-held record state.
+          localDatabase.fenceForRecovery("commit of tx " + txId + " failed after its WAL append", commitFailureCause);
+        // The RIDs optimistically assigned to records created in this transaction remain valid (the replay
+        // makes them real): release resources WITHOUT touching user-held record state.
         reset();
       } else if (remotelyCommitted)
         // #5064: the replication QUORUM already durably committed this transaction cluster-wide; only the

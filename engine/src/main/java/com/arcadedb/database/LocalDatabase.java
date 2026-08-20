@@ -2916,10 +2916,21 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   private volatile String fenceReason = null;
 
   public void fenceForRecovery(final String reason) {
+    fenceForRecovery(reason, null);
+  }
+
+  /**
+   * Same as {@link #fenceForRecovery(String)}, plus the exception that crossed the WAL point of no return, if
+   * one is known. Fencing is one of the most serious events a database can log - without the cause attached
+   * here, the only place that exception was otherwise recorded is {@code TransactionContext.commit2ndPhase}'s
+   * generic catch, at FINE (invisible under any default logging configuration): a fenced database with no
+   * visible reason (#6505).
+   */
+  public void fenceForRecovery(final String reason, final Throwable cause) {
     if (fenceReason == null) {
       fenceReason = reason;
       LogManager.instance().log(this, Level.SEVERE,
-          "Database '%s' fenced for recovery: %s. Close and reopen the database to replay the WAL", null, name, reason);
+          "Database '%s' fenced for recovery: %s. Close and reopen the database to replay the WAL", cause, name, reason);
     }
   }
 
