@@ -1,4 +1,3 @@
-/* SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com) */
 /*
  * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
  *
