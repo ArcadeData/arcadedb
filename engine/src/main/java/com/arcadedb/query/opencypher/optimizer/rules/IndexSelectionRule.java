@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.optimizer.rules;
 
 import com.arcadedb.query.opencypher.Labels;
+import com.arcadedb.query.opencypher.executor.operators.NodeByLabelDisjunctionIndexSeek;
 import com.arcadedb.query.opencypher.executor.operators.NodeByLabelDisjunctionScan;
 import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexRangeScan;
@@ -28,8 +29,10 @@ import com.arcadedb.query.opencypher.optimizer.plan.AnchorSelection;
 import com.arcadedb.query.opencypher.optimizer.plan.LogicalPlan;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
 import com.arcadedb.query.opencypher.optimizer.statistics.CostModel;
+import com.arcadedb.query.opencypher.optimizer.statistics.IndexStatistics;
 import com.arcadedb.query.opencypher.optimizer.statistics.StatisticsProvider;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -105,8 +108,38 @@ public class IndexSelectionRule implements OptimizationRule {
 
     // Label disjunction (n:A|B) requires scanning each label type separately — a composite
     // type A~B would not exist in the schema, so NodeByLabelScan would return 0 rows.
-    // Index seeks are also not applicable for disjunctions.
     if (anchor.getNode().isLabelDisjunction() && labels.size() > 1) {
+      // An equality predicate resolved by an index on every root type (issue #6397): union the per-root
+      // seeks instead of the full scan below. AnchorSelector only ever produces this shape all-or-nothing,
+      // so every entry here is guaranteed indexable.
+      if (anchor.isDisjunctionIndexSeek()) {
+        final int rootCount = anchor.getDisjunctionIndexSeeks().size();
+        final List<NodeIndexSeek> perRootSeeks = new ArrayList<>(rootCount);
+        for (final AnchorSelection.DisjunctionIndexSeek rootSeek : anchor.getDisjunctionIndexSeeks()) {
+          final IndexStatistics index = rootSeek.index();
+          perRootSeeks.add(new NodeIndexSeek(
+              anchor.getVariable(),
+              rootSeek.typeName(),
+              anchor.getPropertyName(),
+              anchor.getPropertyValue(),
+              index.getIndexName(),
+              index.getPropertyNames(),
+              rootSeek.keyValues(),
+              anchor.getEstimatedCost() / rootCount,
+              // At least 1, not floored to 0 by integer division on a small total (issue #6397 review): every
+              // root that reached this point has its own usable index, so its seek returns at least one row on
+              // a hit, however small a slice of the anchor's total estimate that root was assigned.
+              Math.max(1, anchor.getEstimatedCardinality() / rootCount)
+          ));
+        }
+        return new NodeByLabelDisjunctionIndexSeek(
+            anchor.getVariable(),
+            perRootSeeks,
+            anchor.getEstimatedCost(),
+            anchor.getEstimatedCardinality()
+        );
+      }
+
       return new NodeByLabelDisjunctionScan(
           anchor.getVariable(),
           labels,

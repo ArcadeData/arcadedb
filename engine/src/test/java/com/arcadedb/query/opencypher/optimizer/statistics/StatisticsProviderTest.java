@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
@@ -453,5 +454,53 @@ class StatisticsProviderTest {
     final IndexStatistics emailIndex = statisticsProvider.findIndexForProperty("Person", "email");
     assertThat(emailIndex).isNotNull();
     assertThat(emailIndex.isUnique()).isFalse();
+  }
+
+  /**
+   * Unit coverage for {@link StatisticsProvider#getMatchingVertexRootTypes}, added in the review of issue #6397:
+   * the disjunction-seek path built on top of it was only covered indirectly, through plan-string assertions
+   * several layers up.
+   */
+  @Test
+  void matchingVertexRootTypesOfTwoUnrelatedTypesIsBothOfThem() {
+    database.getSchema().getOrCreateVertexType("Author6397");
+    database.getSchema().getOrCreateVertexType("Topic6397");
+
+    final List<String> roots = rootNames(List.of("Author6397", "Topic6397"));
+    assertThat(roots).containsExactlyInAnyOrder("Author6397", "Topic6397");
+  }
+
+  /** A subtype of an accepted alternative is not its own root - the ancestor's own polymorphic index already covers it. */
+  @Test
+  void matchingVertexRootTypesExcludesASubtypeOfAnAcceptedAlternative() {
+    database.getSchema().getOrCreateVertexType("Author6397");
+    database.transaction(() -> database.command("sql", "CREATE VERTEX TYPE SpecialAuthor6397 EXTENDS Author6397"));
+
+    final List<String> roots = rootNames(List.of("Author6397"));
+    assertThat(roots).containsExactly("Author6397");
+  }
+
+  /** A type that multiply-inherits from two accepted alternatives is a root under BOTH of them (issue #6397 diamond case). */
+  @Test
+  void matchingVertexRootTypesOfADiamondSubtypeIncludesBothParentRoots() {
+    database.getSchema().getOrCreateVertexType("Author6397");
+    database.getSchema().getOrCreateVertexType("Topic6397");
+    database.transaction(() -> database.command("sql", "CREATE VERTEX TYPE Special6397 EXTENDS Author6397, Topic6397"));
+
+    final List<String> roots = rootNames(List.of("Author6397", "Topic6397"));
+    // Special6397 does not appear on its own - it is reached through both Author6397 and Topic6397 - but both of
+    // those stay roots since neither is the other's ancestor.
+    assertThat(roots).containsExactlyInAnyOrder("Author6397", "Topic6397");
+  }
+
+  @Test
+  void matchingVertexRootTypesOfALabelTheSchemaDoesNotHaveIsEmpty() {
+    assertThat(statisticsProvider.getMatchingVertexRootTypes(List.of("NoSuchLabel6397"), true)).isEmpty();
+  }
+
+  private List<String> rootNames(final List<String> labels) {
+    return statisticsProvider.getMatchingVertexRootTypes(labels, true).stream()
+        .map(DocumentType::getName)
+        .toList();
   }
 }
