@@ -1031,7 +1031,9 @@ public enum GlobalConfiguration {
       """
       Maximum share of the JVM heap (percentage) the auto-sized graph-build cache may use. Only applies when \
       arcadedb.vectorIndex.graphBuildCacheSize is left at 0. A corpus larger than this budget still builds: \
-      the cache evicts instead of holding everything.""",
+      the cache evicts instead of holding everything. Measured against the heap currently AVAILABLE rather than \
+      against the ceiling, so a rebuild that is holding the old graph resident asks for less (issue #6503). \
+      Values above 90 are clamped to 90: no cache is allowed to plan on the whole heap.""",
       Integer.class, 25),
 
   VECTOR_INDEX_SEARCH_CACHE_SIZE("arcadedb.vectorIndex.searchCacheSize", SCOPE.DATABASE,
@@ -1046,8 +1048,10 @@ public enum GlobalConfiguration {
 
   VECTOR_INDEX_SEARCH_CACHE_MAX_HEAP_PERCENT("arcadedb.vectorIndex.searchCacheMaxHeapPercent", SCOPE.DATABASE,
       """
-      Upper bound, as a percentage of the maximum JVM heap, on the RAM an automatically sized per-index search \
-      cache may use (see arcadedb.vectorIndex.searchCacheSize). Ignored when the cache size is set explicitly.""",
+      Upper bound, as a percentage of the JVM heap currently AVAILABLE rather than of the ceiling (issue #6503), \
+      on the RAM an automatically sized per-index search cache may use (see arcadedb.vectorIndex.searchCacheSize). \
+      Ignored when the cache size is set explicitly. Values above 90 are clamped to 90: no cache is allowed to \
+      plan on the whole heap.""",
       Integer.class, 25),
 
   VECTOR_INDEX_SEARCHER_POOL_SIZE("arcadedb.vectorIndex.searcherPoolSize", SCOPE.DATABASE,
@@ -1151,7 +1155,8 @@ public enum GlobalConfiguration {
       wrong or missing results. The estimate is deliberately coarse, so the default is generous: it refuses only \
       when a rebuild is confidently too large, not whenever one looks tight. Applies to online rebuilds only - a \
       first build, a rebuild on close, an explicit REBUILD INDEX and a COMPACT INDEX are never declined. \
-      Set to 0 to disable the gate and restore the attempt-and-hope behaviour.""",
+      Set to 0 to disable the gate and restore the attempt-and-hope behaviour. Values above 90 are clamped to 90: \
+      a rebuild is never allowed to plan on the whole heap, since the request, I/O and GC threads need some too.""",
       Integer.class, 90),
 
   VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS("arcadedb.vectorIndex.rebuildPermitTimeoutMs", SCOPE.JVM,

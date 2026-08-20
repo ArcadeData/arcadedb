@@ -3661,11 +3661,20 @@ once, not how much heap one needs. A rebuild that could not fit was simply attem
 Four changes, in the order they matter:
 
 **The close path releases the old graph before building the replacement.** By the time `flush()` rebuilds, it has
-already CAS-ed the index to `UNAVAILABLE` and `close()` has already cleared the pooled searchers, so nothing can
+already CAS-ed the index to `UNAVAILABLE` and a closing database hands it no further requests, so nothing can
 still be reading the old graph or the shared search cache - holding them for the duration of the build was pure
-waste. This roughly halves peak heap for exactly the case that measurably dies today. An *online* rebuild keeps
-both, unchanged: `rebuildGraphBeforeSearch()`, an async rebuild, an explicit `REBUILD INDEX` and `COMPACT INDEX`
-do not gate concurrent searches, so for them the old graph is still load-bearing.
+waste. This roughly halves peak heap for exactly the case that measurably dies today.
+
+Three references have to go, not one. `graphIndex` and the search cache are the obvious two; the third is the
+searcher pool, because a pooled searcher holds the graph it was pooled under and so pins it however many times
+`graphIndex` is nulled. That is not hypothetical on this path: `LocalDatabase.closeDurableParts()` runs
+`index.flush()` *before* `index.releaseBackgroundResources()`, so on a real database close the pool is still
+populated when the rebuild starts. The release therefore clears the pool itself rather than assuming the caller
+already has.
+
+An *online* rebuild keeps all three, unchanged: `rebuildGraphBeforeSearch()`, an async rebuild, an explicit
+`REBUILD INDEX` and `COMPACT INDEX` do not gate concurrent searches on the index status, so for them the old graph
+is still load-bearing.
 
 **Both caches are now budgeted against the heap actually available**, not against the ceiling. Availability is read
 from `MemoryPoolMXBean.getCollectionUsage()` - the pool's occupancy measured right after the JVM last collected it,

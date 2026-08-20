@@ -1707,12 +1707,28 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * Rebuilds the way {@link #flush()} does on the close path: releases the resident graph and the shared search
-   * cache before starting, instead of at the end. {@code flush()} has already CAS-ed the index to
-   * {@code UNAVAILABLE} and {@code close()} has already run {@link #releaseBackgroundResources()} (which clears
-   * the pooled searchers), so nothing can still be reading either reference - dropping them first roughly halves
-   * peak heap for the case that otherwise runs out of it: a from-scratch build already retains the old graph plus
-   * its own full working set (build cache, JVector builder, ordinal map) for the whole build (issue #6503).
+   * Rebuilds the way {@link #flush()} does on the close path: releases everything holding the OLD graph on the
+   * heap before starting, instead of at the end. A from-scratch build otherwise retains that graph plus its own
+   * full working set (build cache, JVector builder, ordinal map) for the whole build, which is what makes a
+   * rebuild cost about 1.7x what building the same corpus from nothing costs and what runs a large index out of
+   * heap (issue #6503). Releasing first roughly halves the peak.
+   * <p>
+   * <b>All three references have to go, not just {@link #graphIndex}.</b> {@link #searchVectorCache} is the
+   * obvious second one. The third is the searcher pool: a pooled searcher holds the {@code ImmutableGraphIndex}
+   * it was pooled under, so a populated pool pins the old graph however many times {@code graphIndex} is nulled.
+   * That is not hypothetical on the path this method exists for - {@code LocalDatabase.closeDurableParts()}
+   * calls {@code index.flush()} BEFORE {@code index.releaseBackgroundResources()}, so on a database close the
+   * pool is still full when this runs, and clearing it here rather than relying on the caller having done it is
+   * what makes the release actually release anything.
+   * <p>
+   * <b>Safe only because no search can be in flight.</b> {@code flush()} has already CAS-ed {@link #status} to
+   * {@code UNAVAILABLE}, and a database close does not return requests to the pool afterwards. That is a
+   * caller-side contract, though, not something this class enforces: the search methods gate on
+   * {@code lock.readLock()} alone and never consult {@link #status}. A reader that violated it would not crash
+   * or read torn state - it takes the {@code graphIndex == null} branch and is served from the delta scan - but
+   * it would get an incomplete result set, and for the whole duration of the rebuild rather than for the instant
+   * around the swap. Degrading rather than corrupting is why this is acceptable on a path where the contract
+   * holds, and exactly why it must not be used where it does not.
    * <p>
    * Deliberately not used by an online rebuild ({@link #rebuildGraphBeforeSearch()}, {@link #startAsyncGraphRebuild()},
    * an explicit {@link #buildVectorGraphNow(GraphBuildCallback)}, or {@code compact()}): none of those gate
@@ -1761,11 +1777,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
     }
 
     if (releaseResidentGraphFirst) {
-      // See buildGraphFromScratchReleasingResidentGraph() for why this is safe only on that path.
+      // See buildGraphFromScratchReleasingResidentGraph() for why this is safe only on that path, and why the
+      // searcher pool has to be emptied too: a pooled searcher holds the graph it was pooled under, so leaving
+      // the pool populated would keep the old graph reachable and release nothing.
       lock.writeLock().lock();
       try {
         this.graphIndex = null;
         this.searchVectorCache = null;
+        final GraphSearcherPool searchers = searcherPool;
+        if (searchers != null)
+          searchers.clear();
       } finally {
         lock.writeLock().unlock();
       }
@@ -2001,6 +2022,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // worker threads cannot lookupByRID without a transaction context bound to the thread.
       final boolean inlineQuantization = metadata.quantizationType == VectorQuantizationType.INT8
           || metadata.quantizationType == VectorQuantizationType.BINARY;
+      // ORDERING: this now budgets off AVAILABLE heap (issue #6503), so it must stay AFTER the
+      // releaseResidentGraphFirst block at the top of this method. On the close path that block has already
+      // dropped the old graph, the search cache and the pooled searchers, so this sizes against a heap that no
+      // longer counts them. Move this call above that block - or that block below this call - and the close-path
+      // rebuild would shrink its own build cache to make room for memory it is in the act of freeing, which is
+      // the slow-build failure mode this change exists to avoid rather than cause.
       final int graphBuildCacheSize = computeGraphBuildCacheCapacity(expectedSize, inlineQuantization);
       // Never preload more than the cache can hold: the surplus used to be read, boxed and then dropped.
       final int preloadBudget = Math.min(expectedSize, graphBuildCacheSize);
