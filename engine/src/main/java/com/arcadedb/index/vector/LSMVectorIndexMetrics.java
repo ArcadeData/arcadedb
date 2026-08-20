@@ -55,6 +55,12 @@ class LSMVectorIndexMetrics {
   // one restored from a backup, which does not carry the sidecar. Non-zero means this index is still being judged by
   // the weaker comparison; REBUILD INDEX, or any graph persist, writes a manifest and takes it off that path.
   private final AtomicLong unverifiedGraphReuses = new AtomicLong(0);
+  // Online rebuild cycles declined because the estimated peak footprint did not fit the available heap (issue
+  // #6503). Deferring is the intended outcome - the alternative is an OutOfMemoryError - but it is not free: the
+  // graph stays as stale as the delta buffer is long, so every query pays a longer brute-force scan over it. A
+  // number that keeps climbing is the signal to give the JVM more heap, lower graphBuildCacheMaxHeapPercent, or
+  // split the index; one that climbed once and stopped is a transient the next trigger already recovered from.
+  private final AtomicLong rebuildsDeferredForMemory = new AtomicLong(0);
 
   // Vector fetch source tracking
   private final AtomicLong vectorFetchFromQuantized = new AtomicLong(0);
@@ -101,6 +107,10 @@ class LSMVectorIndexMetrics {
 
   void incrementUnverifiedGraphReuses() {
     unverifiedGraphReuses.incrementAndGet();
+  }
+
+  void incrementRebuildsDeferredForMemory() {
+    rebuildsDeferredForMemory.incrementAndGet();
   }
 
   // Vector fetch source tracking methods
@@ -204,6 +214,7 @@ class LSMVectorIndexMetrics {
     stats.put("preFilterSearches", preFilterSearches.get());
     stats.put("groupedSearchesShortOfLimit", groupedSearchesShortOfLimit.get());
     stats.put("unverifiedGraphReuses", unverifiedGraphReuses.get());
+    stats.put("rebuildsDeferredForMemory", rebuildsDeferredForMemory.get());
     stats.put("compactionCount", compactionCount.get());
 
     stats.put("vectorFetchFromQuantized", vectorFetchFromQuantized.get());
@@ -225,6 +236,7 @@ class LSMVectorIndexMetrics {
     preFilterSearches.set(0);
     groupedSearchesShortOfLimit.set(0);
     unverifiedGraphReuses.set(0);
+    rebuildsDeferredForMemory.set(0);
     compactionCount.set(0);
     vectorFetchFromQuantized.set(0);
     vectorFetchFromDocuments.set(0);

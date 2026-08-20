@@ -1139,6 +1139,21 @@ public enum GlobalConfiguration {
       Set to 1 to serialize all rebuilds (safest for memory). Higher values trade memory for throughput.""",
       Integer.class, 1),
 
+  VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT("arcadedb.vectorIndex.rebuildMaxHeapPercent", SCOPE.DATABASE,
+      """
+      Share of the currently AVAILABLE heap (percentage) that an online vector graph rebuild's estimated peak \
+      footprint may occupy before the rebuild is deferred instead of attempted. An online rebuild keeps the old \
+      graph resident so searches keep working, and pays for a full new build's working set on top of it, so it \
+      costs roughly 1.7x what building the same corpus from nothing costs. With no gate at all it simply attempts \
+      the rebuild and dies with an OutOfMemoryError when it does not fit. A deferred cycle is not lost: the next \
+      mutation-threshold or inactivity trigger retries it, and pending vectors stay exactly searchable through the \
+      in-memory delta buffer meanwhile, so the cost of deferring is a longer delta scan per query rather than \
+      wrong or missing results. The estimate is deliberately coarse, so the default is generous: it refuses only \
+      when a rebuild is confidently too large, not whenever one looks tight. Applies to online rebuilds only - a \
+      first build, a rebuild on close, an explicit REBUILD INDEX and a COMPACT INDEX are never declined. \
+      Set to 0 to disable the gate and restore the attempt-and-hope behaviour.""",
+      Integer.class, 90),
+
   VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS("arcadedb.vectorIndex.rebuildPermitTimeoutMs", SCOPE.JVM,
       """
       Maximum time in milliseconds an async vector index rebuild waits to acquire a JVM-wide rebuild permit \
