@@ -6670,8 +6670,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (timeoutMs <= 0)
       return; // Disabled
 
-    if (mutationsSinceSerialize.get() <= 0)
-      return; // Nothing to rebuild
+    if (!inactivityRebuildIsWorthIt())
+      return; // Nothing worth rebuilding (issue #6496)
 
     // Cancel any previously scheduled task (reset on new mutation) and purge the cancelled
     // entry from the Timer's queue so a high write rate does not let cancelled tasks pile up.
@@ -6685,8 +6685,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final TimerTask task = new TimerTask() {
       @Override
       public void run() {
-        // Double-check: only rebuild if there are still pending mutations
-        if (mutationsSinceSerialize.get() <= 0)
+        // Double-check: only rebuild if there are still enough pending mutations
+        // to justify a full O(N) rebuild (issue #6496)
+        if (!inactivityRebuildIsWorthIt())
           return;
 
         LogManager.instance().log(this, Level.INFO,
