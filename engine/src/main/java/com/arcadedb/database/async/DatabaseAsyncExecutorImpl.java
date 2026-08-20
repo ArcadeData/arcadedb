@@ -28,6 +28,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.WALFile;
@@ -284,14 +285,33 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
             .log(this, Level.FINE, "Received async message %s (threadId=%d)", message,
                 Thread.currentThread().getId());
 
+        // #6509 review: useWAL/walFlush are read only at commit time and then govern the WHOLE
+        // accumulated transaction (TransactionContext.commit1stPhase/commit2ndPhase), not per write - so
+        // an already-open transaction that straddles a flag change would silently commit EARLIER tasks
+        // (queued by a caller unrelated to whoever changed the flag) under a durability policy they
+        // never asked for. Before #6509 this could not happen: a flag flip tore down and respawned the
+        // whole pool, and each worker's shutdown path committed its pending transaction under the STILL
+        // original flags before the new thread began a fresh one with the new flags. That "a flag change
+        // always starts a fresh transaction" guarantee is preserved here explicitly instead: if a
+        // transaction is already open and was last stamped with different flags than are current now,
+        // close it out under its own (unmodified) flags before this task touches anything, then let the
+        // check below open a new one that picks up the new flags cleanly. Guarded by !nested for the
+        // same reason as the commitEvery boundary below: a nested commit would commit an enclosing
+        // task's partial writes.
+        if (!nested && database.isTransactionActive()) {
+          final TransactionContext activeTx = database.getTransaction();
+          if (activeTx.isUseWAL() != transactionUseWAL || activeTx.getWALFlush() != transactionSync)
+            database.commit();
+        }
+
         if (message.requiresActiveTx() && !database.isTransactionActive())
           database.begin();
 
-        // #6509: applied per task, not once at thread start (see run()). setTransactionUseWAL()/
-        // setTransactionSync() are plain volatile writes now, so the latest requested durability
-        // policy is picked up here on the very next task and carried into whichever commit follows -
-        // the commitEvery boundary below or the final commit in run() - instead of requiring the
-        // whole pool to be torn down and respawned for the change to become visible.
+        // Applied per task, not once at thread start (see run()): setTransactionUseWAL()/
+        // setTransactionSync() are plain volatile writes now, so the latest requested durability policy
+        // is picked up here - on a transaction that, by the guard above, either just began or was
+        // already running under this same policy - instead of requiring the whole pool to be torn down
+        // and respawned for the change to become visible.
         database.getTransaction().setUseWAL(transactionUseWAL);
         database.setWALFlush(transactionSync);
 

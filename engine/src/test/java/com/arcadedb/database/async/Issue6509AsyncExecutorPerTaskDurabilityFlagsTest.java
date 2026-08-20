@@ -29,6 +29,7 @@ import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -110,6 +111,86 @@ class Issue6509AsyncExecutorPerTaskDurabilityFlagsTest extends TestHelper {
     assertThat(asyncWorkerThreadIds())
         .as("the durability change must take effect without the worker thread being respawned")
         .isEqualTo(threadIdsBefore);
+  }
+
+  /**
+   * Regression test for the code-review finding on this fix: {@code useWAL}/{@code walFlush} are read only
+   * at COMMIT time and then govern the WHOLE accumulated transaction ({@code TransactionContext}'s
+   * {@code commit1stPhase}/{@code commit2ndPhase}), not per write - so re-stamping them onto an
+   * already-open transaction is not enough by itself. Without also forcing a transaction boundary on a
+   * flag change, a worker's open transaction could straddle a flip: writes queued while {@code useWAL}
+   * was {@code true} would sit in the SAME transaction as later writes queued after a caller (e.g. a
+   * concurrent GraphBatch) flipped it to {@code false}, and the eventual commit - whether the periodic
+   * {@code commitEvery} boundary or a later flag-triggered one - would apply whichever value happened to
+   * be current at that moment to ALL of them, silently downgrading the durability the earlier caller
+   * asked for.
+   * <p>
+   * {@code AsyncThread.executeTask()} closes this by forcing a commit (under the transaction's own,
+   * unmodified flags) whenever it finds an open transaction whose applied flags differ from the current
+   * ones, before running the next task - restoring the "a flag change always starts a fresh transaction"
+   * property the pre-#6509 pool-teardown gave for free.
+   */
+  @Test
+  void durabilityFlagFlipMidTransactionForcesABoundaryInsteadOfMixingDurability() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    database.getSchema().createDocumentType("MixTest");
+
+    final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) db.async();
+    async.setParallelLevel(1);
+    async.recreateThreadsForTests();
+    // High enough that the natural commitEvery boundary never fires before the 3rd task below - only the
+    // flag-flip boundary (or, pre-fix, nothing at all) can close a transaction early in this test.
+    async.setCommitEvery(3);
+
+    final AtomicInteger walWrites = new AtomicInteger();
+    db.registerCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, () -> {
+      walWrites.incrementAndGet();
+      return null;
+    });
+
+    final List<Throwable> errors = new CopyOnWriteArrayList<>();
+    async.onError(errors::add);
+
+    // Task A: written while useWAL=true. Must end up in a WAL-protected commit of its own.
+    async.setTransactionUseWAL(true);
+    createDocumentAndWait(async, "MixTest");
+
+    // Task B: the flip. Forces task A's still-open transaction to commit (under useWAL=true, the value it
+    // was opened/stamped with) BEFORE B runs, then starts a fresh transaction stamped useWAL=false.
+    async.setTransactionUseWAL(false);
+    createDocumentAndWait(async, "MixTest");
+    assertThat(walWrites.get())
+        .as("task A's write must be committed under WAL as soon as the flag changes, not carried silently "
+            + "into a later no-WAL commit")
+        .isEqualTo(1);
+
+    // Task C: no flip, same useWAL=false transaction as B. This is the 3rd task on the worker, so it hits
+    // the natural commitEvery(3) boundary - committing {B, C} together, correctly WITHOUT WAL.
+    createDocumentAndWait(async, "MixTest");
+    assertThat(walWrites.get())
+        .as("B and C must commit together without WAL: the periodic boundary must not retroactively gain "
+            + "a WAL write, and must not be the moment A's write finally commits")
+        .isEqualTo(1);
+
+    assertThat(errors).as("no task may fail").isEmpty();
+  }
+
+  /** Schedules a task that creates one document of the given type and waits for it to run (not commit). */
+  private static void createDocumentAndWait(final DatabaseAsyncExecutorImpl async, final String typeName)
+      throws Exception {
+    final CountDownLatch done = new CountDownLatch(1);
+    async.scheduleTask(0, new DatabaseAsyncTask() {
+      @Override
+      public void execute(final DatabaseAsyncExecutorImpl.AsyncThread asyncThread, final DatabaseInternal database) {
+        database.newDocument(typeName).save();
+      }
+
+      @Override
+      public void completed() {
+        done.countDown();
+      }
+    }, true, 0);
+    assertThat(done.await(5, TimeUnit.SECONDS)).as("document-creation task must complete").isTrue();
   }
 
   /** Schedules a task on worker 0 that captures the transaction's current useWAL flag, and waits for it. */
