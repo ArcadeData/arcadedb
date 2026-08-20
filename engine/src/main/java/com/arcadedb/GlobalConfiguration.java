@@ -1100,8 +1100,8 @@ public enum GlobalConfiguration {
       rebuilds are asynchronous, so sustained ingest outruns them. Measured with this set to 500, the buffer \
       reached 45,000 entries, and 42,504 even with the rebuild trigger firing continuously. Note also that \
       mutationsBeforeRebuild is applied as a floor afterwards, so an explicit value above this ceiling wins. \
-      Size the buffer with mutationsBeforeRebuild and rebuildGraphRatio, and treat its footprint as a \
-      consequence of ingest rate rather than something this setting guarantees.""",
+      Nothing here bounds the buffer. mutationsBeforeRebuild and rebuildGraphRatio only change how OFTEN a \
+      rebuild drains it, so its peak follows from how much is written between rebuilds.""",
       Integer.class, 50_000),
 
   VECTOR_INDEX_INACTIVITY_REBUILD_TIMEOUT_MS("arcadedb.vectorIndex.inactivityRebuildTimeoutMs", SCOPE.DATABASE,
