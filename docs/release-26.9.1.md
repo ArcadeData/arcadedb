@@ -3691,3 +3691,62 @@ stallable.
 [#6410](https://github.com/ArcadeData/arcadedb/issues/6410),
 [#6411](https://github.com/ArcadeData/arcadedb/issues/6411),
 [#6412](https://github.com/ArcadeData/arcadedb/issues/6412)
+
+## The async executor no longer tears down and respawns its whole worker pool to flip a durability flag (#6509)
+
+`DatabaseAsyncExecutorImpl.setTransactionUseWAL()`/`setTransactionSync()` unconditionally called `createThreads()`,
+which shuts down and respawns every worker thread of the database's async pool - not just the caller's. `GraphBatch`
+calls both setters once per batch session to relax and then restore durability for a bulk load, so opening or
+closing a batch churned the entire pool. Any *other* concurrent user of `database.async()` - another `GraphBatch`,
+an async insert, an index compaction - had its in-flight and queued tasks force-exited mid-flight, surfacing as
+`"Async executor has been shut down"` for callers that had nothing to do with the batch.
+
+#5665 diagnosed this and shipped a cheap interim mitigation (GraphBatch toggling the flags once per batch instead of
+once per flush), explicitly deferring the real fix: `AsyncThread.run()` applied both flags only once, at thread
+start, so respawning the thread was the only way a change could ever become visible to it. A production log (#6505)
+showed the interim mitigation is not enough under real multi-writer concurrency: six threads on one database,
+including a `GraphBatch` import running alongside a `DELETE ... BATCH` loop, produced 2,183 `InterruptedIOException`s
+over about seven hours from the pool teardown interrupting unrelated in-progress LSM compactions, and one of those
+races escalated into fencing the entire database when a commit's `onAfterCommit()` hook tried to schedule a
+compaction at the exact moment the pool was mid-recreate (fixed separately by #6505 hardening the compaction
+scheduler against that specific escalation).
+
+The proper fix, per #5665's own diagnosis: `AsyncThread.executeTask()` now re-applies `transactionUseWAL`/
+`transactionSync` to the worker's transaction before every task, instead of `run()` applying them once. The setters
+are now plain volatile writes with no `createThreads()` call at all, so a changed durability policy is picked up by
+whichever worker runs the next task - and by the commit that follows it - without any thread ever being torn down,
+and without disturbing whatever unrelated work is queued on the rest of the pool.
+
+Re-stamping the flags onto an already-open transaction is not, by itself, enough: `useWAL`/`walFlush` are read only
+at commit time and then govern the *whole* accumulated transaction, which can span up to `ASYNC_TX_BATCH_SIZE`
+(10,240 by default) tasks from unrelated callers sharing the same worker slot. Without a further guard, a flag flip
+landing mid-transaction would silently carry earlier tasks - queued under the old policy - into a commit governed by
+the new one, downgrading (or upgrading) their durability without anyone asking for it. The pool-teardown this PR
+removes had incidentally prevented that: a flag flip forced every worker's pending transaction to commit under its
+original flags before the new thread began a fresh one. `executeTask()` now preserves that "a flag change always
+starts a fresh transaction" property explicitly - closing out the currently open transaction, under its own
+unmodified flags, before applying a changed policy to a new one - instead of relying on thread teardown for it.
+
+That boundary-forcing commit closes out *earlier* tasks' work, not the task whose flag check triggered it - so its
+failure (a genuine `ConcurrentModificationException`, say, under the exact multi-writer contention this fix targets)
+must not be attributed to that task, which has not run yet. Left unguarded, the failure would propagate to
+`executeTask()`'s own catch block, and the triggering task would still reach `completed()` having never reached
+`execute()` - a task silently marked done without ever running. The boundary commit's failure is now caught
+separately, reported through the executor's `onError`, and the triggering task still gets its own attempt on a
+freshly begun transaction.
+
+`transactionUseWAL`/`transactionSync` are volatile and can be changed concurrently by any other thread - the exact
+multi-writer scenario this fix is about - so reading them once for the boundary check and again for the flag stamp
+left a narrow race: a flip landing between the two reads let the check see the transaction's flags still matching
+the about-to-be-stale value (skipping the boundary commit) while the stamp went on to apply the new value anyway,
+reintroducing the same durability-mixing failure through a race instead of a guaranteed ordering. Both reads now
+share one snapshot taken at the top of `executeTask()`, so the check and the stamp always agree.
+
+Worth knowing when tuning `parallelLevel`/queue sizing around concurrent bulk loads: the boundary-forcing commit is
+paid per worker slot, not per database, so two `GraphBatch` sessions (or a batch and a direct caller) that land on
+the *same* slot and keep flipping the durability policy in opposite directions can degrade that slot toward
+`commitEvery=1` - each task forcing its own boundary. Correctness over batching is the right trade, and it is still
+strictly better than the pre-fix full pool teardown, but a workload that provokes this is a sign the workers sharing
+that slot would benefit from more parallelism (raising `parallelLevel`) rather than sharing one.
+
+[#6509](https://github.com/ArcadeData/arcadedb/issues/6509)
