@@ -377,12 +377,13 @@ public class GraphBatch implements AutoCloseable {
   private final boolean savedUseWAL;
   private final WALFile.FlushType savedWALFlush;
   // Async executor WAL policy, relaxed/restored ONCE for the whole batch instead of once per flush
-  // (issue #5665): DatabaseAsyncExecutorImpl tears down and respawns its entire worker pool on every
-  // setTransactionUseWAL()/setTransactionSync() call, so applying the relaxed policy around every
-  // flush's parallel connect phase recreated every async worker thread on every flush - killing any
-  // concurrent async work on this database (an unrelated caller's in-flight/queued tasks force-exited
-  // with "Async executor has been shut down") and, on a large multi-flush bulk load, doing so tens of
-  // thousands of times. Meaningful only when parallelFlush is true; unused (false/null) otherwise.
+  // (issue #5665): applying the relaxed policy around every flush's parallel connect phase toggled the
+  // shared, database-wide policy that many times, needlessly forcing a transaction boundary on every
+  // OTHER concurrent user of database.async() sharing a worker slot with this batch (#6509 - before
+  // that fix, each toggle instead tore down and respawned the entire async worker pool, which was far
+  // more disruptive: any concurrent caller's in-flight/queued tasks were force-exited with "Async
+  // executor has been shut down"). Meaningful only when parallelFlush is true; unused (false/null)
+  // otherwise.
   private final boolean            savedAsyncUseWAL;
   private final WALFile.FlushType  savedAsyncWALFlush;
 
@@ -472,7 +473,8 @@ public class GraphBatch implements AutoCloseable {
 
     // Relax the shared async executor's WAL policy once, here, instead of once per flush (issue
     // #5665; see the field javadoc on savedAsyncUseWAL). Guarded on an actual change because the
-    // setters below are not - each unconditionally tears down and respawns the worker pool.
+    // setters below are not: an unconditional call would still needlessly force a transaction boundary
+    // on any other concurrent caller sharing a worker slot with this batch (#6509) for a no-op change.
     if (parallelFlush) {
       final DatabaseAsyncExecutor asyncExecutor = database.async();
       final boolean           priorAsyncUseWAL   = asyncExecutor.isTransactionUseWAL();
@@ -1445,9 +1447,10 @@ public class GraphBatch implements AutoCloseable {
   /**
    * Puts back the async executor's WAL policy relaxed once at construction for {@code parallelFlush}
    * (issue #5665). Guarded on an actual change for the same reason as the constructor: the setters are
-   * not, so calling them unconditionally would tear down and respawn the worker pool for nothing. A
-   * no-op when {@code parallelFlush} is false (the policy was never touched) or when called twice
-   * (idempotent: {@link #abandon()} and {@link #close()} can both reach this).
+   * not, so calling them unconditionally would needlessly force a transaction boundary on any other
+   * concurrent caller sharing a worker slot with this batch (#6509) for a no-op change. A no-op when
+   * {@code parallelFlush} is false (the policy was never touched) or when called twice (idempotent:
+   * {@link #abandon()} and {@link #close()} can both reach this).
    */
   private void restoreAsyncSettings() {
     if (!parallelFlush)

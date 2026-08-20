@@ -3747,4 +3747,12 @@ original flags before the new thread began a fresh one. `executeTask()` now pres
 starts a fresh transaction" property explicitly - closing out the currently open transaction, under its own
 unmodified flags, before applying a changed policy to a new one - instead of relying on thread teardown for it.
 
+That boundary-forcing commit closes out *earlier* tasks' work, not the task whose flag check triggered it - so its
+failure (a genuine `ConcurrentModificationException`, say, under the exact multi-writer contention this fix targets)
+must not be attributed to that task, which has not run yet. Left unguarded, the failure would propagate to
+`executeTask()`'s own catch block, and the triggering task would still reach `completed()` having never reached
+`execute()` - a task silently marked done without ever running. The boundary commit's failure is now caught
+separately, reported through the executor's `onError`, and the triggering task still gets its own attempt on a
+freshly begun transaction.
+
 [#6509](https://github.com/ArcadeData/arcadedb/issues/6509)
