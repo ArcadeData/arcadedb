@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
@@ -34,6 +35,7 @@ import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for UNION, CALL, and PROFILE features.
@@ -405,6 +407,86 @@ class OpenCypherUnionCallProfileTest {
     final ResultSet check = database.query("opencypher", "MATCH (n:NoReturnNode) RETURN n.name AS name");
     assertThat(check.hasNext()).isTrue();
     assertThat((Object) check.next().getProperty("name")).isEqualTo("x");
+  }
+
+  // ============================================================
+  // Issue #6450: CALL ... YIELD that concludes the statement (not
+  // standalone, no trailing RETURN/consuming clause) must be a
+  // compile-time error, matching Neo4j's "Query cannot conclude
+  // with CALL together with YIELD", instead of silently returning
+  // zero rows.
+  // ============================================================
+
+  @Test
+  void callYieldConcludingAWriteClassifiedStatementIsRejected() {
+    // Exact repro from the issue: math.add is a custom DEFINE FUNCTION, so it is write-classified
+    // per #6418's conservative classification. Before the fix this parsed fine and silently
+    // returned zero rows instead of erroring like Neo4j does.
+    database.command("sql", "DEFINE FUNCTION math.add \"SELECT :a + :b AS result\" PARAMETERS [a,b] LANGUAGE sql");
+
+    assertThatThrownBy(() -> database.command("opencypher", "WITH 1 AS x CALL math.add(x, 1) YIELD value"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("Query cannot conclude with CALL together with YIELD");
+  }
+
+  @Test
+  void callYieldConcludingAReadClassifiedStatementIsRejected() {
+    // Same shape, but the CALL target is a registered read-only procedure: the rule is about clause
+    // composition, not the write/read classification, so this must be rejected too.
+    assertThatThrownBy(() -> database.command("opencypher", "WITH 1 AS x CALL db.labels() YIELD label"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("Query cannot conclude with CALL together with YIELD");
+  }
+
+  @Test
+  void callYieldConcludingAfterMatchIsRejected() {
+    database.getSchema().createVertexType("CallYieldConclude");
+    database.command("opencypher", "CREATE (n:CallYieldConclude {name: 'a'})");
+
+    assertThatThrownBy(() -> database.command("opencypher",
+        "MATCH (n:CallYieldConclude) WITH n CALL db.labels() YIELD label"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("Query cannot conclude with CALL together with YIELD");
+  }
+
+  @Test
+  void callYieldFollowedByReturnIsStillAccepted() {
+    // The existing, already-working shape: CALL ... YIELD followed by RETURN must keep working
+    // exactly as before - this check must not reject a query that already has its consuming clause.
+    final ResultSet result = database.command("opencypher", "WITH 1 AS x CALL db.labels() YIELD label RETURN label");
+    // No rows expected (empty database), but the statement itself must parse and execute without error.
+    assertThat(result.hasNext()).isFalse();
+  }
+
+  @Test
+  void callYieldFollowedByWithThenReturnIsStillAccepted() {
+    // CALL ... YIELD followed by WITH (which consumes the yielded column) and eventually a RETURN
+    // must still be accepted: the YIELD is not the statement's final clause here.
+    final ResultSet result = database.command("opencypher", "CALL db.labels() YIELD label WITH label RETURN label");
+    assertThat(result.hasNext()).isFalse();
+  }
+
+  @Test
+  void bareCallYieldAsTheSoleClauseIsStillAccepted() {
+    // The standalone-CALL exception (issue #6446/#6448) must be untouched by this check: a CALL ...
+    // YIELD that is the statement's ONLY clause owns its own projection and needs no RETURN.
+    database.command("sql", "DEFINE FUNCTION math.add \"SELECT :a + :b AS result\" PARAMETERS [a,b] LANGUAGE sql");
+
+    final ResultSet result = database.command("opencypher", "CALL math.add(3, 5) YIELD value");
+    assertThat(result.hasNext()).isTrue();
+    assertThat(((Number) result.next().getProperty("value")).intValue()).isEqualTo(8);
+    assertThat(result.hasNext()).isFalse();
+  }
+
+  @Test
+  void callWithNoYieldChainedAfterWithIsStillAccepted() {
+    // A CALL with no YIELD at all, chained after another clause, is a legal side-effect-only
+    // terminal statement in Neo4j (existing "no RETURN -> side effects only" behavior) and must
+    // not be caught by this YIELD-specific check.
+    database.command("sql", "DEFINE FUNCTION math.add \"SELECT :a + :b AS result\" PARAMETERS [a,b] LANGUAGE sql");
+
+    final ResultSet result = database.command("opencypher", "WITH 1 AS x CALL math.add(x, 1)");
+    assertThat(result.hasNext()).isFalse();
   }
 
   // ============================================================
