@@ -330,8 +330,18 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
               // that guarantee. Made unconditional here rather than relying on it: without this, a
               // still-active transaction would skip begin() below and the stamp would land on the same
               // stale, mismatched transaction the boundary commit was trying to close out.
-              if (database.isTransactionActive())
-                database.rollback();
+              try {
+                if (database.isTransactionActive())
+                  database.rollback();
+              } catch (final Throwable rollbackError) {
+                // #6509 review: a failure HERE must not escape to the outer catch either - that would
+                // repeat the exact bug this whole block exists to close, just one level deeper: `message`
+                // would still reach completed() in the outer finally having never reached execute().
+                // Logged and swallowed instead; `message` still gets its own begin()/execute() attempt
+                // below regardless of whether the transaction ends up active or not.
+                LogManager.instance().log(this, Level.WARNING,
+                    "Error rolling back the transaction after a failed durability-boundary commit", rollbackError);
+              }
             }
           }
         }
