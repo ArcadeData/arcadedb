@@ -753,6 +753,47 @@ public class UpdateStatementExecutionTest extends TestHelper {
   }
 
   @Test
+  void returnBeforeWithListRemoveIsNotMutatedByTheRemoval() {
+    // Issue #6456: UPDATE ... REMOVE <collection value> ... RETURN BEFORE must snapshot the collection
+    // BEFORE the in-place removal, not share the live list reference with it.
+    final ResultSet result = database.command("sql",
+        "update " + className + " remove tagsList = 'bar' RETURN BEFORE where name = 'name1'");
+    assertThat(result.hasNext()).isTrue();
+    final Result item = result.next();
+    assertThat(item).isNotNull();
+    final List<String> before = item.getProperty("tagsList");
+    assertThat(before).containsExactly("foo", "bar", "baz");
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+
+    final ResultSet persisted = database.query("sql", "SELECT tagsList FROM " + className + " WHERE name = 'name1'");
+    assertThat(persisted.hasNext()).isTrue();
+    final List<String> after = persisted.next().getProperty("tagsList");
+    assertThat(after).containsExactly("foo", "baz");
+    persisted.close();
+  }
+
+  @Test
+  void returnBeforeWithMapKeyRemoveIsNotMutatedByTheRemoval() {
+    // Issue #6456: same shallow-copy bug for nested `REMOVE map[key]` on the map value.
+    final ResultSet result = database.command("sql",
+        "update " + className + " remove tagsMap[\"bar\"] RETURN BEFORE where name = 'name1'");
+    assertThat(result.hasNext()).isTrue();
+    final Result item = result.next();
+    assertThat(item).isNotNull();
+    final Map<String, String> before = item.getProperty("tagsMap");
+    assertThat(before).containsEntry("bar", "bar").hasSize(3);
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+
+    final ResultSet persisted = database.query("sql", "SELECT tagsMap FROM " + className + " WHERE name = 'name1'");
+    assertThat(persisted.hasNext()).isTrue();
+    final Map<String, String> after = persisted.next().getProperty("tagsMap");
+    assertThat(after).doesNotContainKey("bar").hasSize(2);
+    persisted.close();
+  }
+
+  @Test
   void localDateTimeUpsertWithIndexMicros() throws Exception {
     database.transaction(() -> {
       if (database.getSchema().existsType("Product"))
