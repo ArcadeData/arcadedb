@@ -251,8 +251,10 @@ class CypherMatchClauseUniquenessIssue6310Test extends TestHelper {
   /**
    * Which plan runs a clause decides which implementation supplies its uniqueness, so pin the routing
    * rather than assuming it. Ordinary variable-length MATCH now uses {@code VarLengthExpand}; when a
-   * comma separates disconnected relationship components, the physical Cartesian product is followed by
-   * a clause-wide relationship-uniqueness filter. shortestPath remains a separate traditional capability.
+   * comma separates disconnected relationship components, the physical Cartesian product applies the
+   * clause-wide relationship-uniqueness check to each candidate pair before merging it into a row,
+   * rather than merging first and filtering afterward. shortestPath remains a separate traditional
+   * capability.
    */
   @Test
   void theOptimizerRoutesOrdinaryVariableLengthHopsButNotShortestPath() {
@@ -267,6 +269,27 @@ class CypherMatchClauseUniquenessIssue6310Test extends TestHelper {
         .doesNotContain("Traditional Execution");
     assertThat(planOf("MATCH (n0:A)<-[r1]-(:E), (n3:C)-[]->(:E)-[r2]->(n0) RETURN n0.n AS a"))
         .doesNotContain("Traditional Execution");
+  }
+
+  /**
+   * The pushdown check runs incrementally, one join at a time, so a conflict between the FIRST and
+   * THIRD of three disconnected components - never adjacent in the join chain - has to be caught by
+   * the second join carrying the first component's binding forward in its merged row, not by any
+   * single join comparing the two directly.
+   */
+  @Test
+  void uniquenessIsEnforcedAcrossThreeDisconnectedComponents() {
+    database.command("opencypher", "CREATE (:N {n:'x1'})-[:R]->(:N {n:'y1'})");
+    database.command("opencypher", "CREATE (:N {n:'x2'})-[:R]->(:N {n:'y2'})");
+    database.command("opencypher", "CREATE (:N {n:'x3'})-[:R]->(:N {n:'y3'})");
+
+    final String match = "MATCH (a1:N)-[r1:R]->(b1:N), (a2:N)-[r2:R]->(b2:N), (a3:N)-[r3:R]->(b3:N) ";
+
+    assertThat(planOf(match + "RETURN count(*) AS rows")).doesNotContain("Traditional Execution");
+
+    // 3 x 3 x 3 = 27 candidate triples, minus every triple that reuses an edge: only the 3! = 6
+    // permutations where r1, r2 and r3 are pairwise distinct edges survive.
+    assertThat(count(match + "RETURN count(*) AS rows")).isEqualTo(6);
   }
 
   private String planOf(final String query) {

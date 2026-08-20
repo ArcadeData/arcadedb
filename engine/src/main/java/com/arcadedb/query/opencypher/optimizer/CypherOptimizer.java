@@ -214,22 +214,21 @@ public class CypherOptimizer {
         if (rootOperator == null)
           rootOperator = expansion.root();
         else {
-          final double cost = CostModel.saturatingAdd(rootOperator.getEstimatedCost(),
+          final double joinCost = CostModel.saturatingAdd(rootOperator.getEstimatedCost(),
               expansion.root().getEstimatedCost());
           final long cardinality = CostModel.saturatingCardinalityProduct(
               Math.max(1, rootOperator.getEstimatedCardinality()),
               Math.max(1, expansion.root().getEstimatedCardinality()));
-          rootOperator = new CartesianProduct(rootOperator, expansion.root(), cost, cardinality);
+          // Expansion operators see relationships bound earlier in their own connected chain. A row
+          // joining two components still has to obey the same MATCH-wide uniqueness rule, so the check
+          // is pushed into the join itself: a conflicting pair is rejected before it is merged into a
+          // row at all, instead of being merged and then discarded by a filter further downstream -
+          // which also keeps a conflicting pair from ever reaching a subsequent component's join.
+          final double cost = CostModel.saturatingAdd(joinCost,
+              CostModel.saturatingMultiply(cardinality, costModel.FILTER_COST_PER_ROW));
+          rootOperator = new CartesianProduct(rootOperator, expansion.root(), cost, cardinality,
+              RelationshipUniquenessFilter.pushdownPredicate(relVarsPerClause));
         }
-      }
-
-      // Expansion operators see relationships bound earlier in their own connected chain. After a
-      // Cartesian product, enforce the same MATCH-wide rule across component boundaries as well.
-      if (components.size() > 1) {
-        final double uniquenessCost = CostModel.saturatingAdd(rootOperator.getEstimatedCost(),
-            CostModel.saturatingMultiply(rootOperator.getEstimatedCardinality(), costModel.FILTER_COST_PER_ROW));
-        rootOperator = new RelationshipUniquenessFilter(rootOperator, relVarsPerClause,
-            uniquenessCost, rootOperator.getEstimatedCardinality());
       }
     }
 

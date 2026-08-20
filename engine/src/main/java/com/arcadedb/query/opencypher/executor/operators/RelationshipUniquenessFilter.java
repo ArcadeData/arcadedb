@@ -19,92 +19,47 @@
 package com.arcadedb.query.opencypher.executor.operators;
 
 import com.arcadedb.graph.EdgeIdentitySet;
-import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.query.sql.executor.WorkGuard;
 
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.Map;
-import java.util.NoSuchElementException;
 import java.util.Set;
+import java.util.function.BiPredicate;
 
 /**
- * Rejects a row when separate relationship bindings from the same MATCH clause share an edge.
- * Expansion operators enforce the rule while walking one connected component; this filter closes
- * the only remaining gap, after independently planned components are joined by Cartesian product.
+ * Builds the relationship-uniqueness check for two independently planned components of the same
+ * MATCH clause, joined by {@link CartesianProduct}. Expansion operators already enforce the rule
+ * while walking one connected component; this closes the only remaining gap, between components
+ * joined by a Cartesian product, as a predicate the join applies to each candidate pair before
+ * merging it into a row - so a pair that would bind the same edge to two different relationship
+ * variables is rejected before a row is ever allocated for it, and never reaches a further join.
  */
-public class RelationshipUniquenessFilter extends AbstractPhysicalOperator {
-  private final Map<Integer, Set<String>> relationshipVariablesByClause;
-
-  public RelationshipUniquenessFilter(final PhysicalOperator child,
-      final Map<Integer, Set<String>> relationshipVariablesByClause,
-      final double estimatedCost, final long estimatedCardinality) {
-    super(child, estimatedCost, estimatedCardinality);
-    this.relationshipVariablesByClause = new LinkedHashMap<>();
-    relationshipVariablesByClause.forEach((clause, variables) ->
-        this.relationshipVariablesByClause.put(clause, new LinkedHashSet<>(variables)));
+public final class RelationshipUniquenessFilter {
+  private RelationshipUniquenessFilter() {
   }
 
-  @Override
-  public ResultSet execute(final CommandContext context, final int nRecords) {
-    final ResultSet input = child.execute(context, nRecords);
-    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
-
-    return new ResultSet() {
-      private Result next;
-      private boolean finished;
-
-      @Override
-      public boolean hasNext() {
-        if (next != null)
-          return true;
-        if (finished)
-          return false;
-
-        while (input.hasNext()) {
-          guard.check();
-          final Result candidate = input.next();
-          if (!hasConflict(candidate)) {
-            next = candidate;
-            return true;
-          }
-        }
-        finished = true;
-        return false;
-      }
-
-      @Override
-      public Result next() {
-        if (!hasNext())
-          throw new NoSuchElementException();
-        final Result result = next;
-        next = null;
-        return result;
-      }
-
-      @Override
-      public void close() {
-        input.close();
-      }
-    };
+  public static BiPredicate<Result, Result> pushdownPredicate(final Map<Integer, Set<String>> relationshipVariablesByClause) {
+    return (left, right) -> !conflicts(relationshipVariablesByClause, left, right);
   }
 
-  private boolean hasConflict(final Result row) {
+  private static boolean conflicts(final Map<Integer, Set<String>> relationshipVariablesByClause,
+      final Result left, final Result right) {
     for (final Set<String> variables : relationshipVariablesByClause.values()) {
       if (variables.size() < 2)
         continue;
-      final EdgeIdentitySet used = new EdgeIdentitySet();
-      for (final String variable : variables)
-        if (RelationshipBindings.addBindingAndDetectOverlap(used, row.getProperty(variable)))
+      EdgeIdentitySet used = null;
+      for (final String variable : variables) {
+        // A variable owned by a component not yet joined is bound on neither side and is skipped:
+        // it cannot conflict with anything until the join that introduces it.
+        final Object binding = left.hasProperty(variable) ? left.getProperty(variable)
+            : right.hasProperty(variable) ? right.getProperty(variable) : null;
+        if (binding == null)
+          continue;
+        if (used == null)
+          used = new EdgeIdentitySet();
+        if (RelationshipBindings.addBindingAndDetectOverlap(used, binding))
           return true;
+      }
     }
     return false;
-  }
-
-  @Override
-  public String getOperatorType() {
-    return "RelationshipUniquenessFilter";
   }
 }
