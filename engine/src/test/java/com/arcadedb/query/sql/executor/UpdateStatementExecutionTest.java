@@ -774,6 +774,40 @@ public class UpdateStatementExecutionTest extends TestHelper {
   }
 
   @Test
+  void returnBeforeWithNestedListInsideMapRemoveIsNotMutatedByTheRemoval() {
+    // Issue #6456 review follow-up: pin down the recursive branch of the deep copy, not just a top-level
+    // List/Map, by mutating a List nested inside a Map value.
+    final String className = "overridden" + this.className;
+    database.getSchema().createDocumentType(className);
+
+    final MutableDocument doc = database.newDocument(className);
+    final Map<String, Object> nestedMap = new HashMap<>();
+    final List<String> nestedList = new ArrayList<>();
+    nestedList.add("foo");
+    nestedList.add("bar");
+    nestedList.add("baz");
+    nestedMap.put("list", nestedList);
+    doc.set("nestedMap", nestedMap);
+    doc.save();
+
+    final ResultSet result = database.command("sql",
+        "update " + className + " remove nestedMap[\"list\"] = 'bar' RETURN BEFORE");
+    assertThat(result.hasNext()).isTrue();
+    final Result item = result.next();
+    assertThat(item).isNotNull();
+    final Map<String, Object> before = item.getProperty("nestedMap");
+    assertThat((List<String>) before.get("list")).containsExactly("foo", "bar", "baz");
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+
+    final ResultSet persisted = database.query("sql", "SELECT nestedMap FROM " + className);
+    assertThat(persisted.hasNext()).isTrue();
+    final Map<String, Object> after = persisted.next().getProperty("nestedMap");
+    assertThat((List<String>) after.get("list")).containsExactly("foo", "baz");
+    persisted.close();
+  }
+
+  @Test
   void returnBeforeWithMapKeyRemoveIsNotMutatedByTheRemoval() {
     // Issue #6456: same shallow-copy bug for nested `REMOVE map[key]` on the map value.
     final ResultSet result = database.command("sql",
