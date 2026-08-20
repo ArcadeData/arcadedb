@@ -6656,6 +6656,35 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * Decide whether the inactivity rebuild timer should actually rebuild the graph.
+   * <p>
+   * The mutation-driven path ({@link #rebuildGraphBeforeSearch()}) gates on the effective
+   * rebuild threshold so a handful of pending vectors do not trigger a full O(N) rebuild.
+   * The timer path used to arm and fire on {@code pending > 0} alone, so a single insert
+   * into a large settled index cost a full rebuild on the next quiet period (issue #6496).
+   * This method consults the same threshold the search path uses, with a small floor so
+   * a trickle of writes is still eventually absorbed rather than deferred forever.
+   *
+   * @return {@code true} when pending mutations justify (or exceed) a rebuild
+   */
+  private boolean inactivityRebuildIsWorthIt() {
+    final int pending = mutationsSinceSerialize.get();
+    if (pending <= 0)
+      return false;
+
+    final int threshold = getEffectiveMutationsBeforeRebuild();
+    // Rebuild once the mutation-driven threshold is reached...
+    if (pending >= threshold)
+      return true;
+
+    // ...or when enough of it has accumulated to justify a full rebuild.
+    // The floor prevents a single insert from triggering a full O(N) rebuild
+    // on every quiet period while still eventually absorbing a trickle of writes.
+    final int floor = Math.max(threshold / 10, 1);
+    return pending >= floor;
+  }
+
+  /**
    * Schedule or reset the inactivity rebuild timer (issue #3737).
    * Called after each mutation when mutations are below the rebuild threshold.
    * If a timer is already scheduled, it is cancelled and a new one is started,
