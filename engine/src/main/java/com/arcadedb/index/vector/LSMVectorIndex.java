@@ -4145,14 +4145,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
         final RandomAccessVectorValues vectors = searchVectorValues(ordinalMap);
 
-        // Issue #6502: a RID allow-list narrow enough relative to the index is cheaper to answer directly than to
-        // walk the HNSW graph under it. The graph's Bits filter only rejects a node once it is popped from the
-        // beam - it cannot make the walk itself shrink with a narrower filter - so a selective allow-list makes the
-        // beam admit almost nothing and the walk keeps expanding trying to fill k: the search space gets smaller in
-        // principle and larger in practice. Scoring the allowed ordinals directly is O(allow-list) and exact by
-        // construction, matching the 1.0000 recall already measured at the selective end. collectAllowedOrdinals,
-        // scoreOrdinal and bruteForceScan already do exactly this walk for the issue #3722 shortfall fallback, so
-        // it is reused here as the primary plan rather than duplicated.
+        // Issue #6502 pre-filter plan: below VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY (see its javadoc for why the
+        // graph walk gets more expensive, not less, as the allow-list narrows), score the allow-list directly via
+        // collectAllowedOrdinals/scoreOrdinal/bruteForceScan - the same walk the issue #3722 shortfall fallback
+        // already uses - instead of duplicating it.
         if (allowedRIDs != null && !allowedRIDs.isEmpty()) {
           final float maxSelectivity = getDatabase().getConfiguration()
               .getValueAsFloat(GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY);
@@ -4274,11 +4270,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         final int availableVectors = Math.min(ordinalMap.length, vectorIndex.size());
         final int expectedResults = Math.min(k, availableVectors);
         if (results.size() < expectedResults) {
-          // Issue #6502: an allow-list narrower than k can never be filled from the graph - that is a property of
-          // the filter, not a sign the graph needs attention, and the pre-filter plan above already answers the
-          // common case of this directly without reaching here at all. What still lands here is either no allow-list
-          // at all (the original issue #3722 degraded-graph case) or one wide enough to skip the pre-filter plan
-          // yet still narrower than k, so the two are told apart rather than both blamed on the graph.
+          // Issue #6502: see shortfallIsAllowListDriven's javadoc for why this is split.
           if (shortfallIsAllowListDriven(allowedRIDs, expectedResults))
             LogManager.instance()
                 .log(this, Level.FINE,

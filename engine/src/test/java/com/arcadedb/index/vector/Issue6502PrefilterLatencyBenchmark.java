@@ -99,7 +99,10 @@ class Issue6502PrefilterLatencyBenchmark {
         System.out.printf("Vectors: %,d | Dimensions: %d | K: %d%n%n", NUM_VECTORS, DIMENSIONS, K);
 
         measure(index, "unfiltered", queries, null);
-        for (final int allowedCount : new int[] { NUM_VECTORS / 10, NUM_VECTORS / 100, NUM_VECTORS / 1000, 5 }) {
+        // 25% and 15% straddle the default VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY (20%) on either side, so the
+        // crossover is a measured point rather than an unverified round-number guess (per code review on #6512).
+        for (final int allowedCount : new int[] { NUM_VECTORS / 4, NUM_VECTORS / 5, (NUM_VECTORS * 3) / 20,
+            NUM_VECTORS / 10, NUM_VECTORS / 100, NUM_VECTORS / 1000, 5 }) {
           final Set<RID> allowed = randomSubset(rids, allowedCount, rng);
           measure(index, allowedCount + " RIDs (" + (100.0 * allowedCount / NUM_VECTORS) + "%)", queries, allowed);
         }
