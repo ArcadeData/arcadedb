@@ -373,8 +373,9 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
    * A condition whose right side evaluates to {@code null} makes the whole block match NOTHING rather than leaving its
    * property unconstrained. The two readings share one slot - a {@code null} slot is exactly how the key says "this property
    * is not constrained" - so folding a null-valued condition into it would silently drop the condition instead of failing
-   * it. That is what {@link ContainsTextCondition#evaluate} does off the index (a non-String value is never a match), what
-   * a single-property index already did (an empty query text finds no term), and now what a multi-property one does too.
+   * it. That is what {@link ContainsTextCondition#evaluate} does off the index (a {@code null} value is never a match),
+   * what a single-property index already did (an empty query text finds no term), and now what a multi-property one
+   * does too.
    */
   private boolean processFullTextBlock() {
     if (index.getType() != Schema.INDEX_TYPE.FULL_TEXT || additionalRangeCondition != null)
