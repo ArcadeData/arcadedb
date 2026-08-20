@@ -3737,4 +3737,14 @@ are now plain volatile writes with no `createThreads()` call at all, so a change
 whichever worker runs the next task - and by the commit that follows it - without any thread ever being torn down,
 and without disturbing whatever unrelated work is queued on the rest of the pool.
 
+Re-stamping the flags onto an already-open transaction is not, by itself, enough: `useWAL`/`walFlush` are read only
+at commit time and then govern the *whole* accumulated transaction, which can span up to `ASYNC_TX_BATCH_SIZE`
+(10,240 by default) tasks from unrelated callers sharing the same worker slot. Without a further guard, a flag flip
+landing mid-transaction would silently carry earlier tasks - queued under the old policy - into a commit governed by
+the new one, downgrading (or upgrading) their durability without anyone asking for it. The pool-teardown this PR
+removes had incidentally prevented that: a flag flip forced every worker's pending transaction to commit under its
+original flags before the new thread began a fresh one. `executeTask()` now preserves that "a flag change always
+starts a fresh transaction" property explicitly - closing out the currently open transaction, under its own
+unmodified flags, before applying a changed policy to a new one - instead of relying on thread teardown for it.
+
 [#6509](https://github.com/ArcadeData/arcadedb/issues/6509)
