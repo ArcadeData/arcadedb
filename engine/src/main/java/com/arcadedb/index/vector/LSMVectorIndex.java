@@ -1286,7 +1286,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
     try {
       final DatabaseInternal db = getDatabase();
       final String graphFileName = indexName + "_" + LSMVectorIndexGraphFile.FILE_EXT;
-      final String graphFilePath = mutable.getFilePath() + "_" + LSMVectorIndexGraphFile.FILE_EXT;
+      // Derive from the BARE index path, exactly as the creating constructor does. mutable.getFilePath()
+      // already carries the ".<fileId>.<pageSize>.v<version>.lsmvecidx" suffix, and ComponentFile derives a
+      // component's registered name from its path, so appending here produced the name
+      // "<index>.<fileId>.<pageSize>.v<version>.lsmvecidx_vecgraph". discoverAndLoadGraphFile() looks for
+      // "<mutable.getName()>_vecgraph", which that can never match, so the file was written, never found
+      // again, and re-created on every open.
+      final String graphFilePath =
+          db.getDatabasePath() + File.separator + indexName + "_" + LSMVectorIndexGraphFile.FILE_EXT;
       this.graphFile = new LSMVectorIndexGraphFile(db, graphFileName, graphFilePath,
           db.getMode(), mutable.getPageSize());
       this.graphFile.setMainIndex(this);
