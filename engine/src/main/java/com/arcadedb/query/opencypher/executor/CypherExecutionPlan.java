@@ -5105,12 +5105,21 @@ public class CypherExecutionPlan {
     // operator enumerates one type of central node, so every occurrence has to agree on it: a label
     // set the single name cannot stand for, or two occurrences naming different types, declines the
     // push-down and leaves the query to the ordinary pipeline, which applies each of them (#6322).
+    // An inline property filter or dynamic label on any occurrence is just as unenforceable as a
+    // rejected label set - the operator has no way to check either - so it declines the push-down
+    // too, exactly as the arm-endpoint loop below does (#6431). In practice this is caught earlier
+    // by hasInlineNodePropertyOrDynamicLabel() in tryOptimizeCountStar (#5071); this check exists so
+    // the detector is correct standing alone, not only in combination with that outer guard.
     for (final MatchClause mc : statement.getMatchClauses()) {
       if (!mc.hasPathPatterns()) continue;
       for (final PathPattern pp : mc.getPathPatterns())
         for (int i = 0; i <= pp.getRelationshipCount(); i++) {
           final NodePattern node = pp.getNode(i);
-          if (!centralVar.equals(node.getVariable()) || !node.hasLabels())
+          if (!centralVar.equals(node.getVariable()))
+            continue;
+          if (node.hasProperties() || node.hasDynamicLabels())
+            return null;
+          if (!node.hasLabels())
             continue;
           if (!hasPushDownRepresentableLabel(node))
             return null;
@@ -5158,15 +5167,17 @@ public class CypherExecutionPlan {
         final int totalHops = pathPattern.getRelationshipCount();
 
         // Every non-central node of the arm - the far endpoint and any interior node of a multi-hop
-        // arm alike - is a label the degree product cannot enforce: it counts degree off the arm's
-        // edge types and directions alone, with no field on Arm for a per-hop endpoint type, so
-        // (:Author) and () built the same operator and the same, over-counted, answer. Decline the
-        // push-down rather than silently drop the filter, exactly as the central variable's own label
-        // already does above (issue #6337, the arm-endpoint sibling of #6322).
+        // arm alike - is a label, inline property filter, or dynamic label the degree product cannot
+        // enforce: it counts degree off the arm's edge types and directions alone, with no field on
+        // Arm for a per-hop endpoint type or filter, so (:Author), (:Author {status:'active'}) and ()
+        // built the same operator and the same, over-counted, answer. Decline the push-down rather
+        // than silently drop the filter, exactly as the central variable's own check already does
+        // above (issue #6337 for labels, #6431 for properties/dynamic labels, both siblings of #6322).
         for (int i = 0; i <= totalHops; i++) {
           if (i == centralNodeIdx)
             continue;
-          if (pathPattern.getNode(i).hasLabels())
+          final NodePattern node = pathPattern.getNode(i);
+          if (node.hasLabels() || node.hasProperties() || node.hasDynamicLabels())
             return null;
         }
 
