@@ -187,6 +187,91 @@ class Issue6502VectorPrefilterTest extends TestHelper {
   }
 
   /**
+   * The union-and-truncate case flagged in code review: {@code mergeWithDeltaScan} runs first against an empty
+   * {@code results}, then {@code bruteForceScan} adds the persisted candidates and re-sorts the combined list before
+   * trimming to {@code k}. With an allow-list wider than {@code k}, split across both the delta buffer and the
+   * persisted graph, the closest {@code k} overall - not the closest {@code k} of either source considered alone -
+   * has to survive the truncation, regardless of which side of that split they came from.
+   */
+  @Test
+  void thePreFilterPlanTruncatesToKAcrossBothDeltaAndPersistedCandidates() {
+    createSchemaAndData();
+
+    // Five more documents landing in the delta buffer (inserted after the graph build), interleaved with five
+    // already-persisted ones so the allow-list straddles both sources.
+    database.transaction(() -> {
+      for (int i = 0; i < 5; i++)
+        database.command("sql", "INSERT INTO Doc SET id = ?, embedding = ?", "delta" + i, embedding(200 + i));
+    });
+
+    final LSMVectorIndex index = vectorIndex();
+    final float[] query = embedding(202); // near the middle of the delta cluster
+
+    final Set<RID> allowed = new HashSet<>();
+    for (int i = 0; i < 5; i++)
+      allowed.add(ridOf("delta" + i));
+    for (final int i : new int[] { 10, 25, 40, 60, 80 }) // persisted, spread across the index
+      allowed.add(ridOf("doc" + i));
+    assertThat(allowed).hasSize(10);
+
+    final int k = 3;
+    final List<Pair<RID, Float>> preFiltered = index.findNeighborsFromVector(query, k, -1, allowed);
+    assertThat(preFiltered).hasSize(k);
+
+    // Reference: an unfiltered search wide enough to rank the whole live set (persisted + delta), then keep only
+    // the allowed RIDs and truncate by hand - the same reference-by-construction approach used elsewhere in this
+    // suite, extended to a query the delta buffer also has to answer through.
+    final List<Pair<RID, Float>> everything = index.findNeighborsFromVector(query, VERTICES + 10, -1, null);
+    final List<Pair<RID, Float>> reference = new ArrayList<>();
+    for (final Pair<RID, Float> candidate : everything)
+      if (allowed.contains(candidate.getFirst()) && reference.size() < k)
+        reference.add(candidate);
+
+    assertThat(reference).as("the fixture has to leave something for the comparison to be about").hasSize(k);
+    assertThat(ridsIn(preFiltered))
+        .as("the closest k overall must survive truncation, not the closest k of either source alone")
+        .isEqualTo(ridsIn(reference));
+    assertThat(distancesIn(preFiltered)).isEqualTo(distancesIn(reference));
+  }
+
+  /**
+   * An operator-supplied selectivity above 1.0 is nonsensical (the setting is documented as a fraction of the
+   * index) but not rejected outright; it must not be taken literally either, or a value like {@code 5.0} would
+   * route every allow-list query - however wide - through the ordinal-resolution walk instead of the graph, which
+   * is the same pathology this plan exists to fix on the other side of the crossover.
+   */
+  @Test
+  void aSelectivityAboveOneIsClampedNotTakenLiterally() {
+    createSchemaAndData();
+    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY, 5.0f);
+    try {
+      final LSMVectorIndex index = vectorIndex();
+      final float[] query = embedding(7);
+
+      // Every real RID (100% of the index) plus enough RIDs from a bucket this index knows nothing about to push
+      // the allow-list past availableVectors (100) but comfortably under an unclamped 5.0x threshold (500). Only a
+      // literal (unclamped) selectivity would route this to the pre-filter plan.
+      final Set<RID> allWithExtra = new HashSet<>();
+      for (int i = 0; i < VERTICES; i++)
+        allWithExtra.add(ridOf("doc" + i));
+      for (int i = 0; i < 50; i++)
+        allWithExtra.add(new RID(9999, i));
+      assertThat(allWithExtra.size()).as("must exceed availableVectors to distinguish clamped from unclamped")
+          .isGreaterThan(VERTICES);
+
+      final long preFilterBefore = index.getStats().getOrDefault("preFilterSearches", 0L);
+      final List<Pair<RID, Float>> results = index.findNeighborsFromVector(query, K, -1, allWithExtra);
+      assertThat(index.getStats().get("preFilterSearches"))
+          .as("a selectivity above 1.0 must be clamped to 1.0, not taken as \"prefer the pre-filter plan always\"")
+          .isEqualTo(preFilterBefore);
+      assertThat(results).hasSize(K);
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY,
+          GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY.getDefValue());
+    }
+  }
+
+  /**
    * Direct coverage of {@link LSMVectorIndex#shortfallIsAllowListDriven}, the predicate that decides whether the
    * issue #3722 shortfall log line comes out at FINE (the allow-list itself made the shortfall unavoidable) or
    * WARNING (the graph may genuinely need attention). Exercised without a real degraded-graph fixture: JVector's
