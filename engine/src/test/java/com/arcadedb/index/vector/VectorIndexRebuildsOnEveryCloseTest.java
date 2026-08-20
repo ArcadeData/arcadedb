@@ -24,8 +24,10 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.StallAwareStopwatch;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -63,12 +65,19 @@ import static org.assertj.core.api.Assertions.assertThat;
  * The mutation counter was already guarded against exactly this loop ("would rebuild itself
  * forever", :2372-2377). The state flag was not.
  */
+@Tag("vector")
 class VectorIndexRebuildsOnEveryCloseTest {
   private static final int    DIMENSIONS      = 128;
   private static final int    NUM_VECTORS     = 50_000;
   private static final int    MAX_CONNECTIONS = 32;   // the engine default
   private static final int    BEAM_WIDTH      = 100;
   private static final String DB_PATH         = "./target/databases/VectorIndexRebuildsOnEveryCloseTest";
+  /**
+   * Tripwire, not a latency budget. Close doing nothing measured 0.07 s; the rebuild it must not do measured
+   * 10.8 s at this size. 5 s sits well clear of both, and per CLAUDE.md a wider bound cannot turn a passing
+   * run red.
+   */
+  private static final long   CLOSE_TRIPWIRE_MS = 5_000;
 
   @AfterEach
   void cleanUp() {
@@ -78,9 +87,6 @@ class VectorIndexRebuildsOnEveryCloseTest {
   @Test
   void closingMustNotRebuildAGraphThatIsAlreadyCompleteAndPersisted() {
     FileUtils.deleteRecursively(new File(DB_PATH));
-
-    final long buildMs;
-    final long closeMs;
 
     try (final DatabaseFactory factory = new DatabaseFactory(DB_PATH)) {
       final Database db = factory.create();
@@ -96,7 +102,6 @@ class VectorIndexRebuildsOnEveryCloseTest {
           db.newDocument("Doc").set("id", i).set("embedding", randomVector(rng)).save();
       });
 
-      final long t0 = System.currentTimeMillis();
       db.command("sql", "CREATE INDEX ON Doc (embedding) LSM_VECTOR METADATA "
           + "{ \"dimensions\": " + DIMENSIONS + ", \"similarity\": \"EUCLIDEAN\", "
           + "\"maxConnections\": " + MAX_CONNECTIONS + ", \"beamWidth\": " + BEAM_WIDTH + ", "
@@ -106,7 +111,6 @@ class VectorIndexRebuildsOnEveryCloseTest {
       final LSMVectorIndex lsm = (LSMVectorIndex) idx.getIndexesOnBuckets()[0];
       for (int i = 0; i < 900 && lsm.getStats().get("graphNodeCount") == 0L; i++)
         try { Thread.sleep(100); } catch (final InterruptedException ignored) { break; }
-      buildMs = System.currentTimeMillis() - t0;
 
       final Map<String, Long> afterBuild = lsm.getStats();
 
@@ -119,15 +123,14 @@ class VectorIndexRebuildsOnEveryCloseTest {
               + "MUTABLE(2), because the build's own orphaned nodes were added to the pending list")
           .isEqualTo(1L); // IMMUTABLE
 
-      final long t1 = System.currentTimeMillis();
+      // StallAwareStopwatch, not System.currentTimeMillis(): a full-suite run shares one JVM and a
+      // stop-the-world pause inside the measured window would otherwise flake this independently of any
+      // regression (CLAUDE.md, issue #6260).
+      final StallAwareStopwatch closing = StallAwareStopwatch.start();
       db.close();
-      closeMs = System.currentTimeMillis() - t1;
+      closing.assertGaveUpWithin(CLOSE_TRIPWIRE_MS,
+          "a close that persists an already-persisted graph from one that rebuilds it from scratch");
     }
-
-    assertThat(closeMs)
-        .as("closing rebuilt the whole graph (build was %d ms, close took %d ms); the rebuild "
-            + "re-orphans nodes, so this repeats on every open/close cycle", buildMs, closeMs)
-        .isLessThan(buildMs / 4);
   }
 
   private static float[] randomVector(final Random rng) {
