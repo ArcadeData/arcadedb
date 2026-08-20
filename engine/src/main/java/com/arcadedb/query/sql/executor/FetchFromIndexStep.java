@@ -391,7 +391,6 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
    * that is a distinct, narrower problem than #6427, whose fix is deliberately confined to the same-property,
    * same-modifier case the issue describes.
    */
-  @SuppressWarnings("unchecked")
   private boolean processFullTextBlock() {
     if (index.getType() != Schema.INDEX_TYPE.FULL_TEXT || additionalRangeCondition != null)
       return false;
@@ -434,8 +433,11 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       if (existing == null) {
         keys[position] = value;
       } else if (existing instanceof List<?> existingList) {
-        // Safe: the only producer of this list is the `else` branch below, freshly allocated as List<Object>.
-        ((List<Object>) existingList).add(value);
+        // Safe: the only producer of this list is the `else` branch below, freshly allocated as List<Object>. The
+        // suppression is scoped to this one cast rather than the whole method.
+        @SuppressWarnings("unchecked")
+        final List<Object> objectList = (List<Object>) existingList;
+        objectList.add(value);
       } else {
         final List<Object> values = new ArrayList<>(2);
         values.add(existing);
