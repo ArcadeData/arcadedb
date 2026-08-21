@@ -1861,6 +1861,10 @@ public class PostgresNetworkExecutor extends Thread {
         // "recovering" (issue #6548). Every other statement still falls through to the silent return;
         // bindCommand()'s own errorInTransaction check (issue #6545) is what turns an attempt to Bind one
         // of those into an ErrorResponse.
+        // Unlike the non-aborted BEGIN/COMMIT/ROLLBACK recognition below (gated inside the "sql" case of the
+        // portal.language switch), this check runs regardless of portal.language - intentionally, matching
+        // queryCommand()'s own aborted-transaction branch, which has no language gate either. No real client
+        // sends a transaction-control statement under a non-"sql" language mid-session.
         final String abortedUpperCaseText = portal.query.toUpperCase(Locale.ENGLISH);
         if (isTransactionEndStatement(abortedUpperCaseText)) {
           if (database.isTransactionActive())
