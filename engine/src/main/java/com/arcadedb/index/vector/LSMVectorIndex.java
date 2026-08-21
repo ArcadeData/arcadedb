@@ -2593,9 +2593,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // rebuild issue #6495's fix otherwise still leaves behind. Dropping the reference here, immediately
       // before it is read, makes the persist step below register a fresh file under the CURRENT name instead,
       // so the very next open finds it - zero rebuilds, zero orphans - exactly like the mutable/compacted
-      // components a compaction replaces just above: the stale file is torn down only once its replacement
-      // (gf) actually exists, and outside any lock, because a reader that already captured it must be able to
-      // finish (see dropReplacedComponent()).
+      // components a compaction replaces just above. Unlike those two, the stale file is NOT torn down here:
+      // it stays the only usable persisted graph until the replacement is CERTIFIED (graphCertified, set once
+      // writeGraphManifest() has vouched for committed pages), not merely once getOrCreateGraphFile() hands
+      // back an empty file object. A write or commit failure in between restores this reference instead (see
+      // the catch block below and the graphCertified check further down), so a failed persist still leaves
+      // something usable on disk rather than nothing.
       final LSMVectorIndexGraphFile staleGraphFileFromCompaction = locationIndexAlreadyPublished ? graphFile : null;
       if (staleGraphFileFromCompaction != null)
         graphFile = null;
@@ -2603,15 +2606,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Persist graph to disk IMMEDIATELY in its own transaction
       // This ensures the graph is available on next database open (fast restart)
       final LSMVectorIndexGraphFile gf = getOrCreateGraphFile();
-      if (staleGraphFileFromCompaction != null) {
-        if (gf != null)
-          dropReplacedComponent(staleGraphFileFromCompaction);
-        else
-          // getOrCreateGraphFile() could not create a replacement: keep serving this session from the stale,
-          // pre-compaction file rather than losing the graph outright. It stays orphaned under its old name,
-          // exactly as before this change, and is picked up again the next time something finds graphFile null.
-          this.graphFile = staleGraphFileFromCompaction;
-      }
+      if (gf == null && staleGraphFileFromCompaction != null)
+        // getOrCreateGraphFile() could not create a replacement at all: keep serving this session from the
+        // stale, pre-compaction file rather than losing the graph outright. It stays orphaned under its old
+        // name, exactly as before this change, and is picked up again the next time something finds graphFile
+        // null.
+        this.graphFile = staleGraphFileFromCompaction;
       if (gf != null) {
         final int totalNodes = graphIndex.getIdUpperBound();
         LogManager.instance().log(this, Level.FINE, "Writing vector graph to disk for index: %s (nodes=%d)",
@@ -2675,6 +2675,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // thing able to certify a graph nobody built.
           writeGraphManifest(gf, finalActiveVectorIds);
           graphCertified = true;
+
+          // The replacement is certified now, so the stale pre-compaction file it supersedes is safe to drop -
+          // outside any lock, because a reader that already captured it must be able to finish (see
+          // dropReplacedComponent()). Doing this only now, rather than as soon as gf existed, is what keeps a
+          // write or commit failure above from deleting the one persisted graph the index still has.
+          if (staleGraphFileFromCompaction != null)
+            dropReplacedComponent(staleGraphFileFromCompaction);
 
           // When storeVectorsInGraph is enabled, reload the graph as OnDiskGraphIndex so the
           // current session benefits from inline vector storage immediately. This is safe because
@@ -2740,8 +2747,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
           //
           // writeGraph() marks its own failures the same way before rethrowing, so this repeats that one small
           // write when the failure came from in there. Cheap, and on a path already logged as SEVERE.
-          if (!graphCertified)
+          if (!graphCertified) {
             gf.getManifest().markUnusable("graph persist failed: " + e);
+            // The replacement never got certified, so it was never dropped above either: restore the stale
+            // file as the active graph rather than leaving the index with no usable persisted graph at all.
+            // gf itself is now unreachable from any field - drop it here (outside any lock, same reasoning as
+            // dropReplacedComponent()'s other callers) rather than leaving an uncertified, unusable file behind
+            // as a second orphan alongside the very one this whole rebuild was trying to eliminate. The stale
+            // file stays orphaned under its old (pre-compaction) name; the next build attempt finds graphFile
+            // null again and retries under the current one.
+            if (staleGraphFileFromCompaction != null) {
+              this.graphFile = staleGraphFileFromCompaction;
+              dropReplacedComponent(gf);
+            }
+          }
           LogManager.instance().log(this, Level.SEVERE,
               "PERSIST: Failed to persist graph for %s (nodes=%d, storeVectorsInGraph=%b, txStatus=%s): %s - %s",
               indexName,
