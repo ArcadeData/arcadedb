@@ -104,6 +104,12 @@ public final class EngineMetricsBinder implements MeterBinder {
         "Chunked reads that completed after a page they walked had moved", "chunkChainReadRevalidations");
     counter(registry, "arcadedb.engine.record.chunked.read.retries",
         "Chunked reads restarted because the record changed under them", "chunkChainReadRetries");
+    // #6526: the cost side of #6511's fix. A durability-flag change no longer tears the async pool down, it closes
+    // the affected worker's open batch transaction instead - so this climbing while async throughput falls is two
+    // callers flipping setTransactionUseWAL()/setTransactionSync() against each other on one database, and the
+    // batching collapsing toward one commit per task.
+    counter(registry, "arcadedb.engine.async.boundary.commits",
+        "Async batch transactions closed early by a durability-flag change", "asyncForcedBoundaryCommits");
     counter(registry, "arcadedb.engine.tx.write", "Write transactions", "writeTx");
     counter(registry, "arcadedb.engine.tx.read", "Read transactions", "readTx");
     counter(registry, "arcadedb.engine.tx.rollbacks", "Transaction rollbacks", "txRollbacks");
@@ -173,6 +179,13 @@ public final class EngineMetricsBinder implements MeterBinder {
     // PageManager.getDeferredRAMBytesOf.
     gauge(registry, "arcadedb.engine.flush.deferred.bytes", "Dirty page bytes deferred by a flush suspension",
         "deferredRAM");
+
+    // #6526: workers a lowered parallel level retired that are still finishing the tasks queued on them. Zero almost
+    // always, briefly positive during a resize - and PERSISTENTLY positive is the alertable one: a resize never
+    // interrupts a worker the way a close does, so one wedged inside user code drains for ever, and before this the
+    // only trace of it was a single WARNING at the moment the resize gave up waiting.
+    gauge(registry, "arcadedb.engine.async.workers.retiring",
+        "Async workers retired by a parallel-level change and still draining", "asyncRetiringWorkers");
   }
 
   /**

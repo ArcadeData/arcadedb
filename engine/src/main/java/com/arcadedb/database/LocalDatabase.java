@@ -504,6 +504,25 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     return executor.quiesceWorkers();
   }
 
+  /**
+   * The asynchronous executor of this database <b>if one already exists</b>, and {@code null} otherwise - never a
+   * newly created one, unlike {@link #async()}, whose lazy creation starts a full set of worker threads.
+   * <p>
+   * The same rule {@link #waitForAsyncCompletion()} and {@link #quiesceAsync()} follow, and for the same reason,
+   * exported for the one caller that lives outside this class: {@code Profiler} reads async counters on every metrics
+   * scrape AND on every database close, and going through {@code async()} there made merely observing a database
+   * grow it a worker pool - one that the close path had already passed, so nothing was left to shut it down
+   * (issue #6526 review).
+   *
+   * @see #async()
+   */
+  public DatabaseAsyncExecutorImpl getAsyncIfExists() {
+    // The volatile field, unlocked: asyncLock serializes the lazy creation in async(), and once assigned this field
+    // is never assigned again - not even on close - so the only two values a reader can see are "no executor yet"
+    // and "the one and only executor".
+    return async;
+  }
+
   public DatabaseAsyncExecutor async() {
     if (async == null) {
       asyncLock.lock();

@@ -19,6 +19,7 @@
 package com.arcadedb;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.PageManager;
@@ -65,13 +66,20 @@ public class Profiler {
   private static final int STAT_INDEX_COMPACTIONS = 15;
   private static final int STAT_WAL_PAGES_WRITTEN = 16;
   private static final int STAT_WAL_BYTES_WRITTEN = 17;
-  private static final int MONOTONIC_STATS        = 18;
-  private static final int STAT_WAL_TOTAL_FILES   = 18;
-  private static final int STAT_OPEN_FILES        = 19;
-  private static final int STAT_MAX_OPEN_FILES    = 20;
-  private static final int STAT_ASYNC_QUEUE       = 21;
-  private static final int STAT_ASYNC_PARALLEL    = 22;
-  private static final int STATS_COUNT            = 23;
+  // #6526: monotonic, and it belongs INSIDE the retained range - a durability-flag flipper is exactly the kind of
+  // caller (a bulk load through GraphBatch) that opens a database, does its work and closes it, so a counter that
+  // went back to zero on that close would be zero every time anybody looked at it.
+  private static final int STAT_ASYNC_BOUNDARY_COMMITS = 18;
+  private static final int MONOTONIC_STATS        = 19;
+  private static final int STAT_WAL_TOTAL_FILES   = 19;
+  private static final int STAT_OPEN_FILES        = 20;
+  private static final int STAT_MAX_OPEN_FILES    = 21;
+  private static final int STAT_ASYNC_QUEUE       = 22;
+  private static final int STAT_ASYNC_PARALLEL    = 23;
+  // #6526 review round 4: instantaneous, and firmly on this side of MONOTONIC_STATS - it returns to zero as the
+  // retired workers finish, so carrying it across a close would make a gauge that only ever grows.
+  private static final int STAT_ASYNC_RETIRING    = 24;
+  private static final int STATS_COUNT            = 25;
 
   /**
    * Registered database INSTANCES, compared by identity.
@@ -172,8 +180,15 @@ public class Profiler {
       acc[STAT_OPEN_FILES] += fStats.totalOpenFiles;
       acc[STAT_MAX_OPEN_FILES] += fStats.maxOpenFiles;
 
-      acc[STAT_ASYNC_QUEUE] += ((DatabaseAsyncExecutorImpl) db.async()).getStats().queueSize;
-      acc[STAT_ASYNC_PARALLEL] = db.async().getParallelLevel();
+      // asyncIfExists(), never db.async(): that accessor CREATES the executor, worker threads included, so a
+      // metrics scrape used to grow a full pool on every open database that had never touched the async API
+      // (issue #6526 review). A database with no executor has no queue and no workers, which is what the two
+      // readings below now say instead of what asking the question made true.
+      final DatabaseAsyncExecutorImpl async = asyncIfExists(db);
+      final DatabaseAsyncExecutorImpl.DBAsyncStats asyncStats = async != null ? async.getStats() : null;
+      acc[STAT_ASYNC_QUEUE] += asyncStats != null ? asyncStats.queueSize : 0L;
+      acc[STAT_ASYNC_PARALLEL] = async != null ? async.getParallelLevel() : 0L;
+      acc[STAT_ASYNC_RETIRING] += asyncStats != null ? asyncStats.retiringWorkers : 0L;
     }
     return acc;
   }
@@ -195,7 +210,25 @@ public class Profiler {
     final Map<String, Object> walStats = db.getTransactionManager().getStats();
     acc[STAT_WAL_PAGES_WRITTEN] += statOf(walStats, "pagesWritten");
     acc[STAT_WAL_BYTES_WRITTEN] += statOf(walStats, "bytesWritten");
+
+    // #6526: DatabaseAsyncExecutorImpl.getStats() is lock-free and documented to stay callable on a shut-down
+    // executor, which is the property this method requires of every source it reads - unregisterDatabase() calls it
+    // on a database that is already closing. And it is reached through asyncIfExists() rather than db.async() for a
+    // second reason that only this path has: this runs ON THE CLOSE, after the close has already shut down whatever
+    // executor existed, so creating one here would leave its worker threads running with nothing left to stop them.
+    final DatabaseAsyncExecutorImpl async = asyncIfExists(db);
+    if (async != null)
+      acc[STAT_ASYNC_BOUNDARY_COMMITS] += async.getStats().forcedBoundaryCommits;
     return walStats;
+  }
+
+  /**
+   * The database's asynchronous executor <b>if it already has one</b>, and {@code null} otherwise. Every database in
+   * the registry is a {@link LocalDatabase} - it is what registers itself - so the check is a formality that keeps
+   * this class honest rather than a cast that assumes.
+   */
+  private static DatabaseAsyncExecutorImpl asyncIfExists(final DatabaseInternal db) {
+    return db instanceof final LocalDatabase local ? local.getAsyncIfExists() : null;
   }
 
   /**
@@ -220,6 +253,8 @@ public class Profiler {
     final long walTotalFiles = dbStats[STAT_WAL_TOTAL_FILES];
     final long asyncQueueLength = dbStats[STAT_ASYNC_QUEUE];
     final long asyncParallelLevel = dbStats[STAT_ASYNC_PARALLEL];
+    final long asyncForcedBoundaryCommits = dbStats[STAT_ASYNC_BOUNDARY_COMMITS];
+    final long asyncRetiringWorkers = dbStats[STAT_ASYNC_RETIRING];
 
     final long writeTx = dbStats[STAT_WRITE_TX];
     final long readTx = dbStats[STAT_READ_TX];
@@ -273,6 +308,13 @@ public class Profiler {
     json.put("pageFlushQueueMaxPerDatabase", new JSONObject().put("value", pStats.pageFlushQueueMaxPerDatabase));
     json.put("asyncQueueLength", new JSONObject().put("value", asyncQueueLength));
     json.put("asyncParallelLevel", new JSONObject().put("count", asyncParallelLevel));
+    // #6526: how often a durability-flag change (setTransactionUseWAL()/setTransactionSync()) cut an async worker's
+    // batch transaction short. #6511 traded the pool teardown for this extra commit; this is what makes the trade
+    // measurable instead of something to reconstruct from logs after an incident.
+    json.put("asyncForcedBoundaryCommits", new JSONObject().put("count", asyncForcedBoundaryCommits));
+    // #6526 review round 4: "value", not "count" - this one goes back down, so it is a gauge. Persistently non-zero
+    // is a worker a lowered parallel level retired and that never finished draining; a resize never interrupts one.
+    json.put("asyncRetiringWorkers", new JSONObject().put("value", asyncRetiringWorkers));
     json.put("pageCacheHits", new JSONObject().put("count", pageCacheHits));
     json.put("pageCacheMiss", new JSONObject().put("count", pageCacheMiss));
     json.put("totalOpenFiles", new JSONObject().put("count", totalOpenFiles));
@@ -407,6 +449,8 @@ public class Profiler {
       final long[] dbStats = collectDatabaseStats();
       final long asyncQueueLength = dbStats[STAT_ASYNC_QUEUE];
       final long asyncParallelLevel = dbStats[STAT_ASYNC_PARALLEL];
+      final long asyncForcedBoundaryCommits = dbStats[STAT_ASYNC_BOUNDARY_COMMITS];
+      final long asyncRetiringWorkers = dbStats[STAT_ASYNC_RETIRING];
       final long totalOpenFiles = dbStats[STAT_OPEN_FILES];
       final long maxOpenFiles = dbStats[STAT_MAX_OPEN_FILES];
       final long walPagesWritten = dbStats[STAT_WAL_PAGES_WRITTEN];
@@ -493,6 +537,13 @@ public class Profiler {
           asyncParallelLevel, asyncQueueLength, writeTx, readTx, txRollbacks, queries, commands));
       buffer.append("%n    createRecord=%d readRecord=%d updateRecord=%d deleteRecord=%d".formatted(createRecord, readRecord,
         updateRecord, deleteRecord));
+      // #6526: read this next to asyncQueue/asyncParallelLevel above. Climbing while the async queue drains slowly
+      // is two callers flipping setTransactionUseWAL()/setTransactionSync() against each other on one database,
+      // each flip closing whatever worker's batch sees it next. Printed here as well as in toJSON() for the same
+      // reason the #6217 read-path counters are: this dump is what an operator has when there is no metrics
+      // endpoint to scrape.
+      buffer.append("%n    asyncForcedBoundaryCommits=%d asyncRetiringWorkers=%d".formatted(
+          asyncForcedBoundaryCommits, asyncRetiringWorkers));
       buffer.append(
         "%n    scanType=%d scanBucket=%d iterateType=%d iterateBucket=%d countType=%d countBucket=%d".formatted(scanType,
           scanBucket, iterateType,

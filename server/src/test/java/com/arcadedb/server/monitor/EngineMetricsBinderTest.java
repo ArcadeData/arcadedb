@@ -67,7 +67,9 @@ class EngineMetricsBinderTest {
         "arcadedb.engine.snapshot.barrier.count", "arcadedb.engine.snapshot.barrier.seconds",
         "arcadedb.engine.snapshot.barrier.inexact",
         // #6217: the read-path twin of the page merges above
-        "arcadedb.engine.record.chunked.read.revalidations", "arcadedb.engine.record.chunked.read.retries" }) {
+        "arcadedb.engine.record.chunked.read.revalidations", "arcadedb.engine.record.chunked.read.retries",
+        // #6526: async batch transactions cut short by a durability-flag change
+        "arcadedb.engine.async.boundary.commits" }) {
       final FunctionCounter counter = registry.find(name).functionCounter();
       assertThat(counter).as(name).isNotNull();
       assertThat(Double.isNaN(counter.count())).as(name).isFalse();
@@ -91,7 +93,10 @@ class EngineMetricsBinderTest {
         // #6125: a high-water mark. Monotonic, but a rate() over it would be meaningless, so it is the one
         // never-decreasing reading here that is deliberately a gauge
         "arcadedb.engine.snapshot.barrier.max.seconds",
-        "arcadedb.engine.flush.deferred.bytes" }) {
+        "arcadedb.engine.flush.deferred.bytes",
+        // #6526: workers a lowered parallel level retired and that are still draining - it comes back down, so it
+        // is a gauge
+        "arcadedb.engine.async.workers.retiring" }) {
       final Gauge gauge = registry.find(name).gauge();
       assertThat(gauge).as(name).isNotNull();
       assertThat(Double.isNaN(gauge.value())).as(name).isFalse();
