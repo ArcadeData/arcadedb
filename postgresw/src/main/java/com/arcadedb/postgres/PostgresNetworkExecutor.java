@@ -642,7 +642,7 @@ public class PostgresNetworkExecutor extends Thread {
       } else if (upperCaseText.startsWith("SHOW ")) {
         final String varName = query.query.substring(5).trim().toLowerCase(Locale.ENGLISH);
         resultSet = new IteratorResultSet(createResultSet(varName, getShowConfigValue(varName)).iterator());
-      } else if ("BEGIN".equals(upperCaseText) || "BEGIN TRANSACTION".equals(upperCaseText)) {
+      } else if (isBeginStatement(upperCaseText)) {
         explicitTransactionStarted = true;
         database.begin();
         resultSet = new IteratorResultSet(Collections.emptyIterator());
@@ -1902,14 +1902,32 @@ public class PostgresNetworkExecutor extends Thread {
         } else {
           switch (portal.language) {
           case "sql":
-            final SQLQueryEngine sqlEngine = (SQLQueryEngine) database.getQueryEngine("sql");
-            portal.sqlStatement = sqlEngine.parse(query.query, (DatabaseInternal) database);
-            if ("BEGIN".equalsIgnoreCase(portal.query) || "BEGIN TRANSACTION".equalsIgnoreCase(portal.query)) {
+            // BEGIN/COMMIT/ROLLBACK (in any of their recognized forms) are handled directly below and must
+            // never reach sqlEngine.parse(): the grammar's beginStatement/commitStatement/rollbackStatement
+            // productions accept only the bare keyword (or BEGIN's own ISOLATION clause and COMMIT's own RETRY
+            // clause) - "BEGIN TRANSACTION"/"COMMIT WORK"/"ROLLBACK TRANSACTION"/etc. all fail to parse as SQL.
+            // Checking first, the same way queryCommand's simple-query dispatch already does, keeps this
+            // branch from ever calling parse() on text the grammar was never going to accept (issue #6543).
+            if (isBeginStatement(upperCaseText)) {
               explicitTransactionStarted = true;
               setEmptyResultSet(portal);
-            } else if ("COMMIT".equalsIgnoreCase(portal.query)) {
+            } else if (isCommitStatement(upperCaseText)) {
+              // No explicit database.commit() here: clearing the flag makes the Sync that follows this
+              // Execute take its implicit-commit branch (see syncCommand()), which is what actually
+              // persists the transaction.
               explicitTransactionStarted = false;
               setEmptyResultSet(portal);
+            } else if (isRollbackStatement(upperCaseText)) {
+              // Unlike COMMIT, ROLLBACK cannot lean on Sync's implicit-commit branch - clearing the flag
+              // without rolling back here would make the next Sync COMMIT the transaction instead (issue
+              // #6543), the opposite of what the client asked for.
+              if (explicitTransactionStarted && database.isTransactionActive())
+                database.rollback();
+              explicitTransactionStarted = false;
+              setEmptyResultSet(portal);
+            } else {
+              final SQLQueryEngine sqlEngine = (SQLQueryEngine) database.getQueryEngine("sql");
+              portal.sqlStatement = sqlEngine.parse(query.query, (DatabaseInternal) database);
             }
             break;
 
@@ -2355,7 +2373,7 @@ public class PostgresNetworkExecutor extends Thread {
       return "UPDATE " + resultSetCount;
     } else if (upperCaseText.startsWith("DELETE")) {
       return "DELETE " + resultSetCount;
-    } else if ("BEGIN".equals(upperCaseText) || "BEGIN TRANSACTION".equals(upperCaseText)) {
+    } else if (isBeginStatement(upperCaseText)) {
       return "BEGIN";
     } else if (isCommitStatement(upperCaseText)) {
       return "COMMIT";
@@ -2367,19 +2385,31 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   /**
-   * Matches a simple-query COMMIT/END statement, the counterpart to the existing BEGIN check (issue #6457).
+   * Matches a BEGIN statement, including the SQL-standard {@code ... WORK} form alongside the bare and
+   * {@code ... TRANSACTION} forms - the same three-way shape as {@link #isCommitStatement} and
+   * {@link #isRollbackStatement} (issue #6543 review follow-up: PostgreSQL's own grammar is
+   * {@code BEGIN [ WORK | TRANSACTION ]}).
    */
-  private static boolean isCommitStatement(final String upperCaseText) {
-    return "COMMIT".equals(upperCaseText) || "COMMIT TRANSACTION".equals(upperCaseText) ||
-        "END".equals(upperCaseText) || "END TRANSACTION".equals(upperCaseText);
+  private static boolean isBeginStatement(final String upperCaseText) {
+    return "BEGIN".equals(upperCaseText) || "BEGIN TRANSACTION".equals(upperCaseText) || "BEGIN WORK".equals(upperCaseText);
   }
 
   /**
-   * Matches a simple-query ROLLBACK statement (issue #6457). Deliberately excludes {@code ROLLBACK TO
-   * <savepoint>}, which queryCommand's dispatch already routes elsewhere (it does not end the transaction).
+   * Matches a COMMIT/END statement, the counterpart to the existing BEGIN check (issue #6457). Covers the
+   * SQL-standard {@code ... WORK} form alongside the bare and {@code ... TRANSACTION} forms (issue #6543).
+   */
+  private static boolean isCommitStatement(final String upperCaseText) {
+    return "COMMIT".equals(upperCaseText) || "COMMIT TRANSACTION".equals(upperCaseText) || "COMMIT WORK".equals(upperCaseText) ||
+        "END".equals(upperCaseText) || "END TRANSACTION".equals(upperCaseText) || "END WORK".equals(upperCaseText);
+  }
+
+  /**
+   * Matches a ROLLBACK statement (issue #6457, extended to the extended-query protocol and the
+   * SQL-standard {@code ... WORK} form by issue #6543). Deliberately excludes {@code ROLLBACK TO
+   * <savepoint>}, which the dispatch already routes elsewhere (it does not end the transaction).
    */
   private static boolean isRollbackStatement(final String upperCaseText) {
-    return "ROLLBACK".equals(upperCaseText) || "ROLLBACK TRANSACTION".equals(upperCaseText);
+    return "ROLLBACK".equals(upperCaseText) || "ROLLBACK TRANSACTION".equals(upperCaseText) || "ROLLBACK WORK".equals(upperCaseText);
   }
 
   /**
