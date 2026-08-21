@@ -119,6 +119,12 @@ class Issue6543RollbackExtendedProtocolIT extends PostgresWireProtocolTestBase {
         assertThat(readyForQueryStatusOf(runExtendedQuery(out, in, "BEGIN TRANSACTION"))).isEqualTo('T');
         assertThat(readyForQueryStatusOf(runExtendedQuery(out, in, "ROLLBACK TRANSACTION")))
             .as("ROLLBACK TRANSACTION must be recognized just like a bare ROLLBACK").isEqualTo('I');
+
+        // BEGIN WORK: PostgreSQL's own grammar is BEGIN [ WORK | TRANSACTION ], added per review feedback on
+        // this PR for symmetry with the COMMIT/ROLLBACK WORK forms above.
+        assertThat(readyForQueryStatusOf(runExtendedQuery(out, in, "BEGIN WORK")))
+            .as("BEGIN WORK must be recognized just like a bare BEGIN").isEqualTo('T');
+        assertThat(readyForQueryStatusOf(runExtendedQuery(out, in, "ROLLBACK"))).isEqualTo('I');
       });
     }
   }

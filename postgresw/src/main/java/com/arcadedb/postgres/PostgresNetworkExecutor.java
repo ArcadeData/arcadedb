@@ -642,7 +642,7 @@ public class PostgresNetworkExecutor extends Thread {
       } else if (upperCaseText.startsWith("SHOW ")) {
         final String varName = query.query.substring(5).trim().toLowerCase(Locale.ENGLISH);
         resultSet = new IteratorResultSet(createResultSet(varName, getShowConfigValue(varName)).iterator());
-      } else if ("BEGIN".equals(upperCaseText) || "BEGIN TRANSACTION".equals(upperCaseText)) {
+      } else if (isBeginStatement(upperCaseText)) {
         explicitTransactionStarted = true;
         database.begin();
         resultSet = new IteratorResultSet(Collections.emptyIterator());
@@ -1901,7 +1901,7 @@ public class PostgresNetworkExecutor extends Thread {
             // clause) - "BEGIN TRANSACTION"/"COMMIT WORK"/"ROLLBACK TRANSACTION"/etc. all fail to parse as SQL.
             // Checking first, the same way queryCommand's simple-query dispatch already does, keeps this
             // branch from ever calling parse() on text the grammar was never going to accept (issue #6543).
-            if ("BEGIN".equalsIgnoreCase(portal.query) || "BEGIN TRANSACTION".equalsIgnoreCase(portal.query)) {
+            if (isBeginStatement(upperCaseText)) {
               explicitTransactionStarted = true;
               setEmptyResultSet(portal);
             } else if (isCommitStatement(upperCaseText)) {
@@ -2370,7 +2370,7 @@ public class PostgresNetworkExecutor extends Thread {
       return "UPDATE " + resultSetCount;
     } else if (upperCaseText.startsWith("DELETE")) {
       return "DELETE " + resultSetCount;
-    } else if ("BEGIN".equals(upperCaseText) || "BEGIN TRANSACTION".equals(upperCaseText)) {
+    } else if (isBeginStatement(upperCaseText)) {
       return "BEGIN";
     } else if (isCommitStatement(upperCaseText)) {
       return "COMMIT";
@@ -2379,6 +2379,16 @@ public class PostgresNetworkExecutor extends Thread {
     } else {
       return "";
     }
+  }
+
+  /**
+   * Matches a BEGIN statement, including the SQL-standard {@code ... WORK} form alongside the bare and
+   * {@code ... TRANSACTION} forms - the same three-way shape as {@link #isCommitStatement} and
+   * {@link #isRollbackStatement} (issue #6543 review follow-up: PostgreSQL's own grammar is
+   * {@code BEGIN [ WORK | TRANSACTION ]}).
+   */
+  private static boolean isBeginStatement(final String upperCaseText) {
+    return "BEGIN".equals(upperCaseText) || "BEGIN TRANSACTION".equals(upperCaseText) || "BEGIN WORK".equals(upperCaseText);
   }
 
   /**
