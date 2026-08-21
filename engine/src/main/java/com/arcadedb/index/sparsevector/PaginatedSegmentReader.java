@@ -136,11 +136,14 @@ public final class PaginatedSegmentReader implements AutoCloseable {
     this.recencyEpoch = storedEpoch != 0L ? storedEpoch : this.segmentId;
     cursor += 8;
     // Manifest CRC validation. Layout written by SparseSegmentBuilder.writeManifest covers
-    // segmentId + parentCount + parents[] + reserved(16), with the CRC of all of those in the
-    // last 4 bytes. A bit-flipped manifest could otherwise return wrong {@code parentSegments}
+    // segmentId + parentCount + parents[] + tombstoneCount + recencyEpoch, with the CRC of all of
+    // those in the last 4 bytes. (Both 8-byte slots were once "reserved"; slot 0 became the
+    // tombstone count with the tombstone-ratio trigger and slot 1 the recency epoch in #6379, so
+    // neither is spare any more - the next addition needs a new slot and a size bump.)
+    // A bit-flipped manifest could otherwise return wrong {@code parentSegments}
     // silently; we surface that as a SEVERE log here so the issue is observable without
     // failing the segment open.
-    final int manifestSize = 8 + 4 + parentCount * 8 + 8 + 8 + 4; // segmentId + parentCount + parents + 2 reserved + crc
+    final int manifestSize = 8 + 4 + parentCount * 8 + 8 + 8 + 4; // segId + parentCount + parents + tombstones + epoch + crc
     final byte[] manifestBytes = new byte[manifestSize];
     manifestPage.readByteArray(0, manifestBytes);
     final int storedManifestCrc = manifestPage.readInt(cursor);

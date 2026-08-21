@@ -214,6 +214,13 @@ public final class SparseSegmentBuilder implements AutoCloseable {
    */
   public void setRecencyEpoch(final long recencyEpoch) {
     requireFresh();
+    // Enforced rather than merely documented: {@link #setSegmentId} unconditionally re-defaults
+    // the epoch to the id, so calling these two in the wrong order would discard the epoch set
+    // here without a word - and a merged segment silently carrying its own id as its epoch is
+    // exactly the #6379 bug this field exists to prevent. Fail on the ordering instead.
+    if (segmentId == 0L)
+      throw new IllegalStateException(
+          "setSegmentId(long) must be called before setRecencyEpoch(long): the former defaults the epoch to the segment id");
     this.recencyEpoch = recencyEpoch;
   }
 
