@@ -225,7 +225,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // matching graphState/graphIndex/ordinalToVectorId/vectorIndex just above, which are read the same way
   // (issue #6527).
   private volatile LSMVectorIndexGraphFile graphFile;
-  private final AtomicInteger           mutationsSinceSerialize;
+  private final    AtomicInteger           mutationsSinceSerialize;
 
   // Product Quantization (PQ) for zero-disk-I/O approximate search
   // PQ file stores codebooks and encoded vectors; pqVectors is cached in memory
