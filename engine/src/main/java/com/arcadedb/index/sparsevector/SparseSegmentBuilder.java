@@ -96,6 +96,14 @@ public final class SparseSegmentBuilder implements AutoCloseable {
    * so the merged segment cannot leapfrog a segment it did not consume.
    */
   private long   recencyEpoch          = 0L;
+  /**
+   * Whether {@link #setSegmentId} has run. Tracked explicitly rather than inferred from
+   * {@code segmentId == 0L}: the ids the engine issues start at 1, so the sentinel would work
+   * today, but it would let a caller passing {@code 0} silently defeat the ordering guard in
+   * {@link #setRecencyEpoch} - and that guard exists precisely because the failure it prevents is
+   * silent.
+   */
+  private boolean segmentIdSet          = false;
   private long[] parentSegments        = new long[0];
 
   // Currently open dim state.
@@ -204,6 +212,7 @@ public final class SparseSegmentBuilder implements AutoCloseable {
     // monotonic, so a freshly sealed memtable is by construction the newest segment); only a
     // compaction needs to override it via {@link #setRecencyEpoch}, and it does so after this call.
     this.recencyEpoch = segmentId;
+    this.segmentIdSet = true;
   }
 
   /**
@@ -218,7 +227,7 @@ public final class SparseSegmentBuilder implements AutoCloseable {
     // the epoch to the id, so calling these two in the wrong order would discard the epoch set
     // here without a word - and a merged segment silently carrying its own id as its epoch is
     // exactly the #6379 bug this field exists to prevent. Fail on the ordering instead.
-    if (segmentId == 0L)
+    if (!segmentIdSet)
       throw new IllegalStateException(
           "setSegmentId(long) must be called before setRecencyEpoch(long): the former defaults the epoch to the segment id");
     this.recencyEpoch = recencyEpoch;
