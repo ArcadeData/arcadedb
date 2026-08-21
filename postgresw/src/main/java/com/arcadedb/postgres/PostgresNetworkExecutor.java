@@ -1852,8 +1852,45 @@ public class PostgresNetworkExecutor extends Thread {
             .log(this, Level.INFO, "PSQL: parse (portal=%s) -> %s (params=%d, detected=%d) (errorInTransaction=%s thread=%s)",
                 portalName, portal.query, paramCount, actualParamCount, errorInTransaction, Thread.currentThread().getId());
 
-      if (errorInTransaction)
+      if (errorInTransaction) {
+        // Mirror queryCommand()'s aborted-transaction dispatch (issue #6457/#6542): a client recovering
+        // from an aborted transaction over the extended protocol sends its COMMIT/END/ROLLBACK through its
+        // own Parse/Bind/Execute round trip rather than a single Query message, and the unconditional
+        // return below dropped it silently - Sync's own errorInTransaction branch clears errorInTransaction
+        // but never explicitTransactionStarted, so the client was reported status 'T' forever after
+        // "recovering" (issue #6548). Every other statement still falls through to the silent return;
+        // bindCommand()'s own errorInTransaction check (issue #6545) is what turns an attempt to Bind one
+        // of those into an ErrorResponse.
+        // Unlike the non-aborted BEGIN/COMMIT/ROLLBACK recognition below (gated inside the "sql" case of the
+        // portal.language switch), this check runs regardless of portal.language - intentionally, matching
+        // queryCommand()'s own aborted-transaction branch, which has no language gate either. No real client
+        // sends a transaction-control statement under a non-"sql" language mid-session.
+        // isCommitStatement()/isRollbackStatement() match by exact string equality, so the text they see must
+        // be trimmed and stripped of a trailing ';' the same way queryCommand() strips it from its queryText
+        // before its own aborted-transaction check runs (issue #6548 review follow-up) - otherwise a client
+        // that sends "ROLLBACK;" (a real Postgres statement terminator many drivers append) falls through to
+        // the silent return below, reproducing this exact issue's "wedged forever" symptom via a trailing
+        // semicolon instead of via the missing dispatch. portal.query itself is left untouched here: the
+        // matched branch below overwrites it outright, and the unmatched branch discards this portal.
+        String abortedText = portal.query.trim();
+        if (abortedText.endsWith(";"))
+          abortedText = abortedText.substring(0, abortedText.length() - 1);
+        final String abortedUpperCaseText = abortedText.toUpperCase(Locale.ENGLISH);
+        if (isTransactionEndStatement(abortedUpperCaseText)) {
+          if (database.isTransactionActive())
+            database.rollback();
+          explicitTransactionStarted = false;
+          errorInTransaction = false;
+          // Real Postgres treats a COMMIT/END of an aborted transaction the same as ROLLBACK - there is
+          // nothing left to commit - so the command tag executeCommand() later writes must read ROLLBACK
+          // regardless of which of the three keywords the client actually sent (see queryCommand()).
+          portal.query = "ROLLBACK";
+          setEmptyResultSet(portal);
+          portals.put(portalName, portal);
+          writeMessage("parse complete", null, '1', 4);
+        }
         return;
+      }
 
       if (portal.query.isEmpty()) {
         emptyQueryResponse();
