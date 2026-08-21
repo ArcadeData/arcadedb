@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.Constants;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.openapi.AiApiSpec;
 import com.arcadedb.server.http.handler.openapi.AuthApiSpec;
@@ -112,7 +113,7 @@ public class OpenApiSpecGenerator {
     info.setTitle("ArcadeDB HTTP API");
     info.setDescription(
         "Multi-Model DBMS HTTP API for Graph, Document, Key/Value, Search Engine, Time Series, and Vector Embedding operations");
-    info.setVersion("1.0.0");
+    info.setVersion(Constants.getRawVersion());
 
     final Contact contact = new Contact();
     contact.setName("Arcade Data Ltd");

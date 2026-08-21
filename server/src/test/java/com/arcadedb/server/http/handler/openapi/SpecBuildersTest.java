@@ -19,6 +19,7 @@
 package com.arcadedb.server.http.handler.openapi;
 
 import io.swagger.v3.oas.models.Operation;
+import io.swagger.v3.oas.models.headers.Header;
 import io.swagger.v3.oas.models.parameters.Parameter;
 import io.swagger.v3.oas.models.parameters.RequestBody;
 import io.swagger.v3.oas.models.responses.ApiResponse;
@@ -100,5 +101,32 @@ class SpecBuildersTest {
     SpecBuilders.basicAuthOnly(op);
     assertThat(op.getSecurity()).hasSize(1);
     assertThat(op.getSecurity().get(0)).containsOnlyKeys("basicAuth");
+  }
+
+  @Test
+  void headerParamDeclaresAStringHeaderParameter() {
+    final Parameter param = SpecBuilders.headerParam("x-example", "An example header", true);
+
+    assertThat(param.getIn())
+        .as("a header parameter that is not in:header binds as a query string by default")
+        .isEqualTo("header");
+    assertThat(param.getRequired())
+        .as("the required flag passed to headerParam must reach the parameter")
+        .isTrue();
+    assertThat(param.getSchema().getType())
+        .as("a header value is always transmitted as a string")
+        .isEqualTo("string");
+  }
+
+  @Test
+  void stringHeaderDescribesAResponseHeader() {
+    final Header header = SpecBuilders.stringHeader("An example response header");
+
+    assertThat(header.getDescription())
+        .as("the description passed to stringHeader must reach the response header")
+        .isEqualTo("An example response header");
+    assertThat(header.getSchema().getType())
+        .as("a header value is always transmitted as a string")
+        .isEqualTo("string");
   }
 }

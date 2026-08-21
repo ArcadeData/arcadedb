@@ -1,0 +1,86 @@
+name: publish-contract
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish contract artifacts for (e.g. 26.9.1)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      ROOT_PASSWORD: contractfetch
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+
+      - name: Start the released server
+        run: |
+          docker run -d --name arcadedb-contract -p 127.0.0.1:2480:2480 \
+            -e JAVA_OPTS="-Darcadedb.server.rootPassword=$ROOT_PASSWORD" \
+            "arcadedata/arcadedb:$TAG"
+
+      - name: Wait for readiness
+        run: |
+          for _ in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:2480/api/v1/ready || true)
+            if [ "$code" = "204" ]; then
+              echo "server ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "server did not become ready within 120s"
+          docker logs arcadedb-contract
+          exit 1
+
+      - name: Fetch the OpenAPI contract
+        shell: bash
+        run: |
+          set -o pipefail
+          curl -sS --fail -u "root:$ROOT_PASSWORD" \
+            http://localhost:2480/api/v1/openapi.json | jq -S . > "arcadedb-openapi-$TAG.json"
+
+      - name: Verify the contract identifies this release
+        run: |
+          declared=$(jq -r '.info.version' "arcadedb-openapi-$TAG.json")
+          if [ "$declared" != "$TAG" ]; then
+            echo "spec declares info.version=$declared but this release is $TAG"
+            exit 1
+          fi
+
+      - name: Copy the proto
+        run: cp grpc/src/main/proto/arcadedb-server.proto "arcadedb-server-$TAG.proto"
+
+      - name: Checksum both artifacts
+        run: |
+          sha256sum "arcadedb-openapi-$TAG.json" > "arcadedb-openapi-$TAG.json.sha256"
+          sha256sum "arcadedb-server-$TAG.proto" > "arcadedb-server-$TAG.proto.sha256"
+
+      - name: Attach to the release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "$TAG" \
+            "arcadedb-openapi-$TAG.json" "arcadedb-openapi-$TAG.json.sha256" \
+            "arcadedb-server-$TAG.proto" "arcadedb-server-$TAG.proto.sha256" \
+            --clobber
+
+      - name: Stop the server
+        if: always()
+        run: docker rm -f arcadedb-contract || true

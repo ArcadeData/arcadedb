@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.Constants;
 import com.arcadedb.server.http.handler.openapi.OpenApiContributor;
 import io.swagger.v3.oas.models.Components;
 import io.swagger.v3.oas.models.OpenAPI;
@@ -62,5 +63,27 @@ class OpenApiSpecGeneratorTest {
         schemaOwner.put(schemaName, contributorName);
       }
     }
+  }
+
+  /**
+   * publish-contract.yml compares the served document's {@code info.version} to the bare release
+   * tag. {@link Constants#getVersion()} appends a build suffix ("... (build ...)"); using it here
+   * would break that comparison on every publish. This guards {@code createApiInfo()} in the only
+   * unit lane that runs on this machine: the IT that also asserts this cannot bind port 2480 here.
+   */
+  @Test
+  void infoVersionIsTheBareReleaseVersionNotTheBuildStampedOne() {
+    final OpenAPI openAPI = new OpenApiSpecGenerator(null).generateSpec();
+
+    final String version = openAPI.getInfo().getVersion();
+
+    assertThat(version)
+        .as("publish-contract.yml compares info.version to the bare release tag, so it must equal "
+            + "Constants.getRawVersion(), not the build-stamped Constants.getVersion()")
+        .isEqualTo(Constants.getRawVersion());
+    assertThat(version)
+        .as("a build-stamped version (\"... (build ...)\") would never equal the release tag and "
+            + "would break the publish gate forever")
+        .doesNotContain(" (build ");
   }
 }

@@ -150,6 +150,106 @@ class PrometheusApiSpecTest {
   }
 
   @Test
+  void promQlResultDeclaresItsThreeShapes() {
+    final Schema<?> response = openAPI.getComponents().getSchemas().get("PromQLDataResponse");
+    final Schema<?> data = (Schema<?>) response.getProperties().get("data");
+    final Schema<?> result = (Schema<?>) data.getProperties().get("result");
+
+    assertThat(result.getOneOf())
+        .as("oneOf must be gone: an empty result array matches every branch, so 'exactly one match' can never hold")
+        .isNull();
+    assertThat(result.getAnyOf())
+        .as("vector, matrix and scalar are structurally different; a client narrows on resultType")
+        .hasSize(3);
+  }
+
+  @Test
+  void promQlVectorEntriesCarryMetricAndValue() {
+    final Schema<?> response = openAPI.getComponents().getSchemas().get("PromQLDataResponse");
+    final Schema<?> data = (Schema<?>) response.getProperties().get("data");
+    final Schema<?> result = (Schema<?>) data.getProperties().get("result");
+    final Schema<?> vectorEntry = result.getAnyOf().get(0).getItems();
+
+    assertThat(vectorEntry.getProperties().keySet())
+        .as("an instant sample is a labelled metric plus one [timestamp, value] pair")
+        .containsExactlyInAnyOrder("metric", "value");
+    assertThat(vectorEntry.getRequired())
+        .as("branch index 0 is assumed to be the vector branch throughout this test class; guard that coupling")
+        .containsExactlyInAnyOrder("metric", "value");
+  }
+
+  @Test
+  void promQlMatrixEntriesRequireMetricAndValues() {
+    final Schema<?> response = openAPI.getComponents().getSchemas().get("PromQLDataResponse");
+    final Schema<?> data = (Schema<?>) response.getProperties().get("data");
+    final Schema<?> result = (Schema<?>) data.getProperties().get("result");
+    final Schema<?> matrixEntry = result.getAnyOf().get(1).getItems();
+
+    assertThat(matrixEntry.getRequired())
+        .as("a range series is discriminated from a vector entry by its 'values' plural")
+        .containsExactlyInAnyOrder("metric", "values");
+  }
+
+  @Test
+  void samplePairItemsAreUnconstrainedNotObjectTyped() {
+    final Schema<?> response = openAPI.getComponents().getSchemas().get("PromQLDataResponse");
+    final Schema<?> data = (Schema<?>) response.getProperties().get("data");
+    final Schema<?> result = (Schema<?>) data.getProperties().get("result");
+    final Schema<?> scalarPair = result.getAnyOf().get(2);
+
+    assertThat(scalarPair.getType())
+        .as("a [timestamp, value] pair is an array")
+        .isEqualTo("array");
+    assertThat(scalarPair.getItems().getType())
+        .as("the server sends a number then a string, never an object; a typed 'object' item breaks a "
+            + "generated Go client's unmarshalling of every PromQL response")
+        .isNull();
+    assertThat(scalarPair.getMinItems())
+        .as("the tuple is always exactly 2 elements")
+        .isEqualTo(2);
+    assertThat(scalarPair.getMaxItems())
+        .as("the tuple is always exactly 2 elements")
+        .isEqualTo(2);
+  }
+
+  @Test
+  void samplePairIsAFreshInstanceEveryCall() {
+    final Schema<?> response = openAPI.getComponents().getSchemas().get("PromQLDataResponse");
+    final Schema<?> data = (Schema<?>) response.getProperties().get("data");
+    final Schema<?> result = (Schema<?>) data.getProperties().get("result");
+    final Schema<?> vectorEntry = result.getAnyOf().get(0).getItems();
+    final Schema<?> matrixEntry = result.getAnyOf().get(1).getItems();
+
+    final Schema<?> vectorValuePair = vectorEntry.getProperties().get("value");
+    final Schema<?> matrixValuesPair = matrixEntry.getProperties().get("values").getItems();
+    final Schema<?> scalarPair = result.getAnyOf().get(2);
+
+    assertThat(vectorValuePair)
+        .as("each samplePair() call must build its own schema instance, not share one mutable object")
+        .isNotSameAs(matrixValuesPair)
+        .isNotSameAs(scalarPair);
+    assertThat(matrixValuesPair)
+        .as("each samplePair() call must build its own schema instance, not share one mutable object")
+        .isNotSameAs(scalarPair);
+  }
+
+  @Test
+  void metricLabelMapConstrainsValuesToStrings() {
+    final Schema<?> response = openAPI.getComponents().getSchemas().get("PromQLDataResponse");
+    final Schema<?> data = (Schema<?>) response.getProperties().get("data");
+    final Schema<?> result = (Schema<?>) data.getProperties().get("result");
+    final Schema<?> vectorEntry = result.getAnyOf().get(0).getItems();
+    final Schema<?> metric = (Schema<?>) vectorEntry.getProperties().get("metric");
+
+    assertThat(metric.getAdditionalProperties())
+        .as("labelsToJson only ever writes string values, so a generator should emit Map<String,String>")
+        .isInstanceOf(Schema.class);
+    assertThat(((Schema<?>) metric.getAdditionalProperties()).getType())
+        .as("label values are strings")
+        .isEqualTo("string");
+  }
+
+  @Test
   void everyPromQlOperationUsesTheErrorEnvelopeNotTheGenericOne() {
     final Schema<?> error = openAPI.getComponents().getSchemas().get("PromQLErrorResponse");
     assertThat(error.getProperties().keySet())
