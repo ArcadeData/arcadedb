@@ -1852,8 +1852,31 @@ public class PostgresNetworkExecutor extends Thread {
             .log(this, Level.INFO, "PSQL: parse (portal=%s) -> %s (params=%d, detected=%d) (errorInTransaction=%s thread=%s)",
                 portalName, portal.query, paramCount, actualParamCount, errorInTransaction, Thread.currentThread().threadId());
 
-      if (errorInTransaction)
+      if (errorInTransaction) {
+        // Mirror queryCommand()'s aborted-transaction dispatch (issue #6457/#6542): a client recovering
+        // from an aborted transaction over the extended protocol sends its COMMIT/END/ROLLBACK through its
+        // own Parse/Bind/Execute round trip rather than a single Query message, and the unconditional
+        // return below dropped it silently - Sync's own errorInTransaction branch clears errorInTransaction
+        // but never explicitTransactionStarted, so the client was reported status 'T' forever after
+        // "recovering" (issue #6548). Every other statement still falls through to the silent return;
+        // bindCommand()'s own errorInTransaction check (issue #6545) is what turns an attempt to Bind one
+        // of those into an ErrorResponse.
+        final String abortedUpperCaseText = portal.query.toUpperCase(Locale.ENGLISH);
+        if (isTransactionEndStatement(abortedUpperCaseText)) {
+          if (database.isTransactionActive())
+            database.rollback();
+          explicitTransactionStarted = false;
+          errorInTransaction = false;
+          // Real Postgres treats a COMMIT/END of an aborted transaction the same as ROLLBACK - there is
+          // nothing left to commit - so the command tag executeCommand() later writes must read ROLLBACK
+          // regardless of which of the three keywords the client actually sent (see queryCommand()).
+          portal.query = "ROLLBACK";
+          setEmptyResultSet(portal);
+          portals.put(portalName, portal);
+          writeMessage("parse complete", null, '1', 4);
+        }
         return;
+      }
 
       if (portal.query.isEmpty()) {
         emptyQueryResponse();
