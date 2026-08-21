@@ -4690,12 +4690,27 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * cap returns fewer than {@code limit} groups and increments {@code groupedSearchesShortOfLimit} in
    * {@link #getStats()}. Raise {@code efSearch} when that counter moves.
    * <p>
-   * <b>Delta scan and brute-force fallback are skipped.</b> The two augmentations would re-admit
-   * candidates outside the per-group cap; the delta path because it scores newly-inserted vectors
-   * not yet visible to HNSW (no Bits filter applied), the brute-force path because it walks every
-   * vector when the graph search returned too few hits. Skipping them is correct for the grouped
-   * contract; callers that depend on either should use {@link #findNeighborsFromVector} and apply
-   * the group admission post-filter at the SQL layer.
+   * <b>The delta buffer is merged into the stream, not appended to the answer</b> (issue #6501). Every
+   * vector written since the graph was last built lives in the delta buffer and is invisible to the
+   * walk above, so a grouped query that ignored it answered from the corpus as of the last rebuild -
+   * a full, exception-free, plausible answer over stale data, while the same query without
+   * {@code groupBy} returned the newer rows. On stock knobs that window is up to
+   * {@code min(rebuildGraphRatio * graphSize, maxPendingMutations)} rows wide and stays open for as
+   * long as writes keep arriving, so it is the steady state under ingestion rather than a corner case.
+   * <p>
+   * Merging is the only way to add them: {@link GroupAdmissionState} hands out its slots
+   * first-come-first-served, so a delta row offered after the walk would take a group its distance
+   * never earned, and one offered before it would lock the walk out of groups it should have won. The
+   * buffer is therefore scored once into a {@link ScoredCandidateCursor} and drained into the same
+   * rank-ordered stream the walk feeds: before each graph candidate, every delta candidate at least as
+   * near as it. A row offered by both sides - a vector left unreachable by a rebuild is re-queued into
+   * the buffer while its graph node survives - is admitted once.
+   * <p>
+   * <b>The issue #3722 brute-force fallback is still skipped.</b> That one walks every vector in the
+   * index whenever the graph search came up short, which for a grouped search is not evidence of a
+   * degraded graph at all - it is the ordinary outcome of a cap that stops admitting. Callers that
+   * want it should use {@link #findNeighborsFromVector} and apply the group admission post-filter at
+   * the SQL layer.
    *
    * @param queryVector      query embedding
    * @param limit            max number of distinct groups to return; must be {@code > 0}
@@ -4753,10 +4768,25 @@ public class LSMVectorIndex implements Index, IndexInternal {
       lock.readLock().lock();
       readLockHeld = true;
       try {
-        if (graphIndex == null || vectorIndex.size() == 0)
-          return Collections.emptyList();
-
         final VectorFloat<?> queryVectorFloat = vts.createFloatVector(queryVector);
+
+        // Volatile read pinned for the whole query, taken under the read lock because writers mutate this list in
+        // place under the write lock. Every candidate the cursor built below points back into it by position.
+        final List<DeltaVectorEntry> deltaSnapshot = deltaVectors;
+
+        if (graphIndex == null || vectorIndex.size() == 0) {
+          // No graph to walk yet - but the delta buffer can still answer, which is the same courtesy
+          // findNeighborsFromVector extends. Before issue #6501 this returned an empty list even when every vector
+          // in the index was sitting in the buffer.
+          final GroupedSearchState deltaOnly = new GroupedSearchState(limit, groupSize, maxRows, allowedRIDs,
+              groupKeyResolver, queryVectorFloat, deltaSnapshot);
+          if (!deltaOnly.mergesDelta())
+            return Collections.emptyList();
+          deltaOnly.drainDelta();
+          if (deltaOnly.mergedFromDelta() > 0)
+            metrics.incrementGroupedSearchesMergingDelta();
+          return deltaOnly.finish();
+        }
 
         // Snapshotted once and reused for the prefilter check, the vectors accessor and the Bits filter below, for
         // the same issue #4581 reason findNeighborsFromVector snapshots it: a concurrent rebuild must not pair an
@@ -4771,7 +4801,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
             && allowListQualifiesForPreFilter(allowedRIDs, ordinalMap, GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY)) {
           metrics.incrementPreFilterSearches();
           return preFilterGrouped(queryVectorFloat, limit, groupSize, maxRows, allowedRIDs, groupKeyResolver, vectors,
-              ordinalMap);
+              ordinalMap, deltaSnapshot);
         }
 
         // Liveness-only Bits filter. Unlike the first grouped implementation, we do NOT apply
@@ -4780,9 +4810,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // (issue #5761). The group cap is applied to the score-ordered output below instead.
         final Bits bitsFilter = new LiveVectorBitsFilter(allowedRIDs, ordinalMap, vectorIndex);
 
-        final List<Pair<RID, Float>> results = new ArrayList<>(maxRows);
-        final GroupAdmissionState groups = new GroupAdmissionState(limit, groupSize);
-        final GroupedSearchTally tally = new GroupedSearchTally();
+        final GroupedSearchState state = new GroupedSearchState(limit, groupSize, maxRows, allowedRIDs,
+            groupKeyResolver, queryVectorFloat, deltaSnapshot);
 
         final GraphSearcherPool pool = getSearcherPool();
         final long poolEpoch = searcherPoolEpoch();
@@ -4822,10 +4851,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
           while (true) {
             final int returned = searchResult.getNodes().length;
             examined += returned;
-            admitGroupedCandidates(searchResult, ordinalMap, allowedRIDs, groupKeyResolver, groups, results,
-                tally);
+            admitGroupedCandidates(searchResult, ordinalMap, state);
 
-            if (groups.isFull())
+            if (state.isFull())
               break;
             // A pass that could not fill its beam ran the candidate queue dry: the reachable graph is
             // exhausted and no further pass can add anything. This is also what makes the loop terminate -
@@ -4844,29 +4872,32 @@ public class LSMVectorIndex implements Index, IndexInternal {
           pool.release(searcher, pooledGraph, poolEpoch);
         }
 
-        // Each pass is score-ordered and starts below where the previous one stopped, so the rows are collected in
-        // rank order - with one exception: a resumed pass expands nodes the previous one left on the frontier, and a
-        // neighbour of a mediocre node can outrank the worst row already admitted. That is the same greedy-stop
-        // approximation the ungrouped path lives with, and it is far too rare to justify buffering every candidate
-        // and sorting before the cap; but the return contract says "ascending by distance", so make it true. At most
-        // limit * groupSize entries, so the sort is free.
-        results.sort(Comparator.comparing(Pair::getSecond));
+        // The walk is over - the groups filled, the reachable graph ran out, or the candidate budget did. Whatever
+        // is left in the cursor is further from the query than every graph candidate examined, so it is exactly what
+        // a merged stream would offer next, and it takes whatever the cap still has free (issue #6501).
+        state.drainDelta();
+        if (state.mergedFromDelta() > 0)
+          metrics.incrementGroupedSearchesMergingDelta();
 
-        if (groups.distinctGroups() < limit) {
+        final List<Pair<RID, Float>> results = state.finish();
+
+        if (state.distinctGroups() < limit) {
           metrics.incrementGroupedSearchesShortOfLimit();
           LogManager.instance()
               .log(this, Level.FINE,
                   "Vector grouped search on index %s filled only %d of %d groups after %d pass(es) - raise efSearch for wider group coverage",
-                  indexName, groups.distinctGroups(), limit, passes);
+                  indexName, state.distinctGroups(), limit, passes);
         }
 
         LogManager.instance()
             .log(this, Level.FINE,
                 """
                 Vector grouped search returned %d results in %d group(s) over %d pass(es) (graphSize=%d, limit=%d, \
-                groupSize=%d, skipped: %d out of bounds, %d deleted/null, %d group full, %d unresolved group)""",
-                results.size(), groups.distinctGroups(), passes, graphSize, limit, groupSize, tally.outOfBounds,
-                tally.deletedOrNull, tally.groupFull, tally.unresolvedGroup);
+                groupSize=%d, %d row(s) merged from a %d-entry delta buffer, skipped: %d out of bounds, \
+                %d deleted/null, %d group full, %d unresolved group, %d duplicate)""",
+                results.size(), state.distinctGroups(), passes, graphSize, limit, groupSize, state.mergedFromDelta(),
+                deltaSnapshot.size(), state.outOfBounds, state.deletedOrNull, state.groupFull, state.unresolvedGroup,
+                state.duplicates);
         return results;
 
       } catch (final Exception e) {
@@ -4883,64 +4914,41 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * Offers one pass of {@link #findNeighborsFromVectorGrouped}'s search output to the group cap. The nodes arrive in
-   * descending score order and every pass is strictly worse than the one before it, so feeding successive passes into
-   * the same {@link GroupAdmissionState} keeps the whole walk in rank order: the {@code groupSize} members admitted
-   * for a group really are its best, and the {@code limit} groups admitted really are the nearest.
+   * Offers one pass of {@link #findNeighborsFromVectorGrouped}'s search output to the group cap, interleaved with
+   * whatever the delta buffer has that is at least as near (issue #6501). The nodes arrive in descending score order
+   * and every pass is strictly worse than the one before it, so feeding successive passes into the same
+   * {@link GroupedSearchState} keeps the whole walk in rank order: the {@code groupSize} members admitted for a group
+   * really are its best, and the {@code limit} groups admitted really are the nearest.
    */
   private void admitGroupedCandidates(final SearchResult searchResult, final int[] ordinalToVectorId,
-      final Set<RID> allowedRIDs, final Function<RID, Object> groupKeyResolver, final GroupAdmissionState groups,
-      final List<Pair<RID, Float>> results, final GroupedSearchTally tally) {
+      final GroupedSearchState state) {
     for (final SearchResult.NodeScore nodeScore : searchResult.getNodes()) {
-      if (groups.isFull())
+      if (state.isFull())
         return;
       final int ordinal = nodeScore.node;
       if (ordinal < 0 || ordinal >= ordinalToVectorId.length) {
-        tally.outOfBounds++;
+        state.outOfBounds++;
         continue;
       }
       final int vectorId = ordinalToVectorId[ordinal];
       final RID rid = vectorIndex.getRid(vectorId);
       if (rid == null) {
-        tally.deletedOrNull++;
+        state.deletedOrNull++;
         continue;
       }
+      final float distance = scoreToDistance(metadata.similarityFunction, nodeScore.score);
+
+      // Everything in the delta buffer at least as near as this graph candidate outranks it, so it goes first. Ties
+      // go to the buffer, which is also what makes the duplicate check inside admit() see the pair adjacently.
+      state.drainDeltaUpTo(distance);
+      if (state.isFull())
+        return;
+
       // Defensive post-filter: JVector may include the entry node despite Bits, and the LiveVectorBitsFilter has
       // already enforced the liveness + RID-whitelist contract, so we only need to re-check the RID whitelist here
       // for parity with findNeighborsFromVector.
-      admitGroupedCandidate(rid, scoreToDistance(metadata.similarityFunction, nodeScore.score), allowedRIDs,
-          groupKeyResolver, groups, results, tally);
+      state.admit(rid, distance);
     }
-  }
-
-  /**
-   * The per-candidate half of {@link #admitGroupedCandidates}, factored out so {@link #preFilterGrouped} (issue
-   * #6514) can feed it already-resolved, already-scored candidates instead of a JVector {@link SearchResult}. Both
-   * callers must agree on what "admit" means - the RID-whitelist re-check, the group-key resolution and its failure
-   * handling, and the cap itself - or the graph-walk and pre-filter plans could answer the same grouped query
-   * differently depending only on which one a narrow allow-list happened to route to.
-   */
-  private void admitGroupedCandidate(final RID rid, final float distance, final Set<RID> allowedRIDs,
-      final Function<RID, Object> groupKeyResolver, final GroupAdmissionState groups,
-      final List<Pair<RID, Float>> results, final GroupedSearchTally tally) {
-    if (allowedRIDs != null && !allowedRIDs.isEmpty() && !allowedRIDs.contains(rid))
-      return;
-
-    final Object groupKey;
-    try {
-      groupKey = groupKeyResolver.apply(rid);
-    } catch (final RuntimeException e) {
-      // Same verdict the traversal-integrated filter gave an unresolvable candidate: drop it. Counted apart from
-      // the cap hits so the log does not read a resolver fault as a full group.
-      tally.unresolvedGroup++;
-      return;
-    }
-    if (!groups.admit(groupKey)) {
-      tally.groupFull++;
-      return;
-    }
-
-    results.add(new Pair<>(bindRid(rid), distance));
   }
 
   /**
@@ -4953,17 +4961,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * {@code k} before the caller ever sees which group a row belongs to, which is exactly the information the group
    * cap needs. So every allow-listed candidate is scored and dedup'd through {@link #scoreOrdinal} (unbounded, no
    * {@code k} truncation), sorted once, and then walked in rank order through the same
-   * {@link #admitGroupedCandidate} bookkeeping {@link #admitGroupedCandidates} applies to graph-walk output - the
+   * {@link GroupedSearchState#admit} bookkeeping {@link #admitGroupedCandidates} applies to graph-walk output - the
    * two plans can therefore never disagree about which candidates the group cap keeps.
    * <p>
-   * Like the graph-walk path, this never touches the delta buffer or the issue #3722 brute-force fallback: both
-   * would re-admit candidates outside the per-group cap, which {@link #findNeighborsFromVectorGrouped}'s own javadoc
-   * already rules out for the graph-walk path, and a query whose allow-list is narrow enough to reach this plan
-   * inherits the same contract.
+   * Like the graph-walk path it merges the delta buffer into the same rank-ordered stream (issue #6501) and skips
+   * the issue #3722 brute-force fallback; see {@link #findNeighborsFromVectorGrouped}'s javadoc for why the two are
+   * decided differently. Merging matters more here, not less: an allow-list is usually a set of records the caller
+   * just wrote, so "narrow enough to reach this plan" and "still in the delta buffer" are the same query, and this
+   * plan used to answer it empty.
    */
   private List<Pair<RID, Float>> preFilterGrouped(final VectorFloat<?> queryVectorFloat, final int limit, final int groupSize,
       final int maxRows, final Set<RID> allowedRIDs, final Function<RID, Object> groupKeyResolver,
-      final RandomAccessVectorValues vectors, final int[] ordinalMap) {
+      final RandomAccessVectorValues vectors, final int[] ordinalMap, final List<DeltaVectorEntry> deltaSnapshot) {
     final int[] candidates = collectAllowedOrdinals(allowedRIDs, ordinalMap);
     final ArcadePageVectorValues pageValues = vectors instanceof final ArcadePageVectorValues p ? p : null;
     final RidHashSet seenRIDs = new RidHashSet(candidates.length);
@@ -4972,51 +4981,239 @@ public class LSMVectorIndex implements Index, IndexInternal {
       scoreOrdinal(ordinal, queryVectorFloat, allowedRIDs, scored, vectors, ordinalMap, seenRIDs, pageValues);
     scored.sort(Comparator.comparing(Pair::getSecond));
 
-    final GroupAdmissionState groups = new GroupAdmissionState(limit, groupSize);
-    final GroupedSearchTally tally = new GroupedSearchTally();
-    // maxRows, not limit * groupSize: the caller has already clamped that product in long and to what the index can
-    // address (issue #6066) - recomputing it here in int would reopen the same overflow the caller closed.
-    final List<Pair<RID, Float>> results = new ArrayList<>(Math.min(scored.size(), maxRows));
+    final GroupedSearchState state = new GroupedSearchState(limit, groupSize, maxRows, allowedRIDs, groupKeyResolver,
+        queryVectorFloat, deltaSnapshot);
     for (final Pair<RID, Float> candidate : scored) {
-      if (groups.isFull())
+      if (state.isFull())
         break;
-      // allowedRIDs is not re-checked here: scoreOrdinal already enforced membership when it built `scored`.
-      admitGroupedCandidate(candidate.getFirst(), candidate.getSecond(), null, groupKeyResolver, groups, results, tally);
+      state.drainDeltaUpTo(candidate.getSecond());
+      if (state.isFull())
+        break;
+      state.admit(candidate.getFirst(), candidate.getSecond());
     }
+    // Whatever the allow-list still has in the delta buffer is further away than every ordinal scored above, so it
+    // comes last - the same place the graph-walk plan puts it.
+    state.drainDelta();
+    if (state.mergedFromDelta() > 0)
+      metrics.incrementGroupedSearchesMergingDelta();
 
-    if (groups.distinctGroups() < limit) {
+    if (state.distinctGroups() < limit) {
       metrics.incrementGroupedSearchesShortOfLimit();
-      // Deliberately not claiming this is "expected": that is only true when scored.size() itself is under limit.
+      // Deliberately not claiming this is "expected": that is only true when the scored set itself is under limit.
       // An allow-list wide enough to clear limit can still land here if its candidates cluster into fewer than
-      // limit distinct groups, or enough of them hit tally.unresolvedGroup - the summary log line below breaks out
-      // scored.size() against groupFull/unresolvedGroup, which is what actually tells the two apart.
+      // limit distinct groups, or enough of them fail group-key resolution - the summary log line below breaks the
+      // candidate count out against groupFull/unresolvedGroup, which is what actually tells the two apart.
       LogManager.instance()
           .log(this, Level.FINE,
               """
               Vector grouped pre-filter search on index %s filled only %d of %d groups from %d allow-listed \
-              candidate(s) - either the allow-list itself is narrower than %d distinct groups, or its candidates \
-              cluster into fewer than %d groups; see the result summary below for which""",
-              indexName, groups.distinctGroups(), limit, scored.size(), limit, limit);
+              candidate(s) (%d scored from the graph, %d from the delta buffer) - either the allow-list itself is \
+              narrower than %d distinct groups, or its candidates cluster into fewer than %d groups; see the result \
+              summary below for which""",
+              indexName, state.distinctGroups(), limit, scored.size() + state.deltaCandidates(), scored.size(),
+              state.deltaCandidates(), limit, limit);
     }
 
     LogManager.instance()
         .log(this, Level.FINE,
             """
-            Vector grouped pre-filter search returned %d results in %d group(s) over %d allow-listed candidate(s) \
-            (limit=%d, groupSize=%d, skipped: %d group full, %d unresolved group)""",
-            results.size(), groups.distinctGroups(), scored.size(), limit, groupSize, tally.groupFull, tally.unresolvedGroup);
-    return results;
+            Vector grouped pre-filter search returned %d results in %d group(s) over %d graph candidate(s) and \
+            %d delta candidate(s) (limit=%d, groupSize=%d, %d row(s) merged from the delta buffer, skipped: \
+            %d group full, %d unresolved group, %d duplicate)""",
+            state.results().size(), state.distinctGroups(), scored.size(), state.deltaCandidates(), limit, groupSize,
+            state.mergedFromDelta(), state.groupFull, state.unresolvedGroup, state.duplicates);
+    return state.finish();
   }
 
   /**
-   * Per-query skip counters for the grouped search, kept in one object so the multi-pass loop can accumulate them
-   * across passes without four parameters travelling by reference. Query-scoped, never shared, never thread-safe.
+   * Everything one grouped query accumulates: the per-group cap, the rows admitted so far, the delta buffer merged
+   * into the candidate stream (issue #6501), and the per-query skip counters.
+   * <p>
+   * One object rather than eight parameters because the two plans that can answer a grouped query - the graph walk
+   * of {@link #findNeighborsFromVectorGrouped} and the narrow-allow-list plan of {@link #preFilterGrouped} - have to
+   * agree on every one of them, and while they travelled positionally the two call sites could drift apart in
+   * silence. The only thing a plan now chooses is the order it offers candidates in; what "admit" means is here, and
+   * is the same for both.
+   * <p>
+   * Candidates must be offered in ascending distance order, for the reason {@link GroupAdmissionState} documents:
+   * the cap is first-come-first-served, so only a rank-ordered stream makes "first" mean "nearest".
+   * <p>
+   * Query-scoped, never shared, never thread-safe.
    */
-  private static final class GroupedSearchTally {
+  private final class GroupedSearchState {
+    private final Set<RID>               allowedRIDs;
+    private final Function<RID, Object>  groupKeyResolver;
+    private final GroupAdmissionState    groups;
+    private final List<Pair<RID, Float>> results;
+
+    // The delta buffer, scored once and drained in rank order. The cursor's payloads are positions in the snapshot,
+    // which is pinned for the life of the query. Null when the buffer held nothing this query could use.
+    private final List<DeltaVectorEntry> deltaSnapshot;
+    private final ScoredCandidateCursor  deltaCursor;
+    private final int                    deltaCandidates;
+
+    // Only allocated when a delta merge is actually running. The merge is the one thing that can offer the same RID
+    // twice - a vector left unreachable by a rebuild is re-queued into the buffer while its graph node survives (see
+    // buildGraphFromScratch) - and a query with nothing to merge should not pay for a set that can never fire.
+    private final RidHashSet admitted;
+
     private int outOfBounds;
     private int deletedOrNull;
     private int groupFull;
     private int unresolvedGroup;
+    private int duplicates;
+    private int fromDelta;
+
+    private GroupedSearchState(final int limit, final int groupSize, final int maxRows, final Set<RID> allowedRIDs,
+        final Function<RID, Object> groupKeyResolver, final VectorFloat<?> queryVectorFloat,
+        final List<DeltaVectorEntry> deltaSnapshot) {
+      this.allowedRIDs = allowedRIDs;
+      this.groupKeyResolver = groupKeyResolver;
+      this.groups = new GroupAdmissionState(limit, groupSize);
+      // maxRows, not limit * groupSize: the caller has already clamped that product in long and to what the index
+      // can address (issue #6066) - recomputing it here in int would reopen the same overflow the caller closed.
+      this.results = new ArrayList<>(maxRows);
+      this.deltaSnapshot = deltaSnapshot;
+      this.deltaCursor = scoreDeltaCandidates(queryVectorFloat, allowedRIDs, deltaSnapshot);
+      this.deltaCandidates = deltaCursor == null ? 0 : deltaCursor.size();
+      this.admitted = deltaCursor == null ? null : new RidHashSet(maxRows);
+    }
+
+    private boolean isFull() {
+      return groups.isFull();
+    }
+
+    private int distinctGroups() {
+      return groups.distinctGroups();
+    }
+
+    private boolean mergesDelta() {
+      return deltaCursor != null;
+    }
+
+    /** Delta candidates this query could have used, before the cap decided how many of them it actually wanted. */
+    private int deltaCandidates() {
+      return deltaCandidates;
+    }
+
+    /** Rows of the answer that came out of the delta buffer rather than the graph. */
+    private int mergedFromDelta() {
+      return fromDelta;
+    }
+
+    private List<Pair<RID, Float>> results() {
+      return results;
+    }
+
+    /**
+     * Offers one candidate to the cap. Both plans reach the cap through here - the RID-whitelist re-check, the
+     * duplicate check, the group-key resolution and its failure handling, and the cap itself - so the graph-walk and
+     * pre-filter plans cannot answer the same grouped query differently depending only on which one a narrow
+     * allow-list happened to route to.
+     */
+    private void admit(final RID rid, final float distance) {
+      if (allowedRIDs != null && !allowedRIDs.isEmpty() && !allowedRIDs.contains(rid))
+        return;
+
+      // Caught before the cap sees it, so a row offered by both sides of the merge never spends two group slots. A
+      // candidate the cap REJECTED is deliberately not remembered: the cap only ever gets fuller, so a second offer
+      // of it is rejected again anyway, and remembering it would cost a set entry per skipped row.
+      if (admitted != null && admitted.contains(rid)) {
+        duplicates++;
+        return;
+      }
+
+      final Object groupKey;
+      try {
+        groupKey = groupKeyResolver.apply(rid);
+      } catch (final RuntimeException e) {
+        // Same verdict the traversal-integrated filter gave an unresolvable candidate: drop it. Counted apart from
+        // the cap hits so the log does not read a resolver fault as a full group.
+        unresolvedGroup++;
+        return;
+      }
+      if (!groups.admit(groupKey)) {
+        groupFull++;
+        return;
+      }
+
+      if (admitted != null)
+        admitted.add(rid);
+      results.add(new Pair<>(bindRid(rid), distance));
+    }
+
+    /**
+     * Offers every delta candidate at least as near as {@code distance} to the cap, in rank order. Called just
+     * before each graph candidate, so the two streams interleave by distance rather than one being appended to the
+     * other - which is the whole point: the cap is first-come-first-served, so appending in either direction hands
+     * a group slot to a row that did not earn it.
+     */
+    private void drainDeltaUpTo(final float distance) {
+      if (deltaCursor == null)
+        return;
+      while (!deltaCursor.isEmpty() && deltaCursor.peekDistance() <= distance) {
+        if (groups.isFull())
+          return;
+        final float candidateDistance = deltaCursor.peekDistance();
+        final int before = results.size();
+        admit(deltaSnapshot.get(deltaCursor.poll()).rid, candidateDistance);
+        if (results.size() > before)
+          fromDelta++;
+      }
+    }
+
+    /** Drains the rest of the buffer, for the point at which no graph candidate can outrank what is left. */
+    private void drainDelta() {
+      drainDeltaUpTo(Float.POSITIVE_INFINITY);
+    }
+
+    /**
+     * Sorts the admitted rows and hands them over. The passes of a resumed walk are each score-ordered and start
+     * below where the previous one stopped, so the rows are collected in rank order already - with one exception: a
+     * resumed pass expands nodes the previous one left on the frontier, and a neighbour of a mediocre node can
+     * outrank the worst row already admitted. That is the same greedy-stop approximation the ungrouped path lives
+     * with, and it is far too rare to justify buffering every candidate and sorting before the cap; but the return
+     * contract says "ascending by distance", so make it true. At most {@code limit * groupSize} entries, so the sort
+     * is free.
+     */
+    private List<Pair<RID, Float>> finish() {
+      results.sort(Comparator.comparing(Pair::getSecond));
+      return results;
+    }
+  }
+
+  /**
+   * Scores the delta buffer for one grouped query and returns it as a rank-ordered cursor, or {@code null} when
+   * there is nothing in it this query can use (issue #6501).
+   * <p>
+   * The whole buffer is scored, not a top-k slice of it: see {@link ScoredCandidateCursor}'s javadoc for why the
+   * group cap makes a bounded heap lose rows the answer needs. Scoring allocates nothing - delta entries are stored
+   * already converted to {@link VectorFloat} for exactly this reason (issue #5391) - and the two arrays handed to
+   * the cursor are the only per-query allocation, at 8 bytes per buffered vector.
+   */
+  private ScoredCandidateCursor scoreDeltaCandidates(final VectorFloat<?> queryVectorFloat, final Set<RID> allowedRIDs,
+      final List<DeltaVectorEntry> deltaSnapshot) {
+    final int buffered = deltaSnapshot.size();
+    if (buffered == 0)
+      return null;
+
+    final float[] distances = new float[buffered];
+    final int[] positions = new int[buffered];
+    int kept = 0;
+    for (int i = 0; i < buffered; i++) {
+      final DeltaVectorEntry entry = deltaSnapshot.get(i);
+      if (allowedRIDs != null && !allowedRIDs.isEmpty() && !allowedRIDs.contains(entry.rid))
+        continue;
+      // The same tombstone check mergeWithDeltaScan applies, asked of the tombstone set for the same reason - see
+      // its javadoc for why a resident location cannot answer it and why it stays despite being unreachable today.
+      if (vectorIndex.isDeleted(entry.vectorId))
+        continue;
+      distances[kept] = scoreToDistance(metadata.similarityFunction,
+          metadata.similarityFunction.compare(queryVectorFloat, entry.vector));
+      positions[kept] = i;
+      kept++;
+    }
+    return kept == 0 ? null : new ScoredCandidateCursor(distances, positions, kept);
   }
 
   /**

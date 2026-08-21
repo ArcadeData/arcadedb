@@ -207,6 +207,12 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
    * whose nearest group is denser than its candidate budget returns fewer groups and counts the query in
    * {@code groupedSearchesShortOfLimit}, which is the signal to raise the index's {@code efSearch}.
    * <p>
+   * Adding {@code groupBy} to a query changes how its rows are capped and nothing else about what the index can see:
+   * both branches below are answered from the graph <em>and</em> the delta buffer of vectors written since it was
+   * built. That is worth stating because it was not true until issue #6501 - the grouped branch skipped the buffer,
+   * so the same query, index and instant returned recent writes without {@code groupBy} and hid them with it. Any
+   * future divergence between the two branches on what is visible is a defect, not a tradeoff of grouping.
+   * <p>
    * <b>Parameter sprawl</b> (8 positional args). Each new option that lands here adds another
    * parameter. The next addition should refactor to a {@code VectorSearchOptions} record - keeping
    * it positional for now to minimise the blast radius of the maxDistance / Tier 4 follow-ups.
