@@ -3915,11 +3915,12 @@ public class SelectExecutionPlanner {
    * second dropped from the filter as well (issue #6414, item 2). {@link FetchFromIndexStep} turns the claimed conditions
    * into the positional key the index expects.
    * <p>
-   * At most ONE condition per index property is claimed - the inner loop breaks after the first match - so a second
-   * condition on the same property stays in the residual filter and is answered by {@code String.contains} rather than by
-   * the index's analyzer. The positional key has one slot per property and cannot express two texts for one: within a
-   * property the terms of a single query text are OR-ed, while the {@code AND} between two conditions wants both. Serving
-   * it means one lookup per CONDITION rather than per property, which is issue #6427.
+   * EVERY condition on an index property is claimed, not just the first - the inner loop used to {@code break} after the
+   * first match, which left a second condition on an already-claimed property in the residual filter, answered by
+   * {@code String.contains} rather than by the index's analyzer (issue #6427). {@link FetchFromIndexStep} accumulates the
+   * conditions claimed for one property into a list and turns them into one lookup per condition rather than one per
+   * property, intersecting them via {@code LSMTreeFullTextIndex.intersectPerProperty}: the conjunction then comes from the
+   * number of conditions in the query, not from the shape of the index.
    *
    * @param context
    * @param index
@@ -3953,7 +3954,8 @@ public class SelectExecutionPlanner {
             condition.setRight(textCondition.getRight().copy());
             indexKeyValue.getSubBlocks().add(condition);
             blockIterator.remove();
-            break;
+            // No break: a second (or third...) CONTAINSTEXT on this same property is claimed too, not left for the
+            // residual filter to answer with different (case-sensitive, non-tokenized) semantics.
           }
         }
       }

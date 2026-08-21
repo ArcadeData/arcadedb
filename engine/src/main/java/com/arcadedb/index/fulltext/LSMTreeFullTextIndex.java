@@ -225,9 +225,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   }
 
   /**
-   * Decomposes a POSITIONAL key over a multi-property index into one field-qualified single-text query per constrained
-   * property, or answers {@code null} when the key is not positional and must keep its historical "text to find anywhere"
-   * meaning.
+   * Decomposes a POSITIONAL key into one single-text query per constrained property PER CONDITION, or answers
+   * {@code null} when the key is not positional and must keep its historical "text to find anywhere" meaning.
    * <p>
    * A multi-property full-text index stores each token twice - once qualified as {@code field:token} and once unprefixed
    * (see {@link #put}) - so a per-property lookup is exact rather than a filter over a superset. Before issue #6414 nothing
@@ -239,21 +238,55 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * {@link #parseQueryTerms} works at: qualifying only the head would leave every following word matching any property.
    * The qualifier is the property's BASE name ({@code obj.hd}, not the index's {@code obj.hd by item}): the modified
    * spelling carries spaces, which the whitespace split would tear apart before anything could recognise it.
+   * <p>
+   * A slot holding a {@code List} - two or more {@code CONTAINSTEXT} conditions claimed for the same property - expands
+   * into one entry PER ELEMENT rather than one entry for the whole property, so {@code intersectPerProperty} ANDs them
+   * exactly as it already ANDs conditions on different properties (issue #6427). This is also what lets a
+   * SINGLE-property index take this path: without a list in a one-property key there is nothing to intersect, and the
+   * key keeps meaning "one query text, its words OR-ed by the historical coordination scoring" - which is why the
+   * property-count guard alone is not enough to decide whether this is a positional key any more. A single-property
+   * index never field-qualifies its tokens ({@link #put}, {@code getPropertyCount() == 1} branch), so entries built from
+   * a one-property key are left unqualified too.
    *
    * @param propertyNames the indexed property names, in index order
    * @param keys          the lookup key
    *
-   * @return one single-element key per constrained property, or {@code null} if {@code keys} is not a positional key
+   * @return one single-element key per constrained property per condition, or {@code null} if {@code keys} is not a
+   * positional key
    */
   static List<Object[]> splitPositionalKey(final List<String> propertyNames, final Object[] keys) {
-    if (propertyNames == null || propertyNames.size() < 2 || keys == null || keys.length != propertyNames.size())
+    if (propertyNames == null || keys == null || keys.length != propertyNames.size())
+      return null;
+
+    final boolean multiProperty = propertyNames.size() > 1;
+
+    boolean positional = multiProperty;
+    if (!positional)
+      for (final Object key : keys)
+        if (key instanceof Collection) {
+          positional = true;
+          break;
+        }
+
+    if (!positional)
+      // Single property, single text: keep the historical "anywhere" meaning untouched.
       return null;
 
     final List<Object[]> result = new ArrayList<>(keys.length);
     for (int i = 0; i < keys.length; i++) {
       if (keys[i] == null)
         continue;
-      result.add(new Object[] { qualifyEveryPart(keys[i].toString(), Index.basePropertyName(propertyNames.get(i))) });
+      final String baseField = Index.basePropertyName(propertyNames.get(i));
+      if (keys[i] instanceof Collection<?> values) {
+        for (final Object value : values) {
+          if (value == null)
+            continue;
+          result.add(new Object[] { multiProperty ? qualifyEveryPart(value.toString(), baseField) : value.toString() });
+        }
+      } else {
+        result.add(
+            new Object[] { multiProperty ? qualifyEveryPart(keys[i].toString(), baseField) : keys[i].toString() });
+      }
     }
     return result;
   }
