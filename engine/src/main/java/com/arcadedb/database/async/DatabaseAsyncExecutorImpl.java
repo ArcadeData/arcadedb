@@ -674,16 +674,20 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       // commit past the threshold schedules again - both gates are level-triggered, so no compaction is lost.
       scheduled = scheduleTask(getBestSlot(), new DatabaseAsyncIndexCompaction(index), false, 0);
     } catch (final DatabaseOperationException e) {
-      // #6505: getBestSlot()/scheduleTask throw the SAME "shut down" exception for a genuine terminal close()/
-      // kill() (#4955, the case this was written for) and for the momentary window createThreads() leaves while
-      // it tears down and respawns the whole pool for an UNRELATED caller (issue #5665 - setTransactionUseWAL()/
-      // setTransactionSync() used to trigger this on every GraphBatch open/close; #6509 removed that path, but
-      // setParallelLevel() still goes through createThreads() and leaves the same momentary window) - the pool
-      // is back within milliseconds, but this onAfterCommit hook runs AFTER writeTransactionToWAL(), so letting
-      // the exception escape crossed the WAL point of no return and fenced the entire database (#5053) over a
-      // best-effort scheduling hiccup that had nothing to do with the committing transaction's data. This finally
-      // hands the reservation back exactly like the full-queue case above: no compaction is lost, it is picked up
-      // by the next commit past the threshold.
+      // #6505: getBestSlot()/scheduleTask throw a "shut down" exception, and this onAfterCommit hook runs AFTER
+      // writeTransactionToWAL(), so letting it escape crossed the WAL point of no return and fenced the entire
+      // database (#5053) over a best-effort scheduling hiccup that had nothing to do with the committing
+      // transaction's data. This finally hands the reservation back exactly like the full-queue case above: no
+      // compaction is lost, it is picked up by the next commit past the threshold.
+      //
+      // WHAT CAN STILL THROW IT, as of #6526: a genuine terminal close()/kill() (#4955, the case this was
+      // originally written for) and nothing else. It used to be ambiguous - the same exception also came from the
+      // momentary window createThreads() left while it tore down and respawned the whole pool for an UNRELATED
+      // caller, which #5665's setTransactionUseWAL()/setTransactionSync() triggered on every GraphBatch open/close
+      // and which setParallelLevel() kept after #6509 removed that path. #6526 took setParallelLevel() off
+      // createThreads() entirely, so there is no transient window left to mistake for a close. The catch stays
+      // exactly as valuable: what it now protects against is the terminal case, where the pool is NOT coming back
+      // and an escaping exception would fence a database that is closing anyway (#6526 review round 7).
       LogManager.instance().log(this, Level.WARNING, "Could not schedule compaction of index '%s': %s", null,
           index, e.getMessage());
     } finally {
@@ -2312,13 +2316,20 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     if (executorThreads == null || executorThreads.length == 0)
       // NOTHING TO PARK, and the lock is deliberately NOT taken for it. Holding it here would make a nested
       // quiescence short-circuit on hold count and hand back another no-op - so if workers came into existence in
-      // between (a concurrent setParallelLevel on a shut-down executor is the only way), the nested call would leave
-      // them running under a scan. Not locking makes that nested call a fresh outer one that parks them properly.
+      // between, the nested call would leave them running under a scan. Not locking makes that nested call a fresh
+      // outer one that parks them properly.
       //
-      // The residual, named rather than papered over: workers created after this check are not parked by THIS
-      // quiescence either. Closing that needs the executor's creation gated on the quiescence, which is a lock on
-      // the async lifecycle path for a window an index build has to race a pool resize to reach - out of scope here,
-      // and the same window the barrier of #6281 has always had.
+      // The way that USED to happen was a concurrent setParallelLevel() on a shut-down executor, which went through
+      // createThreads() and cheerfully respawned a pool on a closed database. #6526 removed it: resizeThreads()
+      // records the requested level and returns rather than resurrecting anything, and LocalDatabase assigns its
+      // `async` field exactly once per instance, so a null-or-empty executorThreads read here is now terminal
+      // (#6526 review round 7). The defence stays because it costs nothing and the property it relies on lives in
+      // another class.
+      //
+      // The residual that is NOT closed, named rather than papered over: workers created after this check - a GROW
+      // racing the scan - are not parked by THIS quiescence either. Closing that needs the executor's creation
+      // gated on the quiescence, which is a lock on the async lifecycle path for a window an index build has to
+      // race a pool resize to reach - out of scope here, and the same window the barrier of #6281 has always had.
       return new HeldQuiesce(null, false);
 
     quiesceLock.lock();
