@@ -103,7 +103,7 @@ public final class SparseSegmentBuilder implements AutoCloseable {
    * {@link #setRecencyEpoch} - and that guard exists precisely because the failure it prevents is
    * silent.
    */
-  private boolean segmentIdSet          = false;
+  private boolean segmentIdSet         = false;
   private long[] parentSegments        = new long[0];
 
   // Currently open dim state.
