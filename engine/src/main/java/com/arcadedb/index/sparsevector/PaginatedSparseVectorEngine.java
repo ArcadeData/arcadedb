@@ -1845,6 +1845,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     }
     // Precedence order (epoch), not id order - see RECENCY_ORDER.
     readers.sort(RECENCY_ORDER);
+    warnOnPreRecencyEpochSegments(readers);
     if (!readers.isEmpty())
       segments.set(readers.toArray(new PaginatedSegmentReader[0]));
     long highestReadable = 0L;
@@ -1854,6 +1855,36 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     final long floor = Math.max(highestReadable, highestSegmentFileId);
     if (floor > 0L)
       nextSegmentId.set(floor + 1L);
+  }
+
+  /**
+   * Count the segments that were merged under the pre-#6379 rule, and say so once at open time.
+   * <p>
+   * The test is exact rather than heuristic. A segment merged <i>after</i> the fix inherits the
+   * epoch of its newest input, and every input's epoch was issued before the id this merge
+   * allocated, so its epoch is always strictly below its own id. A segment sealed from a memtable
+   * has no parents at all. That leaves {@code parents > 0 && epoch == id} matching exactly one
+   * thing: a merge whose manifest slot read back 0 because it predates the field, and which is
+   * therefore still carrying the ordering that could hide a tombstone behind it.
+   * <p>
+   * Worth a {@code WARNING} because nothing else surfaces it: such an index answers queries without
+   * complaint while a deleted document is visible again, and no amount of reading the data tells an
+   * operator that a rebuild is what fixes it. Emitted only from {@link #loadExistingSegments} - the
+   * follower-side {@link #refreshSegmentsFromFileManager} runs on the query path, where the same
+   * line would repeat for as long as the condition holds.
+   */
+  private void warnOnPreRecencyEpochSegments(final List<PaginatedSegmentReader> readers) {
+    int stale = 0;
+    for (final PaginatedSegmentReader r : readers)
+      if (r.parentSegmentCount() > 0 && r.recencyEpoch() == r.segmentId())
+        stale++;
+    if (stale == 0)
+      return;
+    LogManager.instance().log(this, Level.WARNING,
+        "Sparse-vector index '%s' holds %d segment(s) merged before the recency-epoch fix (issue #6379); a document "
+            + "deleted before that merge may still be returned by queries. Run 'REBUILD INDEX %s' once to rewrite them "
+            + "in the correct order.",
+        null, indexName, stale, indexName);
   }
 
   /**
