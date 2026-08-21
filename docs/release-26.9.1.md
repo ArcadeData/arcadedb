@@ -3645,6 +3645,37 @@ cannot produce. Deliberately not an equality against today's date: the two trans
 
 [#6414](https://github.com/ArcadeData/arcadedb/issues/6414)
 
+## JSONL import fails loudly on a broken record instead of reporting a silently-shrunken graph as a success (#6468)
+
+`JsonlImporterFormat` caught every per-record exception - a bad property value, a missing type, a malformed old-RID
+field - logged it at `SEVERE`, and moved on; `load()` then committed and returned normally regardless. A vertex
+that failed to import left its old RID out of the in-memory RID map used to resolve edge endpoints, so every edge
+referencing it hit the same swallowed "vertex not found" path and vanished too, with the import's own counters
+reporting nothing wrong. A single bad record could silently take an unbounded number of good edges down with it.
+
+`loadDocument`/`loadVertex`/`loadEdge` no longer catch their own errors: every failure - including the two
+"out/in vertex not found" edge paths - now propagates to a single, centralized catch in `load()`'s dispatch loop,
+which logs it once, counts it in `context.errors`, and then does one of two things depending on the existing
+`-onRowError` setting (already respected by the CSV and JSON importers, previously ignored by JSONL entirely):
+
+- **`abort`** (the default): the whole import fails with an `ImportException`, and the in-flight batch is rolled
+  back rather than committed, so a failed import no longer leaves a partially-written database behind.
+- **`skip`**: the failing record is discarded and the import continues. Getting this right required more than
+  catching the exception: a vertex/document whose `save()` succeeds before a later step fails (originally, the old
+  RID was parsed *after* `save()`) used to leave an orphaned, uncounted record in the database anyway, unreachable
+  by the RID map - the same cascade, one step later. The old-RID field is now parsed and validated before `save()`
+  is called, and `-onRowError skip` commits each record in its own transaction (rather than riding along in the
+  periodic every-1000-records batch) so a failed record's rollback can never be durably persisted by a later
+  commit.
+
+> [!IMPORTANT]
+> **Behaviour change.** JSONL import now fails by default (`-onRowError abort`, unchanged as the default value) as
+> soon as any record cannot be imported, instead of silently skipping it and reporting success. A workflow that
+> relied on the old silently-tolerant behavior should pass `-onRowError skip` (`IMPORT DATABASE ... WITH
+> onRowError = 'skip'`) to keep importing past bad records - the `errors` counter in the import result reports how
+> many were skipped.
+
+[#6468](https://github.com/ArcadeData/arcadedb/issues/6468)
 ## An idle Postgres connection blocks instead of polling, a blob is `bytea`, and the system catalog answers by shape (#6410, #6411, #6412)
 
 `PostgresNetworkExecutor.readMessage()` opened with a non-blocking read: `if (!channel.inputHasData())
