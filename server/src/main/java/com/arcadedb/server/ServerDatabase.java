@@ -718,6 +718,16 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
+  public Object setGlobalVariableIfAbsent(final String name, final Object value) {
+    return wrapped.setGlobalVariableIfAbsent(name, value);
+  }
+
+  @Override
+  public Object setGlobalVariableIfPresent(final String name, final Object value) {
+    return wrapped.setGlobalVariableIfPresent(name, value);
+  }
+
+  @Override
   public Map<String, Object> getGlobalVariables() {
     return wrapped.getGlobalVariables();
   }

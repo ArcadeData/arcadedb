@@ -27,4 +27,8 @@ public class RedisException extends ArcadeDBException {
   public RedisException(final String message) {
     super(message);
   }
+
+  public RedisException(final String message, final Throwable cause) {
+    super(message, cause);
+  }
 }
