@@ -179,6 +179,13 @@ public final class EngineMetricsBinder implements MeterBinder {
     // PageManager.getDeferredRAMBytesOf.
     gauge(registry, "arcadedb.engine.flush.deferred.bytes", "Dirty page bytes deferred by a flush suspension",
         "deferredRAM");
+
+    // #6526: workers a lowered parallel level retired that are still finishing the tasks queued on them. Zero almost
+    // always, briefly positive during a resize - and PERSISTENTLY positive is the alertable one: a resize never
+    // interrupts a worker the way a close does, so one wedged inside user code drains for ever, and before this the
+    // only trace of it was a single WARNING at the moment the resize gave up waiting.
+    gauge(registry, "arcadedb.engine.async.workers.retiring",
+        "Async workers retired by a parallel-level change and still draining", "asyncRetiringWorkers");
   }
 
   /**
