@@ -3645,108 +3645,34 @@ cannot produce. Deliberately not an equality against today's date: the two trans
 
 [#6414](https://github.com/ArcadeData/arcadedb/issues/6414)
 
-## An idle Postgres connection blocks instead of polling, a blob is `bytea`, and the system catalog answers by shape (#6410, #6411, #6412)
+## JSONL import fails loudly on a broken record instead of reporting a silently-shrunken graph as a success (#6468)
 
-`PostgresNetworkExecutor.readMessage()` opened with a non-blocking read: `if (!channel.inputHasData())
-{ sleep(100); return false; }`. Every **idle authenticated** connection woke its thread ten times a second to ask
-an empty socket whether anything had arrived - and a Postgres client pool is expected to hold long-lived,
-mostly-idle connections, which is the shape this cost the most on. The read now blocks: a server-side `close()`
-breaks it (the cancel-request path already relied on exactly this to interrupt another connection's executor), and
-a clean client close still produces the `EOFException` the method already handled. The same fix closes a second
-hole: a client that vanished without sending Terminate used to leave its thread polling a socket that could never
-produce another byte, for the life of the server, because `available()` answers 0 on a closed peer exactly as it
-does on an idle one.
+`JsonlImporterFormat` caught every per-record exception - a bad property value, a missing type, a malformed old-RID
+field - logged it at `SEVERE`, and moved on; `load()` then committed and returned normally regardless. A vertex
+that failed to import left its old RID out of the in-memory RID map used to resolve edge endpoints, so every edge
+referencing it hit the same swallowed "vertex not found" path and vanished too, with the import's own counters
+reporting nothing wrong. A single bad record could silently take an unbounded number of good edges down with it.
 
-`PostgresType` typed a `byte[]` as `"char"[]` (OID 1002) from a sampled row and as `varchar` (OID 1043) from the
-schema, so a BINARY column's announced OID depended on whether the result set happened to be empty. Neither answer
-was right - PostgreSQL has `bytea` (OID 17), and typing a blob as an array of one-byte characters makes a client
-decode arbitrary bytes as text. `BYTEA` is now its own `PostgresType` entry, with the `\x<hex>` text format, the
-raw-bytes binary format, and both text input formats (hex and the pre-9.0 octal escape) accepted back.
+`loadDocument`/`loadVertex`/`loadEdge` no longer catch their own errors: every failure - including the two
+"out/in vertex not found" edge paths - now propagates to a single, centralized catch in `load()`'s dispatch loop,
+which logs it once, counts it in `context.errors`, and then does one of two things depending on the existing
+`-onRowError` setting (already respected by the CSV and JSON importers, previously ignored by JSONL entirely):
 
-The `pg_catalog`/`information_schema` queries a client's driver sends to discover schemas, tables and columns used
-to be matched by roughly 150 lines of exact-string equality, several arms gated on `application_name` being
-literally `"dbvis"` - so the same question from any other tool fell through and got nothing. They are now answered
-by the *shape* of the query: which relations the FROM clause names, and the client's own projection - CASE
-expressions, a window function, a one-level derived table - evaluated against rows built from ArcadeDB's own
-schema. That is why `DatabaseMetaData.getTables()` now answers `TABLE_TYPE = 'TABLE'` for every JDBC-based tool:
-the driver's own `CASE c.relkind WHEN 'r' THEN 'TABLE' ...` produces that string against a row saying
-`relkind = 'r'`; the emulation never spells it itself. A shape outside what the evaluator reads is declined and
-answered with the same empty result set `pg_catalog` has always given for something it does not understand, rather
-than a guessed or invented row.
+- **`abort`** (the default): the whole import fails with an `ImportException`, and the in-flight batch is rolled
+  back rather than committed, so a failed import no longer leaves a partially-written database behind.
+- **`skip`**: the failing record is discarded and the import continues. Getting this right required more than
+  catching the exception: a vertex/document whose `save()` succeeds before a later step fails (originally, the old
+  RID was parsed *after* `save()`) used to leave an orphaned, uncounted record in the database anyway, unreachable
+  by the RID map - the same cascade, one step later. The old-RID field is now parsed and validated before `save()`
+  is called, and `-onRowError skip` commits each record in its own transaction (rather than riding along in the
+  periodic every-1000-records batch) so a failed record's rollback can never be durably persisted by a later
+  commit.
 
 > [!IMPORTANT]
-> **Behaviour change.** The emulated schema list is now exactly one schema, named after the connected database -
-> matching what `current_schema()` already answered. The removed code disagreed with itself and with that function:
-> one arm reported every ArcadeDB *type* as a schema, another reported every *database on the server* as one, which
-> also told any authenticated user the names of databases they had no access to.
+> **Behaviour change.** JSONL import now fails by default (`-onRowError abort`, unchanged as the default value) as
+> soon as any record cannot be imported, instead of silently skipping it and reporting success. A workflow that
+> relied on the old silently-tolerant behavior should pass `-onRowError skip` (`IMPORT DATABASE ... WITH
+> onRowError = 'skip'`) to keep importing past bad records - the `errors` counter in the import result reports how
+> many were skipped.
 
-Also new: `arcadedb.network.maxPreAuthConnections` (default 500, per listener) caps how many connections a binary
-wire-protocol listener (Postgres, Redis, BOLT) may hold before authentication - the pre-auth *timeout* added in
-#6377/#5912/#5978 bounded how long a connection could stay unauthenticated, not how many could exist at once, so a
-client opening connections faster than the timeout reaps them still drove thread and file-descriptor count
-arbitrarily high. Past the cap the listener closes the socket immediately rather than accepting it and answering
-with an error, since writing an error is an I/O the refused peer could stall, on the one thread that must never be
-stallable.
-
-[#6410](https://github.com/ArcadeData/arcadedb/issues/6410),
-[#6411](https://github.com/ArcadeData/arcadedb/issues/6411),
-[#6412](https://github.com/ArcadeData/arcadedb/issues/6412)
-
-## The async executor no longer tears down and respawns its whole worker pool to flip a durability flag (#6509)
-
-`DatabaseAsyncExecutorImpl.setTransactionUseWAL()`/`setTransactionSync()` unconditionally called `createThreads()`,
-which shuts down and respawns every worker thread of the database's async pool - not just the caller's. `GraphBatch`
-calls both setters once per batch session to relax and then restore durability for a bulk load, so opening or
-closing a batch churned the entire pool. Any *other* concurrent user of `database.async()` - another `GraphBatch`,
-an async insert, an index compaction - had its in-flight and queued tasks force-exited mid-flight, surfacing as
-`"Async executor has been shut down"` for callers that had nothing to do with the batch.
-
-#5665 diagnosed this and shipped a cheap interim mitigation (GraphBatch toggling the flags once per batch instead of
-once per flush), explicitly deferring the real fix: `AsyncThread.run()` applied both flags only once, at thread
-start, so respawning the thread was the only way a change could ever become visible to it. A production log (#6505)
-showed the interim mitigation is not enough under real multi-writer concurrency: six threads on one database,
-including a `GraphBatch` import running alongside a `DELETE ... BATCH` loop, produced 2,183 `InterruptedIOException`s
-over about seven hours from the pool teardown interrupting unrelated in-progress LSM compactions, and one of those
-races escalated into fencing the entire database when a commit's `onAfterCommit()` hook tried to schedule a
-compaction at the exact moment the pool was mid-recreate (fixed separately by #6505 hardening the compaction
-scheduler against that specific escalation).
-
-The proper fix, per #5665's own diagnosis: `AsyncThread.executeTask()` now re-applies `transactionUseWAL`/
-`transactionSync` to the worker's transaction before every task, instead of `run()` applying them once. The setters
-are now plain volatile writes with no `createThreads()` call at all, so a changed durability policy is picked up by
-whichever worker runs the next task - and by the commit that follows it - without any thread ever being torn down,
-and without disturbing whatever unrelated work is queued on the rest of the pool.
-
-Re-stamping the flags onto an already-open transaction is not, by itself, enough: `useWAL`/`walFlush` are read only
-at commit time and then govern the *whole* accumulated transaction, which can span up to `ASYNC_TX_BATCH_SIZE`
-(10,240 by default) tasks from unrelated callers sharing the same worker slot. Without a further guard, a flag flip
-landing mid-transaction would silently carry earlier tasks - queued under the old policy - into a commit governed by
-the new one, downgrading (or upgrading) their durability without anyone asking for it. The pool-teardown this PR
-removes had incidentally prevented that: a flag flip forced every worker's pending transaction to commit under its
-original flags before the new thread began a fresh one. `executeTask()` now preserves that "a flag change always
-starts a fresh transaction" property explicitly - closing out the currently open transaction, under its own
-unmodified flags, before applying a changed policy to a new one - instead of relying on thread teardown for it.
-
-That boundary-forcing commit closes out *earlier* tasks' work, not the task whose flag check triggered it - so its
-failure (a genuine `ConcurrentModificationException`, say, under the exact multi-writer contention this fix targets)
-must not be attributed to that task, which has not run yet. Left unguarded, the failure would propagate to
-`executeTask()`'s own catch block, and the triggering task would still reach `completed()` having never reached
-`execute()` - a task silently marked done without ever running. The boundary commit's failure is now caught
-separately, reported through the executor's `onError`, and the triggering task still gets its own attempt on a
-freshly begun transaction.
-
-`transactionUseWAL`/`transactionSync` are volatile and can be changed concurrently by any other thread - the exact
-multi-writer scenario this fix is about - so reading them once for the boundary check and again for the flag stamp
-left a narrow race: a flip landing between the two reads let the check see the transaction's flags still matching
-the about-to-be-stale value (skipping the boundary commit) while the stamp went on to apply the new value anyway,
-reintroducing the same durability-mixing failure through a race instead of a guaranteed ordering. Both reads now
-share one snapshot taken at the top of `executeTask()`, so the check and the stamp always agree.
-
-Worth knowing when tuning `parallelLevel`/queue sizing around concurrent bulk loads: the boundary-forcing commit is
-paid per worker slot, not per database, so two `GraphBatch` sessions (or a batch and a direct caller) that land on
-the *same* slot and keep flipping the durability policy in opposite directions can degrade that slot toward
-`commitEvery=1` - each task forcing its own boundary. Correctness over batching is the right trade, and it is still
-strictly better than the pre-fix full pool teardown, but a workload that provokes this is a sign the workers sharing
-that slot would benefit from more parallelism (raising `parallelLevel`) rather than sharing one.
-
-[#6509](https://github.com/ArcadeData/arcadedb/issues/6509)
+[#6468](https://github.com/ArcadeData/arcadedb/issues/6468)
