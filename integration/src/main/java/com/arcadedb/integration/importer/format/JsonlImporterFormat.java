@@ -75,6 +75,10 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
     logger.logLine(2, "Start importing... ");
 
+    // Governs the commit granularity below (see the loop): skip mode needs one record per transaction so a
+    // failed record's rollback can never discard an earlier, already-successful one riding in the same batch.
+    final boolean skipOnRowError = settings.isSkipOnRowError();
+
     try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream(),
         DatabaseFactory.getDefaultCharset())) {
       context.startedOn = System.currentTimeMillis();
@@ -89,16 +93,41 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       while ((line = reader.readLine()) != null) {
 
         var jsonLine = new JSONObject(line);
+        final String recordType = jsonLine.getString("t");
 
-        switch (jsonLine.getString("t")) {
-        case "schema" -> loadSchema(database, context, settings, jsonLine.getJSONObject("c"));
-        case "d" -> loadDocument(database, context, settings, jsonLine.getJSONObject("c"));
-        case "v" -> loadVertex(database, context, settings, jsonLine.getJSONObject("c"));
-        case "e" -> loadEdge(database, context, settings, jsonLine.getJSONObject("c"));
+        try {
+          switch (recordType) {
+          case "schema" -> loadSchema(database, context, settings, jsonLine.getJSONObject("c"));
+          case "d" -> loadDocument(database, context, jsonLine.getJSONObject("c"));
+          case "v" -> loadVertex(database, context, jsonLine.getJSONObject("c"));
+          case "e" -> loadEdge(database, context, jsonLine.getJSONObject("c"));
+          }
+        } catch (final Exception e) {
+          // Every per-record failure (document/vertex/edge, and a broken schema entry too) funnels through here,
+          // issue #6468: logging, error counting and the abort/skip decision live in ONE place instead of being
+          // duplicated at each call site, which is also what keeps them from drifting out of sync with each other.
+          LogManager.instance().log(this, Level.SEVERE, "Error on importing '%s' record: %s", e, recordType, line);
+          context.errors.incrementAndGet();
+          if (!skipOnRowError)
+            throw new ImportException("Error on importing '" + recordType + "' record", e);
+
+          // -onRowError skip: a failed record must leave no partial write behind for a later periodic commit to
+          // durably persist - e.g. a vertex whose save() succeeded but whose RID-map bookkeeping then failed would
+          // otherwise sit in the database uncounted and unreachable by ridIndex, silently cascading into every edge
+          // that references it (the exact mechanism issue #6468 describes). Rolling back only this record's own
+          // uncommitted work - never the batch - is what makes that guarantee hold.
+          if (database.isTransactionActive())
+            database.rollback();
+          database.begin();
+          continue;
         }
 
         context.parsed.incrementAndGet();
-        if (context.parsed.get() % 1000 == 0) {
+
+        // Skip mode commits every record individually (see above and the field comment on skipOnRowError); the
+        // default "abort" mode keeps the coarser periodic commit for throughput, since any failure there aborts
+        // and rolls back the whole in-flight batch anyway (see the ImportException catch below).
+        if (skipOnRowError || context.parsed.get() % 1000 == 0) {
           database.commit();
           database.begin();
         }
@@ -303,93 +332,69 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     builder.create();
   }
 
+  /**
+   * Errors are intentionally NOT caught here (issue #6468): the RID is parsed and validated before {@code save()}
+   * so that a malformed "r" field never leaves an orphaned, ridIndex-less record behind for the caller's per-record
+   * rollback to have to clean up - and any other failure (a bad property value, a missing type, ...) is left to
+   * propagate to {@link #load}'s single, centralized catch, which owns logging, error counting, and the abort/skip
+   * decision for every record kind.
+   */
   private void loadDocument(DatabaseInternal database,
       ImporterContext context,
-      ImporterSettings settings,
       JSONObject document) {
-    try {
-      var properties = document.getJSONObject("p");
-      var imported = database.newDocument(document.getString("t"));
-      loadProperties(database, imported, properties);
-      imported.save();
-      var oldRid = new RID(document.getString("r"));
-      ridIndex.put(oldRid, imported.getIdentity());
-      context.createdDocuments.incrementAndGet();
-    } catch (Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on importing document: %s", e, document);
-      context.errors.incrementAndGet();
-      if (!settings.isSkipOnRowError())
-        throw new ImportException("Error on importing document", e);
-    }
+    var properties = document.getJSONObject("p");
+    var oldRid = new RID(document.getString("r"));
+    var imported = database.newDocument(document.getString("t"));
+    loadProperties(database, imported, properties);
+    imported.save();
+    ridIndex.put(oldRid, imported.getIdentity());
+    context.createdDocuments.incrementAndGet();
   }
 
+  /**
+   * See {@link #loadDocument}: same reasoning, same RID-before-save ordering.
+   */
   private void loadVertex(DatabaseInternal database,
       ImporterContext context,
-      ImporterSettings settings,
       JSONObject vertex) {
-
-    try {
-      var properties = vertex.getJSONObject("p");
-      var imported = database.newVertex(vertex.getString("t"));
-      loadProperties(database, imported, properties);
-      imported.save();
-      var oldRid = new RID(vertex.getString("r"));
-      ridIndex.put(oldRid, imported.getIdentity());
-      context.createdVertices.incrementAndGet();
-    } catch (Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on importing vertex: %s", e, vertex);
-      context.errors.incrementAndGet();
-      if (!settings.isSkipOnRowError())
-        throw new ImportException("Error on importing vertex", e);
-    }
+    var properties = vertex.getJSONObject("p");
+    var oldRid = new RID(vertex.getString("r"));
+    var imported = database.newVertex(vertex.getString("t"));
+    loadProperties(database, imported, properties);
+    imported.save();
+    ridIndex.put(oldRid, imported.getIdentity());
+    context.createdVertices.incrementAndGet();
   }
 
-  private void loadEdge(DatabaseInternal database, ImporterContext context,
-      ImporterSettings settings,
-      JSONObject edge) {
-    try {
-      var properties = edge.getJSONObject("p");
-      var edgeType = edge.getString("t");
+  /**
+   * See {@link #loadDocument}: errors, including an unresolved out/in vertex, propagate to {@link #load}'s
+   * centralized catch rather than being handled here.
+   */
+  private void loadEdge(DatabaseInternal database, ImporterContext context, JSONObject edge) {
+    var properties = edge.getJSONObject("p");
+    var edgeType = edge.getString("t");
 
-      var out = new RID(edge.getString("o"));
-      var newOut = ridIndex.get(out);
+    var out = new RID(edge.getString("o"));
+    var newOut = ridIndex.get(out);
+    if (newOut == null)
+      throw new ImportException("Out vertex not found: " + out);
 
-      if (newOut == null) {
-        LogManager.instance().log(this, Level.SEVERE, "Error on importing edge (out vertex not found): %s", edge);
-        context.errors.incrementAndGet();
-        if (!settings.isSkipOnRowError())
-          throw new ImportException("Error on importing edge: out vertex not found");
-        return;
-      }
+    var in = new RID(edge.getString("i"));
+    var newIn = ridIndex.get(in);
+    if (newIn == null)
+      throw new ImportException("In vertex not found: " + in);
 
-      var in = new RID(edge.getString("i"));
-      var newIn = ridIndex.get(in);
+    var sourceVertex = (Vertex) database.lookupByRID(newOut, false);
 
-      if (newIn == null) {
-        LogManager.instance().log(this, Level.SEVERE, "Error on importing edge (in vertex not found): %s", edge);
-        context.errors.incrementAndGet();
-        if (!settings.isSkipOnRowError())
-          throw new ImportException("Error on importing edge: in vertex not found");
-        return;
-      }
-
-      var sourceVertex = (Vertex) database.lookupByRID(newOut, false);
-
-      MutableEdge imported = sourceVertex.newEdge(edgeType, newIn);
-      if (!(imported instanceof LightEdge)) {
-        // A lightweight edge has no record: it is already connected by newEdge, carries no properties, and
-        // rejects fromMap()/save() by design.
-        loadProperties(database, imported, properties);
-        imported.save();
-      }
-
-      context.createdEdges.incrementAndGet();
-    } catch (Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on importing edge: %s", e, edge);
-      context.errors.incrementAndGet();
-      if (!settings.isSkipOnRowError())
-        throw new ImportException("Error on importing edge", e);
+    MutableEdge imported = sourceVertex.newEdge(edgeType, newIn);
+    if (!(imported instanceof LightEdge)) {
+      // A lightweight edge has no record: it is already connected by newEdge, carries no properties, and
+      // rejects fromMap()/save() by design.
+      loadProperties(database, imported, properties);
+      imported.save();
     }
+
+    context.createdEdges.incrementAndGet();
   }
 
   @Override
