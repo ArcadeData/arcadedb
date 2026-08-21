@@ -4334,6 +4334,28 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * Whether {@code allowedRIDs} is narrow enough, relative to {@code selectivitySetting}, to take a pre-filter plan
+   * instead of paying for a {@code Bits}-filtered HNSW walk (issue #6502, extended to the groupBy and
+   * PQ-approximate paths by issue #6514). Shared by all three call sites - {@link #findNeighborsFromVector},
+   * {@link #findNeighborsFromVectorGrouped} and {@link #findNeighborsFromVectorApproximate} - each gated on its own
+   * {@code selectivitySetting}, so the clamp-to-1.0 and persisted-vectors-only reasoning below only has to be
+   * right once instead of three times in step.
+   */
+  private boolean allowListQualifiesForPreFilter(final Set<RID> allowedRIDs, final int[] ordinalMap,
+      final GlobalConfiguration selectivitySetting) {
+    // Clamped to 1.0: the setting is documented as a fraction of the index, and an operator-supplied value above
+    // that would route every allow-list query - however wide - through the ordinal-resolution walk instead of the
+    // graph, which is exactly the pathology this plan exists to avoid on the OTHER side of the crossover.
+    final float maxSelectivity = Math.min(1f, getDatabase().getConfiguration().getValueAsFloat(selectivitySetting));
+    // Persisted/graph vectors only, same as findNeighborsFromVector's issue #3722 shortfall-budget calculation -
+    // the delta buffer is not in this count. Under a large buffer relative to the graph this can overstate the
+    // allow-list's selectivity against the true live set and bias toward the graph walk; per that calculation's
+    // own reasoning, that only ever costs a missed optimization, never a wrong answer.
+    final int availableVectors = Math.min(ordinalMap.length, vectorIndex.size());
+    return maxSelectivity > 0f && allowedRIDs.size() <= availableVectors * maxSelectivity;
+  }
+
+  /**
    * Search for k nearest neighbors to the given vector and return results with similarity scores.
    * This method is similar to HnswVectorIndex.findNeighborsFromVector and avoids the need to
    * recalculate distances after the search.
@@ -4442,25 +4464,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // graph walk gets more expensive, not less, as the allow-list narrows), score the allow-list directly via
         // collectAllowedOrdinals/scoreOrdinal/bruteForceScan - the same walk the issue #3722 shortfall fallback
         // already uses - instead of duplicating it.
-        if (allowedRIDs != null && !allowedRIDs.isEmpty()) {
-          // Clamped to 1.0: the setting is documented as a fraction of the index, and an operator-supplied value
-          // above that would route every allow-list query - however wide - through the ordinal-resolution walk
-          // instead of the graph, which is exactly the pathology this plan exists to avoid on the OTHER side of
-          // the crossover.
-          final float maxSelectivity = Math.min(1f, getDatabase().getConfiguration()
-              .getValueAsFloat(GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY));
-          // Persisted/graph vectors only, same as the shortfall-budget calculation below - the delta buffer is not
-          // in this count. Under a large buffer relative to the graph this can overstate the allow-list's
-          // selectivity against the true live set and bias toward the graph walk; per the shortfall calculation's
-          // own comment, that only ever costs a missed optimization, never a wrong answer.
-          final int availableVectors = Math.min(ordinalMap.length, vectorIndex.size());
-          if (maxSelectivity > 0f && allowedRIDs.size() <= availableVectors * maxSelectivity) {
-            metrics.incrementPreFilterSearches();
-            final List<Pair<RID, Float>> results = new ArrayList<>(k);
-            mergeWithDeltaScan(queryVectorFloat, k, allowedRIDs, results);
-            bruteForceScan(queryVectorFloat, k, allowedRIDs, results, vectors, ordinalMap);
-            return results;
-          }
+        if (allowedRIDs != null && !allowedRIDs.isEmpty()
+            && allowListQualifiesForPreFilter(allowedRIDs, ordinalMap, GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY)) {
+          metrics.incrementPreFilterSearches();
+          final List<Pair<RID, Float>> results = new ArrayList<>(k);
+          mergeWithDeltaScan(queryVectorFloat, k, allowedRIDs, results);
+          bruteForceScan(queryVectorFloat, k, allowedRIDs, results, vectors, ordinalMap);
+          return results;
         }
 
         // Only live vectors may enter the result heap. Accepting tombstones lets a query aimed at a deleted
@@ -4737,15 +4747,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
         // Issue #6514 pre-filter plan: the grouped counterpart of the issue #6502 plan in findNeighborsFromVector -
         // see preFilterGrouped's javadoc for why it cannot simply call bruteForceScan.
-        if (allowedRIDs != null && !allowedRIDs.isEmpty()) {
-          final float maxSelectivity = Math.min(1f, getDatabase().getConfiguration()
-              .getValueAsFloat(GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY));
-          final int availableVectors = Math.min(ordinalMap.length, vectorIndex.size());
-          if (maxSelectivity > 0f && allowedRIDs.size() <= availableVectors * maxSelectivity) {
-            metrics.incrementPreFilterSearches();
-            return preFilterGrouped(queryVectorFloat, limit, groupSize, maxRows, allowedRIDs, groupKeyResolver, vectors,
-                ordinalMap);
-          }
+        if (allowedRIDs != null && !allowedRIDs.isEmpty()
+            && allowListQualifiesForPreFilter(allowedRIDs, ordinalMap, GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY)) {
+          metrics.incrementPreFilterSearches();
+          return preFilterGrouped(queryVectorFloat, limit, groupSize, maxRows, allowedRIDs, groupKeyResolver, vectors,
+              ordinalMap);
         }
 
         // Liveness-only Bits filter. Unlike the first grouped implementation, we do NOT apply
@@ -4960,12 +4966,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     if (groups.distinctGroups() < limit) {
       metrics.incrementGroupedSearchesShortOfLimit();
+      // Deliberately not claiming this is "expected": that is only true when scored.size() itself is under limit.
+      // An allow-list wide enough to clear limit can still land here if its candidates cluster into fewer than
+      // limit distinct groups, or enough of them hit tally.unresolvedGroup - the summary log line below breaks out
+      // scored.size() against groupFull/unresolvedGroup, which is what actually tells the two apart.
       LogManager.instance()
           .log(this, Level.FINE,
               """
-              Vector grouped pre-filter search on index %s filled only %d of %d groups - the allow-list resolved to \
-              only %d distinct candidate(s), fewer than needed to fill %d groups, so this is expected""",
-              indexName, groups.distinctGroups(), limit, scored.size(), limit);
+              Vector grouped pre-filter search on index %s filled only %d of %d groups from %d allow-listed \
+              candidate(s) - either the allow-list itself is narrower than %d distinct groups, or its candidates \
+              cluster into fewer than %d groups; see the result summary below for which""",
+              indexName, groups.distinctGroups(), limit, scored.size(), limit, limit);
     }
 
     LogManager.instance()
@@ -5096,17 +5107,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // selectivity threshold, not VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY: Issue6514ApproximatePrefilterBenchmark
         // measured this path's crossover at roughly 6-7% selectivity, well below the exact path's 20% default -
         // see VECTOR_INDEX_PREFILTER_APPROXIMATE_MAX_SELECTIVITY's javadoc for why the two cannot share one knob.
-        if (allowedRIDs != null && !allowedRIDs.isEmpty()) {
-          final float maxSelectivity = Math.min(1f, getDatabase().getConfiguration()
-              .getValueAsFloat(GlobalConfiguration.VECTOR_INDEX_PREFILTER_APPROXIMATE_MAX_SELECTIVITY));
-          final int availableVectors = Math.min(ordinalMap.length, vectorIndex.size());
-          if (maxSelectivity > 0f && allowedRIDs.size() <= availableVectors * maxSelectivity) {
-            metrics.incrementPreFilterSearches();
-            final List<Pair<RID, Float>> results = new ArrayList<>(k);
-            mergeWithDeltaScan(queryVectorFloat, k, allowedRIDs, results);
-            preFilterApproximate(scoreFunction, k, allowedRIDs, results, ordinalMap);
-            return results;
-          }
+        if (allowedRIDs != null && !allowedRIDs.isEmpty() && allowListQualifiesForPreFilter(allowedRIDs, ordinalMap,
+            GlobalConfiguration.VECTOR_INDEX_PREFILTER_APPROXIMATE_MAX_SELECTIVITY)) {
+          metrics.incrementPreFilterSearches();
+          final List<Pair<RID, Float>> results = new ArrayList<>(k);
+          mergeWithDeltaScan(queryVectorFloat, k, allowedRIDs, results);
+          preFilterApproximate(scoreFunction, k, allowedRIDs, results, ordinalMap);
+          return results;
         }
 
         // Live-only (plus the optional RID allow-list): PQ scores a tombstone as happily as a live vector, so
