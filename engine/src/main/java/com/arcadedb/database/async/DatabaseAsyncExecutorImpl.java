@@ -1742,6 +1742,13 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
       // 3. Ask the tail to stop.
       for (final AsyncThread worker : retired) {
+        // RENAMED FIRST (#6526 review round 8). A worker is named after the slot it occupies, and a grow that lands
+        // while this one is still draining past awaitRetiredThreads()'s budget starts a NEW worker on that same
+        // index - two live threads of one database with an identical name, in the one situation an operator is
+        // most likely to be reading a thread dump. The suffix keeps the prefix every existing test and log filter
+        // matches on ("AsyncExecutor-<db>-"), so kill()'s "no thread of this database survives" assertion still
+        // covers it, while saying which of the two is on its way out.
+        worker.setName(worker.getName() + "-retiring");
         worker.shutdown = true;
         // Best effort and NON-blocking, unlike the close path's bounded offer plus interrupt. The marker only makes
         // an IDLE worker exit at once instead of on its next 500ms poll timeout; a worker whose queue is full does
@@ -1786,7 +1793,10 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     // what an operator needs to tell "one task is slow" from "the whole pool is wedged", and this method's whole
     // contract is that giving up is bounded and LOUD rather than silent - a break here made it loud about one.
     for (final AsyncThread worker : retired)
-      if (worker.isAlive())
+      // Self excluded here exactly as in the join loop (#6526 review round 8): a worker that retired its own slot
+      // from inside one of its tasks is alive BECAUSE it is still executing the call that would print this line,
+      // which is not the wedged worker this warning is about.
+      if (worker != Thread.currentThread() && worker.isAlive())
         LogManager.instance().log(this, Level.WARNING,
             "Asynchronous worker %s did not finish draining within %dms of the parallel level being lowered: it "
                 + "keeps running its queued tasks in the background and stays visible to waitCompletion()",
@@ -2343,26 +2353,51 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     // the failure that got us there.
     CountDownLatch release = null;
     try {
-      final AsyncThread[] threads = executorThreads;
-      if (threads == null || threads.length == 0) {
-        // Shut down between the check above and here: nothing to park, and the lock this holds is given back by the
-        // handle like any other.
-        handedOver = true;
-        return new HeldQuiesce(null, true);
+      final CountDownLatch parked;
+
+      // ONE PARK TASK PER WORKER, which needs the pool it is sized against to be the pool the tasks are scheduled
+      // onto (#6526 review round 8). scheduleTask() re-reads executorThreads on every call, and since #6526 a slot
+      // index the pool has outgrown is re-mapped onto a live worker instead of throwing - so a shrink landing
+      // between the read that sizes the latch and the last scheduleTask() would fold several indices onto one
+      // survivor. That worker runs the first park task, counts the latch down once and blocks on `release`, so the
+      // duplicates queued behind it never run: a latch sized for the old pool that can no longer reach zero, and a
+      // caller - an index build - that waits out the whole quiesce timeout before failing. Measured: 60s and a
+      // NeedRetryException where the answer should have been immediate.
+      //
+      // So the READ AND THE LOOP ARE BOTH INSIDE resizeLock, not just the loop: a snapshot taken outside it is
+      // already stale by the time the lock is acquired, which is the same bug one window earlier.
+      //
+      // Held for that ONLY, not for the quiescence: a shrink that lands afterwards is harmless, because the park
+      // task is already ahead of the exit marker on the retired worker's queue and still runs, counts down and
+      // parks. Keeping the lock any longer would put an administrative resize behind a whole index build.
+      //
+      // Lock order is quiesceLock (held) -> resizeLock -> lifecycleLock, and nothing takes them the other way
+      // round: setParallelLevel() never touches quiesceLock, and close()/kill() take only lifecycleLock.
+      resizeLock.lock();
+      try {
+        final AsyncThread[] threads = executorThreads;
+        if (threads == null || threads.length == 0) {
+          // Shut down between the check above and here: nothing to park, and the lock this holds is given back by
+          // the handle like any other.
+          handedOver = true;
+          return new HeldQuiesce(null, true);
+        }
+
+        parked = new CountDownLatch(threads.length);
+        release = new CountDownLatch(1);
+
+        for (int i = 0; i < threads.length; i++)
+          // waitIfQueueIsFull, so a busy worker is queued behind rather than skipped: an unparked worker is exactly
+          // the hole this method exists to close, and a `false` here would be one - which is why the old call
+          // site's discarded boolean mattered. Any refusal (a worker that has shut down) throws, and the finally
+          // below releases whatever was already parked.
+          if (!scheduleTask(i, new DatabaseAsyncParkWorker(parked, release), true, 0))
+            throw new NeedRetryException(
+                "Cannot quiesce the asynchronous executor of database '" + database.getName() + "': worker " + i
+                    + " refused the park task");
+      } finally {
+        resizeLock.unlock();
       }
-
-      final CountDownLatch parked = new CountDownLatch(threads.length);
-      release = new CountDownLatch(1);
-
-      for (int i = 0; i < threads.length; i++)
-        // waitIfQueueIsFull, so a busy worker is queued behind rather than skipped: an unparked worker is exactly the
-        // hole this method exists to close, and a `false` here would be one - which is why the old call site's
-        // discarded boolean mattered. Any refusal (a worker that has shut down) throws, and the finally below
-        // releases whatever was already parked.
-        if (!scheduleTask(i, new DatabaseAsyncParkWorker(parked, release), true, 0))
-          throw new NeedRetryException(
-              "Cannot quiesce the asynchronous executor of database '" + database.getName() + "': worker " + i
-                  + " refused the park task");
 
       final long timeout = quiesceTimeoutMillis();
       try {
