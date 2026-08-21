@@ -150,4 +150,41 @@ public class DocumentTest extends TestHelper {
       assertThat(mapKeysWithMetadata.subList(0, propertyNames.size())).isEqualTo(propertyNames);
     });
   }
+
+  // Regression test for issue #6472: DetachedDocument.toMap(false) had the same bug as
+  // MutableDocument.toMap() (copied into a plain HashMap instead of a LinkedHashMap), so it was
+  // left unfixed by PR #6500. Document.detach() is a common pattern for handing documents outside
+  // a transaction, so this covers that path too.
+  @Test
+  void detachedDocumentToMapPreservesPropertyInsertionOrder() {
+    database.transaction(() -> {
+      final DocumentType type = database.getSchema().createDocumentType("OrderPersonDetached");
+      type.createProperty("name", Type.STRING);
+      type.createProperty("age", Type.INTEGER);
+      type.createProperty("city", Type.STRING);
+      type.createProperty("country", Type.STRING);
+      type.createProperty("email", Type.STRING);
+
+      final MutableDocument doc = database.newDocument("OrderPersonDetached");
+      doc.set("name", "Alice");
+      doc.set("age", 30);
+      doc.set("city", "Rome");
+      doc.set("country", "Italy");
+      doc.set("email", "alice@example.com");
+      doc.save();
+
+      final DetachedDocument detached = doc.detach();
+
+      final List<String> propertyNames = new ArrayList<>(detached.getPropertyNames());
+      final List<String> mapKeysNoMetadata = new ArrayList<>(detached.toMap(false).keySet());
+      final List<Object> mapValuesNoMetadata = new ArrayList<>(detached.toMap(false).values());
+
+      assertThat(mapKeysNoMetadata).isEqualTo(propertyNames);
+      for (int i = 0; i < propertyNames.size(); i++)
+        assertThat(mapValuesNoMetadata.get(i)).isEqualTo(detached.get(propertyNames.get(i)));
+
+      final List<String> mapKeysWithMetadata = new ArrayList<>(detached.toMap(true).keySet());
+      assertThat(mapKeysWithMetadata.subList(0, propertyNames.size())).isEqualTo(propertyNames);
+    });
+  }
 }
