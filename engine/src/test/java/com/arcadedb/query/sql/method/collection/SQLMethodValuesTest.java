@@ -128,6 +128,70 @@ class SQLMethodValuesTest extends TestHelper {
     assertThat((List<Object>) flattenedValues).contains("Alice", 30, "Bob", 25);
   }
 
+  // Regression tests for issue #6472: keys()/values() must be index-aligned, not just same-sized
+
+  @Test
+  void keysAndValuesAreIndexAlignedForDocumentWithSeveralProperties() {
+    database.transaction(() ->
+      database.getSchema().createDocumentType("OrderPerson"));
+
+    database.transaction(() -> {
+      final MutableDocument doc = database.newDocument("OrderPerson");
+      doc.set("name", "Alice");
+      doc.set("age", 30);
+      doc.set("city", "Rome");
+      doc.set("country", "Italy");
+      doc.set("email", "alice@example.com");
+      doc.save();
+
+      final SQLMethod keysFunction = new SQLMethodKeys();
+
+      final List<String> keys = (List<String>) keysFunction.execute(doc, null, null, null);
+      final List<Object> values = (List<Object>) function.execute(doc, null, null, null);
+
+      assertThat(keys).hasSameSizeAs(values);
+      for (int i = 0; i < keys.size(); i++)
+        assertThat(values.get(i)).as("value at index %d for key '%s'", i, keys.get(i)).isEqualTo(doc.get(keys.get(i)));
+    });
+  }
+
+  @Test
+  void keysAndValuesAreIndexAlignedViaSQLOnStoredDocument() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("OrderPerson");
+
+      final MutableDocument doc = database.newDocument("OrderPerson");
+      doc.set("name", "Alice");
+      doc.set("age", 30);
+      doc.set("city", "Rome");
+      doc.set("country", "Italy");
+      doc.set("email", "alice@example.com");
+      doc.save();
+    });
+
+    // Reproduces the SQL scenario from issue #6472, on a document reloaded from storage
+    // (an ImmutableDocument), not the in-memory MutableDocument used right after save().
+    try (ResultSet resultSet = database.query("sql",
+        "SELECT @this.keys() AS k, @this.values() AS v FROM OrderPerson LIMIT 1")) {
+      final Result row = resultSet.next();
+      final List<String> keys = row.getProperty("k");
+      final List<Object> values = row.getProperty("v");
+
+      assertThat(keys).hasSameSizeAs(values);
+      for (int i = 0; i < keys.size(); i++) {
+        final Object expected = switch (keys.get(i)) {
+          case "name" -> "Alice";
+          case "age" -> 30;
+          case "city" -> "Rome";
+          case "country" -> "Italy";
+          case "email" -> "alice@example.com";
+          default -> throw new AssertionError("Unexpected key: " + keys.get(i));
+        };
+        assertThat(values.get(i)).as("value at index %d for key '%s'", i, keys.get(i)).isEqualTo(expected);
+      }
+    }
+  }
+
   // NEW TESTS - Result object handling
 
   @Test
