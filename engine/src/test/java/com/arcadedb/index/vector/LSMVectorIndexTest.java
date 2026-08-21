@@ -2602,6 +2602,59 @@ class LSMVectorIndexTest extends TestHelper {
     });
   }
 
+  // Issue #6531: a negative k passed to the public findNeighborsFromVector*/ entry points must raise a clear
+  // IllegalArgumentException naming the offending value, instead of the ArrayList constructor's confusing
+  // "Illegal Capacity: -N" once it reaches `new ArrayList<>(k)`.
+  @Test
+  void negativeKRaisesClearError() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE NegativeKDoc");
+      database.command("sql", "CREATE PROPERTY NegativeKDoc.embedding ARRAY_OF_FLOATS");
+      database.command("sql", """
+          CREATE INDEX ON NegativeKDoc (embedding) LSM_VECTOR
+          METADATA {
+            "dimensions": 3,
+            "similarity": "COSINE"
+          }""");
+    });
+
+    database.transaction(() -> {
+      for (int i = 0; i < 5; i++) {
+        final var vertex = database.newVertex("NegativeKDoc");
+        vertex.set("embedding", new float[] { 1.0f + i, 1.0f + i, 1.0f + i });
+        vertex.save();
+      }
+    });
+
+    final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("NegativeKDoc[embedding]");
+    final LSMVectorIndex index = (LSMVectorIndex) typeIndex.getIndexesOnBuckets()[0];
+
+    database.transaction(() -> {
+      final float[] queryVector = { 1.5f, 1.5f, 1.5f };
+
+      assertThatThrownBy(() -> index.findNeighborsFromVector(queryVector, -1))
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("k must be >= 0")
+          .hasMessageContaining("-1");
+
+      assertThatThrownBy(() -> index.findNeighborsFromVector(queryVector, -3, (Set<RID>) null))
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("k must be >= 0")
+          .hasMessageContaining("-3");
+
+      assertThatThrownBy(() -> index.findNeighborsFromVectorApproximate(queryVector, -1))
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("k must be >= 0")
+          .hasMessageContaining("-1");
+
+      // k == 0 must remain unaffected by the guard: it is a valid, harmless request for zero neighbors.
+      assertThatCode(() -> {
+        final List<Pair<RID, Float>> zeroResults = index.findNeighborsFromVector(queryVector, 0);
+        assertThat(zeroResults).isEmpty();
+      }).doesNotThrowAnyException();
+    });
+  }
+
   /**
    * Helper method to recursively delete a directory using Files.walk() API
    */

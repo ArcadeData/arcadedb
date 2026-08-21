@@ -4430,6 +4430,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
         throw new IllegalArgumentException(
             "Query vector cannot be a zero vector when using COSINE similarity (causes undefined similarity)");
 
+      // Issue #6531 follow-up: k == 0 is a valid "no results wanted" request, but letting it reach
+      // GraphSearcher.search() with topK == 0 throws a NullPointerException deep inside JVector's
+      // reranking (NodeQueue.rerank), not an ArcadeDB exception. Short-circuit here, matching the
+      // limit <= 0 behavior SQLFunctionVectorNeighbors already applies before ever calling in, and
+      // skip the graph build/lock entirely since there is nothing left to search for.
+      if (k == 0)
+        return Collections.emptyList();
+
       // Ensure graph is available (lazy-load from disk if needed, or build if not persisted)
       ensureGraphAvailable();
 
@@ -5075,6 +5083,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (metadata.similarityFunction == VectorSimilarityFunction.COSINE && VectorUtils.isZeroVector(queryVector))
         throw new IllegalArgumentException(
             "Query vector cannot be a zero vector when using COSINE similarity (causes undefined similarity)");
+
+      // Issue #6531 follow-up: see findNeighborsFromVector's matching short-circuit - k == 0 must not
+      // reach GraphSearcher.search() with topK == 0, which NPEs inside JVector's reranking.
+      if (k == 0)
+        return Collections.emptyList();
 
       // Ensure graph is available (lazy-load from disk if needed)
       ensureGraphAvailable();
