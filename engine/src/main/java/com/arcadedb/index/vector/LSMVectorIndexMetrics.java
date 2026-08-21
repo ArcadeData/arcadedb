@@ -52,6 +52,14 @@ class LSMVectorIndexMetrics {
   // many candidates the data puts between it and the query, which no fixed budget can guarantee (issue #5761), so
   // this is the signal to raise efSearch on the index or the query.
   private final AtomicLong groupedSearchesShortOfLimit = new AtomicLong(0);
+  // Grouped searches that merged at least one row out of the delta buffer into their answer (issue #6501). Before
+  // that issue the grouped path skipped the buffer outright, so a groupBy query silently answered from the corpus as
+  // of the last graph rebuild while the same query without groupBy returned the newer rows; the merge is what closed
+  // that, and this counter is what makes it visible. A number that tracks the query rate means the graph is
+  // persistently behind the write rate and every grouped query is paying a linear scan of the buffer for it -
+  // deltaVectorsCount says how long that scan is, and a lower vectorIndex.mutationsBeforeRebuild or
+  // rebuildGraphRatio is what shortens it.
+  private final AtomicLong groupedSearchesMergingDelta = new AtomicLong(0);
   // Times a persisted graph was reused on the strength of its node count alone, because it carries no manifest
   // saying which records it was built over (issue #6106) - a graph written by a version older than the manifest, or
   // one restored from a backup, which does not carry the sidecar. Non-zero means this index is still being judged by
@@ -105,6 +113,10 @@ class LSMVectorIndexMetrics {
 
   void incrementGroupedSearchesShortOfLimit() {
     groupedSearchesShortOfLimit.incrementAndGet();
+  }
+
+  void incrementGroupedSearchesMergingDelta() {
+    groupedSearchesMergingDelta.incrementAndGet();
   }
 
   void incrementUnverifiedGraphReuses() {
@@ -169,6 +181,10 @@ class LSMVectorIndexMetrics {
     return groupedSearchesShortOfLimit.get();
   }
 
+  long getGroupedSearchesMergingDelta() {
+    return groupedSearchesMergingDelta.get();
+  }
+
   long getVectorFetchFromQuantized() {
     return vectorFetchFromQuantized.get();
   }
@@ -215,6 +231,7 @@ class LSMVectorIndexMetrics {
     stats.put("bruteForceScans", bruteForceScans.get());
     stats.put("preFilterSearches", preFilterSearches.get());
     stats.put("groupedSearchesShortOfLimit", groupedSearchesShortOfLimit.get());
+    stats.put("groupedSearchesMergingDelta", groupedSearchesMergingDelta.get());
     stats.put("unverifiedGraphReuses", unverifiedGraphReuses.get());
     stats.put("rebuildsDeferredForMemory", rebuildsDeferredForMemory.get());
     stats.put("compactionCount", compactionCount.get());
@@ -237,6 +254,7 @@ class LSMVectorIndexMetrics {
     bruteForceScans.set(0);
     preFilterSearches.set(0);
     groupedSearchesShortOfLimit.set(0);
+    groupedSearchesMergingDelta.set(0);
     unverifiedGraphReuses.set(0);
     rebuildsDeferredForMemory.set(0);
     compactionCount.set(0);
