@@ -110,4 +110,44 @@ public class DocumentTest extends TestHelper {
       assertThat(detached.getString("lastname")).isNull();
     });
   }
+
+  // Regression test for issue #6472: MutableDocument.toMap(false) used to copy the properties
+  // into a plain HashMap, whose iteration order (hash-bucket order) can differ from
+  // getPropertyNames()'s insertion order (the properties LinkedHashMap's keySet()). That made
+  // toMap().values() misaligned with getPropertyNames() for any document with enough properties
+  // to land in different buckets, which is what made doc.keys()[i]/doc.values()[i] disagree.
+  @Test
+  void toMapPreservesPropertyInsertionOrder() {
+    database.transaction(() -> {
+      final DocumentType type = database.getSchema().createDocumentType("OrderPerson");
+      type.createProperty("name", Type.STRING);
+      type.createProperty("age", Type.INTEGER);
+      type.createProperty("city", Type.STRING);
+      type.createProperty("country", Type.STRING);
+      type.createProperty("email", Type.STRING);
+
+      final MutableDocument doc = database.newDocument("OrderPerson");
+      doc.set("name", "Alice");
+      doc.set("age", 30);
+      doc.set("city", "Rome");
+      doc.set("country", "Italy");
+      doc.set("email", "alice@example.com");
+      doc.save();
+
+      final List<String> propertyNames = new ArrayList<>(doc.getPropertyNames());
+      final List<Object> mapValuesNoMetadata = new ArrayList<>(doc.toMap(false).values());
+      final List<String> mapKeysNoMetadata = new ArrayList<>(doc.toMap(false).keySet());
+
+      // toMap(false)'s key order must match getPropertyNames()'s order...
+      assertThat(mapKeysNoMetadata).isEqualTo(propertyNames);
+      // ...and therefore values() at index i must be the value of keys()/propertyNames() at index i.
+      for (int i = 0; i < propertyNames.size(); i++)
+        assertThat(mapValuesNoMetadata.get(i)).isEqualTo(doc.get(propertyNames.get(i)));
+
+      // With metadata included, the declared properties keep their relative order and the
+      // @cat/@type/@rid fields are appended after them.
+      final List<String> mapKeysWithMetadata = new ArrayList<>(doc.toMap(true).keySet());
+      assertThat(mapKeysWithMetadata.subList(0, propertyNames.size())).isEqualTo(propertyNames);
+    });
+  }
 }
