@@ -200,6 +200,42 @@ class PaginatedSparseVectorEngineCompactionRecencyTest extends TestHelper {
   }
 
   /**
+   * The tombstone-ratio window reaches backwards from the offender, so when the offender is within
+   * {@code tierFanout - 1} of the <i>oldest</i> end there are not enough older neighbours and the
+   * window starts at 0 and extends forwards past it instead. That is the one case where the window
+   * holds something newer than the offender, and it is the branch the (removed) upper clamp was
+   * nominally guarding: pin that it still produces an in-bounds window and still resolves a
+   * tombstone held by a segment newer than the offender.
+   */
+  @Test
+  void tombstoneRatioWindowAtTheOldestEndKeepsDeletedRidInvisible() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final RID deleted = new RID(0, DELETED_POSITION);
+    try (final PaginatedSparseVectorEngine engine = tieredEngine(db, "TombstoneOldestEndTest", 3, 2L)) {
+      // S1 (tier 0: 2 postings, 50% tombstones) is the offender AND the oldest segment, so the
+      // window cannot reach back and starts at 0.
+      engine.put(DIM, deleted, 0.9f);
+      engine.remove(DIM, new RID(0, 900L));
+      engine.flush();
+      // S2 (tier 1: 6 postings): filler.
+      fill(engine, 200L, 6);
+      engine.flush();
+      // S3 (tier 2: 18 postings): holds the tombstone for the RID S1 inserted, at a ratio well
+      // under the trigger so S1 stays the offender.
+      engine.remove(DIM, deleted);
+      fill(engine, 300L, 17);
+      engine.flush();
+
+      assertThat(engine.segmentCount())
+          .as("the window starting at 0 must span all three segments")
+          .isEqualTo(1);
+      assertThat(topKRids(engine))
+          .as("a window that extends forwards must still let the newer tombstone win")
+          .doesNotContain(deleted);
+    }
+  }
+
+  /**
    * The same inversion applied to an <i>update</i>: a younger segment lowers a posting's weight,
    * and a partial merge that leaves it out must not restore the stale weight.
    */

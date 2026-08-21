@@ -1029,14 +1029,17 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
         }
       }
       if (heaviestIdx >= 0) {
-        // Prefer older neighbours - the offender's tombstones can only mask postings that precede
-        // them, so reaching backwards is what actually reclaims space. The clamp only bites when
-        // the offender is within {@code tierFanout} of the newest end, and it keeps the offender
-        // inside the window: {@code heaviestIdx >= ordered.length - tierFanout} is precisely the
-        // condition under which it fires.
-        int start = Math.max(0, heaviestIdx - (tierFanout - 1));
-        if (start + tierFanout > ordered.length)
-          start = ordered.length - tierFanout;
+        // The window ends at the offender and reaches backwards, because the offender's tombstones
+        // can only mask postings that precede them - reaching forwards would merge segments whose
+        // space the offender cannot reclaim. Near the oldest end there are fewer than
+        // {@code tierFanout - 1} older neighbours to take, so the window starts at 0 and extends
+        // past the offender instead; that is the only case where it holds anything newer.
+        // <p>
+        // No upper clamp is needed: the window is {@code [start, start + tierFanout)} with
+        // {@code start = max(0, heaviestIdx - (tierFanout - 1))}, so it ends either at
+        // {@code heaviestIdx + 1 <= ordered.length} or at {@code tierFanout <= ordered.length}
+        // (the early return above guarantees the latter bound).
+        final int start = Math.max(0, heaviestIdx - (tierFanout - 1));
         return Arrays.copyOfRange(ordered, start, start + tierFanout);
       }
 
