@@ -572,8 +572,16 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     // #6526: a worker retired by a shrinking setParallelLevel() is off the published array but is still draining
     // real tasks, so leaving it out here would report a queue that shrank the instant the pool did - which is the
     // one moment an operator is most likely to be looking at this number.
+    //
+    // Counted ONCE (#6526 review round 2, point 2): the two reads are separate and unsynchronized - deliberately,
+    // since this method must stay lock-free - so a shrink landing between them publishes the smaller array and adds
+    // the worker to retiringThreads, and a naive second loop would count that worker's queue twice. Skipping the
+    // ones the first loop already saw is exact under every interleaving: whichever of the two reads observed the
+    // worker, it contributes exactly one term. The scan is over arrays the size of the pool, so it costs nothing
+    // that matters here.
     for (final AsyncThread retiring : retiringThreads)
-      stats.queueSize += retiring.queue.size();
+      if (!contains(threads, retiring))
+        stats.queueSize += retiring.queue.size();
 
     stats.scheduledTasks = counterScheduledTasks.get();
     stats.forcedBoundaryCommits = forcedBoundaryCommits.get();
@@ -1714,14 +1722,15 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     if (interrupted)
       Thread.currentThread().interrupt();
 
+    // EVERY one that is still running, not just the first (#6526 review round 2, point 1). One line per worker is
+    // what an operator needs to tell "one task is slow" from "the whole pool is wedged", and this method's whole
+    // contract is that giving up is bounded and LOUD rather than silent - a break here made it loud about one.
     for (final AsyncThread worker : retired)
-      if (worker.isAlive()) {
+      if (worker.isAlive())
         LogManager.instance().log(this, Level.WARNING,
             "Asynchronous worker %s did not finish draining within %dms of the parallel level being lowered: it "
                 + "keeps running its queued tasks in the background and stays visible to waitCompletion()",
             worker.getName(), shutdownJoinTimeoutMs);
-        break;
-      }
   }
 
   private void createThreads(int parallelLevel) {
@@ -1807,6 +1816,15 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       Thread.currentThread().interrupt();
   }
 
+  /** Identity search over a worker array, tolerating the null a closed executor publishes. */
+  private static boolean contains(final AsyncThread[] threads, final AsyncThread worker) {
+    if (threads != null)
+      for (int i = 0; i < threads.length; ++i)
+        if (threads[i] == worker)
+          return true;
+    return false;
+  }
+
   /**
    * Concatenates the live worker array (possibly null on an already-closed executor) with the retiring ones.
    */
@@ -1839,7 +1857,10 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     // half of it.
     final List<AsyncThread> stillRunning = new ArrayList<>(retiringThreads.size());
     for (final AsyncThread retiring : retiringThreads)
-      if (retiring.isAlive())
+      // Alive, and not already in the published array: same unsynchronized-pair window getStats() names, and the
+      // same answer. A duplicate here would only cost waitCompletion() a second marker on one worker, but there is
+      // no reason to hand it one.
+      if (retiring.isAlive() && !contains(live, retiring))
         stillRunning.add(retiring);
 
     final AsyncThread[] all = concat(live, stillRunning.toArray(new AsyncThread[0]));
