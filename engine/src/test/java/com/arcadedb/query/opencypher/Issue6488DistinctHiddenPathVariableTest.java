@@ -20,10 +20,13 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -114,6 +117,42 @@ public class Issue6488DistinctHiddenPathVariableTest {
       assertThat(rs.hasNext()).isTrue();
       rs.next();
       assertThat(rs.hasNext()).as("WITH DISTINCT must collapse the zero-length and self-loop paths into a single row").isFalse();
+    }
+  }
+
+  /**
+   * {@code UNION} (implicit DISTINCT) deduplicates through the very same
+   * {@code DistinctNumericKey.canonicalize()} utility as {@code RETURN DISTINCT}. Union the
+   * already-loaded reference from a plain match with the freshly-fetched, not-yet-deserialized
+   * reference from the self-loop traversal, and confirm they still collapse to one row.
+   */
+  @Test
+  public void unionCollapsesLoadedAndUnloadedReferencesToSameNode() {
+    try (ResultSet rs = database.query("cypher", """
+        MATCH p = WALK (n0)-[*0..1]->(n1)
+        RETURN n1 AS x
+        UNION
+        MATCH (a:A)
+        RETURN a AS x""")) {
+      assertThat(rs.hasNext()).isTrue();
+      rs.next();
+      assertThat(rs.hasNext()).as("UNION must collapse references to the same node regardless of load state").isFalse();
+    }
+  }
+
+  /**
+   * {@code collect(DISTINCT ...)} and {@code count(DISTINCT ...)} go through
+   * {@code DistinctAggregationWrapper}, which also canonicalizes via {@code DistinctNumericKey}.
+   */
+  @Test
+  public void collectAndCountDistinctCollapseSelfLoopZeroAndOneHopPaths() {
+    try (ResultSet rs = database.query("cypher", """
+        MATCH p = WALK (n0)-[*0..1]->(n1)
+        RETURN collect(DISTINCT n1) AS xs, count(DISTINCT n1) AS c""")) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result row = rs.next();
+      assertThat((List<?>) row.getProperty("xs")).hasSize(1);
+      assertThat(row.<Number>getProperty("c").intValue()).isEqualTo(1);
     }
   }
 }
