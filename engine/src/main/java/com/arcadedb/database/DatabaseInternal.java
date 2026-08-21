@@ -345,6 +345,48 @@ public interface DatabaseInternal extends Database {
   Object setGlobalVariable(String name, Object value);
 
   /**
+   * Atomically sets a global variable only if it is not already set. Unlike calling
+   * {@link #getGlobalVariable(String)} followed by {@link #setGlobalVariable(String, Object)}, this check-and-set
+   * happens as one operation, so two callers racing on the same name cannot both observe "absent" and both write -
+   * the property a caller using this as a distributed lock (e.g. Redis {@code SET k v NX}) depends on.
+   * <p>
+   * The default falls back to a non-atomic get-then-set for implementations (e.g. test doubles) that do not need
+   * the atomicity guarantee; {@link LocalDatabase} overrides it with a genuinely atomic implementation.
+   * @param name Variable name (with or without $ prefix)
+   * @param value The value to set
+   * @return The existing value if the variable was already set (value left untouched), or null if it was absent
+   * (value was set)
+   */
+  default Object setGlobalVariableIfAbsent(final String name, final Object value) {
+    final Object existing = getGlobalVariable(name);
+    if (existing != null)
+      return existing;
+    setGlobalVariable(name, value);
+    return null;
+  }
+
+  /**
+   * Atomically sets a global variable only if it is already set. Unlike calling
+   * {@link #getGlobalVariable(String)} followed by {@link #setGlobalVariable(String, Object)}, this check-and-set
+   * happens as one operation - the counterpart to {@link #setGlobalVariableIfAbsent(String, Object)} (e.g. Redis
+   * {@code SET k v XX}).
+   * <p>
+   * The default falls back to a non-atomic get-then-set for implementations (e.g. test doubles) that do not need
+   * the atomicity guarantee; {@link LocalDatabase} overrides it with a genuinely atomic implementation.
+   * @param name Variable name (with or without $ prefix)
+   * @param value The value to set
+   * @return The previous value if the variable was set (value was replaced), or null if it was absent (value left
+   * untouched)
+   */
+  default Object setGlobalVariableIfPresent(final String name, final Object value) {
+    final Object existing = getGlobalVariable(name);
+    if (existing == null)
+      return null;
+    setGlobalVariable(name, value);
+    return existing;
+  }
+
+  /**
    * Gets all global variables as an unmodifiable map.
    * @return Map of variable name to value
    */

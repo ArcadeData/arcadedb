@@ -958,6 +958,16 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   @Override
+  public Object setGlobalVariableIfAbsent(final String name, final Object value) {
+    return proxied.setGlobalVariableIfAbsent(name, value);
+  }
+
+  @Override
+  public Object setGlobalVariableIfPresent(final String name, final Object value) {
+    return proxied.setGlobalVariableIfPresent(name, value);
+  }
+
+  @Override
   public Map<String, Object> getGlobalVariables() {
     return proxied.getGlobalVariables();
   }
