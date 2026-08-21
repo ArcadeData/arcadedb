@@ -45,6 +45,11 @@ public class CoreApiSpec implements OpenApiContributor {
       Session id returned by 'beginTransaction'. Present it on every call that must run inside that \
       transaction, and on the commit or rollback that ends it. Omit it to run outside a transaction.""";
 
+  private static final String BEGIN_SESSION_REQUEST_DESCRIPTION = """
+      Normally omitted: 'beginTransaction' opens a new transaction and returns its own session id. \
+      Supplying a session id here that still resolves to an open transaction does not start a nested \
+      transaction; it makes the call fail with 409 instead.""";
+
   @Override
   public void contribute(final OpenAPI openAPI) {
     openAPI.getPaths().addPathItem("/api/v1/server", createServerPath());
@@ -236,6 +241,7 @@ public class CoreApiSpec implements OpenApiContributor {
     postOp.setOperationId("beginTransaction");
     postOp.addTagsItem("Transaction");
     postOp.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
+    postOp.addParametersItem(SpecBuilders.headerParam(SESSION_HEADER, BEGIN_SESSION_REQUEST_DESCRIPTION, false));
     postOp.setResponses(createBeginResponses());
     pathItem.setPost(postOp);
 

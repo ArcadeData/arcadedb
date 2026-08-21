@@ -163,6 +163,23 @@ class CoreApiSpecTest {
   }
 
   @Test
+  void beginDeclaresTheSessionIdRequestHeaderAsOptional() {
+    final Operation post = openAPI.getPaths().get("/api/v1/begin/{database}").getPost();
+    final Parameter header = post.getParameters().stream()
+        .filter(p -> "arcadedb-session-id".equals(p.getName()))
+        .findFirst()
+        .orElseThrow(() -> new AssertionError("no session header declared on /api/v1/begin/{database}"));
+
+    assertThat(header.getIn())
+        .as("PostBeginHandler reads the session id from a request header, not a query parameter")
+        .isEqualTo("header");
+    assertThat(header.getRequired())
+        .as("a client cannot otherwise know what triggers the 409: supplying an id that still "
+            + "resolves is what triggers it, not omitting the header")
+        .isFalse();
+  }
+
+  @Test
   void commitAndRollbackDeclareTheSessionIdRequestHeader() {
     for (final String path : List.of("/api/v1/commit/{database}", "/api/v1/rollback/{database}")) {
       final Operation post = openAPI.getPaths().get(path).getPost();
