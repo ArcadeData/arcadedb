@@ -581,6 +581,25 @@ public class PostgresNetworkExecutor extends Thread {
 
       if (errorInTransaction) {
         profile.addDeserializationNanos(System.nanoTime() - deserStart);
+        final String abortedUpperCaseText = queryText.toUpperCase(Locale.ENGLISH);
+        if (isTransactionEndStatement(abortedUpperCaseText)) {
+          // Real Postgres treats a COMMIT of an aborted transaction the same as a ROLLBACK (with a
+          // warning): there is nothing left to commit, so both end keywords just discard the transaction.
+          if (database.isTransactionActive())
+            database.rollback();
+          explicitTransactionStarted = false;
+          errorInTransaction = false;
+          // The tag is always "ROLLBACK" here, even if the client sent COMMIT/END: see the comment above.
+          writeCommandComplete("ROLLBACK", 0);
+        } else if (queryText.isEmpty()) {
+          emptyQueryResponse();
+        } else {
+          // Every other statement is refused, not silently swallowed (issue #6457): the client needs an
+          // ErrorResponse to know its statement never ran, and errorInTransaction must stay set so the
+          // session remains aborted until COMMIT/ROLLBACK/END ends the block.
+          writeError(ERROR_SEVERITY.ERROR,
+              "current transaction is aborted, commands ignored until end of transaction block", "25P02");
+        }
         return;
       }
 
@@ -626,6 +645,16 @@ public class PostgresNetworkExecutor extends Thread {
       } else if ("BEGIN".equals(upperCaseText) || "BEGIN TRANSACTION".equals(upperCaseText)) {
         explicitTransactionStarted = true;
         database.begin();
+        resultSet = new IteratorResultSet(Collections.emptyIterator());
+      } else if (isCommitStatement(upperCaseText)) {
+        if (explicitTransactionStarted && database.isTransactionActive())
+          database.commit();
+        explicitTransactionStarted = false;
+        resultSet = new IteratorResultSet(Collections.emptyIterator());
+      } else if (isRollbackStatement(upperCaseText)) {
+        if (explicitTransactionStarted && database.isTransactionActive())
+          database.rollback();
+        explicitTransactionStarted = false;
         resultSet = new IteratorResultSet(Collections.emptyIterator());
       } else {
         // A query about the emulated system catalog, which every client sends and which ArcadeDB's own SQL
@@ -686,7 +715,9 @@ public class PostgresNetworkExecutor extends Thread {
 
   private void writeReadyForQueryMessage() {
     final byte transactionStatus;
-    if (explicitTransactionStarted)
+    if (errorInTransaction)
+      transactionStatus = 'E';
+    else if (explicitTransactionStarted)
       transactionStatus = 'T';
     else
       transactionStatus = 'I';
@@ -2319,9 +2350,39 @@ public class PostgresNetworkExecutor extends Thread {
       return "DELETE " + resultSetCount;
     } else if ("BEGIN".equals(upperCaseText) || "BEGIN TRANSACTION".equals(upperCaseText)) {
       return "BEGIN";
+    } else if (isCommitStatement(upperCaseText)) {
+      return "COMMIT";
+    } else if (isRollbackStatement(upperCaseText)) {
+      return "ROLLBACK";
     } else {
       return "";
     }
+  }
+
+  /**
+   * Matches a simple-query COMMIT/END statement, the counterpart to the existing BEGIN check (issue #6457).
+   */
+  private static boolean isCommitStatement(final String upperCaseText) {
+    return "COMMIT".equals(upperCaseText) || "COMMIT TRANSACTION".equals(upperCaseText) ||
+        "END".equals(upperCaseText) || "END TRANSACTION".equals(upperCaseText);
+  }
+
+  /**
+   * Matches a simple-query ROLLBACK statement (issue #6457). Deliberately excludes {@code ROLLBACK TO
+   * <savepoint>}, which queryCommand's dispatch already routes elsewhere (it does not end the transaction).
+   */
+  private static boolean isRollbackStatement(final String upperCaseText) {
+    return "ROLLBACK".equals(upperCaseText) || "ROLLBACK TRANSACTION".equals(upperCaseText);
+  }
+
+  /**
+   * True for any statement that ends an explicit transaction block, whichever keyword the client used
+   * (issue #6457). While the transaction is aborted, real Postgres treats all three identically - a plain
+   * rollback - rather than distinguishing COMMIT (which would otherwise try to persist writes that
+   * already failed).
+   */
+  private static boolean isTransactionEndStatement(final String upperCaseText) {
+    return isCommitStatement(upperCaseText) || isRollbackStatement(upperCaseText);
   }
 
   private void writeNoData() {
