@@ -93,6 +93,7 @@ public class CypherSemanticValidator {
     v.validateExpressionAliases(statement);
     v.validateReturnStar(statement);
     v.validateFunctionArgumentTypes(statement);
+    v.validateCallYieldConclusion(statement);
     v.validateNestedStatements(statement);
   }
 
@@ -2096,6 +2097,44 @@ public class CypherSemanticValidator {
     }
   }
 
+  // ================================================
+  // Phase 10b: CALL ... YIELD Conclusion Validation
+  // ================================================
+
+  /**
+   * Rejects a {@code CALL ... YIELD} that concludes the statement (or a subquery body, since this also runs through
+   * {@link #validateBodyPhases}) without a {@code RETURN} or some other clause consuming the yielded columns -
+   * mirroring Neo4j's {@code "Query cannot conclude with CALL together with YIELD"} compile-time error.
+   * <p>
+   * A <b>standalone</b> {@code CALL ... YIELD} - the statement's only clause - is deliberately exempt: it owns its
+   * own projection (issue #6446/#6448, {@code CypherExecutionPlan}'s {@code bareCallOwnsProjection}) and needs no
+   * trailing {@code RETURN}, exactly as real Neo4j allows {@code CALL db.labels() YIELD label} to stand alone. What
+   * this rejects is the narrower gap #6448 left open on purpose: a {@code CALL ... YIELD} chained after (or before)
+   * other clauses, that is still the LAST clause of the statement, with nothing left to project its yielded
+   * columns. Before this check, {@code CypherExecutionPlan.execute()}'s write branch silently treated "no RETURN"
+   * as "side effects only" for that shape too, so {@code WITH 1 AS x CALL math.add(x, 1) YIELD value} parsed fine
+   * and quietly returned zero rows - a worse failure mode than an error, since the shape looks like it should
+   * produce rows. A {@code CALL} with no {@code YIELD} at all chained the same way is untouched: that is the
+   * ordinary "side effects only" terminal write clause, and Neo4j accepts it without a trailing {@code RETURN}.
+   */
+  private static void validateCallYieldConclusion(final CypherStatement statement) {
+    final List<ClauseEntry> clauses = statement.getClausesInOrder();
+    // A CALL that is the statement's only clause is the standalone/bare-CALL exception - not this check's business.
+    if (clauses == null || clauses.size() < 2)
+      return;
+
+    final ClauseEntry last = clauses.get(clauses.size() - 1);
+    if (last.getType() != ClauseEntry.ClauseType.CALL)
+      return;
+
+    final CallClause callClause = last.getTypedClause();
+    if (callClause.hasYield())
+      throw new CommandParsingException(
+          "QueryCannotConcludeWithCallYield: Query cannot conclude with CALL together with YIELD - add a RETURN "
+              + "(or another clause that consumes the yielded columns), or drop the YIELD to call it as a "
+              + "side-effect-only statement");
+  }
+
   // ==================================================
   // Phase 11: Every phase above, applied to each body
   // ==================================================
@@ -2172,6 +2211,7 @@ public class CypherSemanticValidator {
     validateColumnNames(body);
     validateExpressionAliases(body);
     validateReturnStar(body);
+    validateCallYieldConclusion(body);
   }
 
   /**
