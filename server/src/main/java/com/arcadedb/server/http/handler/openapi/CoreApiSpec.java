@@ -50,6 +50,16 @@ public class CoreApiSpec implements OpenApiContributor {
       Supplying a session id here that still resolves to an open transaction does not start a nested \
       transaction; it makes the call fail with 409 instead.""";
 
+  // Used only by commit and rollback: on those two, unlike query/command, omitting the header is
+  // NOT a safe "run outside a transaction". requiresTransaction() is false and isTransactionActive()
+  // is false on the fresh context, so the handler still answers 204 while committing or rolling back
+  // nothing. A generated client that loses the session id would otherwise report success while the
+  // caller's writes are gone.
+  private static final String TRANSACTION_END_SESSION_REQUEST_DESCRIPTION = """
+      Session id returned by 'beginTransaction', identifying the transaction to end. Omitting it, or \
+      presenting an id that no longer resolves to an open transaction, is an idempotent no-op: the \
+      call still answers 204, but commits or rolls back nothing.""";
+
   @Override
   public void contribute(final OpenAPI openAPI) {
     openAPI.getPaths().addPathItem("/api/v1/server", createServerPath());
@@ -257,7 +267,7 @@ public class CoreApiSpec implements OpenApiContributor {
     postOp.setOperationId("commitTransaction");
     postOp.addTagsItem("Transaction");
     postOp.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
-    postOp.addParametersItem(SpecBuilders.headerParam(SESSION_HEADER, SESSION_REQUEST_DESCRIPTION, false));
+    postOp.addParametersItem(SpecBuilders.headerParam(SESSION_HEADER, TRANSACTION_END_SESSION_REQUEST_DESCRIPTION, false));
     postOp.setResponses(createTransactionResponses());
     pathItem.setPost(postOp);
 
@@ -273,7 +283,7 @@ public class CoreApiSpec implements OpenApiContributor {
     postOp.setOperationId("rollbackTransaction");
     postOp.addTagsItem("Transaction");
     postOp.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
-    postOp.addParametersItem(SpecBuilders.headerParam(SESSION_HEADER, SESSION_REQUEST_DESCRIPTION, false));
+    postOp.addParametersItem(SpecBuilders.headerParam(SESSION_HEADER, TRANSACTION_END_SESSION_REQUEST_DESCRIPTION, false));
     postOp.setResponses(createTransactionResponses());
     pathItem.setPost(postOp);
 
@@ -477,7 +487,9 @@ public class CoreApiSpec implements OpenApiContributor {
     responses.addApiResponse("200", SpecBuilders.jsonResponse("Query executed successfully", "QueryResponse"));
     responses.addApiResponse("400", SpecBuilders.errorResponse("Bad request"));
     responses.addApiResponse("401", SpecBuilders.errorResponse("Unauthorized"));
-    responses.addApiResponse("404", SpecBuilders.errorResponse("Database not found"));
+    responses.addApiResponse("404", SpecBuilders.errorResponse(
+        "Database not found, or the session id header names a transaction that no longer resolves "
+            + "(\"Remote transaction session not found or expired\")"));
     responses.addApiResponse("413", SpecBuilders.errorResponse(
         "The result exceeds 'arcadedb.server.httpQueryMaxResultRows': narrow or page the query"));
     responses.addApiResponse("500", SpecBuilders.errorResponse("Internal server error"));
@@ -489,7 +501,9 @@ public class CoreApiSpec implements OpenApiContributor {
     responses.addApiResponse("200", SpecBuilders.jsonResponse("Command executed successfully", "QueryResponse"));
     responses.addApiResponse("400", SpecBuilders.errorResponse("Bad request"));
     responses.addApiResponse("401", SpecBuilders.errorResponse("Unauthorized"));
-    responses.addApiResponse("404", SpecBuilders.errorResponse("Database not found"));
+    responses.addApiResponse("404", SpecBuilders.errorResponse(
+        "Database not found, or the session id header names a transaction that no longer resolves "
+            + "(\"Remote transaction session not found or expired\")"));
     responses.addApiResponse("413", SpecBuilders.errorResponse(
         "The result exceeds 'arcadedb.server.httpQueryMaxResultRows': narrow or page the command"));
     responses.addApiResponse("500", SpecBuilders.errorResponse("Internal server error"));

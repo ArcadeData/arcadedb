@@ -331,8 +331,12 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
     final Info info = result.getOpenAPI().getInfo();
 
     assertThat(info.getVersion())
-        .as("a generated client must record which server release produced its types")
-        .isEqualTo(Constants.getVersion());
+        .as("a generated client must record which server release produced its types, as the bare version")
+        .isEqualTo(Constants.getRawVersion());
+
+    assertThat(info.getVersion())
+        .as("a build stamp is not a release identity; publish-contract.yml compares this to the bare tag")
+        .doesNotContain(" (build ");
 
     assertThat(info.getVersion())
         .as("the placeholder must be gone, not merely coincidentally equal")

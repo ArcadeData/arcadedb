@@ -234,4 +234,55 @@ class CoreApiSpecTest {
         .as("PostBeginHandler returns 409 when the request carries a session id that still resolves")
         .containsKey("409");
   }
+
+  @Test
+  void commitAndRollbackDoNotAdvertiseTheSessionIdResponseHeader() {
+    for (final String path : List.of("/api/v1/commit/{database}", "/api/v1/rollback/{database}")) {
+      final Operation post = openAPI.getPaths().get(path).getPost();
+
+      assertThat(post.getResponses().get("204").getHeaders())
+          .as("PostCommitHandler/PostRollbackHandler strip the session header before responding on "
+              + path + "; advertising it here would be a lie only 'begin' is entitled to make")
+          .isNullOrEmpty();
+    }
+  }
+
+  @Test
+  void commitAndRollbackDoNotDeclareA409() {
+    for (final String path : List.of("/api/v1/commit/{database}", "/api/v1/rollback/{database}")) {
+      final Operation post = openAPI.getPaths().get(path).getPost();
+
+      assertThat(post.getResponses())
+          .as("only 'begin' can answer 409 for an already-open session; " + path
+              + " must not share that response with it via a memoized createTransactionResponses()")
+          .doesNotContainKey("409");
+    }
+  }
+
+  @Test
+  void commitAndRollbackWarnThatALostOrStaleSessionIdIsASilentNoOp() {
+    for (final String path : List.of("/api/v1/commit/{database}", "/api/v1/rollback/{database}")) {
+      final Operation post = openAPI.getPaths().get(path).getPost();
+      final Parameter header = post.getParameters().stream()
+          .filter(p -> "arcadedb-session-id".equals(p.getName()))
+          .findFirst()
+          .orElseThrow(() -> new AssertionError("no session header declared on " + path));
+
+      assertThat(header.getDescription())
+          .as(path + " must warn that an omitted or stale session id still answers 204 while "
+              + "committing or rolling back nothing, or a generated client will report success on data loss")
+          .contains("no-op");
+    }
+  }
+
+  @Test
+  void queryAndCommand404CoversAStaleSessionIdNotOnlyAMissingDatabase() {
+    for (final String path : List.of("/api/v1/query/{database}", "/api/v1/command/{database}")) {
+      final Operation post = openAPI.getPaths().get(path).getPost();
+
+      assertThat(post.getResponses().get("404").getDescription())
+          .as(path + " also answers 404 for a stale session id, not only a missing database")
+          .contains("Remote transaction session not found or expired");
+    }
+  }
 }

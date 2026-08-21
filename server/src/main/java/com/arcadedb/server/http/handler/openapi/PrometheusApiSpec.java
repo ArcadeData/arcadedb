@@ -244,18 +244,23 @@ public class PrometheusApiSpec implements OpenApiContributor {
     resultType.setEnum(List.of("vector", "matrix", "scalar"));
 
     final Schema<Object> vectorEntry = SpecBuilders.object("One instant sample");
-    vectorEntry.addProperty("metric", SpecBuilders.object("Label map, including the '__name__' label"));
+    vectorEntry.addProperty("metric", metricLabelsSchema());
     vectorEntry.addProperty("value", samplePair());
+    vectorEntry.setRequired(List.of("metric", "value"));
 
     final Schema<Object> matrixEntry = SpecBuilders.object("One range series");
-    matrixEntry.addProperty("metric", SpecBuilders.object("Label map, including the '__name__' label"));
+    matrixEntry.addProperty("metric", metricLabelsSchema());
     matrixEntry.addProperty("values", SpecBuilders.arrayOf(samplePair(), "Samples ordered by timestamp"));
+    matrixEntry.setRequired(List.of("metric", "values"));
 
     final Schema<Object> result = new Schema<>();
     result.setDescription("""
         Evaluation result, shaped by 'resultType': an array of instant samples when 'vector', an \
         array of range series when 'matrix', and a single [timestamp, value] pair when 'scalar'.""");
-    result.setOneOf(List.of(
+    // anyOf, not oneOf: an empty 'result' array (a normal empty vector or matrix result) validates
+    // against every branch here, so oneOf's "exactly one match" can never be satisfied. 'resultType'
+    // remains the real narrowing key for a human, or a hand-written narrowing function.
+    result.setAnyOf(List.of(
         SpecBuilders.arrayOf(vectorEntry, "Entries when resultType is 'vector'"),
         SpecBuilders.arrayOf(matrixEntry, "Entries when resultType is 'matrix'"),
         samplePair()));
@@ -274,11 +279,30 @@ public class PrometheusApiSpec implements OpenApiContributor {
    * A fresh [timestamp, value] pair schema on every call. Returning a shared instance would place
    * one mutable schema object at several points in the document, the same defect class that put one
    * ApiResponse under two status keys during #4895.
+   * <p>
+   * The server actually sends a 2-element JSON array of a number then a string (see
+   * {@code PromQLResponseFormatter}), neither of which is an object, so the items schema is left
+   * unconstrained rather than typed as 'object'. The tuple shape is instead pinned with
+   * minItems/maxItems.
    */
   private Schema<?> samplePair() {
-    return SpecBuilders.arrayOf(
-        SpecBuilders.object("Unix timestamp in seconds, then the sample value as a string"),
-        "One [timestamp, value] pair");
+    final Schema<?> pair = SpecBuilders.arrayOf(new Schema<>(),
+        "One [timestamp, value] pair: a Unix timestamp in seconds (number), then the sample value (string)");
+    pair.setMinItems(2);
+    pair.setMaxItems(2);
+    return pair;
+  }
+
+  /**
+   * The PromQL label map is free-form (label names are not known ahead of time), but every value
+   * {@code labelsToJson} writes is a JSON string, so 'additionalProperties' is pinned to a string
+   * schema rather than left as bare 'object'. That is what makes a generator emit Map&lt;String,
+   * String&gt; instead of Map&lt;String, Object&gt;.
+   */
+  private Schema<Object> metricLabelsSchema() {
+    final Schema<Object> schema = SpecBuilders.object("Label map, including the '__name__' label");
+    schema.setAdditionalProperties(SpecBuilders.string("Label value"));
+    return schema;
   }
 
   private Schema<?> createLabelsResponseSchema() {

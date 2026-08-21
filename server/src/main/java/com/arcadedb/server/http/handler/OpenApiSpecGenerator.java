@@ -113,7 +113,7 @@ public class OpenApiSpecGenerator {
     info.setTitle("ArcadeDB HTTP API");
     info.setDescription(
         "Multi-Model DBMS HTTP API for Graph, Document, Key/Value, Search Engine, Time Series, and Vector Embedding operations");
-    info.setVersion(Constants.getVersion());
+    info.setVersion(Constants.getRawVersion());
 
     final Contact contact = new Contact();
     contact.setName("Arcade Data Ltd");
