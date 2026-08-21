@@ -1013,8 +1013,11 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       // method (query() goes straight to a worker), so a task that gets this far is never idempotent.
       final boolean ownTransaction = task.requiresActiveTx() && !database.isTransactionActive();
 
-      // #6526 item 2. Non-null exactly when the transaction below is OURS and therefore carries this executor's
-      // durability policy; the finally reads it back to undo the stamp.
+      // #6526 item 2. ownTx is non-null exactly when the transaction below is OURS and therefore carries this
+      // executor's durability policy; the finally reads the other two back to undo the stamp. Their initial values
+      // are never observed - the finally only runs them when ownTx is non-null, and the branch that sets ownTx sets
+      // both first - so `true` here is a compiler-mandated placeholder and not a default policy (#6526 review round
+      // 5): a primitive cannot carry the "unset" the reference next to it does.
       TransactionContext  ownTx            = null;
       boolean             previousUseWAL   = true;
       WALFile.FlushType   previousWALFlush = null;
