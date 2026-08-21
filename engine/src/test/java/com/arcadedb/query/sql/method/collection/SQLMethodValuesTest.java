@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.method.collection;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DetachedDocument;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.query.sql.executor.Result;
@@ -190,6 +191,32 @@ class SQLMethodValuesTest extends TestHelper {
         assertThat(values.get(i)).as("value at index %d for key '%s'", i, keys.get(i)).isEqualTo(expected);
       }
     }
+  }
+
+  @Test
+  void keysAndValuesAreIndexAlignedOnDetachedDocument() {
+    database.transaction(() ->
+      database.getSchema().createDocumentType("OrderPerson"));
+
+    database.transaction(() -> {
+      final MutableDocument doc = database.newDocument("OrderPerson");
+      doc.set("name", "Alice");
+      doc.set("age", 30);
+      doc.set("city", "Rome");
+      doc.set("country", "Italy");
+      doc.set("email", "alice@example.com");
+      doc.save();
+
+      final DetachedDocument detached = doc.detach();
+
+      final SQLMethod keysFunction = new SQLMethodKeys();
+      final List<String> keys = (List<String>) keysFunction.execute(detached, null, null, null);
+      final List<Object> values = (List<Object>) function.execute(detached, null, null, null);
+
+      assertThat(keys).hasSameSizeAs(values);
+      for (int i = 0; i < keys.size(); i++)
+        assertThat(values.get(i)).as("value at index %d for key '%s'", i, keys.get(i)).isEqualTo(detached.get(keys.get(i)));
+    });
   }
 
   // NEW TESTS - Result object handling
