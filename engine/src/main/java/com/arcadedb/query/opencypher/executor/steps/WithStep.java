@@ -18,6 +18,7 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.function.DistinctNumericKey;
 import com.arcadedb.query.opencypher.LoadCSVRowContext;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
@@ -35,6 +36,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Set;
+import java.util.TreeSet;
 
 /**
  * Execution step for WITH clause.
@@ -180,7 +182,18 @@ public class WithStep extends AbstractExecutionStep {
 
             // Apply DISTINCT
             if (withClause.isDistinct()) {
-              final String resultKey = projectedResult.toString();
+              // Build the key from the projected properties' canonicalized values rather than
+              // projectedResult.toString(): a document/vertex/edge's toString() decorates its RID
+              // with the record's deserialized properties, and a not-yet-loaded property buffer
+              // renders as a placeholder instead of the actual values, so two references to the
+              // very same record can render two different strings depending on load state alone
+              // (issue #6488).
+              final StringBuilder keyBuilder = new StringBuilder();
+              for (final String name : new TreeSet<>(projectedResult.getPropertyNames())) {
+                final Object val = projectedResult.getProperty(name);
+                keyBuilder.append(name).append('=').append(DistinctNumericKey.canonicalize(val)).append('|');
+              }
+              final String resultKey = keyBuilder.toString();
               if (seenResults.contains(resultKey))
                 continue;
               seenResults.add(resultKey);
