@@ -22,7 +22,6 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -90,7 +89,9 @@ public class DetachedDocument extends BaseDocument {
 
   @Override
   public synchronized Map<String, Object> toMap(final boolean includeMetadata) {
-    final Map<String, Object> result = new HashMap<>(map);
+    // LinkedHashMap (not HashMap) so iteration order matches getPropertyNames() (this same
+    // LinkedHashMap-backed map's keySet()) — see MutableDocument.toMap() for the same fix (#6472).
+    final Map<String, Object> result = new LinkedHashMap<>(map);
     if (includeMetadata) {
       result.put(Property.CAT_PROPERTY, "d");
       result.put(Property.TYPE_PROPERTY, type.getName());
