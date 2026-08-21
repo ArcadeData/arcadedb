@@ -65,13 +65,17 @@ public class Profiler {
   private static final int STAT_INDEX_COMPACTIONS = 15;
   private static final int STAT_WAL_PAGES_WRITTEN = 16;
   private static final int STAT_WAL_BYTES_WRITTEN = 17;
-  private static final int MONOTONIC_STATS        = 18;
-  private static final int STAT_WAL_TOTAL_FILES   = 18;
-  private static final int STAT_OPEN_FILES        = 19;
-  private static final int STAT_MAX_OPEN_FILES    = 20;
-  private static final int STAT_ASYNC_QUEUE       = 21;
-  private static final int STAT_ASYNC_PARALLEL    = 22;
-  private static final int STATS_COUNT            = 23;
+  // #6526: monotonic, and it belongs INSIDE the retained range - a durability-flag flipper is exactly the kind of
+  // caller (a bulk load through GraphBatch) that opens a database, does its work and closes it, so a counter that
+  // went back to zero on that close would be zero every time anybody looked at it.
+  private static final int STAT_ASYNC_BOUNDARY_COMMITS = 18;
+  private static final int MONOTONIC_STATS        = 19;
+  private static final int STAT_WAL_TOTAL_FILES   = 19;
+  private static final int STAT_OPEN_FILES        = 20;
+  private static final int STAT_MAX_OPEN_FILES    = 21;
+  private static final int STAT_ASYNC_QUEUE       = 22;
+  private static final int STAT_ASYNC_PARALLEL    = 23;
+  private static final int STATS_COUNT            = 24;
 
   /**
    * Registered database INSTANCES, compared by identity.
@@ -195,6 +199,11 @@ public class Profiler {
     final Map<String, Object> walStats = db.getTransactionManager().getStats();
     acc[STAT_WAL_PAGES_WRITTEN] += statOf(walStats, "pagesWritten");
     acc[STAT_WAL_BYTES_WRITTEN] += statOf(walStats, "bytesWritten");
+
+    // #6526: DatabaseAsyncExecutorImpl.getStats() is lock-free and documented to stay callable on a shut-down
+    // executor, which is the property this method requires of every source it reads - unregisterDatabase() calls it
+    // on a database that is already closing.
+    acc[STAT_ASYNC_BOUNDARY_COMMITS] += ((DatabaseAsyncExecutorImpl) db.async()).getStats().forcedBoundaryCommits;
     return walStats;
   }
 
@@ -220,6 +229,7 @@ public class Profiler {
     final long walTotalFiles = dbStats[STAT_WAL_TOTAL_FILES];
     final long asyncQueueLength = dbStats[STAT_ASYNC_QUEUE];
     final long asyncParallelLevel = dbStats[STAT_ASYNC_PARALLEL];
+    final long asyncForcedBoundaryCommits = dbStats[STAT_ASYNC_BOUNDARY_COMMITS];
 
     final long writeTx = dbStats[STAT_WRITE_TX];
     final long readTx = dbStats[STAT_READ_TX];
@@ -273,6 +283,10 @@ public class Profiler {
     json.put("pageFlushQueueMaxPerDatabase", new JSONObject().put("value", pStats.pageFlushQueueMaxPerDatabase));
     json.put("asyncQueueLength", new JSONObject().put("value", asyncQueueLength));
     json.put("asyncParallelLevel", new JSONObject().put("count", asyncParallelLevel));
+    // #6526: how often a durability-flag change (setTransactionUseWAL()/setTransactionSync()) cut an async worker's
+    // batch transaction short. #6511 traded the pool teardown for this extra commit; this is what makes the trade
+    // measurable instead of something to reconstruct from logs after an incident.
+    json.put("asyncForcedBoundaryCommits", new JSONObject().put("count", asyncForcedBoundaryCommits));
     json.put("pageCacheHits", new JSONObject().put("count", pageCacheHits));
     json.put("pageCacheMiss", new JSONObject().put("count", pageCacheMiss));
     json.put("totalOpenFiles", new JSONObject().put("count", totalOpenFiles));

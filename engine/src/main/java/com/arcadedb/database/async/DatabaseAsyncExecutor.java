@@ -346,6 +346,11 @@ public interface DatabaseAsyncExecutor {
   /**
    * Changes the number of executor threads for asynchronous operations. It is recommended to keep this number equals or lower than the actual cores available
    * on the server.
+   * <p>
+   * Safe to call while other callers have asynchronous work in flight on the same database (issue #6526): growing
+   * only adds workers, and shrinking lets the workers it retires finish the tasks already queued on them - within a
+   * bounded wait this call makes on the caller's behalf - rather than force-exiting them. Nothing already submitted
+   * is dropped, and no unrelated producer is told the executor has shut down.
    *
    * @param parallelLevel Number of executor threads
    */
