@@ -72,16 +72,18 @@ this design.
 
 | Item | Description | Blocks M1? |
 |---|---|---|
-| M0-1 | Stamp the real build version into `info.version`, currently hardcoded to `"1.0.0"` | No |
+| M0-1 | Stamp the bare release version into `info.version` (not the build-stamped `Constants.getVersion()`, which `publish-contract.yml` cannot match against the release tag), currently hardcoded to `"1.0.0"` | No |
 | M0-2 | Publish `openapi.json` and the proto as release assets, with `.sha256` files | Yes |
 | M0-3 | Model PromQL `data.result` as an `anyOf` over vector/matrix/scalar (`oneOf` cannot work: an empty result array validates against every branch) | Yes, for the facade |
 | M0-4 | Settle `ai/chat`: `mode=auto` returns `text/event-stream` while the spec documents JSON | No |
 | M0-5 | Rewrite Epic #4894; close #4897 through #4903 as superseded | No |
 | M0-6 | Model the `arcadedb-session-id` header on `begin`, `commit`, `rollback`, `query`, `command` | Yes |
 
-M0-1, M0-3, and M0-6 are small, independent, and coverable by the existing per-domain contributor
-unit tests. M0-2 should land last so the first published contract already carries the fixes. M0-4
-carries design risk and is deliberately off the critical path.
+M0-3 and M0-6 are small, independent, and coverable by the existing per-domain contributor unit
+tests. M0-1 is not: `createApiInfo()` lives in `OpenApiSpecGenerator` itself, which has no
+per-domain contributor class, so it is covered by `OpenApiSpecGeneratorTest` instead. M0-2 should
+land last so the first published contract already carries the fixes. M0-4 carries design risk and
+is deliberately off the critical path.
 
 Plugin routes are declared statically in `PluginApiSpec`, so a default server yields the complete
 63-operation spec without loading the Raft or metrics plugins.

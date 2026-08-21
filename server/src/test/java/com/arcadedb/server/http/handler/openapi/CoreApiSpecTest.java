@@ -285,4 +285,23 @@ class CoreApiSpecTest {
           .contains("Remote transaction session not found or expired");
     }
   }
+
+  @Test
+  void getQuery404DoesNotClaimTheStaleSessionCasePostAndCommandDo() {
+    final Operation get = openAPI.getPaths().get("/api/v1/query/{database}/{language}/{command}").getGet();
+
+    assertThat(get.getResponses().get("404").getDescription())
+        .as("GetQueryHandler.requiresTransaction() returns false, so a stale session id degrades "
+            + "session-less and answers 200, never 404: the GET query 404 must not claim otherwise")
+        .doesNotContain("Remote transaction session not found or expired");
+
+    for (final String path : List.of("/api/v1/query/{database}", "/api/v1/command/{database}")) {
+      final Operation post = openAPI.getPaths().get(path).getPost();
+
+      assertThat(post.getResponses().get("404").getDescription())
+          .as(path + " has no requiresTransaction() override, so its 404 must still cover the "
+              + "stale-session case")
+          .contains("Remote transaction session not found or expired");
+    }
+  }
 }

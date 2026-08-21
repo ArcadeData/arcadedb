@@ -202,7 +202,7 @@ public class CoreApiSpec implements OpenApiContributor {
         List.of("sql", "cypher", "gremlin", "graphql", "mongo")));
     getOp.addParametersItem(SpecBuilders.pathParam("command", "Query or command to execute"));
     getOp.addParametersItem(SpecBuilders.headerParam(SESSION_HEADER, SESSION_REQUEST_DESCRIPTION, false));
-    getOp.setResponses(createQueryResponses());
+    getOp.setResponses(createGetQueryResponses());
     pathItem.setGet(getOp);
 
     return pathItem;
@@ -482,14 +482,26 @@ public class CoreApiSpec implements OpenApiContributor {
     return responses;
   }
 
+  // GetQueryHandler.requiresTransaction() returns false, so a stale session id on GET query degrades
+  // session-less (DatabaseAbstractHandler.setTransactionInThreadLocal) and answers 200, never 404. The
+  // POST endpoint has no such override, so its 404 does cover the stale-session case.
   private ApiResponses createQueryResponses() {
+    return createQueryResponses(true);
+  }
+
+  private ApiResponses createGetQueryResponses() {
+    return createQueryResponses(false);
+  }
+
+  private ApiResponses createQueryResponses(final boolean sessionAware) {
     final ApiResponses responses = new ApiResponses();
     responses.addApiResponse("200", SpecBuilders.jsonResponse("Query executed successfully", "QueryResponse"));
     responses.addApiResponse("400", SpecBuilders.errorResponse("Bad request"));
     responses.addApiResponse("401", SpecBuilders.errorResponse("Unauthorized"));
-    responses.addApiResponse("404", SpecBuilders.errorResponse(
-        "Database not found, or the session id header names a transaction that no longer resolves "
-            + "(\"Remote transaction session not found or expired\")"));
+    responses.addApiResponse("404", SpecBuilders.errorResponse(sessionAware
+        ? "Database not found, or the session id header names a transaction that no longer resolves "
+            + "(\"Remote transaction session not found or expired\")"
+        : "Database not found"));
     responses.addApiResponse("413", SpecBuilders.errorResponse(
         "The result exceeds 'arcadedb.server.httpQueryMaxResultRows': narrow or page the query"));
     responses.addApiResponse("500", SpecBuilders.errorResponse("Internal server error"));
