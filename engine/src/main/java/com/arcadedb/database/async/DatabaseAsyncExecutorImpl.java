@@ -28,6 +28,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.WALFile;
@@ -72,7 +73,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   private volatile AsyncThread[]     executorThreads;
   private final Object               lifecycleLock                 = new Object();
   // #4961: these settings are written by user threads and read by the worker threads, so they must
-  // be volatile or a change applied after createThreads() may never become visible to the workers.
+  // be volatile or a change may never become visible to the workers. parallelLevel only ever changes
+  // via createThreads() (setParallelLevel), which visibility naturally piggybacks on; transactionUseWAL
+  // and transactionSync are read directly by AsyncThread.executeTask() on every task instead (#6509).
   private volatile int               parallelLevel                 = 1;
   private volatile int               commitEvery;
   private volatile int               backPressurePercentage        = 0;
@@ -224,8 +227,16 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       DatabaseContext.INSTANCE.init(database);
 
       DatabaseContext.INSTANCE.getContext(database.getDatabasePath()).perThreadBucketSelection = true;
-      database.getTransaction().setUseWAL(transactionUseWAL);
-      database.setWALFlush(transactionSync);
+      // Seeds the transaction this thread is about to begin; executeTask() re-applies both on every task
+      // afterwards (#6509), so a later change is picked up without needing this thread respawned. Snapshotted
+      // into locals first, same as executeTask(), so a concurrent setTransactionUseWAL()/setTransactionSync()
+      // flip landing between the two reads can't seed one field from the old policy and the other from the
+      // new one - benign here either way (the first task's own boundary check reconciles it), but consistent
+      // with the same reasoning applied there.
+      final boolean           initialUseWAL = transactionUseWAL;
+      final WALFile.FlushType initialSync   = transactionSync;
+      database.getTransaction().setUseWAL(initialUseWAL);
+      database.setWALFlush(initialSync);
       database.getTransaction().begin(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED); // FORCE THE LOWEST LEVEL
       // OF ISOLATION
 
@@ -280,22 +291,65 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
             .log(this, Level.FINE, "Received async message %s (threadId=%d)", message,
                 Thread.currentThread().threadId());
 
-        if (message.requiresActiveTx() && !database.isTransactionActive())
+        // One snapshot, reused everywhere below: transactionUseWAL/transactionSync are independent
+        // volatiles that any other thread can flip concurrently (another GraphBatch open/close, a direct
+        // caller), so reading them more than once per task would let a flip land in between reads and
+        // desynchronize the boundary check from the stamp (#6509 review).
+        final boolean           currentUseWAL = transactionUseWAL;
+        final WALFile.FlushType currentSync   = transactionSync;
+
+        // A nested execution must never touch the transaction boundary of the outer, suspended task it
+        // runs inside (#5062 review, point 1) - the helping path defers polled tasks back to the run loop
+        // instead of nesting, so `nested` is always false today; every `!nested` guard in this method is
+        // defense-in-depth should a re-entrant call path ever be reintroduced.
+        //
+        // Deliberately does not touch `count`: a flag-triggered boundary commit here closes a transaction
+        // out of band from the commitEvery cadence, so the NEXT periodic boundary below can land anywhere
+        // from immediately (if `count % commitEvery` was already due) to up to `commitEvery` tasks later -
+        // it is measuring "how many tasks since the last periodic check", not "how many since the
+        // transaction last committed". Harmless: it can only make the next real commit arrive sooner or
+        // later than the nominal cadence, never mix data across a durability-policy boundary (that is what
+        // this whole method exists to prevent) or lose a task.
+        final boolean forceFreshTransactionAfterBoundaryFailure =
+            !nested && closeTransactionBoundaryIfDurabilityPolicyChanged(currentUseWAL, currentSync);
+
+        if (message.requiresActiveTx() && (forceFreshTransactionAfterBoundaryFailure || !database.isTransactionActive()))
+          // LocalDatabase.begin() checks isActive() on the CURRENT TransactionContext itself - when
+          // forceFreshTransactionAfterBoundaryFailure is set that reads true, so this deliberately takes
+          // the "already active" branch and pushes a NEW nested context for `message` rather than reusing
+          // the poisoned one left behind by closeTransactionBoundaryIfDurabilityPolicyChanged(), exactly as
+          // it would for any other caller that begins a transaction while one is already open.
           database.begin();
+
+        // Applied per task, not once at thread start (see run()): setTransactionUseWAL()/
+        // setTransactionSync() are plain volatile writes now, so the latest requested durability policy is
+        // picked up here - on a transaction that, by the call above, either just began fresh or was
+        // already running under this same snapshotted policy - instead of requiring the whole pool to be
+        // torn down and respawned for the change to become visible. Skipped when `forceFreshTransactionAfterBoundaryFailure`
+        // is set but `message` does not require an active tx (begin() above was skipped too): the stamp
+        // then lands on the still-active, poisoned transaction rather than a fresh one, which is accepted
+        // since a task that never writes through it does not need it clean - it only means the NEXT task's
+        // boundary check sees this poisoned transaction's flags already matching and leaves it for a later
+        // commitEvery boundary or begin() call to deal with, exactly as untouched as it already was.
+        if (!nested) {
+          database.getTransaction().setUseWAL(currentUseWAL);
+          database.setWALFlush(currentSync);
+        }
 
         message.execute(this, database);
 
-        // #5062 review (point 1): the commit-every-N boundary must never fire from a nested
-        // execution while an enclosing task is suspended mid-execute(), or it would commit that
-        // task's partial writes. The helping path defers tasks instead of nesting (see
-        // offerHelping), so today `nested` is always false here; the guard is defense-in-depth
-        // should a re-entrant call path ever be reintroduced.
         if (!nested) {
           count++;
 
           if (database.isTransactionActive() && count % commitEvery == 0) {
             database.commit();
             database.begin();
+            // TransactionContext.begin()/reset() never reset useWAL/walFlush, so the stamp above would
+            // "happen to" survive this cycle via object reuse even without this - re-applied explicitly
+            // anyway so the guarantee does not depend on that staying true in a different class (#6509
+            // review round 9).
+            database.getTransaction().setUseWAL(currentUseWAL);
+            database.setWALFlush(currentSync);
           }
         }
       } catch (final Throwable e) {
@@ -311,6 +365,81 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
           executingTask.set(nested);
         }
       }
+    }
+
+    /**
+     * If a transaction is already open and was last stamped with different durability flags than
+     * {@code currentUseWAL}/{@code currentSync}, commits it under its own (unmodified) flags before the
+     * caller applies the new ones to anything - a no-op otherwise.
+     * <p>
+     * {@code useWAL}/{@code walFlush} are read only at commit time and then govern the WHOLE accumulated
+     * transaction (see {@code TransactionContext.commit1stPhase}/{@code commit2ndPhase}), not per write, so
+     * re-stamping them onto an already-open transaction without first closing it would silently commit
+     * earlier tasks - queued under the OLD policy by a caller unrelated to whoever changed it - under the
+     * NEW one instead. Before #6509 this could not happen: a flag flip tore down and respawned the whole
+     * pool, and each worker's shutdown path committed its pending transaction under the still-original
+     * flags before the new thread began a fresh one. This restores that "a flag change always starts a
+     * fresh transaction" guarantee explicitly, without the pool teardown.
+     *
+     * @return true if the transaction must be treated as active by the caller's own {@code begin()} guard
+     * even though {@link Database#isTransactionActive()} may still (wrongly) report true afterward - set
+     * only when BOTH the commit above and its rollback fallback fail. {@code TransactionContext.rollback()}
+     * can itself throw before reaching its own {@code reset()} (e.g. a schema-dictionary reload
+     * IOException), leaving the transaction in a half-cleaned, unknown state; a caller that trusted
+     * {@code isTransactionActive()} at that point would skip beginning a fresh transaction and run the next
+     * task against that leftover state instead.
+     * <p>
+     * In that double-failure case the caller's {@code begin()} pushes a new nested {@code TransactionContext}
+     * (see {@code executeTask()}'s caller-side comment) and the poisoned one this method leaves behind stays
+     * on the per-thread transaction stack underneath it - nothing pops a non-top entry. Not a permanent leak
+     * in the common case: {@code DatabaseContext}'s dead-thread sweep (and a normal database close) rolls
+     * back and clears every entry on the stack, not just the top, once this worker thread eventually ends.
+     * Until then it sits inert (only the stack top is ever read or written by later tasks) at the cost of one
+     * small object. That reclaim itself calls {@code rollback()} again, though, so if the original rollback
+     * failure was persistent (e.g. a disk genuinely full, a corrupted schema dictionary that keeps throwing)
+     * rather than transient, the sweep's own attempt can fail the same way - its own contract is a logged
+     * warning and moving on, not a guarantee, and its own comment already documents that failure mode as
+     * held file locks. A double failure on top of the double failure that got here is out of scope for this
+     * class to solve.
+     */
+    private boolean closeTransactionBoundaryIfDurabilityPolicyChanged(final boolean currentUseWAL,
+        final WALFile.FlushType currentSync) {
+      if (!database.isTransactionActive())
+        return false;
+
+      final TransactionContext activeTx = database.getTransaction();
+      if (activeTx.isUseWAL() == currentUseWAL && activeTx.getWALFlush() == currentSync)
+        return false;
+
+      try {
+        database.commit();
+      } catch (final Throwable e) {
+        // This commit closes out EARLIER tasks' accumulated work, not the task that triggered this check -
+        // which has not run yet - so the failure must not be attributed to it: left uncaught, the caller's
+        // task would still reach completed() without ever reaching execute(), silently discarding it
+        // instead of running it. Reported here instead, and the caller still gets its own begin()/execute()
+        // attempt on a transaction this method leaves inactive (see below) - if the failure left the
+        // database unusable, that attempt fails too, for a reason that legitimately belongs to it.
+        onError(e);
+        try {
+          // TransactionContext.commit()'s own failure paths always leave the transaction inactive
+          // (rollback()/reset() run in every catch/finally there), but LocalDatabase.commit() wraps the
+          // call in executeInReadLock(...), so a failure originating outside TransactionContext (e.g. the
+          // read-lock acquisition) is not provably covered by that guarantee - made unconditional here
+          // instead of relying on it.
+          if (database.isTransactionActive())
+            database.rollback();
+        } catch (final Throwable rollbackError) {
+          // A failure HERE must not escape either, for the same reason as the commit failure above: it
+          // would repeat the exact bug this method exists to close, one level deeper. Logged and swallowed;
+          // the true/false returned tells the caller whether it can still trust isTransactionActive() or
+          // must force a fresh transaction regardless of what that reads.
+          LogManager.instance().log(this, Level.WARNING,
+              "Error rolling back the transaction after a failed durability-boundary commit", rollbackError);
+          return database.isTransactionActive();
+        }
+      }
+      return false;
     }
 
     private void drainQueueNotifyingWaiters() {
@@ -375,8 +504,10 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
   @Override
   public void setTransactionUseWAL(final boolean transactionUseWAL) {
+    // #6509: a plain volatile write. AsyncThread.executeTask() re-applies this to the worker's
+    // TransactionContext before every task, so the new value takes effect on the very next task
+    // without tearing down and respawning the whole pool (the #5665 mechanism this replaces).
     this.transactionUseWAL = transactionUseWAL;
-    createThreads(parallelLevel);
   }
 
   @Override
@@ -391,8 +522,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
   @Override
   public void setTransactionSync(final WALFile.FlushType transactionSync) {
+    // #6509: see setTransactionUseWAL() above - same plain-volatile-write treatment.
     this.transactionSync = transactionSync;
-    createThreads(parallelLevel);
   }
 
   public long getCheckForStalledQueuesMaxDelay() {
@@ -442,13 +573,15 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       scheduled = scheduleTask(getBestSlot(), new DatabaseAsyncIndexCompaction(index), false, 0);
     } catch (final DatabaseOperationException e) {
       // #6505: getBestSlot()/scheduleTask throw the SAME "shut down" exception for a genuine terminal close()/
-      // kill() (#4955, the case this was written for) and for the momentary window setTransactionUseWAL()/
-      // setTransactionSync() leaves while createThreads() tears down and respawns the whole pool for an
-      // UNRELATED caller (issue #5665) - the pool is back within milliseconds, but this onAfterCommit hook runs
-      // AFTER writeTransactionToWAL(), so letting the exception escape crossed the WAL point of no return and
-      // fenced the entire database (#5053) over a best-effort scheduling hiccup that had nothing to do with the
-      // committing transaction's data. This finally hands the reservation back exactly like the full-queue case
-      // above: no compaction is lost, it is picked up by the next commit past the threshold.
+      // kill() (#4955, the case this was written for) and for the momentary window createThreads() leaves while
+      // it tears down and respawns the whole pool for an UNRELATED caller (issue #5665 - setTransactionUseWAL()/
+      // setTransactionSync() used to trigger this on every GraphBatch open/close; #6509 removed that path, but
+      // setParallelLevel() still goes through createThreads() and leaves the same momentary window) - the pool
+      // is back within milliseconds, but this onAfterCommit hook runs AFTER writeTransactionToWAL(), so letting
+      // the exception escape crossed the WAL point of no return and fenced the entire database (#5053) over a
+      // best-effort scheduling hiccup that had nothing to do with the committing transaction's data. This finally
+      // hands the reservation back exactly like the full-queue case above: no compaction is lost, it is picked up
+      // by the next commit past the threshold.
       LogManager.instance().log(this, Level.WARNING, "Could not schedule compaction of index '%s': %s", null,
           index, e.getMessage());
     } finally {
@@ -1286,8 +1419,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   }
 
   // Package-private test hook (#5072 review, point 4): rebuilds the worker pool so configuration
-  // changes (e.g. ASYNC_OPERATIONS_QUEUE_SIZE) are picked up deterministically, instead of the
-  // tests relying on setTransactionUseWAL()'s createThreads() side effect.
+  // changes (e.g. ASYNC_OPERATIONS_QUEUE_SIZE) are picked up deterministically. Originally an
+  // alternative to tests relying on setTransactionUseWAL()'s createThreads() side effect; #6509
+  // removed that side effect, making this the only way to force a rebuild from a test.
   void recreateThreadsForTests() {
     createThreads(parallelLevel);
   }
