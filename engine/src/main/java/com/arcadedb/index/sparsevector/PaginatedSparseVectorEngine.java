@@ -1155,11 +1155,15 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
 
     final int span = last - first + 1;
     if (span > inputs.length)
+      // Named by segment id for the same reason the shape guard's line is: an operator can match an
+      // id against the component files on disk, while an epoch is an internal ordinal they have no
+      // other way to see. That matters more here than there - this is a WARNING, so it is the line
+      // someone actually reads.
       LogManager.instance().log(this, Level.WARNING,
           "Sparse-vector compaction of '%s' picked %d segment(s) with %d non-selected segment(s) in between; widening to the "
-              + "contiguous epoch run [%d..%d] so the merged segment cannot outrank a segment it skipped",
-          null, indexName, inputs.length, span - inputs.length, ordered[first].recencyEpoch(),
-          ordered[last].recencyEpoch());
+              + "contiguous run of segments %d..%d so the merged segment cannot outrank a segment it skipped",
+          null, indexName, inputs.length, span - inputs.length, ordered[first].segmentId(),
+          ordered[last].segmentId());
     return Arrays.copyOfRange(ordered, first, last + 1);
   }
 
