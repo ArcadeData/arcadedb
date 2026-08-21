@@ -219,7 +219,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   // Graph file for persistent storage of graph topology
   // Allows lazy-loading graph from disk and avoiding expensive rebuilds
-  private       LSMVectorIndexGraphFile graphFile;
+  // Written only under graphBuildLock (builders are serialized against each other by that mutex) or during
+  // construction (before the instance escapes), but read by several call sites - getFileIds() in particular -
+  // under no lock at all. volatile is what gives those readers a happens-before edge against the writer,
+  // matching graphState/graphIndex/ordinalToVectorId/vectorIndex just above, which are read the same way
+  // (issue #6527).
+  private volatile LSMVectorIndexGraphFile graphFile;
   private final AtomicInteger           mutationsSinceSerialize;
 
   // Product Quantization (PQ) for zero-disk-I/O approximate search
