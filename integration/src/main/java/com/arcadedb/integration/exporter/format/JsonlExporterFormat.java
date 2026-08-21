@@ -122,10 +122,14 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
 
       final JSONObject recordJson = new JSONObject();
 
+      // Issue #6455: the importer feeds the exported JSON straight back through MutableDocument.fromMap(), so
+      // DATE/DATETIME_MICROS/DATETIME_NANOS must be encoded the way that schema-typed write-back path decodes
+      // them, not as the epoch-millis number the default (HTTP graph-mode) encoding uses.
       final JsonGraphSerializer graphSerializer = JsonGraphSerializer.createJsonGraphSerializer()
           .setSharedJson(recordJson)
           .setIncludeMetadata(false)
-          .setExpandVertexEdges(true);
+          .setExpandVertexEdges(true)
+          .setPrecisionAwareTemporals(true);
 
       exportVertices(vertexTypes, graphSerializer);
       exportDocuments(documentTypes, graphSerializer);
