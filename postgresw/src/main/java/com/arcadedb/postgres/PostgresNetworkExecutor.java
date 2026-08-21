@@ -1759,8 +1759,15 @@ public class PostgresNetworkExecutor extends Thread {
       }
       resultFormatSectionRead = true;
 
-      if (errorInTransaction)
+      if (errorInTransaction) {
+        // The Bind message is already fully consumed off the wire at this point (parameter values and
+        // result-format codes), so no drain is needed. Mirror the simple-query fix from #6542/#6457: refuse
+        // with an ErrorResponse instead of silently returning, so the client knows this Bind never ran
+        // (issue #6545). errorInTransaction stays set until COMMIT/ROLLBACK/END ends the block.
+        writeError(ERROR_SEVERITY.ERROR,
+            "current transaction is aborted, commands ignored until end of transaction block", "25P02");
         return;
+      }
 
       // Store the portal under the portal name (which may be empty for unnamed portal)
       // This is necessary because EXECUTE looks up portals by portal name, not prepared statement name
