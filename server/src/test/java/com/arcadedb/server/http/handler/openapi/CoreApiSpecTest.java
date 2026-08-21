@@ -152,4 +152,69 @@ class CoreApiSpecTest {
         .as("GetReadyHandler.execute only ever returns 204 or 503")
         .containsExactlyInAnyOrder("204", "503");
   }
+
+  @Test
+  void beginDeclaresTheSessionIdResponseHeader() {
+    final Operation post = openAPI.getPaths().get("/api/v1/begin/{database}").getPost();
+
+    assertThat(post.getResponses().get("204").getHeaders())
+        .as("a client that cannot read the session id cannot use the transaction it just opened")
+        .containsKey("arcadedb-session-id");
+  }
+
+  @Test
+  void commitAndRollbackDeclareTheSessionIdRequestHeader() {
+    for (final String path : List.of("/api/v1/commit/{database}", "/api/v1/rollback/{database}")) {
+      final Operation post = openAPI.getPaths().get(path).getPost();
+      final Parameter header = post.getParameters().stream()
+          .filter(p -> "arcadedb-session-id".equals(p.getName()))
+          .findFirst()
+          .orElseThrow(() -> new AssertionError("no session header declared on " + path));
+
+      assertThat(header.getIn())
+          .as("the session id travels as a header on " + path)
+          .isEqualTo("header");
+    }
+  }
+
+  @Test
+  void queryAndCommandAcceptAnOptionalSessionIdHeader() {
+    for (final String path : List.of("/api/v1/query/{database}", "/api/v1/command/{database}")) {
+      final Operation post = openAPI.getPaths().get(path).getPost();
+      final Parameter header = post.getParameters().stream()
+          .filter(p -> "arcadedb-session-id".equals(p.getName()))
+          .findFirst()
+          .orElseThrow(() -> new AssertionError("no session header declared on " + path));
+
+      assertThat(header.getRequired())
+          .as("running outside a transaction must remain legal on " + path)
+          .isFalse();
+    }
+  }
+
+  @Test
+  void transactionOperationsDeclare204AndNot200() {
+    for (final String path : List.of("/api/v1/begin/{database}", "/api/v1/commit/{database}",
+        "/api/v1/rollback/{database}")) {
+      final Operation post = openAPI.getPaths().get(path).getPost();
+
+      assertThat(post.getResponses())
+          .as("PostBeginHandler, PostCommitHandler and PostRollbackHandler all return "
+              + "'new ExecutionResponse(204, \"\")', so " + path + " must declare 204")
+          .containsKey("204");
+      assertThat(post.getResponses())
+          .as(path + " must not declare 200: the handler never returns it, and a generated client "
+              + "would deserialize a body that is never sent")
+          .doesNotContainKey("200");
+    }
+  }
+
+  @Test
+  void beginDeclaresA409ForAnAlreadyOpenSession() {
+    final Operation post = openAPI.getPaths().get("/api/v1/begin/{database}").getPost();
+
+    assertThat(post.getResponses())
+        .as("PostBeginHandler returns 409 when the request carries a session id that still resolves")
+        .containsKey("409");
+  }
 }
