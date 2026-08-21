@@ -147,29 +147,29 @@ class Issue6414ContainsTextMultiPropertyIndexTest extends TestHelper {
   }
 
   /**
-   * Pins what a SECOND condition on an already-claimed property does today, which issue #6427 exists to change. The
-   * planner claims one condition per index property, so this one is answered by the index and that one by the residual
-   * {@code String.contains} - the last place where the same operator still means two things in one query. The
-   * assertions are a record of the current answer, not an endorsement of it: the third is the one #6427 will flip.
+   * Pins what a SECOND condition on an already-claimed property does now that issue #6427 is fixed: the planner claims
+   * every {@code CONTAINSTEXT} condition on an index property, not just the first, so both reach the index instead of
+   * one being answered by the residual {@code String.contains}.
    */
   @Test
-  void aSecondConditionOnTheSamePropertyIsStillAnsweredByTheRowFilter() {
+  void aSecondConditionOnTheSamePropertyIsAlsoAnsweredByTheIndex() {
     createArticles("CREATE INDEX ON Article6414 (title, content) FULL_TEXT");
     database.transaction(() -> database.command("sql",
         "INSERT INTO Article6414 SET id = 'e', title = 'java concurrency', content = 'threads'"));
 
     database.transaction(() -> {
-      // The index answers 'java'; the row filter answers 'concurrency' as a substring, and agrees here.
       assertThat(idsMatching(
           "SELECT id FROM Article6414 WHERE title CONTAINSTEXT 'java' AND title CONTAINSTEXT 'concurrency'"))
           .containsExactly("e");
-      // A second condition that matches nothing still empties the result: it is checked, just not by the index.
+      // A second condition that matches nothing still empties the result.
       assertThat(idsMatching(
           "SELECT id FROM Article6414 WHERE title CONTAINSTEXT 'java' AND title CONTAINSTEXT 'zzz'")).isEmpty();
-      // #6427: the index is case-insensitive and the row filter is not, so the two conditions disagree about the same
-      // word. Once a second condition reaches the index this becomes 'e'.
+      // Issue #6427: the index is case-insensitive, so the two conditions now agree about the same word regardless of
+      // case - this used to answer empty, when the second condition was still evaluated by the residual, case-sensitive
+      // String.contains.
       assertThat(idsMatching(
-          "SELECT id FROM Article6414 WHERE title CONTAINSTEXT 'java' AND title CONTAINSTEXT 'CONCURRENCY'")).isEmpty();
+          "SELECT id FROM Article6414 WHERE title CONTAINSTEXT 'java' AND title CONTAINSTEXT 'CONCURRENCY'"))
+          .containsExactly("e");
     });
   }
 

@@ -41,16 +41,36 @@ class LSMVectorIndexMetrics {
   // expensive thing this index does, and until now it was only a log line (issue #5558). Counts the plain k-NN path
   // only, which is the only one with a fallback to count: the grouped and PQ paths deliberately have none.
   private final AtomicLong bruteForceScans = new AtomicLong(0);
+  // Queries answered by the pre-filter plan (issue #6502, extended to the groupBy and PQ-approximate paths by issue
+  // #6514): the RID allow-list was narrow enough that scoring it directly was chosen up front, in place of the HNSW
+  // graph walk. Unlike bruteForceScans this is not a fallback - it is the cheaper of the two plans available for a
+  // given search path (exact on the plain and groupBy paths, PQ-approximate on the PQ path), picked before any
+  // graph traversal ran. Shared across all three paths; a query on any of them can bump this counter.
+  private final AtomicLong preFilterSearches = new AtomicLong(0);
   // Grouped searches (vector.neighbors with groupBy) that ran out of candidate budget before they could open `limit`
   // distinct groups, so the caller got a correct but short answer. Finding the limit-th nearest group costs however
   // many candidates the data puts between it and the query, which no fixed budget can guarantee (issue #5761), so
   // this is the signal to raise efSearch on the index or the query.
   private final AtomicLong groupedSearchesShortOfLimit = new AtomicLong(0);
+  // Grouped searches that merged at least one row out of the delta buffer into their answer (issue #6501). Before
+  // that issue the grouped path skipped the buffer outright, so a groupBy query silently answered from the corpus as
+  // of the last graph rebuild while the same query without groupBy returned the newer rows; the merge is what closed
+  // that, and this counter is what makes it visible. A number that tracks the query rate means the graph is
+  // persistently behind the write rate and every grouped query is paying a linear scan of the buffer for it -
+  // deltaVectorsCount says how long that scan is, and a lower vectorIndex.mutationsBeforeRebuild or
+  // rebuildGraphRatio is what shortens it.
+  private final AtomicLong groupedSearchesMergingDelta = new AtomicLong(0);
   // Times a persisted graph was reused on the strength of its node count alone, because it carries no manifest
   // saying which records it was built over (issue #6106) - a graph written by a version older than the manifest, or
   // one restored from a backup, which does not carry the sidecar. Non-zero means this index is still being judged by
   // the weaker comparison; REBUILD INDEX, or any graph persist, writes a manifest and takes it off that path.
   private final AtomicLong unverifiedGraphReuses = new AtomicLong(0);
+  // Online rebuild cycles declined because the estimated peak footprint did not fit the available heap (issue
+  // #6503). Deferring is the intended outcome - the alternative is an OutOfMemoryError - but it is not free: the
+  // graph stays as stale as the delta buffer is long, so every query pays a longer brute-force scan over it. A
+  // number that keeps climbing is the signal to give the JVM more heap, lower graphBuildCacheMaxHeapPercent, or
+  // split the index; one that climbed once and stopped is a transient the next trigger already recovered from.
+  private final AtomicLong rebuildsDeferredForMemory = new AtomicLong(0);
 
   // Vector fetch source tracking
   private final AtomicLong vectorFetchFromQuantized = new AtomicLong(0);
@@ -87,12 +107,24 @@ class LSMVectorIndexMetrics {
     bruteForceScans.incrementAndGet();
   }
 
+  void incrementPreFilterSearches() {
+    preFilterSearches.incrementAndGet();
+  }
+
   void incrementGroupedSearchesShortOfLimit() {
     groupedSearchesShortOfLimit.incrementAndGet();
   }
 
+  void incrementGroupedSearchesMergingDelta() {
+    groupedSearchesMergingDelta.incrementAndGet();
+  }
+
   void incrementUnverifiedGraphReuses() {
     unverifiedGraphReuses.incrementAndGet();
+  }
+
+  void incrementRebuildsDeferredForMemory() {
+    rebuildsDeferredForMemory.incrementAndGet();
   }
 
   // Vector fetch source tracking methods
@@ -141,8 +173,16 @@ class LSMVectorIndexMetrics {
     return bruteForceScans.get();
   }
 
+  long getPreFilterSearches() {
+    return preFilterSearches.get();
+  }
+
   long getGroupedSearchesShortOfLimit() {
     return groupedSearchesShortOfLimit.get();
+  }
+
+  long getGroupedSearchesMergingDelta() {
+    return groupedSearchesMergingDelta.get();
   }
 
   long getVectorFetchFromQuantized() {
@@ -189,8 +229,11 @@ class LSMVectorIndexMetrics {
     stats.put("insertOperations", insertOperations.get());
     stats.put("graphRebuildCount", graphRebuildCount.get());
     stats.put("bruteForceScans", bruteForceScans.get());
+    stats.put("preFilterSearches", preFilterSearches.get());
     stats.put("groupedSearchesShortOfLimit", groupedSearchesShortOfLimit.get());
+    stats.put("groupedSearchesMergingDelta", groupedSearchesMergingDelta.get());
     stats.put("unverifiedGraphReuses", unverifiedGraphReuses.get());
+    stats.put("rebuildsDeferredForMemory", rebuildsDeferredForMemory.get());
     stats.put("compactionCount", compactionCount.get());
 
     stats.put("vectorFetchFromQuantized", vectorFetchFromQuantized.get());
@@ -209,8 +252,11 @@ class LSMVectorIndexMetrics {
     insertOperations.set(0);
     graphRebuildCount.set(0);
     bruteForceScans.set(0);
+    preFilterSearches.set(0);
     groupedSearchesShortOfLimit.set(0);
+    groupedSearchesMergingDelta.set(0);
     unverifiedGraphReuses.set(0);
+    rebuildsDeferredForMemory.set(0);
     compactionCount.set(0);
     vectorFetchFromQuantized.set(0);
     vectorFetchFromDocuments.set(0);

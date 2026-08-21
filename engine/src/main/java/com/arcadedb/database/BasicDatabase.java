@@ -46,6 +46,14 @@ public interface BasicDatabase extends AutoCloseable {
 
   boolean isOpen();
 
+  /**
+   * Returns true if the database is fenced after a commit failed past its WAL point of no return (#5053).
+   * A fenced database refuses every further operation until it is closed and reopened to run recovery.
+   */
+  default boolean isFencedForRecovery() {
+    return false;
+  }
+
   Schema getSchema();
 
   @Override

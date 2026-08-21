@@ -102,8 +102,12 @@ public class TransactionManager {
         @Override
         public void run() {
           try {
-            if (!database.isOpen()) {
-              // DB CLOSED, CANCEL THE TASK
+            if (!database.isOpen() || database.isFencedForRecovery()) {
+              // DB CLOSED, OR FENCED AND WAITING FOR A CLOSE/REOPEN TO RUN RECOVERY (#5053): CANCEL THE TASK.
+              // A fenced database never clears the fence on its own, so there is nothing left for this task to
+              // do until close() creates a fresh TransactionManager (and timer) on reopen. Leaving the task
+              // running would otherwise hit checkDatabaseIsOpen()'s fenced check every second and log a
+              // misleading SEVERE stack trace on top of the real fencing failure already logged.
               cancel();
               return;
             }

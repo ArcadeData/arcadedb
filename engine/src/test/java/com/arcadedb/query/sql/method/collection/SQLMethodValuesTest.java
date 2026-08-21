@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.method.collection;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DetachedDocument;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.query.sql.executor.Result;
@@ -90,11 +91,11 @@ class SQLMethodValuesTest extends TestHelper {
 
       Object result = function.execute(doc, null, null, null);
 
-      // Flat collection of the document's property values (toMap() also carries the internal
-      // fields RID, type marker "d", type name), not wrapped in an extra one-element list.
+      // Flat collection of the document's declared property values. toMap(false) excludes the
+      // internal fields (RID, type marker "d", type name), so values() aligns with keys().
       assertThat(result).isInstanceOf(Collection.class);
       final Collection<Object> values = (Collection<Object>) result;
-      assertThat(values).containsExactlyInAnyOrder("Alice", 30, doc.getIdentity().toString(), "d", "Person");
+      assertThat(values).containsExactlyInAnyOrder("Alice", 30);
     });
   }
 
@@ -122,10 +123,100 @@ class SQLMethodValuesTest extends TestHelper {
 
     assertThat(result).isInstanceOf(List.class);
     List<?> flattenedValues = (List<?>) result;
-    // Each document contributes its own (unwrapped) toMap() values: name, age plus the 3
-    // internal fields (RID, type marker, type name) = 5 values per document.
-    assertThat(flattenedValues).hasSize(10);
+    // Each document contributes its own (unwrapped) declared-property values: name, age = 2
+    // values per document (metadata fields excluded via toMap(false)).
+    assertThat(flattenedValues).hasSize(4);
     assertThat((List<Object>) flattenedValues).contains("Alice", 30, "Bob", 25);
+  }
+
+  // Regression tests for issue #6472: keys()/values() must be index-aligned, not just same-sized
+
+  @Test
+  void keysAndValuesAreIndexAlignedForDocumentWithSeveralProperties() {
+    database.transaction(() ->
+      database.getSchema().createDocumentType("OrderPerson"));
+
+    database.transaction(() -> {
+      final MutableDocument doc = database.newDocument("OrderPerson");
+      doc.set("name", "Alice");
+      doc.set("age", 30);
+      doc.set("city", "Rome");
+      doc.set("country", "Italy");
+      doc.set("email", "alice@example.com");
+      doc.save();
+
+      final SQLMethod keysFunction = new SQLMethodKeys();
+
+      final List<String> keys = (List<String>) keysFunction.execute(doc, null, null, null);
+      final List<Object> values = (List<Object>) function.execute(doc, null, null, null);
+
+      assertThat(keys).hasSameSizeAs(values);
+      for (int i = 0; i < keys.size(); i++)
+        assertThat(values.get(i)).as("value at index %d for key '%s'", i, keys.get(i)).isEqualTo(doc.get(keys.get(i)));
+    });
+  }
+
+  @Test
+  void keysAndValuesAreIndexAlignedViaSQLOnStoredDocument() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("OrderPerson");
+
+      final MutableDocument doc = database.newDocument("OrderPerson");
+      doc.set("name", "Alice");
+      doc.set("age", 30);
+      doc.set("city", "Rome");
+      doc.set("country", "Italy");
+      doc.set("email", "alice@example.com");
+      doc.save();
+    });
+
+    // Reproduces the SQL scenario from issue #6472, on a document reloaded from storage
+    // (an ImmutableDocument), not the in-memory MutableDocument used right after save().
+    try (ResultSet resultSet = database.query("sql",
+        "SELECT @this.keys() AS k, @this.values() AS v FROM OrderPerson LIMIT 1")) {
+      final Result row = resultSet.next();
+      final List<String> keys = row.getProperty("k");
+      final List<Object> values = row.getProperty("v");
+
+      assertThat(keys).hasSameSizeAs(values);
+      for (int i = 0; i < keys.size(); i++) {
+        final Object expected = switch (keys.get(i)) {
+          case "name" -> "Alice";
+          case "age" -> 30;
+          case "city" -> "Rome";
+          case "country" -> "Italy";
+          case "email" -> "alice@example.com";
+          default -> throw new AssertionError("Unexpected key: " + keys.get(i));
+        };
+        assertThat(values.get(i)).as("value at index %d for key '%s'", i, keys.get(i)).isEqualTo(expected);
+      }
+    }
+  }
+
+  @Test
+  void keysAndValuesAreIndexAlignedOnDetachedDocument() {
+    database.transaction(() ->
+      database.getSchema().createDocumentType("OrderPerson"));
+
+    database.transaction(() -> {
+      final MutableDocument doc = database.newDocument("OrderPerson");
+      doc.set("name", "Alice");
+      doc.set("age", 30);
+      doc.set("city", "Rome");
+      doc.set("country", "Italy");
+      doc.set("email", "alice@example.com");
+      doc.save();
+
+      final DetachedDocument detached = doc.detach();
+
+      final SQLMethod keysFunction = new SQLMethodKeys();
+      final List<String> keys = (List<String>) keysFunction.execute(detached, null, null, null);
+      final List<Object> values = (List<Object>) function.execute(detached, null, null, null);
+
+      assertThat(keys).hasSameSizeAs(values);
+      for (int i = 0; i < keys.size(); i++)
+        assertThat(values.get(i)).as("value at index %d for key '%s'", i, keys.get(i)).isEqualTo(detached.get(keys.get(i)));
+    });
   }
 
   // NEW TESTS - Result object handling

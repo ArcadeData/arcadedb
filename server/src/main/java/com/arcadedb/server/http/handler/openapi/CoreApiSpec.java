@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler.openapi;
 
+import com.arcadedb.server.http.HttpSessionManager;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.Operation;
 import io.swagger.v3.oas.models.PathItem;
@@ -37,6 +38,27 @@ import java.util.List;
  * lifecycle.
  */
 public class CoreApiSpec implements OpenApiContributor {
+
+  private static final String SESSION_HEADER = HttpSessionManager.ARCADEDB_SESSION_ID;
+
+  private static final String SESSION_REQUEST_DESCRIPTION = """
+      Session id returned by 'beginTransaction'. Present it on every call that must run inside that \
+      transaction, and on the commit or rollback that ends it. Omit it to run outside a transaction.""";
+
+  private static final String BEGIN_SESSION_REQUEST_DESCRIPTION = """
+      Normally omitted: 'beginTransaction' opens a new transaction and returns its own session id. \
+      Supplying a session id here that still resolves to an open transaction does not start a nested \
+      transaction; it makes the call fail with 409 instead.""";
+
+  // Used only by commit and rollback: on those two, unlike query/command, omitting the header is
+  // NOT a safe "run outside a transaction". requiresTransaction() is false and isTransactionActive()
+  // is false on the fresh context, so the handler still answers 204 while committing or rolling back
+  // nothing. A generated client that loses the session id would otherwise report success while the
+  // caller's writes are gone.
+  private static final String TRANSACTION_END_SESSION_REQUEST_DESCRIPTION = """
+      Session id returned by 'beginTransaction', identifying the transaction to end. Omitting it, or \
+      presenting an id that no longer resolves to an open transaction, is an idempotent no-op: the \
+      call still answers 204, but commits or rolls back nothing.""";
 
   @Override
   public void contribute(final OpenAPI openAPI) {
@@ -179,7 +201,8 @@ public class CoreApiSpec implements OpenApiContributor {
     getOp.addParametersItem(SpecBuilders.pathParam("language", "Query language (sql, cypher, gremlin, graphql, mongo)",
         List.of("sql", "cypher", "gremlin", "graphql", "mongo")));
     getOp.addParametersItem(SpecBuilders.pathParam("command", "Query or command to execute"));
-    getOp.setResponses(createQueryResponses());
+    getOp.addParametersItem(SpecBuilders.headerParam(SESSION_HEADER, SESSION_REQUEST_DESCRIPTION, false));
+    getOp.setResponses(createGetQueryResponses());
     pathItem.setGet(getOp);
 
     return pathItem;
@@ -194,6 +217,7 @@ public class CoreApiSpec implements OpenApiContributor {
     postOp.setOperationId("executeQueryPost");
     postOp.addTagsItem("Query");
     postOp.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
+    postOp.addParametersItem(SpecBuilders.headerParam(SESSION_HEADER, SESSION_REQUEST_DESCRIPTION, false));
     postOp.setRequestBody(SpecBuilders.jsonBody("Query request with command and optional parameters", "QueryRequest", true));
     postOp.setResponses(createQueryResponses());
     pathItem.setPost(postOp);
@@ -210,6 +234,7 @@ public class CoreApiSpec implements OpenApiContributor {
     postOp.setOperationId("executeCommand");
     postOp.addTagsItem("Command");
     postOp.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
+    postOp.addParametersItem(SpecBuilders.headerParam(SESSION_HEADER, SESSION_REQUEST_DESCRIPTION, false));
     postOp.setRequestBody(SpecBuilders.jsonBody("Command request with command and optional parameters", "CommandRequest", true));
     postOp.setResponses(createCommandResponses());
     pathItem.setPost(postOp);
@@ -226,7 +251,8 @@ public class CoreApiSpec implements OpenApiContributor {
     postOp.setOperationId("beginTransaction");
     postOp.addTagsItem("Transaction");
     postOp.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
-    postOp.setResponses(createTransactionResponses());
+    postOp.addParametersItem(SpecBuilders.headerParam(SESSION_HEADER, BEGIN_SESSION_REQUEST_DESCRIPTION, false));
+    postOp.setResponses(createBeginResponses());
     pathItem.setPost(postOp);
 
     return pathItem;
@@ -241,6 +267,7 @@ public class CoreApiSpec implements OpenApiContributor {
     postOp.setOperationId("commitTransaction");
     postOp.addTagsItem("Transaction");
     postOp.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
+    postOp.addParametersItem(SpecBuilders.headerParam(SESSION_HEADER, TRANSACTION_END_SESSION_REQUEST_DESCRIPTION, false));
     postOp.setResponses(createTransactionResponses());
     pathItem.setPost(postOp);
 
@@ -256,6 +283,7 @@ public class CoreApiSpec implements OpenApiContributor {
     postOp.setOperationId("rollbackTransaction");
     postOp.addTagsItem("Transaction");
     postOp.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
+    postOp.addParametersItem(SpecBuilders.headerParam(SESSION_HEADER, TRANSACTION_END_SESSION_REQUEST_DESCRIPTION, false));
     postOp.setResponses(createTransactionResponses());
     pathItem.setPost(postOp);
 
@@ -454,12 +482,26 @@ public class CoreApiSpec implements OpenApiContributor {
     return responses;
   }
 
+  // GetQueryHandler.requiresTransaction() returns false, so a stale session id on GET query degrades
+  // session-less (DatabaseAbstractHandler.setTransactionInThreadLocal) and answers 200, never 404. The
+  // POST endpoint has no such override, so its 404 does cover the stale-session case.
   private ApiResponses createQueryResponses() {
+    return createQueryResponses(true);
+  }
+
+  private ApiResponses createGetQueryResponses() {
+    return createQueryResponses(false);
+  }
+
+  private ApiResponses createQueryResponses(final boolean sessionAware) {
     final ApiResponses responses = new ApiResponses();
     responses.addApiResponse("200", SpecBuilders.jsonResponse("Query executed successfully", "QueryResponse"));
     responses.addApiResponse("400", SpecBuilders.errorResponse("Bad request"));
     responses.addApiResponse("401", SpecBuilders.errorResponse("Unauthorized"));
-    responses.addApiResponse("404", SpecBuilders.errorResponse("Database not found"));
+    responses.addApiResponse("404", SpecBuilders.errorResponse(sessionAware
+        ? "Database not found, or the session id header names a transaction that no longer resolves "
+            + "(\"Remote transaction session not found or expired\")"
+        : "Database not found"));
     responses.addApiResponse("413", SpecBuilders.errorResponse(
         "The result exceeds 'arcadedb.server.httpQueryMaxResultRows': narrow or page the query"));
     responses.addApiResponse("500", SpecBuilders.errorResponse("Internal server error"));
@@ -471,7 +513,9 @@ public class CoreApiSpec implements OpenApiContributor {
     responses.addApiResponse("200", SpecBuilders.jsonResponse("Command executed successfully", "QueryResponse"));
     responses.addApiResponse("400", SpecBuilders.errorResponse("Bad request"));
     responses.addApiResponse("401", SpecBuilders.errorResponse("Unauthorized"));
-    responses.addApiResponse("404", SpecBuilders.errorResponse("Database not found"));
+    responses.addApiResponse("404", SpecBuilders.errorResponse(
+        "Database not found, or the session id header names a transaction that no longer resolves "
+            + "(\"Remote transaction session not found or expired\")"));
     responses.addApiResponse("413", SpecBuilders.errorResponse(
         "The result exceeds 'arcadedb.server.httpQueryMaxResultRows': narrow or page the command"));
     responses.addApiResponse("500", SpecBuilders.errorResponse("Internal server error"));
@@ -483,13 +527,29 @@ public class CoreApiSpec implements OpenApiContributor {
 
     final ApiResponse successResponse = new ApiResponse();
     successResponse.setDescription("Transaction operation completed successfully");
-    responses.addApiResponse("200", successResponse);
+    responses.addApiResponse("204", successResponse);
 
     responses.addApiResponse("400", SpecBuilders.errorResponse("Bad request"));
     responses.addApiResponse("401", SpecBuilders.errorResponse("Unauthorized"));
     responses.addApiResponse("404", SpecBuilders.errorResponse("Database not found"));
     responses.addApiResponse("500", SpecBuilders.errorResponse("Internal server error"));
 
+    return responses;
+  }
+
+  /**
+   * The transaction responses plus the session-id header that 'begin' alone returns, and the 409
+   * PostBeginHandler returns when the request carries a session id that still resolves. Built from a
+   * fresh {@link #createTransactionResponses()} every call, so neither addition lands on the shared
+   * instance that commit and rollback also use.
+   */
+  private ApiResponses createBeginResponses() {
+    final ApiResponses responses = createTransactionResponses();
+    responses.get("204").addHeaderObject(SESSION_HEADER, SpecBuilders.stringHeader("""
+        Session id identifying the transaction just opened. Present it on the '%s' request header \
+        of every subsequent call that belongs to this transaction.""".formatted(SESSION_HEADER)));
+    responses.addApiResponse("409", SpecBuilders.errorResponse(
+        "A transaction is already open on this session"));
     return responses;
   }
 

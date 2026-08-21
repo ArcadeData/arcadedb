@@ -34,10 +34,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   SEVER [PostBatchHandler] Cannot assign field "shutdown" because "this.executorThreads[i]" is null
  *   SEVER [PostBatchHandler] Cannot store to object array because "this.executorThreads" is null
  * </pre>
- * The cause was a race between two callers of {@code createThreads}/{@code shutdownThreads} (e.g.
- * concurrent {@code setTransactionUseWAL(true)} during GraphBatch close). Each call read
- * {@code executorThreads}, the other thread nulled it, and the first thread NPE'd on the dangling
- * reference. This test exercises that race directly.
+ * The cause was a race between two callers of {@code createThreads}/{@code shutdownThreads} (concurrent
+ * {@code setTransactionUseWAL(true)} during GraphBatch close, back when that setter still tore down and
+ * respawned the pool). Each call read {@code executorThreads}, the other thread nulled it, and the first
+ * thread NPE'd on the dangling reference. This test exercises concurrent flag flips directly.
+ * <p>
+ * #6509 turned {@code setTransactionUseWAL()}/{@code setTransactionSync()} into plain volatile writes
+ * that no longer call {@code createThreads()} at all, so this exact race is no longer reachable through
+ * them - the assertions below stay valid (concurrent flips still must not throw) as a standing guard
+ * against the mechanism being reintroduced.
  */
 class DatabaseAsyncExecutorLifecycleRaceTest extends TestHelper {
 
@@ -54,10 +59,8 @@ class DatabaseAsyncExecutorLifecycleRaceTest extends TestHelper {
       workers[t] = CompletableFuture.runAsync(() -> {
         try {
           for (int i = 0; i < iterations; i++) {
-            // Every flip of WAL or sync triggers an internal createThreads() -> shutdownThreads()
-            // cycle on the shared async executor. Multiple threads racing on this is the exact
-            // workload the customer hit (one GraphBatch per ingest worker thread, all on the same
-            // database).
+            // #6509: plain volatile writes now, no createThreads()/shutdownThreads() cycle. Kept as a
+            // concurrent-flip regression guard for the mechanism this test was written against.
             async.setTransactionUseWAL((seed + i) % 2 == 0);
             async.setTransactionSync((seed + i) % 2 == 0
                 ? WALFile.FlushType.NO

@@ -22,9 +22,13 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.DateUtils;
 
+import java.time.temporal.Temporal;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -32,9 +36,10 @@ import java.util.Map;
 
 public class JsonGraphSerializer extends JsonSerializer {
 
-  private boolean    expandVertexEdges = false;
-  private JSONObject sharedJson        = null;
-  private boolean    includeMetadata   = true;
+  private boolean    expandVertexEdges       = false;
+  private JSONObject sharedJson              = null;
+  private boolean    includeMetadata         = true;
+  private boolean    precisionAwareTemporals = false;
 
   private JsonGraphSerializer() {
   }
@@ -67,6 +72,8 @@ public class JsonGraphSerializer extends JsonSerializer {
       object.put("r", rid.toString());
     object.put("t", document.getTypeName());
 
+    final DocumentType type = precisionAwareTemporals ? document.getType() : null;
+
     for (final Map.Entry<String, Object> prop : document.toMap(includeMetadata).entrySet()) {
       Object value = prop.getValue();
 
@@ -90,6 +97,8 @@ public class JsonGraphSerializer extends JsonSerializer {
         else if (value.equals(Double.NEGATIVE_INFINITY) || value.equals(Float.NEGATIVE_INFINITY))
           // JSON DOES NOT SUPPORT INFINITY
           value = "NegInfinity";
+        else if (type != null && value instanceof Temporal && type.existsProperty(prop.getKey()))
+          value = encodeTemporalForWriteBack(value, type.getProperty(prop.getKey()).getType());
       }
       properties.put(prop.getKey(), value);
     }
@@ -142,5 +151,39 @@ public class JsonGraphSerializer extends JsonSerializer {
   public JsonGraphSerializer setIncludeMetadata(final boolean includeMetadata) {
     this.includeMetadata = includeMetadata;
     return this;
+  }
+
+  /**
+   * Issue #6455: when enabled, a schema-typed DATE or DATETIME_MICROS/DATETIME_NANOS property is
+   * pre-converted to the encoding a schema-typed write-back path (such as {@code MutableDocument.fromMap})
+   * actually decodes, instead of the epoch-millisecond number {@link JSONObject#put(String, Object)}'s
+   * default temporal branch writes for every temporal:
+   * <ul>
+   *   <li>DATE becomes epoch DAYS ({@link DateUtils#dateToEpochDays}) - the encoding {@code Type.convert}'s
+   *   {@code Number} branch reads back for a DATE property, matching the remote-wire fix of issue #4601.
+   *   A DATE written as epoch millis is read back as epoch days: any date from ~August 1981 onward
+   *   overflows {@code LocalDate.ofEpochDay}'s range, and the resulting exception is swallowed by
+   *   {@code Type.convert}'s broad catch, silently nulling the property.</li>
+   *   <li>DATETIME_MICROS/DATETIME_NANOS become an ISO-8601 string, because a raw epoch number is always
+   *   decoded as MILLIS on the way back in, regardless of the column's declared precision (the {@code
+   *   Number} branch of {@code Type.convert} hardcodes it) - only a parsed string carries enough digits
+   *   to restore the sub-millisecond component.</li>
+   * </ul>
+   * Off by default: existing callers - the HTTP graph-mode query response in particular, which does not
+   * write these values back through the schema-typed path this class assumes - keep writing every
+   * temporal as an epoch-millis number. {@code JsonlExporterFormat} opts in because its counterpart
+   * importer feeds the JSON straight back through {@code MutableDocument.fromMap}.
+   */
+  public JsonGraphSerializer setPrecisionAwareTemporals(final boolean precisionAwareTemporals) {
+    this.precisionAwareTemporals = precisionAwareTemporals;
+    return this;
+  }
+
+  private static Object encodeTemporalForWriteBack(final Object value, final Type propertyType) {
+    if (propertyType == Type.DATE)
+      return DateUtils.dateToEpochDays(value);
+    if (propertyType == Type.DATETIME_MICROS || propertyType == Type.DATETIME_NANOS)
+      return value.toString();
+    return value;
   }
 }

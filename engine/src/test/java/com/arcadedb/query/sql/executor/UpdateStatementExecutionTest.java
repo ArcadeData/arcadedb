@@ -721,6 +721,113 @@ public class UpdateStatementExecutionTest extends TestHelper {
   }
 
   @Test
+  void returnBeforeWithEmbeddedDocRemoveIsNotMutatedByTheRemoval() {
+    // Issue #6517: UPDATE ... REMOVE <embeddedDoc>.<field> ... RETURN BEFORE must snapshot the embedded
+    // document BEFORE the in-place field removal, not share the live reference with it.
+    final String className = "overridden" + this.className;
+    final DocumentType clazz = database.getSchema().createDocumentType(className);
+    clazz.createProperty("emb", Type.EMBEDDED);
+
+    final MutableDocument doc = database.newDocument(className);
+    final MutableEmbeddedDocument emb = doc.newEmbeddedDocument(className, "emb");
+    emb.set("sub", "foo").set("aaa", "bar");
+    doc.save();
+
+    final ResultSet result = database.command("sql",
+        "update " + className + " remove emb.sub RETURN BEFORE");
+    assertThat(result.hasNext()).isTrue();
+    final Result item = result.next();
+    assertThat(item).isNotNull();
+    final Map<String, Object> before = item.getProperty("emb");
+    assertThat((String) before.get("sub")).isEqualTo("foo");
+    assertThat((String) before.get("aaa")).isEqualTo("bar");
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+
+    final ResultSet persisted = database.query("sql", "SELECT emb FROM " + className);
+    assertThat(persisted.hasNext()).isTrue();
+    final EmbeddedDocument after = persisted.next().getProperty("emb");
+    assertThat(after.getPropertyNames().contains("sub")).isFalse();
+    assertThat(after.getString("aaa")).isEqualTo("bar");
+    persisted.close();
+  }
+
+  @Test
+  void returnBeforeWithListRemoveIsNotMutatedByTheRemoval() {
+    // Issue #6456: UPDATE ... REMOVE <collection value> ... RETURN BEFORE must snapshot the collection
+    // BEFORE the in-place removal, not share the live list reference with it.
+    final ResultSet result = database.command("sql",
+        "update " + className + " remove tagsList = 'bar' RETURN BEFORE where name = 'name1'");
+    assertThat(result.hasNext()).isTrue();
+    final Result item = result.next();
+    assertThat(item).isNotNull();
+    final List<String> before = item.getProperty("tagsList");
+    assertThat(before).containsExactly("foo", "bar", "baz");
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+
+    final ResultSet persisted = database.query("sql", "SELECT tagsList FROM " + className + " WHERE name = 'name1'");
+    assertThat(persisted.hasNext()).isTrue();
+    final List<String> after = persisted.next().getProperty("tagsList");
+    assertThat(after).containsExactly("foo", "baz");
+    persisted.close();
+  }
+
+  @Test
+  void returnBeforeWithNestedListInsideMapRemoveIsNotMutatedByTheRemoval() {
+    // Issue #6456 review follow-up: pin down the recursive branch of the deep copy, not just a top-level
+    // List/Map, by mutating a List nested inside a Map value.
+    final String className = "overridden" + this.className;
+    database.getSchema().createDocumentType(className);
+
+    final MutableDocument doc = database.newDocument(className);
+    final Map<String, Object> nestedMap = new HashMap<>();
+    final List<String> nestedList = new ArrayList<>();
+    nestedList.add("foo");
+    nestedList.add("bar");
+    nestedList.add("baz");
+    nestedMap.put("list", nestedList);
+    doc.set("nestedMap", nestedMap);
+    doc.save();
+
+    final ResultSet result = database.command("sql",
+        "update " + className + " remove nestedMap[\"list\"] = 'bar' RETURN BEFORE");
+    assertThat(result.hasNext()).isTrue();
+    final Result item = result.next();
+    assertThat(item).isNotNull();
+    final Map<String, Object> before = item.getProperty("nestedMap");
+    assertThat((List<String>) before.get("list")).containsExactly("foo", "bar", "baz");
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+
+    final ResultSet persisted = database.query("sql", "SELECT nestedMap FROM " + className);
+    assertThat(persisted.hasNext()).isTrue();
+    final Map<String, Object> after = persisted.next().getProperty("nestedMap");
+    assertThat((List<String>) after.get("list")).containsExactly("foo", "baz");
+    persisted.close();
+  }
+
+  @Test
+  void returnBeforeWithMapKeyRemoveIsNotMutatedByTheRemoval() {
+    // Issue #6456: same shallow-copy bug for nested `REMOVE map[key]` on the map value.
+    final ResultSet result = database.command("sql",
+        "update " + className + " remove tagsMap[\"bar\"] RETURN BEFORE where name = 'name1'");
+    assertThat(result.hasNext()).isTrue();
+    final Result item = result.next();
+    assertThat(item).isNotNull();
+    final Map<String, String> before = item.getProperty("tagsMap");
+    assertThat(before).containsEntry("bar", "bar").hasSize(3);
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+
+    final ResultSet persisted = database.query("sql", "SELECT tagsMap FROM " + className + " WHERE name = 'name1'");
+    assertThat(persisted.hasNext()).isTrue();
+    final Map<String, String> after = persisted.next().getProperty("tagsMap");
+    assertThat(after).doesNotContainKey("bar").hasSize(2);
+    persisted.close();
+  }
+
+  @Test
   void localDateTimeUpsertWithIndexMicros() throws Exception {
     database.transaction(() -> {
       if (database.getSchema().existsType("Product"))

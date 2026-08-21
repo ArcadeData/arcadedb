@@ -19,6 +19,7 @@
 package com.arcadedb.server.http.handler.openapi;
 
 import io.swagger.v3.oas.models.Operation;
+import io.swagger.v3.oas.models.headers.Header;
 import io.swagger.v3.oas.models.media.Content;
 import io.swagger.v3.oas.models.media.MediaType;
 import io.swagger.v3.oas.models.media.Schema;
@@ -73,6 +74,23 @@ public final class SpecBuilders {
     param.setDescription(description);
     param.setSchema(new Schema<>().type(type));
     return param;
+  }
+
+  public static Parameter headerParam(final String name, final String description, final boolean required) {
+    final Parameter param = new Parameter();
+    param.setName(name);
+    param.setIn("header");
+    param.setRequired(required);
+    param.setDescription(description);
+    param.setSchema(new Schema<>().type("string"));
+    return param;
+  }
+
+  public static Header stringHeader(final String description) {
+    final Header header = new Header();
+    header.setDescription(description);
+    header.setSchema(new Schema<>().type("string"));
+    return header;
   }
 
   /**

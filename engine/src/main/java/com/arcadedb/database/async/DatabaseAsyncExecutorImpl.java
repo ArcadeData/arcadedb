@@ -28,6 +28,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.WALFile;
@@ -48,12 +49,15 @@ import com.arcadedb.schema.LocalTimeSeriesType;
 import com.conversantmedia.util.concurrent.DisruptorBlockingQueue;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
@@ -72,7 +76,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   private volatile AsyncThread[]     executorThreads;
   private final Object               lifecycleLock                 = new Object();
   // #4961: these settings are written by user threads and read by the worker threads, so they must
-  // be volatile or a change applied after createThreads() may never become visible to the workers.
+  // be volatile or a change may never become visible to the workers. parallelLevel only ever changes
+  // via createThreads() (setParallelLevel), which visibility naturally piggybacks on; transactionUseWAL
+  // and transactionSync are read directly by AsyncThread.executeTask() on every task instead (#6509).
   private volatile int               parallelLevel                 = 1;
   private volatile int               commitEvery;
   private volatile int               backPressurePercentage        = 0;
@@ -96,6 +102,64 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   private final AtomicInteger        commandsInFlight              = new AtomicInteger();
   /** Monitor {@link #awaitCommands} parks on; notified when the last in-flight command lands. */
   private final Object               commandsLock                  = new Object();
+
+  /**
+   * Workers a SHRINKING {@link #setParallelLevel(int)} has retired and left DRAINING (issue #6526, item 1).
+   * <p>
+   * A retired worker is unpublished from {@link #executorThreads} first - so nothing new is routed to it - and is
+   * then asked to stop the way {@code close()} asks, minus the escalation: the {@code shutdown} flag plus a
+   * best-effort {@code FORCE_EXIT} at the TAIL of its queue, never an {@code interrupt()}. Everything already
+   * queued on it therefore still runs, inside the batch transaction that worker already owns, and that batch is
+   * committed by its own run loop on the way out. That is the whole point of the change: before it,
+   * {@code setParallelLevel()} went through {@code createThreads()}, which nulls the array for the WHOLE teardown
+   * (so an unrelated concurrent producer got "Async executor has been shut down" - the #6505 failure mode) and
+   * interrupts any worker whose full queue refuses the marker within a second (so an unrelated caller's queued
+   * tasks were notified as completed WITHOUT having run).
+   * <p>
+   * They stay in this set until their run loop ends, because {@link #waitCompletion(long)}, {@link #isProcessing()}
+   * and {@link #getStats()} have to keep answering about the tasks still queued on them - a resize must not make
+   * work disappear from the executor's own accounting - and because {@code close()}/{@code kill()} must reach them
+   * too: {@code DatabaseAsyncExecutorKillTest} asserts no worker thread of the database survives a {@code kill()}.
+   * A set rather than an array: entries are added by the resizing thread and removed by each worker itself.
+   */
+  private final Set<AsyncThread>     retiringThreads               = ConcurrentHashMap.newKeySet();
+
+  /**
+   * How many times a task found the open batch transaction stamped with durability flags other than the ones now
+   * requested, and had to close it out of band (issue #6526, item 3).
+   * <p>
+   * #6511 made a durability-flag change take effect on the very next task instead of tearing down the pool, at the
+   * cost of an extra commit at the boundary: two concurrent flag-flippers sharing a worker slot can therefore drive
+   * that slot's effective batching toward {@code commitEvery=1}. That is a deliberate trade (it is strictly better
+   * than the teardown it replaced) but it was invisible - the incident that motivated #6509 was diagnosed by
+   * grepping {@code InterruptedIOException} counts out of seven hours of logs. Exported through
+   * {@link DBAsyncStats#forcedBoundaryCommits} and, from there, as {@code arcadedb.engine.async.boundary.commits}.
+   */
+  private final AtomicLong           forcedBoundaryCommits         = new AtomicLong();
+
+  /**
+   * Serializes {@link #setParallelLevel(int)} against itself, and is held for the WHOLE resize - the publish AND
+   * the wait for whatever the publish retired (issue #6526 review, point 2).
+   * <p>
+   * The drain wait cannot be taken under {@code lifecycleLock}: that lock is what a concurrent {@code close()} or
+   * {@code kill()} needs to force the very workers being waited for, so holding it across the wait would make the
+   * wait the thing that prevents its own end. But releasing every lock leaves a second resize free to grow the pool
+   * back while the first one's workers are still draining, and a grow fills the array positions the shrink just
+   * vacated - so slot 2 would name a brand-new worker AND an old one still running slot 2's pre-shrink tasks, which
+   * is the concurrent write to one bucket's pages the wait exists to prevent. A separate lock gives the wait its
+   * meaning back without putting a resize in {@code close()}'s way.
+   * <p>
+   * Reentrant, so a resize triggered from inside a resize rides on the outer one rather than deadlocking, and
+   * deliberately NOT taken by {@code createThreads()}: the constructor runs before anything can race it, and
+   * {@code recreateThreadsForTests()} is a test hook that means "tear it down and rebuild it".
+   * <p>
+   * FAIR (#6526 review round 6), which is the one place in this class that choice is affordable. The lock is held
+   * across a wait that can last {@code shutdownJoinTimeoutMs}, so under barging a caller could queue behind an
+   * unbounded number of other resizes; fairness turns that into first-come-first-served. The throughput fairness
+   * normally costs is irrelevant here - this is an administrative call taken once per bulk load, not a hot path -
+   * and an unbounded wait on a public API is worth more than the uncontended-acquire nanoseconds it gives up.
+   */
+  private final ReentrantLock        resizeLock                    = new ReentrantLock(true);
 
   // #5062 review r2 (point 1): producer-side backstop for a worker wedged inside user code. After
   // this many consecutive stall windows (checkForStalledQueuesMaxDelay each, 60s with the defaults)
@@ -221,11 +285,31 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
     @Override
     public void run() {
+      try {
+        runLoop();
+      } finally {
+        // #6526: a worker retired by a shrinking setParallelLevel() stops being part of this executor's accounting
+        // exactly here - once its queue is drained, its batch committed and every dropped task notified. Done in a
+        // finally so an unexpected escape (an Error, an interrupt on the close path) cannot strand it in the set,
+        // where waitCompletion() would keep offering markers to a thread that is never going to run them.
+        retiringThreads.remove(this);
+      }
+    }
+
+    private void runLoop() {
       DatabaseContext.INSTANCE.init(database);
 
       DatabaseContext.INSTANCE.getContext(database.getDatabasePath()).perThreadBucketSelection = true;
-      database.getTransaction().setUseWAL(transactionUseWAL);
-      database.setWALFlush(transactionSync);
+      // Seeds the transaction this thread is about to begin; executeTask() re-applies both on every task
+      // afterwards (#6509), so a later change is picked up without needing this thread respawned. Snapshotted
+      // into locals first, same as executeTask(), so a concurrent setTransactionUseWAL()/setTransactionSync()
+      // flip landing between the two reads can't seed one field from the old policy and the other from the
+      // new one - benign here either way (the first task's own boundary check reconciles it), but consistent
+      // with the same reasoning applied there.
+      final boolean           initialUseWAL = transactionUseWAL;
+      final WALFile.FlushType initialSync   = transactionSync;
+      database.getTransaction().setUseWAL(initialUseWAL);
+      database.setWALFlush(initialSync);
       database.getTransaction().begin(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED); // FORCE THE LOWEST LEVEL
       // OF ISOLATION
 
@@ -280,22 +364,65 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
             .log(this, Level.FINE, "Received async message %s (threadId=%d)", message,
                 Thread.currentThread().threadId());
 
-        if (message.requiresActiveTx() && !database.isTransactionActive())
+        // One snapshot, reused everywhere below: transactionUseWAL/transactionSync are independent
+        // volatiles that any other thread can flip concurrently (another GraphBatch open/close, a direct
+        // caller), so reading them more than once per task would let a flip land in between reads and
+        // desynchronize the boundary check from the stamp (#6509 review).
+        final boolean           currentUseWAL = transactionUseWAL;
+        final WALFile.FlushType currentSync   = transactionSync;
+
+        // A nested execution must never touch the transaction boundary of the outer, suspended task it
+        // runs inside (#5062 review, point 1) - the helping path defers polled tasks back to the run loop
+        // instead of nesting, so `nested` is always false today; every `!nested` guard in this method is
+        // defense-in-depth should a re-entrant call path ever be reintroduced.
+        //
+        // Deliberately does not touch `count`: a flag-triggered boundary commit here closes a transaction
+        // out of band from the commitEvery cadence, so the NEXT periodic boundary below can land anywhere
+        // from immediately (if `count % commitEvery` was already due) to up to `commitEvery` tasks later -
+        // it is measuring "how many tasks since the last periodic check", not "how many since the
+        // transaction last committed". Harmless: it can only make the next real commit arrive sooner or
+        // later than the nominal cadence, never mix data across a durability-policy boundary (that is what
+        // this whole method exists to prevent) or lose a task.
+        final boolean forceFreshTransactionAfterBoundaryFailure =
+            !nested && closeTransactionBoundaryIfDurabilityPolicyChanged(currentUseWAL, currentSync);
+
+        if (message.requiresActiveTx() && (forceFreshTransactionAfterBoundaryFailure || !database.isTransactionActive()))
+          // LocalDatabase.begin() checks isActive() on the CURRENT TransactionContext itself - when
+          // forceFreshTransactionAfterBoundaryFailure is set that reads true, so this deliberately takes
+          // the "already active" branch and pushes a NEW nested context for `message` rather than reusing
+          // the poisoned one left behind by closeTransactionBoundaryIfDurabilityPolicyChanged(), exactly as
+          // it would for any other caller that begins a transaction while one is already open.
           database.begin();
+
+        // Applied per task, not once at thread start (see run()): setTransactionUseWAL()/
+        // setTransactionSync() are plain volatile writes now, so the latest requested durability policy is
+        // picked up here - on a transaction that, by the call above, either just began fresh or was
+        // already running under this same snapshotted policy - instead of requiring the whole pool to be
+        // torn down and respawned for the change to become visible. Skipped when `forceFreshTransactionAfterBoundaryFailure`
+        // is set but `message` does not require an active tx (begin() above was skipped too): the stamp
+        // then lands on the still-active, poisoned transaction rather than a fresh one, which is accepted
+        // since a task that never writes through it does not need it clean - it only means the NEXT task's
+        // boundary check sees this poisoned transaction's flags already matching and leaves it for a later
+        // commitEvery boundary or begin() call to deal with, exactly as untouched as it already was.
+        if (!nested) {
+          database.getTransaction().setUseWAL(currentUseWAL);
+          database.setWALFlush(currentSync);
+        }
 
         message.execute(this, database);
 
-        // #5062 review (point 1): the commit-every-N boundary must never fire from a nested
-        // execution while an enclosing task is suspended mid-execute(), or it would commit that
-        // task's partial writes. The helping path defers tasks instead of nesting (see
-        // offerHelping), so today `nested` is always false here; the guard is defense-in-depth
-        // should a re-entrant call path ever be reintroduced.
         if (!nested) {
           count++;
 
           if (database.isTransactionActive() && count % commitEvery == 0) {
             database.commit();
             database.begin();
+            // TransactionContext.begin()/reset() never reset useWAL/walFlush, so the stamp above would
+            // "happen to" survive this cycle via object reuse even without this - re-applied explicitly
+            // anyway so the guarantee does not depend on that staying true in a different class (#6509
+            // review round 9).
+            database.getTransaction().setUseWAL(currentUseWAL);
+            database.setWALFlush(currentSync);
           }
         }
       } catch (final Throwable e) {
@@ -311,6 +438,86 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
           executingTask.set(nested);
         }
       }
+    }
+
+    /**
+     * If a transaction is already open and was last stamped with different durability flags than
+     * {@code currentUseWAL}/{@code currentSync}, commits it under its own (unmodified) flags before the
+     * caller applies the new ones to anything - a no-op otherwise.
+     * <p>
+     * {@code useWAL}/{@code walFlush} are read only at commit time and then govern the WHOLE accumulated
+     * transaction (see {@code TransactionContext.commit1stPhase}/{@code commit2ndPhase}), not per write, so
+     * re-stamping them onto an already-open transaction without first closing it would silently commit
+     * earlier tasks - queued under the OLD policy by a caller unrelated to whoever changed it - under the
+     * NEW one instead. Before #6509 this could not happen: a flag flip tore down and respawned the whole
+     * pool, and each worker's shutdown path committed its pending transaction under the still-original
+     * flags before the new thread began a fresh one. This restores that "a flag change always starts a
+     * fresh transaction" guarantee explicitly, without the pool teardown.
+     *
+     * @return true if the transaction must be treated as active by the caller's own {@code begin()} guard
+     * even though {@link Database#isTransactionActive()} may still (wrongly) report true afterward - set
+     * only when BOTH the commit above and its rollback fallback fail. {@code TransactionContext.rollback()}
+     * can itself throw before reaching its own {@code reset()} (e.g. a schema-dictionary reload
+     * IOException), leaving the transaction in a half-cleaned, unknown state; a caller that trusted
+     * {@code isTransactionActive()} at that point would skip beginning a fresh transaction and run the next
+     * task against that leftover state instead.
+     * <p>
+     * In that double-failure case the caller's {@code begin()} pushes a new nested {@code TransactionContext}
+     * (see {@code executeTask()}'s caller-side comment) and the poisoned one this method leaves behind stays
+     * on the per-thread transaction stack underneath it - nothing pops a non-top entry. Not a permanent leak
+     * in the common case: {@code DatabaseContext}'s dead-thread sweep (and a normal database close) rolls
+     * back and clears every entry on the stack, not just the top, once this worker thread eventually ends.
+     * Until then it sits inert (only the stack top is ever read or written by later tasks) at the cost of one
+     * small object. That reclaim itself calls {@code rollback()} again, though, so if the original rollback
+     * failure was persistent (e.g. a disk genuinely full, a corrupted schema dictionary that keeps throwing)
+     * rather than transient, the sweep's own attempt can fail the same way - its own contract is a logged
+     * warning and moving on, not a guarantee, and its own comment already documents that failure mode as
+     * held file locks. A double failure on top of the double failure that got here is out of scope for this
+     * class to solve.
+     */
+    private boolean closeTransactionBoundaryIfDurabilityPolicyChanged(final boolean currentUseWAL,
+        final WALFile.FlushType currentSync) {
+      if (!database.isTransactionActive())
+        return false;
+
+      final TransactionContext activeTx = database.getTransaction();
+      if (activeTx.isUseWAL() == currentUseWAL && activeTx.getWALFlush() == currentSync)
+        return false;
+
+      // #6526 item 3: counted BEFORE the attempt, not after it succeeds - what the metric answers is "how often is
+      // the batching of this executor being cut short by a durability-flag flip", and a boundary commit that failed
+      // cut it short just the same (the caller starts a fresh transaction either way).
+      forcedBoundaryCommits.incrementAndGet();
+
+      try {
+        database.commit();
+      } catch (final Throwable e) {
+        // This commit closes out EARLIER tasks' accumulated work, not the task that triggered this check -
+        // which has not run yet - so the failure must not be attributed to it: left uncaught, the caller's
+        // task would still reach completed() without ever reaching execute(), silently discarding it
+        // instead of running it. Reported here instead, and the caller still gets its own begin()/execute()
+        // attempt on a transaction this method leaves inactive (see below) - if the failure left the
+        // database unusable, that attempt fails too, for a reason that legitimately belongs to it.
+        onError(e);
+        try {
+          // TransactionContext.commit()'s own failure paths always leave the transaction inactive
+          // (rollback()/reset() run in every catch/finally there), but LocalDatabase.commit() wraps the
+          // call in executeInReadLock(...), so a failure originating outside TransactionContext (e.g. the
+          // read-lock acquisition) is not provably covered by that guarantee - made unconditional here
+          // instead of relying on it.
+          if (database.isTransactionActive())
+            database.rollback();
+        } catch (final Throwable rollbackError) {
+          // A failure HERE must not escape either, for the same reason as the commit failure above: it
+          // would repeat the exact bug this method exists to close, one level deeper. Logged and swallowed;
+          // the true/false returned tells the caller whether it can still trust isTransactionActive() or
+          // must force a fresh transaction regardless of what that reads.
+          LogManager.instance().log(this, Level.WARNING,
+              "Error rolling back the transaction after a failed durability-boundary commit", rollbackError);
+          return database.isTransactionActive();
+        }
+      }
+      return false;
     }
 
     private void drainQueueNotifyingWaiters() {
@@ -368,15 +575,41 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       for (int i = 0; i < threads.length; ++i)
         stats.queueSize += threads[i].queue.size();
 
+    // #6526: a worker retired by a shrinking setParallelLevel() is off the published array but is still draining
+    // real tasks, so leaving it out here would report a queue that shrank the instant the pool did - which is the
+    // one moment an operator is most likely to be looking at this number.
+    //
+    // Counted EXACTLY ONCE (#6526 review rounds 2 and 3): the two reads are separate and unsynchronized -
+    // deliberately, since this method must stay lock-free - so a shrink landing between them could otherwise be
+    // seen twice (the worker still in the array this method read, and already in the set) or not at all. Both
+    // halves are closed: resizeThreads() registers a retiring worker BEFORE it unpublishes the array, so it is
+    // never in neither, and the identity check here drops it when it is in both. The scan is over arrays the size
+    // of the pool, so it costs nothing that matters here.
+    for (final AsyncThread retiring : retiringThreads) {
+      if (!contains(threads, retiring))
+        stats.queueSize += retiring.queue.size();
+      // #6526 review round 4: and how many of them there are. A worker retired by a shrink is normally in this set
+      // for milliseconds; one that outlived awaitRetiredThreads()'s budget stays, and until now the ONLY trace of
+      // that was the single WARNING logged at the moment the wait gave up. This is the same argument item 3 of
+      // #6526 makes for the boundary-commit counter: a condition whose only evidence is one log line is a condition
+      // somebody reconstructs after an incident instead of seeing during one. Persistently non-zero here is a
+      // wedged worker; briefly non-zero is a resize doing its job.
+      if (retiring.isAlive())
+        ++stats.retiringWorkers;
+    }
+
     stats.scheduledTasks = counterScheduledTasks.get();
+    stats.forcedBoundaryCommits = forcedBoundaryCommits.get();
 
     return stats;
   }
 
   @Override
   public void setTransactionUseWAL(final boolean transactionUseWAL) {
+    // #6509: a plain volatile write. AsyncThread.executeTask() re-applies this to the worker's
+    // TransactionContext before every task, so the new value takes effect on the very next task
+    // without tearing down and respawning the whole pool (the #5665 mechanism this replaces).
     this.transactionUseWAL = transactionUseWAL;
-    createThreads(parallelLevel);
   }
 
   @Override
@@ -391,8 +624,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
   @Override
   public void setTransactionSync(final WALFile.FlushType transactionSync) {
+    // #6509: see setTransactionUseWAL() above - same plain-volatile-write treatment.
     this.transactionSync = transactionSync;
-    createThreads(parallelLevel);
   }
 
   public long getCheckForStalledQueuesMaxDelay() {
@@ -428,9 +661,10 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
     // scheduleCompaction() has reserved the index (AVAILABLE -> COMPACTION_SCHEDULED) and only the compaction
     // itself gives that back. So when nothing is going to run it, hand it back here: a full worker queue answers
-    // false without throwing, and a shut-down executor throws out of getBestSlot()/scheduleTask. Leaving it
-    // reserved would be permanent - every later attempt, an explicit COMPACT INDEX included, needs the same
-    // AVAILABLE -> SCHEDULED move - so the index would silently stop compacting until the database is reopened.
+    // false without throwing, and a shut-down (or, per the catch below, transiently recreating) executor throws
+    // out of getBestSlot()/scheduleTask. Leaving it reserved would be permanent - every later attempt, an
+    // explicit COMPACT INDEX included, needs the same AVAILABLE -> SCHEDULED move - so the index would silently
+    // stop compacting until the database is reopened.
     boolean scheduled = false;
     try {
       // No back-pressure (0) on purpose, unlike the user-facing async entry points. Both callers of this method are
@@ -439,6 +673,23 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       // finished. A full queue instead makes the offer below give up, the finally hands the slot back, and the next
       // commit past the threshold schedules again - both gates are level-triggered, so no compaction is lost.
       scheduled = scheduleTask(getBestSlot(), new DatabaseAsyncIndexCompaction(index), false, 0);
+    } catch (final DatabaseOperationException e) {
+      // #6505: getBestSlot()/scheduleTask throw a "shut down" exception, and this onAfterCommit hook runs AFTER
+      // writeTransactionToWAL(), so letting it escape crossed the WAL point of no return and fenced the entire
+      // database (#5053) over a best-effort scheduling hiccup that had nothing to do with the committing
+      // transaction's data. This finally hands the reservation back exactly like the full-queue case above: no
+      // compaction is lost, it is picked up by the next commit past the threshold.
+      //
+      // WHAT CAN STILL THROW IT, as of #6526: a genuine terminal close()/kill() (#4955, the case this was
+      // originally written for) and nothing else. It used to be ambiguous - the same exception also came from the
+      // momentary window createThreads() left while it tore down and respawned the whole pool for an UNRELATED
+      // caller, which #5665's setTransactionUseWAL()/setTransactionSync() triggered on every GraphBatch open/close
+      // and which setParallelLevel() kept after #6509 removed that path. #6526 took setParallelLevel() off
+      // createThreads() entirely, so there is no transient window left to mistake for a close. The catch stays
+      // exactly as valuable: what it now protects against is the terminal case, where the pool is NOT coming back
+      // and an escaping exception would fence a database that is closing anyway (#6526 review round 7).
+      LogManager.instance().log(this, Level.WARNING, "Could not schedule compaction of index '%s': %s", null,
+          index, e.getMessage());
     } finally {
       if (!scheduled)
         index.setStatus(new IndexInternal.INDEX_STATUS[] { IndexInternal.INDEX_STATUS.COMPACTION_SCHEDULED },
@@ -502,7 +753,10 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     if (!awaitCommands(beginTime, timeout))
       return false;
 
-    final AsyncThread[] threads = executorThreads;
+    // #6526: allThreads(), not executorThreads - a worker retired by a shrinking setParallelLevel() still holds
+    // the tasks it was queued before the resize, and waitCompletion() promising they are done while they are not
+    // would be the resize silently changing what this method means.
+    final AsyncThread[] threads = allThreads();
     if (threads == null)
       return true;
 
@@ -768,10 +1022,48 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       // would be wrong for a query sharing a worker's batch, and cannot arise here: only command() reaches this
       // method (query() goes straight to a worker), so a task that gets this far is never idempotent.
       final boolean ownTransaction = task.requiresActiveTx() && !database.isTransactionActive();
+
+      // #6526 item 2. ownTx is non-null exactly when the transaction below is OURS and therefore carries this
+      // executor's durability policy; the finally reads the other two back to undo the stamp. Their initial values
+      // are never observed - the finally only runs them when ownTx is non-null, and the branch that sets ownTx sets
+      // both first - so `true` here is a compiler-mandated placeholder and not a default policy (#6526 review round
+      // 5): a primitive cannot carry the "unset" the reference next to it does.
+      TransactionContext  ownTx            = null;
+      boolean             previousUseWAL   = true;
+      WALFile.FlushType   previousWALFlush = null;
       try {
         try {
-          if (ownTransaction)
+          if (ownTransaction) {
             database.begin();
+
+            // THE EXECUTOR'S DURABILITY POLICY APPLIES HERE TOO. Until #6526 this path - the one an HTTP
+            // POST /command with awaitResponse=false carrying DDL takes since #6303 - read neither
+            // transactionUseWAL nor transactionSync, so the command committed under whatever ambient flags the
+            // database (or, on the caller-runs fallback, the submitter's own thread) already had. A caller that
+            // set setTransactionUseWAL(false) around a bulk GraphBatch load and dispatched DDL inside that window
+            // silently got a different durability from the one it asked the executor for: a latent exception to
+            // the per-task contract #6511 established for every other task of this executor.
+            //
+            // ONLY when the transaction is ours, which is the same "touch nothing this method did not create" rule
+            // the DatabaseContext handling above follows and for a sharper reason: useWAL/walFlush are read at
+            // COMMIT time and govern the WHOLE accumulated transaction, not the individual writes, so stamping
+            // them onto a transaction the submitter opened would re-decide the durability of that caller's own
+            // work.
+            //
+            // One snapshot of each volatile, as AsyncThread.executeTask() takes: a concurrent flip landing between
+            // two reads must not stamp one field from the old policy and the other from the new one.
+            final boolean           useWAL = transactionUseWAL;
+            final WALFile.FlushType sync   = transactionSync;
+
+            ownTx = database.getTransaction();
+            // Read AFTER begin() on purpose: TransactionContext.begin()/reset() never touch these two, so this is
+            // still the value that was in force before this method ran - which is what has to go back.
+            previousUseWAL = ownTx.isUseWAL();
+            previousWALFlush = ownTx.getWALFlush();
+
+            ownTx.setUseWAL(useWAL);
+            ownTx.setWALFlush(sync);
+          }
 
           // No AsyncThread to hand it: the task never used it, and error reporting is this method's job now.
           task.execute(null, database);
@@ -793,6 +1085,17 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
             LogManager.instance().log(this, Level.SEVERE, "Error on executing asynchronous command %s", e, task);
         }
       } finally {
+        if (ownTx != null) {
+          // RESTORED, not merely set. On the caller-runs path begin() reuses the SUBMITTER'S own inactive
+          // TransactionContext rather than pushing a new one, and neither begin() nor reset() clears these two, so
+          // leaving the stamp behind would hand this executor's durability policy to the submitter's next
+          // transaction - an HTTP worker's next request - which never asked for it. On a pool thread that created
+          // its own context the restore is a no-op the removeContext() below would have covered anyway; done
+          // unconditionally so the guarantee does not depend on which of the two paths ran.
+          ownTx.setUseWAL(previousUseWAL);
+          ownTx.setWALFlush(previousWALFlush);
+        }
+
         if (contextCreated)
           DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
         else
@@ -1186,8 +1489,14 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   public void kill() {
     final AsyncThread[] threads;
     synchronized (lifecycleLock) {
-      threads = executorThreads;
-      if (threads == null)
+      // #6526 review: the workers a shrinking setParallelLevel() retired are alive and are NOT in the published
+      // array, so reading executorThreads alone let kill() return having never touched them - and that is exactly
+      // the case this class designs for, since awaitRetiredThreads() gives up after shutdownJoinTimeoutMs and
+      // leaves whatever is still draining to finish in the background. Same treatment as shutdownThreadsLocked()
+      // gives them on the close() path, for the same reason: a kill() is terminal, so nothing of this database may
+      // still be running when it returns.
+      threads = concat(executorThreads, retiringThreads.toArray(new AsyncThread[0]));
+      if (threads.length == 0)
         return;
       // Unpublish first so concurrent callers stop targeting the about-to-die threads.
       executorThreads = null;
@@ -1233,10 +1542,85 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     return parallelLevel;
   }
 
+  /**
+   * Resizes the worker pool <b>without taking the executor away from anybody else</b> (issue #6526, item 1).
+   * <p>
+   * This used to go through {@code createThreads()} - the exact full-pool teardown-and-respawn that #6511 removed
+   * from the durability setters - and it is runtime-callable public API, so it kept both of that mechanism's
+   * failure modes for an UNRELATED concurrent user of {@code database.async()} on the same database:
+   * <ul>
+   *   <li>{@code executorThreads} was nulled for the whole teardown, so a producer scheduling in that window got
+   *   {@code DatabaseOperationException("Async executor has been shut down")} - indistinguishable from a genuine
+   *   {@code close()}, and the #6505 production incident (a compaction hook crossing the WAL point of no return
+   *   and fencing the database over a scheduling hiccup that had nothing to do with it);</li>
+   *   <li>a worker whose queue was full refused the {@code FORCE_EXIT} marker within a second and was
+   *   {@code interrupt()}ed, which unwound its in-flight task loudly and notified every task still queued on it as
+   *   COMPLETED without ever running it - somebody else's writes, silently dropped.</li>
+   * </ul>
+   * Neither is inherent to changing the parallel level, and neither survives here. Growing keeps every existing
+   * worker untouched and only starts the new ones. Shrinking publishes the truncated array FIRST - so the retired
+   * workers stop receiving work while remaining perfectly able to finish what they already hold - and then retires
+   * them by DRAINING: the {@code shutdown} flag plus a {@code FORCE_EXIT} at the tail of the queue, so everything
+   * ahead of it still executes and the worker's batch transaction is committed by its own run loop on the way out.
+   * There is no {@code interrupt()} on this path at all; that escalation belongs to {@code close()}, which is
+   * terminal, and not to a resize, which is not.
+   * <p>
+   * <b>It waits for the retired workers, within a bounded budget</b> - so that when this call RETURNS, the pool it
+   * reports is the pool that exists: the caller's own next {@code getSlot()} cannot land on a bucket another worker
+   * is still writing, a second resize cannot reuse a position that is still occupied, and {@code getThreadCount()}
+   * is not describing a fiction. It is bounded by {@code shutdownJoinTimeoutMs} and taken OUTSIDE
+   * {@code lifecycleLock}, so a worker wedged inside user code delays neither a concurrent {@code close()} nor the
+   * caller for ever; if the budget runs out the workers are left draining in the background, still visible to
+   * {@link #waitCompletion(long)}, {@link #isProcessing()} and {@link #getStats()}, which is the honest outcome
+   * rather than dropping their work to return on time.
+   * <p>
+   * <b>What that wait is NOT</b> (issue #6526 review round 6), because an earlier draft of this javadoc claimed it
+   * and the claim was wrong: it does not give back the bucket exclusivity the teardown had. {@code getSlot()} maps a
+   * bucket modulo the pool size and reads {@code executorThreads} lock-free, so the moment the truncated array is
+   * published, a bucket that used to hash to a retired worker hashes to a survivor - and an UNRELATED producer,
+   * which is not holding this lock and is not waiting for anything, routes there immediately while the retired
+   * worker is still draining that same bucket's queued tasks. For the length of the drain those two workers can
+   * write one bucket's pages, which is the contention {@code ThreadBucketSelectionStrategy} exists to prevent and
+   * which {@code AsyncInsertTest} measures as MVCC conflicts. The wait bounds when the caller of THIS method
+   * observes the overlap; it cannot bound when everybody else does.
+   * <p>
+   * That residual is accepted rather than closed, and the alternatives are why. Changing the pool size changes which
+   * worker owns a bucket, so every resize has a handover, and there are only three ways to spend it: refuse the
+   * producers for its duration (the teardown's answer - the "shut down" exception of #6505), drop what the retired
+   * worker still holds (the teardown's other answer - somebody else's writes, silently), or let the two overlap
+   * while the old work finishes. Only the third loses nothing, and what it costs is bounded, self-correcting and
+   * already handled: an MVCC conflict on a migrating bucket, for the length of one drain, on a path that reports
+   * through {@code onError} and retries. Closing it properly would mean blocking a producer inside
+   * {@code scheduleTask()} until the previous owner of its bucket finished - a bounded wait on the lock-free hot
+   * path that index-compaction hooks reach after {@code writeTransactionToWAL()}, which is exactly the shape of
+   * failure #6505 was.
+   * <p>
+   * <b>Serialized against itself</b> by {@code resizeLock}, a FAIR lock held across the publish AND the wait.
+   * Without that, a
+   * second caller growing the pool back would fill the array positions the shrink just vacated while the old
+   * workers for those positions are still draining, and the wait would guarantee nothing for the multi-caller case
+   * it exists for. The residual is what survives the wait's own budget: if a retired worker is still draining when
+   * {@code shutdownJoinTimeoutMs} runs out, the lock is released and a later grow can reuse its position while it
+   * runs on. Bounded and loud (that timeout is logged at WARNING) rather than silent, and the alternative - waiting
+   * without a bound - makes an administrative call hostage to a worker wedged in user code.
+   * <p>
+   * <b>What it does not do.</b> A retired worker is not parked by a {@link #quiesceWorkers()} that is already in
+   * progress - the park task would land behind the exit marker on its queue - so an index build racing a shrink can
+   * still see a draining worker write under its scan. That is the same residual {@code quiesceWorkers()} already
+   * names for workers created after its own check, it is narrower here than it was under the teardown (the wait
+   * above closes it for anything that starts after the resize returns), and closing it properly means gating the
+   * async lifecycle on the quiescence, which is a lock on a path an index build has to race a resize to reach.
+   */
   @Override
   public void setParallelLevel(final int parallelLevel) {
-    if (parallelLevel != this.parallelLevel)
-      createThreads(parallelLevel);
+    resizeLock.lock();
+    try {
+      final AsyncThread[] retired = resizeThreads(parallelLevel);
+      if (retired != null)
+        awaitRetiredThreads(retired);
+    } finally {
+      resizeLock.unlock();
+    }
   }
 
   @Override
@@ -1271,13 +1655,152 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   public static class DBAsyncStats {
     public long queueSize;
     public long scheduledTasks;
+    /**
+     * Workers a shrinking {@code setParallelLevel()} retired that are still running (issue #6526 review round 4).
+     * <p>
+     * Instantaneous, not monotonic - it goes back to zero as they finish - so it must be read as a gauge and never
+     * as a counter. Zero almost always; briefly positive during a resize; PERSISTENTLY positive means a retired
+     * worker is wedged inside user code and is never going to finish, which a resize deliberately never escalates
+     * to an {@code interrupt()} the way a close does.
+     */
+    public long retiringWorkers;
+    /**
+     * Monotonic count of transaction boundaries forced by a durability-flag change (issue #6526, item 3). Climbing
+     * while throughput drops is the signature of two callers flipping {@code setTransactionUseWAL()} /
+     * {@code setTransactionSync()} against each other on one database: each flip closes the open batch of whatever
+     * worker sees it next, so the batching degrades toward one commit per task.
+     */
+    public long forcedBoundaryCommits;
   }
 
   // Package-private test hook (#5072 review, point 4): rebuilds the worker pool so configuration
-  // changes (e.g. ASYNC_OPERATIONS_QUEUE_SIZE) are picked up deterministically, instead of the
-  // tests relying on setTransactionUseWAL()'s createThreads() side effect.
+  // changes (e.g. ASYNC_OPERATIONS_QUEUE_SIZE) are picked up deterministically. Originally an
+  // alternative to tests relying on setTransactionUseWAL()'s createThreads() side effect; #6509
+  // removed that side effect, making this the only way to force a rebuild from a test.
   void recreateThreadsForTests() {
     createThreads(parallelLevel);
+  }
+
+  /**
+   * The pool-preserving half of {@link #setParallelLevel(int)}: publishes the resized array and hands the retired
+   * workers back to the caller to be waited for outside {@code lifecycleLock}.
+   *
+   * @return the workers this call retired, or {@code null} when nothing was retired (a grow, a no-op, or an
+   *     executor that is already shut down).
+   */
+  private AsyncThread[] resizeThreads(final int requestedLevel) {
+    final int newLevel = Math.max(1, requestedLevel);
+
+    synchronized (lifecycleLock) {
+      final AsyncThread[] current = executorThreads;
+      if (current == null) {
+        // ALREADY CLOSED. Deliberately NOT resurrecting the pool: createThreads() would have, and a set of workers
+        // brought back to life on a closed database is a worse answer than none - they would open transactions on
+        // it and no close() is coming to drain them. Recording the level keeps getParallelLevel() honest about what
+        // was asked for.
+        this.parallelLevel = newLevel;
+        return null;
+      }
+
+      if (newLevel == current.length) {
+        this.parallelLevel = newLevel;
+        return null;
+      }
+
+      // Set BEFORE constructing anything: AsyncThread's constructor sizes its queue as
+      // ASYNC_OPERATIONS_QUEUE_SIZE / parallelLevel, so a new worker must see the new level, exactly as in
+      // createThreads().
+      this.parallelLevel = newLevel;
+
+      if (newLevel > current.length) {
+        // GROW: the existing workers are carried over by reference and never touched - no marker, no flag, no join.
+        // Their queues stay whatever size they were sized at, which is the price of not disturbing them and is the
+        // right one: re-sizing a live worker's queue would mean moving its queued tasks.
+        final AsyncThread[] newThreads = Arrays.copyOf(current, newLevel);
+        for (int i = current.length; i < newLevel; ++i) {
+          newThreads[i] = new AsyncThread(database, i);
+          newThreads[i].start();
+        }
+        this.executorThreads = newThreads;
+        return null;
+      }
+
+      // SHRINK, in three ordered steps that a LOCK-FREE reader has to be able to walk through at any point.
+      final AsyncThread[] retired = Arrays.copyOfRange(current, newLevel, current.length);
+
+      // 1. REGISTER BEFORE UNPUBLISHING (#6526 review round 3, point 1). The reverse order - publish the smaller
+      //    array, then add - leaves a window in which a retired worker is in NEITHER collection, and a getStats()
+      //    or waitCompletion() reading the two in that window would miss its queue entirely. This way it is always
+      //    in at least one, and the identity check both readers apply makes it count for exactly one. Registering
+      //    before the stop request below matters for the same kind of reason: a worker that exits immediately must
+      //    be removed by its own run loop AFTER it was added, or it would stay in the set for ever.
+      for (final AsyncThread worker : retired)
+        retiringThreads.add(worker);
+
+      // 2. Publish the survivors, so by the time the tail is asked to stop, nothing can still choose it.
+      this.executorThreads = Arrays.copyOf(current, newLevel);
+
+      // 3. Ask the tail to stop.
+      for (final AsyncThread worker : retired) {
+        // RENAMED FIRST (#6526 review round 8). A worker is named after the slot it occupies, and a grow that lands
+        // while this one is still draining past awaitRetiredThreads()'s budget starts a NEW worker on that same
+        // index - two live threads of one database with an identical name, in the one situation an operator is
+        // most likely to be reading a thread dump. The suffix keeps the prefix every existing test and log filter
+        // matches on ("AsyncExecutor-<db>-"), so kill()'s "no thread of this database survives" assertion still
+        // covers it, while saying which of the two is on its way out.
+        worker.setName(worker.getName() + "-retiring");
+        worker.shutdown = true;
+        // Best effort and NON-blocking, unlike the close path's bounded offer plus interrupt. The marker only makes
+        // an IDLE worker exit at once instead of on its next 500ms poll timeout; a worker whose queue is full does
+        // not need it, since the flag is what ends the loop once the queue it is busy draining runs dry. Refusing
+        // to interrupt here is the point: an interrupt would unwind the task in flight and drop the queued ones.
+        worker.queue.offer(FORCE_EXIT);
+      }
+      return retired;
+    }
+  }
+
+  /**
+   * Waits, outside {@code lifecycleLock}, for the workers a shrink retired to finish draining. Never interrupts:
+   * see {@link #setParallelLevel(int)}.
+   */
+  private void awaitRetiredThreads(final AsyncThread[] retired) {
+    final long deadline = System.currentTimeMillis() + shutdownJoinTimeoutMs;
+    boolean interrupted = false;
+
+    for (final AsyncThread worker : retired) {
+      if (worker == Thread.currentThread())
+        // A worker lowering the parallel level from inside one of its own tasks would be joining ITSELF, which never
+        // returns. Nothing in the engine does this - setParallelLevel() is an administrative call - but the method is
+        // public API and a self-join is an unrecoverable hang, not a slow path.
+        continue;
+
+      final long remaining = deadline - System.currentTimeMillis();
+      if (remaining <= 0)
+        break;
+      try {
+        worker.join(remaining);
+      } catch (final InterruptedException e) {
+        interrupted = true;
+        break;
+      }
+    }
+
+    if (interrupted)
+      Thread.currentThread().interrupt();
+
+    // EVERY one that is still running, not just the first (#6526 review round 2, point 1). One line per worker is
+    // what an operator needs to tell "one task is slow" from "the whole pool is wedged", and this method's whole
+    // contract is that giving up is bounded and LOUD rather than silent - a break here made it loud about one.
+    for (final AsyncThread worker : retired)
+      // Self excluded here exactly as in the join loop (#6526 review round 8): a worker that retired its own slot
+      // from inside one of its tasks is alive BECAUSE it is still executing the call that would print this line,
+      // which is not the wedged worker this warning is about.
+      if (worker != Thread.currentThread() && worker.isAlive())
+        LogManager.instance().log(this, Level.WARNING,
+            "Asynchronous worker %s did not finish draining within %dms of the parallel level being lowered: it "
+                + "keeps running its queued tasks in the background and stays visible to waitCompletion()",
+            worker.getName(), shutdownJoinTimeoutMs);
   }
 
   private void createThreads(int parallelLevel) {
@@ -1310,8 +1833,15 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
   // Caller must hold lifecycleLock.
   private void shutdownThreadsLocked() {
-    final AsyncThread[] toClose = executorThreads;
-    if (toClose == null)
+    final AsyncThread[] live = executorThreads;
+
+    // #6526: the workers a shrinking setParallelLevel() retired are still draining and are NOT in the published
+    // array, so closing only that array would leave them running on a database that is being torn down - and
+    // DatabaseAsyncExecutorKillTest asserts no worker thread of the database outlives a kill(). Closed together
+    // with the live ones, under the same terminal escalation: unlike a resize, a close does not have the option of
+    // letting them finish.
+    final AsyncThread[] toClose = concat(live, retiringThreads.toArray(new AsyncThread[0]));
+    if (toClose.length == 0)
       return;
 
     // Unpublish first so concurrent readers stop seeing the about-to-die threads.
@@ -1354,6 +1884,57 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     }
     if (interrupted)
       Thread.currentThread().interrupt();
+  }
+
+  /** Identity search over a worker array, tolerating the null a closed executor publishes. */
+  private static boolean contains(final AsyncThread[] threads, final AsyncThread worker) {
+    if (threads != null)
+      for (int i = 0; i < threads.length; ++i)
+        if (threads[i] == worker)
+          return true;
+    return false;
+  }
+
+  /**
+   * Concatenates the live worker array (possibly null on an already-closed executor) with the retiring ones.
+   */
+  private static AsyncThread[] concat(final AsyncThread[] live, final AsyncThread[] retiring) {
+    if (live == null)
+      return retiring;
+    if (retiring.length == 0)
+      return live;
+    final AsyncThread[] all = Arrays.copyOf(live, live.length + retiring.length);
+    System.arraycopy(retiring, 0, all, live.length, retiring.length);
+    return all;
+  }
+
+  /**
+   * Every worker that can still be holding tasks of this executor: the published pool plus whatever a shrinking
+   * {@link #setParallelLevel(int)} retired and left draining (issue #6526, item 1). Returns {@code null} exactly
+   * when the executor is closed AND nothing is draining, which is the "nothing to wait for" answer the callers
+   * already knew how to handle.
+   */
+  private AsyncThread[] allThreads() {
+    final AsyncThread[] live = executorThreads;
+    if (retiringThreads.isEmpty())
+      return live;
+
+    // ONLY THE ONES STILL RUNNING. A worker removes itself from the set in its own finally, after its final queue
+    // drain, so there is a brief window in which a finished worker is still registered - and handing it to
+    // waitCompletion() would let a marker land in a queue nobody is going to poll again, which the caller pays for
+    // as its whole timeout budget. The residual race (alive here, finished by the time the marker is offered) is the
+    // same one the published array has always had, and waitCompletion()'s own isAlive() re-check covers the common
+    // half of it.
+    final List<AsyncThread> stillRunning = new ArrayList<>(retiringThreads.size());
+    for (final AsyncThread retiring : retiringThreads)
+      // Alive, and not already in the published array: same unsynchronized-pair window getStats() names, closed the
+      // same way (see resizeThreads()'s ordered shrink). A duplicate here would only cost waitCompletion() a second
+      // marker on one worker, but there is no reason to hand it one.
+      if (retiring.isAlive() && !contains(live, retiring))
+        stillRunning.add(retiring);
+
+    final AsyncThread[] all = concat(live, stillRunning.toArray(new AsyncThread[0]));
+    return all.length == 0 ? null : all;
   }
 
   @Override
@@ -1399,6 +1980,19 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       if (threads == null)
         throw new DatabaseOperationException(
             "Async executor has been shut down; cannot schedule asynchronous task " + task);
+
+      if (slot >= threads.length)
+        // #6526: getSlot() maps its value modulo the pool size it read, and the pool can SHRINK between that read
+        // and this one - before, the array was nulled for the whole resize, so this race surfaced as the "shut
+        // down" exception above; now the array stays live and a stale slot index would be an
+        // ArrayIndexOutOfBoundsException instead.
+        //
+        // A FALLBACK, NOT A RE-DERIVATION (#6526 review, point 3): (value % oldLength) % newLength is not
+        // (value % newLength) in general - value 7 over a pool that went from 5 to 3 lands on 2 here and on 1 from
+        // a fresh getSlot(). All this owes the caller is a valid live worker instead of an exception, and the task
+        // is one whose bucket pinning was decided against a pool that no longer exists; the next task for the same
+        // bucket asks getSlot() again and gets the stable answer.
+        slot %= threads.length;
 
       final AsyncThread target = threads[slot];
       final BlockingQueue<DatabaseAsyncTask> queue = target.queue;
@@ -1732,13 +2326,20 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     if (executorThreads == null || executorThreads.length == 0)
       // NOTHING TO PARK, and the lock is deliberately NOT taken for it. Holding it here would make a nested
       // quiescence short-circuit on hold count and hand back another no-op - so if workers came into existence in
-      // between (a concurrent setParallelLevel on a shut-down executor is the only way), the nested call would leave
-      // them running under a scan. Not locking makes that nested call a fresh outer one that parks them properly.
+      // between, the nested call would leave them running under a scan. Not locking makes that nested call a fresh
+      // outer one that parks them properly.
       //
-      // The residual, named rather than papered over: workers created after this check are not parked by THIS
-      // quiescence either. Closing that needs the executor's creation gated on the quiescence, which is a lock on
-      // the async lifecycle path for a window an index build has to race a pool resize to reach - out of scope here,
-      // and the same window the barrier of #6281 has always had.
+      // The way that USED to happen was a concurrent setParallelLevel() on a shut-down executor, which went through
+      // createThreads() and cheerfully respawned a pool on a closed database. #6526 removed it: resizeThreads()
+      // records the requested level and returns rather than resurrecting anything, and LocalDatabase assigns its
+      // `async` field exactly once per instance, so a null-or-empty executorThreads read here is now terminal
+      // (#6526 review round 7). The defence stays because it costs nothing and the property it relies on lives in
+      // another class.
+      //
+      // The residual that is NOT closed, named rather than papered over: workers created after this check - a GROW
+      // racing the scan - are not parked by THIS quiescence either. Closing that needs the executor's creation
+      // gated on the quiescence, which is a lock on the async lifecycle path for a window an index build has to
+      // race a pool resize to reach - out of scope here, and the same window the barrier of #6281 has always had.
       return new HeldQuiesce(null, false);
 
     quiesceLock.lock();
@@ -1752,26 +2353,51 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     // the failure that got us there.
     CountDownLatch release = null;
     try {
-      final AsyncThread[] threads = executorThreads;
-      if (threads == null || threads.length == 0) {
-        // Shut down between the check above and here: nothing to park, and the lock this holds is given back by the
-        // handle like any other.
-        handedOver = true;
-        return new HeldQuiesce(null, true);
+      final CountDownLatch parked;
+
+      // ONE PARK TASK PER WORKER, which needs the pool it is sized against to be the pool the tasks are scheduled
+      // onto (#6526 review round 8). scheduleTask() re-reads executorThreads on every call, and since #6526 a slot
+      // index the pool has outgrown is re-mapped onto a live worker instead of throwing - so a shrink landing
+      // between the read that sizes the latch and the last scheduleTask() would fold several indices onto one
+      // survivor. That worker runs the first park task, counts the latch down once and blocks on `release`, so the
+      // duplicates queued behind it never run: a latch sized for the old pool that can no longer reach zero, and a
+      // caller - an index build - that waits out the whole quiesce timeout before failing. Measured: 60s and a
+      // NeedRetryException where the answer should have been immediate.
+      //
+      // So the READ AND THE LOOP ARE BOTH INSIDE resizeLock, not just the loop: a snapshot taken outside it is
+      // already stale by the time the lock is acquired, which is the same bug one window earlier.
+      //
+      // Held for that ONLY, not for the quiescence: a shrink that lands afterwards is harmless, because the park
+      // task is already ahead of the exit marker on the retired worker's queue and still runs, counts down and
+      // parks. Keeping the lock any longer would put an administrative resize behind a whole index build.
+      //
+      // Lock order is quiesceLock (held) -> resizeLock -> lifecycleLock, and nothing takes them the other way
+      // round: setParallelLevel() never touches quiesceLock, and close()/kill() take only lifecycleLock.
+      resizeLock.lock();
+      try {
+        final AsyncThread[] threads = executorThreads;
+        if (threads == null || threads.length == 0) {
+          // Shut down between the check above and here: nothing to park, and the lock this holds is given back by
+          // the handle like any other.
+          handedOver = true;
+          return new HeldQuiesce(null, true);
+        }
+
+        parked = new CountDownLatch(threads.length);
+        release = new CountDownLatch(1);
+
+        for (int i = 0; i < threads.length; i++)
+          // waitIfQueueIsFull, so a busy worker is queued behind rather than skipped: an unparked worker is exactly
+          // the hole this method exists to close, and a `false` here would be one - which is why the old call
+          // site's discarded boolean mattered. Any refusal (a worker that has shut down) throws, and the finally
+          // below releases whatever was already parked.
+          if (!scheduleTask(i, new DatabaseAsyncParkWorker(parked, release), true, 0))
+            throw new NeedRetryException(
+                "Cannot quiesce the asynchronous executor of database '" + database.getName() + "': worker " + i
+                    + " refused the park task");
+      } finally {
+        resizeLock.unlock();
       }
-
-      final CountDownLatch parked = new CountDownLatch(threads.length);
-      release = new CountDownLatch(1);
-
-      for (int i = 0; i < threads.length; i++)
-        // waitIfQueueIsFull, so a busy worker is queued behind rather than skipped: an unparked worker is exactly the
-        // hole this method exists to close, and a `false` here would be one - which is why the old call site's
-        // discarded boolean mattered. Any refusal (a worker that has shut down) throws, and the finally below
-        // releases whatever was already parked.
-        if (!scheduleTask(i, new DatabaseAsyncParkWorker(parked, release), true, 0))
-          throw new NeedRetryException(
-              "Cannot quiesce the asynchronous executor of database '" + database.getName() + "': worker " + i
-                  + " refused the park task");
 
       final long timeout = quiesceTimeoutMillis();
       try {
@@ -1856,7 +2482,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       // workers alone would report an executor with a command in flight as idle.
       return true;
 
-    final AsyncThread[] threads = executorThreads;
+    // #6526: includes the workers a shrinking setParallelLevel() left draining - they are still executing this
+    // executor's tasks, so reporting the executor idle because the pool got smaller would be wrong.
+    final AsyncThread[] threads = allThreads();
     if (threads != null)
       for (int i = 0; i < threads.length; ++i) {
         if (threads[i].isExecutingTask())

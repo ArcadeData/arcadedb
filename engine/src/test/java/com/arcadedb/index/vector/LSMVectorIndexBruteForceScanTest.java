@@ -187,13 +187,16 @@ class LSMVectorIndexBruteForceScanTest extends TestHelper {
   }
 
   /**
-   * The end-to-end route into the brute-force fallback that survives #5873, so the "a real query reaches the scan
+   * The end-to-end route into {@code bruteForceScan} that survives #5873, so the "a real query reaches the scan
    * and the scan pairs each RID with its own score" claim keeps a test.
    * <p>
    * An allow-list narrower than {@code k} is the case: the graph can only ever answer with the allowed rows, which
-   * is fewer than the {@code k} the caller asked for, so {@code expectedResults} stays above what the search returns
-   * and the fallback fires every time (issue #5748). Unlike the stale-graph fixture above, that shortfall is real -
-   * the answer genuinely cannot be filled from the graph - so the scan has something to do.
+   * is fewer than the {@code k} the caller asked for. Before issue #6502 that shortfall was only discovered after
+   * a full graph walk, which is what drove this fixture's size (a large, stale-free graph the walk had to pay for
+   * on every query). Since #6502 an allow-list this narrow is resolved by the pre-filter plan up front - same
+   * {@code bruteForceScan} call, reached without ever asking the graph - so the graph walk and its shortfall
+   * WARNING are now the thing this fixture proves does NOT run, while the RID/score pairing claim is proven the
+   * same way it always was.
    */
   @Test
   void aNarrowAllowListStillReachesTheFallbackEndToEnd() {
@@ -235,13 +238,19 @@ class LSMVectorIndexBruteForceScanTest extends TestHelper {
     final Logger originalLogger = LogManager.instance().getLogger();
     LogManager.instance().setLogger(new CapturingLogger(captured, originalLogger));
     try {
+      final long preFilterBefore = index.getStats().getOrDefault("preFilterSearches", 0L);
+
       // Probe with one whitelisted vertex's own vector: it has to rank first at ~0 distance, which is exactly the
       // RID-to-score pairing issue #4581 was about, now observed through a real query rather than by reflection.
       final int probe = total / allowed;
       final List<Pair<RID, Float>> results = index.findNeighborsFromVector(vectorByIndex[probe], 10, whitelist);
 
-      assertThat(captured).as("an allow-list narrower than k cannot be filled from the graph, so the scan must run")
-          .anyMatch(m -> m != null && m.contains("falling back to brute-force scan"));
+      assertThat(index.getStats().get("preFilterSearches"))
+          .as("3 of 1200 is well under the default pre-filter threshold, so the plan must answer this directly")
+          .isEqualTo(preFilterBefore + 1);
+      assertThat(captured)
+          .as("the pre-filter plan answers before the graph is ever walked, so its shortfall WARNING must not fire")
+          .noneMatch(m -> m != null && m.contains("falling back to brute-force scan"));
       assertThat(results).as("and it answers with the whitelisted rows, and only those").hasSize(allowed);
       for (final Pair<RID, Float> r : results)
         assertThat(whitelist).as("a row outside the allow-list must not survive the scan").contains(
