@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http;
 
+import com.arcadedb.Constants;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.http.handler.OpenApiSpecGenerator;
@@ -321,6 +322,25 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
         .hasSize(2);
     assertThat(openAPI.getSecurity().stream().flatMap(r -> r.keySet().stream()).toList())
         .containsExactlyInAnyOrder("basicAuth", "bearerAuth");
+  }
+
+  @Test
+  void specDeclaresTheRunningServerVersion() throws Exception {
+    final String specContent = getOpenApiSpec();
+    final SwaggerParseResult result = new OpenAPIV3Parser().readContents(specContent, null, new ParseOptions());
+    final Info info = result.getOpenAPI().getInfo();
+
+    assertThat(info.getVersion())
+        .as("a generated client must record which server release produced its types, as the bare version")
+        .isEqualTo(Constants.getRawVersion());
+
+    assertThat(info.getVersion())
+        .as("a build stamp is not a release identity; publish-contract.yml compares this to the bare tag")
+        .doesNotContain(" (build ");
+
+    assertThat(info.getVersion())
+        .as("the placeholder must be gone, not merely coincidentally equal")
+        .isNotEqualTo("1.0.0");
   }
 
   @Test
