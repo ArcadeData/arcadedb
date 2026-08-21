@@ -129,10 +129,8 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   @Override
   public Map<String, Object> toMap(final boolean includeMetadata) {
     checkForLazyLoadingProperties();
-    // LinkedHashMap (not HashMap) so iteration order matches getPropertyNames()/map's own
-    // insertion order — SQL methods keys()/values() rely on this to stay index-aligned, and
-    // ImmutableDocument.toMap() already gives this ordering guarantee (#6472).
-    final Map<String, Object> result = new LinkedHashMap<>(map.size() + (includeMetadata ? 3 : 0));
+    // Optimized: add extra capacity for metadata fields (@rid, @type, @cat)
+    final Map<String, Object> result = new HashMap<>(map.size() + (includeMetadata ? 3 : 0));
     result.putAll(map);
     if (includeMetadata) {
       result.put(CAT_PROPERTY, "d");
