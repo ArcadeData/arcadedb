@@ -243,19 +243,42 @@ public class PrometheusApiSpec implements OpenApiContributor {
         "Shape of 'result': a vector of instant samples, a matrix of range samples, or a scalar");
     resultType.setEnum(List.of("vector", "matrix", "scalar"));
 
+    final Schema<Object> vectorEntry = SpecBuilders.object("One instant sample");
+    vectorEntry.addProperty("metric", SpecBuilders.object("Label map, including the '__name__' label"));
+    vectorEntry.addProperty("value", samplePair());
+
+    final Schema<Object> matrixEntry = SpecBuilders.object("One range series");
+    matrixEntry.addProperty("metric", SpecBuilders.object("Label map, including the '__name__' label"));
+    matrixEntry.addProperty("values", SpecBuilders.arrayOf(samplePair(), "Samples ordered by timestamp"));
+
+    final Schema<Object> result = new Schema<>();
+    result.setDescription("""
+        Evaluation result, shaped by 'resultType': an array of instant samples when 'vector', an \
+        array of range series when 'matrix', and a single [timestamp, value] pair when 'scalar'.""");
+    result.setOneOf(List.of(
+        SpecBuilders.arrayOf(vectorEntry, "Entries when resultType is 'vector'"),
+        SpecBuilders.arrayOf(matrixEntry, "Entries when resultType is 'matrix'"),
+        samplePair()));
+
     final Schema<Object> data = SpecBuilders.object("Evaluation result");
     data.addProperty("resultType", resultType);
-    data.addProperty("result", SpecBuilders.arrayOf(
-        SpecBuilders.object(
-            "A vector entry carries 'metric' and a single 'value'; a matrix entry carries 'metric' and 'values'"),
-        "Result entries. A vector result's entries carry [timestamp, value] in 'value'; a matrix "
-            + "result's entries carry a list of [timestamp, value] pairs in 'values'. A scalar result "
-            + "replaces this array with a single [timestamp, value] pair."));
+    data.addProperty("result", result);
 
     final Schema<Object> schema = SpecBuilders.object("Prometheus query response");
     schema.addProperty("status", SpecBuilders.string("Always 'success' on a 200"));
     schema.addProperty("data", data);
     return schema;
+  }
+
+  /**
+   * A fresh [timestamp, value] pair schema on every call. Returning a shared instance would place
+   * one mutable schema object at several points in the document, the same defect class that put one
+   * ApiResponse under two status keys during #4895.
+   */
+  private Schema<?> samplePair() {
+    return SpecBuilders.arrayOf(
+        SpecBuilders.object("Unix timestamp in seconds, then the sample value as a string"),
+        "One [timestamp, value] pair");
   }
 
   private Schema<?> createLabelsResponseSchema() {

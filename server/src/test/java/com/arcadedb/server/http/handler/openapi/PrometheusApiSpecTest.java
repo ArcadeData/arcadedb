@@ -150,6 +150,29 @@ class PrometheusApiSpecTest {
   }
 
   @Test
+  void promQlResultDeclaresItsThreeShapes() {
+    final Schema<?> response = openAPI.getComponents().getSchemas().get("PromQLDataResponse");
+    final Schema<?> data = (Schema<?>) response.getProperties().get("data");
+    final Schema<?> result = (Schema<?>) data.getProperties().get("result");
+
+    assertThat(result.getOneOf())
+        .as("vector, matrix and scalar are structurally different; a client must narrow on resultType")
+        .hasSize(3);
+  }
+
+  @Test
+  void promQlVectorEntriesCarryMetricAndValue() {
+    final Schema<?> response = openAPI.getComponents().getSchemas().get("PromQLDataResponse");
+    final Schema<?> data = (Schema<?>) response.getProperties().get("data");
+    final Schema<?> result = (Schema<?>) data.getProperties().get("result");
+    final Schema<?> vectorEntry = result.getOneOf().get(0).getItems();
+
+    assertThat(vectorEntry.getProperties().keySet())
+        .as("an instant sample is a labelled metric plus one [timestamp, value] pair")
+        .containsExactlyInAnyOrder("metric", "value");
+  }
+
+  @Test
   void everyPromQlOperationUsesTheErrorEnvelopeNotTheGenericOne() {
     final Schema<?> error = openAPI.getComponents().getSchemas().get("PromQLErrorResponse");
     assertThat(error.getProperties().keySet())
