@@ -21,9 +21,12 @@ package com.arcadedb.index.sparsevector;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.schema.LocalSchema;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -370,6 +373,41 @@ class PaginatedSparseVectorEngineCompactionRecencyTest extends TestHelper {
       assertThatThrownBy(() -> engine.contiguousClosure(shortSnapshot, new PaginatedSegmentReader[] { active[0], active[3] }))
           .isInstanceOf(IllegalStateException.class)
           .hasMessageContaining("must come from the live snapshot");
+    }
+  }
+
+  /**
+   * {@link SparseSegmentBuilder#setSegmentId} re-defaults the epoch to the id, so the two setters
+   * are order-dependent. Pin that the wrong order fails loudly instead of silently discarding the
+   * epoch - a merged segment quietly carrying its own id as its epoch is precisely the #6379 bug
+   * the field exists to prevent, and it would show up as resurrected documents rather than as
+   * anything traceable to the builder.
+   */
+  @Test
+  void setRecencyEpochBeforeSetSegmentIdIsRejected() {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    database.transaction(() -> {
+      final SparseSegmentComponent component = newComponent(db, "recency-order-guard");
+      try (final SparseSegmentBuilder b = new SparseSegmentBuilder(component, SegmentParameters.defaults())) {
+        assertThatThrownBy(() -> b.setRecencyEpoch(7L))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessageContaining("must be called before setRecencyEpoch");
+
+        // The documented order is accepted and the explicit epoch wins over the id default.
+        b.setSegmentId(9L);
+        b.setRecencyEpoch(7L);
+      }
+    });
+  }
+
+  private static SparseSegmentComponent newComponent(final DatabaseInternal db, final String name) {
+    try {
+      final SparseSegmentComponent c = new SparseSegmentComponent(db, name, db.getDatabasePath() + "/" + name,
+          ComponentFile.MODE.READ_WRITE, SparseSegmentComponent.DEFAULT_PAGE_SIZE);
+      ((LocalSchema) db.getSchema().getEmbedded()).registerFile(c);
+      return c;
+    } catch (final IOException e) {
+      throw new RuntimeException("failed to create sparse segment component '" + name + "'", e);
     }
   }
 
