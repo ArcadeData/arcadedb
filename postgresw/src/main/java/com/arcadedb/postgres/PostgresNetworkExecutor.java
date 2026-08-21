@@ -1865,7 +1865,17 @@ public class PostgresNetworkExecutor extends Thread {
         // portal.language switch), this check runs regardless of portal.language - intentionally, matching
         // queryCommand()'s own aborted-transaction branch, which has no language gate either. No real client
         // sends a transaction-control statement under a non-"sql" language mid-session.
-        final String abortedUpperCaseText = portal.query.toUpperCase(Locale.ENGLISH);
+        // isCommitStatement()/isRollbackStatement() match by exact string equality, so the text they see must
+        // be trimmed and stripped of a trailing ';' the same way queryCommand() strips it from its queryText
+        // before its own aborted-transaction check runs (issue #6548 review follow-up) - otherwise a client
+        // that sends "ROLLBACK;" (a real Postgres statement terminator many drivers append) falls through to
+        // the silent return below, reproducing this exact issue's "wedged forever" symptom via a trailing
+        // semicolon instead of via the missing dispatch. portal.query itself is left untouched here: the
+        // matched branch below overwrites it outright, and the unmatched branch discards this portal.
+        String abortedText = portal.query.trim();
+        if (abortedText.endsWith(";"))
+          abortedText = abortedText.substring(0, abortedText.length() - 1);
+        final String abortedUpperCaseText = abortedText.toUpperCase(Locale.ENGLISH);
         if (isTransactionEndStatement(abortedUpperCaseText)) {
           if (database.isTransactionActive())
             database.rollback();

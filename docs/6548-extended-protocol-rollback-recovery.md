@@ -47,6 +47,24 @@ one of those into an `ErrorResponse`.
 
 - `postgresw/src/main/java/com/arcadedb/postgres/PostgresNetworkExecutor.java` - `parseCommand()`.
 
+## Review follow-up: trailing ';' / whitespace
+
+`isCommitStatement()`/`isRollbackStatement()` match by exact string equality, so `abortedUpperCaseText` has to
+be trimmed and stripped of a trailing `;` before comparison - the same normalization `queryCommand()` applies
+to its own `queryText` (`queryText = readString().trim(); if (queryText.endsWith(";")) queryText = ...`)
+before its aborted-transaction check runs. Without it, a client that sends `"ROLLBACK;"` (a real Postgres
+statement terminator many drivers append) over the extended protocol while aborted falls through to the
+silent `return`, reproducing this issue's "wedged forever" symptom via a trailing semicolon instead of via
+the missing dispatch. Caught by the Claude Code review on this PR.
+
+Fixed narrowly: a local `abortedText` is trimmed and semicolon-stripped before uppercasing, only for the
+match this PR's new branch performs. `portal.query` itself is left untouched (the matched branch overwrites
+it outright with `"ROLLBACK"`; the unmatched branch discards the portal). The non-aborted BEGIN/COMMIT/
+ROLLBACK dispatch a few lines below (`upperCaseText` at parseCommand()'s top) has the identical gap, but that
+variable is also read by several unrelated checks (SET/SHOW/SAVEPOINT/system-query), so normalizing it there
+is a materially larger, riskier change outside this PR's scope - left as a pre-existing issue, not introduced
+here, callable out as a fast follow if desired.
+
 ## Tests
 
 - `postgresw/src/test/java/com/arcadedb/postgres/Issue6548AbortedTransactionRollbackExtendedProtocolIT.java` (new)
@@ -54,6 +72,9 @@ one of those into an `ErrorResponse`.
     sent as its own Parse/Bind/Execute/Sync must clear both `errorInTransaction` and
     `explicitTransactionStarted`, reporting status `'I'`, not `'T'`.
   - Covers `COMMIT`/`END` while aborted producing the `ROLLBACK` command tag, per real Postgres semantics.
+  - Covers `"ROLLBACK;"`, `" ROLLBACK "`, and `" ROLLBACK; "` while aborted, locking in the trim/semicolon-strip
+    fix above - verified red against the code before that fix (protocol desync, same signature as the
+    original bug), green after.
   - Confirms the session is fully usable again after recovery (`SELECT 1` succeeds with no `ErrorResponse`).
 
 ## Verification

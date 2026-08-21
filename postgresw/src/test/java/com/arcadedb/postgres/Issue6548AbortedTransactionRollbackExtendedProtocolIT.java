@@ -102,6 +102,38 @@ class Issue6548AbortedTransactionRollbackExtendedProtocolIT extends PostgresWire
   }
 
   @Test
+  @DisplayName("[#6548] a trailing ';' or surrounding whitespace on ROLLBACK does not defeat the aborted-transaction recovery match")
+  void rollbackWithTrailingSemicolonOrWhitespaceRecoversFromAbortedTransaction() throws Exception {
+    try (final Socket socket = new Socket()) {
+      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+      authenticate(out, in);
+
+      assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
+        // isCommitStatement()/isRollbackStatement() match by exact string equality, so the aborted-branch
+        // dispatch must trim and strip a trailing ';' before comparing - the same normalization
+        // queryCommand() applies to its own queryText - or a driver that appends the statement terminator
+        // (many do) would fall through to the silent return and reproduce this issue's "wedged forever"
+        // symptom via a trailing semicolon instead of via the missing dispatch.
+        for (final String rollbackVariant : new String[] {"ROLLBACK;", " ROLLBACK ", " ROLLBACK; "}) {
+          assertThat(readyForQueryStatusOf(runExtendedQuery(out, in, "BEGIN"))).isEqualTo('T');
+
+          sendParse(out, "SELEC 1");
+          assertThat(readWireMessage(in).type()).isEqualTo('E');
+
+          final List<WireMessage> afterRollback = runExtendedQuery(out, in, rollbackVariant);
+          assertThat(messageTypesOf(afterRollback))
+              .as("'" + rollbackVariant + "' must not itself error").doesNotContain('E');
+          assertThat(readyForQueryStatusOf(afterRollback))
+              .as("'" + rollbackVariant + "' must clear both errorInTransaction and explicitTransactionStarted")
+              .isEqualTo('I');
+        }
+      });
+    }
+  }
+
+  @Test
   @DisplayName("[#6548] COMMIT/END sent while aborted over the extended query protocol recover the session and report the ROLLBACK tag")
   void commitAndEndRecoverFromAbortedTransactionOverExtendedProtocol() throws Exception {
     try (final Socket socket = new Socket()) {
