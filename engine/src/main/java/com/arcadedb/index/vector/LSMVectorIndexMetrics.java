@@ -41,9 +41,11 @@ class LSMVectorIndexMetrics {
   // expensive thing this index does, and until now it was only a log line (issue #5558). Counts the plain k-NN path
   // only, which is the only one with a fallback to count: the grouped and PQ paths deliberately have none.
   private final AtomicLong bruteForceScans = new AtomicLong(0);
-  // Queries answered by the pre-filter plan (issue #6502): the RID allow-list was narrow enough that scoring it
-  // directly was chosen up front, in place of the HNSW graph walk. Unlike bruteForceScans this is not a fallback -
-  // it is the cheaper of two exact plans, picked before any graph traversal ran.
+  // Queries answered by the pre-filter plan (issue #6502, extended to the groupBy and PQ-approximate paths by issue
+  // #6514): the RID allow-list was narrow enough that scoring it directly was chosen up front, in place of the HNSW
+  // graph walk. Unlike bruteForceScans this is not a fallback - it is the cheaper of the two plans available for a
+  // given search path (exact on the plain and groupBy paths, PQ-approximate on the PQ path), picked before any
+  // graph traversal ran. Shared across all three paths; a query on any of them can bump this counter.
   private final AtomicLong preFilterSearches = new AtomicLong(0);
   // Grouped searches (vector.neighbors with groupBy) that ran out of candidate budget before they could open `limit`
   // distinct groups, so the caller got a correct but short answer. Finding the limit-th nearest group costs however
