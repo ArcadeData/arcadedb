@@ -267,6 +267,25 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
    */
   protected static final long MATRIX_ROW_OVERHEAD_BYTES = 32L;
 
+  /**
+   * Entry-count checkpoint interval for the CSR-adjacency fallback branch of {@link GraphData#adjacency}, taken
+   * when a {@link com.arcadedb.graph.GraphTraversalProvider} has no {@link com.arcadedb.graph.NeighborView} to
+   * size the copy from up front.
+   * <p>
+   * That branch used to checkpoint the budget every 1024 <em>nodes</em>, a count with no relationship to how much
+   * heap those nodes actually cost: a single supernode's neighbour list is fully materialised by one
+   * {@code getNeighborIds()} call, so a node-count interval left the budget unable to refuse it until up to 1023
+   * more (possibly tiny) rows had also been expanded. Checkpointing on entries-seen-so-far as well closes that -
+   * the supernode's own row already crosses this threshold, so the very next checkpoint (right after that one
+   * row) has a chance to refuse the call, rather than the one up to 1023 nodes later (issue #6444, following up
+   * on the #6417 code review that first named this gap).
+   * <p>
+   * 1 Mi entries is 4 MB of {@code int[]} at {@link #INT_BYTES} each - generous enough that an ordinary,
+   * moderate-degree graph still checkpoints on the node-count interval as before, while capping how much of a
+   * single oversized row's cost can go unpriced past the previous checkpoint.
+   */
+  protected static final long ADJACENCY_CHECKPOINT_ENTRIES = 1_048_576L;
+
   /** Heap cost of one {@code boolean} array element, which the JVM stores as a byte. */
   protected static final long BOOLEAN_BYTES = 1L;
 
@@ -708,20 +727,21 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
           }
           return adj;
         }
-        // No view to size the copy from, so the rows are priced as they arrive, 1024 nodes at a time. That
-        // interval is a node count, not a byte count: a single supernode's neighbour list is fully materialised
-        // by getNeighborIds() before the next checkpoint has a chance to refuse it, unlike the NeighborView
-        // branch above and the OLTP buildAdjacencyList below, both of which know the exact entry count before
-        // allocating a single row. Narrow in practice - it takes one enormous row rather than many average ones
-        // to matter - and left as a known limitation rather than checkpointed per-row, which would cost a
-        // reservation call per node on every CSR-backed call that lacks a NeighborView (code review, issue #6317).
+        // No view to size the copy from, so the rows are priced as they arrive. Unlike the NeighborView branch
+        // above and the OLTP buildAdjacencyList below - both of which know the exact entry count before
+        // allocating a single row - this loop cannot know a row's size before calling getNeighborIds(), so that
+        // one call is unavoidably unpriced. What is avoidable is how long a checkpoint can then be postponed:
+        // checkpointing on entries-seen-so-far as well as on the node-count interval means a single oversized
+        // row (a supernode) crosses ADJACENCY_CHECKPOINT_ENTRIES by itself and gets checkpointed - and can be
+        // refused - right after that one row, rather than only after another 1023 nodes reach the next
+        // node-count boundary (issue #6444, following up on the #6317 code review that first named this gap).
         reserveAdjacency(nodeCount, 0);
         final int[][] adj = new int[nodeCount][];
         long entries = 0;
         for (int i = 0; i < nodeCount; i++) {
           adj[i] = provider.getNeighborIds(i, dir, relTypes);
           entries += adj[i].length;
-          if ((i & 1023) == 1023) {
+          if (entries >= ADJACENCY_CHECKPOINT_ENTRIES || (i & 1023) == 1023) {
             reserveAdjacency(0, entries);
             entries = 0;
           }
