@@ -123,6 +123,31 @@ class Issue6543RollbackExtendedProtocolIT extends PostgresWireProtocolTestBase {
     }
   }
 
+  @Test
+  @DisplayName("[#6543] COMMIT WORK / END are recognized as aliases for COMMIT over the extended query protocol")
+  void commitAliasesAreRecognizedOverExtendedProtocol() throws Exception {
+    // Companion to the ROLLBACK-alias test above: isCommitStatement() was widened to COMMIT WORK/END/END
+    // TRANSACTION/END WORK alongside the ROLLBACK fix (the extended-protocol COMMIT branch previously matched
+    // only the exact literal "COMMIT"), and that widening only works because BEGIN/COMMIT/ROLLBACK are now
+    // checked before sqlEngine.parse() is ever called - so this exercises both halves of the fix together.
+    try (final Socket socket = new Socket()) {
+      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+      authenticate(out, in);
+
+      assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
+        assertThat(readyForQueryStatusOf(runExtendedQuery(out, in, "BEGIN"))).isEqualTo('T');
+        assertThat(readyForQueryStatusOf(runExtendedQuery(out, in, "COMMIT WORK")))
+            .as("COMMIT WORK must be recognized just like a bare COMMIT").isEqualTo('I');
+
+        assertThat(readyForQueryStatusOf(runExtendedQuery(out, in, "BEGIN"))).isEqualTo('T');
+        assertThat(readyForQueryStatusOf(runExtendedQuery(out, in, "END")))
+            .as("END must be recognized as an alias for COMMIT").isEqualTo('I');
+      });
+    }
+  }
+
   private void authenticate(final DataOutputStream out, final DataInputStream in) throws Exception {
     sendStartupMessage(out, "root", getDatabaseName());
     readMessage(in); // AuthenticationCleartextPassword
