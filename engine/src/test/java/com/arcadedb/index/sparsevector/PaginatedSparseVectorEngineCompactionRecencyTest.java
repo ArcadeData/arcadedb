@@ -28,6 +28,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.within;
 
 /**
@@ -331,6 +332,44 @@ class PaginatedSparseVectorEngineCompactionRecencyTest extends TestHelper {
       assertThat(topKRids(engine))
           .as("every live posting must survive the guard's merges")
           .containsAll(expected);
+    }
+  }
+
+  /**
+   * {@link PaginatedSparseVectorEngine#contiguousClosure} is the safety net the whole "a future
+   * policy can only over-merge, never corrupt" claim rests on, and no production selector can
+   * reach its widening branch - every one of them already returns a run. Exercise it directly, so
+   * the fallback is pinned rather than merely asserted in a comment.
+   */
+  @Test
+  void contiguousClosureWidensAGappedPick() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    try (final PaginatedSparseVectorEngine engine = nonCompactingEngine(db, "ContiguousClosureTest")) {
+      for (int i = 0; i < 4; i++) {
+        fill(engine, 100L + i * 10L, 3);
+        engine.flush();
+      }
+      final PaginatedSegmentReader[] active = engine.segmentsForTest();
+      assertThat(active).hasSize(4);
+
+      // A pick that jumps over the two middle segments must come back as the whole run, so the
+      // merged segment cannot inherit an epoch that leapfrogs what it skipped.
+      assertThat(engine.contiguousClosure(active, new PaginatedSegmentReader[] { active[0], active[3] }))
+          .as("a gapped pick must widen to the contiguous run that spans it")
+          .containsExactly(active[0], active[1], active[2], active[3]);
+
+      // An already-contiguous pick is returned untouched, oldest first - the common case, and the
+      // reason widening never costs anything in practice.
+      assertThat(engine.contiguousClosure(active, new PaginatedSegmentReader[] { active[2], active[1] }))
+          .as("an already-contiguous pick must survive unchanged and oldest-first")
+          .containsExactly(active[1], active[2]);
+
+      // A pick naming a segment that is not in the live snapshot is a programming error: merging
+      // it would drop a component the engine never owned.
+      final PaginatedSegmentReader[] shortSnapshot = { active[0], active[1] };
+      assertThatThrownBy(() -> engine.contiguousClosure(shortSnapshot, new PaginatedSegmentReader[] { active[0], active[3] }))
+          .isInstanceOf(IllegalStateException.class)
+          .hasMessageContaining("must come from the live snapshot");
     }
   }
 

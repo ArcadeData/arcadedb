@@ -1120,8 +1120,14 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * unreachable in practice - it exists so that a future policy which does not return one can only
    * over-merge, never corrupt. The {@code WARNING} makes that over-merge observable instead of
    * quietly paying the write amplification forever.
+   * <p>
+   * The {@code sortedCopy} below deliberately re-sorts a snapshot the selectors have usually
+   * already sorted. Threading their {@code ordered} array through here to save the second
+   * {@code O(n log n)} on a handful of segments would make this check trust the caller for the
+   * very ordering it exists to verify, which is the one thing it must not do. Package-private for
+   * the regression test that pins the widening branch, since no production caller can reach it.
    */
-  private PaginatedSegmentReader[] contiguousClosure(final PaginatedSegmentReader[] active,
+  PaginatedSegmentReader[] contiguousClosure(final PaginatedSegmentReader[] active,
       final PaginatedSegmentReader[] inputs) {
     final PaginatedSegmentReader[] ordered = sortedCopy(active);
     final LongHashSet inputIds = new LongHashSet(Math.max(8, inputs.length * 2));
@@ -1358,6 +1364,16 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    */
   ReentrantLock mutatorLockForTest() {
     return mutatorLock;
+  }
+
+  /**
+   * Test-only view of the live segment snapshot, in {@link #RECENCY_ORDER}. Used by the
+   * compaction-recency regression test to hand {@link #contiguousClosure} a deliberately gapped
+   * input set - something no production selector produces, which is precisely why the widening
+   * branch needs a test of its own.
+   */
+  PaginatedSegmentReader[] segmentsForTest() {
+    return segments.get();
   }
 
   // --- lifecycle ------------------------------------------------------------
