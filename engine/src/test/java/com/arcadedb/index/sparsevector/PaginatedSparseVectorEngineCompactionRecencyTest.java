@@ -416,6 +416,54 @@ class PaginatedSparseVectorEngineCompactionRecencyTest extends TestHelper {
   }
 
   /**
+   * The path a Raft follower actually rebuilds its snapshot through is
+   * {@link PaginatedSparseVectorEngine#refreshSegmentsFromFileManager}, not the open-time scan: the
+   * merged component arrives as a shipped file and the engine reconciles against the FileManager on
+   * its next query. It has to arrive at the same precedence the leader published, from the files
+   * alone, which is the whole reason the epoch is persisted rather than derived.
+   * <p>
+   * Reproduced without an HA harness by holding a second engine open over the same index while the
+   * first one compacts: the second sees the merged file appear and the inputs vanish exactly as a
+   * follower does, and its next query drives the reconcile.
+   */
+  @Test
+  void followerRefreshRebuildsPrecedenceFromTheShippedFiles() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final RID deleted = new RID(0, DELETED_POSITION);
+    try (final PaginatedSparseVectorEngine leader = nonCompactingEngine(db, "FollowerRefreshRecencyTest")) {
+      leader.put(DIM, deleted, 0.9f);
+      fill(leader, 100L, 4);
+      leader.flush();
+      fill(leader, 200L, 5);
+      leader.flush();
+      fill(leader, 300L, 5);
+      leader.flush();
+      leader.remove(DIM, deleted);
+      leader.flush();
+
+      // Opened before the compaction, so its snapshot holds the four pre-merge segments and it can
+      // only learn about the merge the way a follower does - by reconciling against the FileManager.
+      try (final PaginatedSparseVectorEngine follower = nonCompactingEngine(db, "FollowerRefreshRecencyTest")) {
+        assertThat(follower.segmentCount()).isEqualTo(4);
+        assertThat(topKRids(follower)).doesNotContain(deleted);
+
+        leader.compactOldest(3);
+
+        // The query is what triggers the reconcile; the follower must land on the same order the
+        // leader holds, with the merged segment behind the tombstone despite owning the higher id.
+        assertThat(topKRids(follower))
+            .as("a follower rebuilding from shipped files must not resurrect the deleted RID")
+            .doesNotContain(deleted);
+        assertThat(follower.segmentCount()).isEqualTo(2);
+        assertThat(follower.segmentEpochs())
+            .as("the follower's precedence must match the leader's, reconstructed from the manifests alone")
+            .containsExactly(leader.segmentEpochs());
+        assertThat(follower.segmentIds()).containsExactly(4L, 5L);
+      }
+    }
+  }
+
+  /**
    * A segment merged before #6379 keeps its old ordering on disk after the upgrade, and nothing
    * about the index looks wrong: it answers queries happily while a deleted document is visible
    * again. The open-time scan is the only thing that tells an operator a {@code REBUILD INDEX} is
