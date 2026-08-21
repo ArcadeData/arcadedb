@@ -127,6 +127,76 @@ class JsonLImporterIT {
     }
   }
 
+  @Test
+  void importDatabaseSkipModeMalformedRidLeavesNoGhostRecord() throws IOException {
+    // A vertex whose properties/type are otherwise valid but whose "r" (old RID) field is malformed used to fail
+    // AFTER save(), leaving an orphaned record in the database that was never added to the RID map and never
+    // counted - exactly the "ghost record" mechanism behind issue #6468's cascading edge loss. In skip mode this
+    // must now roll back that record's own write instead of letting a later periodic commit persist it.
+    Path jsonlFile = Files.createTempFile("arcadedb-ghostrecord-import-", ".jsonl");
+    try {
+      Files.writeString(jsonlFile, ""
+          + "{\"t\":\"info\",\"c\":{\"description\":\"test\",\"exporterVersion\":1,\"dbVersion\":\"25.1.1-SNAPSHOT\",\"dbBuild\":\"\",\"dbTimestamp\":\"\"}}\n"
+          + "{\"t\":\"db\",\"c\":{\"name\":\"test\",\"executedOn\":\"2025-01-01\",\"executedOnTimestamp\":0}}\n"
+          + "{\"t\":\"schema\",\"c\":{\"schemaVersion\":1,\"dbmsVersion\":\"25.1.1-SNAPSHOT\",\"dbmsBuild\":\"\",\"settings\":{\"zoneId\":\"UTC\",\"dateFormat\":\"yyyy-MM-dd\",\"dateTimeFormat\":\"yyyy-MM-dd HH:mm:ss\"},\"types\":{\"Person\":{\"type\":\"v\",\"parents\":[],\"buckets\":[\"Person_0\"],\"properties\":{\"id\":{\"type\":\"INTEGER\",\"custom\":{}}},\"indexes\":{},\"custom\":{}}}}}\n"
+          + "{\"t\":\"v\",\"c\":{\"p\":{\"id\":1},\"r\":\"#6:0\",\"t\":\"Person\",\"o\":[],\"i\":[]}}\n"
+          + "{\"t\":\"v\",\"c\":{\"p\":{\"id\":2},\"r\":\"NOT-A-VALID-RID\",\"t\":\"Person\",\"o\":[],\"i\":[]}}\n"
+          + "{\"t\":\"v\",\"c\":{\"p\":{\"id\":3},\"r\":\"#6:2\",\"t\":\"Person\",\"o\":[],\"i\":[]}}\n");
+
+      var importer = new Importer(
+          ("-url " + jsonlFile.toAbsolutePath() + " -database " + DATABASE_PATH + " -forceDatabaseCreate true -onRowError skip").split(" "));
+      Map<String, Object> result = importer.load();
+
+      assertThat(result).containsEntry("errors", 1L);
+      assertThat(result).containsEntry("createdVertices", 2L);
+
+      try (var db = new DatabaseFactory(DATABASE_PATH).open()) {
+        // Ground truth: the malformed record must not be reachable in the database either, not just uncounted.
+        assertThat(db.countType("Person", true)).isEqualTo(2L);
+      }
+    } finally {
+      Files.deleteIfExists(jsonlFile);
+    }
+  }
+
+  @Test
+  void importDatabaseSkipModeFailedVertexDropsReferencingEdgeAsCountedError() throws IOException {
+    // Reproduces the cascade from issue #6468: a vertex that fails to import leaves its old RID out of the RID
+    // map, so an edge referencing it hits the "vertex not found" path. In skip mode both failures must now be
+    // counted as errors and leave no partial edge behind, rather than being silently swallowed as before the fix.
+    Path jsonlFile = Files.createTempFile("arcadedb-cascade-import-", ".jsonl");
+    try {
+      Files.writeString(jsonlFile, ""
+          + "{\"t\":\"info\",\"c\":{\"description\":\"test\",\"exporterVersion\":1,\"dbVersion\":\"25.1.1-SNAPSHOT\",\"dbBuild\":\"\",\"dbTimestamp\":\"\"}}\n"
+          + "{\"t\":\"db\",\"c\":{\"name\":\"test\",\"executedOn\":\"2025-01-01\",\"executedOnTimestamp\":0}}\n"
+          + "{\"t\":\"schema\",\"c\":{\"schemaVersion\":1,\"dbmsVersion\":\"25.1.1-SNAPSHOT\",\"dbmsBuild\":\"\",\"settings\":{\"zoneId\":\"UTC\",\"dateFormat\":\"yyyy-MM-dd\",\"dateTimeFormat\":\"yyyy-MM-dd HH:mm:ss\"},"
+          + "\"types\":{"
+          + "\"Person\":{\"type\":\"v\",\"parents\":[],\"buckets\":[\"Person_0\"],\"properties\":{\"id\":{\"type\":\"INTEGER\",\"custom\":{}}},\"indexes\":{},\"custom\":{}},"
+          + "\"Friend\":{\"type\":\"e\",\"parents\":[],\"buckets\":[\"Friend_0\"],\"properties\":{},\"indexes\":{},\"custom\":{}}"
+          + "}}}\n"
+          + "{\"t\":\"v\",\"c\":{\"p\":{\"id\":1},\"r\":\"#6:0\",\"t\":\"Person\",\"o\":[],\"i\":[]}}\n"
+          + "{\"t\":\"v\",\"c\":{\"p\":{\"id\":2},\"r\":\"#6:1\",\"t\":\"NonExistentType\",\"o\":[],\"i\":[]}}\n"
+          + "{\"t\":\"e\",\"c\":{\"p\":{},\"t\":\"Friend\",\"o\":\"#6:1\",\"i\":\"#6:0\"}}\n"
+          + "{\"t\":\"v\",\"c\":{\"p\":{\"id\":3},\"r\":\"#6:2\",\"t\":\"Person\",\"o\":[],\"i\":[]}}\n");
+
+      var importer = new Importer(
+          ("-url " + jsonlFile.toAbsolutePath() + " -database " + DATABASE_PATH + " -forceDatabaseCreate true -onRowError skip").split(" "));
+      Map<String, Object> result = importer.load();
+
+      // One error for the failed vertex, one for the edge that could no longer resolve its out-vertex.
+      assertThat(result).containsEntry("errors", 2L);
+      assertThat(result).containsEntry("createdVertices", 2L);
+      assertThat(result).doesNotContainKey("createdEdges");
+
+      try (var db = new DatabaseFactory(DATABASE_PATH).open()) {
+        assertThat(db.countType("Person", true)).isEqualTo(2L);
+        assertThat(db.countType("Friend", true)).isEqualTo(0L);
+      }
+    } finally {
+      Files.deleteIfExists(jsonlFile);
+    }
+  }
+
   private static void checkImportedDatabase() {
     try (var db = new DatabaseFactory(DATABASE_PATH).open()) {
 
