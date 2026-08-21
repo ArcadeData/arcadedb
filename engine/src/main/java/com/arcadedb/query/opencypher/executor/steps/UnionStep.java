@@ -147,19 +147,12 @@ public class UnionStep extends AbstractExecutionStep {
       }
 
       /**
-       * Builds a key for deduplication based on result properties.
+       * Builds a key for deduplication based on result properties. Values are canonicalized via
+       * DistinctNumericKey so numerically-equal values (issue #5789) and graph-element references
+       * sharing one RID (issue #6488) collapse together.
        */
       private String buildResultKey(final Result result) {
-        final StringBuilder sb = new StringBuilder();
-        for (final String prop : result.getPropertyNames()) {
-          sb.append(prop).append("=");
-          final Object value = result.getProperty(prop);
-          // Canonicalize numeric values so UNION treats e.g. INTEGER 1 and FLOAT 1.0 as the same
-          // value, consistent with Cypher's `=` operator (issue #5789).
-          sb.append(value == null ? "null" : DistinctNumericKey.canonicalize(value));
-          sb.append("|");
-        }
-        return sb.toString();
+        return DistinctNumericKey.buildKey(result.getPropertyNames(), result::getProperty);
       }
 
       @Override
