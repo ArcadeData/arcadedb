@@ -4280,6 +4280,60 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * The {@link ScoreFunction.ApproximateScoreFunction}-scored counterpart of {@link #scoreOrdinal}, for
+   * {@link #preFilterApproximate} (issue #6514). Scores an ordinal via the caller's precomputed PQ score function
+   * instead of {@link #metadata}'s exact similarity function, and so needs no {@link RandomAccessVectorValues} - the
+   * whole point of the PQ approximate path is answering without reading a single vector from disk or document, and a
+   * pre-filter plan that fell back to exact per-candidate scoring here would quietly defeat that.
+   */
+  private boolean scoreOrdinalApproximate(final int ordinal, final ScoreFunction.ApproximateScoreFunction scoreFunction,
+      final Set<RID> allowedRIDs, final List<Pair<RID, Float>> results, final int[] ordinalMap, final RidHashSet seenRIDs) {
+    final int vectorId = ordinalMap[ordinal];
+    final RID rid = vectorIndex.getRid(vectorId);
+    if (rid == null)
+      return false;
+    if (seenRIDs.contains(rid))
+      return false;
+    if (allowedRIDs != null && !allowedRIDs.isEmpty() && !allowedRIDs.contains(rid))
+      return false;
+
+    final float score = scoreFunction.similarityTo(ordinal);
+    results.add(new Pair<>(bindRid(rid), scoreToDistance(metadata.similarityFunction, score)));
+    return true;
+  }
+
+  /**
+   * Pre-filter plan for {@link #findNeighborsFromVectorApproximate} (issue #6514), the PQ-scored counterpart of the
+   * issue #6502 plan in {@link #findNeighborsFromVector}: below the same selectivity threshold, resolve the
+   * allow-list to its ordinals and score them directly instead of paying for a {@code Bits}-filtered HNSW walk that
+   * gets more expensive, not less, as the allow-list narrows.
+   * <p>
+   * Not a call to {@link #bruteForceScan}: that method scores through {@link #scoreOrdinal}, which reads the real
+   * vector (from the graph file, a quantized page, or the document) to compute an exact score - exactly the
+   * disk/document I/O this search path exists to avoid. {@link #scoreOrdinalApproximate} scores from the
+   * already-in-memory PQ codes instead, the same way the caller's graph-walk beam does, so a query routed to this
+   * plan by a narrow allow-list pays the same zero-I/O cost per candidate the graph walk would have, not the exact
+   * path's.
+   */
+  private void preFilterApproximate(final ScoreFunction.ApproximateScoreFunction scoreFunction, final int k,
+      final Set<RID> allowedRIDs, final List<Pair<RID, Float>> results, final int[] ordinalMap) {
+    final RidHashSet seenRIDs = new RidHashSet(results.size());
+    for (final Pair<RID, Float> r : results)
+      seenRIDs.add(r.getFirst());
+
+    final int[] candidates = collectAllowedOrdinals(allowedRIDs, ordinalMap);
+    boolean added = false;
+    for (final int ordinal : candidates)
+      added |= scoreOrdinalApproximate(ordinal, scoreFunction, allowedRIDs, results, ordinalMap, seenRIDs);
+
+    if (added) {
+      results.sort((a, b) -> Float.compare(a.getSecond(), b.getSecond()));
+      if (results.size() > k)
+        results.subList(k, results.size()).clear();
+    }
+  }
+
+  /**
    * Search for k nearest neighbors to the given vector and return results with similarity scores.
    * This method is similar to HnswVectorIndex.findNeighborsFromVector and avoids the need to
    * recalculate distances after the search.
@@ -4674,13 +4728,31 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
         final VectorFloat<?> queryVectorFloat = vts.createFloatVector(queryVector);
 
-        final RandomAccessVectorValues vectors = searchVectorValues(ordinalToVectorId);
+        // Snapshotted once and reused for the prefilter check, the vectors accessor and the Bits filter below, for
+        // the same issue #4581 reason findNeighborsFromVector snapshots it: a concurrent rebuild must not pair an
+        // ordinal from one mapping with a vector read through another.
+        final int[] ordinalMap = ordinalToVectorId;
+
+        final RandomAccessVectorValues vectors = searchVectorValues(ordinalMap);
+
+        // Issue #6514 pre-filter plan: the grouped counterpart of the issue #6502 plan in findNeighborsFromVector -
+        // see preFilterGrouped's javadoc for why it cannot simply call bruteForceScan.
+        if (allowedRIDs != null && !allowedRIDs.isEmpty()) {
+          final float maxSelectivity = Math.min(1f, getDatabase().getConfiguration()
+              .getValueAsFloat(GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY));
+          final int availableVectors = Math.min(ordinalMap.length, vectorIndex.size());
+          if (maxSelectivity > 0f && allowedRIDs.size() <= availableVectors * maxSelectivity) {
+            metrics.incrementPreFilterSearches();
+            return preFilterGrouped(queryVectorFloat, limit, groupSize, maxRows, allowedRIDs, groupKeyResolver, vectors,
+                ordinalMap);
+          }
+        }
 
         // Liveness-only Bits filter. Unlike the first grouped implementation, we do NOT apply
         // group-aware filtering during traversal: Bits is score-blind, so doing so lets the HNSW walk
         // hand the per-group budget to whatever cluster the entry-point descent happened to land in
         // (issue #5761). The group cap is applied to the score-ordered output below instead.
-        final Bits bitsFilter = new LiveVectorBitsFilter(allowedRIDs, ordinalToVectorId, vectorIndex);
+        final Bits bitsFilter = new LiveVectorBitsFilter(allowedRIDs, ordinalMap, vectorIndex);
 
         final List<Pair<RID, Float>> results = new ArrayList<>(maxRows);
         final GroupAdmissionState groups = new GroupAdmissionState(limit, groupSize);
@@ -4724,7 +4796,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           while (true) {
             final int returned = searchResult.getNodes().length;
             examined += returned;
-            admitGroupedCandidates(searchResult, ordinalToVectorId, allowedRIDs, groupKeyResolver, groups, results,
+            admitGroupedCandidates(searchResult, ordinalMap, allowedRIDs, groupKeyResolver, groups, results,
                 tally);
 
             if (groups.isFull())
@@ -4810,25 +4882,99 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Defensive post-filter: JVector may include the entry node despite Bits, and the LiveVectorBitsFilter has
       // already enforced the liveness + RID-whitelist contract, so we only need to re-check the RID whitelist here
       // for parity with findNeighborsFromVector.
-      if (allowedRIDs != null && !allowedRIDs.isEmpty() && !allowedRIDs.contains(rid))
-        continue;
-
-      final Object groupKey;
-      try {
-        groupKey = groupKeyResolver.apply(rid);
-      } catch (final RuntimeException e) {
-        // Same verdict the traversal-integrated filter gave an unresolvable candidate: drop it. Counted apart from
-        // the cap hits so the log does not read a resolver fault as a full group.
-        tally.unresolvedGroup++;
-        continue;
-      }
-      if (!groups.admit(groupKey)) {
-        tally.groupFull++;
-        continue;
-      }
-
-      results.add(new Pair<>(bindRid(rid), scoreToDistance(metadata.similarityFunction, nodeScore.score)));
+      admitGroupedCandidate(rid, scoreToDistance(metadata.similarityFunction, nodeScore.score), allowedRIDs,
+          groupKeyResolver, groups, results, tally);
     }
+  }
+
+  /**
+   * The per-candidate half of {@link #admitGroupedCandidates}, factored out so {@link #preFilterGrouped} (issue
+   * #6514) can feed it already-resolved, already-scored candidates instead of a JVector {@link SearchResult}. Both
+   * callers must agree on what "admit" means - the RID-whitelist re-check, the group-key resolution and its failure
+   * handling, and the cap itself - or the graph-walk and pre-filter plans could answer the same grouped query
+   * differently depending only on which one a narrow allow-list happened to route to.
+   */
+  private void admitGroupedCandidate(final RID rid, final float distance, final Set<RID> allowedRIDs,
+      final Function<RID, Object> groupKeyResolver, final GroupAdmissionState groups,
+      final List<Pair<RID, Float>> results, final GroupedSearchTally tally) {
+    if (allowedRIDs != null && !allowedRIDs.isEmpty() && !allowedRIDs.contains(rid))
+      return;
+
+    final Object groupKey;
+    try {
+      groupKey = groupKeyResolver.apply(rid);
+    } catch (final RuntimeException e) {
+      // Same verdict the traversal-integrated filter gave an unresolvable candidate: drop it. Counted apart from
+      // the cap hits so the log does not read a resolver fault as a full group.
+      tally.unresolvedGroup++;
+      return;
+    }
+    if (!groups.admit(groupKey)) {
+      tally.groupFull++;
+      return;
+    }
+
+    results.add(new Pair<>(bindRid(rid), distance));
+  }
+
+  /**
+   * Pre-filter plan for {@link #findNeighborsFromVectorGrouped} (issue #6514), the group-aware counterpart of the
+   * issue #6502 plan in {@link #findNeighborsFromVector}: below the same selectivity threshold, resolve the
+   * allow-list to its ordinals and score them directly instead of paying for a {@code Bits}-filtered HNSW walk that
+   * gets more expensive, not less, as the allow-list narrows.
+   * <p>
+   * This cannot be a call to {@link #bruteForceScan} - that method is exact-score/ungrouped-only, and truncates to
+   * {@code k} before the caller ever sees which group a row belongs to, which is exactly the information the group
+   * cap needs. So every allow-listed candidate is scored and dedup'd through {@link #scoreOrdinal} (unbounded, no
+   * {@code k} truncation), sorted once, and then walked in rank order through the same
+   * {@link #admitGroupedCandidate} bookkeeping {@link #admitGroupedCandidates} applies to graph-walk output - the
+   * two plans can therefore never disagree about which candidates the group cap keeps.
+   * <p>
+   * Like the graph-walk path, this never touches the delta buffer or the issue #3722 brute-force fallback: both
+   * would re-admit candidates outside the per-group cap, which {@link #findNeighborsFromVectorGrouped}'s own javadoc
+   * already rules out for the graph-walk path, and a query whose allow-list is narrow enough to reach this plan
+   * inherits the same contract.
+   */
+  private List<Pair<RID, Float>> preFilterGrouped(final VectorFloat<?> queryVectorFloat, final int limit, final int groupSize,
+      final int maxRows, final Set<RID> allowedRIDs, final Function<RID, Object> groupKeyResolver,
+      final RandomAccessVectorValues vectors, final int[] ordinalMap) {
+    final int[] candidates = collectAllowedOrdinals(allowedRIDs, ordinalMap);
+    final ArcadePageVectorValues pageValues = vectors instanceof final ArcadePageVectorValues p ? p : null;
+    final RidHashSet seenRIDs = new RidHashSet(candidates.length);
+    final List<Pair<RID, Float>> scored = new ArrayList<>(candidates.length);
+    for (final int ordinal : candidates)
+      scoreOrdinal(ordinal, queryVectorFloat, allowedRIDs, scored, vectors, ordinalMap, seenRIDs, pageValues);
+    scored.sort(Comparator.comparing(Pair::getSecond));
+
+    final GroupAdmissionState groups = new GroupAdmissionState(limit, groupSize);
+    final GroupedSearchTally tally = new GroupedSearchTally();
+    // maxRows, not limit * groupSize: the caller has already clamped that product in long and to what the index can
+    // address (issue #6066) - recomputing it here in int would reopen the same overflow the caller closed.
+    final List<Pair<RID, Float>> results = new ArrayList<>(Math.min(scored.size(), maxRows));
+    for (final Pair<RID, Float> candidate : scored) {
+      if (groups.isFull())
+        break;
+      // allowedRIDs is not re-checked here: scoreOrdinal already enforced membership when it built `scored`.
+      admitGroupedCandidate(candidate.getFirst(), candidate.getSecond(), null, groupKeyResolver, groups, results, tally);
+    }
+
+    if (groups.distinctGroups() < limit) {
+      metrics.incrementGroupedSearchesShortOfLimit();
+      LogManager.instance()
+          .log(this, Level.FINE,
+              """
+              Vector grouped pre-filter search on index %s filled only %d of %d groups - the allow-list resolved to \
+              only %d distinct candidate(s), fewer than needed to fill %d groups, so this is expected""",
+              indexName, groups.distinctGroups(), limit, scored.size(), limit);
+    }
+
+    LogManager.instance()
+        .log(this, Level.FINE,
+            """
+            Vector grouped pre-filter search returned %d results in %d group(s) over %d allow-listed candidate(s) \
+            (limit=%d, groupSize=%d, skipped: %d group full, %d unresolved group)""",
+            results.size(), groups.distinctGroups(), scored.size(), limit, groupSize, tally.groupFull, tally.unresolvedGroup);
+    return results;
   }
 
   /**
@@ -4944,6 +5090,24 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // must resolve an ordinal through the same array, or a concurrent rebuild between the two reads would pair
         // an ordinal's RID with a vector from a different mapping (issue #4581).
         final int[] ordinalMap = this.ordinalToVectorId;
+
+        // Issue #6514 pre-filter plan: the PQ-scored counterpart of the issue #6502 plan in findNeighborsFromVector -
+        // see preFilterApproximate's javadoc for why it cannot simply call bruteForceScan. Gated by its own
+        // selectivity threshold, not VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY: Issue6514ApproximatePrefilterBenchmark
+        // measured this path's crossover at roughly 6-7% selectivity, well below the exact path's 20% default -
+        // see VECTOR_INDEX_PREFILTER_APPROXIMATE_MAX_SELECTIVITY's javadoc for why the two cannot share one knob.
+        if (allowedRIDs != null && !allowedRIDs.isEmpty()) {
+          final float maxSelectivity = Math.min(1f, getDatabase().getConfiguration()
+              .getValueAsFloat(GlobalConfiguration.VECTOR_INDEX_PREFILTER_APPROXIMATE_MAX_SELECTIVITY));
+          final int availableVectors = Math.min(ordinalMap.length, vectorIndex.size());
+          if (maxSelectivity > 0f && allowedRIDs.size() <= availableVectors * maxSelectivity) {
+            metrics.incrementPreFilterSearches();
+            final List<Pair<RID, Float>> results = new ArrayList<>(k);
+            mergeWithDeltaScan(queryVectorFloat, k, allowedRIDs, results);
+            preFilterApproximate(scoreFunction, k, allowedRIDs, results, ordinalMap);
+            return results;
+          }
+        }
 
         // Live-only (plus the optional RID allow-list): PQ scores a tombstone as happily as a live vector, so
         // without this the beam fills with nodes the post-filter below then drops (issue #5558).

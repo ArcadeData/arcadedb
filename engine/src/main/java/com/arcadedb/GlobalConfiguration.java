@@ -1067,15 +1067,39 @@ public enum GlobalConfiguration {
   VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY("arcadedb.vectorIndex.prefilterMaxSelectivity", SCOPE.DATABASE,
       """
       Maximum fraction of the index's live vectors that a query's RID allow-list may cover and still take the \
-      pre-filter plan instead of the HNSW graph walk (issue #6502). The graph's Bits filter only rejects a node \
-      once it is popped from the beam - it cannot make the walk itself shrink with a narrower filter - so a \
-      selective allow-list makes the beam admit almost nothing and the walk keeps expanding trying to fill k, \
-      the search space growing smaller in principle and larger in practice: at the limit, 5 candidates cost more \
-      than 20,000. Below this fraction the query instead resolves the allow-list to its ordinals and scores them \
-      directly, which is O(allow-list) and exact by construction. Above it the allow-list barely narrows the \
-      search, the graph walk is already cheap, and resolving every allowed RID up front would cost more than the \
-      walk it replaces. Set to 0 to disable the pre-filter plan and always use the graph walk.""",
+      pre-filter plan instead of a Bits-filtered HNSW graph walk, on the plain k-NN path (issue #6502) and the \
+      groupBy path (issue #6514) - see vectorIndex.prefilterApproximateMaxSelectivity for the separate threshold \
+      the PQ-approximate path uses. The graph's Bits filter only rejects a node once it is popped from \
+      the beam - it cannot make the walk itself shrink with a narrower filter - so a selective allow-list makes the \
+      beam admit almost nothing and the walk keeps expanding trying to fill k, the search space growing smaller in \
+      principle and larger in practice: at the limit, 5 candidates cost more than 20,000. Below this fraction the \
+      query instead resolves the allow-list to its ordinals and scores them directly via the index's regular \
+      (exact) scoring function, which is O(allow-list) and exact by construction. Above it the allow-list barely \
+      narrows the search, the graph walk is already cheap, and resolving every allowed RID up front would cost \
+      more than the walk it replaces. Set to 0 to disable the pre-filter plan and always use the graph walk. \
+      Shared between the plain and groupBy paths rather than tuned separately: both score candidates the same way \
+      (the groupBy path only adds cap bookkeeping on top), and benchmarking found no crossover far enough apart to \
+      justify a second setting (see Issue6502PrefilterLatencyBenchmark / Issue6514GroupedPrefilterBenchmark) - \
+      unlike the PQ-approximate path below, whose per-candidate cost is a different shape entirely.""",
       Float.class, 0.2f),
+
+  VECTOR_INDEX_PREFILTER_APPROXIMATE_MAX_SELECTIVITY("arcadedb.vectorIndex.prefilterApproximateMaxSelectivity", SCOPE.DATABASE,
+      """
+      The vectorIndex.prefilterMaxSelectivity threshold, but for findNeighborsFromVectorApproximate (issue #6514's \
+      extension of issue #6502 to the zero-disk-I/O PQ search path) - kept as a separate setting, not \
+      folded into that one, because the two paths' pre-filter plans have measurably different crossovers. PQ scores a \
+      candidate from in-memory codes, which Issue6514ApproximatePrefilterBenchmark measured at roughly an order of \
+      magnitude cheaper per candidate than the exact plan's page/document read; a Bits-filtered PQ graph walk is \
+      correspondingly cheaper too, so it stays the better plan for longer as the allow-list narrows. That benchmark \
+      put the actual crossover between the two plans at roughly 6-7% selectivity on a 20,000-vector, 128-dimension \
+      index - reusing the plain/groupBy paths' 20% default here would route every query between 7% and 20% \
+      selectivity through the more expensive of the two plans, 2-8x slower than simply keeping the graph walk. \
+      This default is set conservatively below the measured crossover rather than exactly on it, since the \
+      crossover itself will shift with dimension count, graph shape and PQ subspace count in ways a single fixed \
+      benchmark cannot cover; a deployment with an unusually cheap or expensive PQ scoring function should \
+      re-measure with that benchmark and tune this independently of the exact-path setting. Set to 0 to disable the \
+      pre-filter plan and always use the graph walk.""",
+      Float.class, 0.05f),
 
   VECTOR_INDEX_GRAPH_BUILD_PARALLELISM("arcadedb.vectorIndex.graphBuildParallelism", SCOPE.DATABASE,
       """
