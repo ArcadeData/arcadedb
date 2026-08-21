@@ -435,6 +435,50 @@ class Issue6526AsyncExecutorFollowUpsTest extends TestHelper {
   }
 
   /**
+   * Item 1 against the barrier (#6526 review round 8). {@code quiesceWorkers()} snapshots the pool once and then
+   * schedules one park task per slot, but {@code scheduleTask()} re-reads the published array on every call - and
+   * since this PR a slot the pool has outgrown is re-mapped onto a live worker rather than refused. A shrink
+   * landing inside that loop therefore used to fold several park tasks onto one survivor, which runs the first,
+   * counts the latch down once and blocks: the duplicates behind it never run, the latch never reaches zero, and
+   * the caller - an index build - waits out the whole quiesce timeout before failing.
+   * <p>
+   * Driven from the worst end: the resize runs in a tight loop while the quiescence is repeatedly established and
+   * released, so the two interleave many times rather than once by luck.
+   */
+  @Test
+  @Tag("slow")
+  @Timeout(120)
+  void quiescingWhileTheParallelLevelChangesStillParksEveryWorker() throws Exception {
+    final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) ((DatabaseInternal) database).async();
+    async.setParallelLevel(5);
+
+    final AtomicBoolean stop = new AtomicBoolean();
+    final List<Throwable> resizeFailures = new CopyOnWriteArrayList<>();
+    final Thread resizer = new Thread(() -> {
+      for (int i = 0; !stop.get(); i++)
+        try {
+          async.setParallelLevel(i % 2 == 0 ? 2 : 5);
+        } catch (final Throwable e) {
+          resizeFailures.add(e);
+        }
+    }, "issue6526-quiesce-resizer");
+    resizer.start();
+
+    try {
+      // Each quiescence must complete promptly. Before the fix a collapsed park loop could not reach its latch and
+      // only unblocked when quiesceTimeoutMillis() (60s) expired, so a run that finishes at all finishes fast.
+      for (int i = 0; i < 40; i++)
+        async.quiesceWorkers().close();
+    } finally {
+      stop.set(true);
+      resizer.join(30_000);
+    }
+
+    assertThat(resizer.isAlive()).isFalse();
+    assertThat(resizeFailures).as("a resize must not fail because a quiescence was running").isEmpty();
+  }
+
+  /**
    * Item 1, growing. Raising the level must not disturb the workers that already exist: they own batch transactions
    * and are the unit {@code ThreadBucketSelectionStrategy} pins buckets to, so respawning them is never free.
    */
