@@ -589,6 +589,7 @@ public class PostgresNetworkExecutor extends Thread {
             database.rollback();
           explicitTransactionStarted = false;
           errorInTransaction = false;
+          // The tag is always "ROLLBACK" here, even if the client sent COMMIT/END: see the comment above.
           writeCommandComplete("ROLLBACK", 0);
         } else if (queryText.isEmpty()) {
           emptyQueryResponse();
