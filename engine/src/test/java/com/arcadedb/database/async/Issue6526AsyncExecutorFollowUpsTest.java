@@ -25,6 +25,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.query.sql.executor.ResultSet;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -69,6 +70,8 @@ class Issue6526AsyncExecutorFollowUpsTest extends TestHelper {
    * nothing here measures elapsed time, this only has to outlive a fixed timeout in the code under test.
    */
   private static final long WORKER_HOLD_MS = 3_000;
+  // The two methods that hold a worker for it carry @Tag("slow") and run in the slow lane; the rest of the class
+  // stays in the default one, which is the per-method split CLAUDE.md asks for when only some methods are slow.
 
   /**
    * How long the gate task of the {@code kill()} test occupies its worker: long enough that only an interrupt can
@@ -84,6 +87,7 @@ class Issue6526AsyncExecutorFollowUpsTest extends TestHelper {
    * released, work silently gone.
    */
   @Test
+  @Tag("slow")
   @Timeout(60)
   void loweringTheParallelLevelRunsTheWorkStillQueuedOnTheRetiredWorkers() throws Exception {
     final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) ((DatabaseInternal) database).async();
@@ -262,6 +266,7 @@ class Issue6526AsyncExecutorFollowUpsTest extends TestHelper {
    * the old slot-2 worker still running its pre-shrink tasks.
    */
   @Test
+  @Tag("slow")
   @Timeout(60)
   void aConcurrentGrowCannotOvertakeAShrinkStillDraining() throws Exception {
     final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) ((DatabaseInternal) database).async();
