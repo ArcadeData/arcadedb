@@ -362,13 +362,15 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
    * condition on the second property alone is a perfectly good key and must not be shifted into the first slot.
    * <p>
    * Answers false, leaving the generic path to run, whenever the block is not exactly that: another index type, a range
-   * condition alongside, anything but {@code CONTAINSTEXT}, a property this index does not cover, a multi-value key, or two
-   * conditions on the same property. A single-property index takes this path too and produces the same one-element key it
-   * always did (issue #6414, item 2).
+   * condition alongside, anything but {@code CONTAINSTEXT}, a property this index does not cover, or a multi-value key. A
+   * single-property index takes this path too and produces the same one-element key it always did (issue #6414, item 2).
    * <p>
-   * The already-filled-slot case is reachable only when one document property is indexed twice under different modifiers
-   * ({@code (m by key, m by value)}), since the planner claims at most one condition per index property; two conditions on
-   * one property leave the second in the residual filter instead, with the semantics gap that is issue #6427.
+   * A property's slot can be filled more than once - two (or more) {@code CONTAINSTEXT} conditions on the same property,
+   * which the planner now claims all of, or one document property indexed twice under different modifiers
+   * ({@code (m by key, m by value)}). Rather than keeping one value, the slot then holds a {@code List} of them, and
+   * {@link com.arcadedb.index.fulltext.LSMTreeFullTextIndex#splitPositionalKey(java.util.List, Object[])} expands each
+   * list slot into one lookup per element, which {@link com.arcadedb.index.fulltext.LSMTreeFullTextIndex#get(Object[],
+   * int)} intersects exactly as it already intersects one lookup per property (issue #6427).
    * <p>
    * A condition whose right side evaluates to {@code null} makes the whole block match NOTHING rather than leaving its
    * property unconstrained. The two readings share one slot - a {@code null} slot is exactly how the key says "this property
@@ -376,6 +378,18 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
    * it. That is what {@link ContainsTextCondition#evaluate} does off the index (a {@code null} value is never a match),
    * what a single-property index already did (an empty query text finds no term), and now what a multi-property one
    * does too.
+   * <p>
+   * The position-resolution loop below matches a condition's field name to an index property by its BASE name only, so
+   * two index properties that share one base name but differ in modifier ({@code m by key} and {@code m by value})
+   * are indistinguishable to it - a condition on {@code m} always resolves to whichever of the two comes FIRST in
+   * {@code properties}. This was already true for a single such condition before issue #6427 (it silently searched only
+   * the first modifier's tokens, never the second); what changes here is that a SECOND {@code m} condition, which used
+   * to make the whole block bail to the generic path, now lands in the same slot as the first and is intersected
+   * against it. Both conditions therefore query the same one modifier property - the other is never consulted - rather
+   * than one condition per modifier. Resolving that would need the position lookup to track which specific index
+   * property the planner associated each claimed condition with, rather than re-deriving it from the field name alone;
+   * that is a distinct, narrower problem than #6427, whose fix is deliberately confined to the same-property,
+   * same-modifier case the issue describes.
    */
   private boolean processFullTextBlock() {
     if (index.getType() != Schema.INDEX_TYPE.FULL_TEXT || additionalRangeCondition != null)
@@ -402,7 +416,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
           break;
         }
 
-      if (position < 0 || keys[position] != null)
+      if (position < 0)
         return false;
 
       final Object value = textCondition.getRight().execute((Result) null, context);
@@ -415,7 +429,21 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       if (!(value instanceof Identifiable) && MultiValue.isMultiValue(value))
         return false;
 
-      keys[position] = value;
+      final Object existing = keys[position];
+      if (existing == null) {
+        keys[position] = value;
+      } else if (existing instanceof List<?> existingList) {
+        // Safe: the only producer of this list is the `else` branch below, freshly allocated as List<Object>. The
+        // suppression is scoped to this one cast rather than the whole method.
+        @SuppressWarnings("unchecked")
+        final List<Object> objectList = (List<Object>) existingList;
+        objectList.add(value);
+      } else {
+        final List<Object> values = new ArrayList<>(2);
+        values.add(existing);
+        values.add(value);
+        keys[position] = values;
+      }
     }
 
     cursor = index.get(keys);
