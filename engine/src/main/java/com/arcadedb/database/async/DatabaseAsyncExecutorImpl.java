@@ -573,12 +573,12 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     // real tasks, so leaving it out here would report a queue that shrank the instant the pool did - which is the
     // one moment an operator is most likely to be looking at this number.
     //
-    // Counted ONCE (#6526 review round 2, point 2): the two reads are separate and unsynchronized - deliberately,
-    // since this method must stay lock-free - so a shrink landing between them publishes the smaller array and adds
-    // the worker to retiringThreads, and a naive second loop would count that worker's queue twice. Skipping the
-    // ones the first loop already saw is exact under every interleaving: whichever of the two reads observed the
-    // worker, it contributes exactly one term. The scan is over arrays the size of the pool, so it costs nothing
-    // that matters here.
+    // Counted EXACTLY ONCE (#6526 review rounds 2 and 3): the two reads are separate and unsynchronized -
+    // deliberately, since this method must stay lock-free - so a shrink landing between them could otherwise be
+    // seen twice (the worker still in the array this method read, and already in the set) or not at all. Both
+    // halves are closed: resizeThreads() registers a retiring worker BEFORE it unpublishes the array, so it is
+    // never in neither, and the identity check here drops it when it is in both. The scan is over arrays the size
+    // of the pool, so it costs nothing that matters here.
     for (final AsyncThread retiring : retiringThreads)
       if (!contains(threads, retiring))
         stats.queueSize += retiring.queue.size();
@@ -1674,14 +1674,23 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         return null;
       }
 
-      // SHRINK. Publish the survivors FIRST, so by the time the tail is asked to stop, nothing can still choose it.
+      // SHRINK, in three ordered steps that a LOCK-FREE reader has to be able to walk through at any point.
       final AsyncThread[] retired = Arrays.copyOfRange(current, newLevel, current.length);
+
+      // 1. REGISTER BEFORE UNPUBLISHING (#6526 review round 3, point 1). The reverse order - publish the smaller
+      //    array, then add - leaves a window in which a retired worker is in NEITHER collection, and a getStats()
+      //    or waitCompletion() reading the two in that window would miss its queue entirely. This way it is always
+      //    in at least one, and the identity check both readers apply makes it count for exactly one. Registering
+      //    before the stop request below matters for the same kind of reason: a worker that exits immediately must
+      //    be removed by its own run loop AFTER it was added, or it would stay in the set for ever.
+      for (final AsyncThread worker : retired)
+        retiringThreads.add(worker);
+
+      // 2. Publish the survivors, so by the time the tail is asked to stop, nothing can still choose it.
       this.executorThreads = Arrays.copyOf(current, newLevel);
 
+      // 3. Ask the tail to stop.
       for (final AsyncThread worker : retired) {
-        // Registered BEFORE the stop request, so a worker that exits immediately is removed by its own run loop
-        // after it was added rather than before - the reverse order would leave it in the set for ever.
-        retiringThreads.add(worker);
         worker.shutdown = true;
         // Best effort and NON-blocking, unlike the close path's bounded offer plus interrupt. The marker only makes
         // an IDLE worker exit at once instead of on its next 500ms poll timeout; a worker whose queue is full does
@@ -1857,9 +1866,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     // half of it.
     final List<AsyncThread> stillRunning = new ArrayList<>(retiringThreads.size());
     for (final AsyncThread retiring : retiringThreads)
-      // Alive, and not already in the published array: same unsynchronized-pair window getStats() names, and the
-      // same answer. A duplicate here would only cost waitCompletion() a second marker on one worker, but there is
-      // no reason to hand it one.
+      // Alive, and not already in the published array: same unsynchronized-pair window getStats() names, closed the
+      // same way (see resizeThreads()'s ordered shrink). A duplicate here would only cost waitCompletion() a second
+      // marker on one worker, but there is no reason to hand it one.
       if (retiring.isAlive() && !contains(live, retiring))
         stillRunning.add(retiring);
 

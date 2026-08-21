@@ -440,6 +440,7 @@ public class Profiler {
       final long[] dbStats = collectDatabaseStats();
       final long asyncQueueLength = dbStats[STAT_ASYNC_QUEUE];
       final long asyncParallelLevel = dbStats[STAT_ASYNC_PARALLEL];
+      final long asyncForcedBoundaryCommits = dbStats[STAT_ASYNC_BOUNDARY_COMMITS];
       final long totalOpenFiles = dbStats[STAT_OPEN_FILES];
       final long maxOpenFiles = dbStats[STAT_MAX_OPEN_FILES];
       final long walPagesWritten = dbStats[STAT_WAL_PAGES_WRITTEN];
@@ -526,6 +527,12 @@ public class Profiler {
           asyncParallelLevel, asyncQueueLength, writeTx, readTx, txRollbacks, queries, commands));
       buffer.append("%n    createRecord=%d readRecord=%d updateRecord=%d deleteRecord=%d".formatted(createRecord, readRecord,
         updateRecord, deleteRecord));
+      // #6526: read this next to asyncQueue/asyncParallelLevel above. Climbing while the async queue drains slowly
+      // is two callers flipping setTransactionUseWAL()/setTransactionSync() against each other on one database,
+      // each flip closing whatever worker's batch sees it next. Printed here as well as in toJSON() for the same
+      // reason the #6217 read-path counters are: this dump is what an operator has when there is no metrics
+      // endpoint to scrape.
+      buffer.append("%n    asyncForcedBoundaryCommits=%d".formatted(asyncForcedBoundaryCommits));
       buffer.append(
         "%n    scanType=%d scanBucket=%d iterateType=%d iterateBucket=%d countType=%d countBucket=%d".formatted(scanType,
           scanBucket, iterateType,
