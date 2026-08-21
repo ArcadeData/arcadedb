@@ -371,6 +371,70 @@ class Issue6526AsyncExecutorFollowUpsTest extends TestHelper {
   }
 
   /**
+   * Item 1, the boundary the drain wait actually holds (#6526 review round 6). A producer pinned to ONE bucket -
+   * the case round-robin scheduling cannot reach, and the case where a shrink migrates that bucket from a retiring
+   * worker to a survivor - must keep working across the resize: every task it schedules runs, and it is never
+   * refused.
+   * <p>
+   * What this deliberately does NOT assert is that the two workers never touch the bucket's pages at the same time,
+   * because they can: the moment the truncated array is published, {@code getSlot()} sends the producer to the
+   * survivor while the retired worker is still draining that bucket's queued tasks. That overlap is the accepted
+   * residual documented on {@link DatabaseAsyncExecutorImpl#setParallelLevel(int)} - bounded by the drain, costing
+   * an MVCC conflict the async path already reports and retries - and a test claiming otherwise would be pinning a
+   * guarantee the code does not make. What it pins instead is the guarantee it does: nothing is lost, nobody is
+   * refused.
+   */
+  @Test
+  @Timeout(60)
+  void aProducerPinnedToOneBucketKeepsWorkingAcrossAShrink() throws Exception {
+    final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) ((DatabaseInternal) database).async();
+    async.setParallelLevel(4);
+
+    final AtomicInteger executed = new AtomicInteger();
+    final AtomicInteger completed = new AtomicInteger();
+    final AtomicInteger scheduled = new AtomicInteger();
+    final List<Throwable> producerFailures = new CopyOnWriteArrayList<>();
+    final List<Throwable> taskErrors = new CopyOnWriteArrayList<>();
+    async.onError(taskErrors::add);
+
+    // BUCKET 3 is the one that migrates: 3 % 4 = 3, a worker the shrink below retires, and 3 % 2 = 1, one that
+    // survives. Routed through getSlot() on every iteration exactly as the engine's own createRecord() does, so the
+    // producer follows the mapping across the resize instead of pinning to a slot number.
+    final AtomicBoolean stop = new AtomicBoolean();
+    final Thread producer = new Thread(() -> {
+      while (!stop.get()) {
+        try {
+          if (async.scheduleTask(async.getSlot(3), new CountingTask(executed, completed), true, 0))
+            scheduled.incrementAndGet();
+        } catch (final Throwable e) {
+          producerFailures.add(e);
+        }
+      }
+    }, "issue6526-bucket-producer");
+    producer.start();
+
+    try {
+      async.setParallelLevel(2);
+      async.setParallelLevel(4);
+      async.setParallelLevel(2);
+    } finally {
+      stop.set(true);
+      producer.join(30_000);
+    }
+    assertThat(producer.isAlive()).isFalse();
+
+    assertThat(producerFailures)
+        .as("a producer pinned to a migrating bucket must never be refused by a resize").isEmpty();
+    assertThat(scheduled.get()).as("the producer must have kept working throughout").isGreaterThan(0);
+
+    assertThat(async.waitCompletion(60_000)).isTrue();
+    assertThat(executed.get())
+        .as("and every task it scheduled must have run, on whichever worker owned the bucket at the time")
+        .isEqualTo(scheduled.get());
+    assertThat(taskErrors).as("no task may fail because its bucket changed owner").isEmpty();
+  }
+
+  /**
    * Item 1, growing. Raising the level must not disturb the workers that already exist: they own batch transactions
    * and are the unit {@code ThreadBucketSelectionStrategy} pins buckets to, so respawning them is never free.
    */

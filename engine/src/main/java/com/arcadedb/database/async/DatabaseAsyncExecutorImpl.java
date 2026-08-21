@@ -152,8 +152,14 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    * Reentrant, so a resize triggered from inside a resize rides on the outer one rather than deadlocking, and
    * deliberately NOT taken by {@code createThreads()}: the constructor runs before anything can race it, and
    * {@code recreateThreadsForTests()} is a test hook that means "tear it down and rebuild it".
+   * <p>
+   * FAIR (#6526 review round 6), which is the one place in this class that choice is affordable. The lock is held
+   * across a wait that can last {@code shutdownJoinTimeoutMs}, so under barging a caller could queue behind an
+   * unbounded number of other resizes; fairness turns that into first-come-first-served. The throughput fairness
+   * normally costs is irrelevant here - this is an administrative call taken once per bulk load, not a hot path -
+   * and an unbounded wait on a public API is worth more than the uncontended-acquire nanoseconds it gives up.
    */
-  private final ReentrantLock        resizeLock                    = new ReentrantLock();
+  private final ReentrantLock        resizeLock                    = new ReentrantLock(true);
 
   // #5062 review r2 (point 1): producer-side backstop for a worker wedged inside user code. After
   // this many consecutive stall windows (checkForStalledQueuesMaxDelay each, 60s with the defaults)
@@ -1555,18 +1561,38 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    * There is no {@code interrupt()} on this path at all; that escalation belongs to {@code close()}, which is
    * terminal, and not to a resize, which is not.
    * <p>
-   * <b>It waits for the retired workers, within a bounded budget.</b> {@code getSlot()} maps a bucket to a worker
-   * modulo the pool size, so while a retired worker is still draining, a bucket it holds tasks for is also mapped
-   * to one of the surviving workers: returning immediately would let two workers write the same bucket's pages
-   * concurrently, which is precisely the contention {@code ThreadBucketSelectionStrategy} exists to prevent
-   * ({@code AsyncInsertTest} measures it as MVCC conflicts). The wait therefore restores the guarantee the teardown
-   * gave for free. It is bounded by {@code shutdownJoinTimeoutMs} and taken OUTSIDE {@code lifecycleLock}, so a
-   * worker wedged inside user code delays neither a concurrent {@code close()} nor the caller for ever; if the
-   * budget runs out the workers are left draining in the background, still visible to
+   * <b>It waits for the retired workers, within a bounded budget</b> - so that when this call RETURNS, the pool it
+   * reports is the pool that exists: the caller's own next {@code getSlot()} cannot land on a bucket another worker
+   * is still writing, a second resize cannot reuse a position that is still occupied, and {@code getThreadCount()}
+   * is not describing a fiction. It is bounded by {@code shutdownJoinTimeoutMs} and taken OUTSIDE
+   * {@code lifecycleLock}, so a worker wedged inside user code delays neither a concurrent {@code close()} nor the
+   * caller for ever; if the budget runs out the workers are left draining in the background, still visible to
    * {@link #waitCompletion(long)}, {@link #isProcessing()} and {@link #getStats()}, which is the honest outcome
    * rather than dropping their work to return on time.
    * <p>
-   * <b>Serialized against itself</b> by {@code resizeLock}, held across the publish AND the wait. Without that, a
+   * <b>What that wait is NOT</b> (issue #6526 review round 6), because an earlier draft of this javadoc claimed it
+   * and the claim was wrong: it does not give back the bucket exclusivity the teardown had. {@code getSlot()} maps a
+   * bucket modulo the pool size and reads {@code executorThreads} lock-free, so the moment the truncated array is
+   * published, a bucket that used to hash to a retired worker hashes to a survivor - and an UNRELATED producer,
+   * which is not holding this lock and is not waiting for anything, routes there immediately while the retired
+   * worker is still draining that same bucket's queued tasks. For the length of the drain those two workers can
+   * write one bucket's pages, which is the contention {@code ThreadBucketSelectionStrategy} exists to prevent and
+   * which {@code AsyncInsertTest} measures as MVCC conflicts. The wait bounds when the caller of THIS method
+   * observes the overlap; it cannot bound when everybody else does.
+   * <p>
+   * That residual is accepted rather than closed, and the alternatives are why. Changing the pool size changes which
+   * worker owns a bucket, so every resize has a handover, and there are only three ways to spend it: refuse the
+   * producers for its duration (the teardown's answer - the "shut down" exception of #6505), drop what the retired
+   * worker still holds (the teardown's other answer - somebody else's writes, silently), or let the two overlap
+   * while the old work finishes. Only the third loses nothing, and what it costs is bounded, self-correcting and
+   * already handled: an MVCC conflict on a migrating bucket, for the length of one drain, on a path that reports
+   * through {@code onError} and retries. Closing it properly would mean blocking a producer inside
+   * {@code scheduleTask()} until the previous owner of its bucket finished - a bounded wait on the lock-free hot
+   * path that index-compaction hooks reach after {@code writeTransactionToWAL()}, which is exactly the shape of
+   * failure #6505 was.
+   * <p>
+   * <b>Serialized against itself</b> by {@code resizeLock}, a FAIR lock held across the publish AND the wait.
+   * Without that, a
    * second caller growing the pool back would fill the array positions the shrink just vacated while the old
    * workers for those positions are still draining, and the wait would guarantee nothing for the multi-caller case
    * it exists for. The residual is what survives the wait's own budget: if a retired worker is still draining when
