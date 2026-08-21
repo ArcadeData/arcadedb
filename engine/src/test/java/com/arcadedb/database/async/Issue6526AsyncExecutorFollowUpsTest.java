@@ -334,6 +334,43 @@ class Issue6526AsyncExecutorFollowUpsTest extends TestHelper {
   }
 
   /**
+   * Item 1, the stale-slot fallback in {@code scheduleTask()} (#6526 review round 5), pinned directly rather than
+   * left to be hit by chance. {@code getSlot()} maps a bucket modulo the pool size it read, and the pool can shrink
+   * before the caller reaches {@code scheduleTask()} - a window that did not exist while a resize nulled the array
+   * for its whole duration, because the caller got the "shut down" exception instead. The index is re-mapped rather
+   * than thrown on, so the task still runs.
+   * <p>
+   * Deterministic, and does not need a race to be: an index obtained from an eight-worker pool is simply carried
+   * across the shrink by hand, which is precisely the value the racing caller would be holding.
+   */
+  @Test
+  @Timeout(60)
+  void aSlotIndexLeftStaleByAShrinkStillReachesALiveWorker() throws Exception {
+    final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) ((DatabaseInternal) database).async();
+    async.setParallelLevel(8);
+
+    final int staleSlot = async.getSlot(7);
+    assertThat(staleSlot).as("the bucket must map into the upper half of the pool it was read against").isEqualTo(7);
+
+    async.setParallelLevel(2);
+    assertThat(staleSlot)
+        .as("the slot must now be out of bounds for the published pool, or the fallback is not being exercised")
+        .isGreaterThanOrEqualTo(async.getThreadCount());
+
+    final AtomicInteger executed = new AtomicInteger();
+    final AtomicInteger completed = new AtomicInteger();
+    final List<Throwable> errors = new CopyOnWriteArrayList<>();
+    async.onError(errors::add);
+
+    assertThat(async.scheduleTask(staleSlot, new CountingTask(executed, completed), true, 0))
+        .as("a stale slot must be re-mapped onto a live worker, not thrown on").isTrue();
+    assertThat(async.waitCompletion(30_000)).isTrue();
+
+    assertThat(executed.get()).as("and the task must actually run there").isEqualTo(1);
+    assertThat(errors).isEmpty();
+  }
+
+  /**
    * Item 1, growing. Raising the level must not disturb the workers that already exist: they own batch transactions
    * and are the unit {@code ThreadBucketSelectionStrategy} pins buckets to, so respawning them is never free.
    */
