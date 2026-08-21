@@ -21,6 +21,8 @@ package com.arcadedb.function;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 
+import java.util.function.Function;
+
 /**
  * Canonicalizes values for duplicate-elimination purposes (Cypher {@code UNION},
  * {@code RETURN DISTINCT}, {@code count(DISTINCT ...)}, {@code collect(DISTINCT ...)}) so that
@@ -82,5 +84,20 @@ public final class DistinctNumericKey {
     }
 
     return value;
+  }
+
+  /**
+   * Builds a composite string key from {@code names}, in iteration order, by rendering each name's
+   * canonicalized value as {@code name=value|}. Shared by every Cypher duplicate-elimination step
+   * (RETURN DISTINCT, WITH DISTINCT, UNION) that dedups on a set of named values, so the
+   * {@link #canonicalize(Object)} behavior - including the RID canonicalization above - only needs
+   * to be applied in one place. Callers control ordering (and hence key stability across rows) by
+   * choosing what {@code names} they pass; this method does not sort or otherwise reorder it.
+   */
+  public static String buildKey(final Iterable<String> names, final Function<String, Object> valueOf) {
+    final StringBuilder keyBuilder = new StringBuilder();
+    for (final String name : names)
+      keyBuilder.append(name).append('=').append(canonicalize(valueOf.apply(name))).append('|');
+    return keyBuilder.toString();
   }
 }
