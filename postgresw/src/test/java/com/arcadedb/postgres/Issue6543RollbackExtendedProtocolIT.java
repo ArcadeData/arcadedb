@@ -142,8 +142,20 @@ class Issue6543RollbackExtendedProtocolIT extends PostgresWireProtocolTestBase {
             .as("COMMIT WORK must be recognized just like a bare COMMIT").isEqualTo('I');
 
         assertThat(readyForQueryStatusOf(runExtendedQuery(out, in, "BEGIN"))).isEqualTo('T');
+        assertThat(readyForQueryStatusOf(runExtendedQuery(out, in, "COMMIT TRANSACTION")))
+            .as("COMMIT TRANSACTION must be recognized just like a bare COMMIT").isEqualTo('I');
+
+        assertThat(readyForQueryStatusOf(runExtendedQuery(out, in, "BEGIN"))).isEqualTo('T');
         assertThat(readyForQueryStatusOf(runExtendedQuery(out, in, "END")))
             .as("END must be recognized as an alias for COMMIT").isEqualTo('I');
+
+        assertThat(readyForQueryStatusOf(runExtendedQuery(out, in, "BEGIN"))).isEqualTo('T');
+        assertThat(readyForQueryStatusOf(runExtendedQuery(out, in, "END TRANSACTION")))
+            .as("END TRANSACTION must be recognized as an alias for COMMIT").isEqualTo('I');
+
+        assertThat(readyForQueryStatusOf(runExtendedQuery(out, in, "BEGIN"))).isEqualTo('T');
+        assertThat(readyForQueryStatusOf(runExtendedQuery(out, in, "END WORK")))
+            .as("END WORK must be recognized as an alias for COMMIT").isEqualTo('I');
       });
     }
   }
