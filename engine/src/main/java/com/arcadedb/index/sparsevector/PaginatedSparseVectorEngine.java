@@ -1067,10 +1067,14 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
         }
         windowCost -= ordered[i - (tierFanout - 1)].totalPostings();
       }
+      // Names the window by segment id, not by array position: the position is an index into an
+      // internal snapshot that means nothing once this call returns, while the ids are what an
+      // operator can match against the component files on disk and against later log lines.
       LogManager.instance().log(this, Level.FINE,
           "Sparse-vector index '%s' holds %d segments with no same-tier run of %d to merge; collapsing the cheapest "
-              + "adjacent window at position %d (%d postings)",
-          null, indexName, active.length, tierFanout, cheapestStart, cheapestCost);
+              + "adjacent window, segments %d..%d (%d postings)",
+          null, indexName, active.length, tierFanout, ordered[cheapestStart].segmentId(),
+          ordered[cheapestStart + tierFanout - 1].segmentId(), cheapestCost);
       return Arrays.copyOfRange(ordered, cheapestStart, cheapestStart + tierFanout);
     });
   }
