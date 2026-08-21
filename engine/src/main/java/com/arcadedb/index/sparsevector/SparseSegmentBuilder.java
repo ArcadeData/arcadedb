@@ -60,7 +60,7 @@ import java.util.zip.CRC32;
  *               dense enough that its trailer exceeds one page (issue #5254) spans consecutive
  *               pages and the reader reassembles it.
  * Page M+1: dim_index page (count + sorted (dim_id, trailer_page_num, trailer_offset) entries).
- * Page M+2: manifest page (segment_id, parent_segments, tombstone_floor, crc).
+ * Page M+2: manifest page (segment_id, parent_segments, tombstone_count, recency_epoch, crc).
  * </pre>
  * The header, dim_index, and manifest each occupy their own dedicated page; the block stream and
  * trailer stream pack densely.
@@ -88,6 +88,14 @@ public final class SparseSegmentBuilder implements AutoCloseable {
 
   // Manifest fields, fixed once before any dim is started.
   private long   segmentId             = 0L;
+  /**
+   * Precedence ordinal of this segment among its siblings ("newest wins"), deliberately decoupled
+   * from {@link #segmentId} - see {@code PaginatedSparseVectorEngine}'s recency-epoch contract
+   * (issue #6379). Defaulted by {@link #setSegmentId} to the segment id, which is the right value
+   * for a freshly flushed memtable; a compaction overrides it with the epoch of its newest input
+   * so the merged segment cannot leapfrog a segment it did not consume.
+   */
+  private long   recencyEpoch          = 0L;
   private long[] parentSegments        = new long[0];
 
   // Currently open dim state.
@@ -192,6 +200,21 @@ public final class SparseSegmentBuilder implements AutoCloseable {
   public void setSegmentId(final long segmentId) {
     requireFresh();
     this.segmentId = segmentId;
+    // Default the precedence ordinal to the id. A flush wants exactly that (the id counter is
+    // monotonic, so a freshly sealed memtable is by construction the newest segment); only a
+    // compaction needs to override it via {@link #setRecencyEpoch}, and it does so after this call.
+    this.recencyEpoch = segmentId;
+  }
+
+  /**
+   * Override the precedence ordinal written into the manifest. Must be called <i>after</i>
+   * {@link #setSegmentId}, which defaults it. Compaction passes the epoch of its newest input here
+   * so the merged segment inherits that input's position in the "newest wins" order instead of
+   * jumping to the front on the strength of its brand-new segment id (issue #6379).
+   */
+  public void setRecencyEpoch(final long recencyEpoch) {
+    requireFresh();
+    this.recencyEpoch = recencyEpoch;
   }
 
   public void setParentSegments(final long[] parents) {
@@ -687,10 +710,13 @@ public final class SparseSegmentBuilder implements AutoCloseable {
     // trigger without walking every dim's metadata. Older segments built before this field was
     // populated wrote 0L here, which is a safe under-report (the trigger simply skips them).
     payloadBuf.putLong(totalTombstones);
-    // Slot 1 (8 bytes): reserved for future use. Kept zero so the manifest layout stays at the
-    // same size; a future addition can repurpose it without bumping the format version (the CRC
-    // is stable as long as the slot stays consistent within a build).
-    payloadBuf.putLong(0L);
+    // Slot 1 (8 bytes): recency epoch - the segment's position in the "newest wins" order, which
+    // a compaction deliberately keeps below its own segment id (issue #6379). Segments built
+    // before this field existed wrote 0L here; the reader treats 0 as "no epoch recorded" and
+    // falls back to the segment id, which reproduces the pre-#6379 ordering for legacy files.
+    // Repurposing the reserved slot keeps the manifest at the same size, so the format version
+    // does not move.
+    payloadBuf.putLong(recencyEpoch);
     final CRC32 crc = new CRC32();
     crc.update(payloadScratch, 0, size - 4);
     payloadBuf.putInt((int) crc.getValue());
