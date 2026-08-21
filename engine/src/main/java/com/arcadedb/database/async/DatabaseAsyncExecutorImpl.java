@@ -579,9 +579,18 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     // halves are closed: resizeThreads() registers a retiring worker BEFORE it unpublishes the array, so it is
     // never in neither, and the identity check here drops it when it is in both. The scan is over arrays the size
     // of the pool, so it costs nothing that matters here.
-    for (final AsyncThread retiring : retiringThreads)
+    for (final AsyncThread retiring : retiringThreads) {
       if (!contains(threads, retiring))
         stats.queueSize += retiring.queue.size();
+      // #6526 review round 4: and how many of them there are. A worker retired by a shrink is normally in this set
+      // for milliseconds; one that outlived awaitRetiredThreads()'s budget stays, and until now the ONLY trace of
+      // that was the single WARNING logged at the moment the wait gave up. This is the same argument item 3 of
+      // #6526 makes for the boundary-commit counter: a condition whose only evidence is one log line is a condition
+      // somebody reconstructs after an incident instead of seeing during one. Persistently non-zero here is a
+      // wedged worker; briefly non-zero is a resize doing its job.
+      if (retiring.isAlive())
+        ++stats.retiringWorkers;
+    }
 
     stats.scheduledTasks = counterScheduledTasks.get();
     stats.forcedBoundaryCommits = forcedBoundaryCommits.get();
@@ -1613,6 +1622,15 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   public static class DBAsyncStats {
     public long queueSize;
     public long scheduledTasks;
+    /**
+     * Workers a shrinking {@code setParallelLevel()} retired that are still running (issue #6526 review round 4).
+     * <p>
+     * Instantaneous, not monotonic - it goes back to zero as they finish - so it must be read as a gauge and never
+     * as a counter. Zero almost always; briefly positive during a resize; PERSISTENTLY positive means a retired
+     * worker is wedged inside user code and is never going to finish, which a resize deliberately never escalates
+     * to an {@code interrupt()} the way a close does.
+     */
+    public long retiringWorkers;
     /**
      * Monotonic count of transaction boundaries forced by a durability-flag change (issue #6526, item 3). Climbing
      * while throughput drops is the signature of two callers flipping {@code setTransactionUseWAL()} /

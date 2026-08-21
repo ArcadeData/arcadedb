@@ -76,7 +76,10 @@ public class Profiler {
   private static final int STAT_MAX_OPEN_FILES    = 21;
   private static final int STAT_ASYNC_QUEUE       = 22;
   private static final int STAT_ASYNC_PARALLEL    = 23;
-  private static final int STATS_COUNT            = 24;
+  // #6526 review round 4: instantaneous, and firmly on this side of MONOTONIC_STATS - it returns to zero as the
+  // retired workers finish, so carrying it across a close would make a gauge that only ever grows.
+  private static final int STAT_ASYNC_RETIRING    = 24;
+  private static final int STATS_COUNT            = 25;
 
   /**
    * Registered database INSTANCES, compared by identity.
@@ -182,8 +185,10 @@ public class Profiler {
       // (issue #6526 review). A database with no executor has no queue and no workers, which is what the two
       // readings below now say instead of what asking the question made true.
       final DatabaseAsyncExecutorImpl async = asyncIfExists(db);
-      acc[STAT_ASYNC_QUEUE] += async != null ? async.getStats().queueSize : 0L;
+      final DatabaseAsyncExecutorImpl.DBAsyncStats asyncStats = async != null ? async.getStats() : null;
+      acc[STAT_ASYNC_QUEUE] += asyncStats != null ? asyncStats.queueSize : 0L;
       acc[STAT_ASYNC_PARALLEL] = async != null ? async.getParallelLevel() : 0L;
+      acc[STAT_ASYNC_RETIRING] += asyncStats != null ? asyncStats.retiringWorkers : 0L;
     }
     return acc;
   }
@@ -249,6 +254,7 @@ public class Profiler {
     final long asyncQueueLength = dbStats[STAT_ASYNC_QUEUE];
     final long asyncParallelLevel = dbStats[STAT_ASYNC_PARALLEL];
     final long asyncForcedBoundaryCommits = dbStats[STAT_ASYNC_BOUNDARY_COMMITS];
+    final long asyncRetiringWorkers = dbStats[STAT_ASYNC_RETIRING];
 
     final long writeTx = dbStats[STAT_WRITE_TX];
     final long readTx = dbStats[STAT_READ_TX];
@@ -306,6 +312,9 @@ public class Profiler {
     // batch transaction short. #6511 traded the pool teardown for this extra commit; this is what makes the trade
     // measurable instead of something to reconstruct from logs after an incident.
     json.put("asyncForcedBoundaryCommits", new JSONObject().put("count", asyncForcedBoundaryCommits));
+    // #6526 review round 4: "value", not "count" - this one goes back down, so it is a gauge. Persistently non-zero
+    // is a worker a lowered parallel level retired and that never finished draining; a resize never interrupts one.
+    json.put("asyncRetiringWorkers", new JSONObject().put("value", asyncRetiringWorkers));
     json.put("pageCacheHits", new JSONObject().put("count", pageCacheHits));
     json.put("pageCacheMiss", new JSONObject().put("count", pageCacheMiss));
     json.put("totalOpenFiles", new JSONObject().put("count", totalOpenFiles));
@@ -441,6 +450,7 @@ public class Profiler {
       final long asyncQueueLength = dbStats[STAT_ASYNC_QUEUE];
       final long asyncParallelLevel = dbStats[STAT_ASYNC_PARALLEL];
       final long asyncForcedBoundaryCommits = dbStats[STAT_ASYNC_BOUNDARY_COMMITS];
+      final long asyncRetiringWorkers = dbStats[STAT_ASYNC_RETIRING];
       final long totalOpenFiles = dbStats[STAT_OPEN_FILES];
       final long maxOpenFiles = dbStats[STAT_MAX_OPEN_FILES];
       final long walPagesWritten = dbStats[STAT_WAL_PAGES_WRITTEN];
@@ -532,7 +542,8 @@ public class Profiler {
       // each flip closing whatever worker's batch sees it next. Printed here as well as in toJSON() for the same
       // reason the #6217 read-path counters are: this dump is what an operator has when there is no metrics
       // endpoint to scrape.
-      buffer.append("%n    asyncForcedBoundaryCommits=%d".formatted(asyncForcedBoundaryCommits));
+      buffer.append("%n    asyncForcedBoundaryCommits=%d asyncRetiringWorkers=%d".formatted(
+          asyncForcedBoundaryCommits, asyncRetiringWorkers));
       buffer.append(
         "%n    scanType=%d scanBucket=%d iterateType=%d iterateBucket=%d countType=%d countBucket=%d".formatted(scanType,
           scanBucket, iterateType,

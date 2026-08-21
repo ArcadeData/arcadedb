@@ -249,11 +249,21 @@ class Issue6526AsyncExecutorFollowUpsTest extends TestHelper {
       assertThat(retiredWorker.isAlive()).as("the drain budget must have expired with the worker still running")
           .isTrue();
 
+      // #6526 review round 4: a worker abandoned past its drain budget has to be VISIBLE, not just logged once at
+      // the moment the wait gave up. This is the only state in which the gauge is non-zero for longer than a
+      // resize takes, and it is the state an operator needs to be able to see.
+      assertThat(async.getStats().retiringWorkers)
+          .as("a worker still draining past the resize budget must be reported").isEqualTo(1L);
+      assertThat(Profiler.INSTANCE.toJSON().getJSONObject("asyncRetiringWorkers").getLong("value", -1L))
+          .as("and must reach the profiler, as a gauge rather than a counter").isGreaterThanOrEqualTo(1L);
+
       async.kill();
 
       retiredWorker.join(10_000);
       assertThat(retiredWorker.isAlive()).as("kill() must not leave a retired worker of this database running")
           .isFalse();
+      assertThat(async.getStats().retiringWorkers)
+          .as("and the gauge must come back down once nothing is draining").isZero();
     } finally {
       async.shutdownJoinTimeoutMs = previousJoinTimeout;
     }

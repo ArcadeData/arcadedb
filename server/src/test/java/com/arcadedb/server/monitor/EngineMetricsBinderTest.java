@@ -93,7 +93,10 @@ class EngineMetricsBinderTest {
         // #6125: a high-water mark. Monotonic, but a rate() over it would be meaningless, so it is the one
         // never-decreasing reading here that is deliberately a gauge
         "arcadedb.engine.snapshot.barrier.max.seconds",
-        "arcadedb.engine.flush.deferred.bytes" }) {
+        "arcadedb.engine.flush.deferred.bytes",
+        // #6526: workers a lowered parallel level retired and that are still draining - it comes back down, so it
+        // is a gauge
+        "arcadedb.engine.async.workers.retiring" }) {
       final Gauge gauge = registry.find(name).gauge();
       assertThat(gauge).as(name).isNotNull();
       assertThat(Double.isNaN(gauge.value())).as(name).isFalse();
