@@ -78,8 +78,8 @@ class LSMVectorIndexGraphFileToctouTest {
     FileUtils.deleteRecursively(new File(DB_PATH));
     final Random rng = new Random(7);
 
-    try (final DatabaseFactory factory = new DatabaseFactory(DB_PATH)) {
-      final Database db = factory.create();
+    try (final DatabaseFactory factory = new DatabaseFactory(DB_PATH);
+         final Database db = factory.create()) {
       db.transaction(() -> {
         final DocumentType t = db.getSchema().createDocumentType("Doc");
         t.createProperty("id", Type.INTEGER);
@@ -131,8 +131,6 @@ class LSMVectorIndexGraphFileToctouTest {
               + "dereferencing it; reading it twice lets a concurrent writer null it out in between and turns the "
               + "null-check-then-use into a live NullPointerException (issue #6536)")
           .isNull();
-
-      db.close();
     }
   }
 
