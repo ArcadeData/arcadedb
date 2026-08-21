@@ -28,6 +28,13 @@ import redis.clients.jedis.Jedis;
 import java.io.IOException;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -229,6 +236,204 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
       assertThat(jedis.ping()).isEqualTo("PONG");
     } finally {
       GlobalConfiguration.NETWORK_SOCKET_TIMEOUT.reset();
+    }
+  }
+
+  @Test
+  void incrByAcceptsSigned64BitIncrements() {
+    // INCRBY amount was parsed as 32-bit int before #6466: a 64-bit increment threw
+    // NumberFormatException -> "-ERR For input string". Real Redis accepts any signed 64-bit value.
+    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+      jedis.auth(USER, PASSWORD);
+      // ArcadeDB Redis wire has no DEL; use SET to initialise the key
+      jedis.set("incr64", "0");
+      assertThat(jedis.incrBy("incr64", 3_000_000_000L)).isEqualTo(3_000_000_000L);
+      assertThat(jedis.incrBy("incr64", -1_000_000_000L)).isEqualTo(2_000_000_000L);
+      assertThat(jedis.decrBy("incr64", 2_000_000_000L)).isZero();
+    }
+  }
+
+  @Test
+  void incrOverflowReturnsErrorInsteadOfWrapping() throws IOException {
+    // (issue #6466): INCR on Long.MAX_VALUE wrapped silently to Long.MIN_VALUE. Real Redis answers
+    // with an error; the wire reply must be "-ERR ... overflow" and the stored value must be untouched.
+    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      socket.setSoTimeout(10_000);
+
+      sendCommand(socket, "AUTH", USER, PASSWORD);
+      readReply(socket); // +OK
+
+      sendCommand(socket, "SET", "overflowKey", "9223372036854775807"); // Long.MAX_VALUE
+      readReply(socket); // +OK
+
+      sendCommand(socket, "INCR", "overflowKey");
+      final String reply = readReply(socket);
+      assertThat(reply).startsWith("-ERR");
+      assertThat(reply).containsIgnoringCase("overflow");
+
+      // The key must keep its pre-increment value: a failed INCR is a no-op.
+      sendCommand(socket, "GET", "overflowKey");
+      assertThat(readReply(socket)).isEqualTo("$19\r\n9223372036854775807");
+    }
+  }
+
+  @Test
+  void setNxDoesNotOverwriteExistingKey() throws IOException {
+    // (issue #6466): SET k v NX on an existing key returned +OK and overwrote it, so a distributed-lock
+    // client believed it acquired a lock it did not. Real Redis replies with the RESP2 null bulk string.
+    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      socket.setSoTimeout(10_000);
+
+      sendCommand(socket, "AUTH", USER, PASSWORD);
+      readReply(socket); // +OK
+
+      sendCommand(socket, "SET", "lockKey", "1");
+      readReply(socket); // +OK
+
+      sendCommand(socket, "SET", "lockKey", "2", "NX");
+      assertThat(readReply(socket)).isEqualTo("$-1");
+
+      sendCommand(socket, "GET", "lockKey");
+      assertThat(readReply(socket)).isEqualTo("$1\r\n1");
+    }
+  }
+
+  @Test
+  void setXxDoesNotCreateMissingKey() throws IOException {
+    // (issue #6466): XX must only set an existing key; on a missing key real Redis replies nil.
+    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      socket.setSoTimeout(10_000);
+
+      sendCommand(socket, "AUTH", USER, PASSWORD);
+      readReply(socket); // +OK
+
+      // ArcadeDB Redis wire has no DEL; absentKey is already absent
+      sendCommand(socket, "SET", "absentKey", "v", "XX");
+      assertThat(readReply(socket)).isEqualTo("$-1");
+
+      sendCommand(socket, "GET", "absentKey");
+      assertThat(readReply(socket)).isEqualTo("$-1");
+    }
+  }
+
+  @Test
+  void setGetReturnsPreviousValue() throws IOException {
+    // (issue #6466): SET k v GET must return the previous value (bulk string) instead of +OK.
+    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      socket.setSoTimeout(10_000);
+
+      sendCommand(socket, "AUTH", USER, PASSWORD);
+      readReply(socket); // +OK
+
+      sendCommand(socket, "SET", "prevKey", "old");
+      readReply(socket); // +OK
+
+      sendCommand(socket, "SET", "prevKey", "new", "GET");
+      final String reply = readReply(socket);
+      assertThat(reply).isEqualTo("$3\r\nold");
+
+      sendCommand(socket, "GET", "prevKey");
+      assertThat(readReply(socket)).isEqualTo("$3\r\nnew");
+    }
+  }
+
+  @Test
+  void setNxGetReturnsExistingValueOnVetoedWrite() throws IOException {
+    // Real Redis: combining GET with NX/XX still returns the pre-existing value when the NX/XX condition
+    // vetoes the write (it does not fall back to nil just because nothing was written).
+    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      socket.setSoTimeout(10_000);
+
+      sendCommand(socket, "AUTH", USER, PASSWORD);
+      readReply(socket); // +OK
+
+      sendCommand(socket, "SET", "nxGetKey", "original");
+      readReply(socket); // +OK
+
+      sendCommand(socket, "SET", "nxGetKey", "shouldNotApply", "NX", "GET");
+      assertThat(readReply(socket)).isEqualTo("$8\r\noriginal");
+
+      // The vetoed write must not have touched the stored value.
+      sendCommand(socket, "GET", "nxGetKey");
+      assertThat(readReply(socket)).isEqualTo("$8\r\noriginal");
+    }
+  }
+
+  @Test
+  void setWithUnsupportedExpiryOptionIsRejectedInsteadOfSilentlyIgnored() throws IOException {
+    // (issue #6466): EX/PX were silently dropped, so a client setting EX 10 believed the key would
+    // expire. ArcadeDB transient keys have no TTL store, so the honest reply is a clear error.
+    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      socket.setSoTimeout(10_000);
+
+      sendCommand(socket, "AUTH", USER, PASSWORD);
+      readReply(socket); // +OK
+
+      sendCommand(socket, "SET", "ttlKey", "v", "EX", "10");
+      final String reply = readReply(socket);
+      assertThat(reply).startsWith("-ERR");
+      assertThat(reply).containsIgnoringCase("unsupported");
+    }
+  }
+
+  @Test
+  void incrByFloatRepliesWithBulkString() throws IOException {
+    // (issue #6466 minor): INCRBYFLOAT replied with a RESP simple string ("+3.3\r\n") instead of a bulk
+    // string ("$3\r\n3.3\r\n"). Jedis parses both forms into the same double, so routing this through the
+    // client (as the original version of this test did) would pass whether or not the wire format was
+    // fixed; asserting on the raw frame via readReply() is what actually exercises the fix.
+    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      socket.setSoTimeout(10_000);
+
+      sendCommand(socket, "AUTH", USER, PASSWORD);
+      readReply(socket); // +OK
+
+      sendCommand(socket, "SET", "floatKey", "0");
+      readReply(socket); // +OK
+
+      sendCommand(socket, "INCRBYFLOAT", "floatKey", "3.3");
+      assertThat(readReply(socket)).isEqualTo("$3\r\n3.3");
+    }
+  }
+
+  @Test
+  void concurrentSetNxOnSharedDatabaseKeyOnlyLetsOneWinnerThrough() throws Exception {
+    // (issue #6466 follow-up): the initial fix evaluated NX as "does the key exist?" then "write it" as two
+    // separate calls. That is only safe when the key lives in a per-connection bucket; once a key is backed
+    // by a database's global variables (SELECT, or an explicit "db.key" prefix) it is shared by every
+    // connection, and two racing SET k v NX calls could both observe "absent" and both believe they set a
+    // lock. This drives many concurrent connections at the same key and asserts exactly one NX succeeds.
+    final int racers = 16;
+    final String databaseName = getDatabaseName();
+    final String key = databaseName + ".raceLock";
+
+    final CyclicBarrier barrier = new CyclicBarrier(racers);
+    final ExecutorService pool = Executors.newFixedThreadPool(racers);
+    try {
+      final List<Future<Boolean>> results = new ArrayList<>();
+      for (int i = 0; i < racers; i++) {
+        final int id = i;
+        results.add(pool.submit(() -> {
+          try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+            socket.setSoTimeout(10_000);
+            sendCommand(socket, "AUTH", USER, PASSWORD);
+            readReply(socket); // +OK
+
+            barrier.await(10, TimeUnit.SECONDS);
+            sendCommand(socket, "SET", key, "owner-" + id, "NX");
+            return readReply(socket).startsWith("+OK");
+          }
+        }));
+      }
+
+      long winners = 0;
+      for (final Future<Boolean> result : results)
+        if (result.get(10, TimeUnit.SECONDS))
+          winners++;
+
+      assertThat(winners).isEqualTo(1);
+    } finally {
+      pool.shutdownNow();
     }
   }
 

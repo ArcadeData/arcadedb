@@ -414,7 +414,7 @@ public class RedisNetworkExecutor extends Thread {
 
   private void decrBy(final List<Object> list) {
     final String k = (String) list.get(1);
-    final int by = list.size() > 2 ? Integer.parseInt((String) list.get(2)) : 1;
+    final long by = list.size() > 2 ? Long.parseLong((String) list.get(2)) : 1L;
 
     Object number = getVariable(k);
     if (number == null) {
@@ -426,7 +426,16 @@ public class RedisNetworkExecutor extends Thread {
         throw new RedisException("Key '" + k + "' is not a number");
     }
 
-    final Number newValue = Type.decrement((Number) number, by);
+    final Number newValue;
+    if (number instanceof Long || number instanceof Integer || number instanceof Short || number instanceof Byte) {
+      try {
+        newValue = Math.subtractExact(((Number) number).longValue(), by);
+      } catch (final ArithmeticException e) {
+        throw new RedisException("increment or decrement would overflow", e);
+      }
+    } else
+      newValue = Type.decrement((Number) number, by);
+
     setVariable(k, newValue);
     value.append(":");
     value.append(newValue);
@@ -639,9 +648,9 @@ public class RedisNetworkExecutor extends Thread {
       if (decimal)
         by = Double.valueOf((String) list.get(2));
       else
-        by = Integer.valueOf((String) list.get(2));
+        by = Long.valueOf((String) list.get(2));
     } else
-      by = 1;
+      by = 1L;
 
     Object number = getVariable(k);
     if (number == null) {
@@ -653,16 +662,92 @@ public class RedisNetworkExecutor extends Thread {
         throw new RedisException("Key '" + k + "' is not a number");
     }
 
-    final Number newValue = Type.increment((Number) number, by);
+    final Number newValue;
+    if (!decimal && (number instanceof Long || number instanceof Integer || number instanceof Short || number instanceof Byte)) {
+      try {
+        newValue = Math.addExact(((Number) number).longValue(), by.longValue());
+      } catch (final ArithmeticException e) {
+        throw new RedisException("increment or decrement would overflow", e);
+      }
+    } else
+      newValue = Type.increment((Number) number, by);
+
     setVariable(k, newValue);
-    value.append(newValue instanceof Long ? ":" : "+");
-    value.append(newValue);
+    if (decimal) {
+      final String text = newValue.toString();
+      value.append("$");
+      value.append(text.getBytes(DatabaseFactory.getDefaultCharset()).length);
+      appendCrLf();
+      value.append(text);
+    } else {
+      value.append(newValue instanceof Long ? ":" : "+");
+      value.append(newValue);
+    }
   }
 
+  /**
+   * NX/XX must be a single atomic check-and-set: {@code SET k v NX} is the primitive a distributed-lock client
+   * builds on, and evaluating "does k exist" and "write k" as two separate calls would let two racing clients both
+   * observe "absent" and both believe they acquired the lock. {@link #setVariableIfAbsent} / {@link
+   * #setVariableIfPresent} route to a single atomic map operation ({@code ConcurrentHashMap.putIfAbsent} /
+   * {@code computeIfPresent}, or their {@code DatabaseInternal} equivalents) instead of a get-then-set pair.
+   */
   private void set(final List<Object> list) {
     final String k = (String) list.get(1);
     final String v = (String) list.get(2);
-    setVariable(k, v);
+
+    boolean nx = false;
+    boolean xx = false;
+    boolean get = false;
+    for (int i = 3; i < list.size(); i++) {
+      final String opt = ((String) list.get(i)).toUpperCase(Locale.ROOT);
+      switch (opt) {
+      case "NX":
+        if (xx) throw new RedisException("syntax error");
+        nx = true;
+        break;
+      case "XX":
+        if (nx) throw new RedisException("syntax error");
+        xx = true;
+        break;
+      case "GET":
+        get = true;
+        break;
+      case "EX":
+      case "PX":
+      case "EXAT":
+      case "PXAT":
+      case "KEEPTTL":
+        throw new RedisException("unsupported SET option '" + opt + "': ArcadeDB transient keys have no expiry");
+      default:
+        throw new RedisException("syntax error");
+      }
+    }
+
+    final Object previous;
+    final boolean applied;
+    if (nx) {
+      previous = setVariableIfAbsent(k, v);
+      applied = previous == null;
+    } else if (xx) {
+      previous = setVariableIfPresent(k, v);
+      applied = previous != null;
+    } else {
+      previous = setVariable(k, v);
+      applied = true;
+    }
+
+    if (get) {
+      // Real Redis returns the pre-existing value for GET regardless of whether NX/XX vetoed the write.
+      respondValue(previous, true);
+      return;
+    }
+
+    if (!applied) {
+      value.append("$-1");
+      return;
+    }
+
     value.append("+");
     value.append("OK");
   }
@@ -868,14 +953,47 @@ public class RedisNetworkExecutor extends Thread {
     return defaultBucket.get(resolved.key());
   }
 
-  private void setVariable(final String key, final Object value) {
+  /**
+   * @return the previous value of the key, or null if it had none
+   */
+  private Object setVariable(final String key, final Object value) {
     final ResolvedKey resolved = resolveKeyAndDatabase(key);
 
-    if (resolved.database() != null) {
-      resolved.database().setGlobalVariable(resolved.key(), value);
-    } else {
-      defaultBucket.put(resolved.key(), value);
-    }
+    if (resolved.database() != null)
+      return resolved.database().setGlobalVariable(resolved.key(), value);
+    return defaultBucket.put(resolved.key(), value);
+  }
+
+  /**
+   * Atomic check-and-set: writes {@code value} only if the key is currently absent.
+   *
+   * @return the existing value if the key was already set (left untouched), or null if it was absent (now set)
+   */
+  private Object setVariableIfAbsent(final String key, final Object value) {
+    final ResolvedKey resolved = resolveKeyAndDatabase(key);
+
+    if (resolved.database() != null)
+      return resolved.database().setGlobalVariableIfAbsent(resolved.key(), value);
+    return defaultBucket.putIfAbsent(resolved.key(), value);
+  }
+
+  /**
+   * Atomic check-and-set: writes {@code value} only if the key is currently present.
+   *
+   * @return the previous value if the key was set (now replaced), or null if it was absent (left untouched)
+   */
+  private Object setVariableIfPresent(final String key, final Object value) {
+    final ResolvedKey resolved = resolveKeyAndDatabase(key);
+
+    if (resolved.database() != null)
+      return resolved.database().setGlobalVariableIfPresent(resolved.key(), value);
+
+    final Object[] previous = new Object[1];
+    defaultBucket.computeIfPresent(resolved.key(), (k, current) -> {
+      previous[0] = current;
+      return value;
+    });
+    return previous[0];
   }
 
   private Object removeVariable(final String key) {

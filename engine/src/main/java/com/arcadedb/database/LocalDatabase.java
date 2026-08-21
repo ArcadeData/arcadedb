@@ -2379,6 +2379,31 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   @Override
+  public Object setGlobalVariableIfAbsent(String name, final Object value) {
+    if (name == null)
+      throw new IllegalArgumentException("Variable name cannot be null");
+    if (name.startsWith("$"))
+      name = name.substring(1);
+    SQLQueryEngine.validateVariableName(name);
+    return globalVariables.putIfAbsent(name, value);
+  }
+
+  @Override
+  public Object setGlobalVariableIfPresent(String name, final Object value) {
+    if (name == null)
+      throw new IllegalArgumentException("Variable name cannot be null");
+    if (name.startsWith("$"))
+      name = name.substring(1);
+    SQLQueryEngine.validateVariableName(name);
+    final Object[] previous = new Object[1];
+    globalVariables.computeIfPresent(name, (key, current) -> {
+      previous[0] = current;
+      return value;
+    });
+    return previous[0];
+  }
+
+  @Override
   public Map<String, Object> getGlobalVariables() {
     return CollectionUtils.immutableMap(globalVariables);
   }
