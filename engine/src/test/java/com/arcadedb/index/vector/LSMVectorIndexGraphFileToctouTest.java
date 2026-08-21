@@ -125,6 +125,7 @@ class LSMVectorIndexGraphFileToctouTest {
         reader.join(10_000);
       }
 
+      assertThat(reader.isAlive()).as("reader thread must have terminated, not hung, within the join timeout").isFalse();
       assertThat(readerFailure.get())
           .as("getFileIds() must take a single local snapshot of the volatile graphFile field before checking and "
               + "dereferencing it; reading it twice lets a concurrent writer null it out in between and turns the "
