@@ -411,9 +411,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final long vectorIndexBytes = safeFileSize(
         mutable != null && mutable.getComponentFile() != null ? Path.of(mutable.getComponentFile().getFilePath()) :
             null);
+    final LSMVectorIndexGraphFile gf = graphFile;
     final long graphFileBytes = safeFileSize(
-        graphFile != null && graphFile.getComponentFile() != null ?
-            Path.of(graphFile.getComponentFile().getFilePath()) : null);
+        gf != null && gf.getComponentFile() != null ?
+            Path.of(gf.getComponentFile().getFilePath()) : null);
     final long pqFileBytes = safeFileSize(pqFile != null ? pqFile.getFilePath() : null);
     final long compactedFileBytes = safeFileSize(
         compactedSubIndex != null && compactedSubIndex.getComponentFile() != null ?
@@ -1285,8 +1286,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * eagerly in the loading constructor.
    */
   private LSMVectorIndexGraphFile getOrCreateGraphFile() {
-    if (graphFile != null)
-      return graphFile;
+    final LSMVectorIndexGraphFile existing = graphFile;
+    if (existing != null)
+      return existing;
 
     try {
       final DatabaseInternal db = getDatabase();
@@ -1321,7 +1323,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // For loaded indexes, graph will be lazy-loaded on first search via ensureGraphAvailable()
     if (vectorIndex.size() > 0 && graphState == GraphState.LOADING) {
       // Check if we can lazy-load from persisted graph
-      if (graphFile != null && graphFile.hasPersistedGraph()) {
+      final LSMVectorIndexGraphFile gf = graphFile;
+      if (gf != null && gf.hasPersistedGraph()) {
         LogManager.instance().log(this, Level.INFO, "Graph will be lazy-loaded from disk for index: %s", indexName);
         return;
       }
@@ -1376,9 +1379,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
             indexName);
       }
 
-      if (graphFile != null && graphFile.hasPersistedGraph() && !needsGraphRebuildForPQ && !hasDeletedVectors) {
+      final LSMVectorIndexGraphFile gf = graphFile;
+      if (gf != null && gf.hasPersistedGraph() && !needsGraphRebuildForPQ && !hasDeletedVectors) {
         try {
-          final var loadedGraph = graphFile.loadGraph();
+          final var loadedGraph = gf.loadGraph();
 
           // Rebuild ordinalToVectorId from vectorIndex
           // IMPORTANT: Must match the validation logic used during graph building
@@ -1444,7 +1448,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // densely [0, N), so two generations holding different records routinely produce arrays of identical
           // length. The manifest written next to the graph records the correspondence itself, and comparing
           // against it is what makes the reuse safe rather than merely plausible.
-          final LSMVectorIndexGraphManifest.Content persistedManifest = graphFile.getManifest().read();
+          final LSMVectorIndexGraphManifest.Content persistedManifest = gf.getManifest().read();
 
           final String staleReason;
           if (persistedManifest == null) {
@@ -2871,8 +2875,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @param cause what went wrong; recorded in the manifest for a human, nothing reads it back
    */
   private void markGraphManifestUnusable(final Exception cause) {
-    if (graphFile != null)
-      graphFile.getManifest().markUnusable("index build failed: " + cause);
+    final LSMVectorIndexGraphFile gf = graphFile;
+    if (gf != null)
+      gf.getManifest().markUnusable("index build failed: " + cause);
   }
 
   /**
@@ -5771,8 +5776,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
   public List<Integer> getFileIds() {
     // #4937: the companion graph file receives page writes during the transaction too - it must be part of
     // the commit lock set, or its pages pass the version checks without their file lock held.
-    if (graphFile != null)
-      return List.of(mutable.getFileId(), graphFile.getFileId());
+    final LSMVectorIndexGraphFile gf = graphFile;
+    if (gf != null)
+      return List.of(mutable.getFileId(), gf.getFileId());
     return Collections.singletonList(mutable.getFileId());
   }
 
@@ -6145,7 +6151,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // graph is already on disk, and rebuilding then only reproduces a file
       // that already exists. initializeGraphIndex() already draws exactly this
       // distinction with the same predicate.
-      final boolean graphAlreadyOnDisk = graphFile != null && graphFile.hasPersistedGraph();
+      final LSMVectorIndexGraphFile gf = graphFile;
+      final boolean graphAlreadyOnDisk = gf != null && gf.hasPersistedGraph();
       final boolean needsBuild = vectorIndex.size() > 0 && (graphState == GraphState.MUTABLE
           || (graphState == GraphState.LOADING && !graphAlreadyOnDisk));
 
@@ -6350,13 +6357,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
       }
 
       // Delete graph file if it exists
-      if (graphFile != null) {
-        final File graphIndexFile = graphFile.getOSFile();
+      final LSMVectorIndexGraphFile gf = graphFile;
+      if (gf != null) {
+        final File graphIndexFile = gf.getOSFile();
         if (graphIndexFile.exists())
           graphIndexFile.delete();
         // And the sidecar that describes it: left behind, it would be read as vouching for whatever graph file a
         // later index happened to create under the same name (issue #6106).
-        graphFile.getManifest().invalidate();
+        gf.getManifest().invalidate();
       }
 
       // NOTE: Metadata is now embedded in the schema JSON via toJSON() and is automatically
