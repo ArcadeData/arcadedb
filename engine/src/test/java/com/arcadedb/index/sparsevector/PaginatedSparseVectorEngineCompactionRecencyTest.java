@@ -22,12 +22,16 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.log.LogManager;
+import com.arcadedb.log.Logger;
 import com.arcadedb.schema.LocalSchema;
 
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.logging.Level;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -408,6 +412,117 @@ class PaginatedSparseVectorEngineCompactionRecencyTest extends TestHelper {
       return c;
     } catch (final IOException e) {
       throw new RuntimeException("failed to create sparse segment component '" + name + "'", e);
+    }
+  }
+
+  /**
+   * A segment merged before #6379 keeps its old ordering on disk after the upgrade, and nothing
+   * about the index looks wrong: it answers queries happily while a deleted document is visible
+   * again. The open-time scan is the only thing that tells an operator a {@code REBUILD INDEX} is
+   * what fixes it, so pin both that it fires on a legacy-shaped segment and that it stays quiet
+   * for segments written by this version.
+   * <p>
+   * "Legacy-shaped" is synthesised the way the old code produced it: parents recorded, epoch left
+   * at the segment id. The detection is exact - a merge written today always inherits an epoch
+   * strictly below its own id, and a flush has no parents - so neither half can false-positive.
+   */
+  @Test
+  void preRecencyEpochMergedSegmentIsReportedAtOpen() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+
+    // A healthy index built entirely by this version: flushes plus a real compaction.
+    try (final PaginatedSparseVectorEngine engine = nonCompactingEngine(db, "LegacyScanCleanTest")) {
+      for (int i = 0; i < 3; i++) {
+        fill(engine, 100L + i * 10L, 3);
+        engine.flush();
+      }
+      engine.compactOldest(3);
+    }
+    assertThat(warningsWhileOpening(db, "LegacyScanCleanTest"))
+        .as("an index whose merges all carry an inherited epoch must not nag the operator")
+        .noneMatch(w -> w.contains("#6379"));
+
+    // Now the legacy shape: a segment that records parents but never had its epoch set, exactly
+    // what a pre-fix merge left on disk.
+    database.transaction(() -> {
+      final SparseSegmentComponent component = newComponent(db, "LegacyScanStaleTest_seg1");
+      try (final SparseSegmentBuilder b = new SparseSegmentBuilder(component, SegmentParameters.defaults())) {
+        b.setSegmentId(1L);
+        b.setParentSegments(new long[] { 90L, 91L });
+        b.startDim(DIM);
+        b.appendPosting(new RID(0, 500L), 0.5f);
+        b.endDim();
+        b.finish();
+      }
+    });
+    assertThat(warningsWhileOpening(db, "LegacyScanStaleTest"))
+        .as("a segment with parents whose epoch equals its id predates the fix and must be reported")
+        .anyMatch(w -> w.contains("#6379") && w.contains("REBUILD INDEX"));
+  }
+
+  /** Open an engine over {@code indexName} with a capturing logger installed, and return what it warned. */
+  private static List<String> warningsWhileOpening(final DatabaseInternal db, final String indexName) {
+    final List<String> warnings = Collections.synchronizedList(new ArrayList<>());
+    final Logger original = LogManager.instance().getLogger();
+    LogManager.instance().setLogger(new CapturingLogger(warnings, original));
+    try (final PaginatedSparseVectorEngine ignored = nonCompactingEngine(db, indexName)) {
+      // Opening is the whole point; the scan runs in loadExistingSegments.
+    } finally {
+      LogManager.instance().setLogger(original);
+    }
+    return warnings;
+  }
+
+  /**
+   * Captures WARNING-and-above messages while forwarding everything to the real logger. The
+   * fixed-arity overload must NOT delegate to the varargs one: the fixed arity is the exact match,
+   * so it would recurse until the stack dies.
+   */
+  private static final class CapturingLogger implements Logger {
+    private final List<String> warnings;
+    private final Logger       delegate;
+
+    CapturingLogger(final List<String> warnings, final Logger delegate) {
+      this.warnings = warnings;
+      this.delegate = delegate;
+    }
+
+    private void capture(final Level level, final String message, final Object... args) {
+      if (message == null || level.intValue() < Level.WARNING.intValue())
+        return;
+      String formatted = message;
+      if (args != null && args.length > 0) {
+        try {
+          formatted = message.formatted(args);
+        } catch (final Exception ignored) {
+          // Raw template is good enough for the substring matching the assertions do.
+        }
+      }
+      warnings.add(formatted);
+    }
+
+    @Override
+    public void log(final Object requester, final Level level, final String message, final Throwable exception,
+        final String context, final Object arg1, final Object arg2, final Object arg3, final Object arg4,
+        final Object arg5, final Object arg6, final Object arg7, final Object arg8, final Object arg9,
+        final Object arg10, final Object arg11, final Object arg12, final Object arg13, final Object arg14,
+        final Object arg15, final Object arg16, final Object arg17) {
+      capture(level, message, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14,
+          arg15, arg16, arg17);
+      delegate.log(requester, level, message, exception, context, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9,
+          arg10, arg11, arg12, arg13, arg14, arg15, arg16, arg17);
+    }
+
+    @Override
+    public void log(final Object requester, final Level level, final String message, final Throwable exception,
+        final String context, final Object... args) {
+      capture(level, message, args);
+      delegate.log(requester, level, message, exception, context, args);
+    }
+
+    @Override
+    public void flush() {
+      delegate.flush();
     }
   }
 
