@@ -6549,6 +6549,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
             // buildGraphWithChunking() rewrites the graph pages inside this transaction, which drops the manifest;
             // only here, past the commit, is there a persisted graph to vouch for again (issue #6106).
+            // Single read, not a check-then-use, and this runs on the thread that owns the initial build while
+            // the index is UNAVAILABLE (no concurrent COMPACT INDEX possible) - intentionally left out of #6536's
+            // local-capture sweep.
             writeGraphManifest(graphFile, ordinalToVectorId);
 
             persistBuildState(BUILD_STATE.READY);
@@ -6734,6 +6737,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
           vectorProp,
           vectorIndex, ordinalToVectorId, this, getSearchVectorCache());
 
+      // Single read, not a check-then-use, and this runs on the thread that owns the initial build while the
+      // index is UNAVAILABLE (no concurrent COMPACT INDEX possible) - intentionally left out of #6536's
+      // local-capture sweep.
       graphFile.writeGraph(graphIndex, vectors, chunkSizeMB, chunkCallback);
 
       // Final commit for graph
