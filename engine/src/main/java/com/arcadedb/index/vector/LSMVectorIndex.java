@@ -4708,8 +4708,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
     try {
       if (queryVector == null)
         throw new IllegalArgumentException("Query vector cannot be null");
-      if (k < 0)
-        throw new IllegalArgumentException("k must be >= 0, got " + k);
 
       if (queryVector.length != metadata.dimensions)
         throw new IllegalArgumentException(
