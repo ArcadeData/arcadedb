@@ -19,6 +19,7 @@
 package com.arcadedb;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.PageManager;
@@ -176,8 +177,13 @@ public class Profiler {
       acc[STAT_OPEN_FILES] += fStats.totalOpenFiles;
       acc[STAT_MAX_OPEN_FILES] += fStats.maxOpenFiles;
 
-      acc[STAT_ASYNC_QUEUE] += ((DatabaseAsyncExecutorImpl) db.async()).getStats().queueSize;
-      acc[STAT_ASYNC_PARALLEL] = db.async().getParallelLevel();
+      // asyncIfExists(), never db.async(): that accessor CREATES the executor, worker threads included, so a
+      // metrics scrape used to grow a full pool on every open database that had never touched the async API
+      // (issue #6526 review). A database with no executor has no queue and no workers, which is what the two
+      // readings below now say instead of what asking the question made true.
+      final DatabaseAsyncExecutorImpl async = asyncIfExists(db);
+      acc[STAT_ASYNC_QUEUE] += async != null ? async.getStats().queueSize : 0L;
+      acc[STAT_ASYNC_PARALLEL] = async != null ? async.getParallelLevel() : 0L;
     }
     return acc;
   }
@@ -202,9 +208,22 @@ public class Profiler {
 
     // #6526: DatabaseAsyncExecutorImpl.getStats() is lock-free and documented to stay callable on a shut-down
     // executor, which is the property this method requires of every source it reads - unregisterDatabase() calls it
-    // on a database that is already closing.
-    acc[STAT_ASYNC_BOUNDARY_COMMITS] += ((DatabaseAsyncExecutorImpl) db.async()).getStats().forcedBoundaryCommits;
+    // on a database that is already closing. And it is reached through asyncIfExists() rather than db.async() for a
+    // second reason that only this path has: this runs ON THE CLOSE, after the close has already shut down whatever
+    // executor existed, so creating one here would leave its worker threads running with nothing left to stop them.
+    final DatabaseAsyncExecutorImpl async = asyncIfExists(db);
+    if (async != null)
+      acc[STAT_ASYNC_BOUNDARY_COMMITS] += async.getStats().forcedBoundaryCommits;
     return walStats;
+  }
+
+  /**
+   * The database's asynchronous executor <b>if it already has one</b>, and {@code null} otherwise. Every database in
+   * the registry is a {@link LocalDatabase} - it is what registers itself - so the check is a formality that keeps
+   * this class honest rather than a cast that assumes.
+   */
+  private static DatabaseAsyncExecutorImpl asyncIfExists(final DatabaseInternal db) {
+    return db instanceof final LocalDatabase local ? local.getAsyncIfExists() : null;
   }
 
   /**

@@ -137,6 +137,24 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    */
   private final AtomicLong           forcedBoundaryCommits         = new AtomicLong();
 
+  /**
+   * Serializes {@link #setParallelLevel(int)} against itself, and is held for the WHOLE resize - the publish AND
+   * the wait for whatever the publish retired (issue #6526 review, point 2).
+   * <p>
+   * The drain wait cannot be taken under {@code lifecycleLock}: that lock is what a concurrent {@code close()} or
+   * {@code kill()} needs to force the very workers being waited for, so holding it across the wait would make the
+   * wait the thing that prevents its own end. But releasing every lock leaves a second resize free to grow the pool
+   * back while the first one's workers are still draining, and a grow fills the array positions the shrink just
+   * vacated - so slot 2 would name a brand-new worker AND an old one still running slot 2's pre-shrink tasks, which
+   * is the concurrent write to one bucket's pages the wait exists to prevent. A separate lock gives the wait its
+   * meaning back without putting a resize in {@code close()}'s way.
+   * <p>
+   * Reentrant, so a resize triggered from inside a resize rides on the outer one rather than deadlocking, and
+   * deliberately NOT taken by {@code createThreads()}: the constructor runs before anything can race it, and
+   * {@code recreateThreadsForTests()} is a test hook that means "tear it down and rebuild it".
+   */
+  private final ReentrantLock        resizeLock                    = new ReentrantLock();
+
   // #5062 review r2 (point 1): producer-side backstop for a worker wedged inside user code. After
   // this many consecutive stall windows (checkForStalledQueuesMaxDelay each, 60s with the defaults)
   // in which the target worker completed NO task while its queue stayed full, offerWaiting throws
@@ -1441,8 +1459,14 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   public void kill() {
     final AsyncThread[] threads;
     synchronized (lifecycleLock) {
-      threads = executorThreads;
-      if (threads == null)
+      // #6526 review: the workers a shrinking setParallelLevel() retired are alive and are NOT in the published
+      // array, so reading executorThreads alone let kill() return having never touched them - and that is exactly
+      // the case this class designs for, since awaitRetiredThreads() gives up after shutdownJoinTimeoutMs and
+      // leaves whatever is still draining to finish in the background. Same treatment as shutdownThreadsLocked()
+      // gives them on the close() path, for the same reason: a kill() is terminal, so nothing of this database may
+      // still be running when it returns.
+      threads = concat(executorThreads, retiringThreads.toArray(new AsyncThread[0]));
+      if (threads.length == 0)
         return;
       // Unpublish first so concurrent callers stop targeting the about-to-die threads.
       executorThreads = null;
@@ -1522,6 +1546,14 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    * {@link #waitCompletion(long)}, {@link #isProcessing()} and {@link #getStats()}, which is the honest outcome
    * rather than dropping their work to return on time.
    * <p>
+   * <b>Serialized against itself</b> by {@code resizeLock}, held across the publish AND the wait. Without that, a
+   * second caller growing the pool back would fill the array positions the shrink just vacated while the old
+   * workers for those positions are still draining, and the wait would guarantee nothing for the multi-caller case
+   * it exists for. The residual is what survives the wait's own budget: if a retired worker is still draining when
+   * {@code shutdownJoinTimeoutMs} runs out, the lock is released and a later grow can reuse its position while it
+   * runs on. Bounded and loud (that timeout is logged at WARNING) rather than silent, and the alternative - waiting
+   * without a bound - makes an administrative call hostage to a worker wedged in user code.
+   * <p>
    * <b>What it does not do.</b> A retired worker is not parked by a {@link #quiesceWorkers()} that is already in
    * progress - the park task would land behind the exit marker on its queue - so an index build racing a shrink can
    * still see a draining worker write under its scan. That is the same residual {@code quiesceWorkers()} already
@@ -1531,9 +1563,14 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    */
   @Override
   public void setParallelLevel(final int parallelLevel) {
-    final AsyncThread[] retired = resizeThreads(parallelLevel);
-    if (retired != null)
-      awaitRetiredThreads(retired);
+    resizeLock.lock();
+    try {
+      final AsyncThread[] retired = resizeThreads(parallelLevel);
+      if (retired != null)
+        awaitRetiredThreads(retired);
+    } finally {
+      resizeLock.unlock();
+    }
   }
 
   @Override
@@ -1857,8 +1894,13 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         // #6526: getSlot() maps its value modulo the pool size it read, and the pool can SHRINK between that read
         // and this one - before, the array was nulled for the whole resize, so this race surfaced as the "shut
         // down" exception above; now the array stays live and a stale slot index would be an
-        // ArrayIndexOutOfBoundsException instead. Re-mapped with the size actually in hand, which is what getSlot()
-        // would have returned had it run a moment later.
+        // ArrayIndexOutOfBoundsException instead.
+        //
+        // A FALLBACK, NOT A RE-DERIVATION (#6526 review, point 3): (value % oldLength) % newLength is not
+        // (value % newLength) in general - value 7 over a pool that went from 5 to 3 lands on 2 here and on 1 from
+        // a fresh getSlot(). All this owes the caller is a valid live worker instead of an exception, and the task
+        // is one whose bucket pinning was decided against a pool that no longer exists; the next task for the same
+        // bucket asks getSlot() again and gets the stable answer.
         slot %= threads.length;
 
       final AsyncThread target = threads[slot];

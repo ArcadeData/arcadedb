@@ -18,8 +18,11 @@
  */
 package com.arcadedb.database.async;
 
+import com.arcadedb.Profiler;
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
@@ -66,6 +69,13 @@ class Issue6526AsyncExecutorFollowUpsTest extends TestHelper {
    * nothing here measures elapsed time, this only has to outlive a fixed timeout in the code under test.
    */
   private static final long WORKER_HOLD_MS = 3_000;
+
+  /**
+   * How long the gate task of the {@code kill()} test occupies its worker: long enough that only an interrupt can
+   * end it, so the test cannot pass by the worker simply finishing on its own. Never actually waited for - a
+   * {@code kill()} that does its job cuts it short in milliseconds.
+   */
+  private static final long UNTIL_INTERRUPTED_MS = 120_000;
 
   /**
    * Item 1, the half that LOSES DATA. Tasks already queued on a worker the resize retires must still run, in the
@@ -193,6 +203,122 @@ class Issue6526AsyncExecutorFollowUpsTest extends TestHelper {
   }
 
   /**
+   * Item 1, the terminal path (#6526 review, finding 1). {@code kill()} read only the published array, so a worker
+   * left draining by a shrink whose wait had expired was never force-shut-down, never interrupted and never joined:
+   * {@code kill()} returned while a thread of this database kept running against a database it had just stopped.
+   * The shrink here is made to outlive its own drain budget - {@code shutdownJoinTimeoutMs} is dropped to a few
+   * milliseconds - which is precisely the case the design leaves running in the background.
+   */
+  @Test
+  @Timeout(60)
+  void killReachesTheWorkersAShrinkLeftDraining() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) db.async();
+    async.setParallelLevel(4);
+
+    final AtomicInteger executed = new AtomicInteger();
+    final AtomicInteger completed = new AtomicInteger();
+
+    final CountDownLatch gateEntered = new CountDownLatch(1);
+    assertThat(async.scheduleTask(3, new CountingTask(executed, completed) {
+      @Override
+      public void execute(final DatabaseAsyncExecutorImpl.AsyncThread asyncThread, final DatabaseInternal ignored) {
+        super.execute(asyncThread, ignored);
+        gateEntered.countDown();
+        try {
+          Thread.sleep(UNTIL_INTERRUPTED_MS);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      }
+    }, true, 0)).isTrue();
+    assertThat(gateEntered.await(30, TimeUnit.SECONDS)).isTrue();
+
+    // Make the shrink give up on the drain almost immediately, so worker 3 is provably still alive and still
+    // registered as retiring when kill() runs.
+    final long previousJoinTimeout = async.shutdownJoinTimeoutMs;
+    async.shutdownJoinTimeoutMs = 10;
+    final DatabaseAsyncExecutorImpl.AsyncThread retiredWorker = workerNamed(3);
+    assertThat(retiredWorker).isNotNull();
+    try {
+      async.setParallelLevel(2);
+      assertThat(retiredWorker.isAlive()).as("the drain budget must have expired with the worker still running")
+          .isTrue();
+
+      async.kill();
+
+      retiredWorker.join(10_000);
+      assertThat(retiredWorker.isAlive()).as("kill() must not leave a retired worker of this database running")
+          .isFalse();
+    } finally {
+      async.shutdownJoinTimeoutMs = previousJoinTimeout;
+    }
+  }
+
+  /**
+   * Item 1, concurrent resizes (#6526 review, finding 2). The drain wait is what keeps two workers off one bucket's
+   * pages while a shrink finishes, and it only means that if a second caller cannot grow the pool back through the
+   * middle of it: a grow refills the array positions the shrink vacated, so slot 2 would name a fresh worker AND
+   * the old slot-2 worker still running its pre-shrink tasks.
+   */
+  @Test
+  @Timeout(60)
+  void aConcurrentGrowCannotOvertakeAShrinkStillDraining() throws Exception {
+    final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) ((DatabaseInternal) database).async();
+    async.setParallelLevel(4);
+
+    final AtomicInteger executed = new AtomicInteger();
+    final AtomicInteger completed = new AtomicInteger();
+
+    final CountDownLatch gateEntered = new CountDownLatch(1);
+    assertThat(async.scheduleTask(3, new CountingTask(executed, completed) {
+      @Override
+      public void execute(final DatabaseAsyncExecutorImpl.AsyncThread asyncThread, final DatabaseInternal db) {
+        super.execute(asyncThread, db);
+        gateEntered.countDown();
+        try {
+          Thread.sleep(WORKER_HOLD_MS);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      }
+    }, true, 0)).isTrue();
+    assertThat(gateEntered.await(30, TimeUnit.SECONDS)).isTrue();
+
+    final DatabaseAsyncExecutorImpl.AsyncThread retiredWorker = workerNamed(3);
+    assertThat(retiredWorker).isNotNull();
+
+    final Thread shrinker = new Thread(() -> async.setParallelLevel(2), "issue6526-shrinker");
+    shrinker.start();
+
+    // Spin until the shrink has published its smaller pool, so the grow below provably starts while the retired
+    // worker is still draining rather than before the shrink got anywhere.
+    // Sleeping rather than spinning: a tight onSpinWait() loop on this thread starves the shrinker of the CPU it
+    // needs to get anywhere, which turned a three-second test into a fifty-second one on a loaded fork.
+    final long deadline = System.currentTimeMillis() + 30_000;
+    while (async.getThreadCount() != 2 && System.currentTimeMillis() < deadline)
+      Thread.sleep(2);
+    assertThat(async.getThreadCount()).as("the shrink must have published before the grow starts").isEqualTo(2);
+
+    final AtomicBoolean oldWorkerStillAliveAtGrow = new AtomicBoolean();
+    final Thread grower = new Thread(() -> {
+      async.setParallelLevel(4);
+      oldWorkerStillAliveAtGrow.set(retiredWorker.isAlive());
+    }, "issue6526-grower");
+    grower.start();
+
+    grower.join(45_000);
+    shrinker.join(45_000);
+    assertThat(grower.isAlive()).isFalse();
+    assertThat(shrinker.isAlive()).isFalse();
+
+    assertThat(oldWorkerStillAliveAtGrow.get())
+        .as("a grow must not republish a slot while the worker the shrink retired for it is still running")
+        .isFalse();
+    assertThat(async.getThreadCount()).isEqualTo(4);
+  }
+
+  /**
    * Item 1, growing. Raising the level must not disturb the workers that already exist: they own batch transactions
    * and are the unit {@code ThreadBucketSelectionStrategy} pins buckets to, so respawning them is never free.
    */
@@ -281,6 +407,42 @@ class Issue6526AsyncExecutorFollowUpsTest extends TestHelper {
         .as("the sync flag counts too, not just useWAL").isEqualTo(2L);
   }
 
+  /**
+   * Item 3, the part that must cost nothing (#6526 review round 1, found by the regression it caused). The counter
+   * is folded into {@code Profiler} on every metrics scrape AND on every database close, and reaching it through
+   * {@code db.async()} rather than the field made merely OBSERVING a database grow it a full set of worker threads.
+   * On the close path that is a leak with no owner: the close has already shut down whatever executor existed, so
+   * the pool created behind it has nothing left to stop it. {@code waitForAsyncCompletion()} and
+   * {@code quiesceAsync()} both carry the same rule in their comments; this pins it for the profiler too.
+   */
+  @Test
+  @Timeout(60)
+  void readingTheProfilerCountersNeverCreatesAnAsyncExecutor() throws Exception {
+    final String dbName = "Issue6526NoAsyncProfiler";
+    final DatabaseFactory factory = new DatabaseFactory("./target/databases/" + dbName);
+    if (factory.exists())
+      factory.open().drop();
+
+    final LocalDatabase db = (LocalDatabase) factory.create();
+    try {
+      // A database that has never touched the async API. Nothing below may change that.
+      assertThat(db.getAsyncIfExists()).as("a fresh database must have no asynchronous executor").isNull();
+
+      Profiler.INSTANCE.toJSON();
+      assertThat(db.getAsyncIfExists())
+          .as("a metrics scrape must not start a worker pool on a database that never used async").isNull();
+    } finally {
+      db.drop();
+    }
+
+    // The close path folds the same counters in through unregisterDatabase(), where a pool created behind the close
+    // would never be shut down at all: no worker thread of this database may be alive now.
+    final String prefix = "AsyncExecutor-" + dbName + "-";
+    for (final Thread t : Thread.getAllStackTraces().keySet())
+      assertThat(t.getName().startsWith(prefix) && t.isAlive())
+          .as("closing a database must not leave (or start) async worker threads: %s", t.getName()).isFalse();
+  }
+
   private record Observation(boolean transactionActive, boolean useWAL, WALFile.FlushType walFlush) {
   }
 
@@ -337,6 +499,15 @@ class Issue6526AsyncExecutorFollowUpsTest extends TestHelper {
       }
     }, true, 0)).isTrue();
     assertThat(done.await(30, TimeUnit.SECONDS)).isTrue();
+  }
+
+  /** The live worker of this database occupying the given slot, by the name {@code AsyncThread} gives itself. */
+  private DatabaseAsyncExecutorImpl.AsyncThread workerNamed(final int slot) {
+    final String name = "AsyncExecutor-" + database.getName() + "-" + slot;
+    for (final Thread t : Thread.getAllStackTraces().keySet())
+      if (t instanceof final DatabaseAsyncExecutorImpl.AsyncThread worker && name.equals(t.getName()) && t.isAlive())
+        return worker;
+    return null;
   }
 
   private Set<Long> asyncWorkerThreadIds() {
