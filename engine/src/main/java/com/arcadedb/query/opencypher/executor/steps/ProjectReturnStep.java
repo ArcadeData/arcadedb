@@ -126,29 +126,19 @@ public class ProjectReturnStep extends AbstractExecutionStep {
 
             // DISTINCT: for RETURN * the single return item is the unexpanded "*", so hash on
             // the projected row's properties (sorted for stable ordering across rows) instead.
+            // Values are canonicalized via DistinctNumericKey so numerically-equal values (issue
+            // #5789) and graph-element references sharing one RID (issue #6488) collapse together.
             if (distinct) {
-              final StringBuilder keyBuilder = new StringBuilder();
+              final List<String> names;
               if (returnClause.isReturnAll()) {
                 // Distinctness is over the variables the query returns; the executor's internal
                 // bindings for anonymous pattern elements are not returned, so counting them here
                 // would keep rows that are duplicates to the caller (issue #5444).
-                for (final String name : new TreeSet<>(projectedResult.getPropertyNames())) {
-                  if (InternalVariables.isInternal(name))
-                    continue;
-                  final Object val = projectedResult.getProperty(name);
-                  // Canonicalize numeric values so DISTINCT treats e.g. INTEGER 1 and FLOAT 1.0 as
-                  // the same value, consistent with Cypher's `=` operator (issue #5789).
-                  keyBuilder.append(name).append('=').append(DistinctNumericKey.canonicalize(val)).append('|');
-                }
+                names = new TreeSet<>(projectedResult.getPropertyNames()).stream().filter(name -> !InternalVariables.isInternal(name)).toList();
               } else {
-                for (final ReturnClause.ReturnItem item : returnClause.getReturnItems()) {
-                  final String outputName = item.getOutputName();
-                  keyBuilder.append(outputName).append('=');
-                  final Object val = projectedResult.getProperty(outputName);
-                  keyBuilder.append(DistinctNumericKey.canonicalize(val)).append('|');
-                }
+                names = returnClause.getReturnItems().stream().map(ReturnClause.ReturnItem::getOutputName).toList();
               }
-              if (!seenResults.add(keyBuilder.toString()))
+              if (!seenResults.add(DistinctNumericKey.buildKey(names, projectedResult::getProperty)))
                 continue;
             }
 

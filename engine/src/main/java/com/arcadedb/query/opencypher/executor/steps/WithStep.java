@@ -188,12 +188,7 @@ public class WithStep extends AbstractExecutionStep {
               // renders as a placeholder instead of the actual values, so two references to the
               // very same record can render two different strings depending on load state alone
               // (issue #6488).
-              final StringBuilder keyBuilder = new StringBuilder();
-              for (final String name : new TreeSet<>(projectedResult.getPropertyNames())) {
-                final Object val = projectedResult.getProperty(name);
-                keyBuilder.append(name).append('=').append(DistinctNumericKey.canonicalize(val)).append('|');
-              }
-              final String resultKey = keyBuilder.toString();
+              final String resultKey = DistinctNumericKey.buildKey(new TreeSet<>(projectedResult.getPropertyNames()), projectedResult::getProperty);
               if (seenResults.contains(resultKey))
                 continue;
               seenResults.add(resultKey);
