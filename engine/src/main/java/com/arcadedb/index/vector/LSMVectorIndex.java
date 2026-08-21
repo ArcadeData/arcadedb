@@ -4104,6 +4104,43 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * Visible for tests: re-queues a graph ordinal's vector into the delta buffer, exactly as
+   * {@link #buildGraphFromScratch()} does for a vector its build left unreachable - same vector id, same RID, same
+   * {@link VectorFloat} - while the node itself stays in the graph.
+   * <p>
+   * That state is the only one in which the grouped search's cap is offered the same RID twice, once by the graph
+   * walk and once by the delta merge, and it is what {@code GroupedSearchState}'s dedup set exists for (issue
+   * #6501). There is no way to reach it from the public API on demand: it takes a build that happens to orphan a
+   * node, which the data and JVector's own diversity heuristic decide between them. So a test that wants to pin the
+   * dedup - rather than have it hold by accident because no fixture ever produced an overlap - has to put the index
+   * into the state directly.
+   *
+   * @param rid the record to re-queue; it must already be in the graph
+   *
+   * @return the graph ordinal that was re-queued, or {@code -1} if the RID carries no live graph node
+   */
+  int requeueIntoDeltaBufferForTest(final RID rid) {
+    lock.writeLock().lock();
+    try {
+      final int[] ordinalMap = ordinalToVectorId;
+      final RandomAccessVectorValues values = searchVectorValues(ordinalMap);
+      for (int ordinal = 0; ordinal < ordinalMap.length; ordinal++) {
+        final int vectorId = ordinalMap[ordinal];
+        if (!rid.equals(vectorIndex.getRid(vectorId)))
+          continue;
+        final VectorFloat<?> vector = values.getVector(ordinal);
+        if (vector == null)
+          return -1;
+        deltaVectors.add(new DeltaVectorEntry(vectorId, rid, vector));
+        return ordinal;
+      }
+      return -1;
+    } finally {
+      lock.writeLock().unlock();
+    }
+  }
+
+  /**
    * Visible for tests: the similarity a search would compute for one graph ordinal, through the same vector values and
    * the same score function the query path builds. Lets a test assert what a node whose vector cannot be read scores,
    * which end-to-end search results cannot show - the {@link LiveVectorBitsFilter} keeps such a node out of the answer
@@ -5112,6 +5149,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
      * allow-list happened to route to.
      */
     private void admit(final RID rid, final float distance) {
+      // Redundant for two of the three sources - scoreDeltaCandidates filters the cursor on the way in, and
+      // preFilterGrouped's scoreOrdinal filtered before it sorted - and kept anyway, at one hash lookup per
+      // candidate. Making it conditional on where the candidate came from is how the whitelist ends up enforced on
+      // some paths and not others, which is the class of divergence this whole object exists to prevent.
       if (allowedRIDs != null && !allowedRIDs.isEmpty() && !allowedRIDs.contains(rid))
         return;
 

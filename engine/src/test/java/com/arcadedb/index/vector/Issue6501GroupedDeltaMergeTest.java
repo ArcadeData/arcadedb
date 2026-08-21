@@ -249,6 +249,38 @@ class Issue6501GroupedDeltaMergeTest extends TestHelper {
   }
 
   /**
+   * The one row that can reach the cap from both sides of the merge. A graph build occasionally leaves a vector with
+   * a full out-degree and no in-edges and re-queues it into the delta buffer while its node stays in the graph, so
+   * the walk and the cursor both offer the same RID. Admitting it twice would put one record in the answer twice and
+   * charge its group two of its {@code groupSize} slots, evicting a record that earned one.
+   * <p>
+   * Driven through {@code requeueIntoDeltaBufferForTest} rather than by producing a real orphan: whether a build
+   * orphans a node is decided by the data and JVector's diversity heuristic, so a fixture cannot ask for one. The
+   * row re-queued is the nearest record to the query, so it is certain to reach the cap from the graph side too -
+   * re-queueing an arbitrary one of 1,200 proves nothing, since the answer holds twelve. {@code groupSize} is 2 on
+   * purpose: at 1 the cap would reject the second copy on its own and the test would pass with the dedup deleted.
+   */
+  @Test
+  void aRowOfferedByBothTheGraphAndTheDeltaBufferIsAdmittedOnce() {
+    createSchema();
+    insertBaseVertices();
+
+    final RID shared = vectorIndex().findNeighborsFromVector(query(), 1).getFirst().getFirst();
+    assertThat(vectorIndex().requeueIntoDeltaBufferForTest(shared))
+        .as("the nearest record has to be in the graph for this to be an overlap at all").isNotNegative();
+    assertThat(deltaCount()).as("and in the delta buffer as well, which is the whole point").isPositive();
+
+    final int sharedCluster = ((Document) database.lookupByRID(shared, true)).getInteger("cluster");
+    final List<Pair<RID, Float>> grouped = grouped(CLUSTERS, 2);
+
+    assertThat(ridsOf(grouped)).as("the row is in the graph and in the delta buffer; it belongs to the answer once")
+        .filteredOn(shared::equals).hasSize(1);
+    assertThat(clustersOf(grouped)).as("and its group must not have spent two slots on one record")
+        .filteredOn(cluster -> cluster == sharedCluster).hasSizeLessThanOrEqualTo(2);
+    assertWellFormed(grouped);
+  }
+
+  /**
    * Nothing about the merge may change a query that has nothing to merge: with no rows written since the graph was
    * built, the grouped answer has to be exactly what it always was. The buffer is not necessarily empty even here -
    * a rebuild re-queues any vector it left unreachable, so the same row can sit in the graph and the buffer at once -
