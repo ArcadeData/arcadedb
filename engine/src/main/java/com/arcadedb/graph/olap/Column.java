@@ -207,6 +207,37 @@ public class Column {
   }
 
   /**
+   * Reconstructs a column from arrays previously produced by the getters above (see
+   * {@link GraphAnalyticalViewCSRPersistence}). {@code dictionaryValues} is only used for
+   * {@link Type#STRING} and must be indexed by dictionary code (the order {@link DictionaryEncoding#getValues()}
+   * returns them in), so re-encoding them in that order reproduces the exact same codes.
+   */
+  static Column restore(final String name, final Type type, final int nodeCount, final long[] nullBitset,
+      final int[] intData, final long[] longData, final double[] doubleData,
+      final int[] stringCodes, final String[] dictionaryValues) {
+    final Column column = new Column(name, type, nodeCount);
+    System.arraycopy(nullBitset, 0, column.nullBitset, 0, nullBitset.length);
+    switch (type) {
+    case INT:
+      column.intData = intData;
+      break;
+    case LONG:
+      column.longData = longData;
+      break;
+    case DOUBLE:
+      column.doubleData = doubleData;
+      break;
+    case STRING:
+      column.stringCodes = stringCodes;
+      column.dictionary = new DictionaryEncoding();
+      for (final String value : dictionaryValues)
+        column.dictionary.encode(value);
+      break;
+    }
+    return column;
+  }
+
+  /**
    * Returns approximate memory usage in bytes.
    */
   public long getMemoryUsageBytes() {
