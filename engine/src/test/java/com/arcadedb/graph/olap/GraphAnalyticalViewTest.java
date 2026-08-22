@@ -20,7 +20,6 @@ package com.arcadedb.graph.olap;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
-import com.arcadedb.database.DataEncryption;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
@@ -2781,8 +2780,8 @@ class GraphAnalyticalViewTest extends TestHelper {
   }
 
   /**
-   * Regression for issue #6583 code review: when the database has a {@link DataEncryption} configured,
-   * the persisted CSR must not leak record data in cleartext to a plain file beside it. Verifies both that
+   * Regression for issue #6583 code review: when the database has a {@link com.arcadedb.database.DataEncryption}
+   * configured, the persisted CSR must not leak record data in cleartext to a plain file beside it. Verifies both that
    * a distinctive property value never appears verbatim in the persisted file's bytes, and that the round
    * trip through encrypt-at-persist/decrypt-at-restore still produces the exact same data.
    * <p>
