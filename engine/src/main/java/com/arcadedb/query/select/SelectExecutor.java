@@ -47,7 +47,7 @@ public class SelectExecutor {
   // #6565: THE CANDIDATE CAP lookForIndexes() COMPUTED FOR THE WHOLE where-TREE, REUSED BY filterWithIndexesFinalNode()
   // FOR THE NESTED PER-VALUE CURSOR IT BUILDS FOR AN in_op LEAF, SO NEITHER PLACE HANDS A RAW select.limit (MISSING
   // skip) TO A MultiIndexCursor
-  private int indexCandidateLimit = -1;
+  int indexCandidateLimit = -1;
 
   static class IndexInfo {
     public final Index   index;
@@ -208,7 +208,10 @@ public class SelectExecutor {
     return iterator;
   }
 
-  private MultiIndexCursor lookForIndexes() {
+  // PACKAGE-PRIVATE (NOT private) SO Issue6565SelectIndexCandidateLimitTest CAN VERIFY THE COMPUTED CAP DIRECTLY:
+  // A RESULT-COUNT ASSERTION CANNOT TELL A CORRECTLY APPLIED CAP APART FROM THE UNCAPPED FALLBACK, SINCE THE
+  // LAZY-PULL CONSUMERS (SelectIterator, executeCount()) ALREADY STOP AT skip + limit ON THEIR OWN EITHER WAY
+  MultiIndexCursor lookForIndexes() {
     if (select.fromType != null && select.rootTreeElement != null) {
       final List<IndexCursor> cursors = new ArrayList<>();
 
@@ -246,6 +249,12 @@ public class SelectExecutor {
    * {@code is_not_null} leaf never gets a cursor, and under an {@code and} only one child's cursor is kept (see
    * {@link #filterWithIndexesFinalNode}), so the other conjunct is still checked later against a stream a cap would
    * have already truncated. {@code not} is conservatively treated the same way.
+   * <p>
+   * {@code Select.compile()} always finalizes the tree with a trailing {@code setLogic(SelectOperator.run)}
+   * ({@link Select#compile}); when the where-clause is a single bare condition with no {@code and()}/{@code or()},
+   * that call runs its "1ST TIME ONLY" branch and wraps the leaf in a synthetic {@code run} node whose {@code right}
+   * is always {@code null} ({@link Select#setLogic}) - {@code run} is otherwise never used as a tree operator, so it
+   * is treated here as a transparent pass-through to its {@code left} child.
    */
   private boolean isWhereExactlyIndexed(final SelectTreeNode node) {
     if (node == null)
@@ -254,7 +263,7 @@ public class SelectExecutor {
     if (!(node.left instanceof SelectTreeNode))
       return node.index != null;
 
-    if (node.operator == SelectOperator.or)
+    if (node.operator == SelectOperator.or || node.operator == SelectOperator.run)
       return isWhereExactlyIndexed((SelectTreeNode) node.left) && isWhereExactlyIndexed((SelectTreeNode) node.right);
 
     return false;
