@@ -266,15 +266,6 @@ public final class PaginatedSegmentReader implements AutoCloseable {
     return parentSegments.clone();
   }
 
-  /**
-   * How many segments were merged to produce this one; {@code 0} for a segment sealed straight from
-   * a memtable. Separate from {@link #parentSegments()} because callers that only need the count
-   * should not pay for the defensive array clone - the open-time scan for pre-#6379 merged segments
-   * asks this of every segment in the index.
-   */
-  public int parentSegmentCount() {
-    return parentSegments.length;
-  }
 
   public boolean hasDim(final int dimId) {
     return Arrays.binarySearch(dimIds, dimId) >= 0;

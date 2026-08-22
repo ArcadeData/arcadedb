@@ -1364,6 +1364,14 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     return segments.get().length;
   }
 
+  /**
+   * Ids of the active segments, sorted ascending.
+   * <p>
+   * <b>Not parallel to {@link #segmentEpochs()}.</b> This one sorts; that one preserves the array's
+   * own precedence order. Since #6379 the two orders genuinely differ - a merged segment's epoch is
+   * below its own id, so it can sit earlier in precedence than its id would suggest - so zipping
+   * the two results pairs an id with some other segment's epoch.
+   */
   public long[] segmentIds() {
     final PaginatedSegmentReader[] active = segments.get();
     final long[] out = new long[active.length];
@@ -1378,6 +1386,8 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * sorted, so a caller can see the exact precedence {@link #openMergedCursor} will apply. Unlike
    * {@link #segmentIds}, these are the ordinals that decide which segment wins on an aligned RID
    * (issue #6379); a compacted segment reports the epoch of its newest input, not its own id.
+   * <p>
+   * The two results are <b>not</b> positionally related - see {@link #segmentIds}.
    */
   public long[] segmentEpochs() {
     final PaginatedSegmentReader[] active = segments.get();
