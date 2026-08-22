@@ -21,6 +21,7 @@ package com.arcadedb.server.http.handler.openapi;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.Operation;
 import io.swagger.v3.oas.models.PathItem;
+import io.swagger.v3.oas.models.media.Content;
 import io.swagger.v3.oas.models.media.MediaType;
 import io.swagger.v3.oas.models.media.Schema;
 import io.swagger.v3.oas.models.responses.ApiResponse;
@@ -41,6 +42,7 @@ public class AiApiSpec implements OpenApiContributor {
     openAPI.getPaths().addPathItem("/api/v1/ai/config", createConfigPath());
     openAPI.getPaths().addPathItem("/api/v1/ai/activate", createActivatePath());
     openAPI.getPaths().addPathItem("/api/v1/ai/chat", createChatPath());
+    openAPI.getPaths().addPathItem("/api/v1/ai/chat/stream", createChatStreamPath());
     openAPI.getPaths().addPathItem("/api/v1/ai/analyze-profiler", createAnalyzeProfilerPath());
     openAPI.getPaths().addPathItem("/api/v1/ai/chats", createChatsPath());
     openAPI.getPaths().addPathItem("/api/v1/ai/chats/{id}", createChatByIdPath());
@@ -108,13 +110,10 @@ public class AiApiSpec implements OpenApiContributor {
         "Send a message to the AI assistant",
         """
             Sends one message in the context of a database, optionally continuing an existing chat by \
-            'chatId'. The server supplies the database schema and, in the richer modes, server \
-            metrics to the gateway. The reply may carry SQL commands the assistant proposes and the \
-            tool calls it made.
-
-            In the default 'auto' mode the 200 response is a 'text/event-stream', not a JSON body; \
-            the JSON response described below is returned only when 'mode' is set to something other \
-            than 'auto'.
+            'chatId'. The server embeds the database schema and server metrics in the prompt \
+            (review-first) and always answers with a single JSON body; the reply may carry SQL \
+            commands the assistant proposes. For the client-orchestrated streaming protocol instead, \
+            use POST /api/v1/ai/chat/stream.
 
             The assistant is a remote dependency: 503 means the gateway was unreachable and 504 that \
             it did not answer in time. Both are retryable. A rejected subscription token answers 502, \
@@ -122,21 +121,55 @@ public class AiApiSpec implements OpenApiContributor {
             authentication failing.""");
     post.setRequestBody(SpecBuilders.jsonBody("Chat message", "AiChatRequest", true));
 
-    final ApiResponse ok = SpecBuilders.jsonResponse(
+    final ApiResponses responses = chatResponses();
+    responses.addApiResponse("200", SpecBuilders.jsonResponse(
+        "Assistant reply, as a single JSON body.", "AiChatResponse"));
+    post.setResponses(responses);
+
+    final PathItem pathItem = new PathItem();
+    pathItem.setPost(post);
+    return pathItem;
+  }
+
+  private PathItem createChatStreamPath() {
+    final Operation post = SpecBuilders.operation("streamChatWithAi", "AI",
+        "Send a message to the AI assistant, streaming the reply",
         """
-            Assistant reply, as a single JSON body. Sent only when 'mode' is not 'auto' (the \
-            review-first path). In the default 'auto' mode the 200 response is instead a \
-            'text/event-stream' of 'session', 'tool_call', 'tool_start', 'tool_end', and 'done' \
-            events; the closing 'done' event carries the same 'response', 'commands', and 'chatId' \
-            fields as this JSON body.""",
-        "AiChatResponse");
+            Sends one message in the context of a database, optionally continuing an existing chat by \
+            'chatId', using a client-orchestrated streaming protocol so the AI gateway never has to \
+            open an inbound connection into the caller's network: the gateway emits 'tool_call' \
+            events on the response stream, the server executes each tool locally, and posts the \
+            result back to the gateway to resume the loop. The 200 response is always \
+            'text/event-stream', never a JSON body; the closing 'done' event carries the same \
+            'response', 'commands', and 'chatId' fields as POST /api/v1/ai/chat's JSON response. For \
+            a single non-streaming JSON reply instead, use POST /api/v1/ai/chat.
+
+            The assistant is a remote dependency: 503 means the gateway was unreachable and 504 that \
+            it did not answer in time. Both are retryable. A rejected subscription token answers 502, \
+            remapped from the gateway's own 401 or 403 so it cannot be mistaken for this request's own \
+            authentication failing.""");
+    post.setRequestBody(SpecBuilders.jsonBody("Chat message", "AiChatRequest", true));
+
     final MediaType sseMediaType = new MediaType();
     sseMediaType.setSchema(new Schema<>().type("string").description(
         "Server-Sent Events stream: 'session', 'tool_call', 'tool_start', 'tool_end', 'done'"));
-    ok.getContent().addMediaType("text/event-stream", sseMediaType);
+    final ApiResponse ok = new ApiResponse();
+    ok.setDescription(
+        "Server-Sent Events stream of 'session', 'tool_call', 'tool_start', 'tool_end', and 'done' events.");
+    ok.setContent(new Content().addMediaType("text/event-stream", sseMediaType));
 
-    final ApiResponses responses = new ApiResponses();
+    final ApiResponses responses = chatResponses();
     responses.addApiResponse("200", ok);
+    post.setResponses(responses);
+
+    final PathItem pathItem = new PathItem();
+    pathItem.setPost(post);
+    return pathItem;
+  }
+
+  /** Error responses shared by both chat operations; the caller adds its own 200. */
+  private ApiResponses chatResponses() {
+    final ApiResponses responses = new ApiResponses();
     responses.addApiResponse("400", SpecBuilders.jsonResponse(
         """
             Bad request: the assistant is not configured, the body or a required field is missing, \
@@ -156,11 +189,7 @@ public class AiApiSpec implements OpenApiContributor {
         "AI gateway unreachable, reported with code 'gateway_unreachable'"));
     responses.addApiResponse("504", SpecBuilders.errorResponse(
         "AI gateway timed out, reported with code 'gateway_timeout'"));
-    post.setResponses(responses);
-
-    final PathItem pathItem = new PathItem();
-    pathItem.setPost(post);
-    return pathItem;
+    return responses;
   }
 
   private PathItem createAnalyzeProfilerPath() {
@@ -278,10 +307,6 @@ public class AiApiSpec implements OpenApiContributor {
     schema.addProperty("message", SpecBuilders.string("User message"));
     schema.addProperty("chatId", SpecBuilders.string(
         "Existing chat to continue. A new chat is created when omitted."));
-    schema.addProperty("mode", SpecBuilders.string(
-        "How the response is delivered. 'auto' (the default) streams Server-Sent Events, executing "
-            + "tools locally as the assistant requests them. Any other value returns a single "
-            + "non-streaming JSON body matching AiChatResponse."));
     schema.addProperty("protocolVersion", SpecBuilders.integer(
         "Protocol version the client speaks. Rejected with 'protocol_unsupported' when unknown. "
             + "Defaults to 1 when omitted."));

@@ -271,7 +271,8 @@ public class HttpServer implements ServerPlugin {
     routes.addPrefixPath("/api/v1/ai", aiRoutes//
         .get("/config", new AiConfigHandler(this, aiConfig))//
         .post("/activate", new AiActivateHandler(this, aiConfig))//
-        .post("/chat", new AiChatHandler(this, server, aiConfig, chatStorage))//
+        .post("/chat", new AiChatHandler(this, server, aiConfig, chatStorage, false))//
+        .post("/chat/stream", new AiChatHandler(this, server, aiConfig, chatStorage, true))//
         .post("/analyze-profiler", new AiAnalyzeProfilerHandler(this, server, aiConfig))//
         .get("/chats", aiChatsHandler)//
         .get("/chats/{id}", aiChatsHandler)//

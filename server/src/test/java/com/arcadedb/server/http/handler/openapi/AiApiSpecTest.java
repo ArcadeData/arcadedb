@@ -44,11 +44,12 @@ class AiApiSpecTest {
   }
 
   @Test
-  void allEightOperationsArePresentAndTaggedAi() {
+  void allNineOperationsArePresentAndTaggedAi() {
     final Map<String, String> expected = Map.of(
         "/api/v1/ai/config", "getAiConfig",
         "/api/v1/ai/activate", "activateAi",
         "/api/v1/ai/chat", "chatWithAi",
+        "/api/v1/ai/chat/stream", "streamChatWithAi",
         "/api/v1/ai/analyze-profiler", "analyzeProfilerWithAi",
         "/api/v1/ai/chats", "listAiChats");
     expected.forEach((path, operationId) -> {
@@ -83,7 +84,7 @@ class AiApiSpecTest {
     final Schema<?> schema = openAPI.getComponents().getSchemas().get("AiChatRequest");
     assertThat(schema.getRequired()).containsExactlyInAnyOrder("database", "message");
     assertThat(schema.getProperties().keySet()).containsExactlyInAnyOrder(
-        "database", "message", "chatId", "mode", "protocolVersion");
+        "database", "message", "chatId", "protocolVersion");
   }
 
   @Test
@@ -95,10 +96,12 @@ class AiApiSpecTest {
 
   @Test
   void chatDeclaresTheGatewayFailureStatuses() {
-    final Operation post = openAPI.getPaths().get("/api/v1/ai/chat").getPost();
-    assertThat(post.getResponses().keySet())
-        .as("the gateway is a remote dependency, so 503 and 504 are part of the contract")
-        .contains("200", "400", "403", "404", "503", "504");
+    for (final String path : new String[] { "/api/v1/ai/chat", "/api/v1/ai/chat/stream" }) {
+      final Operation post = openAPI.getPaths().get(path).getPost();
+      assertThat(post.getResponses().keySet())
+          .as("%s: the gateway is a remote dependency, so 503 and 504 are part of the contract", path)
+          .contains("200", "400", "403", "404", "503", "504");
+    }
   }
 
   @Test
@@ -150,6 +153,8 @@ class AiApiSpecTest {
     // directly) and activateAi (which inlines the same 401/403 -> 502 remap).
     assertThat(openAPI.getPaths().get("/api/v1/ai/chat").getPost().getResponses().keySet())
         .as("chatWithAi").contains("502");
+    assertThat(openAPI.getPaths().get("/api/v1/ai/chat/stream").getPost().getResponses().keySet())
+        .as("streamChatWithAi").contains("502");
     assertThat(openAPI.getPaths().get("/api/v1/ai/analyze-profiler").getPost().getResponses().keySet())
         .as("analyzeProfilerWithAi").contains("502");
     assertThat(openAPI.getPaths().get("/api/v1/ai/activate").getPost().getResponses().keySet())
@@ -176,29 +181,21 @@ class AiApiSpecTest {
   }
 
   @Test
-  void chatSuccessDeclaresBothJsonAndEventStreamContent() {
-    // AiChatHandler.execute defaults mode to "auto" (line 128) and in "auto" mode calls
-    // handleStreamingRequest, which sets Content-Type: text/event-stream (line 265) and streams
-    // SSE events instead of returning the AiChatResponse JSON body. The JSON body is only produced
-    // by buildResponse on the non-"auto" ("review-first") path. A doc that only declared
-    // application/json would misrepresent the default path, so both must be present on the 200.
+  void chatDeclaresOnlyJsonContentOnItsTwoHundred() {
+    // #6558: OpenAPI's content map selects on the Accept header, not on a request-body field
+    // ('mode' used to pick JSON vs SSE for the SAME operation, which no generator can bind
+    // correctly). POST /api/v1/ai/chat is now always JSON, so its 200 must declare exactly one
+    // content type.
     final ApiResponse ok = openAPI.getPaths().get("/api/v1/ai/chat").getPost().getResponses().get("200");
-    assertThat(ok.getContent().keySet())
-        .as("the default 'auto' mode streams SSE; only 'review-first' mode returns application/json")
-        .containsExactlyInAnyOrder("application/json", "text/event-stream");
+    assertThat(ok.getContent().keySet()).containsExactly("application/json");
   }
 
   @Test
-  void chatOperationDescriptionWarnsAboutStreamingBeforeAResponseDescriptionIsEvenReached() {
-    // openapi-generator's TypeScript targets emit an operation's summary/description as the
-    // generated method's doc comment and drop response descriptions entirely, so the streaming
-    // warning must be self-sufficient in the operation description, not only on the 200 response
-    // or the 'mode' property.
-    final String description = openAPI.getPaths().get("/api/v1/ai/chat").getPost().getDescription();
-    assertThat(description)
-        .as("the operation description must warn about the default streaming mode on its own")
-        .contains("text/event-stream")
-        .contains("auto");
+  void chatStreamDeclaresOnlyEventStreamContent() {
+    // The other half of the #6558 split: POST /api/v1/ai/chat/stream is always SSE, so its 200
+    // must declare exactly one content type too, and it must not be application/json.
+    final ApiResponse ok = openAPI.getPaths().get("/api/v1/ai/chat/stream").getPost().getResponses().get("200");
+    assertThat(ok.getContent().keySet()).containsExactly("text/event-stream");
   }
 
   @Test
