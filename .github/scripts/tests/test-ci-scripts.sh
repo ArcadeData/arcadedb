@@ -27,6 +27,7 @@ GUARDS="$SCRIPTS/check-test-reporter-guards.py"
 ALLOWLIST="$SCRIPTS/check-license-allowlist.py"
 DBDOCSSYNC="$SCRIPTS/check-database-docs-sync.py"
 CONTROLCHARS="$SCRIPTS/check-source-control-chars.py"
+NEEDSOUTPUTS="$SCRIPTS/check-workflow-needs-outputs.py"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -1086,6 +1087,100 @@ printf 'var x = "\000";\n' >"$work/controlchars-skipped/node_modules/bundle.js"
 printf '\000\001\002' >"$work/controlchars-skipped/logo.png"
 expect "ignores build output, vendored bundles and non-source files" 0 "" \
     "$CONTROLCHARS" "$work/controlchars-skipped"
+
+echo
+echo "check-workflow-needs-outputs.py"
+
+# The shape this script exists for: seven jobs read an output the producer never declares. GitHub
+# resolves it to "" instead of failing, so the workflow looks correct and quietly passes nothing.
+mkdir -p "$work/needs-undeclared"
+cat >"$work/needs-undeclared/ci.yml" <<'YAML'
+name: undeclared
+on: [ push ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo building
+  e2e:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - run: echo test
+        env:
+          IMAGE: ${{ needs.build.outputs.image-tag }}
+YAML
+expect "rejects a reference to an output the producer never declares" 1 "image-tag" \
+    "$NEEDSOUTPUTS" "$work/needs-undeclared"
+
+# The same workflow with the output declared: the only change that should matter.
+mkdir -p "$work/needs-declared"
+sed 's/    runs-on: ubuntu-latest\n/&/' "$work/needs-undeclared/ci.yml" \
+    | awk '/^  build:/{print; print "    outputs:"; print "      image-tag: repo\/image:latest"; next} {print}' \
+    >"$work/needs-declared/ci.yml"
+expect "accepts the same workflow once the output is declared" 0 "" \
+    "$NEEDSOUTPUTS" "$work/needs-declared"
+
+# A job that declares SOME outputs but not the one referenced is the easier mistake to miss: the
+# `outputs:` block exists, so a reader skims past it.
+mkdir -p "$work/needs-wrong-name"
+cat >"$work/needs-wrong-name/ci.yml" <<'YAML'
+name: wrong-name
+on: [ push ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        run: echo "version=1" >> $GITHUB_OUTPUT
+  e2e:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - run: echo test
+        env:
+          IMAGE: ${{ needs.build.outputs.image-tag }}
+YAML
+expect "rejects a reference to a name the producer does not declare" 1 "declares: version" \
+    "$NEEDSOUTPUTS" "$work/needs-wrong-name"
+
+# A `needs` reference to a job that does not exist is the other half of the same typo.
+mkdir -p "$work/needs-missing-job"
+cat >"$work/needs-missing-job/ci.yml" <<'YAML'
+name: missing-job
+on: [ push ]
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo test
+        env:
+          IMAGE: ${{ needs.buidl.outputs.image-tag }}
+YAML
+expect "rejects a reference to a job that does not exist" 1 "no job 'buidl' exists" \
+    "$NEEDSOUTPUTS" "$work/needs-missing-job"
+
+# A reusable-workflow job declares its outputs in the called workflow, which this script does not
+# read. Reporting it would be a false violation in a check that gates the whole build.
+mkdir -p "$work/needs-reusable"
+cat >"$work/needs-reusable/ci.yml" <<'YAML'
+name: reusable
+on: [ push ]
+jobs:
+  build:
+    uses: ./.github/workflows/called.yml
+  e2e:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - run: echo test
+        env:
+          IMAGE: ${{ needs.build.outputs.image-tag }}
+YAML
+expect "ignores a reference into a reusable-workflow job" 0 "" \
+    "$NEEDSOUTPUTS" "$work/needs-reusable"
 
 echo
 if [[ $failures -gt 0 ]]; then
