@@ -490,6 +490,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private void shutdown(final boolean persistCsr) {
     awaitInFlightTasks(SHUTDOWN_AWAIT_MS);
     synchronized (this) {
+      // Runs the persist-to-disk write (when eligible) while holding this instance's monitor: any concurrent
+      // awaitReady()/getStatus() caller blocks for the duration of the write, not just of a scan - accepted
+      // because it only happens once per close and is gated by GAV_PERSIST_CSR.
       if (persistCsr)
         persistCsrIfPossible();
       unregisterChangeListeners();
@@ -1523,8 +1526,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     if (restored == null)
       return false;
 
-    final CountDownLatch latch = new CountDownLatch(1);
-    readyLatch = latch;
+    // Reuse the latch already installed (by the constructor, since this is always the first status
+    // transition attempted on a freshly built view) rather than publishing a new one: the view is
+    // registered before this method runs, so a concurrent awaitReady() caller may already be waiting
+    // on that original latch. Counting down a *new* instance instead would leave that caller hanging
+    // until its timeout even though the view is READY.
+    final CountDownLatch latch = readyLatch;
     this.snapshot = restored;
     this.status = Status.READY;
     this.notifyAll();
