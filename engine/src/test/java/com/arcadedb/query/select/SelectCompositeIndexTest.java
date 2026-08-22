@@ -216,6 +216,36 @@ public class SelectCompositeIndexTest extends TestHelper {
   }
 
   @Test
+  void compositeHashIndexPartialPrefixFallsBackToScan() {
+    // A COMPOSITE HASH INDEX DOES NOT SUPPORT ORDERED ITERATIONS (TypeIndex.supportsOrderedIterations() == false),
+    // SO A PARTIAL-PREFIX MATCH AGAINST IT MUST NOT ATTEMPT range() - WHICH WOULD THROW UnsupportedOperationException
+    // - AND MUST INSTEAD FALL BACK TO THE PRE-EXISTING isTheNodeFullyIndexed()/filterWithIndexes() PATH (A FULL SCAN
+    // HERE, SINCE NEITHER PROPERTY HAS ITS OWN STANDALONE INDEX), EXACTLY AS BEFORE THIS COMPOSITE-INDEX SUPPORT
+    // EXISTED. A UNIQUE_HASH INDEX ON (@out, @in) IS A COMMON EDGE-UNIQUENESS IDIOM IN THIS CODEBASE
+    // (Issue5677HashIndexLinkKeyTest) THAT MUST KEEP WORKING WHEN ONLY ONE ENDPOINT IS BOUND.
+    final VertexType hashType = database.getSchema().createVertexType("HashComposite");
+    hashType.createProperty("hashKey1", Type.STRING);
+    hashType.createProperty("hashKey2", Type.STRING);
+    hashType.createTypeIndex(Schema.INDEX_TYPE.HASH, false, "hashKey1", "hashKey2");
+
+    database.transaction(() -> {
+      for (int i = 0; i < GROUP_SIZE; i++)
+        database.newVertex("HashComposite").set("hashKey1", "a", "hashKey2", "k" + i).save();
+      for (int i = 0; i < OTHER_SIZE; i++)
+        database.newVertex("HashComposite").set("hashKey1", "other", "hashKey2", "k" + i).save();
+    });
+
+    // ONLY hashKey1 IS BOUND: A PARTIAL PREFIX OF THE 2-PROPERTY HASH INDEX
+    final SelectCompiled select = database.select().fromType("HashComposite")//
+        .where().property("hashKey1").eq().value("a").compile();
+
+    final List<Vertex> list = select.vertices().toList();
+
+    assertThat(list).hasSize(GROUP_SIZE);
+    list.forEach(v -> assertThat(v.getString("hashKey1")).isEqualTo("a"));
+  }
+
+  @Test
   void compositeIndexNotUsedUnderOr() {
     // AN 'or' MUST NOT ATTEMPT THE COMPOSITE PREFIX MATCH: NEITHER PROPERTY HAS ITS OWN STANDALONE INDEX HERE, SO NO
     // INDEX CAN BE USED AND THE QUERY FALLS BACK TO A FULL TYPE SCAN, JUST LIKE BEFORE THE COMPOSITE-INDEX SUPPORT
