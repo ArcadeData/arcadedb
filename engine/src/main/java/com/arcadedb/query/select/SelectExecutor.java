@@ -222,6 +222,10 @@ public class SelectExecutor {
       // #6565: A CANDIDATE CAP IS SAFE ONLY WHEN THE INDEX SCAN EXACTLY REPRODUCES THE WHERE-TREE'S RESULT SET.
       // OTHERWISE evaluateWhere() AND skip DOWNSTREAM (SelectIterator, executeCount()) STILL DISCARD CANDIDATES THAT
       // THE CAP ALREADY COUNTED AGAINST limit, SO THE SCAN MUST RUN UNCAPPED TO SURVIVE THAT FURTHER FILTERING.
+      // MUST RUN BEFORE filterWithIndexes() BELOW: isWhereExactlyIndexed() UNCONDITIONALLY DISQUALIFIES 'and', SO
+      // TODAY IT DOESN'T MATTER THAT filterWithIndexesFinalNode() NULLS OUT AN 'and' SIBLING'S node.index AS A
+      // SIDE EFFECT OF BUILDING ITS CURSOR - BUT IF THAT DISQUALIFICATION EVER LOOSENS, THIS ORDERING (COMPUTING THE
+      // CAP OFF THE PRE-PRUNING TREE) BECOMES LOAD-BEARING
       indexCandidateLimit = isWhereExactlyIndexed(select.rootTreeElement) ? computeExactCandidateLimit() : -1;
 
       filterWithIndexes(select.rootTreeElement, cursors);
@@ -233,7 +237,10 @@ public class SelectExecutor {
 
   /**
    * The candidate cap for an exactly-indexed where-tree: {@code skip + limit} records are needed downstream (skip
-   * consumed first, then limit), not just {@code limit}.
+   * consumed first, then limit), not just {@code limit}. On overflow this deliberately falls back to {@code -1}
+   * (uncapped) rather than clamping to {@code Integer.MAX_VALUE}: a {@code skip}/{@code limit} pair that overflows
+   * an {@code int} is already pathological, and {@code -1} is the same "run uncapped" value used everywhere else
+   * in this class when the cap can't be trusted, instead of introducing a second sentinel with the same meaning.
    */
   private int computeExactCandidateLimit() {
     if (select.limit < 0)
@@ -316,6 +323,10 @@ public class SelectExecutor {
         final List<IndexCursor> inCursors = new ArrayList<>();
         for (final Object item : collection)
           inCursors.add(node.index.get(new Object[] { item }));
+        // SHARING THE WHOLE TREE'S indexCandidateLimit HERE IS DELIBERATE, NOT JUST CONVENIENT REUSE: WHEN IT IS SET,
+        // THE OUTER MultiIndexCursor WILL NEVER PULL MORE THAN skip + limit CANDIDATES IN TOTAL ACROSS ALL ITS
+        // CHILDREN, SO NO SINGLE in_op VALUE'S NESTED CURSOR COULD EVER LEGITIMATELY NEED TO SUPPLY MORE THAN THAT -
+        // GIVING IT THE FULL BOUND IS A SAFE OVER-APPROXIMATION OF ITS OWN (TIGHTER, UNKNOWABLE HERE) SHARE
         cursor = inCursors.isEmpty() ? null : new MultiIndexCursor(inCursors, indexCandidateLimit, ascendingOrder);
       } else
         cursor = node.index.get(new Object[] { rightValue });
