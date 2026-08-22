@@ -475,6 +475,14 @@ public class GraphEngine {
    * type: a classic {@link EdgeSegment} chain yields an {@link EdgeLinkedList}, a {@link StripeDirectory}
    * (super-node promoted vertex, #5156) yields a {@link StripedEdgeList}. The head page is anchored in the
    * transaction at read time (#5147/#5153).
+   * <p>
+   * #6586: every read of the VERTEX RECORD here is guarded, and a missing one is told apart from a missing CHUNK by
+   * the same evidence #6572 used on the removal side - the RID the {@link RecordNotFoundException} names. The head
+   * pointer used to be read OUTSIDE the {@code try}, so on a not-yet-materialised handle to a record that is gone
+   * (the usual shape: {@code connectIncomingEdge} resolving the TARGET of a new edge, which arrives as a lazy
+   * handle) the lazy load escaped as a bare {@code Record #x:y not found} - correct as a verdict, and mute as a
+   * diagnosis. It now answers {@link #missingVertexOnEdgeListWrite}, exactly as {@link #getEdgeHeadChunkForWrite}
+   * does for the same fact on the other side of the same list.
    */
   public EdgeLinkedList getOrCreateEdgeList(VertexInternal vertex, final Vertex.DIRECTION direction) {
     // Resolve the transaction's own WRITTEN copy of the vertex first (a cache lookup, NO page anchoring):
@@ -489,7 +497,22 @@ public class GraphEngine {
         vertex = inTxVertex;
     }
 
-    RID headRID = direction == Vertex.DIRECTION.OUT ? vertex.getOutEdgesHeadChunk() : vertex.getInEdgesHeadChunk();
+    final RID vertexRID = vertex.getIdentity();
+
+    final RID headRID;
+    try {
+      // INSIDE a try since #6586: on a lazy handle this is the read that loads the vertex record, so it is where a
+      // vertex that no longer exists surfaces - one frame before the head-chunk lookup the catch below was written
+      // for. A multi-page vertex body whose continuation chunk is not visible yet reaches here too, and that one IS
+      // the publication window, so the two are separated by the RID the not-found names rather than by the site.
+      headRID = direction == Vertex.DIRECTION.OUT ? vertex.getOutEdgesHeadChunk() : vertex.getInEdgesHeadChunk();
+    } catch (final RecordNotFoundException e) {
+      if (vertexRID != null && vertexRID.equals(e.getRID()))
+        throw missingVertexOnEdgeListWrite(vertexRID, direction, e);
+      throw new ConcurrentModificationException(
+          "Vertex " + vertexRID + " is not fully visible yet (concurrent commit in flight), so its " + direction
+              + " edge list cannot be extended: " + e.getMessage(), e);
+    }
 
     if (headRID != null)
       try {
@@ -528,7 +551,17 @@ public class GraphEngine {
     // mutable copy only now - anchoring the vertex page is correct here because the vertex is in the write set.
     // modify() reloads the record when it is not already part of the transaction: re-check the head, a
     // concurrent transaction may have created it in the meantime.
-    final MutableVertex mutable = vertex.modify();
+    final MutableVertex mutable;
+    try {
+      mutable = vertex.modify();
+    } catch (final RecordNotFoundException e) {
+      // #6586: modify() RELOADS a handle the transaction does not already hold, so a vertex whose head pointer was
+      // answered from a buffer materialised earlier - which touches no bucket and therefore raises nothing above -
+      // is discovered here instead. Same fact, same answer.
+      if (vertexRID != null && vertexRID.equals(e.getRID()))
+        throw missingVertexOnEdgeListWrite(vertexRID, direction, e);
+      throw e;
+    }
     final RID reloadedHead = direction == Vertex.DIRECTION.OUT ? mutable.getOutEdgesHeadChunk() : mutable.getInEdgesHeadChunk();
     if (reloadedHead != null)
       return getOrCreateEdgeList(mutable, direction);
@@ -1020,6 +1053,13 @@ public class GraphEngine {
    * that is not there. What changes is only that the failure says so, and names {@link #missingVertexRepairAdvice}
    * instead of a repair aimed at the missing record.
    * <p>
+   * #6586 makes "before the walk starts" true of every handle rather than only of the ones that go back to the
+   * bucket to answer their head pointers. A materialised handle answers them from the buffer it already holds, so
+   * the absence was discovered only by the re-read at the END - after a full traversal that disconnected every edge
+   * from its far endpoint, and in a frame that could not tell a stale reference from a concurrent delete. The slot
+   * probe at the top decides it once, for both shapes, and costs one page-cached slot read on a path that is about
+   * to write that same page.
+   * <p>
    * #5760 removes the two costs this method used to pay for the walk, both of which fall out of ONE observation:
    * the vertex's own lists are dropped wholesale at the end, so nothing this method does to them is worth doing.
    * <ul>
@@ -1041,6 +1081,33 @@ public class GraphEngine {
     // and would hide the newest edges, which is the same "see nothing, delete anyway" defect by another route.
     final VertexInternal mostUpdatedVertex = getMostUpdatedVertex(vertex);
 
+    // #6586: DECIDED HERE, before the walk, and by reading the BUCKET rather than by trusting a handle. #6572
+    // already answers "the vertex record is gone" honestly - but only where it can see it, and the one read that
+    // sees it is a read that goes back to the bucket. A MATERIALISED handle (a RID whose content was loaded
+    // earlier in this transaction and used after the record went away) answers its head pointers straight out of
+    // the buffer it already holds, so the whole removal walk ran on stale heads, disconnected every edge from its
+    // FAR endpoint, and only the re-read in checkEdgeListHeadsUnchanged found out - which then reported a vertex
+    // that this transaction had itself removed, or that never existed, as a retryable concurrent delete. A
+    // one-slot probe converts a full traversal spent reaching a foregone failure into an immediate, correctly
+    // typed one, and leaves that re-read with a claim it can actually prove (see checkEdgeListHeadsUnchanged).
+    //
+    // The BUCKET and not database.existsRecord(), deliberately: the latter answers from the transaction's record
+    // caches first, which is precisely where a handle to a deleted record survives, so it would confirm the very
+    // thing being questioned. The slot marker is the ground truth, read through this transaction's view of the
+    // page - a record created earlier in this transaction has its slot allocated eagerly (that is why a rollback
+    // has to reset identities to provisional), so it is seen as present here just as it is by the delete below.
+    //
+    // Not tolerated under force either, for the reason #6572 spells out: deleting a record that is not there is an
+    // error on every other path in the engine too, and succeeding quietly would hide the one thing the caller
+    // needs to know - that something still points at a record that is gone.
+    final RID vertexRID = mostUpdatedVertex.getIdentity();
+    final Bucket vertexBucket = database.getSchema().getBucketByIdIfExists(vertexRID.getBucketId());
+    if (vertexBucket == null || !vertexBucket.existsRecord(vertexRID))
+      // A bucket that no longer exists means the same thing to the caller as a slot that no longer holds a record
+      // (#4501): the RID names nothing. Answering it here also keeps getBucketById's SchemaException - a message
+      // about internal file ids - off a path whose whole subject is a reference that outlived its target.
+      throw missingVertexOnDelete(vertexRID, notFoundOnProbe(vertexRID));
+
     // The heads this delete is about to walk, kept for checkEdgeListHeadsUnchanged below.
     final RID[] headsAtWalkStart = readEdgeListHeads(mostUpdatedVertex);
 
@@ -1055,9 +1122,17 @@ public class GraphEngine {
     if (!force && headsAtWalkStart != null)
       checkEdgeListHeadsUnchanged(mostUpdatedVertex, headsAtWalkStart[0], headsAtWalkStart[1]);
 
-    // DELETE VERTEX RECORD
-    mostUpdatedVertex.getDatabase().getSchema().getBucketById(mostUpdatedVertex.getIdentity().getBucketId())
-        .deleteRecord(mostUpdatedVertex.getIdentity(), force);
+    // DELETE VERTEX RECORD. #6586: the probe at the top is what normally decides this, so a not-found HERE is the
+    // residual - the record went away between the two, or the probe's page view was superseded. Answering it with
+    // the same type keeps the contract whole (this method reports a missing vertex ONE way) instead of letting the
+    // last statement leak the bare "Record #x:y not found" the append path used to.
+    try {
+      vertexBucket.deleteRecord(vertexRID, force);
+    } catch (final RecordNotFoundException e) {
+      if (e instanceof VertexNotFoundException || !vertexRID.equals(e.getRID()))
+        throw e;
+      throw missingVertexOnDelete(vertexRID, e);
+    }
   }
 
   /**
@@ -1144,6 +1219,68 @@ public class GraphEngine {
   }
 
   /**
+   * #6586: the ONE answer to "the vertex whose edge list this write needs does not exist", shared by every path that
+   * can discover it, so that both sides of the same list report the same fact the same way.
+   * <p>
+   * #6572 gave the REMOVAL side of an edge list ({@link #getEdgeHeadChunkForWrite}) a typed, non-retryable failure
+   * carrying a repair that applies. The APPEND side ({@link #getOrCreateEdgeList}) reached the identical fact - a
+   * lazy load of the vertex record finding nothing - and answered it with a bare {@code RecordNotFoundException}:
+   * the right VERDICT, since it is not retryable either, but none of the diagnosis. An operator reading
+   * {@code Record #4:0 not found} in a log cannot tell that the missing record is a VERTEX, that it was an ENDPOINT
+   * of an edge being created rather than the vertex the caller named, which SIDE of the list was being written, or
+   * what to run to repair it. Nothing about the append path makes any of that less true than on the removal path,
+   * so there is no reason for the two to differ - and an application that wants to skip such an endpoint has to be
+   * able to catch ONE type whichever side of the list it met it on.
+   * <p>
+   * Deliberately NOT parameterised on the operation: the wording is the contract these paths share, and a caller
+   * that wants to say more says it around this, not inside it.
+   *
+   * @param vertexRID the vertex whose record is absent - always the RID the cause names, never a neighbour's
+   * @param direction the side of the edge list the caller was about to write
+   * @param cause     the not-found this diagnosis wraps; kept so the trace still names the read that found it
+   */
+  private static VertexNotFoundException missingVertexOnEdgeListWrite(final RID vertexRID,
+      final Vertex.DIRECTION direction, final Exception cause) {
+    return new VertexNotFoundException(
+        "Vertex " + vertexRID + " does not exist, so its " + direction + " edge list cannot be modified: it was "
+            + "reached through a reference to a record that is gone (a stale edge entry, or a RID held past the "
+            + "delete). Retrying cannot make it exist: " + missingVertexRepairAdvice(), vertexRID, cause);
+  }
+
+  /**
+   * #6586: the same answer for the operation that is not a list write at all - deleting a vertex whose record is
+   * already gone.
+   * <p>
+   * Separate from {@link #missingVertexOnEdgeListWrite} only because there is no direction to name and because
+   * "cannot be deleted" is what the caller asked for; the type, the verdict and the repair are identical, which is
+   * the point - a caller sweeping a graph catches ONE type whether it met the missing vertex while reading a list,
+   * while extending one, or while dropping the vertex outright.
+   *
+   * @param cause the not-found this diagnosis wraps - either the one the bucket raised, or the one
+   *              {@link #notFoundOnProbe} gives the slot probe's answer so the chain reads the same either way
+   */
+  private static VertexNotFoundException missingVertexOnDelete(final RID vertexRID, final Exception cause) {
+    return new VertexNotFoundException(
+        "Vertex " + vertexRID + " does not exist, so it cannot be deleted: it was reached through a reference to a "
+            + "record that is gone (a stale edge entry, or a RID held past the delete). Retrying cannot make it "
+            + "exist: " + missingVertexRepairAdvice(), vertexRID, cause);
+  }
+
+  /**
+   * #6586: the not-found a PROBE establishes, so the diagnosis built on it still WRAPS one.
+   * <p>
+   * Every other path here discovers the absence by attempting a read and catching what the bucket raises, and the
+   * cause chain is load-bearing rather than decorative: it is what a full trace uses to say which record was
+   * missing and which read found it missing, and #6572 pins it. A slot probe answers with a boolean instead, so the
+   * fact has to be given the same shape - the same class, the same RID and the same wording the bucket itself uses
+   * for an empty slot, raised at the frame that found it. Not a fabrication of anything that did not happen: the
+   * record really is not there, and the probe really is the read that established it.
+   */
+  private static RecordNotFoundException notFoundOnProbe(final RID vertexRID) {
+    return new RecordNotFoundException("Record " + vertexRID + " not found", vertexRID);
+  }
+
+  /**
    * #5764: the same retryable conflict, carrying the repair command for the vertex whose list could not be read.
    * <p>
    * A conflict is normally absorbed by the transaction retry and never seen, so the one run that DOES surface this
@@ -1217,6 +1354,10 @@ public class GraphEngine {
    * <p>
    * A vertex this transaction has WRITTEN itself needs no check: its own copy is authoritative, and a concurrent
    * commit over it cannot pass the version check on that write.
+   * <p>
+   * #6586: the failures of that re-read are answered by what they are rather than by where they happen. A vertex
+   * that has VANISHED is not a conflict at any point - see the catch - and one that reads back as something other
+   * than a vertex no longer asserts a cause this frame cannot establish.
    */
   private void checkEdgeListHeadsUnchanged(final VertexInternal vertex, final RID walkedOutHead,
       final RID walkedInHead) {
@@ -1236,14 +1377,36 @@ public class GraphEngine {
       // cache if this transaction wrote the record earlier, which is exactly the case the guard above returns on.
       committed = (VertexInternal) database.lookupByRID(vertexRID, true);
     } catch (final RecordNotFoundException e) {
-      // The vertex is already gone: a concurrent transaction deleted it while this one was disconnecting its
-      // edges. Retry, and let the re-read decide there is nothing left to delete.
-      throw new ConcurrentModificationException(
-          "Vertex " + vertexRID + " was deleted by a concurrent transaction while its edges were being removed", e);
+      // #6586: told apart by the RID the not-found names, the discriminator #6572 established. A record OTHER than
+      // the vertex - a continuation chunk of a multi-page vertex body a concurrent commit is republishing - really
+      // is the publication window this check runs inside, and stays the retryable conflict it always was.
+      if (!vertexRID.equals(e.getRID()))
+        throw new ConcurrentModificationException(
+            "Vertex " + vertexRID + " is not fully visible while its edges are being removed (concurrent commit in "
+                + "flight): " + e.getMessage(), e);
+
+      // The VERTEX ITSELF is gone. This used to be asserted as a concurrent delete and reported as retryable, and
+      // it was neither: single-threaded runs reached it too - a materialised handle used past its record's removal
+      // walked the whole list off a stale buffer and arrived here - so the message named a cause that had not
+      // happened, and the retry re-ran a transaction that could only fail identically.
+      //
+      // deleteVertex now probes the slot before the walk, so a delete that gets this far DID see the record in its
+      // bucket when it started. The claim is therefore provable rather than assumed - nothing else removes it
+      // between the probe and here, since this method runs before the physical delete - but it changes nothing
+      // about the verdict: the record is gone for good, and a retry would only spend an attempt rediscovering that
+      // at the probe. Same type as every other "the vertex is not there" this engine can raise (#6586).
+      throw missingVertexOnDelete(vertexRID, e);
     } catch (final ClassCastException e) {
-      // The RID no longer names a vertex: the slot was reused after a concurrent delete. Same answer as above.
+      // #6586: what is OBSERVED, without a cause invented to explain it. The old wording asserted a slot reused
+      // after a concurrent delete, which this frame cannot establish: a bucket maps to exactly one type, so the
+      // record read back through the same RID normally cannot change kind at all, and the ways it can - a type
+      // re-mapped by a DDL committing underneath, a handle from a bucket that has since been reassigned - are not
+      // distinguishable here. Retryable is kept for the same reason it was chosen: unlike a record that is gone,
+      // this really can resolve on a re-read against a settled schema, and there is no better-typed answer to
+      // promote it to.
       throw new ConcurrentModificationException(
-          "Vertex " + vertexRID + " no longer names a vertex record (concurrent commit in flight)", e);
+          "Vertex " + vertexRID + " no longer reads back as a vertex record while its edges are being removed "
+              + "(concurrent commit in flight)", e);
     }
 
     final RID[] committedHeads = readEdgeListHeads(committed);
@@ -2109,10 +2272,7 @@ public class GraphEngine {
       // exists. Reported honestly it is a plain not-found: no retry budget spent, and the advice names a command
       // that can actually be run. RID.equals(null) is false, so a cause carrying no RID takes the conflict arm.
       if (vertexRID != null && vertexRID.equals(e.getRID()))
-        throw new VertexNotFoundException(
-            "Vertex " + vertexRID + " does not exist, so its " + direction + " edge list cannot be modified: it was "
-                + "reached through a reference to a record that is gone (a stale edge entry, or a RID held past the "
-                + "delete). Retrying cannot make it exist: " + missingVertexRepairAdvice(), vertexRID, e);
+        throw missingVertexOnEdgeListWrite(vertexRID, direction, e);
 
       // The cause and the interpolated e.getMessage() are NOT redundant, though they read that way (#5764). This
       // message is the only place the missing CHUNK's RID appears - the text above names the vertex, not the chunk,

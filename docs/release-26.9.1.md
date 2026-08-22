@@ -3818,3 +3818,44 @@ reads, so the same fact can now surface between them as `VertexNotFoundException
 identically rather than promoting a window the probe would have absorbed into a hard failure.
 
 [#6572](https://github.com/ArcadeData/arcadedb/issues/6572)
+
+## Both sides of an edge list answer a missing vertex the same way, and a delete decides it up front (#6586)
+
+#6572 split "the vertex record is gone" out of `GraphEngine.getEdgeHeadChunkForWrite`'s retryable conflict using
+the RID the `RecordNotFoundException` names. That split fires only when the head-pointer read has to go back to the
+bucket, so two adjacent paths reached the same fact - a caller writing the edge list of a vertex whose record does
+not exist - without going through the discriminator, and each still answered it in its own, worse way.
+
+The first is the delete. A **materialised** handle - a RID whose content was loaded earlier in the same transaction
+and used after the record went away - answers `getOutEdgesHeadChunk()` straight out of the buffer it already holds,
+touches no bucket and raises nothing. The whole removal walk then ran on those stale heads, disconnecting every edge
+from its far endpoint, and only the re-read at the end of the delete noticed. What it reported was
+`ConcurrentModificationException: Vertex #4:0 was deleted by a concurrent transaction while its edges were being
+removed` - retryable, so the caller spent its budget re-running a transaction that could only fail identically; and
+untrue, since a single-threaded run reaches it too, with the same wording whether the record was removed by a
+concurrent writer, by this very transaction, or never existed at all. It also carried no repair advice, unlike every
+other failure that delete can produce.
+
+`deleteVertex` now settles it before the walk, by reading the bucket's slot rather than trusting a handle: the
+vertex record either has a slot or it does not, and a `VertexNotFoundException` naming `CHECK DATABASE FIX` is
+raised immediately instead of after a full traversal that is about to be rolled back. The check reads only the slot
+marker, so a vertex with a corrupt or truncated body is unaffected - it stays deletable, as #4420 and #4432 require -
+and it is not tolerated under `force` either, for the reason #6572 spells out. The re-read at the end of the delete
+keeps a conflict only for a record other than the vertex (a continuation chunk a concurrent commit is republishing);
+a vertex that has vanished gets the same non-retryable answer as everywhere else, and the `ClassCastException` arm
+next to it no longer asserts a slot reuse this frame cannot establish.
+
+The second is the append. `GraphEngine.getOrCreateEdgeList` read the head RID *outside* its `try`, so on a vertex
+whose record is gone the lazy load escaped raw as `RecordNotFoundException: Record #4:0 not found`. The verdict was
+right - it was never retryable - but nothing else was there: it did not say the missing record is a vertex, that it
+was an *endpoint* of an edge being created (the common shape is `connectIncomingEdge`, where the target is gone
+rather than the vertex the caller named), which side of the list was being written, or what to run. It now raises
+the same `VertexNotFoundException`, with the same message shape and the same advice as the removal side.
+
+One catchable type therefore covers the whole surface: removing an entry from an edge list, adding one to it, and
+deleting the vertex outright. An application sweeping possibly-stale references catches `VertexNotFoundException`
+(or `RecordNotFoundException`) once and skips the entry, instead of matching on messages or on the accident of which
+read noticed first. An unreadable *chunk* of a vertex that does exist keeps the retryable
+`ConcurrentModificationException` and #5764's scoped advice, on both paths.
+
+[#6586](https://github.com/ArcadeData/arcadedb/issues/6586)
