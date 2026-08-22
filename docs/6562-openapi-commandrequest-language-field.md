@@ -34,3 +34,30 @@ matching what `PostCommandHandler` actually enforces at runtime.
 
 The TypeScript client's widened-cast workaround referenced in the issue lives in the
 `arcadedb-clients` repo (tracked under #4894), not in this repository.
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/6580
+
+## Review cycles
+
+- **cycle 1** - head `d3dd7f6` - initial commit (schema + regression test + tracking doc).
+  `claude[bot]` posted a review as a PR issue comment (not a formal GitHub review) 30s after
+  push: LGTM, no actionable items. It confirmed the root-cause premise against
+  `PostCommandHandler.execute` directly, endorsed the minimal diff and test, and flagged one
+  explicitly out-of-scope observation (see below). Working tree stayed clean - no code changes
+  needed in response.
+
+## Deferred items
+
+None deferred (nothing actionable/unclear). One **out-of-scope nitpick** from the review, not
+acted on here per the reviewer's own framing ("beyond what #6562 asked for"):
+
+- `CommandRequest`'s schema still doesn't document `limit`, `serializer`, `profileExecution`,
+  `typeHints`, or `awaitResponse`, all of which `PostCommandHandler` also reads from the request
+  body (`QueryRequest` already documents `serializer`/`limit`). Worth a follow-up issue for full
+  parity between the two schemas.
+
+## Final state
+
+`clean-approval` - 1 review cycle, zero actionable feedback, working tree unchanged after review.
