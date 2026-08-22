@@ -1142,17 +1142,18 @@ public class GraphEngine {
     if (!force && headsAtWalkStart != null)
       checkEdgeListHeadsUnchanged(mostUpdatedVertex, headsAtWalkStart[0], headsAtWalkStart[1]);
 
-    // DELETE VERTEX RECORD, through the bucket the probe already resolved rather than through a second schema
-    // lookup. The assumption that makes that safe is worth stating: nothing between the two points can re-map this
-    // vertex's bucket, because everything between them is this method's own edge walk - no user code, no DDL, and
-    // the before-delete events fired one frame up in LocalDatabase.deleteRecordNoLock have already run. Reusing it
-    // is also the better failure mode of the two: a bucket that HAS gone is answered as "the RID names nothing"
-    // by the probe, rather than as getBucketById's SchemaException about an internal file id.
+    // DELETE VERTEX RECORD, through a bucket resolved AGAIN rather than through the one the probe captured. The
+    // walk between the two can be long on a super-node, so the reference taken before it is a reference that has
+    // had time to go stale - and a delete written through a bucket whose file has since been closed or re-mapped
+    // is the one mistake here that would not announce itself. Re-resolving costs a map lookup on a path that has
+    // just walked an adjacency list; the freshness is worth more. Null-tolerantly, so a bucket dropped underneath
+    // this delete answers "the RID names nothing" like the probe does, rather than getBucketById's SchemaException
+    // about an internal file id.
     //
-    // #6586: the probe at the top is what normally decides this, so a not-found HERE would be
-    // the residual - the record going away between the two. Answering it with the same type keeps the contract
-    // whole (this method reports a missing vertex ONE way) instead of letting the last statement leak the bare
-    // "Record #x:y not found" the append path used to.
+    // #6586: the probe at the top is what normally decides the not-found, so one HERE is the residual - the record
+    // going away between the two. Answering it with the same type keeps the contract whole (this method reports a
+    // missing vertex ONE way) instead of letting the last statement leak the bare "Record #x:y not found" the
+    // append path used to.
     //
     // FUTURE-PROOFING, not a live path, and worth saying so before someone goes hunting for the case that reaches
     // it: LocalBucket.deleteRecordInternal already swallows every not-found naming a record OTHER than the one it
@@ -1160,8 +1161,12 @@ public class GraphEngine {
     // and the probe a few lines up has already ruled that out for a single-threaded caller. The RID is still
     // compared rather than assumed, since the day that stops holding is exactly the day a silent mis-attribution
     // would be hardest to spot.
+    final Bucket bucketAtDelete = database.getSchema().getBucketByIdIfExists(vertexRID.getBucketId());
+    if (bucketAtDelete == null)
+      throw missingVertexOnDelete(vertexRID, notFoundOnProbe(vertexRID));
+
     try {
-      vertexBucket.deleteRecord(vertexRID, force);
+      bucketAtDelete.deleteRecord(vertexRID, force);
     } catch (final RecordNotFoundException e) {
       if (!vertexRID.equals(e.getRID()))
         throw e;
