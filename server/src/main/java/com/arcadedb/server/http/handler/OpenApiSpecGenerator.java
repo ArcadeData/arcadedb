@@ -125,13 +125,20 @@ public class OpenApiSpecGenerator {
    * response to see it exists (#6563). That makes it a document-level concern like the root security
    * declaration rather than something each contributor should remember to add per response, so it is
    * applied here, once, after every contributor has added its paths.
+   * <p>
+   * Skips a response declared as {@code $ref} to a shared component: per OpenAPI 3.0.x (the version
+   * this document declares), sibling keys next to {@code $ref} are ignored by spec-compliant tooling,
+   * so adding a header there would silently do nothing. No contributor declares a whole response by
+   * {@code $ref} today, only inline objects, but the check keeps a future one from losing the header
+   * with no test pointing at why.
    */
   private void declareRequestIdHeaderOnEveryResponse(final OpenAPI openAPI) {
     final Header headerRef = new Header().$ref("#/components/headers/" + REQUEST_ID_HEADER_COMPONENT);
     for (final PathItem pathItem : openAPI.getPaths().values())
       for (final Operation operation : pathItem.readOperations())
         for (final ApiResponse response : operation.getResponses().values())
-          response.addHeaderObject(IdempotencyCache.HEADER_REQUEST_ID, headerRef);
+          if (response.get$ref() == null)
+            response.addHeaderObject(IdempotencyCache.HEADER_REQUEST_ID, headerRef);
   }
 
   private Info createApiInfo() {

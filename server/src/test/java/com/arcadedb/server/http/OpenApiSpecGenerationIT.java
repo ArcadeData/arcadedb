@@ -630,15 +630,20 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
   void everyResponseDeclaresTheRequestIdHeader() throws Exception {
     final OpenAPI openAPI = new OpenAPIV3Parser().readContents(getOpenApiSpec()).getOpenAPI();
 
-    openAPI.getPaths().forEach((path, item) -> item.readOperations().forEach(op ->
-        op.getResponses().forEach((code, response) -> {
-          final Map<String, Header> headers = response.getHeaders();
-          assertThat(headers)
-              .as("%s %s's %s response is missing the %s header that AbstractServerHttpHandler sets "
-                      + "unconditionally on every response", path, op.getOperationId(), code,
-                  IdempotencyCache.HEADER_REQUEST_ID)
-              .containsKey(IdempotencyCache.HEADER_REQUEST_ID);
-        })));
+    openAPI.getPaths().forEach((path, item) -> item.readOperations().forEach(op -> {
+      assertThat(op.getResponses())
+          .as("%s %s has no responses", path, op.getOperationId())
+          .isNotNull().isNotEmpty();
+
+      op.getResponses().forEach((code, response) -> {
+        final Map<String, Header> headers = response.getHeaders();
+        assertThat(headers)
+            .as("%s %s's %s response is missing the %s header that AbstractServerHttpHandler sets "
+                    + "unconditionally on every response", path, op.getOperationId(), code,
+                IdempotencyCache.HEADER_REQUEST_ID)
+            .containsKey(IdempotencyCache.HEADER_REQUEST_ID);
+      });
+    }));
   }
 
   /**
