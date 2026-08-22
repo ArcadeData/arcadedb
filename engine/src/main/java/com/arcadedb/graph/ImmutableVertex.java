@@ -51,7 +51,7 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   public ImmutableVertex(final Database database, final DocumentType type, final RID rid, final Binary buffer) {
     super(database, type, rid, buffer);
     if (buffer != null)
-      parseEdgePointers();
+      parseEdgePointers(buffer);
   }
 
   /**
@@ -61,20 +61,20 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
    * during lazy loading; surface a clear, catchable {@link SerializationException} instead so a corrupted vertex can
    * still be read/deleted (issue #4432).
    */
-  private void parseEdgePointers() {
+  private void parseEdgePointers(final Binary content) {
     final int prefixSize = Binary.BYTE_SERIALIZED_SIZE + 2 * (Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE);
-    if (buffer.size() < prefixSize)
+    if (content.size() < prefixSize)
       throw new SerializationException(
-          "Cannot read vertex " + rid + " edge pointers: record buffer is truncated or corrupted (size=" + buffer.size()
+          "Cannot read vertex " + rid + " edge pointers: record buffer is truncated or corrupted (size=" + content.size()
               + ", expected at least " + prefixSize + ")");
-    buffer.position(1); // SKIP RECORD TYPE
-    outEdges = new RID(buffer.getInt(), buffer.getLong());
+    content.position(1); // SKIP RECORD TYPE
+    outEdges = new RID(content.getInt(), content.getLong());
     if (outEdges.getBucketId() == -1)
       outEdges = null;
-    inEdges = new RID(buffer.getInt(), buffer.getLong());
+    inEdges = new RID(content.getInt(), content.getLong());
     if (inEdges.getBucketId() == -1)
       inEdges = null;
-    propertiesStartingPosition = buffer.position();
+    propertiesStartingPosition = content.position();
   }
 
   @Override
@@ -102,8 +102,9 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
     }
 
     checkForLazyLoading();
-    buffer.rewind();
-    return new MutableVertex(database, (VertexType) type, rid, buffer.copyOfContent());
+    final Binary content = requireBuffer("modify");
+    content.rewind();
+    return new MutableVertex(database, (VertexType) type, rid, content.copyOfContent());
   }
 
   @Override
@@ -119,8 +120,8 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
    * opposite of what the caller asked for by reloading.
    */
   @Override
-  protected void parseRecordPrefix() {
-    parseEdgePointers();
+  protected void parseRecordPrefix(final Binary content) {
+    parseEdgePointers(content);
   }
 
   @Override
@@ -257,10 +258,20 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
     return json;
   }
 
+  /**
+   * The buffer is read ONCE and every step below works on that local: {@code super} returns {@code false} with the
+   * buffer left {@code null} when an after-read event filtered the record away, and a concurrent {@code reload()} can
+   * null it at any point, so re-reading the field after the check is what used to turn both into an NPE inside
+   * {@code parseEdgePointers()} instead of the named exception the accessor raises right after.
+   */
   @Override
   protected boolean checkForLazyLoading() {
-    if (super.checkForLazyLoading() || buffer != null && buffer.position() == 1) {
-      parseEdgePointers();
+    final boolean materialised = super.checkForLazyLoading();
+    final Binary content = buffer;
+    if (content == null)
+      return false;
+    if (materialised || content.position() == 1) {
+      parseEdgePointers(content);
       return true;
     }
     return false;

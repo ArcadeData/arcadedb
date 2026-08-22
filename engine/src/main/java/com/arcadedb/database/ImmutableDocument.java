@@ -56,7 +56,7 @@ public class ImmutableDocument extends BaseDocument {
       return false;
 
     checkForLazyLoading();
-    return database.getSerializer().hasProperty(database, buffer, propertyName, rid);
+    return database.getSerializer().hasProperty(database, requireBuffer("check a property of"), propertyName, rid);
   }
 
   @Override
@@ -65,9 +65,13 @@ public class ImmutableDocument extends BaseDocument {
       return null;
 
     checkForLazyLoading();
+    // OUTSIDE THE try: A MISSING CONTENT IS NOT A DESERIALIZATION ERROR TO BE LOGGED AND ANSWERED WITH null. THE
+    // SERIALIZER SWALLOWS THE NPE A null BUFFER RAISES AND LOGS IT AS "Possible corrupted record", SO A FILTERED OR
+    // CONCURRENTLY UNLOADED RECORD USED TO BE INDISTINGUISHABLE FROM ONE WITHOUT THAT PROPERTY
+    final Binary content = requireBuffer("read a property of");
     try {
       return database.getSerializer()
-          .deserializeProperty(database, buffer, new EmbeddedModifierProperty(this, propertyName), propertyName, rid);
+          .deserializeProperty(database, content, new EmbeddedModifierProperty(this, propertyName), propertyName, rid);
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on loading property '%s' from record %s", e, propertyName, rid);
       return null;
@@ -96,15 +100,16 @@ public class ImmutableDocument extends BaseDocument {
     }
 
     checkForLazyLoading();
-    buffer.rewind();
-    return new MutableDocument(database, type, rid, buffer.copyOfContent());
+    final Binary content = requireBuffer("modify");
+    content.rewind();
+    return new MutableDocument(database, type, rid, content.copyOfContent());
   }
 
   @Override
   public JSONObject toJSON(final boolean includeMetadata) {
     checkForLazyLoading();
     final Map<String, Object> map = database.getSerializer()
-        .deserializeProperties(database, buffer, new EmbeddedModifierObject(this), rid);
+        .deserializeProperties(database, requireBuffer("serialize to JSON"), new EmbeddedModifierObject(this), rid);
     final JSONObject result = new JsonSerializer(database).map2json(map, type, includeMetadata);
     if (includeMetadata) {
       result.put(CAT_PROPERTY, "d");
@@ -130,12 +135,15 @@ public class ImmutableDocument extends BaseDocument {
     if (database == null || (buffer == null && rid == null))
       return Collections.emptyMap();
     checkForLazyLoading();
-    if (buffer == null)
+    // READ THE FIELD ONCE: A CONCURRENT reload() NULLING IT BETWEEN THE CHECK AND THE USE IS EXACTLY THE NPE THAT
+    // requireBuffer() EXISTS TO REPLACE, AND HERE THE ANSWER IS THE DOCUMENTED EMPTY MAP RATHER THAN AN EXCEPTION
+    final Binary content = buffer;
+    if (content == null)
       return Collections.emptyMap();
     // BELT AND BRACES: checkForLazyLoading() already guarantees this position (see its Javadoc), but the failure mode
     // of getting it wrong here is a SILENTLY empty map - which is how #5723 made copyType() copy empty records
-    buffer.position(propertiesStartingPosition);
-    return database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this), rid);
+    content.position(propertiesStartingPosition);
+    return database.getSerializer().deserializeProperties(database, content, new EmbeddedModifierObject(this), rid);
   }
 
   /**
@@ -152,10 +160,12 @@ public class ImmutableDocument extends BaseDocument {
     if (fieldNames == null || fieldNames.length == 0)
       return propertiesAsMap();
     checkForLazyLoading();
-    if (buffer == null)
+    final Binary content = buffer;
+    if (content == null)
       return Collections.emptyMap();
-    buffer.position(propertiesStartingPosition);
-    return database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this), rid, fieldNames);
+    content.position(propertiesStartingPosition);
+    return database.getSerializer()
+        .deserializeProperties(database, content, new EmbeddedModifierObject(this), rid, fieldNames);
   }
 
   @Override
@@ -166,8 +176,9 @@ public class ImmutableDocument extends BaseDocument {
   @Override
   public Map<String, Object> toMap(final boolean includeMetadata) {
     checkForLazyLoading();
+    final Binary content = requireBuffer("convert to a map");
     final Map<String, Object> result = new LinkedHashMap<>(
-        database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this), rid));
+        database.getSerializer().deserializeProperties(database, content, new EmbeddedModifierObject(this), rid));
     if (includeMetadata) {
       result.put(CAT_PROPERTY, "d");
       result.put(TYPE_PROPERTY, type.getName());
@@ -183,17 +194,18 @@ public class ImmutableDocument extends BaseDocument {
     if (rid != null)
       output.append(rid);
     output.append('[');
-    if (buffer == null)
+    final Binary content = buffer;
+    if (content == null)
       output.append('?');
     else {
-      final int currPosition = buffer.position();
+      final int currPosition = content.position();
 
       try {
-        buffer.position(propertiesStartingPosition);
+        content.position(propertiesStartingPosition);
         final Map<String, Object> map = this.database.getSerializer()
-            .deserializeProperties(database, buffer, new EmbeddedModifierObject(this), rid);
+            .deserializeProperties(database, content, new EmbeddedModifierObject(this), rid);
 
-        buffer.position(currPosition);
+        content.position(currPosition);
 
         int i = 0;
         for (final Map.Entry<String, Object> entry : map.entrySet()) {
@@ -223,7 +235,7 @@ public class ImmutableDocument extends BaseDocument {
   @Override
   public Set<String> getPropertyNames() {
     checkForLazyLoading();
-    return database.getSerializer().getPropertyNames(database, buffer, rid);
+    return database.getSerializer().getPropertyNames(database, requireBuffer("read the property names of"), rid);
   }
 
   /**
@@ -253,12 +265,17 @@ public class ImmutableDocument extends BaseDocument {
    * filtered away by an after-read event
    */
   protected boolean checkForLazyLoading() {
-    if (buffer == null) {
+    // READ THE FIELD ONCE PER STEP AND WORK ON THE LOCAL: A CONCURRENT reload() - A RECORD INSTANCE SHARED BETWEEN
+    // THREADS, WHICH THE API DOES NOT ALLOW BUT APPLICATIONS STILL DO - CAN NULL IT BETWEEN ANY CHECK AND ITS USE
+    Binary content = buffer;
+    if (content == null) {
       if (rid == null)
         throw new DatabaseOperationException("Document cannot be loaded because RID is null");
 
-      buffer = database.getSchema().getBucketById(rid.getBucketId()).getRecord(rid);
-      buffer.position(propertiesStartingPosition);
+      content = database.getSchema().getBucketById(rid.getBucketId()).getRecord(rid);
+      // PUBLISH BEFORE FIRING THE EVENTS: A LISTENER READS THIS RECORD'S PROPERTIES OFF THE FIELD
+      buffer = content;
+      content.position(propertiesStartingPosition);
 
       final Record loaded = database.invokeAfterReadEvents(this);
       if (loaded == null) {
@@ -270,16 +287,17 @@ public class ImmutableDocument extends BaseDocument {
         // INSTEAD OF BEING WRITTEN TO (OR DELETED FROM) THE PAIRED EXTERNAL BUCKET (ISSUE #5770).
         // getNotReusable() IS MANDATORY: FOR A DIRTY RECORD THE SERIALIZER RETURNS THE PER-THREAD SCRATCH BUFFER, WHICH
         // IT COPIES OUT, WHILE THE ALREADY-PRIVATE BUFFER OF THE OTHER BRANCH IS KEPT AS IS
-        buffer = database.getSerializer().serializeForRead(database, loaded).getNotReusable();
+        content = database.getSerializer().serializeForRead(database, loaded).getNotReusable();
+        buffer = content;
         // THE SERIALIZER HANDS THE BUFFER BACK AT 0 OR AT 1 DEPENDING ON THE BRANCH IT TOOK: NORMALISE IT SO THE
         // POSTCONDITION OF THIS METHOD HOLDS ON EVERY PATH
-        buffer.position(propertiesStartingPosition);
+        content.position(propertiesStartingPosition);
       }
 
       return true;
     }
 
-    buffer.position(propertiesStartingPosition);
+    content.position(propertiesStartingPosition);
     return false;
   }
 }

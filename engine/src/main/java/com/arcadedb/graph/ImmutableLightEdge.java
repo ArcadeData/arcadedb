@@ -23,6 +23,7 @@ import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
+import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.Collections;
@@ -50,6 +51,16 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
   @Override
   public Object get(final String propertyName) {
     return null;
+  }
+
+  /**
+   * A lightweight edge has no record content, so it has no properties either. Without this the inherited
+   * implementation handed the {@code null} buffer to the serializer, which swallowed the resulting NPE and logged
+   * "Possible corrupted record" at SEVERE for a record that is not corrupted and has nothing to read.
+   */
+  @Override
+  public boolean has(final String propertyName) {
+    return false;
   }
 
   public MutableEdge modify() {
@@ -119,11 +130,21 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
     return this;
   }
 
+  /**
+   * Built without going through the inherited implementation for the same reason as {@link #has}: there is no buffer
+   * to deserialize the properties from, and there are no properties to deserialize.
+   */
   @Override
   public JSONObject toJSON(final boolean includeMetadata) {
-    final JSONObject json = super.toJSON(includeMetadata);
-    if (includeMetadata)
-      json.put(Property.CAT_PROPERTY, "e").put("@in", in).put("@out", out);
+    final JSONObject json = new JsonSerializer(database).map2json(Collections.emptyMap(), type, includeMetadata);
+    if (includeMetadata) {
+      // SAME KEY ORDER THE INHERITED IMPLEMENTATION PRODUCED: @cat FIRST, WHICH IT WROTE AS "d" AND THIS OVERRIDE
+      // REPLACED IN PLACE WITH "e"
+      json.put(Property.CAT_PROPERTY, "e");
+      json.put(Property.TYPE_PROPERTY, type.getName());
+      json.put(Property.RID_PROPERTY, getIdentity().toString());
+      json.put("@in", in).put("@out", out);
+    }
     return json;
   }
 

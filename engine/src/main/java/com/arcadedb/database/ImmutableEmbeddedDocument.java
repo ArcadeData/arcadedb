@@ -46,8 +46,9 @@ public class ImmutableEmbeddedDocument extends ImmutableDocument implements Embe
     if (mostRecent == this) {
       // CURRENT RECORD IS THE MOST RECENT IN TX, CREATE A MUTABLE DOC, REPLACE ITSELF IN THE OWNER DOCUMENT AND RETURN IT
       checkForLazyLoading();
-      buffer.rewind();
-      final MutableEmbeddedDocument newRecord = new MutableEmbeddedDocument(database, type, buffer.copyOfContent(), modifier);
+      final Binary content = requireBuffer("modify");
+      content.rewind();
+      final MutableEmbeddedDocument newRecord = new MutableEmbeddedDocument(database, type, content.copyOfContent(), modifier);
       modifier.setEmbeddedDocument(newRecord);
       return newRecord;
     } else if (mostRecent instanceof MutableEmbeddedDocument document) {

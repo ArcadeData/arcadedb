@@ -464,11 +464,14 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
         reload();
       }
 
-      if (buffer == null)
+      // READ THE FIELD ONCE AND WORK ON THE LOCAL, LIKE EVERY OTHER BUFFER DEREFERENCE: A CONCURRENT reload() ON A
+      // SHARED RECORD INSTANCE NULLS IT, AND RE-READING IT AFTER THE CHECK IS WHAT MAKES THAT AN NPE
+      final Binary content = buffer;
+      if (content == null)
         return;
 
-      buffer.position(propertiesStartingPosition);
-      this.map = this.database.getSerializer().deserializeProperties(this.database, buffer,
+      content.position(propertiesStartingPosition);
+      this.map = this.database.getSerializer().deserializeProperties(this.database, content,
           new EmbeddedModifierObject(this), rid);
     }
   }

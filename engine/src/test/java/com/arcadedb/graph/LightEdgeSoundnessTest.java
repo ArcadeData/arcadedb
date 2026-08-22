@@ -20,8 +20,11 @@ package com.arcadedb.graph;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
+import com.arcadedb.log.WarningCapture;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Property;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -202,6 +205,35 @@ public class LightEdgeSoundnessTest extends TestHelper {
 
     assertThat(count("select count(*) as c from " + KNOWS)).as("a drift persisted in statistics.json survives a reopen")
         .isEqualTo(3);
+  }
+
+  /**
+   * A lightweight edge has no record content at all - no buffer, no properties - and asking it for either must not
+   * claim otherwise. The inherited accessors handed the {@code null} buffer straight to the serializer, which
+   * swallowed the resulting {@link NullPointerException} and logged "Possible corrupted record" at SEVERE, pointing
+   * whoever read that log at a corruption that does not exist. The answers themselves were already right, so the log
+   * line is the whole of the symptom.
+   */
+  @Test
+  void readingALightEdgeDoesNotReportItAsCorrupted() {
+    final RID[] v = chain(2);
+
+    final JSONObject[] json = new JSONObject[1];
+    final List<String> severe = WarningCapture.captureSevere(() -> database.transaction(() -> {
+      final Edge edge = onlyOutEdge(v[0]);
+      json[0] = edge.toJSON(true);
+      assertThat(edge.has("since")).as("a lightweight edge carries no properties").isFalse();
+      assertThat(edge.getPropertyNames()).isEmpty();
+      assertThat(edge.propertiesAsMap()).isEmpty();
+    }));
+
+    assertThat(severe).as("nothing about a lightweight edge is corrupted").noneSatisfy(
+        message -> assertThat(message).containsIgnoringCase("corrupted"));
+
+    assertThat(json[0].getString(Property.CAT_PROPERTY)).isEqualTo("e");
+    assertThat(json[0].getString(Property.TYPE_PROPERTY)).isEqualTo(KNOWS);
+    assertThat(json[0].get("@out")).hasToString(v[0].toString());
+    assertThat(json[0].get("@in")).hasToString(v[1].toString());
   }
 
   // ---------------------------------------------------------------- helpers

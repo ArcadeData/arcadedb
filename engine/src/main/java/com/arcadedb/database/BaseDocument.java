@@ -185,15 +185,18 @@ public abstract class BaseDocument extends BaseRecord implements Document, Docum
    * edges it had before the reload (issue #5771), and an edge whose replacement buffer had shorter compressed RIDs kept
    * a {@code propertiesStartingPosition} pointing past its own properties.
    */
-  protected void parseRecordPrefix() {
-    buffer.position(propertiesStartingPosition);
+  protected void parseRecordPrefix(final Binary content) {
+    content.position(propertiesStartingPosition);
   }
 
   @Override
   public void reload() {
     super.reload();
-    if (buffer != null)
-      parseRecordPrefix();
+    // READ THE FIELD ONCE AND HAND THE PREFIX PARSER THE SAME BUFFER THE CHECK SAW: A CONCURRENT reload() ON A SHARED
+    // RECORD INSTANCE COULD OTHERWISE NULL IT IN BETWEEN
+    final Binary content = buffer;
+    if (content != null)
+      parseRecordPrefix(content);
   }
 
   @Override
