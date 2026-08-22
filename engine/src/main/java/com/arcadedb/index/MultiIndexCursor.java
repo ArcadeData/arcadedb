@@ -111,7 +111,9 @@ public class MultiIndexCursor implements IndexCursor {
 
   @Override
   public boolean hasNext() {
-    if (limit > -1 && browsed > limit)
+    // #6565: browsed COUNTS CANDIDATES ALREADY RETURNED BY next(), SO browsed == limit MEANS limit CANDIDATES HAVE
+    // ALREADY BEEN HANDED OUT - ONE MORE WOULD EXCEED THE CAP THE CALLER ASKED FOR
+    if (limit > -1 && browsed >= limit)
       return false;
 
     for (int i = 0; i < cursors.size(); ++i) {
