@@ -20,18 +20,24 @@ package com.arcadedb.graph;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseContext;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.exception.VertexNotFoundException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.EnumSet;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -395,6 +401,89 @@ class Issue6586MissingVertexDiagnosisTest extends TestHelper {
     assertThat(thrown).isInstanceOf(VertexNotFoundException.class);
     assertThat(thrown).isNotInstanceOf(NeedRetryException.class);
     assertThat(((RecordNotFoundException) thrown).getRID()).isEqualTo(targetRID);
+  }
+
+  /**
+   * The probe reads the slot through {@code Bucket.existsRecord}, which checks {@code READ_RECORD}, where the
+   * physical delete under it checks only {@code DELETE_RECORD}. That is a real asymmetry, and this pins why it
+   * cannot cost anybody a delete they used to be able to perform: a principal without {@code READ_RECORD} on the
+   * bucket cannot obtain a vertex handle in the first place, so it never reaches {@code deleteVertex} to be
+   * refused there. The refusal it gets is the same one, from the same check, that it always got.
+   * <p>
+   * Both halves matter. The first asserts the read is refused; the second grants {@code READ_RECORD} back, leaving
+   * the same {@code DELETE_RECORD} grant in place, and asserts the delete then goes through - without which the
+   * first half would prove only that the stub user denies everything.
+   */
+  @Test
+  void aPrincipalWithoutReadPermissionCannotReachTheDeleteAtAll() {
+    final String path = "target/databases/Issue6586PermissionProbe";
+
+    final DatabaseFactory factory = new DatabaseFactory(path).setSecurity(database -> {
+    });
+    if (factory.exists())
+      factory.open().drop();
+
+    final Database restricted = factory.create();
+    try {
+      restricted.transaction(() -> restricted.getSchema().createVertexType("Guarded", 1));
+
+      final RID[] guarded = new RID[1];
+      restricted.transaction(() -> {
+        final MutableVertex v = restricted.newVertex("Guarded");
+        v.save();
+        guarded[0] = v.getIdentity();
+      });
+
+      final Set<SecurityDatabaseUser.ACCESS> granted = EnumSet.of(SecurityDatabaseUser.ACCESS.DELETE_RECORD);
+      DatabaseContext.INSTANCE.getContext(restricted.getDatabasePath()).setCurrentUser(userGranting(granted));
+
+      // lookupByRID rather than RID.asVertex(): the latter rewraps everything that is not already a not-found into
+      // one (DatabaseRID.asVertex), so a permission denial reaches the caller disguised as "Record #x:y not found".
+      // Pre-existing and not this issue's subject, but it would make the assertion below read the wrong failure.
+      assertThat(catchThrowable(
+          () -> restricted.transaction(() -> restricted.lookupByRID(guarded[0], true), false, 1)))
+          .as("a handle cannot be obtained without READ_RECORD, which is what keeps the probe out of the picture")
+          .isInstanceOf(SecurityException.class);
+
+      granted.add(SecurityDatabaseUser.ACCESS.READ_RECORD);
+      restricted.transaction(() -> guarded[0].asVertex().delete());
+      restricted.transaction(() -> assertThat(restricted.existsRecord(guarded[0])).isFalse());
+
+    } finally {
+      DatabaseContext.INSTANCE.getContext(restricted.getDatabasePath()).setCurrentUser(null);
+      restricted.drop();
+      factory.close();
+    }
+  }
+
+  /** A principal that allows the database wholesale and exactly {@code granted} on every file. */
+  private static SecurityDatabaseUser userGranting(final Set<SecurityDatabaseUser.ACCESS> granted) {
+    return new SecurityDatabaseUser() {
+      @Override
+      public String getName() {
+        return "restricted";
+      }
+
+      @Override
+      public boolean requestAccessOnDatabase(final DATABASE_ACCESS access) {
+        return true;
+      }
+
+      @Override
+      public boolean requestAccessOnFile(final int fileId, final ACCESS access) {
+        return granted.contains(access);
+      }
+
+      @Override
+      public long getResultSetLimit() {
+        return -1L;
+      }
+
+      @Override
+      public long getReadTimeout() {
+        return -1L;
+      }
+    };
   }
 
   // ---------------------------------------------------------------------------------------------------------

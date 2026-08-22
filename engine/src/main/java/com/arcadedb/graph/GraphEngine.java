@@ -566,6 +566,12 @@ public class GraphEngine {
       // is discovered here instead. Same fact, same answer.
       if (vertexRID != null && vertexRID.equals(e.getRID()))
         throw missingVertexOnEdgeListWrite(vertexRID, direction, e);
+      // The "some OTHER record" case is rethrown here where the head read above converts it to a conflict, and the
+      // asymmetry is deliberate rather than an omission. Up there the read is the FIRST thing this method does, so
+      // an unidentified missing record has to be answered by the policy for a list write that has not begun -
+      // #5670's, retry rather than skip. Down here the vertex has already been read successfully once, three lines
+      // up, so a not-found naming anything else is not a fact about this list at all; re-typing it as a conflict on
+      // this list would be inventing a diagnosis, which is the whole thing #6586 is about not doing.
       throw e;
     }
     final RID reloadedHead = direction == Vertex.DIRECTION.OUT ? mutable.getOutEdgesHeadChunk() : mutable.getInEdgesHeadChunk();
