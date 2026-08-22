@@ -332,7 +332,22 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     status = Status.BUILDING;
     buildError = null;
     try {
-      final long asOfTransactionId = currentLastTransactionId();
+      // Unlike buildAsync()/onRelevantCommit()/applyDelta()'s rebuild - each of which calls database.begin() on a
+      // fresh worker thread AFTER sampling asOfTransactionId, so the scan's transaction cannot have cached
+      // anything before that point - this method runs the scan on whatever transaction is already active on the
+      // CALLING thread (e.g. REBUILD GRAPH ANALYTICAL VIEW / a caller invoking build() directly inside its own
+      // transaction), or with none active at all. Under the default READ_COMMITTED that's harmless (no per-page
+      // caching, every read is current). Under REPEATABLE_READ, a transaction that was already open - and may
+      // already have cached some of the pages this scan is about to read - can miss a commit that landed between
+      // its own begin() and this sample, while asOfTransactionId (sampled here) claims coverage through it. The
+      // certificate would then be wrong in the direction that matters: a "complete" persisted CSR that is
+      // actually missing something. Since there is no way from here to know which pages (if any) that ambient
+      // transaction already cached, treat the certificate as unusable whenever that risk exists at all, rather
+      // than trying to bound it: asOfTransactionId=-1 makes persistCsrIfPossible() skip persisting this snapshot
+      // (see its existing "< 0" guard), the same way a snapshot that must never be persisted already reads.
+      final boolean certificateMayBeUnsound = database.isTransactionActive()
+          && database.getTransactionIsolationLevel() == Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ;
+      final long asOfTransactionId = certificateMayBeUnsound ? -1L : currentLastTransactionId();
       final long buildStart = System.currentTimeMillis();
       final CSRBuilder builder = new CSRBuilder(database, propertyFilter, edgePropertyFilter, propertySampleSize);
       final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);

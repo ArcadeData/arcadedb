@@ -2541,6 +2541,60 @@ class GraphAnalyticalViewTest extends TestHelper {
   }
 
   /**
+   * Regression for issue #6583 code review: {@code build(vertexTypes, edgeTypes)} - unlike {@code
+   * buildAsync()}/{@code onRelevantCommit()}/{@code applyDelta()}'s rebuild, which each open a fresh
+   * transaction on a dedicated worker thread AFTER sampling the certificate - runs its scan on whatever
+   * transaction is already active on the calling thread (this is what {@code REBUILD GRAPH ANALYTICAL VIEW}
+   * and a direct {@code build()} call both do). Under {@code REPEATABLE_READ}, a transaction that was already
+   * open before this call may have cached pages the scan is about to read, so it could miss a commit that
+   * landed between that transaction's own begin() and this call - while the certificate sampled here would
+   * still claim full coverage. The resulting snapshot must never be persisted in that situation, regardless
+   * of whether an actual missed commit occurred: there is no way to tell from here whether it did.
+   */
+  @Test
+  void syncBuildUnderAnAlreadyActiveRepeatableReadTransactionIsNeverPersisted() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").save();
+    final MutableVertex b = database.newVertex("Person").save();
+    a.newEdge("FOLLOWS", b);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("csr-repeatable-read-test")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
+        .build();
+    assertThat(gav.getNodeCount()).isEqualTo(2);
+
+    final Database.TRANSACTION_ISOLATION_LEVEL original = database.getTransactionIsolationLevel();
+    database.setTransactionIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+    try {
+      database.begin();
+      try {
+        // Rescans on THIS already-active transaction, exactly the REBUILD GRAPH ANALYTICAL VIEW / direct
+        // build() path the review flagged - the certificate sampled inside build() cannot vouch for what
+        // this transaction may have already cached before this call.
+        gav.build(new String[] { "Person" }, new String[] { "FOLLOWS" });
+      } finally {
+        database.commit();
+      }
+    } finally {
+      database.setTransactionIsolationLevel(original);
+    }
+
+    gav.shutdown();
+    assertThat(GraphAnalyticalViewCSRPersistence.fileFor(database, "csr-repeatable-read-test"))
+        .as("a synchronous build() scanned under an already-active REPEATABLE_READ transaction must never be "
+            + "persisted: its certificate cannot be trusted to describe what the scan actually saw")
+        .doesNotExist();
+
+    gav.drop();
+  }
+
+  /**
    * Regression for issue #6583, raised in review by the issue's original reporter: the certificate is an
    * equality test against {@code TransactionManager.getLastTransactionId()}, which is NOT guaranteed
    * monotonic across a lost or corrupted recency marker - a clean close removes the WAL, so the marker is
