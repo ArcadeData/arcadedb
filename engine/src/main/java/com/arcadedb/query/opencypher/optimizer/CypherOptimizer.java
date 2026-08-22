@@ -1026,18 +1026,21 @@ public class CypherOptimizer {
    */
   private boolean readsOnlyTheAnchor(final BooleanExpression expression, final String anchorVariable,
       final LogicalPlan logicalPlan) {
-    final String text = expression.getText();
-    if (text == null || !CypherVariableUsage.expressionReferencesVariable(text, anchorVariable))
+    // Walks the parsed expression rather than Expression#getText(): ANTLR's default getText()
+    // concatenates token text with no separating whitespace, which can glue a keyword onto the very
+    // next variable name (e.g. "any(item IN r0.k8 ...)" becomes "any(itemINr0.k8...)") and silently
+    // defeat a word-boundary text scan (issue #6567).
+    if (!CypherVariableUsage.expressionReferencesVariable(expression, anchorVariable))
       return false;
 
     for (final String variable : logicalPlan.getPatternNodes().keySet())
-      if (!variable.equals(anchorVariable) && CypherVariableUsage.expressionReferencesVariable(text, variable))
+      if (!variable.equals(anchorVariable) && CypherVariableUsage.expressionReferencesVariable(expression, variable))
         return false;
 
     for (final LogicalRelationship relationship : logicalPlan.getRelationships()) {
       final String relationshipVariable = relationship.getVariable();
       if (relationshipVariable != null && !relationshipVariable.isEmpty()
-          && CypherVariableUsage.expressionReferencesVariable(text, relationshipVariable))
+          && CypherVariableUsage.expressionReferencesVariable(expression, relationshipVariable))
         return false;
     }
 

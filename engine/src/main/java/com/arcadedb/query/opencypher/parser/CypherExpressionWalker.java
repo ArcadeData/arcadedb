@@ -352,7 +352,9 @@ public final class CypherExpressionWalker {
     } else if (expr instanceof ListPredicateExpression predicate) {
       walk(predicate.getListExpression(), visitor);
       walk(predicate.getWhereExpression(), visitor);
-    } else if (expr instanceof ReduceExpression reduce) {
+    }
+    case CypherExpressionBuilder.ChainedPropertyAccessExpression chained -> walk(chained.getBaseExpression(), visitor);
+    case ReduceExpression reduce -> {
       walk(reduce.getInitialValue(), visitor);
       walk(reduce.getListExpression(), visitor);
       walk(reduce.getReduceExpression(), visitor);
