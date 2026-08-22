@@ -580,13 +580,14 @@ public class CoreApiSpec implements OpenApiContributor {
   private Schema<?> createCommandRequestSchema() {
     final Schema<Object> schema = SpecBuilders.object("Command request object");
     schema.addProperty("command", SpecBuilders.string("Command to execute"));
+    schema.addProperty("language", SpecBuilders.string("Command language").example("sql"));
     schema.addProperty("params", SpecBuilders.object(
         """
         Command parameters. Values may be JSON primitives, arrays, or typed-marker objects: \
         {"$bytes": "<base64>"} for byte[] (standard or URL-safe base64), \
         {"$int8": [v0, v1, ...]} for byte[] from integers in [-128, 127] (used to send \
         INT8-encoded vectors to LSM_VECTOR indexes without a float32 round-trip)."""));
-    schema.setRequired(List.of("command"));
+    schema.setRequired(List.of("command", "language"));
     return schema;
   }
 
