@@ -161,9 +161,18 @@ class GraphAnalyticalViewCSRPersistence {
 
     final Path targetPath = target.toPath();
     try {
-      Files.move(tmp.toPath(), targetPath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-    } catch (final AtomicMoveNotSupportedException e) {
-      Files.move(tmp.toPath(), targetPath, StandardCopyOption.REPLACE_EXISTING);
+      try {
+        Files.move(tmp.toPath(), targetPath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+      } catch (final AtomicMoveNotSupportedException e) {
+        Files.move(tmp.toPath(), targetPath, StandardCopyOption.REPLACE_EXISTING);
+      }
+    } catch (final IOException e) {
+      // A failing move (disk full, permissions) would otherwise leave the tmp file - nanoTime()-suffixed, so a
+      // persistently failing move orphans a new one on every close - behind forever alongside a still-usable
+      // (if stale) previous target file. Clean it up either way; the caller already treats a save() failure as
+      // "no persistence this cycle", exactly as if this file had never been written.
+      Files.deleteIfExists(tmp.toPath());
+      throw e;
     }
   }
 
