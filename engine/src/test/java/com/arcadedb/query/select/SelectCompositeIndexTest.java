@@ -125,6 +125,24 @@ public class SelectCompositeIndexTest extends TestHelper {
   }
 
   @Test
+  void compositeIndexFullKeyMatchIsUsed() {
+    // ALL THREE PROPERTIES OF THE COMPOSITE INDEX ARE BOUND BY EQUALITY: THE KEY'S ARITY MATCHES THE INDEX'S OWN
+    // EXACTLY, SO THIS GOES THROUGH THE PLAIN get() LOOKUP RATHER THAN THE PARTIAL-KEY range() SCAN
+    final SelectCompiled select = database.select().fromType("Supplier")//
+        .where().property("key1").eq().value("a")//
+        .and().property("key2").eq().value("b")//
+        .and().property("orderedAt").eq().value(3L).compile();
+
+    final SelectIterator<Vertex> result = select.vertices();
+    final List<Vertex> list = result.toList();
+
+    assertThat(list).hasSize(1);
+    assertThat(list.getFirst().getLong("orderedAt")).isEqualTo(3L);
+    assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(1);
+    assertThat(result.getMetrics().get("evaluatedRecords")).isEqualTo(1L);
+  }
+
+  @Test
   void compositeIndexNotUsedUnderOr() {
     // AN 'or' MUST NOT ATTEMPT THE COMPOSITE PREFIX MATCH: NEITHER PROPERTY HAS ITS OWN STANDALONE INDEX HERE, SO NO
     // INDEX CAN BE USED AND THE QUERY FALLS BACK TO A FULL TYPE SCAN, JUST LIKE BEFORE THE COMPOSITE-INDEX SUPPORT
