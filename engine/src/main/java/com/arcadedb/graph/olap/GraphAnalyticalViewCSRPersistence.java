@@ -286,7 +286,7 @@ class GraphAnalyticalViewCSRPersistence {
     out.writeInt(array.length);
     if (array.length == 0)
       return;
-    final byte[] bytes = new byte[array.length * Integer.BYTES];
+    final byte[] bytes = new byte[Math.multiplyExact(array.length, Integer.BYTES)];
     ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN).asIntBuffer().put(array);
     out.write(bytes);
   }
@@ -295,7 +295,7 @@ class GraphAnalyticalViewCSRPersistence {
     out.writeInt(array.length);
     if (array.length == 0)
       return;
-    final byte[] bytes = new byte[array.length * Long.BYTES];
+    final byte[] bytes = new byte[Math.multiplyExact(array.length, Long.BYTES)];
     ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN).asLongBuffer().put(array);
     out.write(bytes);
   }
@@ -304,7 +304,7 @@ class GraphAnalyticalViewCSRPersistence {
     out.writeInt(array.length);
     if (array.length == 0)
       return;
-    final byte[] bytes = new byte[array.length * Double.BYTES];
+    final byte[] bytes = new byte[Math.multiplyExact(array.length, Double.BYTES)];
     ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN).asDoubleBuffer().put(array);
     out.write(bytes);
   }
@@ -517,7 +517,7 @@ class GraphAnalyticalViewCSRPersistence {
     final int[] array = new int[len];
     if (len == 0)
       return array;
-    final byte[] bytes = new byte[len * Integer.BYTES];
+    final byte[] bytes = new byte[Math.multiplyExact(len, Integer.BYTES)];
     in.readFully(bytes);
     ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN).asIntBuffer().get(array);
     return array;
@@ -528,7 +528,7 @@ class GraphAnalyticalViewCSRPersistence {
     final long[] array = new long[len];
     if (len == 0)
       return array;
-    final byte[] bytes = new byte[len * Long.BYTES];
+    final byte[] bytes = new byte[Math.multiplyExact(len, Long.BYTES)];
     in.readFully(bytes);
     ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN).asLongBuffer().get(array);
     return array;
@@ -539,7 +539,7 @@ class GraphAnalyticalViewCSRPersistence {
     final double[] array = new double[len];
     if (len == 0)
       return array;
-    final byte[] bytes = new byte[len * Double.BYTES];
+    final byte[] bytes = new byte[Math.multiplyExact(len, Double.BYTES)];
     in.readFully(bytes);
     ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN).asDoubleBuffer().get(array);
     return array;
