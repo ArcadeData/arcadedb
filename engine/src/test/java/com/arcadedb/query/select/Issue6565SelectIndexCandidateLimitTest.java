@@ -194,7 +194,9 @@ public class Issue6565SelectIndexCandidateLimitTest extends TestHelper {
     final SelectExecutor executor = new SelectExecutor(select);
     final MultiIndexCursor cursor = executor.lookForIndexes();
     try {
-      assertThat(cursor == null).as("no cursor should have been built for a bare neq leaf").isTrue();
+      // assertThat(cursor) IS AMBIGUOUS: MultiIndexCursor IMPLEMENTS BOTH Iterator AND Iterable (VIA IndexCursor),
+      // AND AssertJ HAS AN OVERLOAD FOR EACH - THE CAST PICKS THE PLAIN Object OVERLOAD INSTEAD
+      assertThat((Object) cursor).as("no cursor should have been built for a bare neq leaf").isNull();
       assertThat(executor.indexCandidateLimit).isEqualTo(-1);
     } finally {
       if (cursor != null)
