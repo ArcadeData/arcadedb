@@ -222,12 +222,11 @@ public class SelectExecutor {
       // #6565: A CANDIDATE CAP IS SAFE ONLY WHEN THE INDEX SCAN EXACTLY REPRODUCES THE WHERE-TREE'S RESULT SET AND
       // THE ORDER BY (IF ANY) IS ALREADY SATISFIED BY IT - evaluateWhere(), skip AND fetchResultInCaseOfOrderBy()'s
       // FULL-DRAIN SORT ALL REDUCE THE STREAM FURTHER OTHERWISE, SO THE SCAN MUST RUN UNCAPPED TO SURVIVE THAT.
-      // MUST RUN BEFORE filterWithIndexes() BELOW, SINCE isWhereExactlyIndexed() READS node.index BEFORE
+      // MUST RUN BEFORE filterWithIndexes() BELOW, SINCE soleExactLeaf() READS node.index BEFORE
       // filterWithIndexesFinalNode() PRUNES AN 'and' SIBLING'S - HARMLESS TODAY ONLY BECAUSE 'and' IS ALREADY
       // UNCONDITIONALLY DISQUALIFIED
-      final boolean whereExact = isWhereExactlyIndexed(select.rootTreeElement);
-      indexCandidateLimit = whereExact && isOrderBySafeForCap(soleExactLeaf(select.rootTreeElement))
-          ? computeExactCandidateLimit() : -1;
+      final SelectTreeNode exactLeaf = soleExactLeaf(select.rootTreeElement);
+      indexCandidateLimit = exactLeaf != null && isOrderBySafeForCap(exactLeaf) ? computeExactCandidateLimit() : -1;
 
       filterWithIndexes(select.rootTreeElement, cursors);
       if (!cursors.isEmpty())
@@ -256,14 +255,15 @@ public class SelectExecutor {
   }
 
   /**
-   * True when the index cursor(s) built for this subtree return exactly the records matching it, with nothing left
-   * for {@code evaluateWhere()} to discard afterward. Only a bare indexed leaf qualifies (through the synthetic
-   * {@code run} wrapper, see below): an {@code is_null}/{@code is_not_null} leaf never gets a cursor, and under an
-   * {@code and} at most one child's cursor is kept when either side's index is unique (see
-   * {@link #filterWithIndexesFinalNode}) - when neither side is unique, both children's cursors survive and
-   * {@link MultiIndexCursor} unions rather than intersects them, a superset {@code evaluateWhere()} must still
-   * narrow down. Either way the discarded or extra conjunct is still checked later against a stream a cap would
-   * have already truncated or under-counted. {@code not} is conservatively treated the same way.
+   * The tree's one and only indexed leaf whose index cursor, if built, would return exactly the records matching
+   * the whole tree, with nothing left for {@code evaluateWhere()} to discard afterward - {@code null} if no such
+   * leaf exists. Only a bare leaf qualifies (through the synthetic {@code run} wrapper, see below): an
+   * {@code is_null}/{@code is_not_null} leaf never gets a cursor, and under an {@code and} at most one child's
+   * cursor is kept when either side's index is unique (see {@link #filterWithIndexesFinalNode}) - when neither
+   * side is unique, both children's cursors survive and {@link MultiIndexCursor} unions rather than intersects
+   * them, a superset {@code evaluateWhere()} must still narrow down. Either way the discarded or extra conjunct is
+   * still checked later against a stream a cap would have already truncated or under-counted. {@code not} is
+   * conservatively treated the same way.
    * <p>
    * {@code or} is conservatively excluded too, even though {@link MultiIndexCursor} merges its children's cursors
    * into the same shape as the boolean union: that merge is a plain k-way merge with no RID dedup, so two branches
@@ -276,7 +276,9 @@ public class SelectExecutor {
    * per-value cursors don't have this problem (each value is a distinct key on the same single-valued property, so
    * their RID sets are disjoint by construction) - but that dedup-free merge happens once, inside
    * {@link #filterWithIndexesFinalNode}'s own {@code in_op} handling, not through a top-level {@code or}, so
-   * {@code in_op} is unaffected by excluding {@code or} here.
+   * {@code in_op} is unaffected by excluding {@code or} here. An {@code or} also always adds one {@link IndexInfo}
+   * per leaf to {@link #usedIndexes}, so {@code usedIndexes.size() == 1} - the trivial-match precondition
+   * {@link SelectIterator#fetchResultInCaseOfOrderBy} itself requires - can never hold for it either way.
    * <p>
    * {@code Select.compile()} always finalizes the tree with a trailing {@code setLogic(SelectOperator.run)}
    * ({@link Select#compile}); when the where-clause is a single bare condition with no {@code and()}/{@code or()},
@@ -284,9 +286,9 @@ public class SelectExecutor {
    * is always {@code null} ({@link Select#setLogic}) - {@code run} is otherwise never used as a tree operator, so it
    * is treated here as a transparent pass-through to its {@code left} child.
    */
-  private boolean isWhereExactlyIndexed(final SelectTreeNode node) {
+  private SelectTreeNode soleExactLeaf(final SelectTreeNode node) {
     if (node == null)
-      return true;
+      return null;
 
     // node.index != null MEANS "isTheNodeFullyIndexed() FOUND AN INDEX ON THIS LEAF'S PROPERTY", NOT "THIS LEAF'S
     // OPERATOR ACTUALLY PRODUCES A CURSOR" - IT'S SET FOR neq/like/ilike TOO (SEE #6577). HARMLESS TODAY BECAUSE A
@@ -294,29 +296,11 @@ public class SelectExecutor {
     // lookForIndexes() RETURNS null BEFORE ANY (WRONGLY-COMPUTED) CAP IS EVER USED - BUT #6577 IS WHERE TO FIX THIS
     // AT THE SOURCE, NOT HERE
     if (!(node.left instanceof SelectTreeNode))
-      return node.index != null;
-
-    if (node.operator == SelectOperator.run)
-      return isWhereExactlyIndexed((SelectTreeNode) node.left) && isWhereExactlyIndexed((SelectTreeNode) node.right);
-
-    return false;
-  }
-
-  /**
-   * The tree's one and only indexed leaf, if {@code isWhereExactlyIndexed(node)} would be true AND the tree
-   * contributes exactly one cursor - {@code null} otherwise, including for an {@code or} of two or more leaves.
-   * An {@code or} always adds one {@link IndexInfo} per leaf to {@link #usedIndexes} (see
-   * {@link #filterWithIndexesFinalNode}), so {@code usedIndexes.size() == 1} - the trivial-match precondition
-   * {@link SelectIterator#fetchResultInCaseOfOrderBy} itself requires - can never hold for it either; only a
-   * single bare leaf (reached directly, or through the synthetic {@code run} wrapper) ever qualifies.
-   */
-  private SelectTreeNode soleExactLeaf(final SelectTreeNode node) {
-    if (node == null)
-      return null;
-    if (!(node.left instanceof SelectTreeNode))
       return node.index != null ? node : null;
+
     if (node.operator == SelectOperator.run)
       return soleExactLeaf((SelectTreeNode) node.left);
+
     return null;
   }
 
