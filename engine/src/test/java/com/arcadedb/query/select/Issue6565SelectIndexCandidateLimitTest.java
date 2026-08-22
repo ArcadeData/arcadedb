@@ -150,6 +150,21 @@ public class Issue6565SelectIndexCandidateLimitTest extends TestHelper {
   }
 
   @Test
+  void inLeafUnderOrWithSkipAndLimitPagesCorrectly() {
+    // CODE REVIEW ON #6571: COMBINES THE in_op NESTED-CURSOR SHARING (inOperatorWithSkipAndLimitPagesCorrectly) WITH
+    // THE or-MERGE SHAPE (orOfTwoIndexedRangesWithSkipAndLimitPagesCorrectly) TO MAKE EXPLICIT, RATHER THAN JUST
+    // INFERRED, THAT SHARING THE WHOLE TREE'S indexCandidateLimit WITH A NESTED PER-VALUE CURSOR STAYS SAFE EVEN WHEN
+    // THAT CURSOR IS ALSO ONE CHILD OF AN OUTER or-MERGED MultiIndexCursor.
+    // g IN (g0,g1,g2) MATCHES 600 OF THE 1000 ROWS (i % 5 IN {0,1,2}); n = 3 MATCHES EXACTLY 1 ROW WHOSE g IS "g3"
+    // (i % 5 == 3), OUTSIDE THE IN SET, SO THE UNION HAS 601 DISTINCT MATCHES.
+    final long count = database.select().fromType("T").where()//
+        .property("g").in().value(List.of("g0", "g1", "g2"))//
+        .or().property("n").eq().value(3)//
+        .skip(595).limit(10).count();
+    assertThat(count).isEqualTo(6);
+  }
+
+  @Test
   void singleBareEqualityCandidateCapCoversSkipPlusLimit() {
     // CODE REVIEW ON #6571: Select.compile() WRAPS A LONE CONDITION (NO and()/or() CALLED) IN A SYNTHETIC 'run' NODE
     // (Select.setLogic()'S "1ST TIME ONLY" BRANCH), SO THE ROOT'S left IS A SelectTreeNode EVEN THOUGH THE WHOLE TREE
