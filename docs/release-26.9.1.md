@@ -3781,3 +3781,40 @@ strictly better than the pre-fix full pool teardown, but a workload that provoke
 that slot would benefit from more parallelism (raising `parallelLevel`) rather than sharing one.
 
 [#6509](https://github.com/ArcadeData/arcadedb/issues/6509)
+
+## A dangling vertex reference is reported as a not-found, not as a conflict to retry (#6572)
+
+An adjacency entry whose target vertex record was removed without the entry being disconnected - the documented
+legacy of a pre-#5670 best-effort edge delete - hands a caller a handle to a record that is not there. Deleting
+through it (`for (Vertex v : src.getVertices(OUT, "E1")) v.delete()`) reached
+`GraphEngine.getEdgeHeadChunkForWrite`, whose lazy load of the vertex raised `RecordNotFoundException`, and that was
+converted wholesale into the retryable `ConcurrentModificationException` the method exists to produce for a head
+CHUNK that a concurrent commit has not published yet.
+
+Two things were wrong at once, and both of them hurt a batch job. The type said "retry me" for a record that is
+gone, so every attempt failed identically, the retry budget was spent on a foregone conclusion and the whole
+transaction rolled back - one stale reference killing an entire nightly sweep, permanently, with no work
+committed. And the advice said `CHECK DATABASE RECORD <rid> FIX`, which rebuilds the edge list *of* that record
+from the surviving edges - while that record is precisely the one that no longer exists.
+
+The evidence separating the two cases was already on the exception: the RID it names. A missing chunk (or stripe
+head) really can be the publication window; the vertex the caller asked to modify cannot. When the cause names the
+vertex's own RID, `getEdgeHeadChunkForWrite` now raises `VertexNotFoundException` - a `RecordNotFoundException`,
+deliberately not a `NeedRetryException` - saying that the vertex does not exist and that it was reached through a
+stale reference, and pointing at `CHECK DATABASE FIX`, which sweeps and drops the entries that point at missing
+records. The RECORD scope is ruled out in words rather than rendered as a runnable command, since the entry to drop
+lives on the vertex at the *other* end and no index maps a vertex back to the lists that name it. Everything else
+keeps the #5670 conflict and the #5764 scoped advice unchanged.
+
+Deleting a vertex whose record is already gone therefore stays an ERROR rather than becoming a silent no-op: that
+is what `bucket.deleteRecord` answers for every other record shape, and for this vertex a few steps further down
+the same delete. What changes is only that the error says what is wrong. Callers that walk possibly-stale
+references can now tell "this will never work" from "try again" by catching `RecordNotFoundException`, and skip the
+entry instead of losing the batch.
+
+One related tolerance moves with it: `deleteEdge` already treats an endpoint vertex that is gone as "nothing to
+disconnect on that side", decided by an `existsRecord` probe. The probe and the head-pointer read are two separate
+reads, so the same fact can now surface between them as `VertexNotFoundException`; `disconnectEndpoint` tolerates it
+identically rather than promoting a window the probe would have absorbed into a hard failure.
+
+[#6572](https://github.com/ArcadeData/arcadedb/issues/6572)
