@@ -266,7 +266,6 @@ public final class PaginatedSegmentReader implements AutoCloseable {
     return parentSegments.clone();
   }
 
-
   public boolean hasDim(final int dimId) {
     return Arrays.binarySearch(dimIds, dimId) >= 0;
   }
