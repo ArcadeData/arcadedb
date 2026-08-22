@@ -18,6 +18,7 @@
  */
 package com.arcadedb.graph;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
@@ -172,6 +173,32 @@ class Issue6586MissingVertexDiagnosisTest extends TestHelper {
     database.transaction(
         () -> graphEngine.deleteVertex((VertexInternal) database.lookupByRID(srcRID, true).asVertex(), true));
     database.transaction(() -> assertThat(database.existsRecord(srcRID)).isFalse());
+  }
+
+  /**
+   * The other lever that turns a refusal into a forced delete, and the reason it cannot reach this one:
+   * {@code LocalDatabase.deleteRecordNoLock} re-runs {@code deleteVertex} with {@code force} when a
+   * {@link ConcurrentModificationException} escapes AND the chain is confirmed broken - and since #6572 a missing
+   * vertex is no longer a {@code ConcurrentModificationException} at all, so that arm cannot see it. Pinned with
+   * the opt-in actually ON, because "it does not apply" is exactly the kind of claim that quietly stops holding.
+   */
+  @Test
+  void theBrokenChainOptInDoesNotForceThroughAMissingVertexRecord() {
+    createDanglingReference();
+
+    final Object previous = database.getConfiguration().getValue(GlobalConfiguration.DELETE_TOLERATE_BROKEN_CHAIN);
+    database.getConfiguration().setValue(GlobalConfiguration.DELETE_TOLERATE_BROKEN_CHAIN, true);
+    try {
+      final Throwable thrown = catchThrowable(() -> database.transaction(() -> {
+        for (final Vertex v : srcRID.asVertex().getVertices(Vertex.DIRECTION.OUT, "E1"))
+          v.delete();
+      }, false, 1));
+
+      assertThat(thrown).as("the broken-chain opt-in must not absorb a vertex that is not there: %s", thrown)
+          .isInstanceOf(VertexNotFoundException.class);
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.DELETE_TOLERATE_BROKEN_CHAIN, previous);
+    }
   }
 
   /** The same answer whichever handle the caller holds: a LAZY one (#6572's path) and a materialised one agree. */

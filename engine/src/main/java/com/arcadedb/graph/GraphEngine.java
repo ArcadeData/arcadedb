@@ -509,6 +509,12 @@ public class GraphEngine {
     } catch (final RecordNotFoundException e) {
       if (vertexRID != null && vertexRID.equals(e.getRID()))
         throw missingVertexOnEdgeListWrite(vertexRID, direction, e);
+      // DEFENSIVE, and stated so nobody hunts for the case that reaches it: a not-found from THIS read naming a
+      // record other than the vertex would have to be a continuation chunk of a multi-page vertex body, which the
+      // loader reports as BrokenChunkChainException or as a conflict of its own (#6258) rather than as a bare
+      // not-found. It is converted rather than rethrown because the policy for an unidentified missing record on a
+      // path about to WRITE a list is #5670's - retry, do not skip the write - and that is the one thing this arm
+      // must not get wrong if it ever does become reachable.
       throw new ConcurrentModificationException(
           "Vertex " + vertexRID + " is not fully visible yet (concurrent commit in flight), so its " + direction
               + " edge list cannot be extended: " + e.getMessage(), e);
