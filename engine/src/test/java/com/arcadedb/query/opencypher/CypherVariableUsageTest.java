@@ -145,9 +145,56 @@ class CypherVariableUsageTest {
     assertThat(isReferenced("MATCH (a)-[r:KNOWS]->(b) RETURN b.prefixr", "r")).isFalse();
   }
 
+  /**
+   * Issue #6567: a relationship read only inside a list predicate (any/all/none/single) or list
+   * comprehension must keep its real binding. The word-boundary text scan this class used before
+   * missed it: {@code any(item IN r0.k8 WHERE item IS NOT NULL)}'s {@code getText()} - ANTLR's default,
+   * which drops all whitespace between tokens - reads {@code "any(itemINr0.k8WHEREitemISNOTNULL)"},
+   * where "r0" no longer starts a word once it is glued to the "N" of "IN". Anonymizing the edge under
+   * that text then made the WHERE clause's own AST-based evaluation of {@code r0.k8} read a missing
+   * binding instead of the real list, turning a true predicate false and dropping every row.
+   */
+  @Test
+  void aRelationshipReadOnlyInsideAListPredicateIsReferenced() {
+    assertThat(isReferenced(
+        "MATCH (a)-[r0:KNOWS]->(b) WHERE any(item IN r0.tags WHERE item IS NOT NULL) RETURN count(*)", "r0"))
+        .isTrue();
+    assertThat(isReferenced(
+        "MATCH (a)-[r0:KNOWS]->(b) WHERE all(item IN r0.tags WHERE item IS NOT NULL) RETURN count(*)", "r0"))
+        .isTrue();
+    assertThat(isReferenced(
+        "MATCH (a)-[r0:KNOWS]->(b) WHERE none(item IN r0.tags WHERE item IS NULL) RETURN count(*)", "r0"))
+        .isTrue();
+    assertThat(isReferenced(
+        "MATCH (a)-[r0:KNOWS]->(b) WHERE single(item IN r0.tags WHERE item IS NOT NULL) RETURN count(*)", "r0"))
+        .isTrue();
+    assertThat(isReferenced(
+        "MATCH (a)-[r0:KNOWS]->(b) WHERE size([item IN r0.tags WHERE item IS NOT NULL]) > 0 RETURN count(*)", "r0"))
+        .isTrue();
+    // Control: an edge truly absent from the predicate - not even as a loop-scoped iterator name -
+    // must not be reported as referenced just because the statement contains a list predicate at all.
+    assertThat(isReferenced(
+        "MATCH (a)-[unused:KNOWS]->(b) WHERE any(item IN [1,2] WHERE item > 0) RETURN count(*)", "unused"))
+        .isFalse();
+  }
+
+  /**
+   * Issue #6567 review: a relationship read through a chained property access on a function result -
+   * {@code startNode(r).name}, not the simple {@code r.name} - must also keep its real binding.
+   * {@link com.arcadedb.query.opencypher.parser.CypherExpressionWalker} had no case for that node type
+   * (built by {@code CypherExpressionBuilder.ChainedPropertyAccessExpression} whenever a property access
+   * follows something other than a bare variable) and treated it as a leaf, so the walk never reached
+   * the {@code r} inside {@code startNode(r)}.
+   */
+  @Test
+  void aRelationshipReadThroughAChainedPropertyAccessIsReferenced() {
+    assertThat(isReferenced("MATCH (a)-[r:KNOWS]->(b) RETURN startNode(r).name AS n", "r")).isTrue();
+    assertThat(isReferenced("MATCH (a)-[r:KNOWS]->(b) RETURN endNode(r).name AS n", "r")).isTrue();
+  }
+
   @Test
   void expressionMatchingIsNullSafeAndBoundaryAware() {
-    assertThat(CypherVariableUsage.expressionReferencesVariable(null, "r")).isFalse();
+    assertThat(CypherVariableUsage.expressionReferencesVariable((String) null, "r")).isFalse();
     assertThat(CypherVariableUsage.expressionReferencesVariable("r.since", null)).isFalse();
     assertThat(CypherVariableUsage.expressionReferencesVariable("r", "r")).isTrue();
     assertThat(CypherVariableUsage.expressionReferencesVariable("r.since + rate", "r")).isTrue();
