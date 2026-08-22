@@ -44,6 +44,10 @@ public class SelectExecutor {
   final Select select;
   long            evaluatedRecords = 0;
   List<IndexInfo> usedIndexes      = null;
+  // #6565: THE CANDIDATE CAP lookForIndexes() COMPUTED FOR THE WHOLE where-TREE, REUSED BY filterWithIndexesFinalNode()
+  // FOR THE NESTED PER-VALUE CURSOR IT BUILDS FOR AN in_op LEAF, SO NEITHER PLACE HANDS A RAW select.limit (MISSING
+  // skip) TO A MultiIndexCursor
+  int             indexCandidateLimit = -1;
 
   static class IndexInfo {
     public final Index   index;
@@ -204,18 +208,130 @@ public class SelectExecutor {
     return iterator;
   }
 
-  private MultiIndexCursor lookForIndexes() {
+  // PACKAGE-PRIVATE (NOT private) SO Issue6565SelectIndexCandidateLimitTest CAN VERIFY THE COMPUTED CAP DIRECTLY:
+  // A RESULT-COUNT ASSERTION CANNOT TELL A CORRECTLY APPLIED CAP APART FROM THE UNCAPPED FALLBACK, SINCE THE
+  // LAZY-PULL CONSUMERS (SelectIterator, executeCount()) ALREADY STOP AT skip + limit ON THEIR OWN EITHER WAY
+  MultiIndexCursor lookForIndexes() {
     if (select.fromType != null && select.rootTreeElement != null) {
       final List<IndexCursor> cursors = new ArrayList<>();
 
-      // FIND AVAILABLE INDEXES
-      boolean canUseIndexes = isTheNodeFullyIndexed(select.rootTreeElement);
+      // FIND AVAILABLE INDEXES AND ASSIGN node.index ON EVERY INDEXED LEAF: filterWithIndexesFinalNode() RELIES ON THAT
+      // SIDE EFFECT TO KNOW WHICH LEAVES CAN BECOME A CURSOR
+      isTheNodeFullyIndexed(select.rootTreeElement);
+
+      // #6565: A CANDIDATE CAP IS SAFE ONLY WHEN THE INDEX SCAN EXACTLY REPRODUCES THE WHERE-TREE'S RESULT SET AND
+      // THE ORDER BY (IF ANY) IS ALREADY SATISFIED BY IT - evaluateWhere(), skip AND fetchResultInCaseOfOrderBy()'s
+      // FULL-DRAIN SORT ALL REDUCE THE STREAM FURTHER OTHERWISE, SO THE SCAN MUST RUN UNCAPPED TO SURVIVE THAT.
+      // MUST RUN BEFORE filterWithIndexes() BELOW, SINCE soleExactLeaf() READS node.index BEFORE
+      // filterWithIndexesFinalNode() PRUNES AN 'and' SIBLING'S - HARMLESS TODAY ONLY BECAUSE 'and' IS ALREADY
+      // UNCONDITIONALLY DISQUALIFIED
+      final SelectTreeNode exactLeaf = soleExactLeaf(select.rootTreeElement);
+      indexCandidateLimit = exactLeaf != null && isOrderBySafeForCap(exactLeaf) ? computeExactCandidateLimit() : -1;
 
       filterWithIndexes(select.rootTreeElement, cursors);
       if (!cursors.isEmpty())
-        return new MultiIndexCursor(cursors, select.limit, true);
+        return new MultiIndexCursor(cursors, indexCandidateLimit, true);
+
+      // NO CURSOR WAS ACTUALLY BUILT (E.G. A BARE neq/like/ilike LEAF: "INDEXED" PER isTheNodeFullyIndexed()'S LOOSER
+      // CHECK - SEE #6577 - BUT filterWithIndexesFinalNode()'S switch DOESN'T HANDLE THE OPERATOR), SO NO CAP WAS
+      // EVER APPLIED EITHER: RESET THE TEST-VISIBLE FIELD RATHER THAN LEAVE IT HOLDING A MISLEADING FINITE VALUE
+      indexCandidateLimit = -1;
     }
     return null;
+  }
+
+  /**
+   * The candidate cap for an exactly-indexed where-tree: {@code skip + limit} records are needed downstream (skip
+   * consumed first, then limit), not just {@code limit}. On overflow this deliberately falls back to {@code -1}
+   * (uncapped) rather than clamping to {@code Integer.MAX_VALUE}: a {@code skip}/{@code limit} pair that overflows
+   * an {@code int} is already pathological, and {@code -1} is the same "run uncapped" value used everywhere else
+   * in this class when the cap can't be trusted, instead of introducing a second sentinel with the same meaning.
+   */
+  private int computeExactCandidateLimit() {
+    if (select.limit < 0)
+      return -1;
+    final long sum = (long) Math.max(0, select.skip) + select.limit;
+    return sum > Integer.MAX_VALUE ? -1 : (int) sum;
+  }
+
+  /**
+   * The tree's one and only indexed leaf whose index cursor, if built, would return exactly the records matching
+   * the whole tree, with nothing left for {@code evaluateWhere()} to discard afterward - {@code null} if no such
+   * leaf exists. Only a bare leaf qualifies (through the synthetic {@code run} wrapper, see below): an
+   * {@code is_null}/{@code is_not_null} leaf never gets a cursor, and under an {@code and} at most one child's
+   * cursor is kept when either side's index is unique (see {@link #filterWithIndexesFinalNode}) - when neither
+   * side is unique, both children's cursors survive and {@link MultiIndexCursor} unions rather than intersects
+   * them, a superset {@code evaluateWhere()} must still narrow down. Either way the discarded or extra conjunct is
+   * still checked later against a stream a cap would have already truncated or under-counted. {@code not} is
+   * conservatively treated the same way.
+   * <p>
+   * {@code or} is conservatively excluded too, even though {@link MultiIndexCursor} merges its children's cursors
+   * into the same shape as the boolean union: that merge is a plain k-way merge with no RID dedup, so two branches
+   * whose match sets overlap (same-property ranges that overlap, or two different properties a single record can
+   * both satisfy - not provable disjoint from the where-tree's shape alone) make the same record surface as two
+   * separate candidates, each burning one unit of the cap before {@link SelectIterator}/{@code executeCount()}'s
+   * downstream {@code filterOutRecords} dedup ever sees it. That can exhaust the cap on duplicates before enough
+   * distinct matches are found - the same "cap spent before the filtering it needs to survive" defect this class
+   * exists to fix, just reachable again through the "or is exact" path. An {@code in_op} leaf's own internal
+   * per-value cursors don't have this problem <i>for the indexes this method can actually resolve</i>: each value is
+   * a distinct key on a single-valued property, so their RID sets are disjoint by construction - but that
+   * assumption only holds because a {@code BY ITEM}/{@code BY KEY}/{@code BY VALUE} index (one document can
+   * contribute multiple entries for the same list/map property, breaking disjointness the same way {@code or} does)
+   * is registered under a property-name key carrying that literal suffix, which the fluent {@code Select} API this
+   * class serves has no way to produce - see #6578 if that ever changes. That dedup-free merge happens once, inside
+   * {@link #filterWithIndexesFinalNode}'s own {@code in_op} handling, not through a top-level {@code or}, so
+   * {@code in_op} is unaffected by excluding {@code or} here. An {@code or} also always adds one {@link IndexInfo}
+   * per leaf to {@link #usedIndexes}, so {@code usedIndexes.size() == 1} - the trivial-match precondition
+   * {@link SelectIterator#fetchResultInCaseOfOrderBy} itself requires - can never hold for it either way.
+   * <p>
+   * {@code Select.compile()} always finalizes the tree with a trailing {@code setLogic(SelectOperator.run)}
+   * ({@link Select#compile}); when the where-clause is a single bare condition with no {@code and()}/{@code or()},
+   * that call runs its "1ST TIME ONLY" branch and wraps the leaf in a synthetic {@code run} node whose {@code right}
+   * is always {@code null} ({@link Select#setLogic}) - {@code run} is otherwise never used as a tree operator, so it
+   * is treated here as a transparent pass-through to its {@code left} child.
+   * <p>
+   * Callers must invoke this before {@link #filterWithIndexes}, which prunes a losing {@code and} sibling's
+   * {@code node.index} as a side effect of building the winning side's cursor - harmless today only because
+   * {@code and} is unconditionally disqualified above regardless of {@code node.index}. The moment that
+   * disqualification is ever loosened, this ordering becomes load-bearing: calling this method after that pruning
+   * has run could read a {@code node.index} the pruning already cleared.
+   */
+  private SelectTreeNode soleExactLeaf(final SelectTreeNode node) {
+    if (node == null)
+      return null;
+
+    // node.index != null MEANS "isTheNodeFullyIndexed() FOUND AN INDEX ON THIS LEAF'S PROPERTY", NOT "THIS LEAF'S
+    // OPERATOR ACTUALLY PRODUCES A CURSOR" - IT'S SET FOR neq/like/ilike TOO (SEE #6577). HARMLESS TODAY BECAUSE A
+    // BARE SUCH LEAF STILL PRODUCES NO CURSOR IN filterWithIndexesFinalNode()'S switch, SO cursors STAYS EMPTY AND
+    // lookForIndexes() RETURNS null BEFORE ANY (WRONGLY-COMPUTED) CAP IS EVER USED - BUT #6577 IS WHERE TO FIX THIS
+    // AT THE SOURCE, NOT HERE
+    if (!(node.left instanceof SelectTreeNode))
+      return node.index != null ? node : null;
+
+    if (node.operator == SelectOperator.run)
+      return soleExactLeaf((SelectTreeNode) node.left);
+
+    return null;
+  }
+
+  /**
+   * True when there is no {@code orderBy} at all, or when the single {@code leaf}'s ascending index scan trivially
+   * satisfies it - mirroring {@link SelectIterator#fetchResultInCaseOfOrderBy}'s own trivial-match check
+   * ({@code usedIndexes.size() == 1} and matching property/direction). When it does NOT trivially match, that
+   * method drains the iterator fully and sorts in memory, so the candidate cap must stay off: capping at
+   * {@code skip + limit} would let the sort see only the first few candidates in ascending scan order instead of
+   * every match.
+   */
+  private boolean isOrderBySafeForCap(final SelectTreeNode leaf) {
+    if (select.orderBy == null)
+      return true;
+    if (leaf == null || select.orderBy.size() != 1)
+      return false;
+    final Pair<String, Boolean> orderBy = select.orderBy.getFirst();
+    // UNCHECKED CAST IS SAFE: leaf CAME FROM soleExactLeaf(), WHICH ONLY EVER RETURNS A NODE WHOSE node.index IS
+    // NON-null - AND isTheNodeFullyIndexed() ONLY EVER SETS node.index AFTER THIS EXACT SAME CAST ON node.left
+    // ALREADY SUCCEEDED
+    return orderBy.getSecond() && orderBy.getFirst().equals(((SelectPropertyValue) leaf.left).propertyName);
   }
 
   private void filterWithIndexes(final SelectTreeNode node, final List<IndexCursor> cursors) {
@@ -265,7 +381,9 @@ public class SelectExecutor {
         final List<IndexCursor> inCursors = new ArrayList<>();
         for (final Object item : collection)
           inCursors.add(node.index.get(new Object[] { item }));
-        cursor = inCursors.isEmpty() ? null : new MultiIndexCursor(inCursors, select.limit, ascendingOrder);
+        // DELIBERATE, NOT JUST CONVENIENT REUSE: THE OUTER MultiIndexCursor NEVER PULLS MORE THAN indexCandidateLimit
+        // CANDIDATES ACROSS ALL ITS CHILDREN COMBINED, SO NO SINGLE VALUE'S NESTED CURSOR CAN LEGITIMATELY NEED MORE
+        cursor = inCursors.isEmpty() ? null : new MultiIndexCursor(inCursors, indexCandidateLimit, ascendingOrder);
       } else
         cursor = node.index.get(new Object[] { rightValue });
     } else if (node.operator == SelectOperator.between) {
