@@ -3838,7 +3838,11 @@ other failure that delete can produce.
 
 `deleteVertex` now settles it before the walk, by reading the bucket's slot rather than trusting a handle: the
 vertex record either has a slot or it does not, and a `VertexNotFoundException` naming `CHECK DATABASE FIX` is
-raised immediately instead of after a full traversal that is about to be rolled back. The check reads only the slot
+raised immediately instead of after a full traversal that is about to be rolled back. That probe checks
+`READ_RECORD` on the bucket, where the physical delete under it checks only `DELETE_RECORD` - which changes when a
+caller lacking the read permission is told, not whether it needs it: every route into a vertex delete already read
+the record from that same bucket, a lazy handle when the head-pointer read loads it and a materialised one when it
+was materialised. The check reads only the slot
 marker, so a vertex with a corrupt or truncated body is unaffected - it stays deletable, as #4420 and #4432 require -
 and it is not tolerated under `force` either, for the reason #6572 spells out. The re-read at the end of the delete
 keeps a conflict only for a record other than the vertex (a continuation chunk a concurrent commit is republishing);
