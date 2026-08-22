@@ -24,6 +24,7 @@ import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.http.handler.OpenApiSpecGenerator;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.PathItem;
+import io.swagger.v3.oas.models.headers.Header;
 import io.swagger.v3.oas.models.info.Info;
 import io.swagger.v3.oas.models.Operation;
 import io.swagger.v3.oas.models.responses.ApiResponses;
@@ -618,6 +619,31 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
             .as("%s %s is authenticated, so it must declare 401", path, op.getOperationId())
             .contains("401");
       }
+    }));
+  }
+
+  /**
+   * {@code AbstractServerHttpHandler} sets {@link IdempotencyCache#HEADER_REQUEST_ID} on every
+   * response it writes, generating a value when the caller sent none (#6563). A generated client
+   * can only see that header if every response in the spec declares it.
+   */
+  @Test
+  void everyResponseDeclaresTheRequestIdHeader() throws Exception {
+    final OpenAPI openAPI = new OpenAPIV3Parser().readContents(getOpenApiSpec()).getOpenAPI();
+
+    openAPI.getPaths().forEach((path, item) -> item.readOperations().forEach(op -> {
+      assertThat(op.getResponses())
+          .as("%s %s has no responses", path, op.getOperationId())
+          .isNotNull().isNotEmpty();
+
+      op.getResponses().forEach((code, response) -> {
+        final Map<String, Header> headers = response.getHeaders();
+        assertThat(headers)
+            .as("%s %s's %s response is missing the %s header that AbstractServerHttpHandler sets "
+                    + "unconditionally on every response", path, op.getOperationId(), code,
+                IdempotencyCache.HEADER_REQUEST_ID)
+            .containsKey(IdempotencyCache.HEADER_REQUEST_ID);
+      });
     }));
   }
 

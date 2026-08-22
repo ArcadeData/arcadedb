@@ -19,10 +19,12 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.Constants;
+import com.arcadedb.server.http.IdempotencyCache;
 import com.arcadedb.server.http.handler.openapi.OpenApiContributor;
 import io.swagger.v3.oas.models.Components;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.Paths;
+import io.swagger.v3.oas.models.headers.Header;
 import io.swagger.v3.oas.models.media.Schema;
 import org.junit.jupiter.api.Test;
 
@@ -85,5 +87,31 @@ class OpenApiSpecGeneratorTest {
         .as("a build-stamped version (\"... (build ...)\") would never equal the release tag and "
             + "would break the publish gate forever")
         .doesNotContain(" (build ");
+  }
+
+  /**
+   * {@code AbstractServerHttpHandler} sets {@link IdempotencyCache#HEADER_REQUEST_ID} on every
+   * response it writes, generating a value when the caller sent none (#6563). Guarded here, in the
+   * only unit lane that runs on this machine, because {@code OpenApiSpecGenerationIT} needs port
+   * 2480, which the local Homebrew ArcadeDB service already holds.
+   */
+  @Test
+  void everyResponseDeclaresTheRequestIdHeader() {
+    final OpenAPI openAPI = new OpenApiSpecGenerator(null).generateSpec();
+
+    openAPI.getPaths().forEach((path, item) -> item.readOperations().forEach(op -> {
+      assertThat(op.getResponses())
+          .as("%s %s has no responses", path, op.getOperationId())
+          .isNotNull().isNotEmpty();
+
+      op.getResponses().forEach((code, response) -> {
+        final Map<String, Header> headers = response.getHeaders();
+        assertThat(headers)
+            .as("%s %s's %s response is missing the %s header that AbstractServerHttpHandler sets "
+                    + "unconditionally on every response", path, op.getOperationId(), code,
+                IdempotencyCache.HEADER_REQUEST_ID)
+            .containsKey(IdempotencyCache.HEADER_REQUEST_ID);
+      });
+    }));
   }
 }
