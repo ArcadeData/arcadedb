@@ -1142,7 +1142,14 @@ public class GraphEngine {
     if (!force && headsAtWalkStart != null)
       checkEdgeListHeadsUnchanged(mostUpdatedVertex, headsAtWalkStart[0], headsAtWalkStart[1]);
 
-    // DELETE VERTEX RECORD. #6586: the probe at the top is what normally decides this, so a not-found HERE would be
+    // DELETE VERTEX RECORD, through the bucket the probe already resolved rather than through a second schema
+    // lookup. The assumption that makes that safe is worth stating: nothing between the two points can re-map this
+    // vertex's bucket, because everything between them is this method's own edge walk - no user code, no DDL, and
+    // the before-delete events fired one frame up in LocalDatabase.deleteRecordNoLock have already run. Reusing it
+    // is also the better failure mode of the two: a bucket that HAS gone is answered as "the RID names nothing"
+    // by the probe, rather than as getBucketById's SchemaException about an internal file id.
+    //
+    // #6586: the probe at the top is what normally decides this, so a not-found HERE would be
     // the residual - the record going away between the two. Answering it with the same type keeps the contract
     // whole (this method reports a missing vertex ONE way) instead of letting the last statement leak the bare
     // "Record #x:y not found" the append path used to.
@@ -1421,6 +1428,11 @@ public class GraphEngine {
       // between the probe and here, since this method runs before the physical delete - but it changes nothing
       // about the verdict: the record is gone for good, and a retry would only spend an attempt rediscovering that
       // at the probe. Same type as every other "the vertex is not there" this engine can raise (#6586).
+      //
+      // Reached only by a GENUINELY concurrent delete now, which is why no test pins this line: the single-threaded
+      // shapes that used to arrive here are all decided by the probe, and racing two real transactions into a
+      // window a few instructions wide is not something a test can do deterministically. Covered by reasoning, and
+      // said so rather than left to look like an oversight.
       throw missingVertexOnDelete(vertexRID, e);
     } catch (final ClassCastException e) {
       // #6586: what is OBSERVED, without a cause invented to explain it. The old wording asserted a slot reused
