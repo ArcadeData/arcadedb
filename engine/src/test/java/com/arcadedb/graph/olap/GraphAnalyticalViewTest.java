@@ -20,8 +20,11 @@ package com.arcadedb.graph.olap;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DataEncryption;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.DefaultDataEncryption;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.MutableVertex;
@@ -32,6 +35,11 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
+import javax.crypto.SecretKey;
+import java.io.File;
+import java.io.RandomAccessFile;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.*;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.TimeUnit;
@@ -2489,6 +2497,177 @@ class GraphAnalyticalViewTest extends TestHelper {
     }
 
     database = new DatabaseFactory(dbPath).open();
+  }
+
+  /**
+   * Regression for issue #6583 code review: {@code GAV_PERSIST_CSR=false} must suppress persistence
+   * entirely - no file written at close, and a reopen must fall back to the full rebuild rather than
+   * finding (and trusting) a leftover file from before the setting was flipped off.
+   */
+  @Test
+  void csrPersistDisabledByConfigWritesNoFileAndForcesRebuild() {
+    final Object defaultValue = GlobalConfiguration.GAV_PERSIST_CSR.getValue();
+    GlobalConfiguration.GAV_PERSIST_CSR.setValue(false);
+    try {
+      database.getSchema().createVertexType("Person");
+      database.getSchema().createEdgeType("FOLLOWS");
+      database.begin();
+      final MutableVertex a = database.newVertex("Person").save();
+      final MutableVertex b = database.newVertex("Person").save();
+      a.newEdge("FOLLOWS", b);
+      database.commit();
+
+      GraphAnalyticalView.builder(database)
+          .withName("csr-persist-disabled-test")
+          .withVertexTypes("Person")
+          .withEdgeTypes("FOLLOWS")
+          .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
+          .build();
+
+      reopenDatabase();
+
+      assertThat(GraphAnalyticalViewCSRPersistence.fileFor(database, "csr-persist-disabled-test")).doesNotExist();
+
+      final GraphAnalyticalView restored = GraphAnalyticalViewRegistry.get(database, "csr-persist-disabled-test");
+      assertThat(restored).isNotNull();
+      assertThat(restored.awaitReady(10, TimeUnit.SECONDS)).isTrue();
+      assertThat(restored.isRestoredFromPersistedCsr()).isFalse();
+      assertThat(restored.getNodeCount()).isEqualTo(2);
+
+      restored.drop();
+    } finally {
+      GlobalConfiguration.GAV_PERSIST_CSR.setValue(defaultValue);
+    }
+  }
+
+  /**
+   * Regression for issue #6583 code review: {@code drop()} must remove the persisted CSR file, not just
+   * the schema definition, so a later view created under the same name never risks loading a stale file
+   * left over from a previous, unrelated view.
+   */
+  @Test
+  void dropDeletesPersistedCsrFile() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").save();
+    final MutableVertex b = database.newVertex("Person").save();
+    a.newEdge("FOLLOWS", b);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("csr-drop-test")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
+        .build();
+
+    reopenDatabase();
+
+    final GraphAnalyticalView restored = GraphAnalyticalViewRegistry.get(database, "csr-drop-test");
+    assertThat(restored.awaitReady(10, TimeUnit.SECONDS)).isTrue();
+    assertThat(GraphAnalyticalViewCSRPersistence.fileFor(database, "csr-drop-test")).exists();
+
+    restored.drop();
+
+    assertThat(GraphAnalyticalViewCSRPersistence.fileFor(database, "csr-drop-test")).doesNotExist();
+  }
+
+  /**
+   * Regression for issue #6583 code review: a corrupted persisted CSR (truncated, or with a flipped byte
+   * that survives the header checks but fails the CRC) must be treated exactly like a missing file - fall
+   * back to a full rebuild - rather than propagating a parse failure or, worse, silently serving garbage.
+   */
+  @Test
+  void truncatedPersistedCsrFallsBackToRebuild() throws Exception {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").save();
+    final MutableVertex b = database.newVertex("Person").save();
+    a.newEdge("FOLLOWS", b);
+    database.commit();
+
+    GraphAnalyticalView.builder(database)
+        .withName("csr-corrupt-test")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
+        .build();
+
+    database.close();
+
+    final File csrFile = GraphAnalyticalViewCSRPersistence.fileFor(database, "csr-corrupt-test");
+    assertThat(csrFile).exists();
+    // Truncate the file to a few bytes past its header — the certificate check passes (it's still there),
+    // but the payload it points into is gone.
+    try (final RandomAccessFile raf = new RandomAccessFile(csrFile, "rw")) {
+      raf.setLength(Math.min(raf.length(), 64));
+    }
+
+    database = new DatabaseFactory(database.getDatabasePath()).open();
+
+    final GraphAnalyticalView restored = GraphAnalyticalViewRegistry.get(database, "csr-corrupt-test");
+    assertThat(restored).isNotNull();
+    assertThat(restored.awaitReady(10, TimeUnit.SECONDS)).isTrue();
+
+    assertThat(restored.isRestoredFromPersistedCsr())
+        .as("a truncated file must not be trusted, even though its header/certificate is intact")
+        .isFalse();
+    assertThat(restored.getNodeCount()).isEqualTo(2);
+    assertThat(restored.getEdgeCount()).isEqualTo(1);
+
+    restored.drop();
+  }
+
+  /**
+   * Regression for issue #6583 code review: when the database has a {@link DataEncryption} configured,
+   * the persisted CSR must not leak record data in cleartext to a plain file beside it. Verifies both that
+   * a distinctive property value never appears verbatim in the persisted file's bytes, and that the round
+   * trip through encrypt-at-persist/decrypt-at-restore still produces the exact same data.
+   * <p>
+   * Exercises {@link GraphAnalyticalView#shutdown()} (persists, without closing the whole database) and
+   * {@link GraphAnalyticalViewCSRPersistence#load} directly rather than a full close/reopen cycle, because
+   * {@code setDataEncryption()} on a freshly reopened database instance would otherwise race the
+   * {@code restoreAll()} disk-restore attempt that already ran during {@code open()} - the point here is
+   * the codec's own encrypt/decrypt round trip, which this reaches deterministically.
+   */
+  @Test
+  void csrPersistenceEncryptsPayloadWhenDatabaseHasDataEncryptionConfigured() throws Exception {
+    final SecretKey key = DefaultDataEncryption.getSecretKeyFromPasswordUsingDefaults("password", "salt");
+    database.setDataEncryption(DefaultDataEncryption.useDefaults(key));
+
+    database.getSchema().createVertexType("Person").createProperty("name", Type.STRING);
+    database.begin();
+    final String secretName = "Zzq7vXk9SensitiveMarker42";
+    database.newVertex("Person").set("name", secretName).save();
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("csr-encrypted-test")
+        .withVertexTypes("Person")
+        .withProperties("name")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
+        .build();
+
+    final long asOfTransactionId = ((DatabaseInternal) database).getTransactionManager().getLastTransactionId();
+    gav.shutdown(); // persists the CSR to disk (view is READY, no pending overlay changes)
+
+    final File csrFile = GraphAnalyticalViewCSRPersistence.fileFor(database, "csr-encrypted-test");
+    assertThat(csrFile).exists();
+    final byte[] fileBytes = Files.readAllBytes(csrFile.toPath());
+    assertThat(new String(fileBytes, StandardCharsets.ISO_8859_1))
+        .as("the persisted CSR must not contain the plaintext property value when encryption is configured")
+        .doesNotContain(secretName);
+
+    final GraphAnalyticalView.Snapshot restored = GraphAnalyticalViewCSRPersistence.load(database, "csr-encrypted-test",
+        new String[] { "Person" }, null, new String[] { "name" }, null, asOfTransactionId);
+    assertThat(restored).as("the persisted CSR must decrypt and parse back correctly").isNotNull();
+    assertThat(restored.nodeMapping.size()).isEqualTo(1);
+    assertThat(restored.bucketColumns[0].getValue(0, "name")).isEqualTo(secretName);
+
+    gav.drop();
+    database.setDataEncryption(null);
   }
 
   // --- Incremental update (delta overlay) tests ---
