@@ -269,8 +269,8 @@ public class SelectExecutor {
   private boolean matchCompositeIndex(final List<IndexCursor> cursors) {
     // CHEAP UPFRONT GUARD: A TYPE WITH ONLY SINGLE-PROPERTY INDEXES (THE COMMON CASE) CAN NEVER PRODUCE A COMPOSITE
     // MATCH, SO SKIP THE WHERE-TREE WALK (isPureAndConjunction()/collectAndEqLeaves()) AND THE PER-QUERY ALLOCATION
-    // AND SORT BELOW ENTIRELY - THOSE TYPES ALREADY GO THROUGH isTheNodeFullyIndexed()/filterWithIndexes() JUST AS
-    // FAST AS BEFORE THIS METHOD EXISTED
+    // AND SORT BELOW ENTIRELY, LEAVING ONLY THIS ONE getAllIndexes(true) ITERATION (ALREADY NEEDED TO TELL WHETHER
+    // ANY COMPOSITE INDEX EXISTS AT ALL) BEFORE FALLING THROUGH TO isTheNodeFullyIndexed()/filterWithIndexes()
     // ONLY AN INDEX THAT supportsOrderedIterations() CAN SERVE A PARTIAL-PREFIX MATCH: THAT BRANCH BUILDS A cursor
     // VIA range(), WHICH THROWS UnsupportedOperationException OTHERWISE (SEE TypeIndex.range()) - TRUE ONLY FOR
     // LSM_TREE, NOT FOR HASH/UNIQUE_HASH (A COMMON SHAPE FOR EDGE-UNIQUENESS INDEXES ON (@out, @in), E.G.
@@ -334,15 +334,33 @@ public class SelectExecutor {
     }
 
     final String trailingProperty = bestPrefixLength < indexProperties.size() ? indexProperties.get(bestPrefixLength) : null;
+    // trailingProperty == null IFF bestPrefixLength == indexProperties.size() - I.E. EVERY PROPERTY OF THE INDEX IS
+    // BOUND BY EQUALITY, NOT JUST A LEADING SUBSET OF THEM
+    final boolean fullKeyMatch = trailingProperty == null;
+
+    if (!fullKeyMatch) {
+      // A PARTIAL-PREFIX MATCH SCANS EVERY ROW SHARING THE MATCHED PREFIX AND LEAVES ANY EQ-BOUND PROPERTY OUTSIDE
+      // THAT PREFIX TO evaluateWhere() - IF ONE OF THOSE PROPERTIES ALREADY HAS ITS OWN STANDALONE INDEX (A REAL
+      // SHAPE: A NON-UNIQUE COMPOSITE INDEX SERVING ONE QUERY PATTERN COEXISTING WITH A UNIQUE SINGLE-PROPERTY INDEX
+      // ENFORCING A CONSTRAINT ON ANOTHER COLUMN - LocalDocumentType.indexesByProperties HAPPILY LETS BOTH COEXIST),
+      // THAT STANDALONE INDEX CAN ANSWER THE QUERY FAR MORE PRECISELY THAN SCANNING THE WHOLE PREFIX RANGE. DEFER TO
+      // THE PRE-EXISTING isTheNodeFullyIndexed()/filterWithIndexes() PATH IN THAT CASE - IT ALREADY CORRECTLY PICKS
+      // BETWEEN COMPETING SINGLE-PROPERTY INDEXES (PREFERRING A UNIQUE ONE). A PROPERTY ALREADY COVERED BY THE
+      // MATCHED PREFIX ITSELF IS EXEMPT: THE PREFIX SCAN IS AT LEAST AS SELECTIVE FOR THAT PROPERTY AS A STANDALONE
+      // INDEX ON IT ALONE WOULD BE.
+      final Set<String> matchedPrefixProperties = new HashSet<>(indexProperties.subList(0, bestPrefixLength));
+      for (final String property : andEqLeaves.keySet())
+        if (!matchedPrefixProperties.contains(property) && select.fromType.getPolymorphicIndexByProperties(property) != null)
+          return false;
+    }
+
     final boolean orderByElided = select.orderBy != null && select.orderBy.size() == 1 && trailingProperty != null
         && select.orderBy.getFirst().getFirst().equals(trailingProperty);
 
     // A KEY SHORTER THAN THE INDEX'S FULL ARITY IS A PREFIX, NOT AN EXACT KEY: get() PERFORMS A SINGLE POSITIONAL
     // LOOKUP AND ONLY RETURNS EVERY MATCH WHEN THE KEY'S ARITY MATCHES THE INDEX'S OWN EXACTLY, SO A PREFIX MUST GO
     // THROUGH range() WITH EQUAL (INCLUSIVE) BEGIN/END BOUNDS INSTEAD - SEE LSMTreeIndexCompacted's "PARTIAL KEY
-    // COMPARISON...MATCHES BY PREFIX" (PURPOSE=2). trailingProperty == null IFF bestPrefixLength == indexProperties.size(),
-    // WHICH IS EXACTLY WHEN orderByElided CAN NEVER BE true EITHER (NO TRAILING PROPERTY LEFT TO ORDER BY).
-    final boolean fullKeyMatch = trailingProperty == null;
+    // COMPARISON...MATCHES BY PREFIX" (PURPOSE=2).
     final boolean ascendingOrder = orderByElided ? select.orderBy.getFirst().getSecond() : true;
     final IndexCursor cursor = fullKeyMatch ? bestIndex.get(keys) : bestIndex.range(ascendingOrder, keys, true, keys, true);
 

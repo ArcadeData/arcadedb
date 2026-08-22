@@ -286,6 +286,43 @@ public class SelectCompositeIndexTest extends TestHelper {
   }
 
   @Test
+  void compositeIndexPartialPrefixDefersToStandaloneIndexOnUnmatchedProperty() {
+    // A NON-UNIQUE COMPOSITE INDEX (key1, key2, key3) COEXISTS WITH A STANDALONE UNIQUE INDEX ON key3 ALONE - A REAL
+    // SCHEMA SHAPE (ONE INDEX FOR A QUERY PATTERN, ANOTHER ENFORCING A UNIQUENESS CONSTRAINT). key2 IS UNBOUND, SO
+    // THE COMPOSITE PREFIX MATCH STOPS AT key1 (prefixLength=1) AND WOULD OTHERWISE SCAN EVERY key1='a' ROW - key3,
+    // BOUND BY EQUALITY BUT OUTSIDE THAT PREFIX, MUST INSTEAD DEFER TO ITS OWN STANDALONE UNIQUE INDEX, WHICH
+    // ANSWERS THE QUERY WITH A SINGLE-ROW LOOKUP INSTEAD OF SCANNING THE WHOLE key1='a' GROUP
+    final VertexType precedence = database.getSchema().createVertexType("PrecedenceCheck");
+    precedence.createProperty("key1", Type.STRING);
+    precedence.createProperty("key2", Type.STRING);
+    precedence.createProperty("key3", Type.STRING);
+    precedence.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "key1", "key2", "key3");
+    precedence.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "key3");
+
+    database.transaction(() -> {
+      for (int i = 0; i < GROUP_SIZE; i++)
+        database.newVertex("PrecedenceCheck").set("key1", "a", "key2", "k" + i, "key3", "u" + i).save();
+      for (int i = 0; i < OTHER_SIZE; i++)
+        database.newVertex("PrecedenceCheck").set("key1", "other", "key2", "k" + i, "key3", "other" + i).save();
+    });
+
+    final SelectCompiled select = database.select().fromType("PrecedenceCheck")//
+        .where().property("key1").eq().value("a")//
+        .and().property("key3").eq().value("u3")//
+        .compile();
+
+    final SelectIterator<Vertex> result = select.vertices();
+    final List<Vertex> list = result.toList();
+
+    assertThat(list).hasSize(1);
+    assertThat(list.getFirst().getString("key3")).isEqualTo("u3");
+    assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(1);
+    // THE STANDALONE UNIQUE INDEX ON key3 MUST WIN OVER THE COMPOSITE PREFIX MATCH: ONLY THE SINGLE MATCHING RECORD
+    // IS EVALUATED, NOT THE WHOLE key1='a' GROUP
+    assertThat(result.getMetrics().get("evaluatedRecords")).isEqualTo(1L);
+  }
+
+  @Test
   void compositeHashIndexPartialPrefixFallsBackToScan() {
     // A COMPOSITE HASH INDEX DOES NOT SUPPORT ORDERED ITERATIONS (TypeIndex.supportsOrderedIterations() == false),
     // SO A PARTIAL-PREFIX MATCH AGAINST IT MUST NOT ATTEMPT range() - WHICH WOULD THROW UnsupportedOperationException
