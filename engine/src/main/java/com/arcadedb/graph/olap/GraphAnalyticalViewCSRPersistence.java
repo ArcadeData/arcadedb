@@ -341,6 +341,11 @@ class GraphAnalyticalViewCSRPersistence {
         return null;
       encrypted = in.readBoolean();
       final int payloadLength = in.readInt();
+      // A corrupt header could carry a huge but individually plausible length; check it against what's actually
+      // left in the file before allocating, rather than relying on readFully() to eventually fail with
+      // EOFException after the allocation already happened.
+      if (payloadLength < 0 || payloadLength > file.length())
+        throw new EOFException("declared payload length " + payloadLength + " exceeds the file's remaining size");
       storedPayload = new byte[payloadLength];
       in.readFully(storedPayload);
 
@@ -377,7 +382,8 @@ class GraphAnalyticalViewCSRPersistence {
         final Map<String, int[]> bwdToFwd = readOptionalIntArrayMap(payloadIn);
 
         return new GraphAnalyticalView.Snapshot(csrPerType, mapping, bucketColumns, edgeColumnStores, bwdToFwd,
-            null, System.currentTimeMillis(), 0L, asOfTransactionId, true);
+            null, System.currentTimeMillis(), 0L, asOfTransactionId, true,
+            vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter);
       }
     } catch (final EOFException | OutOfMemoryError | RuntimeException e) {
       LogManager.instance().log(GraphAnalyticalViewCSRPersistence.class, Level.WARNING,
