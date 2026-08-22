@@ -40,6 +40,8 @@ jobs:
         run: python3 -m pip install --quiet pyyaml==6.0.3
       - name: Check workflow artifact dependencies
         run: ./.github/scripts/check-workflow-artifact-deps.py
+      - name: Check workflow needs outputs
+        run: ./.github/scripts/check-workflow-needs-outputs.py
       - name: Check test reporter guards
         run: ./.github/scripts/check-test-reporter-guards.py
       - name: Check source files for raw control bytes
