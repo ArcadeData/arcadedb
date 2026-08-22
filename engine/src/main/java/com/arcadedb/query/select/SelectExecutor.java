@@ -226,7 +226,13 @@ public class SelectExecutor {
       // TODAY IT DOESN'T MATTER THAT filterWithIndexesFinalNode() NULLS OUT AN 'and' SIBLING'S node.index AS A
       // SIDE EFFECT OF BUILDING ITS CURSOR - BUT IF THAT DISQUALIFICATION EVER LOOSENS, THIS ORDERING (COMPUTING THE
       // CAP OFF THE PRE-PRUNING TREE) BECOMES LOAD-BEARING
-      indexCandidateLimit = isWhereExactlyIndexed(select.rootTreeElement) ? computeExactCandidateLimit() : -1;
+      // A THIRD DOWNSTREAM CONSUMER OF THIS CURSOR ALSO REDUCES THE STREAM FURTHER: SelectIterator.fetchResultInCaseOfOrderBy()
+      // DRAINS AND SORTS THE *FULL* ITERATOR WHENEVER select.orderBy ISN'T TRIVIALLY SERVED BY THIS SCAN'S FORCED
+      // ASCENDING ORDER, SO THE CAP MUST ALSO STAY OFF WHENEVER THAT DRAIN WOULD HAPPEN - isOrderBySafeForCap() MIRRORS
+      // THAT METHOD'S OWN TRIVIAL-MATCH CHECK
+      final boolean whereExact = isWhereExactlyIndexed(select.rootTreeElement);
+      indexCandidateLimit = whereExact && isOrderBySafeForCap(soleExactLeaf(select.rootTreeElement))
+          ? computeExactCandidateLimit() : -1;
 
       filterWithIndexes(select.rootTreeElement, cursors);
       if (!cursors.isEmpty())
@@ -274,6 +280,41 @@ public class SelectExecutor {
       return isWhereExactlyIndexed((SelectTreeNode) node.left) && isWhereExactlyIndexed((SelectTreeNode) node.right);
 
     return false;
+  }
+
+  /**
+   * The tree's one and only indexed leaf, if {@code isWhereExactlyIndexed(node)} would be true AND the tree
+   * contributes exactly one cursor - {@code null} otherwise, including for an {@code or} of two or more leaves.
+   * An {@code or} always adds one {@link IndexInfo} per leaf to {@link #usedIndexes} (see
+   * {@link #filterWithIndexesFinalNode}), so {@code usedIndexes.size() == 1} - the trivial-match precondition
+   * {@link SelectIterator#fetchResultInCaseOfOrderBy} itself requires - can never hold for it either; only a
+   * single bare leaf (reached directly, or through the synthetic {@code run} wrapper) ever qualifies.
+   */
+  private SelectTreeNode soleExactLeaf(final SelectTreeNode node) {
+    if (node == null)
+      return null;
+    if (!(node.left instanceof SelectTreeNode))
+      return node.index != null ? node : null;
+    if (node.operator == SelectOperator.run)
+      return soleExactLeaf((SelectTreeNode) node.left);
+    return null;
+  }
+
+  /**
+   * True when there is no {@code orderBy} at all, or when the single {@code leaf}'s ascending index scan trivially
+   * satisfies it - mirroring {@link SelectIterator#fetchResultInCaseOfOrderBy}'s own trivial-match check
+   * ({@code usedIndexes.size() == 1} and matching property/direction). When it does NOT trivially match, that
+   * method drains the iterator fully and sorts in memory, so the candidate cap must stay off: capping at
+   * {@code skip + limit} would let the sort see only the first few candidates in ascending scan order instead of
+   * every match.
+   */
+  private boolean isOrderBySafeForCap(final SelectTreeNode leaf) {
+    if (select.orderBy == null)
+      return true;
+    if (leaf == null || select.orderBy.size() != 1)
+      return false;
+    final Pair<String, Boolean> orderBy = select.orderBy.getFirst();
+    return orderBy.getSecond() && orderBy.getFirst().equals(((SelectPropertyValue) leaf.left).propertyName);
   }
 
   private void filterWithIndexes(final SelectTreeNode node, final List<IndexCursor> cursors) {
