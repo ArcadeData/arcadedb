@@ -394,9 +394,13 @@ class GraphAnalyticalViewCSRPersistence {
             null, System.currentTimeMillis(), 0L, asOfTransactionId, true,
             vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter);
       }
-    } catch (final EOFException | OutOfMemoryError | RuntimeException e) {
+    } catch (final IOException | OutOfMemoryError | RuntimeException e) {
+      // IOException here also catches the "encrypted but no DataEncryption configured" case thrown above:
+      // routed through the same log+delete+return-null path as truncation/corruption for consistency, rather
+      // than propagating past this method to be caught (still safely, just less informatively) by the broad
+      // Exception handling in tryRestoreFromPersistedCsr()/persistCsrIfPossible().
       LogManager.instance().log(GraphAnalyticalViewCSRPersistence.class, Level.WARNING,
-          "Persisted CSR for GraphAnalyticalView '%s' is truncated or corrupt (%s), discarding and falling back to rebuild",
+          "Persisted CSR for GraphAnalyticalView '%s' is unusable (%s), discarding and falling back to rebuild",
           null, viewName, e.toString());
       delete(database, viewName);
       return null;
