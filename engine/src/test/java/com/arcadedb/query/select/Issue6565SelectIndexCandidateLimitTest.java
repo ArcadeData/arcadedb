@@ -151,10 +151,8 @@ public class Issue6565SelectIndexCandidateLimitTest extends TestHelper {
 
   @Test
   void inLeafUnderOrWithSkipAndLimitPagesCorrectly() {
-    // CODE REVIEW ON #6571: COMBINES THE in_op NESTED-CURSOR SHARING (inOperatorWithSkipAndLimitPagesCorrectly) WITH
-    // THE or-MERGE SHAPE (orOfTwoIndexedRangesWithSkipAndLimitPagesCorrectly) TO MAKE EXPLICIT, RATHER THAN JUST
-    // INFERRED, THAT SHARING THE WHOLE TREE'S indexCandidateLimit WITH A NESTED PER-VALUE CURSOR STAYS SAFE EVEN WHEN
-    // THAT CURSOR IS ALSO ONE CHILD OF AN OUTER or-MERGED MultiIndexCursor.
+    // SHARING THE WHOLE TREE'S indexCandidateLimit WITH A NESTED PER-VALUE CURSOR (in_op) STAYS SAFE EVEN WHEN THAT
+    // CURSOR IS ALSO ONE CHILD OF AN OUTER or-MERGED MultiIndexCursor.
     // g IN (g0,g1,g2) MATCHES 600 OF THE 1000 ROWS (i % 5 IN {0,1,2}); n = 3 MATCHES EXACTLY 1 ROW WHOSE g IS "g3"
     // (i % 5 == 3), OUTSIDE THE IN SET, SO THE UNION HAS 601 DISTINCT MATCHES.
     final long count = database.select().fromType("T").where()//
@@ -166,10 +164,10 @@ public class Issue6565SelectIndexCandidateLimitTest extends TestHelper {
 
   @Test
   void singleBareEqualityCandidateCapCoversSkipPlusLimit() {
-    // CODE REVIEW ON #6571: Select.compile() WRAPS A LONE CONDITION (NO and()/or() CALLED) IN A SYNTHETIC 'run' NODE
-    // (Select.setLogic()'S "1ST TIME ONLY" BRANCH), SO THE ROOT'S left IS A SelectTreeNode EVEN THOUGH THE WHOLE TREE
-    // IS A SINGLE LEAF. A RESULT-COUNT ASSERTION CANNOT CATCH A REGRESSION HERE: THE LAZY-PULL CONSUMERS ALREADY STOP
-    // AT skip + limit EVEN WHEN THE CANDIDATE CAP ITSELF STAYS AT -1, SO THIS CHECKS THE COMPUTED CAP DIRECTLY.
+    // Select.compile() WRAPS A LONE CONDITION (NO and()/or() CALLED) IN A SYNTHETIC 'run' NODE (Select.setLogic()'S
+    // "1ST TIME ONLY" BRANCH), SO THE ROOT'S left IS A SelectTreeNode EVEN THOUGH THE WHOLE TREE IS A SINGLE LEAF.
+    // A RESULT-COUNT ASSERTION CANNOT CATCH A REGRESSION HERE: THE LAZY-PULL CONSUMERS ALREADY STOP AT skip + limit
+    // EVEN WHEN THE CANDIDATE CAP ITSELF STAYS AT -1, SO THIS CHECKS THE COMPUTED CAP DIRECTLY.
     final Select select = database.select().fromType("T").where().property("a").eq().value("x").limit(50).skip(100);
     select.compile();
 
@@ -245,11 +243,11 @@ public class Issue6565SelectIndexCandidateLimitTest extends TestHelper {
 
   @Test
   void orderByDescendingOnAscendingScannedIndexWithLimitReturnsTrueTail() {
-    // CODE REVIEW ON #6571, ROUND 3: SelectIterator.fetchResultInCaseOfOrderBy() MATERIALIZES BY DRAINING THE FULL
-    // ITERATOR WHENEVER THE REQUESTED ORDER DOESN'T TRIVIALLY MATCH THE (ALWAYS ASCENDING) INDEX SCAN
-    // filterWithIndexesFinalNode() PERFORMS - BUT THE CANDIDATE CAP THIS PR RESTORES WOULD STOP THAT DRAIN AT
-    // skip + limit, LETTING THE IN-MEMORY SORT SEE ONLY THE FIRST FEW ASCENDING CANDIDATES INSTEAD OF EVERY MATCH.
-    // A DESCENDING orderBy() ON THE SAME PROPERTY THE WHERE CLAUSE INDEXES MUST DISABLE THE CAP TOO.
+    // SelectIterator.fetchResultInCaseOfOrderBy() MATERIALIZES BY DRAINING THE FULL ITERATOR WHENEVER THE REQUESTED
+    // ORDER DOESN'T TRIVIALLY MATCH THE (ALWAYS ASCENDING) INDEX SCAN filterWithIndexesFinalNode() PERFORMS - A
+    // CANDIDATE CAP WOULD STOP THAT DRAIN AT skip + limit, LETTING THE IN-MEMORY SORT SEE ONLY THE FIRST FEW
+    // ASCENDING CANDIDATES INSTEAD OF EVERY MATCH. A DESCENDING orderBy() ON THE SAME PROPERTY THE WHERE CLAUSE
+    // INDEXES MUST DISABLE THE CAP TOO.
     final List<Document> list = database.select().fromType("T").where()//
         .property("n").gt().value(-1)//
         .orderBy("n", false).limit(10).documents().toList();

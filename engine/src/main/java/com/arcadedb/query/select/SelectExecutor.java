@@ -219,17 +219,12 @@ public class SelectExecutor {
       // SIDE EFFECT TO KNOW WHICH LEAVES CAN BECOME A CURSOR
       isTheNodeFullyIndexed(select.rootTreeElement);
 
-      // #6565: A CANDIDATE CAP IS SAFE ONLY WHEN THE INDEX SCAN EXACTLY REPRODUCES THE WHERE-TREE'S RESULT SET.
-      // OTHERWISE evaluateWhere() AND skip DOWNSTREAM (SelectIterator, executeCount()) STILL DISCARD CANDIDATES THAT
-      // THE CAP ALREADY COUNTED AGAINST limit, SO THE SCAN MUST RUN UNCAPPED TO SURVIVE THAT FURTHER FILTERING.
-      // MUST RUN BEFORE filterWithIndexes() BELOW: isWhereExactlyIndexed() UNCONDITIONALLY DISQUALIFIES 'and', SO
-      // TODAY IT DOESN'T MATTER THAT filterWithIndexesFinalNode() NULLS OUT AN 'and' SIBLING'S node.index AS A
-      // SIDE EFFECT OF BUILDING ITS CURSOR - BUT IF THAT DISQUALIFICATION EVER LOOSENS, THIS ORDERING (COMPUTING THE
-      // CAP OFF THE PRE-PRUNING TREE) BECOMES LOAD-BEARING
-      // A THIRD DOWNSTREAM CONSUMER OF THIS CURSOR ALSO REDUCES THE STREAM FURTHER: SelectIterator.fetchResultInCaseOfOrderBy()
-      // DRAINS AND SORTS THE *FULL* ITERATOR WHENEVER select.orderBy ISN'T TRIVIALLY SERVED BY THIS SCAN'S FORCED
-      // ASCENDING ORDER, SO THE CAP MUST ALSO STAY OFF WHENEVER THAT DRAIN WOULD HAPPEN - isOrderBySafeForCap() MIRRORS
-      // THAT METHOD'S OWN TRIVIAL-MATCH CHECK
+      // #6565: A CANDIDATE CAP IS SAFE ONLY WHEN THE INDEX SCAN EXACTLY REPRODUCES THE WHERE-TREE'S RESULT SET AND
+      // THE ORDER BY (IF ANY) IS ALREADY SATISFIED BY IT - evaluateWhere(), skip AND fetchResultInCaseOfOrderBy()'s
+      // FULL-DRAIN SORT ALL REDUCE THE STREAM FURTHER OTHERWISE, SO THE SCAN MUST RUN UNCAPPED TO SURVIVE THAT.
+      // MUST RUN BEFORE filterWithIndexes() BELOW, SINCE isWhereExactlyIndexed() READS node.index BEFORE
+      // filterWithIndexesFinalNode() PRUNES AN 'and' SIBLING'S - HARMLESS TODAY ONLY BECAUSE 'and' IS ALREADY
+      // UNCONDITIONALLY DISQUALIFIED
       final boolean whereExact = isWhereExactlyIndexed(select.rootTreeElement);
       indexCandidateLimit = whereExact && isOrderBySafeForCap(soleExactLeaf(select.rootTreeElement))
           ? computeExactCandidateLimit() : -1;
@@ -364,10 +359,8 @@ public class SelectExecutor {
         final List<IndexCursor> inCursors = new ArrayList<>();
         for (final Object item : collection)
           inCursors.add(node.index.get(new Object[] { item }));
-        // SHARING THE WHOLE TREE'S indexCandidateLimit HERE IS DELIBERATE, NOT JUST CONVENIENT REUSE: WHEN IT IS SET,
-        // THE OUTER MultiIndexCursor WILL NEVER PULL MORE THAN skip + limit CANDIDATES IN TOTAL ACROSS ALL ITS
-        // CHILDREN, SO NO SINGLE in_op VALUE'S NESTED CURSOR COULD EVER LEGITIMATELY NEED TO SUPPLY MORE THAN THAT -
-        // GIVING IT THE FULL BOUND IS A SAFE OVER-APPROXIMATION OF ITS OWN (TIGHTER, UNKNOWABLE HERE) SHARE
+        // DELIBERATE, NOT JUST CONVENIENT REUSE: THE OUTER MultiIndexCursor NEVER PULLS MORE THAN indexCandidateLimit
+        // CANDIDATES ACROSS ALL ITS CHILDREN COMBINED, SO NO SINGLE VALUE'S NESTED CURSOR CAN LEGITIMATELY NEED MORE
         cursor = inCursors.isEmpty() ? null : new MultiIndexCursor(inCursors, indexCandidateLimit, ascendingOrder);
       } else
         cursor = node.index.get(new Object[] { rightValue });
