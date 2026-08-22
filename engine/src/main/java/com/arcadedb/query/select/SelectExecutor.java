@@ -47,7 +47,7 @@ public class SelectExecutor {
   // #6565: THE CANDIDATE CAP lookForIndexes() COMPUTED FOR THE WHOLE where-TREE, REUSED BY filterWithIndexesFinalNode()
   // FOR THE NESTED PER-VALUE CURSOR IT BUILDS FOR AN in_op LEAF, SO NEITHER PLACE HANDS A RAW select.limit (MISSING
   // skip) TO A MultiIndexCursor
-  int indexCandidateLimit = -1;
+  int             indexCandidateLimit = -1;
 
   static class IndexInfo {
     public final Index   index;
