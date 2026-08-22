@@ -3838,7 +3838,10 @@ other failure that delete can produce.
 
 `deleteVertex` now settles it before the walk, by reading the bucket's slot rather than trusting a handle: the
 vertex record either has a slot or it does not, and a `VertexNotFoundException` naming `CHECK DATABASE FIX` is
-raised immediately instead of after a full traversal that is about to be rolled back. That probe checks
+raised immediately instead of after a full traversal that is about to be rolled back. The probe is paid on every
+vertex delete, not only the failing ones: it is one slot-marker read on the page the delete is about to write,
+which is already in the page cache by then, bought against a doomed full walk of an adjacency list on the rare
+path - and against a diagnosis that was wrong. That probe checks
 `READ_RECORD` on the bucket, where the physical delete under it checks only `DELETE_RECORD` - which changes when a
 caller lacking the read permission is told, not whether it needs it: every route into a vertex delete already read
 the record from that same bucket, a lazy handle when the head-pointer read loads it and a materialised one when it
