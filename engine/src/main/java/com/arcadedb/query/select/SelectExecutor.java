@@ -44,6 +44,10 @@ public class SelectExecutor {
   final Select select;
   long            evaluatedRecords = 0;
   List<IndexInfo> usedIndexes      = null;
+  // #6565: THE CANDIDATE CAP lookForIndexes() COMPUTED FOR THE WHOLE where-TREE, REUSED BY filterWithIndexesFinalNode()
+  // FOR THE NESTED PER-VALUE CURSOR IT BUILDS FOR AN in_op LEAF, SO NEITHER PLACE HANDS A RAW select.limit (MISSING
+  // skip) TO A MultiIndexCursor
+  private int indexCandidateLimit = -1;
 
   static class IndexInfo {
     public final Index   index;
@@ -208,14 +212,52 @@ public class SelectExecutor {
     if (select.fromType != null && select.rootTreeElement != null) {
       final List<IndexCursor> cursors = new ArrayList<>();
 
-      // FIND AVAILABLE INDEXES
-      boolean canUseIndexes = isTheNodeFullyIndexed(select.rootTreeElement);
+      // FIND AVAILABLE INDEXES AND ASSIGN node.index ON EVERY INDEXED LEAF: filterWithIndexesFinalNode() RELIES ON THAT
+      // SIDE EFFECT TO KNOW WHICH LEAVES CAN BECOME A CURSOR
+      isTheNodeFullyIndexed(select.rootTreeElement);
+
+      // #6565: A CANDIDATE CAP IS SAFE ONLY WHEN THE INDEX SCAN EXACTLY REPRODUCES THE WHERE-TREE'S RESULT SET.
+      // OTHERWISE evaluateWhere() AND skip DOWNSTREAM (SelectIterator, executeCount()) STILL DISCARD CANDIDATES THAT
+      // THE CAP ALREADY COUNTED AGAINST limit, SO THE SCAN MUST RUN UNCAPPED TO SURVIVE THAT FURTHER FILTERING.
+      indexCandidateLimit = isWhereExactlyIndexed(select.rootTreeElement) ? computeExactCandidateLimit() : -1;
 
       filterWithIndexes(select.rootTreeElement, cursors);
       if (!cursors.isEmpty())
-        return new MultiIndexCursor(cursors, select.limit, true);
+        return new MultiIndexCursor(cursors, indexCandidateLimit, true);
     }
     return null;
+  }
+
+  /**
+   * The candidate cap for an exactly-indexed where-tree: {@code skip + limit} records are needed downstream (skip
+   * consumed first, then limit), not just {@code limit}.
+   */
+  private int computeExactCandidateLimit() {
+    if (select.limit < 0)
+      return -1;
+    final long sum = (long) Math.max(0, select.skip) + select.limit;
+    return sum > Integer.MAX_VALUE ? -1 : (int) sum;
+  }
+
+  /**
+   * True when the index cursor(s) built for this subtree return exactly the records matching it, with nothing left
+   * for {@code evaluateWhere()} to discard afterward. Only a bare indexed leaf, or an {@code or} of such leaves
+   * (which {@link MultiIndexCursor} merges - the same shape as the boolean union), qualifies: an {@code is_null}/
+   * {@code is_not_null} leaf never gets a cursor, and under an {@code and} only one child's cursor is kept (see
+   * {@link #filterWithIndexesFinalNode}), so the other conjunct is still checked later against a stream a cap would
+   * have already truncated. {@code not} is conservatively treated the same way.
+   */
+  private boolean isWhereExactlyIndexed(final SelectTreeNode node) {
+    if (node == null)
+      return true;
+
+    if (!(node.left instanceof SelectTreeNode))
+      return node.index != null;
+
+    if (node.operator == SelectOperator.or)
+      return isWhereExactlyIndexed((SelectTreeNode) node.left) && isWhereExactlyIndexed((SelectTreeNode) node.right);
+
+    return false;
   }
 
   private void filterWithIndexes(final SelectTreeNode node, final List<IndexCursor> cursors) {
@@ -265,7 +307,7 @@ public class SelectExecutor {
         final List<IndexCursor> inCursors = new ArrayList<>();
         for (final Object item : collection)
           inCursors.add(node.index.get(new Object[] { item }));
-        cursor = inCursors.isEmpty() ? null : new MultiIndexCursor(inCursors, select.limit, ascendingOrder);
+        cursor = inCursors.isEmpty() ? null : new MultiIndexCursor(inCursors, indexCandidateLimit, ascendingOrder);
       } else
         cursor = node.index.get(new Object[] { rightValue });
     } else if (node.operator == SelectOperator.between) {
