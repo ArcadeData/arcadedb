@@ -182,6 +182,27 @@ public class Issue6565SelectIndexCandidateLimitTest extends TestHelper {
   }
 
   @Test
+  void bareNonCursorOperatorLeavesIndexCandidateLimitAtMinusOne() {
+    // #6577: A BARE neq LEAF IS "INDEXED" PER isTheNodeFullyIndexed()'S LOOSER CHECK, SO isWhereExactlyIndexed()
+    // COMPUTES A FINITE indexCandidateLimit - BUT filterWithIndexesFinalNode()'S switch NEVER BUILDS A CURSOR FOR
+    // neq, SO cursors STAYS EMPTY, lookForIndexes() RETURNS null, AND NO CAP IS EVER ACTUALLY APPLIED. THE
+    // TEST-VISIBLE indexCandidateLimit FIELD MUST NOT BE LEFT HOLDING THAT MISLEADING FINITE VALUE.
+    final Select select = database.select().fromType("T").where().property("a").neq().value("nonexistent")//
+        .limit(50).skip(100);
+    select.compile();
+
+    final SelectExecutor executor = new SelectExecutor(select);
+    final MultiIndexCursor cursor = executor.lookForIndexes();
+    try {
+      assertThat(cursor == null).as("no cursor should have been built for a bare neq leaf").isTrue();
+      assertThat(executor.indexCandidateLimit).isEqualTo(-1);
+    } finally {
+      if (cursor != null)
+        cursor.close();
+    }
+  }
+
+  @Test
   void overlappingOrBranchesOnTheSamePropertyStillReturnLimitDistinctRows() {
     // n > 5 AND n < 500 OVERLAP OVER (5,500): A RECORD IN THAT RANGE IS A CANDIDATE FROM *BOTH* CHILD CURSORS.
     // MultiIndexCursor.next() IS A PLAIN K-WAY MERGE WITH NO RID DEDUP, SO IT EMITS THAT RECORD TWICE; DEDUP ONLY

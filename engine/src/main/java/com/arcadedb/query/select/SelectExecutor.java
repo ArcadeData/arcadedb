@@ -232,6 +232,11 @@ public class SelectExecutor {
       filterWithIndexes(select.rootTreeElement, cursors);
       if (!cursors.isEmpty())
         return new MultiIndexCursor(cursors, indexCandidateLimit, true);
+
+      // NO CURSOR WAS ACTUALLY BUILT (E.G. A BARE neq/like/ilike LEAF: "INDEXED" PER isTheNodeFullyIndexed()'S LOOSER
+      // CHECK - SEE #6577 - BUT filterWithIndexesFinalNode()'S switch DOESN'T HANDLE THE OPERATOR), SO NO CAP WAS
+      // EVER APPLIED EITHER: RESET THE TEST-VISIBLE FIELD RATHER THAN LEAVE IT HOLDING A MISLEADING FINITE VALUE
+      indexCandidateLimit = -1;
     }
     return null;
   }
