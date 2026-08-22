@@ -184,6 +184,49 @@ public class Issue6565SelectIndexCandidateLimitTest extends TestHelper {
     }
   }
 
+  @Test
+  void andUnderOrIsNeverTreatedAsExactlyIndexed() {
+    // (a = 'x' AND b = 'set') OR n = 5: PRECEDENCE-DRIVEN Select.setLogic() BUILDS A NESTED and NODE UNDER THE or
+    // ROOT (and HAS HIGHER PRECEDENCE THAN or). isWhereExactlyIndexed() MUST STAY CONSERVATIVE FOR THE NESTED and
+    // REGARDLESS OF THE or WRAPPER AROUND IT, SINCE filterWithIndexesFinalNode() STILL ONLY KEEPS ONE OF THE and'S
+    // TWO CHILD CURSORS.
+    final Select select = database.select().fromType("T").where()//
+        .property("a").eq().value("x")//
+        .and().property("b").eq().value("set")//
+        .or().property("n").eq().value(5)//
+        .limit(50).skip(0);
+    select.compile();
+
+    final SelectExecutor executor = new SelectExecutor(select);
+    final MultiIndexCursor cursor = executor.lookForIndexes();
+    try {
+      assertThat(executor.indexCandidateLimit).isEqualTo(-1);
+    } finally {
+      if (cursor != null)
+        cursor.close();
+    }
+  }
+
+  @Test
+  void notLeafIsNeverTreatedAsExactlyIndexed() {
+    // SelectOperator.not HAS NO FLUENT ENTRY POINT ON THE Select BUILDER TODAY, BUT THE OPERATOR EXISTS AND
+    // isWhereExactlyIndexed() MUST STILL TREAT IT CONSERVATIVELY (filterWithIndexesFinalNode() NEVER BUILDS A
+    // CURSOR FOR IT), SO THE TREE IS BUILT BY HAND HERE
+    final Select select = database.select().fromType("T");
+    final SelectTreeNode innerLeaf = new SelectTreeNode(new SelectPropertyValue("a"), SelectOperator.eq, "x");
+    select.rootTreeElement = new SelectTreeNode(innerLeaf, SelectOperator.not, null);
+    select.limit(50).skip(0);
+
+    final SelectExecutor executor = new SelectExecutor(select);
+    final MultiIndexCursor cursor = executor.lookForIndexes();
+    try {
+      assertThat(executor.indexCandidateLimit).isEqualTo(-1);
+    } finally {
+      if (cursor != null)
+        cursor.close();
+    }
+  }
+
   private void assertPage(final int skip, final int limit, final int expected) {
     final long count = database.select().fromType("T").where()//
         .property("a").eq().value("x")//
