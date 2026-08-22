@@ -1079,6 +1079,14 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     });
   }
 
+  /** True if any input's precedence predates the recency-epoch fix, so the merge must inherit the doubt. */
+  private static boolean anyEpochUntrusted(final PaginatedSegmentReader[] inputs) {
+    for (final PaginatedSegmentReader r : inputs)
+      if (r.epochUntrusted())
+        return true;
+    return false;
+  }
+
   private static long totalSegmentPostings(final PaginatedSegmentReader[] ordered) {
     long total = 0L;
     for (final PaginatedSegmentReader r : ordered)
@@ -1149,9 +1157,14 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       last = i;
       found++;
     }
-    if (found != inputs.length)
-      throw new IllegalStateException("Sparse-vector compaction of '" + indexName + "' selected " + inputs.length
-          + " segment(s) but only " + found + " are active; the input set must come from the live snapshot");
+    if (found != inputIds.size())
+      throw new IllegalStateException("Sparse-vector compaction of '" + indexName + "' named " + inputIds.size()
+          + " distinct segment(s) but only " + found + " are active; the input set must come from the live snapshot");
+    // Counted against the DISTINCT ids above, so a selector that named the same segment twice is
+    // reported as what it is rather than as a phantom missing from the snapshot.
+    if (inputIds.size() != inputs.length)
+      throw new IllegalStateException("Sparse-vector compaction of '" + indexName + "' listed " + inputs.length
+          + " input(s) but only " + inputIds.size() + " are distinct; a segment cannot be merged with itself");
 
     final int span = last - first + 1;
     if (span > inputs.length)
@@ -1191,6 +1204,11 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       // merged segment inherits the last entry's epoch, so both depend on this ordering.
       final PaginatedSegmentReader[] inputs = contiguousClosure(active, picked);
       final long mergedEpoch = inputs[inputs.length - 1].recencyEpoch();
+      // Doubt is inherited, not re-derived. Absorbing a pre-#6379 segment into one with a fresh id
+      // would otherwise erase the only evidence that this index still needs a REBUILD - and since
+      // flush() cascades compactSizeTiered() on every call, that can happen within the first few
+      // writes after an upgrade, long before anyone reads the log line.
+      final boolean mergedUntrusted = anyEpochUntrusted(inputs);
 
       final long newId = nextSegmentId.getAndIncrement();
       final SparseSegmentComponent[] componentRef = new SparseSegmentComponent[1];
@@ -1207,6 +1225,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
             try (final SparseSegmentBuilder b = new SparseSegmentBuilder(componentRef[0], params, segmentBuildChunkBytes())) {
               b.setSegmentId(newId);
               b.setRecencyEpoch(mergedEpoch);
+              b.setEpochUntrusted(mergedUntrusted);
               final long[] parentIds = new long[inputs.length];
               for (int i = 0; i < inputs.length; i++)
                 parentIds[i] = inputs[i].segmentId();
@@ -1866,14 +1885,18 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   }
 
   /**
-   * Count the segments that were merged under the pre-#6379 rule, and say so once at open time.
+   * Count the segments whose precedence predates the recency-epoch fix, and say so once at open
+   * time.
    * <p>
-   * The test is exact rather than heuristic. A segment merged <i>after</i> the fix inherits the
-   * epoch of its newest input, and every input's epoch was issued before the id this merge
-   * allocated, so its epoch is always strictly below its own id. A segment sealed from a memtable
-   * has no parents at all. That leaves {@code parents > 0 && epoch == id} matching exactly one
-   * thing: a merge whose manifest slot read back 0 because it predates the field, and which is
-   * therefore still carrying the ordering that could hide a tombstone behind it.
+   * Reads the persisted, inherited {@link PaginatedSegmentReader#epochUntrusted()} rather than
+   * re-deriving the condition from each segment's shape. An earlier version tested
+   * {@code parents > 0 && epoch == id}, which identifies a legacy merge exactly - but only until
+   * one is absorbed by an ordinary compaction, which gives the result a fresh id and so a shape
+   * that no longer matches, while the suspect ordering rides along inside it unchanged. Since
+   * {@link #flush} cascades {@link #compactSizeTiered} on every call, that could happen within the
+   * first few writes after an upgrade, silencing the warning before anyone had a chance to act on
+   * it. Marking the doubt and propagating it through merges is what makes the diagnosis survive the
+   * index continuing to be used.
    * <p>
    * Worth a {@code WARNING} because nothing else surfaces it: such an index answers queries without
    * complaint while a deleted document is visible again, and no amount of reading the data tells an
@@ -1884,14 +1907,14 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   private void warnOnPreRecencyEpochSegments(final List<PaginatedSegmentReader> readers) {
     int stale = 0;
     for (final PaginatedSegmentReader r : readers)
-      if (r.parentSegmentCount() > 0 && r.recencyEpoch() == r.segmentId())
+      if (r.epochUntrusted())
         stale++;
     if (stale == 0)
       return;
     LogManager.instance().log(this, Level.WARNING,
-        "Sparse-vector index '%s' holds %d segment(s) merged before the recency-epoch fix (issue #6379); a document "
-            + "deleted before that merge may still be returned by queries. Run 'REBUILD INDEX %s' once to rewrite them "
-            + "in the correct order.",
+        "Sparse-vector index '%s' holds %d segment(s) whose precedence predates the recency-epoch fix (issue #6379); a "
+            + "document deleted before those segments were merged may still be returned by queries. Run "
+            + "'REBUILD INDEX %s' once to rewrite them in the correct order.",
         null, indexName, stale, indexName);
   }
 
