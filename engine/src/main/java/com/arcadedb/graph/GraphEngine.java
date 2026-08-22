@@ -41,6 +41,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.SerializationException;
 import com.arcadedb.exception.ValidationException;
+import com.arcadedb.exception.VertexNotFoundException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -750,7 +751,25 @@ public class GraphEngine {
     if (endpoint == null)
       return;
 
-    final EdgeLinkedList list = getEdgeHeadChunkForWrite(endpoint, direction);
+    final EdgeLinkedList list;
+    try {
+      list = getEdgeHeadChunkForWrite(endpoint, direction);
+    } catch (final VertexNotFoundException e) {
+      // The SAME answer resolveEndpointToDisconnect gives for an endpoint that is gone - nothing to disconnect -
+      // for the same fact discovered one frame later (#6572). Its existsRecord probe and this lazy load are two
+      // reads with a gap between them, so a concurrent commit deleting the endpoint in that gap lands here
+      // instead of there; and a MATERIALISED handle answers its head pointer from the buffer it already holds, so
+      // the probe is what catches the common case and this is what catches the rest. Tolerating both keeps the
+      // window a no-op rather than promoting it to a hard failure the probe would have absorbed.
+      //
+      // Narrow on purpose: ONLY the endpoint vertex being absent. A RecordNotFoundException from anywhere else in
+      // the read - a chunk of a list that does exist - is the #5670 case and must keep reaching the caller as the
+      // retryable conflict getEdgeHeadChunkForWrite turned it into, or the back-reference outlives its edge again.
+      LogManager.instance()
+          .log(this, Level.FINE, "Cannot disconnect edge %s from its %s endpoint %s: the vertex no longer exists", e,
+              edge.getIdentity(), direction, endpoint.getIdentity());
+      return;
+    }
     if (list != null)
       list.removeEdge(edge);
   }
@@ -771,10 +790,15 @@ public class GraphEngine {
       return null;
     try {
       // NOT redundant with the resolution below, however much it looks it: Edge.getOutVertex/getInVertex load with
-      // loadContent=false, which hands back a LAZY handle without touching the bucket. A deleted endpoint therefore
-      // does not surface here at all - it surfaces later, inside getEdgeHeadChunkForWrite, which maps it to a
-      // retryable conflict. This check is what keeps the two apart: vertex gone = nothing to disconnect (tolerated),
-      // vertex present but its list unreadable = a conflict to retry. Removing it turns the first into the second.
+      // loadContent=false, which hands back a LAZY handle without touching the bucket, so a deleted endpoint does
+      // not surface here at all. This check is what keeps the two cases apart: vertex gone = nothing to disconnect
+      // (tolerated), vertex present but its list unreadable = a conflict to retry.
+      //
+      // Since #6572 it is no longer the ONLY thing keeping them apart - getEdgeHeadChunkForWrite names the missing
+      // vertex as a VertexNotFoundException and the caller tolerates that too - but it is still load-bearing, for
+      // the case that raises nothing at all: a handle already MATERIALISED earlier in this transaction answers its
+      // head pointer from the buffer it holds, without going back to the bucket, so a delete committed since would
+      // have this method hand back a vertex that is gone and the caller write chunks of a dead list.
       if (!edge.getDatabase().existsRecord(endpointRID))
         return null;
       final Vertex endpoint = direction == Vertex.DIRECTION.OUT ? edge.getOutVertex() : edge.getInVertex();
@@ -987,6 +1011,15 @@ public class GraphEngine {
    * exactly this case - see {@link #scopedRepairAdvice} and {@link #danglingRepairAdvice} for which of the two
    * each outcome deserves.
    * <p>
+   * #6572: one outcome deserves neither, and it is the only one that is not about the edge LIST. Deleting a vertex
+   * whose RECORD is already gone - reached through a stale adjacency entry, or through a RID held past the delete -
+   * fails with {@link VertexNotFoundException} instead of a retryable conflict, before the walk starts. Not
+   * tolerated, in either mode: deleting a record that does not exist is an error on every other path in the engine
+   * too ({@code bucket.deleteRecord} raises it for a document, and for this vertex a few steps further down), and
+   * silently succeeding would hide the one thing the caller needs to know - that something still points at a record
+   * that is not there. What changes is only that the failure says so, and names {@link #missingVertexRepairAdvice}
+   * instead of a repair aimed at the missing record.
+   * <p>
    * #5760 removes the two costs this method used to pay for the walk, both of which fall out of ONE observation:
    * the vertex's own lists are dropped wholesale at the end, so nothing this method does to them is worth doing.
    * <ul>
@@ -1039,10 +1072,11 @@ public class GraphEngine {
    *   <li>a corrupt or truncated buffer ({@link SerializationException} and the rest of the decode family) is
    *   tolerated by {@code deleteEdgesOf}, because such a vertex reaches here with {@code force == false} and
    *   failing would make it undeletable - the complaint #4420 and #4432 fixed;</li>
-   *   <li>a vanished record, or a multi-page body a concurrent commit is rewriting, is a retryable conflict
+   *   <li>a multi-page body a concurrent commit is rewriting is a retryable conflict
    *   {@link #getEdgeHeadChunkForWrite} raises as a {@link ConcurrentModificationException} - and one that
    *   {@code force} then absorbs, which is how {@code LocalDatabase.deleteRecordNoLock} deletes a record whose own
-   *   chunk chain is broken.</li>
+   *   chunk chain is broken; a vertex record that has VANISHED is the one case {@code force} cannot absorb, and it
+   *   is answered by {@link VertexNotFoundException} rather than by a conflict (#6572).</li>
    * </ul>
    * Re-raising any of them from here would replace a handled outcome with a raw failure the force policy never
    * gets to see. Nothing is hidden by swallowing them either: the very next thing the delete does is read the same
@@ -1068,6 +1102,7 @@ public class GraphEngine {
    * so the edge sweep still runs once per distinct vertex type named.
    *
    * @see #danglingRepairAdvice() for the other outcome - the delete went THROUGH and left references behind.
+   * @see #missingVertexRepairAdvice() for the third - the vertex itself is gone, so there is no list to rebuild.
    */
   private static String scopedRepairAdvice(final RID vertexRID) {
     return "run `CHECK DATABASE RECORD " + vertexRID + " FIX` to rebuild its edge list from the surviving edge "
@@ -1083,6 +1118,29 @@ public class GraphEngine {
   private static String danglingRepairAdvice() {
     return "run `CHECK DATABASE FIX` to drop the references that now dangle - rebuilding the list first with "
         + "`CHECK DATABASE RECORD <vertex> FIX` and deleting without force is what keeps the edges";
+  }
+
+  /**
+   * #6572: the repair for the THIRD outcome - the vertex the caller asked to modify does not exist at all, so it
+   * was reached through a reference that outlived it.
+   * <p>
+   * Whole-database (or whole-type) for a reason the operator would otherwise waste a run discovering: the RECORD
+   * scope needs a record, and this RID has none. What must be dropped is the adjacency entry on the OTHER endpoint,
+   * and nothing here can name it - a vertex handle carries no back-pointer to the list it was read from, and no
+   * index maps a vertex to the lists that reference it, which is the same reason
+   * {@link #scopedRepairAdvice(RID)} warns that its own scope does not save the edge sweep. Finding the referrer
+   * is a scan, and {@code CHECK DATABASE FIX} is the one that does it.
+   * <p>
+   * The scope that does NOT apply is ruled out in words rather than rendered as a command, and the distinction is
+   * not cosmetic: the RECORD form is exactly what the conflict this used to be reported as advertised, so an
+   * operator who met the old message has to be told it was the wrong tool - but a message that spells the command
+   * out with the RID substituted in is one a hurried reader (or a log grep) pastes into a console anyway. Same
+   * line {@link #danglingRepairAdvice} draws when it names the scoped form for a vertex it cannot identify.
+   */
+  private static String missingVertexRepairAdvice() {
+    return "run `CHECK DATABASE FIX` to drop the adjacency entries that still point at it - the RECORD scope cannot "
+        + "help here, since the edge list it would rebuild belongs to the record that is gone, and the entry to drop "
+        + "lives on the vertex at the other end, which only a sweep can find";
   }
 
   /**
@@ -1317,6 +1375,14 @@ public class GraphEngine {
    * well, which no retry can bring back, so that case now fails the delete once the retries are spent instead of
    * quietly completing it. A chunk that cannot be DECODED takes the other path for the reason spelled out there,
    * not because it is less permanent.
+   * <p>
+   * The VERTEX RECORD being the missing one no longer reaches here at all (#6572): it is a
+   * {@link VertexNotFoundException}, not a {@link NeedRetryException}, so it passes this handler and the
+   * {@code force} gate below untouched. Deliberately, and it costs {@code force} nothing: tolerating the edge list
+   * of a record that does not exist cannot complete the delete either. All the old force path bought was a WARNING
+   * about edges surviving a vertex that was already gone, followed by the same not-found from the
+   * {@code bucket.deleteRecord} at the end of {@link #deleteVertex}. Failing at the read is that outcome, reported
+   * once and reported accurately.
    */
   private void tolerateUnreadableEdgeList(final NeedRetryException e, final VertexInternal vertex,
       final Vertex.DIRECTION direction, final boolean force) {
@@ -2005,6 +2071,13 @@ public class GraphEngine {
    * back-reference. Repair belongs to {@code CHECK DATABASE}, which rebuilds an unloadable chain from the surviving
    * edge records and drops the references into it, after which the removal goes through normally.
    * <p>
+   * ONE record inside that window is not indistinguishable, and since #6572 it is not treated as though it were:
+   * the VERTEX. The head-RID read below lazy-loads the vertex record, so a caller that arrived through a stale
+   * reference - an adjacency entry whose target was removed without the entry being disconnected, the documented
+   * legacy of a pre-#5670 best-effort edge delete - fails here naming the vertex's own RID rather than a chunk's.
+   * That is a fact about the graph, not about timing: it gets {@link VertexNotFoundException}, which is not
+   * retryable and whose advice points at a repair that exists. See the catch for the discriminator.
+   * <p>
    * That price reaches {@link #deleteVertex} too, from both sides. Disconnecting an edge touches the vertex at the
    * OTHER end, so deleting a healthy vertex whose NEIGHBOUR's list cannot be read reports a conflict; and #5680
    * routes the collection of the vertex's OWN edges through here as well, so a delete can no longer remove the
@@ -2017,23 +2090,37 @@ public class GraphEngine {
     if (direction != Vertex.DIRECTION.OUT && direction != Vertex.DIRECTION.IN)
       return null;
 
+    final RID vertexRID = vertex.getIdentity();
+
     // The head-RID read stays INSIDE the try: on a not-yet-materialised ImmutableVertex it lazy-loads the record,
-    // so a vertex deleted since the caller resolved it raises RecordNotFoundException here rather than at the chunk
-    // lookup. That is the same transient this method exists to convert - letting it escape raw would fail the
-    // transaction with an exception that is NOT retryable.
+    // so a vertex whose record cannot be read raises RecordNotFoundException here rather than at the chunk lookup.
+    // Which of the two answers below it gets depends on WHICH record was missing - see the catch.
     try {
       final RID rid = direction == Vertex.DIRECTION.OUT ? vertex.getOutEdgesHeadChunk() : vertex.getInEdgesHeadChunk();
       if (rid == null)
         return null;
       return buildEdgeList(vertex, direction, rid);
     } catch (final RecordNotFoundException e) {
+      // #6572: the two cases are told apart by the ONE piece of evidence that separates them, and it is already
+      // on the exception - the RID it names. Anything else (a head chunk, a chunk one hop in, a stripe head) is a
+      // record whose absence really can be the publication window this method exists to convert; the VERTEX ITSELF
+      // cannot. It is not invisible, it is gone, so a retry re-runs the whole transaction to fail identically, and
+      // the repair the conflict advertises is aimed at rebuilding the edge list of the record that no longer
+      // exists. Reported honestly it is a plain not-found: no retry budget spent, and the advice names a command
+      // that can actually be run. RID.equals(null) is false, so a cause carrying no RID takes the conflict arm.
+      if (vertexRID != null && vertexRID.equals(e.getRID()))
+        throw new VertexNotFoundException(
+            "Vertex " + vertexRID + " does not exist, so its " + direction + " edge list cannot be modified: it was "
+                + "reached through a reference to a record that is gone (a stale edge entry, or a RID held past the "
+                + "delete). Retrying cannot make it exist: " + missingVertexRepairAdvice(), vertexRID, e);
+
       // The cause and the interpolated e.getMessage() are NOT redundant, though they read that way (#5764). This
       // message is the only place the missing CHUNK's RID appears - the text above names the vertex, not the chunk,
       // which is inside the record-not-found message - and the top-level message is what a log line and an HTTP
       // error body carry, while the cause chain surfaces only in a full trace or a development-mode detail field.
       // Pinned by Issue5670EdgeDeleteDanglingBackRefTest, which asserts the head chunk's RID is in this message.
       throw new ConcurrentModificationException(
-          "Edge list " + direction + " of vertex " + vertex.getIdentity()
+          "Edge list " + direction + " of vertex " + vertexRID
               + " is not fully visible yet (concurrent commit in flight): " + e.getMessage(), e);
     }
   }
