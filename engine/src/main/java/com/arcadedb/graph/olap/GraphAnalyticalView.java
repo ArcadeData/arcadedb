@@ -1516,6 +1516,17 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private void persistCsrIfPossible() {
     if (name == null || status != Status.READY)
       return;
+    // The certificate is only sound where TransactionManager.getLastTransactionId() reflects every commit that
+    // could have touched the covered types. That holds for a standalone database or an HA leader (the only paths
+    // that call getNextTransactionId()), but not for a follower: TransactionManager.applyChanges(), the path
+    // replicated commits are applied through, never advances that counter, so a follower's certificate would
+    // freeze at whatever value it had when this snapshot was built, then "match" on every later reopen no matter
+    // how much further replicated data has landed since - the same failure shape as the lost-recency-marker case,
+    // but permanent rather than self-healing. Leader-only mirrors the existing precedent for HA-unsafe derived
+    // state (see TimeSeriesMaintenanceScheduler.runMaintenance()) with no compile dependency on the HA module.
+    final DatabaseInternal dbInternal = (DatabaseInternal) database;
+    if (dbInternal.isReplicated() && !dbInternal.isLeader())
+      return;
     final Snapshot snap = this.snapshot;
     if (snap == null || snap.asOfTransactionId < 0)
       return;
@@ -1554,6 +1565,13 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       return false;
     if (!database.getConfiguration().getValueAsBoolean(GlobalConfiguration.GAV_PERSIST_CSR))
       return false;
+    // Mirrors the same leader-only gate in persistCsrIfPossible(): a follower's certificate can never be trusted
+    // (its TransactionManager counter is frozen against replicated commits), so this file - if one even exists,
+    // e.g. left over from a promotion/demotion - must never be restored on this node either. Checked before
+    // isRecencySignalReliable() purely because it is the cheaper of the two disqualifying checks.
+    final DatabaseInternal dbInternal = (DatabaseInternal) database;
+    if (dbInternal.isReplicated() && !dbInternal.isLeader())
+      return false;
     // The certificate is a plain equality check against the database's last committed transaction id, which is
     // only sound while that counter's own history is verifiably continuous. If this open couldn't reconstruct it
     // from real evidence (a lost/corrupt recency marker with no WAL left to recover it from - a clean close
@@ -1562,7 +1580,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // carry as its certificate. Refusing the fast path here until a fresh, trustworthy certificate is written at
     // this session's own close is the same "no manifest reads as unverifiable, not as valid" rule #6106 already
     // established for the vector index's correspondence artifact.
-    if (!((DatabaseInternal) database).getTransactionManager().isRecencySignalReliable())
+    if (!dbInternal.getTransactionManager().isRecencySignalReliable())
       return false;
     final long currentTxId = currentLastTransactionId();
     final Snapshot restored;

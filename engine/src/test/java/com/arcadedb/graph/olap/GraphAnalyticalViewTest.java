@@ -38,6 +38,8 @@ import org.junit.jupiter.api.Test;
 import javax.crypto.SecretKey;
 import java.io.File;
 import java.io.RandomAccessFile;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.*;
@@ -2652,6 +2654,100 @@ class GraphAnalyticalViewTest extends TestHelper {
     }
 
     database = new DatabaseFactory(dbPath).open();
+  }
+
+  /**
+   * Regression for issue #6583 code review (raised in the tenth-round pass): the certificate is sound only
+   * where {@code TransactionManager.getLastTransactionId()} reflects every commit that could have touched a
+   * covered type. That holds for a standalone database or an HA leader - the only paths that call {@code
+   * getNextTransactionId()} - but {@code TransactionManager.applyChanges()}, the path replicated commits are
+   * applied through on a follower, never advances that counter. A follower's certificate would therefore
+   * freeze at whatever value it had when a snapshot was built and "match" on every later reopen no matter how
+   * much further replicated data has landed since - unlike the lost-recency-marker case, this one never
+   * self-heals. Both {@code persistCsrIfPossible()} and {@code tryRestoreFromPersistedCsr()} must refuse
+   * outright on a non-leader replica, mirroring the existing leader-only gate on {@code
+   * TimeSeriesMaintenanceScheduler}'s destructive maintenance.
+   */
+  @Test
+  void csrPersistenceIsLeaderOnlyUnderHA() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").save();
+    final MutableVertex b = database.newVertex("Person").save();
+    a.newEdge("FOLLOWS", b);
+    database.commit();
+
+    final DatabaseInternal realDb = (DatabaseInternal) database;
+    final DatabaseInternal followerView = nodeView(realDb, false);
+
+    // A follower must never persist, even though the view itself builds and reads normally - a follower
+    // still serves reads, it just can't certify a CSR against a counter replicated commits don't advance.
+    final GraphAnalyticalView followerGav = GraphAnalyticalView.builder(followerView)
+        .withName("csr-ha-persist-test")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
+        .build();
+    assertThat(followerGav.getNodeCount()).isEqualTo(2);
+    followerGav.shutdown();
+    assertThat(GraphAnalyticalViewCSRPersistence.fileFor(database, "csr-ha-persist-test"))
+        .as("a follower's certificate is unsound and must never be persisted")
+        .doesNotExist();
+    GraphAnalyticalViewPersistence.remove(database, "csr-ha-persist-test");
+
+    // A leader (standalone == always leader) persists a real, valid file...
+    final GraphAnalyticalView leaderGav = GraphAnalyticalView.builder(database)
+        .withName("csr-ha-restore-test")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
+        .build();
+    leaderGav.shutdown();
+    assertThat(GraphAnalyticalViewCSRPersistence.fileFor(database, "csr-ha-restore-test")).exists();
+
+    // ...but a node that is a follower must still refuse to restore it, even though the certificate would
+    // otherwise match exactly (nothing committed in between).
+    final GraphAnalyticalViewBuilder followerBuilder = GraphAnalyticalView.builder(followerView)
+        .withName("csr-ha-restore-test")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
+        .skipPersistence();
+    final GraphAnalyticalView followerRestored = followerBuilder.restoreFromDiskOrBuildAsync();
+    assertThat(followerRestored.awaitReady(10, TimeUnit.SECONDS)).isTrue();
+    assertThat(followerRestored.isRestoredFromPersistedCsr())
+        .as("a follower must never trust a persisted CSR's certificate, even when it would otherwise match exactly")
+        .isFalse();
+    assertThat(followerRestored.getNodeCount()).isEqualTo(2);
+
+    followerRestored.drop();
+    leaderGav.drop();
+  }
+
+  /**
+   * A view of the database that only differs in being replicated, and in whether this node leads. Avoids pulling a
+   * mocking framework into the engine module just to flip two flags (same approach used by
+   * LSMVectorIndexAutoCompactionTest/Issue5470ReplicatedCommitEveryTest).
+   */
+  private static DatabaseInternal nodeView(final DatabaseInternal delegate, final boolean leader) {
+    return (DatabaseInternal) Proxy.newProxyInstance(DatabaseInternal.class.getClassLoader(),
+        new Class<?>[] { DatabaseInternal.class }, (proxy, method, args) -> {
+          if (args == null || args.length == 0)
+            switch (method.getName()) {
+            case "isReplicated" -> {
+              return Boolean.TRUE;
+            }
+            case "isLeader" -> {
+              return leader;
+            }
+            }
+          try {
+            return method.invoke(delegate, args);
+          } catch (final InvocationTargetException e) {
+            throw e.getCause();
+          }
+        });
   }
 
   /**
