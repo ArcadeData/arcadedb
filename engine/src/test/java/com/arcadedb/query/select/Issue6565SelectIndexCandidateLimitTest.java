@@ -284,6 +284,30 @@ public class Issue6565SelectIndexCandidateLimitTest extends TestHelper {
   }
 
   @Test
+  void skipAndLimitOnPlainIndexedRangePagesCorrectly() {
+    // CODE REVIEW GAP: THE "SOLE EXACT LEAF, skip+limit CAPPED CORRECTLY" PATH WAS ONLY TESTED FOR eq AND in_op -
+    // ANY OPERATOR filterWithIndexesFinalNode()'S switch TURNS INTO A CURSOR (gt/ge/lt/le/between TOO) IS EQUALLY
+    // EXACT, SINCE soleExactLeaf() DOESN'T DISCRIMINATE BY OPERATOR - THIS CLOSES THAT GAP EXPLICITLY FOR ge.
+    // n >= 500 MATCHES 500 OF THE 1000 ROWS (n IN [500,999]).
+    final Select select = database.select().fromType("T").where().property("n").ge().value(500)//
+        .limit(50).skip(100);
+    select.compile();
+
+    final SelectExecutor executor = new SelectExecutor(select);
+    final MultiIndexCursor cursor = executor.lookForIndexes();
+    try {
+      assertThat(executor.indexCandidateLimit).isEqualTo(150);
+    } finally {
+      if (cursor != null)
+        cursor.close();
+    }
+
+    final long count = database.select().fromType("T").where().property("n").ge().value(500)//
+        .skip(100).limit(50).count();
+    assertThat(count).isEqualTo(50);
+  }
+
+  @Test
   void andUnderOrIsNeverTreatedAsExactlyIndexed() {
     // (a = 'x' AND b = 'set') OR n = 5: PRECEDENCE-DRIVEN Select.setLogic() BUILDS A NESTED and NODE UNDER THE or
     // ROOT (and HAS HIGHER PRECEDENCE THAN or). soleExactLeaf() MUST STAY CONSERVATIVE FOR A TREE SHAPED LIKE THIS
