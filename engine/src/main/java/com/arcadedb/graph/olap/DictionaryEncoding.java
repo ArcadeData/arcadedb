@@ -47,6 +47,11 @@ public class DictionaryEncoding {
   /**
    * Encodes a string value, returning its integer code.
    * Assigns a new code if the value hasn't been seen before.
+   * <p>
+   * Codes are assigned sequentially as {@code codeToString.size()} at first sight, so replaying {@link
+   * #getValues()} through {@code encode()} in order (as {@code Column.restore()} does when reconstructing a
+   * persisted column, see issue #6583) reproduces the exact same codes. Changing this assignment scheme would
+   * need a matching change there.
    */
   public int encode(final String value) {
     final Integer existing = stringToCode.get(value);
@@ -83,6 +88,9 @@ public class DictionaryEncoding {
 
   /**
    * Returns the dictionary values as an array (indexed by code).
+   * <p>
+   * Order matters: see the note on {@link #encode(String)} about reconstructing an equivalent dictionary by
+   * replaying this array back through {@code encode()}.
    */
   public String[] getValues() {
     return codeToString.toArray(new String[0]);
