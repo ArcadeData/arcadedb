@@ -74,6 +74,14 @@ public class ColumnStore {
   }
 
   /**
+   * Registers a column reconstructed by {@link GraphAnalyticalViewCSRPersistence} from a persisted CSR.
+   * Package-private: outside the OLAP package, columns are only ever created via {@link #createColumn}.
+   */
+  void putColumn(final Column column) {
+    columns.put(column.getName(), column);
+  }
+
+  /**
    * Returns the column for the given property name, or null if not present.
    */
   public Column getColumn(final String name) {

@@ -2130,6 +2130,17 @@ public enum GlobalConfiguration {
       but open() returns immediately and queries issued right after it run unaccelerated until the rebuild completes. \
       A positive value trades a slower open() for the restored view being usable by the query that triggered the reopen""",
       Long.class, 0L),
+
+  GAV_PERSIST_CSR("arcadedb.gavPersistCsr", SCOPE.DATABASE,
+      """
+      When true (default), a Graph Analytical View (GAV/CSR) that is READY (with no pending overlay changes) when \
+      the database closes cleanly writes its CSR to disk alongside a freshness certificate (the database's last \
+      committed transaction id at build time). If nothing was committed to the database between that close and the \
+      next open, the certificate still matches and the persisted CSR is reused as-is instead of being rebuilt by a \
+      full graph scan (issue #6583). Any commit in between invalidates the certificate and falls back to the \
+      previous behavior: an async rebuild triggered on open. Set to false to disable persisting the CSR file \
+      (e.g. to avoid its disk footprint or the extra write at close)""",
+      Boolean.class, true),
   ;
 
   /**
