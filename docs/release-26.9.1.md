@@ -3861,6 +3861,11 @@ the next attempt and fail there, so what changes is that it is reported once rat
 A loop that wants the old shape should catch `RecordNotFoundException` (or `VertexNotFoundException`) alongside the
 conflict and treat it as "already gone" - which is what it would have concluded after exhausting its retries.
 
+One note for anyone reading causes closely in a log: when the absence is established by the delete's slot probe
+rather than by a failed read, the wrapped `RecordNotFoundException` is raised at the probe, so its top stack frame
+is that check and not a bucket read. The record really is missing either way; only the frame that established it
+differs.
+
 The second is the append. `GraphEngine.getOrCreateEdgeList` read the head RID *outside* its `try`, so on a vertex
 whose record is gone the lazy load escaped raw as `RecordNotFoundException: Record #4:0 not found`. The verdict was
 right - it was never retryable - but nothing else was there: it did not say the missing record is a vertex, that it
