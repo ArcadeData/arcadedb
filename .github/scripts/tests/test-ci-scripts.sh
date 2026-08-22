@@ -27,6 +27,7 @@ GUARDS="$SCRIPTS/check-test-reporter-guards.py"
 ALLOWLIST="$SCRIPTS/check-license-allowlist.py"
 DBDOCSSYNC="$SCRIPTS/check-database-docs-sync.py"
 CONTROLCHARS="$SCRIPTS/check-source-control-chars.py"
+NEEDSOUTPUTS="$SCRIPTS/check-workflow-needs-outputs.py"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -1086,6 +1087,170 @@ printf 'var x = "\000";\n' >"$work/controlchars-skipped/node_modules/bundle.js"
 printf '\000\001\002' >"$work/controlchars-skipped/logo.png"
 expect "ignores build output, vendored bundles and non-source files" 0 "" \
     "$CONTROLCHARS" "$work/controlchars-skipped"
+
+echo
+echo "check-workflow-needs-outputs.py"
+
+# The shape this script exists for: seven jobs read an output the producer never declares. GitHub
+# resolves it to "" instead of failing, so the workflow looks correct and quietly passes nothing.
+mkdir -p "$work/needs-undeclared"
+cat >"$work/needs-undeclared/ci.yml" <<'YAML'
+name: undeclared
+on: [ push ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo building
+  e2e:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - run: echo test
+        env:
+          IMAGE: ${{ needs.build.outputs.image-tag }}
+YAML
+expect "rejects a reference to an output the producer never declares" 1 "image-tag" \
+    "$NEEDSOUTPUTS" "$work/needs-undeclared"
+
+# The same workflow with the output declared: the only change that should matter. Deriving it from
+# the rejected fixture rather than writing a second one is deliberate - it is what makes the pair
+# evidence, since the declaration is then the only difference between a pass and a failure.
+mkdir -p "$work/needs-declared"
+awk '/^  build:/{print; print "    outputs:"; print "      image-tag: repo\/image:latest"; next} {print}' \
+    "$work/needs-undeclared/ci.yml" >"$work/needs-declared/ci.yml"
+expect "accepts the same workflow once the output is declared" 0 "" \
+    "$NEEDSOUTPUTS" "$work/needs-declared"
+
+# A job that declares SOME outputs but not the one referenced is the easier mistake to miss: the
+# `outputs:` block exists, so a reader skims past it.
+mkdir -p "$work/needs-wrong-name"
+cat >"$work/needs-wrong-name/ci.yml" <<'YAML'
+name: wrong-name
+on: [ push ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        run: echo "version=1" >> $GITHUB_OUTPUT
+  e2e:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - run: echo test
+        env:
+          IMAGE: ${{ needs.build.outputs.image-tag }}
+YAML
+expect "rejects a reference to a name the producer does not declare" 1 "declares: version" \
+    "$NEEDSOUTPUTS" "$work/needs-wrong-name"
+
+# A `needs` reference to a job that does not exist is the other half of the same typo.
+mkdir -p "$work/needs-missing-job"
+cat >"$work/needs-missing-job/ci.yml" <<'YAML'
+name: missing-job
+on: [ push ]
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo test
+        env:
+          IMAGE: ${{ needs.buidl.outputs.image-tag }}
+YAML
+expect "rejects a reference to a job that does not exist" 1 "no job 'buidl' exists" \
+    "$NEEDSOUTPUTS" "$work/needs-missing-job"
+
+# A reference to a job the consumer does not depend on resolves to "" just as surely as an
+# undeclared output does, even when the producer declares the output correctly.
+mkdir -p "$work/needs-not-declared-dep"
+cat >"$work/needs-not-declared-dep/ci.yml" <<'YAML'
+name: not-a-dependency
+on: [ push ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: repo/image:latest
+    steps:
+      - run: echo building
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo test
+        env:
+          IMAGE: ${{ needs.build.outputs.image-tag }}
+YAML
+expect "rejects a reference to a job the consumer does not depend on" 1 "does not list 'build'" \
+    "$NEEDSOUTPUTS" "$work/needs-not-declared-dep"
+
+# The needs CONTEXT is not transitive, unlike an artifact: `report` waits for `test` which waits for
+# `build`, so the artifact-deps script would accept the equivalent download, but `needs.build` is
+# still empty here. Getting this wrong in the permissive direction would make the check accept the
+# exact reference it exists to reject.
+mkdir -p "$work/needs-transitive"
+cat >"$work/needs-transitive/ci.yml" <<'YAML'
+name: transitive-outputs
+on: [ push ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: repo/image:latest
+    steps:
+      - run: echo building
+  test:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - run: echo test
+  report:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - run: echo report
+        env:
+          IMAGE: ${{ needs.build.outputs.image-tag }}
+YAML
+expect "rejects a transitively-reached producer, because the needs context is direct-only" 1 "DIRECT" \
+    "$NEEDSOUTPUTS" "$work/needs-transitive"
+
+# Text that merely mentions the expression is not a reference. Without a ${{ }} gate an echo or an
+# error message would be reported as a live violation.
+mkdir -p "$work/needs-plain-text"
+cat >"$work/needs-plain-text/ci.yml" <<'YAML'
+name: plain-text
+on: [ push ]
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "set needs.build.outputs.image-tag to use a custom image"
+YAML
+expect "ignores the expression text outside a \${{ }} block" 0 "" \
+    "$NEEDSOUTPUTS" "$work/needs-plain-text"
+
+# A reusable-workflow job declares its outputs in the called workflow, which this script does not
+# read. Reporting it would be a false violation in a check that gates the whole build.
+mkdir -p "$work/needs-reusable"
+cat >"$work/needs-reusable/ci.yml" <<'YAML'
+name: reusable
+on: [ push ]
+jobs:
+  build:
+    uses: ./.github/workflows/called.yml
+  e2e:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - run: echo test
+        env:
+          IMAGE: ${{ needs.build.outputs.image-tag }}
+YAML
+expect "ignores a reference into a reusable-workflow job" 0 "" \
+    "$NEEDSOUTPUTS" "$work/needs-reusable"
 
 echo
 if [[ $failures -gt 0 ]]; then
