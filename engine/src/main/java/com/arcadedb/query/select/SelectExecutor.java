@@ -329,6 +329,9 @@ public class SelectExecutor {
     if (leaf == null || select.orderBy.size() != 1)
       return false;
     final Pair<String, Boolean> orderBy = select.orderBy.getFirst();
+    // UNCHECKED CAST IS SAFE: leaf CAME FROM soleExactLeaf(), WHICH ONLY EVER RETURNS A NODE WHOSE node.index IS
+    // NON-null - AND isTheNodeFullyIndexed() ONLY EVER SETS node.index AFTER THIS EXACT SAME CAST ON node.left
+    // ALREADY SUCCEEDED
     return orderBy.getSecond() && orderBy.getFirst().equals(((SelectPropertyValue) leaf.left).propertyName);
   }
 
