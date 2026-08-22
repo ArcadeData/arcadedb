@@ -2435,6 +2435,42 @@ class GraphAnalyticalViewTest extends TestHelper {
   }
 
   /**
+   * Regression for issue #6583 code review: an earlier round replaced {@code DataOutputStream.writeUTF()}
+   * (a 64KB modified-UTF-8 cap) with length-prefixed raw UTF-8 encoding specifically so a STRING property
+   * value longer than that limit wouldn't make persistence throw. Pins that fix with an actual value past
+   * the boundary, round-tripped through persist and restore.
+   */
+  @Test
+  void csrPersistenceRoundTripsAStringPropertyLongerThan64KB() {
+    database.getSchema().createVertexType("Person").createProperty("bio", Type.STRING);
+    final String longBio = "x".repeat(100_000); // comfortably past writeUTF's 65535-byte modified-UTF-8 cap
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").set("bio", longBio).save();
+    database.commit();
+
+    GraphAnalyticalView.builder(database)
+        .withName("csr-long-string-test")
+        .withVertexTypes("Person")
+        .withProperties("bio")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
+        .build();
+
+    reopenDatabase();
+
+    final GraphAnalyticalView restored = GraphAnalyticalViewRegistry.get(database, "csr-long-string-test");
+    assertThat(restored).isNotNull();
+    assertThat(restored.awaitReady(10, TimeUnit.SECONDS)).isTrue();
+    assertThat(restored.isRestoredFromPersistedCsr())
+        .as("persisting a >64KB STRING value must not silently fail and force every reopen back to a rebuild")
+        .isTrue();
+
+    final int id = restored.getNodeId(a.getIdentity());
+    assertThat(restored.getProperty(id, "bio")).isEqualTo(longBio);
+
+    restored.drop();
+  }
+
+  /**
    * Regression for issue #6583: the persisted CSR must only be trusted when the certificate
    * (the database's last committed transaction id as of the build) still matches. A commit that
    * happens after a reopen restores from disk - even one that lands after the fast-path restore -

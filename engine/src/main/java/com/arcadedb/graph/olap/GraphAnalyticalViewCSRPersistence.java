@@ -202,11 +202,7 @@ class GraphAnalyticalViewCSRPersistence {
     for (int i = 0; i < numBuckets; i++) {
       out.writeInt(mapping.getBucketId(i));
       writeString(out, mapping.getBucketTypeName(i));
-      final int size = mapping.getBucketSize(i);
-      final long[] positions = new long[size];
-      for (int p = 0; p < size; p++)
-        positions[p] = mapping.getPosition(i, p);
-      writeLongArray(out, positions);
+      writeLongArray(out, mapping.getPositions(i));
     }
     final int[] oldToNew = mapping.getOldToNewMapping();
     out.writeBoolean(oldToNew != null);

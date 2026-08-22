@@ -1547,7 +1547,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       // silently under-covers what the view claims to (#6583 review).
       GraphAnalyticalViewCSRPersistence.save(database, name, snap.vertexTypes, snap.edgeTypes, snap.propertyFilter,
           snap.edgePropertyFilter, snap);
-    } catch (final Exception e) {
+    } catch (final OutOfMemoryError | Exception e) {
+      // OutOfMemoryError is caught deliberately, matching load()'s equivalent guard: save() assembles the whole
+      // CSR payload into one contiguous byte[] (and a second one if encryption is configured) before writing
+      // anything, right at shutdown()/database.close() after a build/rescan has already put memory pressure on
+      // the JVM. Left uncaught, an OOM here would propagate out of GraphAnalyticalViewRegistry.shutdownAll()'s
+      // per-view loop with no try/catch of its own, aborting it and leaking every view after this one in
+      // iteration order (unregisterChangeListeners()/GraphTraversalProviderRegistry.unregister() never run for
+      // them) - directly contradicting this method's own "failures are logged and otherwise ignored" contract.
       LogManager.instance().log(this, Level.WARNING, "GraphAnalyticalView '%s': failed to persist CSR to disk", e, name);
     }
   }
