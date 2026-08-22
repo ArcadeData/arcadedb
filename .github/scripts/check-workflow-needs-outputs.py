@@ -66,6 +66,11 @@ except ImportError:  # pragma: no cover - the workflow installs it explicitly
 # are both restricted to the characters GitHub allows, so this does not need to parse expressions.
 NEEDS_OUTPUT = re.compile(r"needs\.([A-Za-z_][A-Za-z0-9_-]*)\.outputs\.([A-Za-z_][A-Za-z0-9_-]*)")
 
+# Only text inside ${{ }} is an expression. Without this gate a `run:` step that merely PRINTS the
+# words needs.build.outputs.tag - an echo, a comment, an error message - would be read as a live
+# reference and reported as a violation. Same gate the sibling artifact-deps script applies.
+EXPRESSION = re.compile(r"\$\{\{.*?\}\}")
+
 
 def workflow_files(argv):
     """Every workflow to check: the arguments if given, otherwise .github/workflows."""
@@ -98,13 +103,33 @@ def declared_outputs(job):
     return set(outputs.keys())
 
 
+def needs_of(job):
+    """The jobs a job lists as DIRECT dependencies.
+
+    Direct, not transitive, and the distinction is the whole point. An artifact survives a
+    transitive wait - it is uploaded to the run - which is why the sibling artifact-deps script
+    resolves a full `needs` closure. The `needs` CONTEXT does not work that way: it carries "the
+    outputs of all jobs that are defined as a dependency of the current job", so a job that reaches
+    the producer only transitively reads an empty string, exactly like a job that never declared the
+    dependency at all. Using a transitive closure here would accept precisely the reference this
+    script exists to reject.
+    """
+    if not isinstance(job, dict):
+        return []
+    needs = job.get("needs")
+    if isinstance(needs, str):
+        return [needs]
+    return [n for n in needs if isinstance(n, str)] if isinstance(needs, list) else []
+
+
 def references(node, path="", found=None):
     """Every (job, output, where) triple reachable from a parsed workflow node."""
     if found is None:
         found = []
     if isinstance(node, str):
-        for job, output in NEEDS_OUTPUT.findall(node):
-            found.append((job, output, path))
+        for expression in EXPRESSION.findall(node):
+            for job, output in NEEDS_OUTPUT.findall(expression):
+                found.append((job, output, path))
     elif isinstance(node, dict):
         for key, value in node.items():
             references(value, f"{path}.{key}" if path else str(key), found)
@@ -129,11 +154,31 @@ def check(path):
 
     violations = []
     for job_id, job in jobs.items():
+        direct_needs = set(needs_of(job))
+        # One line per distinct mistake. The same bad reference often appears twice in a job - once
+        # in `env:` and again in a `run:` - and reporting it twice makes one typo look like two.
+        reported = set()
+
         for target, output, where in references(job):
+            if (target, output) in reported:
+                continue
+
             if target not in jobs:
+                reported.add((target, output))
                 violations.append(
                     f"{path}: job '{job_id}' references needs.{target}.outputs.{output} at "
                     f"'{where}', but no job '{target}' exists in this workflow"
+                )
+                continue
+
+            if target not in direct_needs:
+                reported.add((target, output))
+                declared = ", ".join(sorted(direct_needs)) if direct_needs else "nothing"
+                violations.append(
+                    f"{path}: job '{job_id}' references needs.{target}.outputs.{output} at "
+                    f"'{where}', but '{job_id}' does not list '{target}' in its needs (needs: "
+                    f"{declared}). The needs context carries only DIRECT dependencies, so this "
+                    f"resolves to an empty string at runtime instead of failing."
                 )
                 continue
 
@@ -142,6 +187,7 @@ def check(path):
                 # A reusable-workflow job: its outputs are declared in the called workflow.
                 continue
             if output not in available:
+                reported.add((target, output))
                 declared = ", ".join(sorted(available)) if available else "none"
                 violations.append(
                     f"{path}: job '{job_id}' references needs.{target}.outputs.{output} at "

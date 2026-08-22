@@ -1163,6 +1163,75 @@ YAML
 expect "rejects a reference to a job that does not exist" 1 "no job 'buidl' exists" \
     "$NEEDSOUTPUTS" "$work/needs-missing-job"
 
+# A reference to a job the consumer does not depend on resolves to "" just as surely as an
+# undeclared output does, even when the producer declares the output correctly.
+mkdir -p "$work/needs-not-declared-dep"
+cat >"$work/needs-not-declared-dep/ci.yml" <<'YAML'
+name: not-a-dependency
+on: [ push ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: repo/image:latest
+    steps:
+      - run: echo building
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo test
+        env:
+          IMAGE: ${{ needs.build.outputs.image-tag }}
+YAML
+expect "rejects a reference to a job the consumer does not depend on" 1 "does not list 'build'" \
+    "$NEEDSOUTPUTS" "$work/needs-not-declared-dep"
+
+# The needs CONTEXT is not transitive, unlike an artifact: `report` waits for `test` which waits for
+# `build`, so the artifact-deps script would accept the equivalent download, but `needs.build` is
+# still empty here. Getting this wrong in the permissive direction would make the check accept the
+# exact reference it exists to reject.
+mkdir -p "$work/needs-transitive"
+cat >"$work/needs-transitive/ci.yml" <<'YAML'
+name: transitive-outputs
+on: [ push ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: repo/image:latest
+    steps:
+      - run: echo building
+  test:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - run: echo test
+  report:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - run: echo report
+        env:
+          IMAGE: ${{ needs.build.outputs.image-tag }}
+YAML
+expect "rejects a transitively-reached producer, because the needs context is direct-only" 1 "DIRECT" \
+    "$NEEDSOUTPUTS" "$work/needs-transitive"
+
+# Text that merely mentions the expression is not a reference. Without a ${{ }} gate an echo or an
+# error message would be reported as a live violation.
+mkdir -p "$work/needs-plain-text"
+cat >"$work/needs-plain-text/ci.yml" <<'YAML'
+name: plain-text
+on: [ push ]
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "set needs.build.outputs.image-tag to use a custom image"
+YAML
+expect "ignores the expression text outside a \${{ }} block" 0 "" \
+    "$NEEDSOUTPUTS" "$work/needs-plain-text"
+
 # A reusable-workflow job declares its outputs in the called workflow, which this script does not
 # read. Reporting it would be a false violation in a check that gates the whole build.
 mkdir -p "$work/needs-reusable"
