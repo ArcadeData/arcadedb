@@ -435,6 +435,16 @@ public class NodeIdMapping {
   }
 
   /**
+   * Returns the backing sorted position array for a bucket directly, with no copy - the array is never mutated
+   * after {@link #compact()}/{@link #restore}, so sharing the reference is safe. Package-private: used by {@link
+   * GraphAnalyticalViewCSRPersistence} to serialize a bucket's positions in one bulk write instead of rebuilding
+   * the array element-by-element via {@link #getPosition} first.
+   */
+  long[] getPositions(final int bucketIdx) {
+    return positions[bucketIdx];
+  }
+
+  /**
    * Applies a BFS-based vertex reordering for improved cache locality.
    * After this call, all global IDs returned by this mapping are BFS-ordered.
    *
