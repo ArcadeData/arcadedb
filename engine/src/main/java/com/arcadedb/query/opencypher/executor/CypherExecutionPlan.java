@@ -1880,6 +1880,12 @@ public class CypherExecutionPlan {
             final ZeroLengthPathStep zeroPathStep = new ZeroLengthPathStep(variable, singlePathVar, context);
             zeroPathStep.setPrevious(currentStep);
             currentStep = zeroPathStep;
+            // With no MatchNodeStep created above, this is the first step of the OPTIONAL chain and has to be
+            // registered as such: OptionalMatchStep feeds every input row into matchChainStart, and the next
+            // pattern part re-seats matchChainStart on its own head, so a chain start left null here would
+            // orphan this step and leave the path variable permanently unbound (issue #6544).
+            if (isOptional && matchChainStart == null)
+              matchChainStart = zeroPathStep;
           }
           continue;
         }
