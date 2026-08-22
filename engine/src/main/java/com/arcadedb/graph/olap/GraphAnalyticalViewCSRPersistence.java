@@ -350,11 +350,14 @@ class GraphAnalyticalViewCSRPersistence {
         return null;
       encrypted = in.readBoolean();
       final int payloadLength = in.readInt();
-      // A corrupt header could carry a huge but individually plausible length; check it against what's actually
-      // left in the file before allocating, rather than relying on readFully() to eventually fail with
-      // EOFException after the allocation already happened.
+      // A corrupt header could carry a huge but individually plausible length; check it against the file's total
+      // size before allocating, rather than relying on readFully() to eventually fail with EOFException after the
+      // allocation already happened. Looser than checking against what's actually left after the header (a length
+      // just under the file's full size would still pass here and then legitimately fail readFully() a few bytes
+      // later), but that remaining failure is already handled as corruption, so this bound only needs to reject the
+      // implausible case cheaply, not pinpoint the exact one.
       if (payloadLength < 0 || payloadLength > file.length())
-        throw new EOFException("declared payload length " + payloadLength + " exceeds the file's remaining size");
+        throw new EOFException("declared payload length " + payloadLength + " exceeds the file's total size");
       storedPayload = new byte[payloadLength];
       in.readFully(storedPayload);
 
