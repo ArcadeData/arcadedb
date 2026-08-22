@@ -22,6 +22,7 @@ import com.arcadedb.database.DataEncryption;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.utility.FileUtils;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -86,8 +87,18 @@ class GraphAnalyticalViewCSRPersistence {
   private GraphAnalyticalViewCSRPersistence() {
   }
 
+  /**
+   * A GAV name is a SQL identifier a schema-privileged user controls, and (unlike a type or bucket name) nothing
+   * upstream of this class validates it against path separators - a name such as {@code ../../../tmp/evil} would
+   * otherwise let {@link #save}/{@link #delete} write, overwrite or delete an arbitrary file the server process can
+   * reach. Encode it exactly like {@link com.arcadedb.schema.LocalSchema} encodes a type name before it becomes a
+   * component file name: {@link FileUtils#encode} percent-encodes {@code /} and {@code \} (and leaves the rest of
+   * the identifier's characters intact), so the result is always a single path segment under the database directory
+   * regardless of what the name contains.
+   */
   static File fileFor(final Database database, final String viewName) {
-    return new File(database.getDatabasePath(), FILE_PREFIX + viewName + FILE_EXTENSION);
+    final String encodedName = FileUtils.encode(viewName, database.getSchema().getEncoding());
+    return new File(database.getDatabasePath(), FILE_PREFIX + encodedName + FILE_EXTENSION);
   }
 
   static void delete(final Database database, final String viewName) {

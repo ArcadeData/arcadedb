@@ -2541,6 +2541,44 @@ class GraphAnalyticalViewTest extends TestHelper {
   }
 
   /**
+   * Regression for issue #6583 code review: a GAV name is a schema-privileged user's choice of SQL
+   * identifier, not validated against path separators anywhere upstream, so {@code fileFor()} must not
+   * let a name like {@code ../../../tmp/evil} escape the database directory - which would otherwise give
+   * {@code save()}/{@code delete()} an arbitrary-file write/delete primitive.
+   */
+  @Test
+  void csrFilePathStaysUnderDatabaseDirectoryEvenForATraversalName() throws Exception {
+    final String maliciousName = "../../../../tmp/arcadedb-issue-6583-traversal-marker";
+
+    final File csrFile = GraphAnalyticalViewCSRPersistence.fileFor(database, maliciousName);
+
+    final String databaseCanonicalPath = new File(database.getDatabasePath()).getCanonicalPath();
+    assertThat(csrFile.getCanonicalPath())
+        .as("the resolved CSR file must stay a direct child of the database directory regardless of the view name")
+        .isEqualTo(databaseCanonicalPath + File.separator + csrFile.getName());
+    assertThat(csrFile.getParentFile().getCanonicalPath()).isEqualTo(databaseCanonicalPath);
+
+    database.getSchema().createVertexType("Person");
+    database.begin();
+    database.newVertex("Person").save();
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName(maliciousName)
+        .withVertexTypes("Person")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
+        .build();
+    gav.shutdown(); // persists the CSR to disk
+
+    assertThat(csrFile).exists();
+    assertThat(new File("/tmp/arcadedb-issue-6583-traversal-marker.csr"))
+        .as("the traversal segments must never resolve outside the database directory")
+        .doesNotExist();
+
+    gav.drop();
+  }
+
+  /**
    * Regression for issue #6583 code review: {@code drop()} must remove the persisted CSR file, not just
    * the schema definition, so a later view created under the same name never risks loading a stale file
    * left over from a previous, unrelated view.
@@ -2595,9 +2633,11 @@ class GraphAnalyticalViewTest extends TestHelper {
         .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
         .build();
 
+    // fileFor() resolves through the schema (for its filename encoding), so it must run before close().
+    final File csrFile = GraphAnalyticalViewCSRPersistence.fileFor(database, "csr-corrupt-test");
+    final String dbPath = database.getDatabasePath();
     database.close();
 
-    final File csrFile = GraphAnalyticalViewCSRPersistence.fileFor(database, "csr-corrupt-test");
     assertThat(csrFile).exists();
     // Truncate the file to a few bytes past its header — the certificate check passes (it's still there),
     // but the payload it points into is gone.
@@ -2605,7 +2645,7 @@ class GraphAnalyticalViewTest extends TestHelper {
       raf.setLength(Math.min(raf.length(), 64));
     }
 
-    database = new DatabaseFactory(database.getDatabasePath()).open();
+    database = new DatabaseFactory(dbPath).open();
 
     final GraphAnalyticalView restored = GraphAnalyticalViewRegistry.get(database, "csr-corrupt-test");
     assertThat(restored).isNotNull();
