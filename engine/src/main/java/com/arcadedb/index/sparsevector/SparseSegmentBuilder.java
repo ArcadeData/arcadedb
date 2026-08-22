@@ -104,6 +104,12 @@ public final class SparseSegmentBuilder implements AutoCloseable {
    * silent.
    */
   private boolean segmentIdSet         = false;
+  /**
+   * Marks the segment's precedence as inherited from a merge that predates the epoch (issue #6379).
+   * A merge ORs this across its inputs so the doubt survives being absorbed; see
+   * {@link PaginatedSegmentReader#epochUntrusted()}.
+   */
+  private boolean epochUntrusted       = false;
   private long[] parentSegments        = new long[0];
 
   // Currently open dim state.
@@ -231,6 +237,16 @@ public final class SparseSegmentBuilder implements AutoCloseable {
       throw new IllegalStateException(
           "setSegmentId(long) must be called before setRecencyEpoch(long): the former defaults the epoch to the segment id");
     this.recencyEpoch = recencyEpoch;
+  }
+
+  /**
+   * Mark this segment's precedence as untrusted, i.e. descended from a merge written before the
+   * recency epoch existed. Compaction passes the OR across its inputs so the flag cannot be lost by
+   * absorbing a legacy segment into a segment with a fresh id.
+   */
+  public void setEpochUntrusted(final boolean epochUntrusted) {
+    requireFresh();
+    this.epochUntrusted = epochUntrusted;
   }
 
   public void setParentSegments(final long[] parents) {
@@ -732,7 +748,7 @@ public final class SparseSegmentBuilder implements AutoCloseable {
     // falls back to the segment id, which reproduces the pre-#6379 ordering for legacy files.
     // Repurposing the reserved slot keeps the manifest at the same size, so the format version
     // does not move.
-    payloadBuf.putLong(recencyEpoch);
+    payloadBuf.putLong(epochUntrusted ? (recencyEpoch | PaginatedSegmentFormat.EPOCH_UNTRUSTED_FLAG) : recencyEpoch);
     final CRC32 crc = new CRC32();
     crc.update(payloadScratch, 0, size - 4);
     payloadBuf.putInt((int) crc.getValue());

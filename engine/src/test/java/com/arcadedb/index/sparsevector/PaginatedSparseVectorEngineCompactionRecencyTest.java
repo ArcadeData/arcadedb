@@ -496,6 +496,9 @@ class PaginatedSparseVectorEngineCompactionRecencyTest extends TestHelper {
       final SparseSegmentComponent component = newComponent(db, "LegacyScanStaleTest_seg1");
       try (final SparseSegmentBuilder b = new SparseSegmentBuilder(component, SegmentParameters.defaults())) {
         b.setSegmentId(1L);
+        // 0 is what a pre-fix builder left in the slot; setSegmentId defaults it to the id, so the
+        // fixture has to put it back to reproduce the on-disk shape rather than merely resemble it.
+        b.setRecencyEpoch(0L);
         b.setParentSegments(new long[] { 90L, 91L });
         b.startDim(DIM);
         b.appendPosting(new RID(0, 500L), 0.5f);
@@ -505,6 +508,58 @@ class PaginatedSparseVectorEngineCompactionRecencyTest extends TestHelper {
     });
     assertThat(warningsWhileOpening(db, "LegacyScanStaleTest"))
         .as("a segment with parents whose epoch equals its id predates the fix and must be reported")
+        .anyMatch(w -> w.contains("#6379") && w.contains("REBUILD INDEX"));
+  }
+
+  /**
+   * The warning has to survive the index continuing to be used. A legacy segment stops looking like
+   * one the moment an ordinary compaction absorbs it - the result has a fresh id, so the shape that
+   * identified it no longer matches - while the suspect ordering rides along inside it unchanged.
+   * Since {@code flush()} cascades the size-tiered trigger on every call, that can happen within
+   * the first few writes after an upgrade, which is exactly when nobody has read the log yet.
+   * <p>
+   * Drives that sequence for real: seal a legacy-shaped segment, let automatic compaction consume
+   * it, and require the next open to still say so.
+   */
+  @Test
+  void legacyEpochDoubtSurvivesBeingAbsorbedByCompaction() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+
+    // A legacy merge: parents recorded, epoch never set, so it reads back as epoch == id.
+    database.transaction(() -> {
+      final SparseSegmentComponent component = newComponent(db, "LegacyAbsorbTest_seg1");
+      try (final SparseSegmentBuilder b = new SparseSegmentBuilder(component, SegmentParameters.defaults())) {
+        b.setSegmentId(1L);
+        b.setRecencyEpoch(0L);   // the pre-fix on-disk shape: slot never written
+        b.setParentSegments(new long[] { 90L, 91L });
+        b.startDim(DIM);
+        for (int i = 0; i < 10; i++)
+          b.appendPosting(new RID(0, 500L + i), 0.5f);
+        b.endDim();
+        b.finish();
+      }
+    });
+    assertThat(warningsWhileOpening(db, "LegacyAbsorbTest"))
+        .as("the legacy segment is reported before anything absorbs it")
+        .anyMatch(w -> w.contains("#6379"));
+
+    // Ordinary post-upgrade write traffic. fanout 2 with a matching tier makes the size-tiered
+    // trigger fire on the flush that follows, consuming the legacy segment into a merge whose id is
+    // freshly allocated - the exact step that used to launder the doubt away.
+    try (final PaginatedSparseVectorEngine engine = tieredEngine(db, "LegacyAbsorbTest", 2, 2L)) {
+      assertThat(engine.segmentCount()).isEqualTo(1);
+      fill(engine, 700L, 10);
+      engine.flush();
+      assertThat(engine.segmentCount())
+          .as("the size-tiered trigger must have merged the legacy segment away")
+          .isEqualTo(1);
+      assertThat(engine.segmentIds())
+          .as("and the merged segment must own a new id, so the old shape no longer identifies it")
+          .doesNotContain(1L);
+    }
+
+    assertThat(warningsWhileOpening(db, "LegacyAbsorbTest"))
+        .as("the doubt must be inherited by the merge, not erased by it")
         .anyMatch(w -> w.contains("#6379") && w.contains("REBUILD INDEX"));
   }
 
@@ -525,6 +580,13 @@ class PaginatedSparseVectorEngineCompactionRecencyTest extends TestHelper {
    * Captures WARNING-and-above messages while forwarding everything to the real logger. The
    * fixed-arity overload must NOT delegate to the varargs one: the fixed arity is the exact match,
    * so it would recurse until the stack dies.
+   * <p>
+   * {@link LogManager#setLogger} is process-wide, so this relies on the engine module running its
+   * test classes sequentially (Surefire {@code forkCount=1}, {@code reuseForks=true}, no JUnit
+   * parallel config). The capture is scoped to a single engine open and restored in a
+   * {@code finally}, so a concurrent test would see at worst a forwarded log line rather than a
+   * lost one - but the assertions here would become flaky if class-level parallelism were ever
+   * enabled for this module.
    */
   private static final class CapturingLogger implements Logger {
     private final List<String> warnings;
