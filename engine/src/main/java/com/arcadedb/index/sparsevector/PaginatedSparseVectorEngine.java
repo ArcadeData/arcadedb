@@ -90,10 +90,9 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * {@link #put} briefly waits on {@link #mutatorLock} so any in-progress flush has a chance to
    * swap the memtable out before we add another posting to it. <b>Soft block, not a rejection</b>:
    * the put always eventually proceeds; the wait is bounded by the in-progress flush duration (or
-   * is essentially free when no flush is running). This is the backpressure described in
-   * {@code docs/sparse-vector-storage-design.md} ("Risks - Memtable pressure under high write
-   * rate"): with the soft trigger ({@code maybeFlush}) firing per commit, sustained write rate
-   * exceeding flush rate would otherwise let the memtable grow unbounded between flushes and
+   * is essentially free when no flush is running). It exists to bound memtable pressure under a
+   * high write rate: with the soft trigger ({@code maybeFlush}) firing per commit, sustained write
+   * rate exceeding flush rate would otherwise let the memtable grow unbounded between flushes and
    * eventually OOM. We deliberately do <i>not</i> call {@link #flush} from {@code put}: the
    * commit-replay path runs inside an outer {@code database.transaction(...)}, and a nested
    * transaction in the flush path would deadlock or corrupt state. Letting {@code maybeFlush}
