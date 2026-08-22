@@ -276,6 +276,16 @@ public interface DatabaseInternal extends Database {
   }
 
   /**
+   * Returns the {@link DataEncryption} configured via {@link #setDataEncryption}, or null if none is configured.
+   * Used by components that persist data outside the normal record/page path (e.g. {@code
+   * GraphAnalyticalViewCSRPersistence}, issue #6583) so that opting into encryption for a database's records also
+   * covers side files derived from that data, rather than only the pages the serializer itself writes.
+   */
+  default DataEncryption getDataEncryption() {
+    return getSerializer().getDataEncryption();
+  }
+
+  /**
    * Returns true if writes against this database are forwarded to a replication layer
    * (e.g. Raft). Components that capture WAL bytes for replication (like {@link com.arcadedb.graph.GraphBatch})
    * must keep the WAL on for committed transactions when this is true, otherwise the
