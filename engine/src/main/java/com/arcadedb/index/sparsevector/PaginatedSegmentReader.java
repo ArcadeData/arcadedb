@@ -52,6 +52,8 @@ public final class PaginatedSegmentReader implements AutoCloseable {
   private final int                    totalDims;
   private final long[]                 parentSegments;
   private final long                   tombstoneCount;
+  private final long                   recencyEpoch;
+  private final boolean                epochUntrusted;
 
   // Sorted parallel arrays: dimIds[i] -> trailer at (trailerPageNums[i], trailerOffsets[i] & 0xFFFF).
   private final int[]                                 dimIds;
@@ -124,16 +126,36 @@ public final class PaginatedSegmentReader implements AutoCloseable {
     // Slot 0 (8 bytes): total tombstones in this segment, written by SparseSegmentBuilder
     // (Tier 2 follow-up to #4068). Older segments built before this field was populated read 0L
     // here, which is a safe under-report - the engine's tombstone-ratio compaction trigger just
-    // skips those segments. Slot 1 stays reserved.
+    // skips those segments.
     this.tombstoneCount = manifestPage.readLong(cursor);
     cursor += 8;
-    cursor += 8; // skip reserved slot 1
+    // Slot 1 (8 bytes): recency epoch, plus the untrusted flag in its high bit (issue #6379).
+    // <p>
+    // A segment written before the slot was repurposed reads 0L. Falling back to the segment id
+    // reproduces exactly the order such a file was written under - correct for a flush, which was
+    // never mis-ordered, but merely the status quo for a merge, whose precedence is the thing the
+    // fix corrects. So a legacy MERGE (parents recorded, no epoch) is where the doubt starts, and
+    // from there it propagates: a merge that consumes an untrusted input writes the flag too, so
+    // absorbing a suspect segment cannot quietly launder it. Epochs start at 1, so 0 is
+    // unambiguously "not recorded".
+    final long storedEpoch = manifestPage.readLong(cursor);
+    if (storedEpoch == 0L) {
+      this.recencyEpoch = this.segmentId;
+      this.epochUntrusted = parentCount > 0;
+    } else {
+      this.recencyEpoch = storedEpoch & ~PaginatedSegmentFormat.EPOCH_UNTRUSTED_FLAG;
+      this.epochUntrusted = (storedEpoch & PaginatedSegmentFormat.EPOCH_UNTRUSTED_FLAG) != 0L;
+    }
+    cursor += 8;
     // Manifest CRC validation. Layout written by SparseSegmentBuilder.writeManifest covers
-    // segmentId + parentCount + parents[] + reserved(16), with the CRC of all of those in the
-    // last 4 bytes. A bit-flipped manifest could otherwise return wrong {@code parentSegments}
+    // segmentId + parentCount + parents[] + tombstoneCount + recencyEpoch, with the CRC of all of
+    // those in the last 4 bytes. (Both 8-byte slots were once "reserved"; slot 0 became the
+    // tombstone count with the tombstone-ratio trigger and slot 1 the recency epoch in #6379, so
+    // neither is spare any more - the next addition needs a new slot and a size bump.)
+    // A bit-flipped manifest could otherwise return wrong {@code parentSegments}
     // silently; we surface that as a SEVERE log here so the issue is observable without
     // failing the segment open.
-    final int manifestSize = 8 + 4 + parentCount * 8 + 8 + 8 + 4; // segmentId + parentCount + parents + 2 reserved + crc
+    final int manifestSize = 8 + 4 + parentCount * 8 + 8 + 8 + 4; // segId + parentCount + parents + tombstones + epoch + crc
     final byte[] manifestBytes = new byte[manifestSize];
     manifestPage.readByteArray(0, manifestBytes);
     final int storedManifestCrc = manifestPage.readInt(cursor);
@@ -211,6 +233,33 @@ public final class PaginatedSegmentReader implements AutoCloseable {
 
   public long segmentId() {
     return segmentId;
+  }
+
+  /**
+   * Precedence ordinal for the "newest wins" merge order, parsed from the manifest's recency slot
+   * (issue #6379). It is <b>not</b> interchangeable with {@link #segmentId}: the id is only a
+   * never-reused file-name allocator, while the epoch is what says which of two segments holds the
+   * newer version of a RID. A compacted segment carries the epoch of its newest input, so its
+   * epoch is normally lower than its own id.
+   */
+  public long recencyEpoch() {
+    return recencyEpoch;
+  }
+
+  /**
+   * True when this segment's precedence predates the recency-epoch fix, or descends from a segment
+   * that did (issue #6379). Such a segment orders correctly against everything it was merged with,
+   * but may still outrank a segment holding a tombstone for one of its postings, so the index needs
+   * a {@code REBUILD INDEX} to be certain a delete stays deleted.
+   * <p>
+   * Deliberately a persisted, inherited property rather than something re-derived per segment: the
+   * shape that identifies a legacy merge ({@code parents > 0} with epoch equal to id) stops
+   * matching the moment an ordinary post-upgrade compaction absorbs it into a segment with a fresh
+   * id, and the doubt would then have been laundered away by the very auto-compaction the operator
+   * had not yet been warned about.
+   */
+  public boolean epochUntrusted() {
+    return epochUntrusted;
   }
 
   public long[] parentSegments() {

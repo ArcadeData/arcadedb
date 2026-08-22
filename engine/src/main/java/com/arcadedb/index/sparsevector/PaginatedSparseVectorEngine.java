@@ -34,16 +34,15 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
@@ -119,11 +118,15 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
 
   /**
    * Size-tiered compaction parameters. After a successful {@link #flush()} the engine groups
-   * active segments into geometric tiers by posting count and, if any tier has at least
-   * {@link #DEFAULT_TIER_FANOUT} segments, merges that tier's oldest {@code fanout} segments
-   * into one. The merged segment lives in the next tier up by virtue of its larger posting
-   * count, so subsequent flushes at tier 0 don't keep re-merging it - this is the classic
-   * size-tiered compaction strategy (STCS) ArcadeDB-flavoured for sparse vectors.
+   * active segments into geometric tiers by posting count and, if at least
+   * {@link #DEFAULT_TIER_FANOUT} segments of one tier sit next to each other in
+   * {@link #RECENCY_ORDER}, merges the oldest {@code fanout} of that run into one. The merged
+   * segment lives in the next tier up by virtue of its larger posting count, so subsequent
+   * flushes at tier 0 don't keep re-merging it - this is the classic size-tiered compaction
+   * strategy (STCS) ArcadeDB-flavoured for sparse vectors. The adjacency requirement is what
+   * keeps a partial merge from outranking a segment it skipped (issue #6379); in the steady
+   * state a uniform flush size produces, a tier's members are adjacent anyway, so it costs
+   * nothing there.
    * <p>
    * <b>Why size-tiered.</b> The earlier count-tiered policy ("after every flush, if total
    * segments &gt; T, merge the oldest M") capped the segment count but kept rewriting the
@@ -176,6 +179,36 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   static final int MIN_BLOCKS_PER_PARTITION = 4;
 
   /**
+   * Precedence order of the active segments: oldest first, newest last. Everything that resolves
+   * two versions of the same RID - {@link #openMergedCursor} via {@link DimCursor}'s
+   * "higher source index wins", and {@link #mergeIntoBuilder} via its input index - reads this
+   * order, so the {@link #segments} array is kept sorted by it at every publication point.
+   * <p>
+   * <b>The key is the recency epoch, not the segment id (issue #6379).</b> The id is only a
+   * never-reused allocator for the component file name, and a compaction necessarily allocates a
+   * brand-new highest one. Ordering on the id therefore let a merged segment leapfrog a segment it
+   * had <i>not</i> consumed: if that skipped segment held the tombstone for a live posting the
+   * merge carried forward from an older input, the merged output outranked the tombstone and the
+   * deleted document came back - permanently, because the next full compaction then dropped the
+   * tombstone as the loser. The epoch fixes the ordering by staying put: a flush takes its id as
+   * its epoch (a freshly sealed memtable is genuinely the newest thing there is), while a merge
+   * inherits the epoch of its <i>newest input</i> and so lands exactly where that input sat.
+   * <p>
+   * Inheriting the newest input's epoch is only sound because {@link #compactInputs} also
+   * guarantees the inputs are a <i>contiguous</i> run in this order - see
+   * {@link #contiguousClosure}. With a gap, a merged posting that came from the oldest input would
+   * still be stamped with the newest input's epoch and would still outrank whatever sat in the
+   * gap; contiguity is what removes the gap rather than papering over it.
+   * <p>
+   * The tie-break on segment id is defensive only: a merge consumes every input whose epoch it
+   * could have inherited, so two active segments never share an epoch. It costs nothing and keeps
+   * the order total (hence the publication deterministic) if a future policy ever breaks that.
+   */
+  private static final Comparator<PaginatedSegmentReader> RECENCY_ORDER = Comparator
+      .comparingLong(PaginatedSegmentReader::recencyEpoch)
+      .thenComparingLong(PaginatedSegmentReader::segmentId);
+
+  /**
    * Ceiling on how far an explicit {@code sparseVectorScoringMaxPartitions} may oversubscribe the
    * scoring pool. The setting exists to opt out of the load gate, not out of arithmetic: each range
    * costs a full cursor stack, and past a small multiple of the pool there is no thread free to run
@@ -215,6 +248,11 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   private final AtomicReference<Memtable>                  memtable     = new AtomicReference<>(new Memtable());
   private final AtomicReference<PaginatedSegmentReader[]>  segments     = new AtomicReference<>(new PaginatedSegmentReader[0]);
   private final AtomicLong                                 nextSegmentId = new AtomicLong(1L);
+  /**
+   * Latches once the pre-#6379 warning has been emitted for this engine instance, so the same line
+   * can be raised from the follower refresh path without repeating on every query.
+   */
+  private final AtomicBoolean                              untrustedEpochWarned = new AtomicBoolean();
   private final ReentrantLock                              mutatorLock  = new ReentrantLock();
   // Content fingerprint of the FileManager's view of <i>this index's</i> sparse-segment files,
   // captured at the end of the last successful {@link #refreshSegmentsFromFileManager}. Lets the
@@ -908,9 +946,23 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
 
   /**
    * One pass of size-tiered compaction. Groups active segments by geometric tier on posting
-   * count and, if any tier holds at least {@link #tierFanout} segments, merges that tier's
-   * oldest {@code tierFanout} into one. Returns the new merged segment id, or {@code -1L} if
-   * no tier overflowed (so the caller's cascading loop can stop).
+   * count and, if any tier holds at least {@link #tierFanout} segments <i>adjacent to each other
+   * in {@link #RECENCY_ORDER}</i>, merges the oldest {@code tierFanout} of that run into one.
+   * Returns the new merged segment id, or {@code -1L} if no tier overflowed (so the caller's
+   * cascading loop can stop).
+   * <p>
+   * <b>Why adjacency, and what it costs (issue #6379).</b> A merge output inherits the epoch of
+   * its newest input, which is only correct when nothing the merge skipped sits between its
+   * inputs - otherwise a posting carried forward from the oldest input outranks a newer version
+   * of the same RID in the skipped segment, and a deleted document comes back. Picking a tier's
+   * oldest {@code tierFanout} members regardless of what sits between them is exactly that
+   * pattern: a small tombstone-carrying flush lands in a lower tier than the fat data segments
+   * around it and gets skipped. Restricting the pick to a run costs nothing in the steady state a
+   * bulk-load produces - equal-sized flushes arrive consecutively, so a tier's members already
+   * <i>are</i> adjacent - and where sizes interleave, the segment that broke the run is merged by
+   * a later pass instead of being jumped over. {@link #contiguousClosure} enforces the invariant
+   * independently, so a run this method fails to find is a missed compaction, never a wrong
+   * answer.
    * <p>
    * <b>Sentinel conflation, intentional.</b> Three "stop the cascade" cases all return
    * {@code -1L}: (a) no tier overflowed, (b) this server is a Raft follower (followers receive
@@ -932,77 +984,132 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     return compactInputs(/* dropAllTombstones */ false, active -> {
       if (active.length < tierFanout)
         return null;
-      // Bucket by tier. Within each tier, sort by segment id (oldest first) so the merge picks
-      // a contiguous run of older segments and leaves any tier-mate that arrived more recently
-      // for the next pass.
-      // <p>
-      // FUTURE: this is called inside the {@code while (compactSizeTiered() != -1L)} cascade in
-      // {@link #flush}, so on a bulk-load it allocates a fresh {@code HashMap} + per-tier
-      // {@code ArrayList}s on every cascade tick. Tier count is bounded by
-      // {@code log_fanout(maxPostings)} (~20 worst case), so a pre-allocated fixed-size arrays
-      // approach (e.g. {@code IntObjectMap}-style with the max plausible tier count) would
-      // eliminate these allocations on the hot flush path. Not done yet because the current
-      // numbers are dominated by the merge itself, not the bookkeeping; revisit if a profile
-      // shows otherwise.
-      final Map<Integer, List<PaginatedSegmentReader>> byTier = new HashMap<>();
-      for (final PaginatedSegmentReader r : active) {
-        final int t = tierOf(r.totalPostings());
-        byTier.computeIfAbsent(t, k -> new ArrayList<>()).add(r);
+      // Everything below indexes into recency order, because that is the order a merge input set
+      // has to be contiguous in.
+      final PaginatedSegmentReader[] ordered = sortedCopy(active);
+
+      // Primary trigger: the lowest-tier run of at least {@code tierFanout} adjacent same-tier
+      // segments, so write amplification stays minimal. Tiers are computed once into a parallel
+      // array - {@link #tierOf} is a double log per call and the run scan reads each entry twice.
+      final int[] tiers = new int[ordered.length];
+      for (int i = 0; i < ordered.length; i++)
+        tiers[i] = tierOf(ordered[i].totalPostings());
+      int bestStart = -1;
+      int bestTier = 0;
+      for (int i = 0; i < ordered.length; ) {
+        int j = i + 1;
+        while (j < ordered.length && tiers[j] == tiers[i])
+          j++;
+        if (j - i >= tierFanout && (bestStart < 0 || tiers[i] < bestTier)) {
+          bestStart = i;
+          bestTier = tiers[i];
+        }
+        i = j;
       }
-      // Primary trigger: pick the lowest-tier overflow first so write amplification stays minimal.
-      final int[] sortedTiers = byTier.keySet().stream().mapToInt(Integer::intValue).sorted().toArray();
-      for (final int t : sortedTiers) {
-        final List<PaginatedSegmentReader> sameTier = byTier.get(t);
-        if (sameTier.size() < tierFanout)
-          continue;
-        sameTier.sort(Comparator.comparingLong(PaginatedSegmentReader::segmentId));
-        return sameTier.subList(0, tierFanout).toArray(new PaginatedSegmentReader[0]);
-      }
+      if (bestStart >= 0)
+        return Arrays.copyOfRange(ordered, bestStart, bestStart + tierFanout);
+
       // Secondary trigger: tombstone-ratio cleanup. A delete-heavy index where segments never
       // grow into the next tier would otherwise accumulate small tombstone-rich segments that BMW
       // DAAT must still walk on every query. Once the corpus has at least {@code tierFanout}
-      // segments AND at least one of them is past {@link #TOMBSTONE_RATIO_TRIGGER}, pick that
-      // segment plus its (fanout - 1) oldest neighbors so the merge collapses file count.
-      // Gating on {@code active.length >= tierFanout} (already enforced by the early return above)
-      // prevents the 2-segment ping-pong where every flush re-merges the same pair.
-      PaginatedSegmentReader heaviestTombstoneSeg = null;
-      double heaviestRatio = 0.0;
-      for (final PaginatedSegmentReader r : active) {
-        final long total = r.totalPostings();
-        if (total <= 0L)
-          continue;
-        final double ratio = (double) r.tombstoneCount() / (double) total;
-        if (ratio >= TOMBSTONE_RATIO_TRIGGER && ratio > heaviestRatio) {
-          heaviestTombstoneSeg = r;
-          heaviestRatio = ratio;
-        }
-      }
-      if (heaviestTombstoneSeg == null)
-        return null;
-      // Pair the high-tombstone segment with the (fanout - 1) oldest neighbors so newest-wins
-      // precedence inside mergeIntoBuilder lines up with on-disk order.
+      // segments AND at least one of them is past {@link #TOMBSTONE_RATIO_TRIGGER}, merge the
+      // window of {@code tierFanout} adjacent segments that ends at the offender, so the merge
+      // collapses file count. Gating on {@code active.length >= tierFanout} (already enforced by
+      // the early return above) prevents the 2-segment ping-pong where every flush re-merges the
+      // same pair.
       // <p>
       // Tier mixing here is intentional: the trigger's goal is file-count reduction (drain the
       // delete-heavy index of small tombstone-rich segments BMW DAAT must walk on every query),
-      // not the write-amplification minimisation that the primary size-tiered branch optimises
-      // for. Pulling the oldest neighbors regardless of tier is a single-pass collapse; the next
+      // not the write-amplification minimisation that the primary branch optimises for. The next
       // flush will rebalance the tier distribution naturally.
-      final List<PaginatedSegmentReader> all = new ArrayList<>(active.length);
-      all.addAll(Arrays.asList(active));
-      all.sort(Comparator.comparingLong(PaginatedSegmentReader::segmentId));
-      final List<PaginatedSegmentReader> picked = new ArrayList<>(tierFanout);
-      final long heavyId = heaviestTombstoneSeg.segmentId();
-      picked.add(heaviestTombstoneSeg);
-      for (final PaginatedSegmentReader r : all) {
-        if (picked.size() >= tierFanout)
-          break;
-        if (r.segmentId() == heavyId)
+      int heaviestIdx = -1;
+      double heaviestRatio = 0.0;
+      for (int i = 0; i < ordered.length; i++) {
+        final long total = ordered[i].totalPostings();
+        if (total <= 0L)
           continue;
-        picked.add(r);
+        final double ratio = (double) ordered[i].tombstoneCount() / (double) total;
+        if (ratio >= TOMBSTONE_RATIO_TRIGGER && ratio > heaviestRatio) {
+          heaviestIdx = i;
+          heaviestRatio = ratio;
+        }
       }
-      picked.sort(Comparator.comparingLong(PaginatedSegmentReader::segmentId));
-      return picked.toArray(new PaginatedSegmentReader[0]);
+      if (heaviestIdx >= 0) {
+        // The window ends at the offender and reaches backwards, because the offender's tombstones
+        // can only mask postings that precede them - reaching forwards would merge segments whose
+        // space the offender cannot reclaim. Near the oldest end there are fewer than
+        // {@code tierFanout - 1} older neighbours to take, so the window starts at 0 and extends
+        // past the offender instead; that is the only case where it holds anything newer.
+        // <p>
+        // No upper clamp is needed: the window is {@code [start, start + tierFanout)} with
+        // {@code start = max(0, heaviestIdx - (tierFanout - 1))}, so it ends either at
+        // {@code heaviestIdx + 1 <= ordered.length} or at {@code tierFanout <= ordered.length}
+        // (the early return above guarantees the latter bound).
+        final int start = Math.max(0, heaviestIdx - (tierFanout - 1));
+        return Arrays.copyOfRange(ordered, start, start + tierFanout);
+      }
+
+      // Tertiary trigger: shape guard. Requiring the primary trigger's inputs to be adjacent
+      // (issue #6379) means an interleaved size distribution - a half-full flush at close time, a
+      // tombstone-only flush, a merge output landing mid-array - can leave every tier's members
+      // non-adjacent and stall compaction for as long as the interleaving persists. Left alone
+      // that is unbounded segment growth, which costs a file handle and a cursor per segment on
+      // every query; the guard bounds it without handing the operator a new knob to tune, by
+      // firing only once the active count exceeds the shape a healthy size-tiered index would
+      // have. It merges the cheapest adjacent window, so it pays the least write amplification
+      // available to it, and it strictly reduces the segment count, so the cascade terminates.
+      if (active.length <= healthyShapeCeiling(totalSegmentPostings(ordered)))
+        return null;
+      int cheapestStart = 0;
+      long cheapestCost = Long.MAX_VALUE;
+      long windowCost = 0L;
+      for (int i = 0; i < ordered.length; i++) {
+        windowCost += ordered[i].totalPostings();
+        if (i < tierFanout - 1)
+          continue;
+        if (windowCost < cheapestCost) {
+          cheapestCost = windowCost;
+          cheapestStart = i - (tierFanout - 1);
+        }
+        windowCost -= ordered[i - (tierFanout - 1)].totalPostings();
+      }
+      // Names the window by segment id, not by array position: the position is an index into an
+      // internal snapshot that means nothing once this call returns, while the ids are what an
+      // operator can match against the component files on disk and against later log lines.
+      LogManager.instance().log(this, Level.FINE,
+          "Sparse-vector index '%s' holds %d segments with no same-tier run of %d to merge; collapsing the cheapest "
+              + "adjacent window, segments %d..%d (%d postings)",
+          null, indexName, active.length, tierFanout, ordered[cheapestStart].segmentId(),
+          ordered[cheapestStart + tierFanout - 1].segmentId(), cheapestCost);
+      return Arrays.copyOfRange(ordered, cheapestStart, cheapestStart + tierFanout);
     });
+  }
+
+  /** True if any input's precedence predates the recency-epoch fix, so the merge must inherit the doubt. */
+  private static boolean anyEpochUntrusted(final PaginatedSegmentReader[] inputs) {
+    for (final PaginatedSegmentReader r : inputs)
+      if (r.epochUntrusted())
+        return true;
+    return false;
+  }
+
+  private static long totalSegmentPostings(final PaginatedSegmentReader[] ordered) {
+    long total = 0L;
+    for (final PaginatedSegmentReader r : ordered)
+      total += r.totalPostings();
+    return total;
+  }
+
+  /**
+   * How many active segments a healthy size-tiered shape holds for {@code totalPostings}: at most
+   * {@code tierFanout - 1} per tier (a tier that reaches {@code tierFanout} is merged away), across
+   * the {@code tierOf(totalPostings) + 1} tiers the corpus spans. This is the same figure the
+   * class-level size-tiered note derives, expressed as code so the shape guard above has a
+   * threshold nobody has to tune. Floored at {@code tierFanout} so the guard can never fire on a
+   * segment set too small for a merge to be worth making.
+   */
+  private int healthyShapeCeiling(final long totalPostings) {
+    return Math.max(tierFanout, (tierFanout - 1) * (tierOf(totalPostings) + 1));
   }
 
   private int tierOf(final long postings) {
@@ -1012,21 +1119,102 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     return (int) (Math.log((double) postings / (double) tierBasePostings) / Math.log(tierFanout));
   }
 
+  /** Copy of {@code in} sorted oldest-first by {@link #RECENCY_ORDER}. */
   private static PaginatedSegmentReader[] sortedCopy(final PaginatedSegmentReader[] in) {
     final PaginatedSegmentReader[] out = Arrays.copyOf(in, in.length);
-    Arrays.sort(out, Comparator.comparingLong(PaginatedSegmentReader::segmentId));
+    Arrays.sort(out, RECENCY_ORDER);
     return out;
   }
 
+  /**
+   * Widen {@code inputs} to the smallest contiguous run of {@code active} in {@link #RECENCY_ORDER}
+   * that contains all of them, so the merge can safely inherit its newest input's epoch.
+   * <p>
+   * This is the invariant {@link #compactInputs} refuses to merge without (issue #6379), and it is
+   * enforced here rather than trusted to the selectors because the consequence of getting it wrong
+   * is silent and permanent: a merged segment that leapfrogs a segment it skipped resurrects
+   * whatever that segment had deleted, and the next full compaction then discards the tombstone as
+   * the loser. Every selector in this class already returns a run, so the widening branch is
+   * unreachable in practice - it exists so that a future policy which does not return one can only
+   * over-merge, never corrupt. The {@code WARNING} makes that over-merge observable instead of
+   * quietly paying the write amplification forever.
+   * <p>
+   * The {@code sortedCopy} below deliberately re-sorts a snapshot the selectors have usually
+   * already sorted. Threading their {@code ordered} array through here to save the second
+   * {@code O(n log n)} on a handful of segments would make this check trust the caller for the
+   * very ordering it exists to verify, which is the one thing it must not do. Package-private for
+   * the regression test that pins the widening branch, since no production caller can reach it.
+   */
+  PaginatedSegmentReader[] contiguousClosure(final PaginatedSegmentReader[] active,
+      final PaginatedSegmentReader[] inputs) {
+    final PaginatedSegmentReader[] ordered = sortedCopy(active);
+    final LongHashSet inputIds = new LongHashSet(Math.max(8, inputs.length * 2));
+    for (final PaginatedSegmentReader r : inputs)
+      inputIds.add(r.segmentId());
+
+    int first = -1;
+    int last = -1;
+    int found = 0;
+    for (int i = 0; i < ordered.length; i++) {
+      if (!inputIds.contains(ordered[i].segmentId()))
+        continue;
+      if (first < 0)
+        first = i;
+      last = i;
+      found++;
+    }
+    if (found != inputIds.size())
+      throw new IllegalStateException("Sparse-vector compaction of '" + indexName + "' named " + inputIds.size()
+          + " distinct segment(s) but only " + found + " are active; the input set must come from the live snapshot");
+    // Counted against the DISTINCT ids above, so a selector that named the same segment twice is
+    // reported as what it is rather than as a phantom missing from the snapshot.
+    if (inputIds.size() != inputs.length)
+      throw new IllegalStateException("Sparse-vector compaction of '" + indexName + "' listed " + inputs.length
+          + " input(s) but only " + inputIds.size() + " are distinct; a segment cannot be merged with itself");
+
+    final int span = last - first + 1;
+    if (span > inputs.length)
+      // Named by segment id for the same reason the shape guard's line is: an operator can match an
+      // id against the component files on disk, while an epoch is an internal ordinal they have no
+      // other way to see. That matters more here than there - this is a WARNING, so it is the line
+      // someone actually reads.
+      LogManager.instance().log(this, Level.WARNING,
+          "Sparse-vector compaction of '%s' picked %d segment(s) with %d non-selected segment(s) in between; widening to the "
+              + "contiguous run of segments %d..%d so the merged segment cannot outrank a segment it skipped",
+          null, indexName, inputs.length, span - inputs.length, ordered[first].segmentId(),
+          ordered[last].segmentId());
+    return Arrays.copyOfRange(ordered, first, last + 1);
+  }
+
+  /**
+   * Merge the segments {@code pickInputs} selects out of the live snapshot into one.
+   * <p>
+   * <b>The merged segment gets a new id but not a new precedence (issue #6379).</b> {@code newId}
+   * is drawn from the monotonic allocator because it names a file that must not collide with an
+   * input's file while both exist; the merged segment's place in {@link #RECENCY_ORDER} instead
+   * comes from {@code mergedEpoch}, the epoch of its newest input. The two together are what stop
+   * a partial merge from outranking a segment it left alone - see {@link #RECENCY_ORDER} for why
+   * ordering on the id resurrected deleted documents, and {@link #contiguousClosure} for the
+   * adjacency half of the same invariant.
+   */
   private long compactInputs(final boolean dropAllTombstones,
       final Function<PaginatedSegmentReader[], PaginatedSegmentReader[]> pickInputs) {
     ensureOpen();
     mutatorLock.lock();
     try {
       final PaginatedSegmentReader[] active = segments.get();
-      final PaginatedSegmentReader[] inputs = pickInputs.apply(active);
-      if (inputs == null || inputs.length < 2)
+      final PaginatedSegmentReader[] picked = pickInputs.apply(active);
+      if (picked == null || picked.length < 2)
         return -1L;
+      // Oldest-first and gap-free: mergeIntoBuilder resolves aligned RIDs by input index, and the
+      // merged segment inherits the last entry's epoch, so both depend on this ordering.
+      final PaginatedSegmentReader[] inputs = contiguousClosure(active, picked);
+      final long mergedEpoch = inputs[inputs.length - 1].recencyEpoch();
+      // Doubt is inherited, not re-derived. Absorbing a pre-#6379 segment into one with a fresh id
+      // would otherwise erase the only evidence that this index still needs a REBUILD - and since
+      // flush() cascades compactSizeTiered() on every call, that can happen within the first few
+      // writes after an upgrade, long before anyone reads the log line.
+      final boolean mergedUntrusted = anyEpochUntrusted(inputs);
 
       final long newId = nextSegmentId.getAndIncrement();
       final SparseSegmentComponent[] componentRef = new SparseSegmentComponent[1];
@@ -1042,6 +1230,8 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
             // the finished file via serializeFilePagesAsWal reading its on-disk pages.
             try (final SparseSegmentBuilder b = new SparseSegmentBuilder(componentRef[0], params, segmentBuildChunkBytes())) {
               b.setSegmentId(newId);
+              b.setRecencyEpoch(mergedEpoch);
+              b.setEpochUntrusted(mergedUntrusted);
               final long[] parentIds = new long[inputs.length];
               for (int i = 0; i < inputs.length; i++)
                 parentIds[i] = inputs[i].segmentId();
@@ -1174,12 +1364,36 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     return segments.get().length;
   }
 
+  /**
+   * Ids of the active segments, sorted ascending.
+   * <p>
+   * <b>Not parallel to {@link #segmentEpochs()}.</b> This one sorts; that one preserves the array's
+   * own precedence order. Since #6379 the two orders genuinely differ - a merged segment's epoch is
+   * below its own id, so it can sit earlier in precedence than its id would suggest - so zipping
+   * the two results pairs an id with some other segment's epoch.
+   */
   public long[] segmentIds() {
     final PaginatedSegmentReader[] active = segments.get();
     final long[] out = new long[active.length];
     for (int i = 0; i < active.length; i++)
       out[i] = active[i].segmentId();
     Arrays.sort(out);
+    return out;
+  }
+
+  /**
+   * Recency epochs of the active segments, in the array's own (oldest-first) order rather than
+   * sorted, so a caller can see the exact precedence {@link #openMergedCursor} will apply. Unlike
+   * {@link #segmentIds}, these are the ordinals that decide which segment wins on an aligned RID
+   * (issue #6379); a compacted segment reports the epoch of its newest input, not its own id.
+   * <p>
+   * The two results are <b>not</b> positionally related - see {@link #segmentIds}.
+   */
+  public long[] segmentEpochs() {
+    final PaginatedSegmentReader[] active = segments.get();
+    final long[] out = new long[active.length];
+    for (int i = 0; i < active.length; i++)
+      out[i] = active[i].recencyEpoch();
     return out;
   }
 
@@ -1193,6 +1407,16 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    */
   ReentrantLock mutatorLockForTest() {
     return mutatorLock;
+  }
+
+  /**
+   * Test-only view of the live segment snapshot, in {@link #RECENCY_ORDER}. Used by the
+   * compaction-recency regression test to hand {@link #contiguousClosure} a deliberately gapped
+   * input set - something no production selector produces, which is precisely why the widening
+   * branch needs a test of its own.
+   */
+  PaginatedSegmentReader[] segmentsForTest() {
+    return segments.get();
   }
 
   // --- lifecycle ------------------------------------------------------------
@@ -1529,13 +1753,21 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       }
 
       if (changed) {
-        updated.sort(Comparator.comparingLong(PaginatedSegmentReader::segmentId));
+        // Precedence order, which is the epoch order - NOT the id order (issue #6379). A follower
+        // rebuilding its snapshot purely from the shipped files has to arrive at the same "newest
+        // wins" order the leader published, and a compacted segment's id deliberately sits above
+        // the epoch it carries.
+        updated.sort(RECENCY_ORDER);
         segments.set(updated.toArray(new PaginatedSegmentReader[0]));
-        if (!updated.isEmpty()) {
-          final long highest = updated.getLast().segmentId();
-          if (nextSegmentId.get() <= highest)
-            nextSegmentId.set(highest + 1L);
-        }
+        warnOnPreRecencyEpochSegments(updated);
+        // Priming the allocator is a separate question from ordering: it must clear every id
+        // already spent on a file name, so it takes the maximum id rather than the last element.
+        long highest = 0L;
+        for (final PaginatedSegmentReader r : updated)
+          if (r.segmentId() > highest)
+            highest = r.segmentId();
+        if (nextSegmentId.get() <= highest)
+          nextSegmentId.set(highest + 1L);
       }
       // Re-compute the fingerprint under the lock and commit it as the new high-water mark; if a
       // concurrent flush() racing this refresh added a file mid-reconcile we capture that here.
@@ -1622,8 +1854,8 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   }
 
   /**
-   * Discover existing components belonging to this index by name pattern, sort them by segment
-   * id, and prime {@link #nextSegmentId} above the highest known id.
+   * Discover existing components belonging to this index by name pattern, sort them into
+   * {@link #RECENCY_ORDER}, and prime {@link #nextSegmentId} above the highest known id.
    */
   private void loadExistingSegments() {
     final List<PaginatedSegmentReader> readers = new ArrayList<>();
@@ -1655,13 +1887,59 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
         }
       }
     }
-    readers.sort(Comparator.comparingLong(PaginatedSegmentReader::segmentId));
+    // Precedence order (epoch), not id order - see RECENCY_ORDER.
+    readers.sort(RECENCY_ORDER);
+    warnOnPreRecencyEpochSegments(readers);
     if (!readers.isEmpty())
       segments.set(readers.toArray(new PaginatedSegmentReader[0]));
-    final long highestReadable = readers.isEmpty() ? 0L : readers.getLast().segmentId();
+    long highestReadable = 0L;
+    for (final PaginatedSegmentReader r : readers)
+      if (r.segmentId() > highestReadable)
+        highestReadable = r.segmentId();
     final long floor = Math.max(highestReadable, highestSegmentFileId);
     if (floor > 0L)
       nextSegmentId.set(floor + 1L);
+  }
+
+  /**
+   * Count the segments whose precedence predates the recency-epoch fix, and say so once at open
+   * time.
+   * <p>
+   * Reads the persisted, inherited {@link PaginatedSegmentReader#epochUntrusted()} rather than
+   * re-deriving the condition from each segment's shape. An earlier version tested
+   * {@code parents > 0 && epoch == id}, which identifies a legacy merge exactly - but only until
+   * one is absorbed by an ordinary compaction, which gives the result a fresh id and so a shape
+   * that no longer matches, while the suspect ordering rides along inside it unchanged. Since
+   * {@link #flush} cascades {@link #compactSizeTiered} on every call, that could happen within the
+   * first few writes after an upgrade, silencing the warning before anyone had a chance to act on
+   * it. Marking the doubt and propagating it through merges is what makes the diagnosis survive the
+   * index continuing to be used.
+   * <p>
+   * Worth a {@code WARNING} because nothing else surfaces it: such an index answers queries without
+   * complaint while a deleted document is visible again, and no amount of reading the data tells an
+   * operator that a rebuild is what fixes it.
+   * <p>
+   * Raised from the follower-side {@link #refreshSegmentsFromFileManager} as well as from
+   * {@link #loadExistingSegments}, because a follower that receives an untrusted segment by
+   * replication - rather than finding one on disk at open - is serving the same suspect ordering
+   * and would otherwise say nothing, leaving only the leader's log to go on. That path runs on
+   * every query, so {@link #untrustedEpochWarned} latches the line to once per engine instance
+   * instead of once per refresh.
+   */
+  private void warnOnPreRecencyEpochSegments(final List<PaginatedSegmentReader> readers) {
+    int stale = 0;
+    for (final PaginatedSegmentReader r : readers)
+      if (r.epochUntrusted())
+        stale++;
+    if (stale == 0)
+      return;
+    if (!untrustedEpochWarned.compareAndSet(false, true))
+      return;
+    LogManager.instance().log(this, Level.WARNING,
+        "Sparse-vector index '%s' holds %d segment(s) whose precedence predates the recency-epoch fix (issue #6379); a "
+            + "document deleted before those segments were merged may still be returned by queries. Run "
+            + "'REBUILD INDEX %s' once to rewrite them in the correct order.",
+        null, indexName, stale, indexName);
   }
 
   /**
@@ -1686,6 +1964,16 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   // which takes a lock-free snapshot via {@code segments.get()}. A plain {@code segments.set(...)}
   // is therefore enough - the AtomicReference still provides the safe-publication barrier we need
   // for readers without the misleading-CAS-loop suggestion of contention between writers.
+  // Both leave the array in RECENCY_ORDER, which is what openMergedCursor reads as "oldest first,
+  // newest last".
+
+  /**
+   * Publish a freshly flushed segment. Appending is the ordered insert for this caller and only
+   * this caller: a flush takes its epoch from the same monotonic allocator that names it, and that
+   * allocator has already issued every epoch any active segment could be carrying (a merge only
+   * ever re-uses one of its inputs' epochs), so the new segment is by construction the newest.
+   * {@link #replaceSegments} has no such guarantee and sorts instead.
+   */
   private void appendSegment(final PaginatedSegmentReader newSeg) {
     final PaginatedSegmentReader[] curr = segments.get();
     final PaginatedSegmentReader[] next = Arrays.copyOf(curr, curr.length + 1);
@@ -1693,6 +1981,12 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     segments.set(next);
   }
 
+  /**
+   * Retire {@code toRemove} and, if the merge produced one, publish {@code maybeNew} in their
+   * place. The merged segment carries the epoch of its newest input, so it belongs where that
+   * input sat, <b>not</b> at the end of the array where its brand-new segment id would have put it
+   * (issue #6379) - hence the sort rather than an append.
+   */
   private void replaceSegments(final PaginatedSegmentReader[] toRemove, final PaginatedSegmentReader maybeNew) {
     final LongHashSet removeIds = new LongHashSet(Math.max(8, toRemove.length * 2));
     for (final PaginatedSegmentReader r : toRemove)
@@ -1706,6 +2000,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     }
     if (maybeNew != null)
       next.add(maybeNew);
+    next.sort(RECENCY_ORDER);
     segments.set(next.toArray(new PaginatedSegmentReader[0]));
 
     // Drop the underlying component files (and FileManager refs) for retired segments.

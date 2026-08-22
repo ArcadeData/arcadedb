@@ -55,6 +55,20 @@ public final class PaginatedSegmentFormat {
   public static final int HEADER_OFFSET_CRC32               = 60;
   public static final int HEADER_SIZE                       = 64;
 
+  /**
+   * High bit of the manifest's recency-epoch slot, marking a segment whose precedence cannot be
+   * trusted: either it was merged before the epoch existed (issue #6379) or it inherited that
+   * doubt from an input that was.
+   * <p>
+   * Carried inside the epoch rather than in a slot of its own because the manifest has none left -
+   * both former "reserved" longs are now the tombstone count and the epoch, and a third would move
+   * the manifest size and so the format version. Epochs are segment ids from a counter that starts
+   * at 1 and is only ever raised, so bit 62 is unreachable by a real value: an index would have to
+   * seal 4.6 quintillion segments to collide. Readers mask it off before comparing, so the flag
+   * never perturbs the ordering it rides along with.
+   */
+  public static final long EPOCH_UNTRUSTED_FLAG = 1L << 62;
+
   /** Block locator within a segment: page_num(4) + offset_in_page(2). */
   public static final int BLOCK_LOCATOR_SIZE = 4 + 2;
 
