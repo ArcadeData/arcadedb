@@ -20,6 +20,7 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.Constants;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.http.IdempotencyCache;
 import com.arcadedb.server.http.handler.openapi.AiApiSpec;
 import com.arcadedb.server.http.handler.openapi.AuthApiSpec;
 import com.arcadedb.server.http.handler.openapi.CoreApiSpec;
@@ -29,13 +30,18 @@ import com.arcadedb.server.http.handler.openapi.OpenApiContributor;
 import com.arcadedb.server.http.handler.openapi.PluginApiSpec;
 import com.arcadedb.server.http.handler.openapi.PrometheusApiSpec;
 import com.arcadedb.server.http.handler.openapi.SecurityAdminApiSpec;
+import com.arcadedb.server.http.handler.openapi.SpecBuilders;
 import com.arcadedb.server.http.handler.openapi.TimeSeriesApiSpec;
 import io.swagger.v3.oas.models.Components;
 import io.swagger.v3.oas.models.OpenAPI;
+import io.swagger.v3.oas.models.Operation;
+import io.swagger.v3.oas.models.PathItem;
 import io.swagger.v3.oas.models.Paths;
+import io.swagger.v3.oas.models.headers.Header;
 import io.swagger.v3.oas.models.info.Contact;
 import io.swagger.v3.oas.models.info.Info;
 import io.swagger.v3.oas.models.info.License;
+import io.swagger.v3.oas.models.responses.ApiResponse;
 import io.swagger.v3.oas.models.security.SecurityRequirement;
 import io.swagger.v3.oas.models.security.SecurityScheme;
 import io.swagger.v3.oas.models.servers.Server;
@@ -53,6 +59,9 @@ import java.util.List;
  * deviate override it themselves.
  */
 public class OpenApiSpecGenerator {
+
+  // Referenced from components.headers by every response (see declareRequestIdHeaderOnEveryResponse).
+  private static final String REQUEST_ID_HEADER_COMPONENT = "RequestIdHeader";
 
   // A contributor absent from this list never reaches the served document: its paths and schemas
   // are silently omitted, with no compile error and no other signal. Order affects nothing but the
@@ -105,7 +114,24 @@ public class OpenApiSpecGenerator {
     for (final OpenApiContributor contributor : CONTRIBUTORS)
       contributor.contribute(openAPI);
 
+    declareRequestIdHeaderOnEveryResponse(openAPI);
+
     return openAPI;
+  }
+
+  /**
+   * {@code AbstractServerHttpHandler} sets {@code X-Request-Id} on every response it writes,
+   * generating a value when the caller sent none, so a generated client needs it declared on every
+   * response to see it exists (#6563). That makes it a document-level concern like the root security
+   * declaration rather than something each contributor should remember to add per response, so it is
+   * applied here, once, after every contributor has added its paths.
+   */
+  private void declareRequestIdHeaderOnEveryResponse(final OpenAPI openAPI) {
+    final Header headerRef = new Header().$ref("#/components/headers/" + REQUEST_ID_HEADER_COMPONENT);
+    for (final PathItem pathItem : openAPI.getPaths().values())
+      for (final Operation operation : pathItem.readOperations())
+        for (final ApiResponse response : operation.getResponses().values())
+          response.addHeaderObject(IdempotencyCache.HEADER_REQUEST_ID, headerRef);
   }
 
   private Info createApiInfo() {
@@ -193,6 +219,11 @@ public class OpenApiSpecGenerator {
         POST /api/v1/server/api-tokens, or a session token prefixed 'AU-', returned by \
         POST /api/v1/login.""");
     components.addSecuritySchemes("bearerAuth", bearerAuth);
+
+    components.addHeaders(REQUEST_ID_HEADER_COMPONENT, SpecBuilders.stringHeader("""
+        Correlates this response with a server log line. Echoes the caller's own \
+        '%s' request header when present; otherwise the server generates one. Set unconditionally \
+        on every response.""".formatted(IdempotencyCache.HEADER_REQUEST_ID)));
 
     return components;
   }
