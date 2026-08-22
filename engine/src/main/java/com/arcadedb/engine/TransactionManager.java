@@ -68,6 +68,21 @@ public class TransactionManager {
   private final AtomicLong                   statsPagesWritten   = new AtomicLong();
   private final AtomicLong                   statsBytesWritten   = new AtomicLong();
   /**
+   * True once this open has reconstructed {@link #getLastTransactionId()} from real evidence - either the marker
+   * persisted at a previous clean close, or WAL replay - rather than falling through to the "no transaction has
+   * ever been committed" default of -1 for a reason that says nothing about whether one actually has. That default
+   * is legitimate for a genuinely empty database, but it is the SAME value a database with real history reports
+   * when its recency marker is lost or corrupted with no WAL left to recover it from (a clean close removes the
+   * WAL, so the marker is the only durable record at that point) - and unlike the marker itself, this counter is
+   * not required to be monotonic across that failure: it restarts from 0 and climbs back through every value it
+   * held before, including ones a persisted derived structure (see {@code GraphAnalyticalViewCSRPersistence},
+   * issue #6583) may have recorded as its freshness certificate. A consumer that only compares the numeric value
+   * would eventually see a stale certificate become numeric equal again and silently accept it. Callers relying on
+   * this counter for "has anything changed since X" must additionally check this flag and refuse to trust an
+   * equality match while it is false.
+   */
+  private volatile boolean                   recencySignalReliable;
+  /**
    * Held SHARED for the whole of {@link #applyChanges}, and EXCLUSIVELY by the snapshot t0 barrier
    * ({@code PageManager.openSnapshot}, issue #6075). Replicated and crash-recovery replay is the one writer that
    * reaches the data files outside the asynchronous flush pipeline, so parking the flush thread does not park it;
@@ -89,6 +104,7 @@ public class TransactionManager {
     final long persistedLastTxId = readPersistedLastTransactionId();
     if (persistedLastTxId >= 0)
       transactionIds.set(persistedLastTxId + 1);
+    this.recencySignalReliable = persistedLastTxId >= 0;
 
     if (database.getMode() == ComponentFile.MODE.READ_WRITE) {
       createWALFilePool();
@@ -382,8 +398,12 @@ public class TransactionManager {
         // Only update the next-tx counter if recovery actually applied a transaction. When
         // lastTxId is still -1 the counter must keep the persistedLastTxId value loaded by the
         // constructor; overwriting it with 0 would lose recency and risk transaction-id reuse.
-        if (lastTxId != -1)
+        if (lastTxId != -1) {
           transactionIds.set(lastTxId + 1);
+          // Reconstructed from real evidence (replayed WAL transactions), regardless of what the
+          // constructor found (or didn't) in the persisted marker.
+          recencySignalReliable = true;
+        }
 
         if (!walGapDetected) {
           // REMOVE ALL WAL FILES
@@ -794,6 +814,19 @@ public class TransactionManager {
    */
   public long getLastTransactionId() {
     return transactionIds.get() - 1;
+  }
+
+  /**
+   * True when {@link #getLastTransactionId()} was reconstructed from real evidence this open (a marker persisted
+   * at a previous clean close, or WAL replay), rather than falling through to the "nothing ever committed" default
+   * because both were missing or unreadable. False means the counter may be lower than a value it held before a
+   * marker was lost, and will climb back through that value as the database keeps operating - so an equality
+   * comparison against a number recorded before this open cannot be trusted while this is false, even once the
+   * numbers happen to match again. See the field-level Javadoc on {@code recencySignalReliable} for the failure
+   * this guards (issue #6583).
+   */
+  public boolean isRecencySignalReliable() {
+    return recencySignalReliable;
   }
 
   /**

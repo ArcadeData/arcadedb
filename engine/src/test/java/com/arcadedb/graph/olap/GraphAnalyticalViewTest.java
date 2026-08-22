@@ -26,6 +26,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.DefaultDataEncryption;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.NeighborView;
@@ -2538,6 +2539,66 @@ class GraphAnalyticalViewTest extends TestHelper {
     } finally {
       GlobalConfiguration.GAV_PERSIST_CSR.setValue(defaultValue);
     }
+  }
+
+  /**
+   * Regression for issue #6583, raised in review by the issue's original reporter: the certificate is an
+   * equality test against {@code TransactionManager.getLastTransactionId()}, which is NOT guaranteed
+   * monotonic across a lost or corrupted recency marker - a clean close removes the WAL, so the marker is
+   * the sole durable record at that point, and its loss resets the counter to climb back from ~0, through
+   * every value it held before, including one a stale persisted CSR might still carry as its certificate.
+   * {@code isRecencySignalReliable()} must be false whenever that marker is missing with nothing to recover
+   * it from, and the disk-restore fast path must refuse to trust ANY certificate match while it is false -
+   * not just this test's case, where the numbers don't even happen to collide, but structurally, so a
+   * later coincidental collision can never be silently accepted either.
+   */
+  @Test
+  void lostRecencyMarkerForcesRebuildRatherThanTrustingAPossiblyStaleCertificate() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").save();
+    final MutableVertex b = database.newVertex("Person").save();
+    a.newEdge("FOLLOWS", b);
+    database.commit();
+
+    GraphAnalyticalView.builder(database)
+        .withName("csr-lost-marker-test")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
+        .build();
+
+    final String dbPath = database.getDatabasePath();
+    database.close();
+
+    // Simulate a lost/corrupted recency marker. A clean close already removed the WAL, so this file was
+    // the sole durable record of "last committed transaction id" - without it, the next open cannot tell
+    // a genuinely empty database apart from one that lost its history.
+    final File markerFile = new File(dbPath, TransactionManager.LAST_TX_ID_FILE_NAME);
+    assertThat(markerFile).exists();
+    assertThat(markerFile.delete()).isTrue();
+
+    final Database db2 = new DatabaseFactory(dbPath).open();
+    try {
+      assertThat(((DatabaseInternal) db2).getTransactionManager().isRecencySignalReliable())
+          .as("a missing recency marker with no WAL to recover from must not be treated as a reliable signal")
+          .isFalse();
+
+      final GraphAnalyticalView restored = GraphAnalyticalViewRegistry.get(db2, "csr-lost-marker-test");
+      assertThat(restored).isNotNull();
+      assertThat(restored.awaitReady(10, TimeUnit.SECONDS)).isTrue();
+      assertThat(restored.isRestoredFromPersistedCsr())
+          .as("an unreliable recency signal must never certify a persisted CSR, however the numbers compare")
+          .isFalse();
+      assertThat(restored.getNodeCount()).isEqualTo(2);
+
+      restored.drop();
+    } finally {
+      db2.close();
+    }
+
+    database = new DatabaseFactory(dbPath).open();
   }
 
   /**

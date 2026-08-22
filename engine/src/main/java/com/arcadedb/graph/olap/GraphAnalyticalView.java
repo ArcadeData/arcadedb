@@ -1539,6 +1539,16 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       return false;
     if (!database.getConfiguration().getValueAsBoolean(GlobalConfiguration.GAV_PERSIST_CSR))
       return false;
+    // The certificate is a plain equality check against the database's last committed transaction id, which is
+    // only sound while that counter's own history is verifiably continuous. If this open couldn't reconstruct it
+    // from real evidence (a lost/corrupt recency marker with no WAL left to recover it from - a clean close
+    // removes the WAL, so the marker is the sole durable record at that point), the counter silently restarts
+    // and will climb back through every value it held before, including one a stale file on disk might still
+    // carry as its certificate. Refusing the fast path here until a fresh, trustworthy certificate is written at
+    // this session's own close is the same "no manifest reads as unverifiable, not as valid" rule #6106 already
+    // established for the vector index's correspondence artifact.
+    if (!((DatabaseInternal) database).getTransactionManager().isRecencySignalReliable())
+      return false;
     final long currentTxId = currentLastTransactionId();
     final Snapshot restored;
     try {
