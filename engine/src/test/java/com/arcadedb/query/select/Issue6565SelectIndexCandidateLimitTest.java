@@ -183,9 +183,9 @@ public class Issue6565SelectIndexCandidateLimitTest extends TestHelper {
 
   @Test
   void bareNonCursorOperatorLeavesIndexCandidateLimitAtMinusOne() {
-    // #6577: A BARE neq LEAF IS "INDEXED" PER isTheNodeFullyIndexed()'S LOOSER CHECK, SO isWhereExactlyIndexed()
-    // COMPUTES A FINITE indexCandidateLimit - BUT filterWithIndexesFinalNode()'S switch NEVER BUILDS A CURSOR FOR
-    // neq, SO cursors STAYS EMPTY, lookForIndexes() RETURNS null, AND NO CAP IS EVER ACTUALLY APPLIED. THE
+    // #6577: A BARE neq LEAF IS "INDEXED" PER isTheNodeFullyIndexed()'S LOOSER CHECK, SO soleExactLeaf() RETURNS IT
+    // AND A FINITE indexCandidateLimit GETS COMPUTED - BUT filterWithIndexesFinalNode()'S switch NEVER BUILDS A
+    // CURSOR FOR neq, SO cursors STAYS EMPTY, lookForIndexes() RETURNS null, AND NO CAP IS EVER ACTUALLY APPLIED. THE
     // TEST-VISIBLE indexCandidateLimit FIELD MUST NOT BE LEFT HOLDING THAT MISLEADING FINITE VALUE.
     final Select select = database.select().fromType("T").where().property("a").neq().value("nonexistent")//
         .limit(50).skip(100);
@@ -195,6 +195,24 @@ public class Issue6565SelectIndexCandidateLimitTest extends TestHelper {
     final MultiIndexCursor cursor = executor.lookForIndexes();
     try {
       assertThat(cursor == null).as("no cursor should have been built for a bare neq leaf").isTrue();
+      assertThat(executor.indexCandidateLimit).isEqualTo(-1);
+    } finally {
+      if (cursor != null)
+        cursor.close();
+    }
+  }
+
+  @Test
+  void skipPlusLimitOverflowFallsBackToUncapped() {
+    // computeExactCandidateLimit()'S long-SUM OVERFLOW GUARD: A skip/limit PAIR THAT OVERFLOWS int MUST FALL BACK
+    // TO -1 (UNCAPPED) RATHER THAN WRAP AROUND TO A NEGATIVE-BUT-NOT--1 OR OTHERWISE BOGUS int CAP
+    final Select select = database.select().fromType("T").where().property("a").eq().value("x")//
+        .limit(20).skip(Integer.MAX_VALUE - 5);
+    select.compile();
+
+    final SelectExecutor executor = new SelectExecutor(select);
+    final MultiIndexCursor cursor = executor.lookForIndexes();
+    try {
       assertThat(executor.indexCandidateLimit).isEqualTo(-1);
     } finally {
       if (cursor != null)
@@ -268,9 +286,9 @@ public class Issue6565SelectIndexCandidateLimitTest extends TestHelper {
   @Test
   void andUnderOrIsNeverTreatedAsExactlyIndexed() {
     // (a = 'x' AND b = 'set') OR n = 5: PRECEDENCE-DRIVEN Select.setLogic() BUILDS A NESTED and NODE UNDER THE or
-    // ROOT (and HAS HIGHER PRECEDENCE THAN or). isWhereExactlyIndexed() MUST STAY CONSERVATIVE FOR THE NESTED and
-    // REGARDLESS OF THE or WRAPPER AROUND IT, SINCE filterWithIndexesFinalNode() STILL ONLY KEEPS ONE OF THE and'S
-    // TWO CHILD CURSORS.
+    // ROOT (and HAS HIGHER PRECEDENCE THAN or). soleExactLeaf() MUST STAY CONSERVATIVE FOR A TREE SHAPED LIKE THIS
+    // REGARDLESS OF THE NESTED and, SINCE filterWithIndexesFinalNode() STILL ONLY KEEPS ONE OF THE and'S TWO CHILD
+    // CURSORS - THOUGH TODAY THE or ROOT ALONE ALREADY DISQUALIFIES IT BEFORE THE NESTED and IS EVEN CONSIDERED.
     final Select select = database.select().fromType("T").where()//
         .property("a").eq().value("x")//
         .and().property("b").eq().value("set")//
@@ -291,8 +309,8 @@ public class Issue6565SelectIndexCandidateLimitTest extends TestHelper {
   @Test
   void notLeafIsNeverTreatedAsExactlyIndexed() {
     // SelectOperator.not HAS NO FLUENT ENTRY POINT ON THE Select BUILDER TODAY, BUT THE OPERATOR EXISTS AND
-    // isWhereExactlyIndexed() MUST STILL TREAT IT CONSERVATIVELY (filterWithIndexesFinalNode() NEVER BUILDS A
-    // CURSOR FOR IT), SO THE TREE IS BUILT BY HAND HERE
+    // soleExactLeaf() MUST STILL TREAT IT CONSERVATIVELY (filterWithIndexesFinalNode() NEVER BUILDS A CURSOR FOR
+    // IT), SO THE TREE IS BUILT BY HAND HERE
     final Select select = database.select().fromType("T");
     final SelectTreeNode innerLeaf = new SelectTreeNode(new SelectPropertyValue("a"), SelectOperator.eq, "x");
     select.rootTreeElement = new SelectTreeNode(innerLeaf, SelectOperator.not, null);
