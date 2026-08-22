@@ -278,7 +278,14 @@ public class SelectExecutor {
     TypeIndex bestIndex = null;
     int bestPrefixLength = 0;
 
-    for (final TypeIndex candidate : select.fromType.getAllIndexes(true)) {
+    // getAllIndexes(true) IS BACKED BY A HashSet FOR A POLYMORPHIC TYPE (LocalDocumentType.getAllIndexes()), SO ITS
+    // ITERATION ORDER IS UNSPECIFIED - SORT BY NAME FIRST SO TWO INDEXES TIED ON PREFIX LENGTH AND UNIQUENESS (E.G.
+    // TWO COMPOSITE INDEXES SHARING THE SAME LEADING PROPERTIES BUT DIFFERENT TRAILING ONES) ARE PICKED BETWEEN
+    // DETERMINISTICALLY ACROSS RUNS, RATHER THAN LEAVING WHICH ONE'S ORDER BY GETS ELIDED TO HASH-BUCKET LUCK
+    final List<TypeIndex> candidates = new ArrayList<>(select.fromType.getAllIndexes(true));
+    candidates.sort(Comparator.comparing(TypeIndex::getName));
+
+    for (final TypeIndex candidate : candidates) {
       final List<String> properties = candidate.getPropertyNames();
       if (properties.size() < 2)
         // SINGLE-PROPERTY INDEXES ARE HANDLED BY THE EXISTING isTheNodeFullyIndexed()/filterWithIndexes() PATH
