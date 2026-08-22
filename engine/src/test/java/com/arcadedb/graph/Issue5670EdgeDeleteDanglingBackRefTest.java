@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.VertexNotFoundException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
@@ -124,12 +125,19 @@ class Issue5670EdgeDeleteDanglingBackRefTest extends TestHelper {
 
   /**
    * The head RID is read off the vertex INSIDE the strict lookup's try, because on a handle that has not loaded its
-   * record yet that read lazy-loads it - so an endpoint deleted since the caller resolved it surfaces here rather
-   * than at the chunk lookup. Escaping raw, that is a plain {@code RecordNotFoundException}: not a
-   * {@code NeedRetryException}, so it would fail the transaction outright instead of retrying it.
+   * record yet that read lazy-loads it - so a vertex deleted since the caller resolved it surfaces here rather than
+   * at the chunk lookup, and does not escape as a raw failure from a walk whose every other miss is answered.
+   * <p>
+   * It is answered SEPARATELY from the chunk misses around it, which is the correction #6572 made to this test:
+   * the conflict below used to be a {@code ConcurrentModificationException} like the ones above, on the argument
+   * that a raw {@code RecordNotFoundException} is not retryable. That is true and was the wrong conclusion - a
+   * vertex record that is GONE cannot become visible on a retry, so the retryable type spent a caller's whole
+   * budget on a foregone failure and advertised a repair aimed at the missing record. The evidence is the RID the
+   * cause names: the vertex's own here, a chunk's in every other test in this class. See
+   * {@code Issue6572DanglingVertexReferenceTest} for the delete-level contract this underpins.
    */
   @Test
-  void headChunkForWriteRaisesRetryableConflictWhenTheVertexItselfVanishes() {
+  void headChunkForWriteRaisesANonRetryableNotFoundWhenTheVertexItselfVanishes() {
     createSchema();
     final RID hubRID = createHub();
     createEdges(hubRID, 20);
@@ -142,8 +150,9 @@ class Issue5670EdgeDeleteDanglingBackRefTest extends TestHelper {
 
       assertThatThrownBy(
           () -> ((DatabaseInternal) database).getGraphEngine().getEdgeHeadChunkForWrite(lazyHub, Vertex.DIRECTION.IN))
-          .isInstanceOf(ConcurrentModificationException.class)
-          .isInstanceOf(NeedRetryException.class);
+          .isInstanceOf(VertexNotFoundException.class)
+          .isNotInstanceOf(NeedRetryException.class)
+          .hasMessageContaining(hubRID.toString());
     } finally {
       database.rollback();
     }
