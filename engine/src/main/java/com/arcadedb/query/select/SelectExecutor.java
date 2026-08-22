@@ -285,6 +285,12 @@ public class SelectExecutor {
    * that call runs its "1ST TIME ONLY" branch and wraps the leaf in a synthetic {@code run} node whose {@code right}
    * is always {@code null} ({@link Select#setLogic}) - {@code run} is otherwise never used as a tree operator, so it
    * is treated here as a transparent pass-through to its {@code left} child.
+   * <p>
+   * Callers must invoke this before {@link #filterWithIndexes}, which prunes a losing {@code and} sibling's
+   * {@code node.index} as a side effect of building the winning side's cursor - harmless today only because
+   * {@code and} is unconditionally disqualified above regardless of {@code node.index}. The moment that
+   * disqualification is ever loosened, this ordering becomes load-bearing: calling this method after that pruning
+   * has run could read a {@code node.index} the pruning already cleared.
    */
   private SelectTreeNode soleExactLeaf(final SelectTreeNode node) {
     if (node == null)
