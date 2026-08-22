@@ -254,9 +254,11 @@ public class SelectExecutor {
    * True when the index cursor(s) built for this subtree return exactly the records matching it, with nothing left
    * for {@code evaluateWhere()} to discard afterward. Only a bare indexed leaf qualifies (through the synthetic
    * {@code run} wrapper, see below): an {@code is_null}/{@code is_not_null} leaf never gets a cursor, and under an
-   * {@code and} only one child's cursor is kept (see {@link #filterWithIndexesFinalNode}), so the other conjunct is
-   * still checked later against a stream a cap would have already truncated. {@code not} is conservatively treated
-   * the same way.
+   * {@code and} at most one child's cursor is kept when either side's index is unique (see
+   * {@link #filterWithIndexesFinalNode}) - when neither side is unique, both children's cursors survive and
+   * {@link MultiIndexCursor} unions rather than intersects them, a superset {@code evaluateWhere()} must still
+   * narrow down. Either way the discarded or extra conjunct is still checked later against a stream a cap would
+   * have already truncated or under-counted. {@code not} is conservatively treated the same way.
    * <p>
    * {@code or} is conservatively excluded too, even though {@link MultiIndexCursor} merges its children's cursors
    * into the same shape as the boolean union: that merge is a plain k-way merge with no RID dedup, so two branches
@@ -281,6 +283,11 @@ public class SelectExecutor {
     if (node == null)
       return true;
 
+    // node.index != null MEANS "isTheNodeFullyIndexed() FOUND AN INDEX ON THIS LEAF'S PROPERTY", NOT "THIS LEAF'S
+    // OPERATOR ACTUALLY PRODUCES A CURSOR" - IT'S SET FOR neq/like/ilike TOO (SEE #6577). HARMLESS TODAY BECAUSE A
+    // BARE SUCH LEAF STILL PRODUCES NO CURSOR IN filterWithIndexesFinalNode()'S switch, SO cursors STAYS EMPTY AND
+    // lookForIndexes() RETURNS null BEFORE ANY (WRONGLY-COMPUTED) CAP IS EVER USED - BUT #6577 IS WHERE TO FIX THIS
+    // AT THE SOURCE, NOT HERE
     if (!(node.left instanceof SelectTreeNode))
       return node.index != null;
 
