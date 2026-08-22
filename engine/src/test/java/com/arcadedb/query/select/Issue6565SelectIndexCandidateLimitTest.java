@@ -40,6 +40,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  * so the discarded conjunct is still checked by {@code evaluateWhere()} against a candidate stream that was
  * already capped too early), and plain {@code skip + limit} paging over a single indexed equality (the candidate
  * cap must cover {@code skip + limit} records, not just {@code limit}).
+ * <p>
+ * The fix for those two shapes only caps a candidate stream that a bare indexed leaf (or a synthetic {@code run}
+ * wrapper around one) reproduces exactly. Two further consumers can still reduce that stream beyond {@code skip +
+ * limit} and had to be accounted for: {@code ORDER BY} whose direction/property doesn't trivially match the forced
+ * ascending index scan (forces a full in-memory sort - see {@code isOrderBySafeForCap()}), and an {@code or} of two
+ * indexed leaves whose match sets can overlap ({@code MultiIndexCursor} merges children with no RID dedup, so an
+ * overlapping record surfaces as two candidates that each burn the cap before downstream dedup runs - see
+ * {@code orOfIndexedLeavesIsNeverTreatedAsExactlyIndexed}).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -130,13 +138,37 @@ public class Issue6565SelectIndexCandidateLimitTest extends TestHelper {
 
   @Test
   void orOfTwoIndexedRangesWithSkipAndLimitPagesCorrectly() {
-    // THE NESTED CURSORS UNDER AN 'OR' ARE MERGED BY MultiIndexCursor - THE SAME UNION SHAPE AS THE BOOLEAN 'OR' - SO
-    // THIS TREE IS EXACTLY INDEXED TOO, AND THE CAP MUST STILL ACCOUNT FOR skip
+    // or DISQUALIFIES THE CAP (SEE orOfIndexedLeavesIsNeverTreatedAsExactlyIndexed BELOW), SO THIS PAGES CORRECTLY
+    // VIA THE UNCAPPED FALLBACK REGARDLESS OF WHETHER THE TWO BRANCHES OVERLAP - THESE RANGES HAPPEN NOT TO
     final long count = database.select().fromType("T").where()//
         .property("n").lt().value(10)//
         .or().property("n").ge().value(990)//
         .skip(5).limit(10).count();
     assertThat(count).isEqualTo(10);
+  }
+
+  @Test
+  void orOfIndexedLeavesIsNeverTreatedAsExactlyIndexed() {
+    // MultiIndexCursor MERGES ITS CHILDREN WITH NO RID DEDUP: IF THE SAME RECORD SATISFIES BOTH or BRANCHES (SAME-
+    // PROPERTY RANGES THAT OVERLAP, OR TWO DIFFERENT PROPERTIES ONE RECORD CAN SATISFY TOGETHER - NOT PROVABLE
+    // DISJOINT FROM THE TREE SHAPE ALONE), IT SURFACES AS TWO SEPARATE CANDIDATES, EACH BURNING ONE UNIT OF THE CAP
+    // BEFORE THE DOWNSTREAM DEDUP (SelectIterator/executeCount()'s filterOutRecords) EVER SEES IT - SEE
+    // overlappingOrBranchesOnTheSamePropertyStillReturnLimitDistinctRows FOR A CONCRETE REPRODUCTION. or MUST
+    // THEREFORE STAY CONSERVATIVE EVEN FOR TWO PLAIN INDEXED LEAVES, JUST LIKE and/not.
+    final Select select = database.select().fromType("T").where()//
+        .property("n").lt().value(10)//
+        .or().property("n").ge().value(990)//
+        .skip(5).limit(10);
+    select.compile();
+
+    final SelectExecutor executor = new SelectExecutor(select);
+    final MultiIndexCursor cursor = executor.lookForIndexes();
+    try {
+      assertThat(executor.indexCandidateLimit).isEqualTo(-1);
+    } finally {
+      if (cursor != null)
+        cursor.close();
+    }
   }
 
   @Test
@@ -150,9 +182,23 @@ public class Issue6565SelectIndexCandidateLimitTest extends TestHelper {
   }
 
   @Test
+  void overlappingOrBranchesOnTheSamePropertyStillReturnLimitDistinctRows() {
+    // n > 5 AND n < 500 OVERLAP OVER (5,500): A RECORD IN THAT RANGE IS A CANDIDATE FROM *BOTH* CHILD CURSORS.
+    // MultiIndexCursor.next() IS A PLAIN K-WAY MERGE WITH NO RID DEDUP, SO IT EMITS THAT RECORD TWICE; DEDUP ONLY
+    // HAPPENS ONE LAYER UP (SelectIterator.fetchNext()/executeCount() VIA filterOutRecords), AFTER THE DUPLICATE HAS
+    // ALREADY BEEN COUNTED AGAINST THE CAP. EVERY ONE OF THE 1000 ROWS SATISFIES THIS OR (ONLY n IN [0,5] FAILS THE
+    // FIRST BRANCH, ONLY n IN [500,999] FAILS THE SECOND, AND NO ROW FAILS BOTH), SO A CAP EXHAUSTED BY DUPLICATES
+    // WOULD RETURN FEWER THAN THE REQUESTED 10.
+    final long count = database.select().fromType("T").where()//
+        .property("n").gt().value(5)//
+        .or().property("n").lt().value(500)//
+        .limit(10).count();
+    assertThat(count).isEqualTo(10);
+  }
+
+  @Test
   void inLeafUnderOrWithSkipAndLimitPagesCorrectly() {
-    // SHARING THE WHOLE TREE'S indexCandidateLimit WITH A NESTED PER-VALUE CURSOR (in_op) STAYS SAFE EVEN WHEN THAT
-    // CURSOR IS ALSO ONE CHILD OF AN OUTER or-MERGED MultiIndexCursor.
+    // AN in_op LEAF NESTED UNDER or PAGES CORRECTLY VIA THE SAME UNCAPPED FALLBACK AS ANY OTHER or.
     // g IN (g0,g1,g2) MATCHES 600 OF THE 1000 ROWS (i % 5 IN {0,1,2}); n = 3 MATCHES EXACTLY 1 ROW WHOSE g IS "g3"
     // (i % 5 == 3), OUTSIDE THE IN SET, SO THE UNION HAS 601 DISTINCT MATCHES.
     final long count = database.select().fromType("T").where()//

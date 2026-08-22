@@ -252,11 +252,24 @@ public class SelectExecutor {
 
   /**
    * True when the index cursor(s) built for this subtree return exactly the records matching it, with nothing left
-   * for {@code evaluateWhere()} to discard afterward. Only a bare indexed leaf, or an {@code or} of such leaves
-   * (which {@link MultiIndexCursor} merges - the same shape as the boolean union), qualifies: an {@code is_null}/
-   * {@code is_not_null} leaf never gets a cursor, and under an {@code and} only one child's cursor is kept (see
-   * {@link #filterWithIndexesFinalNode}), so the other conjunct is still checked later against a stream a cap would
-   * have already truncated. {@code not} is conservatively treated the same way.
+   * for {@code evaluateWhere()} to discard afterward. Only a bare indexed leaf qualifies (through the synthetic
+   * {@code run} wrapper, see below): an {@code is_null}/{@code is_not_null} leaf never gets a cursor, and under an
+   * {@code and} only one child's cursor is kept (see {@link #filterWithIndexesFinalNode}), so the other conjunct is
+   * still checked later against a stream a cap would have already truncated. {@code not} is conservatively treated
+   * the same way.
+   * <p>
+   * {@code or} is conservatively excluded too, even though {@link MultiIndexCursor} merges its children's cursors
+   * into the same shape as the boolean union: that merge is a plain k-way merge with no RID dedup, so two branches
+   * whose match sets overlap (same-property ranges that overlap, or two different properties a single record can
+   * both satisfy - not provable disjoint from the where-tree's shape alone) make the same record surface as two
+   * separate candidates, each burning one unit of the cap before {@link SelectIterator}/{@code executeCount()}'s
+   * downstream {@code filterOutRecords} dedup ever sees it. That can exhaust the cap on duplicates before enough
+   * distinct matches are found - the same "cap spent before the filtering it needs to survive" defect this class
+   * exists to fix, just reachable again through the "or is exact" path. An {@code in_op} leaf's own internal
+   * per-value cursors don't have this problem (each value is a distinct key on the same single-valued property, so
+   * their RID sets are disjoint by construction) - but that dedup-free merge happens once, inside
+   * {@link #filterWithIndexesFinalNode}'s own {@code in_op} handling, not through a top-level {@code or}, so
+   * {@code in_op} is unaffected by excluding {@code or} here.
    * <p>
    * {@code Select.compile()} always finalizes the tree with a trailing {@code setLogic(SelectOperator.run)}
    * ({@link Select#compile}); when the where-clause is a single bare condition with no {@code and()}/{@code or()},
@@ -271,7 +284,7 @@ public class SelectExecutor {
     if (!(node.left instanceof SelectTreeNode))
       return node.index != null;
 
-    if (node.operator == SelectOperator.or || node.operator == SelectOperator.run)
+    if (node.operator == SelectOperator.run)
       return isWhereExactlyIndexed((SelectTreeNode) node.left) && isWhereExactlyIndexed((SelectTreeNode) node.right);
 
     return false;
