@@ -287,6 +287,20 @@ class CoreApiSpecTest {
   }
 
   @Test
+  void commandRequestDeclaresLanguageAsRequired() {
+    final Schema<?> schema = openAPI.getComponents().getSchemas().get("CommandRequest");
+
+    assertThat(schema.getProperties())
+        .as("PostCommandHandler.execute rejects a request with no language (400 \"Language is null\"), "
+            + "so a client generated strictly from the contract must be told to send it")
+        .containsKey("language");
+    assertThat(schema.getRequired())
+        .as("PostCommandHandler.execute treats a missing or empty language exactly like a missing "
+            + "command: both fail requireStringField / the explicit null-or-empty check with a 400")
+        .contains("language");
+  }
+
+  @Test
   void getQuery404DoesNotClaimTheStaleSessionCasePostAndCommandDo() {
     final Operation get = openAPI.getPaths().get("/api/v1/query/{database}/{language}/{command}").getGet();
 
