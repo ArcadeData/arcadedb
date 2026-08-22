@@ -1589,6 +1589,24 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     invalidateGraphStatisticsCache();
     if (deltaCollector == null)
       registerChangeListeners();
+
+    // A commit to a covered type landing between sampling currentTxId (above) and the listener registration
+    // just above this line would be invisible to the restored snapshot (no scan ran to absorb it, unlike
+    // buildAsync(), whose real scan runs AFTER its own sample so a racing commit is already captured in what
+    // it reads) and invisible to onRelevantCommit()/applyDelta() too (the listeners were not live yet when it
+    // happened). Not reachable via the current call site - restoreAll() runs synchronously inside
+    // LocalDatabase.open(), before the Database is handed to any caller, so nothing holding a reference to it
+    // can commit concurrently - but checked defensively so this stays correct if that context ever changes
+    // (e.g. an HA replica replaying commits concurrently with a local open). Marking STALE mirrors exactly
+    // what onRelevantCommit() does for a real relevant commit under OFF/SYNCHRONOUS mode: conservative, but
+    // never wrong.
+    if (currentLastTransactionId() != currentTxId) {
+      LogManager.instance().log(this, Level.WARNING,
+          "GraphAnalyticalView '%s': a commit landed while restoring its CSR from disk; marking it STALE rather than risk missing it",
+          name);
+      status = Status.STALE;
+    }
+
     LogManager.instance().log(this, Level.INFO,
         "GraphAnalyticalView '%s': restored CSR from disk (asOfTransactionId=%d), skipping full rebuild", name, currentTxId);
     return true;
