@@ -147,7 +147,10 @@ public class GraphAnalyticalViewPersistence {
         final int ct = gavDef.getInt("compactionThreshold", -1);
         if (ct >= 0)
           builder.withCompactionThreshold(ct);
-        restoredViews.add(builder.skipPersistence().buildAsync());
+        // Tries a persisted CSR from disk first (issue #6583) and only falls back to the async full
+        // rebuild below when there is none usable — see restoreFromDiskOrBuildAsync() for the certificate
+        // check that decides between the two.
+        restoredViews.add(builder.skipPersistence().restoreFromDiskOrBuildAsync());
         count++;
 
         LogManager.instance().log(GraphAnalyticalViewPersistence.class, Level.INFO,

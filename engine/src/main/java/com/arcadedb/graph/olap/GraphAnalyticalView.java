@@ -187,11 +187,21 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     final DeltaOverlay                   overlay;
     final long                           buildTimestamp;
     final long                           buildDurationMs;
+    // The database's last committed transaction id as of the start of the scan that produced this CSR (see
+    // #6583). Persisted alongside the CSR as its freshness certificate: on a later open, if the database's last
+    // committed transaction id still equals this value, nothing was committed in between, so the persisted CSR is
+    // still exactly correct and can be reused without a rescan. -1 for a snapshot that must never be persisted
+    // (not applicable — no build has produced one yet).
+    final long                           asOfTransactionId;
+    // True when this snapshot was loaded from a persisted CSR file rather than produced by a scan of the graph.
+    // Exposed via isRestoredFromPersistedCsr() — mainly for tests and operational visibility.
+    final boolean                        restoredFromDisk;
 
     Snapshot(final Map<String, CSRAdjacencyIndex> csrPerType, final NodeIdMapping nodeMapping,
         final ColumnStore[] bucketColumns, final Map<String, ColumnStore> edgeColumnStores,
         final Map<String, int[]> bwdToFwd,
-        final DeltaOverlay overlay, final long buildTimestamp, final long buildDurationMs) {
+        final DeltaOverlay overlay, final long buildTimestamp, final long buildDurationMs,
+        final long asOfTransactionId, final boolean restoredFromDisk) {
       this.csrPerType = csrPerType;
       this.nodeMapping = nodeMapping;
       this.bucketColumns = bucketColumns;
@@ -200,11 +210,13 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       this.overlay = overlay;
       this.buildTimestamp = buildTimestamp;
       this.buildDurationMs = buildDurationMs;
+      this.asOfTransactionId = asOfTransactionId;
+      this.restoredFromDisk = restoredFromDisk;
     }
 
     Snapshot withOverlay(final DeltaOverlay newOverlay) {
       return new Snapshot(csrPerType, nodeMapping, bucketColumns, edgeColumnStores, bwdToFwd,
-          newOverlay, buildTimestamp, buildDurationMs);
+          newOverlay, buildTimestamp, buildDurationMs, asOfTransactionId, restoredFromDisk);
     }
 
   }
@@ -304,13 +316,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     status = Status.BUILDING;
     buildError = null;
     try {
+      final long asOfTransactionId = currentLastTransactionId();
       final long buildStart = System.currentTimeMillis();
       final CSRBuilder builder = new CSRBuilder(database, propertyFilter, edgePropertyFilter, propertySampleSize);
       final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
       final long durationMs = System.currentTimeMillis() - buildStart;
 
       // Atomic swap — readers see all-or-nothing
-      this.snapshot = snapshotFromResult(result, durationMs);
+      this.snapshot = snapshotFromResult(result, durationMs, asOfTransactionId);
       this.status = Status.READY;
       this.notifyAll();
       invalidateGraphStatisticsCache();
@@ -346,6 +359,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       getExecutor().execute(() -> {
         BUILD_PERMITS.acquireUninterruptibly();
         try {
+          final long asOfTransactionId = currentLastTransactionId();
           // The build thread needs its own read transaction for database iteration
           database.begin();
           try {
@@ -355,7 +369,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
             final long durationMs = System.currentTimeMillis() - buildStart;
 
             synchronized (GraphAnalyticalView.this) {
-              this.snapshot = snapshotFromResult(result, durationMs);
+              this.snapshot = snapshotFromResult(result, durationMs, asOfTransactionId);
               this.status = Status.READY;
               GraphAnalyticalView.this.notifyAll();
               if (deltaCollector == null)
@@ -451,9 +465,13 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * Call this when the view is no longer needed (user-initiated removal).
    */
   public void drop() {
-    shutdown();
-    if (name != null)
+    // Dropped views have no schema definition left to restore against, so persisting the CSR here
+    // would just be written and immediately deleted below.
+    shutdown(false);
+    if (name != null) {
       GraphAnalyticalViewPersistence.remove(database, name);
+      GraphAnalyticalViewCSRPersistence.delete(database, name);
+    }
   }
 
   /**
@@ -466,8 +484,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * (or even closed the database) and crash with a misleading SEVERE log line.
    */
   public void shutdown() {
+    shutdown(true);
+  }
+
+  private void shutdown(final boolean persistCsr) {
     awaitInFlightTasks(SHUTDOWN_AWAIT_MS);
     synchronized (this) {
+      if (persistCsr)
+        persistCsrIfPossible();
       unregisterChangeListeners();
       GraphTraversalProviderRegistry.unregister(database, this);
       if (name != null)
@@ -1125,6 +1149,16 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return snapshot != null;
   }
 
+  /**
+   * Returns true when the current CSR was loaded from a persisted file (see #6583) rather than produced by a scan
+   * of the graph on this open. Mainly useful for tests and operational visibility (e.g. confirming that a reopen
+   * skipped the O(V+E) rebuild).
+   */
+  public boolean isRestoredFromPersistedCsr() {
+    final Snapshot snap = this.snapshot;
+    return snap != null && snap.restoredFromDisk;
+  }
+
   public boolean isReady() {
     final Status s = status;
     if (s == Status.READY)
@@ -1409,10 +1443,98 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   // --- Private helpers ---
 
-  private static Snapshot snapshotFromResult(final CSRBuilder.CSRResult result, final long durationMs) {
+  private static Snapshot snapshotFromResult(final CSRBuilder.CSRResult result, final long durationMs, final long asOfTransactionId) {
     return new Snapshot(result.getCsrPerType(), result.getMapping(), result.getBucketColumns(),
         result.getEdgeColumnStores(), result.getBwdToFwd(),
-        null, System.currentTimeMillis(), durationMs);
+        null, System.currentTimeMillis(), durationMs, asOfTransactionId, false);
+  }
+
+  /**
+   * The database's last committed transaction id, sampled before a CSR scan starts (see {@link
+   * Snapshot#asOfTransactionId}). Reading it before {@code database.begin()} for the scan — rather than after — is
+   * what makes the certificate sound: whatever the scan reads, it reads no earlier than this point, so "nothing
+   * committed since this value" on a later open implies "nothing committed since the scan ran", regardless of the
+   * read transaction's own isolation semantics.
+   */
+  private long currentLastTransactionId() {
+    return ((DatabaseInternal) database).getTransactionManager().getLastTransactionId();
+  }
+
+  /**
+   * Persists the current CSR to disk (see #6583) so the next open can reuse it instead of rescanning the graph,
+   * when doing so is both possible and safe:
+   * <ul>
+   *   <li>the view is named — an anonymous view has no schema definition to restore against on a later open, so
+   *       there would be nothing to reload the file for</li>
+   *   <li>status is READY with a valid certificate — a STALE view's on-disk certificate would already be
+   *       superseded by the very commit that made it STALE, so persisting it would only cost a write that the
+   *       next open's certificate check is guaranteed to reject; BUILDING has no completed snapshot yet</li>
+   *   <li>the overlay (if any) has no pending changes — the certificate vouches only for the base CSR, so a
+   *       SYNCHRONOUS view with buffered overlay deltas would silently drop them if reloaded from this file</li>
+   * </ul>
+   * Called from {@link #shutdown()} while holding this instance's monitor, after any in-flight build/compaction
+   * has settled. Failures are logged and otherwise ignored: the next open simply falls back to a full rebuild,
+   * exactly as it always has.
+   */
+  private void persistCsrIfPossible() {
+    if (name == null || status != Status.READY)
+      return;
+    final Snapshot snap = this.snapshot;
+    if (snap == null || snap.asOfTransactionId < 0)
+      return;
+    if (snap.overlay != null && snap.overlay.hasChanges())
+      return;
+    // Nothing has changed since this exact snapshot was loaded from disk on this open (no overlay changes,
+    // per the check above, and a fresh scan always produces a new Snapshot instance) — the file on disk
+    // already matches it byte-for-byte, so writing it again would be pure waste.
+    if (snap.restoredFromDisk)
+      return;
+    if (!database.getConfiguration().getValueAsBoolean(GlobalConfiguration.GAV_PERSIST_CSR))
+      return;
+    try {
+      GraphAnalyticalViewCSRPersistence.save(database, name, vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter, snap);
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "GraphAnalyticalView '%s': failed to persist CSR to disk", e, name);
+    }
+  }
+
+  /**
+   * Attempts to load a persisted CSR from disk instead of scanning the graph (see #6583). Returns true and leaves
+   * the view READY with the loaded snapshot when a file exists, its definition matches this view's configuration,
+   * and its freshness certificate (the database's last committed transaction id at persist time) still matches the
+   * database's current last committed transaction id — i.e. nothing was committed in between. Returns false
+   * (leaving the view's state untouched) for a missing file, a mismatched definition or certificate, or any read
+   * failure, so the caller can fall back to {@link #buildAsync()} exactly as it would have without this path.
+   */
+  synchronized boolean tryRestoreFromPersistedCsr() {
+    if (name == null)
+      return false;
+    if (!database.getConfiguration().getValueAsBoolean(GlobalConfiguration.GAV_PERSIST_CSR))
+      return false;
+    final long currentTxId = currentLastTransactionId();
+    final Snapshot restored;
+    try {
+      restored = GraphAnalyticalViewCSRPersistence.load(database, name, vertexTypes, edgeTypes, propertyFilter,
+          edgePropertyFilter, currentTxId);
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "GraphAnalyticalView '%s': failed to load persisted CSR from disk", e, name);
+      return false;
+    }
+    if (restored == null)
+      return false;
+
+    final CountDownLatch latch = new CountDownLatch(1);
+    readyLatch = latch;
+    this.snapshot = restored;
+    this.status = Status.READY;
+    this.notifyAll();
+    latch.countDown();
+    invalidateGraphStatisticsCache();
+    if (deltaCollector == null)
+      registerChangeListeners();
+    LogManager.instance().log(this, Level.INFO,
+        "GraphAnalyticalView '%s': restored CSR from disk (asOfTransactionId=%d), skipping full rebuild", name, currentTxId);
+    return true;
   }
 
   private void registerChangeListeners() {
@@ -1452,6 +1574,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         getExecutor().execute(() -> {
           BUILD_PERMITS.acquireUninterruptibly();
           try {
+            final long asOfTransactionId = currentLastTransactionId();
             database.begin();
             try {
               final long buildStart = System.currentTimeMillis();
@@ -1463,7 +1586,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
               // that would be lost by an unconditional swap.
               synchronized (GraphAnalyticalView.this) {
                 if (updateMode == UpdateMode.ASYNCHRONOUS) {
-                  this.snapshot = snapshotFromResult(result, durationMs);
+                  this.snapshot = snapshotFromResult(result, durationMs, asOfTransactionId);
                   this.status = Status.READY;
                 } else
                   LogManager.instance().log(this, Level.INFO,
@@ -1561,6 +1684,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         getExecutor().execute(() -> {
           BUILD_PERMITS.acquireUninterruptibly();
           try {
+            final long asOfTransactionId = currentLastTransactionId();
             database.begin();
             try {
               final long buildStart = System.currentTimeMillis();
@@ -1579,7 +1703,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
                   LogManager.instance().log(this, Level.INFO,
                       "GraphAnalyticalView '%s': compaction result discarded (delta buffer overflowed during rebuild)", name);
                 } else {
-                  Snapshot fresh = snapshotFromResult(result, durationMs);
+                  Snapshot fresh = snapshotFromResult(result, durationMs, asOfTransactionId);
 
                   // Re-apply any deltas that arrived during the rebuild.
                   // These may not be in the fresh CSR (committed after the CSR scan of their bucket).

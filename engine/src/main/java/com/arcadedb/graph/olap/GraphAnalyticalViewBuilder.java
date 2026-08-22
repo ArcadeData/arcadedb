@@ -196,6 +196,26 @@ public class GraphAnalyticalViewBuilder {
     return this;
   }
 
+  /**
+   * Used by {@link GraphAnalyticalViewPersistence#restoreAll} on database open (see #6583): first tries to load a
+   * persisted CSR from disk whose freshness certificate still matches (nothing was committed to the database since
+   * it was written), and only falls back to the usual {@link #buildAsync()} full graph scan when there is no
+   * usable file. Either way the view is registered and returned immediately; check {@link
+   * GraphAnalyticalView#getStatus()} / {@link GraphAnalyticalView#awaitReady} for completion exactly as with
+   * {@link #buildAsync()}.
+   */
+  GraphAnalyticalView restoreFromDiskOrBuildAsync() {
+    final GraphAnalyticalView view = createView();
+    try {
+      if (!view.tryRestoreFromPersistedCsr())
+        view.buildAsync();
+    } catch (final Exception e) {
+      view.shutdown();
+      throw e;
+    }
+    return view;
+  }
+
   private GraphAnalyticalView createView() {
     final GraphAnalyticalView view = new GraphAnalyticalView(database, name, vertexTypes, edgeTypes, properties, edgeProperties, updateMode);
     if (compactionThreshold >= 0)

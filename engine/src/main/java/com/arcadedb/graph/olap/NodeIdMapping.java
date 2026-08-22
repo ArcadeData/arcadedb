@@ -83,6 +83,70 @@ public class NodeIdMapping {
     this.totalSize = 0;
   }
 
+  private NodeIdMapping() {
+  }
+
+  /**
+   * Reconstructs a compacted mapping from arrays previously produced by {@link #getBucketId}, {@link
+   * #getBucketTypeName}, {@link #getPosition}, and {@link #getOldToNewMapping} (see {@link
+   * GraphAnalyticalViewCSRPersistence}). The result is immutable and ready for lookups, exactly like one that went
+   * through {@link #compact()} — {@code addNode()}/{@code compact()} are not usable on it.
+   *
+   * @param positions      per-bucket sorted RID positions, already in the order {@code bucketIds} expects
+   * @param oldToNewMapping the BFS/RCM permutation to reapply, or null if the original mapping was never reordered
+   */
+  static NodeIdMapping restore(final int[] bucketIds, final String[] bucketTypeNames, final long[][] positions,
+      final int[] oldToNewMapping) {
+    final NodeIdMapping mapping = new NodeIdMapping();
+    mapping.numBuckets = bucketIds.length;
+    mapping.bucketIds = bucketIds;
+    mapping.bucketTypeNames = bucketTypeNames;
+    mapping.positions = positions;
+    mapping.bucketBase = new int[bucketIds.length];
+    mapping.bucketSizes = new int[bucketIds.length];
+
+    int total = 0;
+    for (int i = 0; i < bucketIds.length; i++) {
+      mapping.bucketBase[i] = total;
+      mapping.bucketSizes[i] = positions[i].length;
+      total += positions[i].length;
+    }
+    mapping.totalSize = total;
+
+    mapping.bucketIdToIdx = new int[16];
+    Arrays.fill(mapping.bucketIdToIdx, -1);
+    for (int idx = 0; idx < bucketIds.length; idx++) {
+      final int bucketId = bucketIds[idx];
+      if (bucketId < MAX_DIRECT_BUCKET_ID) {
+        if (bucketId >= mapping.bucketIdToIdx.length) {
+          final int newLen = Math.min(Math.max(bucketId + 1, mapping.bucketIdToIdx.length * 2), MAX_DIRECT_BUCKET_ID);
+          final int[] grown = new int[newLen];
+          Arrays.fill(grown, -1);
+          System.arraycopy(mapping.bucketIdToIdx, 0, grown, 0, mapping.bucketIdToIdx.length);
+          mapping.bucketIdToIdx = grown;
+        }
+        mapping.bucketIdToIdx[bucketId] = idx;
+      } else {
+        if (mapping.bucketIdToIdxSparse == null)
+          mapping.bucketIdToIdxSparse = new HashMap<>();
+        mapping.bucketIdToIdxSparse.put(bucketId, idx);
+      }
+    }
+
+    if (oldToNewMapping != null)
+      mapping.applyReordering(oldToNewMapping);
+
+    return mapping;
+  }
+
+  /**
+   * Returns the BFS/RCM reordering permutation applied by {@link #applyReordering}, or null if the mapping was
+   * never reordered. Package-private: used only to persist the mapping (see {@link GraphAnalyticalViewCSRPersistence}).
+   */
+  int[] getOldToNewMapping() {
+    return oldToNew;
+  }
+
   /**
    * Registers a bucket and prepares it for node collection.
    * Must be called before addNode().
