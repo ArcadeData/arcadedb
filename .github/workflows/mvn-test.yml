@@ -51,6 +51,20 @@ jobs:
   build-and-package:
     runs-on: ubuntu-latest
     needs: setup
+    # Seven downstream jobs pass `needs.build-and-package.outputs.image-tag` as
+    # ARCADEDB_DOCKER_IMAGE, but this block did not exist, so all seven were handed an EMPTY string.
+    # It went unnoticed because every consumer is defensive in a way that hides it: e2e-go guards
+    # `!= ""`, js-bolt-conformance uses `|| "arcadedata/arcadedb:latest"`, and js-pg / js-bolt
+    # hardcode `:latest` and ignore the variable entirely. Since `Save docker image` below saves
+    # ONLY the :latest tag, those fallbacks happen to land on the freshly built image, so the suites
+    # tested the right thing by luck rather than by instruction. The documented intent - e2e-go's
+    # README says "the branch-built image is docker loaded under the tag passed via
+    # ARCADEDB_DOCKER_IMAGE" - has never actually held.
+    #
+    # :latest is the correct value rather than the project version, because the artifact carries no
+    # other tag: `docker load` in a consuming job makes :latest the only reference that resolves.
+    outputs:
+      image-tag: arcadedata/arcadedb:latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -955,6 +969,17 @@ jobs:
         id: client-e2e
         working-directory: clients/typescript
         run: |
+          # The client's e2e suite falls back to a PUBLISHED image when this variable is unset, which
+          # is right for that repository's own CI and wrong here: this job would then report green
+          # while testing a released server and telling us nothing about the commit under review.
+          # The first run of this job failed exactly that way, because build-and-package did not
+          # declare an image-tag output at all. Fail loudly rather than test the wrong thing.
+          if [ -z "$ARCADEDB_DOCKER_IMAGE" ]; then
+            echo "ARCADEDB_DOCKER_IMAGE is empty: build-and-package provided no image-tag." >&2
+            echo "Refusing to run, because the suite would silently fall back to a published image." >&2
+            exit 1
+          fi
+          echo "Smoke-testing the client against $ARCADEDB_DOCKER_IMAGE"
           npm ci
           npm run e2e
         env:
