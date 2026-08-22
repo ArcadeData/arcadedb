@@ -19,6 +19,7 @@
 package com.arcadedb.query.select;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Document;
 import com.arcadedb.index.MultiIndexCursor;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -221,6 +222,40 @@ public class Issue6565SelectIndexCandidateLimitTest extends TestHelper {
     final MultiIndexCursor cursor = executor.lookForIndexes();
     try {
       assertThat(executor.indexCandidateLimit).isEqualTo(-1);
+    } finally {
+      if (cursor != null)
+        cursor.close();
+    }
+  }
+
+  @Test
+  void orderByDescendingOnAscendingScannedIndexWithLimitReturnsTrueTail() {
+    // CODE REVIEW ON #6571, ROUND 3: SelectIterator.fetchResultInCaseOfOrderBy() MATERIALIZES BY DRAINING THE FULL
+    // ITERATOR WHENEVER THE REQUESTED ORDER DOESN'T TRIVIALLY MATCH THE (ALWAYS ASCENDING) INDEX SCAN
+    // filterWithIndexesFinalNode() PERFORMS - BUT THE CANDIDATE CAP THIS PR RESTORES WOULD STOP THAT DRAIN AT
+    // skip + limit, LETTING THE IN-MEMORY SORT SEE ONLY THE FIRST FEW ASCENDING CANDIDATES INSTEAD OF EVERY MATCH.
+    // A DESCENDING orderBy() ON THE SAME PROPERTY THE WHERE CLAUSE INDEXES MUST DISABLE THE CAP TOO.
+    final List<Document> list = database.select().fromType("T").where()//
+        .property("n").gt().value(-1)//
+        .orderBy("n", false).limit(10).documents().toList();
+    assertThat(list).hasSize(10);
+    for (int i = 0; i < list.size(); i++)
+      assertThat(list.get(i).getInteger("n")).isEqualTo(ROWS - 1 - i);
+  }
+
+  @Test
+  void orderByAscendingMatchingScanDirectionStillEngagesCap() {
+    // THE ORDER BY SAFETY CHECK MUST NOT BE ALL-OR-NOTHING: WHEN THE REQUESTED ORDER TRIVIALLY MATCHES THE
+    // (ALWAYS ASCENDING) INDEX SCAN ON THE SAME PROPERTY - SelectIterator.fetchResultInCaseOfOrderBy()'S OWN
+    // TRIVIAL-MATCH CHECK - THE CAP CAN AND SHOULD STILL ENGAGE
+    final Select select = database.select().fromType("T").where().property("n").gt().value(-1)//
+        .orderBy("n", true).limit(50).skip(100);
+    select.compile();
+
+    final SelectExecutor executor = new SelectExecutor(select);
+    final MultiIndexCursor cursor = executor.lookForIndexes();
+    try {
+      assertThat(executor.indexCandidateLimit).isEqualTo(150);
     } finally {
       if (cursor != null)
         cursor.close();
