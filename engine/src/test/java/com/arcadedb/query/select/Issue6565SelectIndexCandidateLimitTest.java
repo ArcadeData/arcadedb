@@ -285,9 +285,9 @@ public class Issue6565SelectIndexCandidateLimitTest extends TestHelper {
 
   @Test
   void skipAndLimitOnPlainIndexedRangePagesCorrectly() {
-    // CODE REVIEW GAP: THE "SOLE EXACT LEAF, skip+limit CAPPED CORRECTLY" PATH WAS ONLY TESTED FOR eq AND in_op -
-    // ANY OPERATOR filterWithIndexesFinalNode()'S switch TURNS INTO A CURSOR (gt/ge/lt/le/between TOO) IS EQUALLY
-    // EXACT, SINCE soleExactLeaf() DOESN'T DISCRIMINATE BY OPERATOR - THIS CLOSES THAT GAP EXPLICITLY FOR ge.
+    // THE "SOLE EXACT LEAF, skip+limit CAPPED CORRECTLY" PATH IS ALSO EXERCISED FOR eq AND in_op ELSEWHERE - ANY
+    // OPERATOR filterWithIndexesFinalNode()'S switch TURNS INTO A CURSOR (gt/ge/lt/le/between TOO) IS EQUALLY EXACT,
+    // SINCE soleExactLeaf() DOESN'T DISCRIMINATE BY OPERATOR - THIS COVERS IT EXPLICITLY FOR ge.
     // n >= 500 MATCHES 500 OF THE 1000 ROWS (n IN [500,999]).
     final Select select = database.select().fromType("T").where().property("n").ge().value(500)//
         .limit(50).skip(100);
