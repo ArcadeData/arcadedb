@@ -21,9 +21,15 @@ package com.arcadedb.exception;
 import com.arcadedb.database.RID;
 
 /**
- * A caller about to WRITE a vertex's edge list found the vertex RECORD ITSELF absent (#6572). The reference it
- * arrived through - an adjacency entry, a RID held across transactions, a traversal step - names a record that is
- * not there.
+ * A caller about to WRITE a vertex found the vertex RECORD ITSELF absent (#6572). The reference it arrived through -
+ * an adjacency entry, a RID held across transactions, a traversal step - names a record that is not there.
+ * <p>
+ * ONE type for that fact, whichever operation met it (#6586): REMOVING an entry from an edge list
+ * ({@code GraphEngine.getEdgeHeadChunkForWrite}), APPENDING one to it ({@code GraphEngine.getOrCreateEdgeList} -
+ * typically the far endpoint of an edge being created, which is not the vertex the caller named), or DELETING the
+ * vertex outright ({@code GraphEngine.deleteVertex}, which probes the slot before it walks anything). A sweep over a
+ * graph that has to skip such a reference catches this and only this, instead of matching on messages or on the
+ * accident of which read noticed first.
  * <p>
  * A {@link RecordNotFoundException}, and deliberately NOT a {@link NeedRetryException}, which is the whole reason
  * this type exists. The read side of an edge list cannot always tell "gone" from "not visible yet": a concurrent
