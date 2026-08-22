@@ -57,7 +57,10 @@ import re
 import sys
 from pathlib import Path
 
-import yaml
+try:
+    import yaml
+except ImportError:  # pragma: no cover - the workflow installs it explicitly
+    sys.exit("check-workflow-needs-outputs: PyYAML is required (pip install pyyaml)")
 
 # `needs.<job>.outputs.<name>`, as it appears inside a ${{ }} expression. Job ids and output names
 # are both restricted to the characters GitHub allows, so this does not need to parse expressions.

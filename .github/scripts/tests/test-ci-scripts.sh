@@ -1113,11 +1113,12 @@ YAML
 expect "rejects a reference to an output the producer never declares" 1 "image-tag" \
     "$NEEDSOUTPUTS" "$work/needs-undeclared"
 
-# The same workflow with the output declared: the only change that should matter.
+# The same workflow with the output declared: the only change that should matter. Deriving it from
+# the rejected fixture rather than writing a second one is deliberate - it is what makes the pair
+# evidence, since the declaration is then the only difference between a pass and a failure.
 mkdir -p "$work/needs-declared"
-sed 's/    runs-on: ubuntu-latest\n/&/' "$work/needs-undeclared/ci.yml" \
-    | awk '/^  build:/{print; print "    outputs:"; print "      image-tag: repo\/image:latest"; next} {print}' \
-    >"$work/needs-declared/ci.yml"
+awk '/^  build:/{print; print "    outputs:"; print "      image-tag: repo\/image:latest"; next} {print}' \
+    "$work/needs-undeclared/ci.yml" >"$work/needs-declared/ci.yml"
 expect "accepts the same workflow once the output is declared" 0 "" \
     "$NEEDSOUTPUTS" "$work/needs-declared"
 
