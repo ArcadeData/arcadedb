@@ -51,18 +51,21 @@ import java.time.Instant;
 import java.util.logging.Level;
 
 /**
- * POST /api/v1/ai/chat - Main AI chat endpoint.
- * Collects schema context, loads chat history, and forwards to the central gateway.
+ * Main AI chat endpoint, split across two operations so each has exactly one response content
+ * type (issue #6558: OpenAPI's content map selects on the Accept header, not on a request-body
+ * field, so a single operation that streamed or not depending on a body field broke generated
+ * clients that bound {@code application/json}).
  *
- * <p><b>Auto mode</b> uses a client-orchestrated streaming protocol so the gateway
- * never has to open an inbound HTTP connection into the user's network. The gateway
- * emits SSE events ({@code session}, {@code tool_call}, {@code done}); this handler
- * executes each tool locally via {@link ToolDispatcher} and POSTs the result to
- * {@code /api/chat/tool_result/:sessionId} so the LLM loop resumes. Studio sees the
- * usual {@code tool_start}/{@code tool_end} events, synthesized locally.
+ * <p><b>{@code POST /api/v1/ai/chat/stream}</b> uses a client-orchestrated streaming protocol so
+ * the gateway never has to open an inbound HTTP connection into the user's network. The gateway
+ * emits SSE events ({@code session}, {@code tool_call}, {@code done}); this handler executes each
+ * tool locally via {@link ToolDispatcher} and POSTs the result to
+ * {@code /api/chat/tool_result/:sessionId} so the LLM loop resumes. Studio sees the usual
+ * {@code tool_start}/{@code tool_end} events, synthesized locally.
  *
- * <p><b>Review-first mode</b> embeds the schema directly in the prompt and uses a
- * single non-streaming request to the gateway (no tool calls).
+ * <p><b>{@code POST /api/v1/ai/chat}</b> (review-first) embeds the schema directly in the prompt
+ * and uses a single non-streaming request to the gateway (no tool calls), always answering with
+ * a JSON body.
  */
 public class AiChatHandler extends AbstractServerHttpHandler {
   // Static so all server instances in the JVM share one client. Each instance spawns
@@ -73,13 +76,19 @@ public class AiChatHandler extends AbstractServerHttpHandler {
   private final ArcadeDBServer server;
   private final AiConfiguration config;
   private final ChatStorage     chatStorage;
+  private final boolean         streaming;
 
+  /**
+   * @param streaming {@code true} to back {@code POST /api/v1/ai/chat/stream} (always SSE),
+   *                  {@code false} to back {@code POST /api/v1/ai/chat} (always JSON)
+   */
   public AiChatHandler(final HttpServer httpServer, final ArcadeDBServer server, final AiConfiguration config,
-      final ChatStorage chatStorage) {
+      final ChatStorage chatStorage, final boolean streaming) {
     super(httpServer);
     this.server = server;
     this.config = config;
     this.chatStorage = chatStorage;
+    this.streaming = streaming;
   }
 
   @Override
@@ -124,8 +133,6 @@ public class AiChatHandler extends AbstractServerHttpHandler {
           new JSONObject().put("error", "User '" + user.getName() + "' is not authorized to access database '" + database + "'")
               .toString());
 
-    final String mode = payload.getString("mode", "auto");
-
     try {
       // Load or create chat
       final String username = user.getName();
@@ -160,7 +167,7 @@ public class AiChatHandler extends AbstractServerHttpHandler {
       gatewayRequest.put("hardwareId", AiActivateHandler.getHardwareId());
       gatewayRequest.put("serverVersion", Constants.getVersion());
 
-      if ("auto".equals(mode)) {
+      if (streaming) {
         // Client-orchestrated streaming: we deliberately do NOT send arcadedb.url to the
         // gateway. The gateway emits tool_call SSE events; we execute each tool locally
         // via ToolDispatcher and POST the result back to /api/chat/tool_result/:sessionId.

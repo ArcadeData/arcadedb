@@ -47,10 +47,16 @@ import java.util.concurrent.TimeUnit;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * End-to-end test: stands up a fake AI gateway that emits the new client-orchestrated
- * SSE protocol (session, tool_call, done) and verifies that ArcadeDB's AiChatHandler
- * executes the tool locally and POSTs the result back to /api/chat/tool_result/:sessionId,
- * with no inbound network connection from the gateway required.
+ * End-to-end test: stands up a fake AI gateway and verifies both split chat operations
+ * (issue #6558):
+ * <ul>
+ *   <li>{@code POST /api/v1/ai/chat/stream} - the client-orchestrated SSE protocol
+ *   (session, tool_call, done). ArcadeDB's AiChatHandler executes each tool locally and
+ *   POSTs the result back to /api/chat/tool_result/:sessionId, with no inbound network
+ *   connection from the gateway required.</li>
+ *   <li>{@code POST /api/v1/ai/chat} - always a single JSON body, even when the request
+ *   still carries a legacy {@code mode: "auto"} field.</li>
+ * </ul>
  */
 class AiChatHandlerStreamingTest extends BaseGraphServerTest {
 
@@ -65,9 +71,10 @@ class AiChatHandlerStreamingTest extends BaseGraphServerTest {
     fakeGateway = Undertow.builder()
         .addHttpListener(0, "127.0.0.1")
         .setHandler(Handlers.path()
-            // Fake gateway /api/chat: emit SSE session + tool_call + done.
-            // The 'done' event is only written AFTER the ArcadeDB client has POSTed
-            // a tool_result, which we synchronize via toolResultPosted CompletableFuture.
+            // Fake gateway /api/chat: a plain JSON reply for a non-streaming request
+            // (stream=false/absent), or the SSE session + tool_call + done sequence for a
+            // streaming one (stream=true). The 'done' event is only written AFTER the
+            // ArcadeDB client has POSTed a tool_result, synchronized via toolResultPosted.
             .addExactPath("/api/chat", exchange -> {
               if (!exchange.getRequestMethod().equals(Methods.POST)) {
                 exchange.setStatusCode(405);
@@ -78,7 +85,18 @@ class AiChatHandlerStreamingTest extends BaseGraphServerTest {
               exchange.dispatch(() -> {
                 try {
                   exchange.startBlocking();
-                  gatewayRequestBodies.add(new String(exchange.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
+                  final String requestBody = new String(exchange.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+                  gatewayRequestBodies.add(requestBody);
+
+                  if (!new JSONObject(requestBody).getBoolean("stream", false)) {
+                    exchange.getResponseHeaders().put(new HttpString("Content-Type"), "application/json");
+                    exchange.setStatusCode(200);
+                    exchange.getResponseSender().send(new JSONObject()
+                        .put("response", "review-first reply")
+                        .put("commands", new JSONArray())
+                        .toString());
+                    return;
+                  }
 
                   exchange.getResponseHeaders().put(new HttpString("Content-Type"), "text/event-stream");
                   exchange.setStatusCode(200);
@@ -155,14 +173,14 @@ class AiChatHandlerStreamingTest extends BaseGraphServerTest {
   }
 
   @Test
-  void streamingAutoModeExecutesToolLocallyAndPostsResultBack() throws Exception {
+  void streamingEndpointExecutesToolLocallyAndPostsResultBack() throws Exception {
     // Point the AI assistant at our fake gateway and activate it with a dummy token.
     final var aiConfig = getServer(0).getAiConfiguration();
     aiConfig.activate("test-token", "127.0.0.1", "hw-test", "test-version");
     setGatewayUrl(aiConfig, "http://127.0.0.1:" + fakeGatewayPort());
 
     final HttpURLConnection conn = (HttpURLConnection) new URI(
-        "http://127.0.0.1:" + getServer(0).getHttpServer().getPort() + "/api/v1/ai/chat").toURL().openConnection();
+        "http://127.0.0.1:" + getServer(0).getHttpServer().getPort() + "/api/v1/ai/chat/stream").toURL().openConnection();
     conn.setRequestMethod("POST");
     conn.setRequestProperty("Authorization", "Basic " + Base64.getEncoder()
         .encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8)));
@@ -172,8 +190,7 @@ class AiChatHandlerStreamingTest extends BaseGraphServerTest {
 
     final JSONObject body = new JSONObject()
         .put("database", getDatabaseName())
-        .put("message", "What types exist?")
-        .put("mode", "auto");
+        .put("message", "What types exist?");
     try (final DataOutputStream out = new DataOutputStream(conn.getOutputStream())) {
       out.write(body.toString().getBytes(StandardCharsets.UTF_8));
     }
@@ -221,6 +238,49 @@ class AiChatHandlerStreamingTest extends BaseGraphServerTest {
     final JSONObject schemaResult = new JSONObject(delivered.getString("result", "{}"));
     assertThat(schemaResult.getString("database", null)).isEqualTo(getDatabaseName());
     assertThat(schemaResult.getJSONArray("types").length()).isGreaterThan(0);
+  }
+
+  @Test
+  void chatEndpointAlwaysReturnsJsonEvenWhenModeFieldSaysAuto() throws Exception {
+    // Regression test for #6558: OpenAPI cannot express a response content type selected by a
+    // request-body field, so POST /api/v1/ai/chat must always answer JSON, regardless of what a
+    // caller still puts in the now-unused legacy 'mode' field. Streaming lives at its own
+    // POST /api/v1/ai/chat/stream operation, covered above.
+    final var aiConfig = getServer(0).getAiConfiguration();
+    aiConfig.activate("test-token", "127.0.0.1", "hw-test", "test-version");
+    setGatewayUrl(aiConfig, "http://127.0.0.1:" + fakeGatewayPort());
+
+    final HttpURLConnection conn = (HttpURLConnection) new URI(
+        "http://127.0.0.1:" + getServer(0).getHttpServer().getPort() + "/api/v1/ai/chat").toURL().openConnection();
+    conn.setRequestMethod("POST");
+    conn.setRequestProperty("Authorization", "Basic " + Base64.getEncoder()
+        .encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8)));
+    conn.setRequestProperty("Content-Type", "application/json");
+    conn.setDoOutput(true);
+
+    final JSONObject body = new JSONObject()
+        .put("database", getDatabaseName())
+        .put("message", "What types exist?")
+        .put("mode", "auto");
+    try (final DataOutputStream out = new DataOutputStream(conn.getOutputStream())) {
+      out.write(body.toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    assertThat(conn.getResponseCode()).isEqualTo(200);
+    assertThat(conn.getContentType()).contains("application/json");
+
+    final JSONObject responseBody;
+    try (final InputStream is = conn.getInputStream()) {
+      responseBody = new JSONObject(new String(is.readAllBytes(), StandardCharsets.UTF_8));
+    }
+    assertThat(responseBody.getString("response", null)).isEqualTo("review-first reply");
+    assertThat(responseBody.getString("chatId", null)).isNotBlank();
+
+    assertThat(gatewayRequestBodies).hasSize(1);
+    final JSONObject gatewayReq = new JSONObject(gatewayRequestBodies.get(0));
+    assertThat(gatewayReq.getBoolean("stream", false)).isFalse();
+    assertThat(gatewayReq.has("schema")).isTrue();
+    assertThat(gatewayReq.has("serverInfo")).isTrue();
   }
 
   // AiConfiguration.gatewayUrl is a volatile package-private field; there's no public

@@ -403,13 +403,13 @@ function aiSendMessageStreaming(db, message) {
 
   var toolCalls = [];
 
-  fetch("api/v1/ai/chat", {
+  fetch("api/v1/ai/chat/stream", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "Authorization": globalCredentials
     },
-    body: JSON.stringify({ database: db, message: message, chatId: aiCurrentChatId, mode: aiMode, protocolVersion: AI_PROTOCOL_VERSION }),
+    body: JSON.stringify({ database: db, message: message, chatId: aiCurrentChatId, protocolVersion: AI_PROTOCOL_VERSION }),
     signal: controller.signal
   })
   .then(function(response) {
@@ -523,7 +523,7 @@ function aiSendMessageLegacy(db, message) {
   aiCurrentXhr = jQuery.ajax({
     type: "POST",
     url: "api/v1/ai/chat",
-    data: JSON.stringify({ database: db, message: message, chatId: aiCurrentChatId, mode: aiMode, protocolVersion: AI_PROTOCOL_VERSION }),
+    data: JSON.stringify({ database: db, message: message, chatId: aiCurrentChatId, protocolVersion: AI_PROTOCOL_VERSION }),
     contentType: "application/json",
     beforeSend: function(xhr) {
       xhr.setRequestHeader("Authorization", globalCredentials);
