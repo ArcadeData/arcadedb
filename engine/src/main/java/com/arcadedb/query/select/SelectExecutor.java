@@ -267,6 +267,18 @@ public class SelectExecutor {
    * @return {@code true} when a composite-index cursor was built and appended to {@code cursors}
    */
   private boolean matchCompositeIndex(final List<IndexCursor> cursors) {
+    // CHEAP UPFRONT GUARD: A TYPE WITH ONLY SINGLE-PROPERTY INDEXES (THE COMMON CASE) CAN NEVER PRODUCE A COMPOSITE
+    // MATCH, SO SKIP THE WHERE-TREE WALK (isPureAndConjunction()/collectAndEqLeaves()) AND THE PER-QUERY ALLOCATION
+    // AND SORT BELOW ENTIRELY - THOSE TYPES ALREADY GO THROUGH isTheNodeFullyIndexed()/filterWithIndexes() JUST AS
+    // FAST AS BEFORE THIS METHOD EXISTED
+    final List<TypeIndex> candidates = new ArrayList<>();
+    for (final TypeIndex candidate : select.fromType.getAllIndexes(true))
+      if (candidate.getPropertyNames().size() >= 2)
+        candidates.add(candidate);
+
+    if (candidates.isEmpty())
+      return false;
+
     if (!isPureAndConjunction(select.rootTreeElement))
       return false;
 
@@ -275,21 +287,18 @@ public class SelectExecutor {
     if (andEqLeaves.isEmpty())
       return false;
 
-    TypeIndex bestIndex = null;
-    int bestPrefixLength = 0;
-
     // getAllIndexes(true) IS BACKED BY A HashSet FOR A POLYMORPHIC TYPE (LocalDocumentType.getAllIndexes()), SO ITS
     // ITERATION ORDER IS UNSPECIFIED - SORT BY NAME FIRST SO TWO INDEXES TIED ON PREFIX LENGTH AND UNIQUENESS (E.G.
     // TWO COMPOSITE INDEXES SHARING THE SAME LEADING PROPERTIES BUT DIFFERENT TRAILING ONES) ARE PICKED BETWEEN
     // DETERMINISTICALLY ACROSS RUNS, RATHER THAN LEAVING WHICH ONE'S ORDER BY GETS ELIDED TO HASH-BUCKET LUCK
-    final List<TypeIndex> candidates = new ArrayList<>(select.fromType.getAllIndexes(true));
-    candidates.sort(Comparator.comparing(TypeIndex::getName));
+    if (candidates.size() > 1)
+      candidates.sort(Comparator.comparing(TypeIndex::getName));
+
+    TypeIndex bestIndex = null;
+    int bestPrefixLength = 0;
 
     for (final TypeIndex candidate : candidates) {
       final List<String> properties = candidate.getPropertyNames();
-      if (properties.size() < 2)
-        // SINGLE-PROPERTY INDEXES ARE HANDLED BY THE EXISTING isTheNodeFullyIndexed()/filterWithIndexes() PATH
-        continue;
 
       int prefixLength = 0;
       while (prefixLength < properties.size() && andEqLeaves.containsKey(properties.get(prefixLength)))
