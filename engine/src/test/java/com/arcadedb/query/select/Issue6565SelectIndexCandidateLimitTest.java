@@ -19,6 +19,7 @@
 package com.arcadedb.query.select;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.index.MultiIndexCursor;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 
@@ -145,6 +146,42 @@ public class Issue6565SelectIndexCandidateLimitTest extends TestHelper {
         .property("g").in().value(List.of("g0", "g1", "g2"))//
         .skip(550).limit(100).count();
     assertThat(count).isEqualTo(50);
+  }
+
+  @Test
+  void singleBareEqualityCandidateCapCoversSkipPlusLimit() {
+    // CODE REVIEW ON #6571: Select.compile() WRAPS A LONE CONDITION (NO and()/or() CALLED) IN A SYNTHETIC 'run' NODE
+    // (Select.setLogic()'S "1ST TIME ONLY" BRANCH), SO THE ROOT'S left IS A SelectTreeNode EVEN THOUGH THE WHOLE TREE
+    // IS A SINGLE LEAF. A RESULT-COUNT ASSERTION CANNOT CATCH A REGRESSION HERE: THE LAZY-PULL CONSUMERS ALREADY STOP
+    // AT skip + limit EVEN WHEN THE CANDIDATE CAP ITSELF STAYS AT -1, SO THIS CHECKS THE COMPUTED CAP DIRECTLY.
+    final Select select = database.select().fromType("T").where().property("a").eq().value("x").limit(50).skip(100);
+    select.compile();
+
+    final SelectExecutor executor = new SelectExecutor(select);
+    final MultiIndexCursor cursor = executor.lookForIndexes();
+    try {
+      assertThat(executor.indexCandidateLimit).isEqualTo(150);
+    } finally {
+      if (cursor != null)
+        cursor.close();
+    }
+  }
+
+  @Test
+  void singleBareInCandidateCapCoversSkipPlusLimit() {
+    // SAME GAP AS ABOVE, FOR THE NESTED PER-VALUE CURSOR filterWithIndexesFinalNode() BUILDS FOR A BARE in_op LEAF
+    final Select select = database.select().fromType("T").where().property("g").in().value(List.of("g0", "g1", "g2"))//
+        .limit(100).skip(550);
+    select.compile();
+
+    final SelectExecutor executor = new SelectExecutor(select);
+    final MultiIndexCursor cursor = executor.lookForIndexes();
+    try {
+      assertThat(executor.indexCandidateLimit).isEqualTo(650);
+    } finally {
+      if (cursor != null)
+        cursor.close();
+    }
   }
 
   private void assertPage(final int skip, final int limit, final int expected) {
