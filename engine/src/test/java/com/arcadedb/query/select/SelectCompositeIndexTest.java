@@ -20,6 +20,7 @@ package com.arcadedb.query.select;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.index.MultiIndexCursor;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
@@ -420,5 +421,29 @@ public class SelectCompositeIndexTest extends TestHelper {
 
     assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(0);
     assertThat(result.getMetrics().get("evaluatedRecords")).isEqualTo((long) (GROUP_SIZE + OTHER_SIZE));
+  }
+
+  @Test
+  void compositeIndexNotUsedWithNotInTheConjunction() {
+    // SelectOperator.not HAS NO FLUENT ENTRY POINT ON THE Select BUILDER TODAY (SEE
+    // Issue6565SelectIndexCandidateLimitTest.notLeafIsNeverTreatedAsExactlyIndexed) - THE TREE IS BUILT BY HAND HERE.
+    // isPureAndConjunction() MUST REJECT A not() ANYWHERE IN AN OTHERWISE COMPOSITE-ELIGIBLE AND CHAIN THE SAME WAY
+    // IT ALREADY REJECTS or(), FALLING BACK TO THE PRE-EXISTING isTheNodeFullyIndexed()/filterWithIndexes() PATH (NO
+    // CURSOR AT ALL HERE, SINCE NEITHER key1 NOR key2 HAS ITS OWN STANDALONE INDEX)
+    final Select select = database.select().fromType("Supplier");
+    final SelectTreeNode key1Leaf = new SelectTreeNode(new SelectPropertyValue("key1"), SelectOperator.eq, "a");
+    final SelectTreeNode notKey1 = new SelectTreeNode(key1Leaf, SelectOperator.not, null);
+    final SelectTreeNode key2Leaf = new SelectTreeNode(new SelectPropertyValue("key2"), SelectOperator.eq, "b");
+    select.rootTreeElement = new SelectTreeNode(notKey1, SelectOperator.and, key2Leaf);
+
+    final SelectExecutor executor = new SelectExecutor(select);
+    final MultiIndexCursor cursor = executor.lookForIndexes();
+    try {
+      assertThat((Object) cursor).isNull();
+      assertThat(executor.metrics().get("usedIndexes")).isEqualTo(0);
+    } finally {
+      if (cursor != null)
+        cursor.close();
+    }
   }
 }
