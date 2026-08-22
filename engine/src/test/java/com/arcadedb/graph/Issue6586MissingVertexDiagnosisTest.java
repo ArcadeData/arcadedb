@@ -25,6 +25,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.VertexNotFoundException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -199,6 +200,35 @@ class Issue6586MissingVertexDiagnosisTest extends TestHelper {
     } finally {
       database.getConfiguration().setValue(GlobalConfiguration.DELETE_TOLERATE_BROKEN_CHAIN, previous);
     }
+  }
+
+  /**
+   * The other way a RID can name nothing: its BUCKET is gone, not just its slot (#4501). A handle held across a
+   * {@code DROP TYPE} is the plainest form of it, and the answer has to be the same - what the caller needs to know
+   * is that the reference outlived its target, not that some internal file id failed to resolve, which is all
+   * {@code getBucketById}'s {@code SchemaException} would have told them.
+   */
+  @Test
+  void aRidWhoseBucketIsGoneAnswersLikeARidWhoseSlotIsEmpty() {
+    createGraph();
+
+    // Materialised BEFORE the drop, so the delete below reads nothing through the schema on its way in.
+    final VertexInternal held = (VertexInternal) database.lookupByRID(targetRID, true).asVertex();
+    assertThat(held.getPropertyNames()).isNotNull();
+
+    database.transaction(() -> database.getSchema().dropType("Target"));
+    assertThat(database.getSchema().getBucketByIdIfExists(targetRID.getBucketId()))
+        .as("the fixture must actually remove the bucket, or this test proves nothing").isNull();
+
+    final GraphEngine graphEngine = ((DatabaseInternal) database).getGraphEngine();
+    final Throwable thrown = catchThrowable(
+        () -> database.transaction(() -> graphEngine.deleteVertex(held, false), false, 1));
+
+    assertThat(thrown).isInstanceOf(VertexNotFoundException.class);
+    assertThat(thrown).isNotInstanceOf(SchemaException.class);
+    assertThat(((RecordNotFoundException) thrown).getRID()).isEqualTo(targetRID);
+    assertThat(thrown.getMessage()).as("%s", thrown.getMessage()).contains(targetRID.toString())
+        .contains("does not exist");
   }
 
   /** The same answer whichever handle the caller holds: a LAZY one (#6572's path) and a materialised one agree. */
