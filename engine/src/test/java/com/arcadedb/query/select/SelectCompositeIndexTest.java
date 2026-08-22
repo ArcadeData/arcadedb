@@ -216,6 +216,76 @@ public class SelectCompositeIndexTest extends TestHelper {
   }
 
   @Test
+  void compositeIndexTieBreakFallsBackToAlphabeticalOrder() {
+    // TWO COMPOSITE INDEXES TIE ON BOTH MATCHED PREFIX LENGTH (1, JUST groupKey) AND UNIQUENESS (BOTH NON-UNIQUE):
+    // THE TIE FALLS THROUGH TO THE candidates SORT-BY-NAME ORDERING. THE AUTO-GENERATED NAME IS
+    // "<Type>[<properties>]" (SEE TypeIndex.updateTypeName()), SO "AlphaTie[groupKey,valA]" SORTS BEFORE
+    // "AlphaTie[groupKey,valB]" - OBSERVED HERE BY WHETHER ORDER BY valA GETS ELIDED (IT MUST, SINCE THE
+    // ALPHABETICALLY-FIRST INDEX'S TRAILING PROPERTY IS valA, NOT valB)
+    final VertexType alphaTie = database.getSchema().createVertexType("AlphaTie");
+    alphaTie.createProperty("groupKey", Type.STRING);
+    alphaTie.createProperty("valA", Type.LONG);
+    alphaTie.createProperty("valB", Type.LONG);
+    alphaTie.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "groupKey", "valA");
+    alphaTie.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "groupKey", "valB");
+
+    database.transaction(() -> {
+      for (int i = 0; i < GROUP_SIZE; i++)
+        database.newVertex("AlphaTie").set("groupKey", "g", "valA", (long) i, "valB", (long) i).save();
+    });
+
+    final SelectCompiled select = database.select().fromType("AlphaTie")//
+        .where().property("groupKey").eq().value("g")//
+        .orderBy("valA", false)//
+        .limit(1)//
+        .compile();
+
+    final SelectIterator<Vertex> result = select.vertices();
+    final Vertex first = result.nextOrNull();
+
+    assertThat(first).isNotNull();
+    assertThat(first.getLong("valA")).isEqualTo(GROUP_SIZE - 1);
+    assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(1);
+    // ORDER BY valA MUST BE ELIDED (NOT A FULL MATERIALIZE-AND-SORT): ONLY THE SINGLE RETURNED CANDIDATE IS EVALUATED
+    assertThat(result.getMetrics().get("evaluatedRecords")).isEqualTo(1L);
+  }
+
+  @Test
+  void compositeIndexMultiColumnOrderByDisablesElision() {
+    // A MULTI-COLUMN ORDER BY (size() > 1) MUST NEVER BE TREATED AS ELIDED, EVEN THOUGH ITS FIRST COLUMN MATCHES THE
+    // COMPOSITE INDEX'S TRAILING PROPERTY - orderByElided EXPLICITLY REQUIRES select.orderBy.size() == 1. ROWS
+    // SHARING THE SAME PRIMARY (orderedAt) VALUE MUST STILL COME OUT ORDERED BY THE SECONDARY COLUMN (tiebreaker),
+    // WHICH ONLY A FULL MATERIALIZE-AND-SORT (NOT A BARE INDEX SCAN OVER orderedAt ALONE) CAN GUARANTEE
+    final VertexType multiSort = database.getSchema().createVertexType("MultiSort");
+    multiSort.createProperty("groupKey", Type.STRING);
+    multiSort.createProperty("orderedAt", Type.LONG);
+    multiSort.createProperty("tiebreaker", Type.LONG);
+    multiSort.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "groupKey", "orderedAt");
+
+    database.transaction(() -> {
+      // THREE ROWS SHARE orderedAt=100, DIFFERING ONLY BY tiebreaker - INSERTED OUT OF tiebreaker ORDER
+      database.newVertex("MultiSort").set("groupKey", "g", "orderedAt", 100L, "tiebreaker", 3L).save();
+      database.newVertex("MultiSort").set("groupKey", "g", "orderedAt", 100L, "tiebreaker", 1L).save();
+      database.newVertex("MultiSort").set("groupKey", "g", "orderedAt", 100L, "tiebreaker", 2L).save();
+      database.newVertex("MultiSort").set("groupKey", "g", "orderedAt", 200L, "tiebreaker", 0L).save();
+    });
+
+    final SelectCompiled select = database.select().fromType("MultiSort")//
+        .where().property("groupKey").eq().value("g")//
+        .orderBy("orderedAt", false)//
+        .orderBy("tiebreaker", true)//
+        .compile();
+
+    final List<Vertex> list = select.vertices().toList();
+
+    assertThat(list).hasSize(4);
+    assertThat(list.get(0).getLong("orderedAt")).isEqualTo(200L);
+    assertThat(list.get(1).getLong("tiebreaker")).isEqualTo(1L);
+    assertThat(list.get(2).getLong("tiebreaker")).isEqualTo(2L);
+    assertThat(list.get(3).getLong("tiebreaker")).isEqualTo(3L);
+  }
+
+  @Test
   void compositeHashIndexPartialPrefixFallsBackToScan() {
     // A COMPOSITE HASH INDEX DOES NOT SUPPORT ORDERED ITERATIONS (TypeIndex.supportsOrderedIterations() == false),
     // SO A PARTIAL-PREFIX MATCH AGAINST IT MUST NOT ATTEMPT range() - WHICH WOULD THROW UnsupportedOperationException
