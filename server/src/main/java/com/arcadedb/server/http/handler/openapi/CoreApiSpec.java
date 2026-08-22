@@ -60,6 +60,15 @@ public class CoreApiSpec implements OpenApiContributor {
       presenting an id that no longer resolves to an open transaction, is an idempotent no-op: the \
       call still answers 204, but commits or rolls back nothing.""";
 
+  // Shared by the POST query and command operations, which both reach the stale-session branch of
+  // DatabaseAbstractHandler.setTransactionInThreadLocal. Held in one place so the two cannot desync:
+  // the quoted text is the message AbstractServerHttpHandler actually sends, so a client matching on
+  // it needs both operations to describe it identically. GET query does NOT use this - its handler
+  // overrides requiresTransaction() to false, so a stale id there degrades and answers 200.
+  private static final String STALE_SESSION_404_DESCRIPTION =
+      "Database not found, or the session id header names a transaction that no longer resolves "
+          + "(\"Remote transaction session not found or expired\")";
+
   @Override
   public void contribute(final OpenAPI openAPI) {
     openAPI.getPaths().addPathItem("/api/v1/server", createServerPath());
@@ -499,8 +508,7 @@ public class CoreApiSpec implements OpenApiContributor {
     responses.addApiResponse("400", SpecBuilders.errorResponse("Bad request"));
     responses.addApiResponse("401", SpecBuilders.errorResponse("Unauthorized"));
     responses.addApiResponse("404", SpecBuilders.errorResponse(sessionAware
-        ? "Database not found, or the session id header names a transaction that no longer resolves "
-            + "(\"Remote transaction session not found or expired\")"
+        ? STALE_SESSION_404_DESCRIPTION
         : "Database not found"));
     responses.addApiResponse("413", SpecBuilders.errorResponse(
         "The result exceeds 'arcadedb.server.httpQueryMaxResultRows': narrow or page the query"));
@@ -513,9 +521,7 @@ public class CoreApiSpec implements OpenApiContributor {
     responses.addApiResponse("200", SpecBuilders.jsonResponse("Command executed successfully", "QueryResponse"));
     responses.addApiResponse("400", SpecBuilders.errorResponse("Bad request"));
     responses.addApiResponse("401", SpecBuilders.errorResponse("Unauthorized"));
-    responses.addApiResponse("404", SpecBuilders.errorResponse(
-        "Database not found, or the session id header names a transaction that no longer resolves "
-            + "(\"Remote transaction session not found or expired\")"));
+    responses.addApiResponse("404", SpecBuilders.errorResponse(STALE_SESSION_404_DESCRIPTION));
     responses.addApiResponse("413", SpecBuilders.errorResponse(
         "The result exceeds 'arcadedb.server.httpQueryMaxResultRows': narrow or page the command"));
     responses.addApiResponse("500", SpecBuilders.errorResponse("Internal server error"));

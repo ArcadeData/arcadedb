@@ -50,7 +50,6 @@ jobs:
           exit 1
 
       - name: Fetch the OpenAPI contract
-        shell: bash
         run: |
           set -o pipefail
           curl -sS --fail -u "root:$ROOT_PASSWORD" \
