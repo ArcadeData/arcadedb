@@ -1670,13 +1670,20 @@ class CypherExpressionBuilder {
    * Expression for chained property access where the base is not a simple variable.
    * Example: list[0].property, func().property
    */
-  private static class ChainedPropertyAccessExpression implements Expression {
+  // Package-private (not private) so CypherExpressionWalker, in this same package, can descend into
+  // baseExpression - the fix for issue #6567 depends on the walk reaching it: without this arm the
+  // walker had already treated startNode(r).name as a leaf and never seen the "r" inside.
+  static class ChainedPropertyAccessExpression implements Expression {
     private final Expression baseExpression;
     private final String propertyName;
 
     ChainedPropertyAccessExpression(final Expression baseExpression, final String propertyName) {
       this.baseExpression = baseExpression;
       this.propertyName = propertyName;
+    }
+
+    public Expression getBaseExpression() {
+      return baseExpression;
     }
 
     @Override

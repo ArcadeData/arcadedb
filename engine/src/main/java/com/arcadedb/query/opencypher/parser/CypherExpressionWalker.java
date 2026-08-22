@@ -359,6 +359,7 @@ public final class CypherExpressionWalker {
       walk(predicate.getListExpression(), visitor);
       walk(predicate.getWhereExpression(), visitor);
     }
+    case CypherExpressionBuilder.ChainedPropertyAccessExpression chained -> walk(chained.getBaseExpression(), visitor);
     case ReduceExpression reduce -> {
       walk(reduce.getInitialValue(), visitor);
       walk(reduce.getListExpression(), visitor);

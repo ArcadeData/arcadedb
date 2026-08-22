@@ -18,25 +18,29 @@
  */
 package com.arcadedb.query.opencypher.executor;
 
+import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.ClauseEntry;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.ast.DeleteClause;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.ForeachClause;
+import com.arcadedb.query.opencypher.ast.MapProjectionExpression;
 import com.arcadedb.query.opencypher.ast.MatchClause;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.OrderByClause;
 import com.arcadedb.query.opencypher.ast.PathPattern;
+import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.ast.RemoveClause;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.ast.SetClause;
 import com.arcadedb.query.opencypher.ast.SubqueryClause;
 import com.arcadedb.query.opencypher.ast.UnwindClause;
+import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.ast.WithClause;
+import com.arcadedb.query.opencypher.parser.CypherExpressionWalker;
 
 import java.util.List;
-import java.util.regex.Pattern;
 
 /**
  * Answers one question for both Cypher executors: is a relationship variable used anywhere outside
@@ -60,8 +64,8 @@ public final class CypherVariableUsage {
    * Rather than enumerating every clause type, this method counts how many times
    * the variable appears across all relationship patterns in all MATCH clauses.
    * If it appears more than once, it's a bound reference in another pattern.
-   * Then it checks all expression texts from all other clauses (RETURN, WHERE,
-   * ORDER BY, WITH, UNWIND, SET, DELETE, CREATE, MERGE) for the variable name.
+   * Then it walks the parsed AST of every other clause (RETURN, WHERE,
+   * ORDER BY, WITH, UNWIND, SET, DELETE, CREATE, MERGE) looking for the variable name.
    *
    * @param statement the whole statement the pattern belongs to
    * @param variable  the edge variable name to check
@@ -89,7 +93,7 @@ public final class CypherVariableUsage {
         for (final PathPattern path : match.getPathPatterns()) {
           for (final NodePattern node : path.getNodes())
             if (node.hasWhereExpression()
-                && expressionReferencesVariable(node.getWhereExpression().getText(), variable))
+                && expressionReferencesVariable(node.getWhereExpression(), variable))
               return true;
           for (int i = 0; i < path.getRelationshipCount(); i++) {
             final RelationshipPattern rel = path.getRelationship(i);
@@ -100,7 +104,7 @@ public final class CypherVariableUsage {
             // binding was dropped whenever nothing else in the query mentioned r. The predicate then
             // evaluated against an unbound variable and silently filtered out every row (issue #5464).
             if (rel.hasWhereExpression()
-                && expressionReferencesVariable(rel.getWhereExpression().getText(), variable))
+                && expressionReferencesVariable(rel.getWhereExpression(), variable))
               return true;
           }
         }
@@ -110,7 +114,11 @@ public final class CypherVariableUsage {
     if (relVarCount > 1)
       return true;
 
-    // 2. Check all expression texts from non-MATCH clauses.
+    // 2. Check all expressions from non-MATCH clauses, walking their parsed AST rather than scanning
+    //    Expression#getText(): ANTLR's default getText() concatenates token text with no separating
+    //    whitespace (e.g. "any(item IN r0.k8 WHERE ...)" becomes "any(itemINr0.k8WHERE...)"), which
+    //    silently defeats a word-boundary text scan whenever a keyword ends right where the variable
+    //    begins - "r0" no longer starts a word once it is glued to the "N" of "IN" (issue #6567).
     //    Use clausesInOrder to cover everything: RETURN, WHERE, WITH, UNWIND, SET, DELETE, etc.
     if (statement.getClausesInOrder() != null) {
       for (final ClauseEntry entry : statement.getClausesInOrder()) {
@@ -118,23 +126,23 @@ public final class CypherVariableUsage {
         case RETURN: {
           final ReturnClause rc = entry.getTypedClause();
           for (final ReturnClause.ReturnItem item : rc.getReturnItems())
-            if (expressionReferencesVariable(item.getExpression().getText(), variable))
+            if (expressionReferencesVariable(item.getExpression(), variable))
               return true;
           break;
         }
         case WITH: {
           final WithClause wc = entry.getTypedClause();
           for (final ReturnClause.ReturnItem item : wc.getItems())
-            if (expressionReferencesVariable(item.getExpression().getText(), variable))
+            if (expressionReferencesVariable(item.getExpression(), variable))
               return true;
           if (wc.getWhereClause() != null && wc.getWhereClause().getConditionExpression() != null)
-            if (expressionReferencesVariable(wc.getWhereClause().getConditionExpression().getText(), variable))
+            if (expressionReferencesVariable(wc.getWhereClause().getConditionExpression(), variable))
               return true;
           break;
         }
         case UNWIND: {
           final UnwindClause uc = entry.getTypedClause();
-          if (expressionReferencesVariable(uc.getListExpression().getText(), variable))
+          if (expressionReferencesVariable(uc.getListExpression(), variable))
             return true;
           break;
         }
@@ -147,10 +155,10 @@ public final class CypherVariableUsage {
             if (variable.equals(item.getVariable()))
               return true;
             if (item.getValueExpression() != null
-                && expressionReferencesVariable(item.getValueExpression().getText(), variable))
+                && expressionReferencesVariable(item.getValueExpression(), variable))
               return true;
             if (item.getTargetExpression() != null
-                && expressionReferencesVariable(item.getTargetExpression().getText(), variable))
+                && expressionReferencesVariable(item.getTargetExpression(), variable))
               return true;
           }
           break;
@@ -197,28 +205,32 @@ public final class CypherVariableUsage {
 
     // 3. Check statement-level WHERE, ORDER BY (may not be in clausesInOrder)
     if (statement.getWhereClause() != null && statement.getWhereClause().getConditionExpression() != null)
-      if (expressionReferencesVariable(statement.getWhereClause().getConditionExpression().getText(), variable))
+      if (expressionReferencesVariable(statement.getWhereClause().getConditionExpression(), variable))
         return true;
 
     for (final MatchClause match : statement.getMatchClauses())
       if (match.hasWhereClause() && match.getWhereClause().getConditionExpression() != null)
-        if (expressionReferencesVariable(match.getWhereClause().getConditionExpression().getText(), variable))
+        if (expressionReferencesVariable(match.getWhereClause().getConditionExpression(), variable))
           return true;
 
     if (statement.getOrderByClause() != null)
       for (final OrderByClause.OrderByItem item : statement.getOrderByClause().getItems())
-        if (expressionReferencesVariable(item.getExpression(), variable))
+        // The AST is preferred over getExpression()'s text for the same reason as everywhere else in
+        // this method; fall back to the legacy text scan only for the rare item that kept no AST.
+        if (item.getExpressionAST() != null
+            ? expressionReferencesVariable(item.getExpressionAST(), variable)
+            : expressionReferencesVariable(item.getExpression(), variable))
           return true;
 
     // 4. Check RETURN clause (may not be in clausesInOrder for simple queries)
     if (statement.getReturnClause() != null)
       for (final ReturnClause.ReturnItem item : statement.getReturnClause().getReturnItems())
-        if (expressionReferencesVariable(item.getExpression().getText(), variable))
+        if (expressionReferencesVariable(item.getExpression(), variable))
           return true;
 
     // 5. Check UNWIND clauses (may not be in clausesInOrder for legacy path)
     for (final UnwindClause uc : statement.getUnwindClauses())
-      if (expressionReferencesVariable(uc.getListExpression().getText(), variable))
+      if (expressionReferencesVariable(uc.getListExpression(), variable))
         return true;
 
     return false;
@@ -233,7 +245,7 @@ public final class CypherVariableUsage {
     if (foreachClause == null)
       return false;
     if (foreachClause.getListExpression() != null
-        && expressionReferencesVariable(foreachClause.getListExpression().getText(), variable))
+        && expressionReferencesVariable(foreachClause.getListExpression(), variable))
       return true;
     if (foreachClause.getInnerClauses() != null) {
       for (final ClauseEntry inner : foreachClause.getInnerClauses()) {
@@ -248,10 +260,10 @@ public final class CypherVariableUsage {
             if (variable.equals(item.getVariable()))
               return true;
             if (item.getValueExpression() != null
-                && expressionReferencesVariable(item.getValueExpression().getText(), variable))
+                && expressionReferencesVariable(item.getValueExpression(), variable))
               return true;
             if (item.getTargetExpression() != null
-                && expressionReferencesVariable(item.getTargetExpression().getText(), variable))
+                && expressionReferencesVariable(item.getTargetExpression(), variable))
               return true;
           }
           break;
@@ -304,15 +316,15 @@ public final class CypherVariableUsage {
       case WITH: {
         final WithClause wc = entry.getTypedClause();
         for (final ReturnClause.ReturnItem item : wc.getItems())
-          if (expressionReferencesVariable(item.getExpression().getText(), variable))
+          if (expressionReferencesVariable(item.getExpression(), variable))
             return true;
         if (wc.getWhereClause() != null && wc.getWhereClause().getConditionExpression() != null
-            && expressionReferencesVariable(wc.getWhereClause().getConditionExpression().getText(), variable))
+            && expressionReferencesVariable(wc.getWhereClause().getConditionExpression(), variable))
           return true;
         break;
       }
       case UNWIND:
-        if (expressionReferencesVariable(((UnwindClause) entry.getTypedClause()).getListExpression().getText(), variable))
+        if (expressionReferencesVariable(((UnwindClause) entry.getTypedClause()).getListExpression(), variable))
           return true;
         break;
       case SET: {
@@ -321,10 +333,10 @@ public final class CypherVariableUsage {
           if (variable.equals(item.getVariable()))
             return true;
           if (item.getValueExpression() != null
-              && expressionReferencesVariable(item.getValueExpression().getText(), variable))
+              && expressionReferencesVariable(item.getValueExpression(), variable))
             return true;
           if (item.getTargetExpression() != null
-              && expressionReferencesVariable(item.getTargetExpression().getText(), variable))
+              && expressionReferencesVariable(item.getTargetExpression(), variable))
             return true;
         }
         break;
@@ -343,7 +355,7 @@ public final class CypherVariableUsage {
       case RETURN: {
         final ReturnClause rc = entry.getTypedClause();
         for (final ReturnClause.ReturnItem item : rc.getReturnItems())
-          if (expressionReferencesVariable(item.getExpression().getText(), variable))
+          if (expressionReferencesVariable(item.getExpression(), variable))
             return true;
         break;
       }
@@ -370,7 +382,7 @@ public final class CypherVariableUsage {
     final List<Expression> expressions = deleteClause.getExpressions();
     if (expressions != null)
       for (final Expression expression : expressions)
-        if (expression != null && expressionReferencesVariable(expression.getText(), variable))
+        if (expression != null && expressionReferencesVariable(expression, variable))
           return true;
     return false;
   }
@@ -378,6 +390,14 @@ public final class CypherVariableUsage {
   /**
    * Checks if an expression text references a variable as a standalone identifier.
    * Uses word-boundary matching to avoid false positives (e.g., "relation" matching "r").
+   * <p>
+   * Kept only for text that never had a parsed AST to walk instead. Prefer
+   * {@link #expressionReferencesVariable(Expression, String)} or
+   * {@link #expressionReferencesVariable(BooleanExpression, String)} wherever an AST is available: this
+   * scan runs against {@link Expression#getText()}, which is ANTLR's default {@code getText()} - it
+   * concatenates token text with no separating whitespace, so a keyword sitting right before the
+   * variable in the source (e.g. {@code any(item IN r0.k8 ...)} becoming {@code any(itemINr0.k8...)})
+   * glues onto it and silently defeats the word-boundary check below (issue #6567).
    */
   public static boolean expressionReferencesVariable(final String expressionText, final String variable) {
     if (expressionText == null || variable == null)
@@ -395,5 +415,85 @@ public final class CypherVariableUsage {
       idx++;
     }
     return false;
+  }
+
+  /**
+   * Checks if {@code expression} reads {@code variable} anywhere within it - a plain variable read, a
+   * property access, or a map-projection base - by walking the parsed AST with
+   * {@link CypherExpressionWalker} instead of scanning {@link Expression#getText()}. See
+   * {@link #expressionReferencesVariable(String, String)} for why the text scan is unreliable.
+   */
+  public static boolean expressionReferencesVariable(final Expression expression, final String variable) {
+    if (expression == null || variable == null)
+      return false;
+    final VariableReferenceFinder finder = new VariableReferenceFinder(variable);
+    CypherExpressionWalker.walk(expression, finder);
+    return finder.found;
+  }
+
+  /** {@link #expressionReferencesVariable(Expression, String)}, for a WHERE-clause predicate. */
+  public static boolean expressionReferencesVariable(final BooleanExpression expression, final String variable) {
+    if (expression == null || variable == null)
+      return false;
+    final VariableReferenceFinder finder = new VariableReferenceFinder(variable);
+    CypherExpressionWalker.walk(expression, finder);
+    return finder.found;
+  }
+
+  /**
+   * A {@link CypherExpressionWalker.Visitor} that stops at the first read of one target variable name,
+   * as a plain variable, a property access, a map-projection base, or a re-mention inside a nested
+   * MATCH/CREATE/MERGE pattern. A nested subquery body (a {@code CALL}, or the parsed body of an
+   * {@code EXISTS}/{@code COUNT}/{@code COLLECT}) auto-correlates to the names in scope where it was
+   * written, so the walk keeps using this same finder inside it (the default
+   * {@link CypherExpressionWalker.Visitor#forNestedStatement}) - reading the outer name again in there,
+   * whether as an expression or as a pattern variable it re-binds to, is still reading it. Missing the
+   * pattern case dropped the edge binding for {@code WHERE EXISTS { MATCH (p)-[r:KNOWS]->(x) ... } } -
+   * the body's own MATCH re-mentions the outer "r" only as a relationship-pattern variable, which
+   * {@link #visit(Expression)} never sees (issue #6567 review).
+   */
+  private static final class VariableReferenceFinder implements CypherExpressionWalker.Visitor {
+    private final String  variable;
+    private       boolean found = false;
+
+    VariableReferenceFinder(final String variable) {
+      this.variable = variable;
+    }
+
+    @Override
+    public void visit(final Expression expression) {
+      if (found)
+        return;
+      switch (expression) {
+      case VariableExpression variableExpression -> found = variable.equals(variableExpression.getVariableName());
+      case PropertyAccessExpression property -> found = variable.equals(property.getVariableName());
+      case MapProjectionExpression projection -> found = variable.equals(projection.getVariableName());
+      default -> {
+        // Not a name-carrying node; the walk still descends into its children.
+      }
+      }
+    }
+
+    @Override
+    public void visitPattern(final PathPattern pattern) {
+      if (found)
+        return;
+      if (variable.equals(pattern.getPathVariable())) {
+        found = true;
+        return;
+      }
+      if (pattern.getNodes() != null)
+        for (final NodePattern node : pattern.getNodes())
+          if (node != null && variable.equals(node.getVariable())) {
+            found = true;
+            return;
+          }
+      if (pattern.getRelationships() != null)
+        for (final RelationshipPattern relationship : pattern.getRelationships())
+          if (relationship != null && variable.equals(relationship.getVariable())) {
+            found = true;
+            return;
+          }
+    }
   }
 }
