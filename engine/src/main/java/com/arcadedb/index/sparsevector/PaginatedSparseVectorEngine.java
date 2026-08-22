@@ -42,6 +42,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
@@ -247,6 +248,11 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   private final AtomicReference<Memtable>                  memtable     = new AtomicReference<>(new Memtable());
   private final AtomicReference<PaginatedSegmentReader[]>  segments     = new AtomicReference<>(new PaginatedSegmentReader[0]);
   private final AtomicLong                                 nextSegmentId = new AtomicLong(1L);
+  /**
+   * Latches once the pre-#6379 warning has been emitted for this engine instance, so the same line
+   * can be raised from the follower refresh path without repeating on every query.
+   */
+  private final AtomicBoolean                              untrustedEpochWarned = new AtomicBoolean();
   private final ReentrantLock                              mutatorLock  = new ReentrantLock();
   // Content fingerprint of the FileManager's view of <i>this index's</i> sparse-segment files,
   // captured at the end of the last successful {@link #refreshSegmentsFromFileManager}. Lets the
@@ -1743,6 +1749,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
         // the epoch it carries.
         updated.sort(RECENCY_ORDER);
         segments.set(updated.toArray(new PaginatedSegmentReader[0]));
+        warnOnPreRecencyEpochSegments(updated);
         // Priming the allocator is a separate question from ordering: it must clear every id
         // already spent on a file name, so it takes the maximum id rather than the last element.
         long highest = 0L;
@@ -1900,9 +1907,14 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * <p>
    * Worth a {@code WARNING} because nothing else surfaces it: such an index answers queries without
    * complaint while a deleted document is visible again, and no amount of reading the data tells an
-   * operator that a rebuild is what fixes it. Emitted only from {@link #loadExistingSegments} - the
-   * follower-side {@link #refreshSegmentsFromFileManager} runs on the query path, where the same
-   * line would repeat for as long as the condition holds.
+   * operator that a rebuild is what fixes it.
+   * <p>
+   * Raised from the follower-side {@link #refreshSegmentsFromFileManager} as well as from
+   * {@link #loadExistingSegments}, because a follower that receives an untrusted segment by
+   * replication - rather than finding one on disk at open - is serving the same suspect ordering
+   * and would otherwise say nothing, leaving only the leader's log to go on. That path runs on
+   * every query, so {@link #untrustedEpochWarned} latches the line to once per engine instance
+   * instead of once per refresh.
    */
   private void warnOnPreRecencyEpochSegments(final List<PaginatedSegmentReader> readers) {
     int stale = 0;
@@ -1910,6 +1922,8 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       if (r.epochUntrusted())
         stale++;
     if (stale == 0)
+      return;
+    if (!untrustedEpochWarned.compareAndSet(false, true))
       return;
     LogManager.instance().log(this, Level.WARNING,
         "Sparse-vector index '%s' holds %d segment(s) whose precedence predates the recency-epoch fix (issue #6379); a "
