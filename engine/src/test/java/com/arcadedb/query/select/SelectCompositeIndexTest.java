@@ -341,6 +341,43 @@ public class SelectCompositeIndexTest extends TestHelper {
   }
 
   @Test
+  void compositeIndexPartialPrefixKeepsMatchWhenUnmatchedStandaloneIndexIsNotUnique() {
+    // UNLIKE compositeIndexPartialPrefixDefersToStandaloneIndexOnUnmatchedProperty, THE STANDALONE INDEX ON key3
+    // HERE IS NON-UNIQUE: DEFERRING TO IT WOULD GIVE UP NO GUARANTEED PRECISION (evaluateWhere() STILL NARROWS THE
+    // RESULT DOWN CORRECTLY EITHER WAY, AND A NON-UNIQUE INDEX COULD EVEN BE LESS SELECTIVE THAN THE COMPOSITE
+    // PREFIX'S OWN COMBINED LEADING PROPERTIES) - SO THE COMPOSITE PREFIX MATCH ON key1 MUST STILL WIN RATHER THAN
+    // FALLING BACK TO A SINGLE-PROPERTY PATH
+    final VertexType precedence = database.getSchema().createVertexType("PrecedenceCheckNonUnique");
+    precedence.createProperty("key1", Type.STRING);
+    precedence.createProperty("key2", Type.STRING);
+    precedence.createProperty("key3", Type.STRING);
+    precedence.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "key1", "key2", "key3");
+    precedence.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "key3");
+
+    database.transaction(() -> {
+      for (int i = 0; i < GROUP_SIZE; i++)
+        database.newVertex("PrecedenceCheckNonUnique").set("key1", "a", "key2", "k" + i, "key3", "u" + i).save();
+      for (int i = 0; i < OTHER_SIZE; i++)
+        database.newVertex("PrecedenceCheckNonUnique").set("key1", "other", "key2", "k" + i, "key3", "other" + i).save();
+    });
+
+    final SelectCompiled select = database.select().fromType("PrecedenceCheckNonUnique")//
+        .where().property("key1").eq().value("a")//
+        .and().property("key3").eq().value("u3")//
+        .compile();
+
+    final SelectIterator<Vertex> result = select.vertices();
+    final List<Vertex> list = result.toList();
+
+    assertThat(list).hasSize(1);
+    assertThat(list.getFirst().getString("key3")).isEqualTo("u3");
+    assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(1);
+    // THE COMPOSITE PREFIX MATCH IS KEPT: EVERY key1='a' ROW IS EVALUATED (NOT JUST THE ONE MATCHING key3), SINCE A
+    // NON-UNIQUE STANDALONE INDEX ON key3 DOES NOT TRIGGER DEFERRAL
+    assertThat(result.getMetrics().get("evaluatedRecords")).isEqualTo((long) GROUP_SIZE);
+  }
+
+  @Test
   void compositeHashIndexPartialPrefixFallsBackToScan() {
     // A COMPOSITE HASH INDEX DOES NOT SUPPORT ORDERED ITERATIONS (TypeIndex.supportsOrderedIterations() == false),
     // SO A PARTIAL-PREFIX MATCH AGAINST IT MUST NOT ATTEMPT range() - WHICH WOULD THROW UnsupportedOperationException

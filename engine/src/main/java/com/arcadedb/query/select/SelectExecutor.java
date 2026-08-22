@@ -340,18 +340,24 @@ public class SelectExecutor {
 
     if (!fullKeyMatch) {
       // A PARTIAL-PREFIX MATCH SCANS EVERY ROW SHARING THE MATCHED PREFIX AND LEAVES ANY EQ-BOUND PROPERTY OUTSIDE
-      // THAT PREFIX TO evaluateWhere() - IF ONE OF THOSE PROPERTIES ALREADY HAS ITS OWN STANDALONE INDEX (A REAL
-      // SHAPE: A NON-UNIQUE COMPOSITE INDEX SERVING ONE QUERY PATTERN COEXISTING WITH A UNIQUE SINGLE-PROPERTY INDEX
-      // ENFORCING A CONSTRAINT ON ANOTHER COLUMN - LocalDocumentType.indexesByProperties HAPPILY LETS BOTH COEXIST),
-      // THAT STANDALONE INDEX CAN ANSWER THE QUERY FAR MORE PRECISELY THAN SCANNING THE WHOLE PREFIX RANGE. DEFER TO
-      // THE PRE-EXISTING isTheNodeFullyIndexed()/filterWithIndexes() PATH IN THAT CASE - IT ALREADY CORRECTLY PICKS
-      // BETWEEN COMPETING SINGLE-PROPERTY INDEXES (PREFERRING A UNIQUE ONE). A PROPERTY ALREADY COVERED BY THE
-      // MATCHED PREFIX ITSELF IS EXEMPT: THE PREFIX SCAN IS AT LEAST AS SELECTIVE FOR THAT PROPERTY AS A STANDALONE
-      // INDEX ON IT ALONE WOULD BE.
+      // THAT PREFIX TO evaluateWhere() - IF ONE OF THOSE PROPERTIES ALREADY HAS ITS OWN STANDALONE *UNIQUE* INDEX (A
+      // REAL SHAPE: A NON-UNIQUE COMPOSITE INDEX SERVING ONE QUERY PATTERN COEXISTING WITH A UNIQUE SINGLE-PROPERTY
+      // INDEX ENFORCING A CONSTRAINT ON ANOTHER COLUMN - LocalDocumentType.indexesByProperties HAPPILY LETS BOTH
+      // COEXIST), THAT STANDALONE INDEX IS GUARANTEED TO ANSWER THE QUERY MORE PRECISELY (AT MOST ONE ROW) THAN
+      // SCANNING THE WHOLE PREFIX RANGE, SO DEFER TO THE PRE-EXISTING isTheNodeFullyIndexed()/filterWithIndexes()
+      // PATH IN THAT CASE. A NON-UNIQUE STANDALONE INDEX GIVES NO SUCH GUARANTEE - IT COULD BE LESS SELECTIVE THAN
+      // THE COMPOSITE PREFIX'S OWN COMBINED LEADING PROPERTIES (E.G. A LOW-CARDINALITY FLAG), AND THIS METHOD HAS NO
+      // COST-BASED WAY TO COMPARE THE TWO - SO IT IS DELIBERATELY NOT ENOUGH TO TRIGGER DEFERRAL ON ITS OWN. A
+      // PROPERTY ALREADY COVERED BY THE MATCHED PREFIX ITSELF IS EXEMPT EITHER WAY: THE PREFIX SCAN IS AT LEAST AS
+      // SELECTIVE FOR THAT PROPERTY AS A STANDALONE INDEX ON IT ALONE WOULD BE.
       final Set<String> matchedPrefixProperties = new HashSet<>(indexProperties.subList(0, bestPrefixLength));
-      for (final String property : andEqLeaves.keySet())
-        if (!matchedPrefixProperties.contains(property) && select.fromType.getPolymorphicIndexByProperties(property) != null)
+      for (final String property : andEqLeaves.keySet()) {
+        if (matchedPrefixProperties.contains(property))
+          continue;
+        final TypeIndex standaloneIndex = select.fromType.getPolymorphicIndexByProperties(property);
+        if (standaloneIndex != null && standaloneIndex.isUnique())
           return false;
+      }
     }
 
     final boolean orderByElided = select.orderBy != null && select.orderBy.size() == 1 && trailingProperty != null
