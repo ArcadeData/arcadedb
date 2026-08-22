@@ -23,7 +23,9 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.ParallelScanProducerPool;
 import com.arcadedb.query.QueryEngineManager;
+import com.arcadedb.utility.DedicatedThreadPool.PoolStats;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.lang.reflect.Field;
 
@@ -56,6 +58,9 @@ class ParallelScanSafetyTest extends TestHelper {
   // Two buckets (the default QUERY_PARALLEL_SCAN_MIN_BUCKETS) with > 4096 records EACH, so a caller-run
   // bucket scan would fill the bounded result queue and wedge (#4948).
   private static final int RECORDS = 12_000;
+  // Runaway backstop for the saturation loop only: it stops on the pool's own "queue is full" signal, and this
+  // bound exists so a pool that never reports full fails the assertion below instead of submitting forever.
+  private static final int MAX_SATURATION_SUBMISSIONS = 100_000;
 
   private void createAndPopulate() {
     database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(2).create();
@@ -66,6 +71,11 @@ class ParallelScanSafetyTest extends TestHelper {
   }
 
   @Test
+  // SEPARATE_THREAD is required, not cosmetic: everything this test guards is a wedge, and the default
+  // same-thread @Timeout can only report a breach AFTER the method returns - which a wedged thread never
+  // does, so the whole build would hang instead of failing. Sized as a hang detector, not as a latency
+  // bound: the body's own deadline is 20s.
+  @Timeout(value = 120, unit = TimeUnit.SECONDS, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
   void parallelScanCompletesWhileQueryPoolIsSaturated() throws Exception {
     createAndPopulate();
 
@@ -76,19 +86,40 @@ class ParallelScanSafetyTest extends TestHelper {
     // with latch-gated tasks. Any further submission to that pool would trigger its caller-runs rejection -
     // which is exactly the condition that used to self-deadlock the parallel scan (#4948).
     final ExecutorService queryPool = QueryEngineManager.getInstance().getExecutorService();
-    final int configuredThreads = GlobalConfiguration.QUERY_PARALLELISM_POOL_THREADS.getValueAsInteger();
-    final int poolThreads = configuredThreads > 0 ? configuredThreads : Math.max(2, Runtime.getRuntime().availableProcessors());
-    final int queueSize = Math.max(1, GlobalConfiguration.QUERY_PARALLELISM_QUEUE_SIZE.getValueAsInteger());
 
+    // The pool is a JVM-wide singleton shared with every other test class, so it does not necessarily start
+    // idle. Give whatever ran before us a moment to drain: a single foreign task left in the queue shifts
+    // every count below by one, and an over-submission here is not an exception - it is this pool's
+    // caller-runs policy handing the task straight back to THIS thread (DedicatedThreadPool.runOnCaller).
+    awaitIdleQueryPool();
+
+    assertThat(QueryEngineManager.getInstance().getExecutorStats().queueCapacityRemaining())
+        .as("saturating an UNBOUNDED queue is not possible, and this scenario is about the bounded one").isNotNegative();
+
+    final Thread submitter = Thread.currentThread();
     final CountDownLatch releaseSaturation = new CountDownLatch(1);
     try {
-      for (int i = 0; i < poolThreads + queueSize; i++)
+      // Ask the POOL when it is full, rather than computing "threads + queue" from QUERY_PARALLELISM_*: the
+      // pool was sized when the singleton was first built, and those settings can have been changed and reset
+      // many times since by other test classes (GlobalConfiguration.PROFILE rewrites both). Whenever today's
+      // settings are wider than the pool actually is, the computed loop over-submits, and the extra tasks come
+      // back to run on this thread.
+      int submissions = 0;
+      while (QueryEngineManager.getInstance().getExecutorStats().queueCapacityRemaining() > 0
+          && submissions < MAX_SATURATION_SUBMISSIONS) {
         queryPool.submit(() -> {
+          // NEVER PARK THE SUBMITTING THREAD. A task the queue refuses runs on the caller, and the caller is
+          // the only thread that reaches the countDown() in the finally below - parking it here would wait for
+          // a latch none but itself can release, wedging the whole suite with no test ever failing.
+          if (Thread.currentThread() == submitter)
+            return null;
           releaseSaturation.await();
           return null;
         });
+        submissions++;
+      }
       assertThat(QueryEngineManager.getInstance().getExecutorStats().queueCapacityRemaining())
-          .as("query pool must be saturated for the scenario to be meaningful").isZero();
+          .as("query pool must be saturated for the scenario to be meaningful (submitted %d tasks)", submissions).isZero();
 
       // Run the parallel-scan query on its own thread so a regression (wedged consumer) fails the test
       // instead of hanging it.
@@ -121,6 +152,21 @@ class ParallelScanSafetyTest extends TestHelper {
       assertThat(rowsRead.get()).as("all rows must be returned").isEqualTo(RECORDS);
     } finally {
       releaseSaturation.countDown();
+    }
+  }
+
+  /**
+   * Waits, briefly and without asserting, for the shared query pool to have no task running and none queued.
+   * The saturation loop is written against a pool that starts empty; a foreign leftover only costs the test its
+   * meaningfulness (the queue-full assertion catches that), never its liveness (the caller-runs guard does).
+   */
+  private static void awaitIdleQueryPool() throws InterruptedException {
+    final long deadline = System.currentTimeMillis() + 10_000;
+    while (System.currentTimeMillis() < deadline) {
+      final PoolStats stats = QueryEngineManager.getInstance().getExecutorStats();
+      if (stats.activeThreads() == 0 && stats.queueDepth() == 0)
+        return;
+      Thread.sleep(10);
     }
   }
 
