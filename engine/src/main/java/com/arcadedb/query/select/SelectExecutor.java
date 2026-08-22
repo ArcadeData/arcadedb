@@ -271,9 +271,16 @@ public class SelectExecutor {
     // MATCH, SO SKIP THE WHERE-TREE WALK (isPureAndConjunction()/collectAndEqLeaves()) AND THE PER-QUERY ALLOCATION
     // AND SORT BELOW ENTIRELY - THOSE TYPES ALREADY GO THROUGH isTheNodeFullyIndexed()/filterWithIndexes() JUST AS
     // FAST AS BEFORE THIS METHOD EXISTED
+    // ONLY AN INDEX THAT supportsOrderedIterations() CAN SERVE A PARTIAL-PREFIX MATCH: THAT BRANCH BUILDS A cursor
+    // VIA range(), WHICH THROWS UnsupportedOperationException OTHERWISE (SEE TypeIndex.range()) - TRUE ONLY FOR
+    // LSM_TREE, NOT FOR HASH/UNIQUE_HASH (A COMMON SHAPE FOR EDGE-UNIQUENESS INDEXES ON (@out, @in), E.G.
+    // Issue5677HashIndexLinkKeyTest), FULL_TEXT, GEOSPATIAL, LSM_VECTOR OR LSM_SPARSE_VECTOR. EXCLUDING THOSE HERE,
+    // RATHER THAN ONLY GUARDING THE range() CALL BELOW, ALSO AVOIDS get() DOING A RAW EQUALITY LOOKUP ON A
+    // FULL-KEY-MATCHED FULL_TEXT INDEX INSTEAD OF A TOKENIZED SEARCH - A TYPE WITH ONLY SUCH INDEXES SIMPLY FALLS
+    // BACK TO THE PRE-EXISTING isTheNodeFullyIndexed()/filterWithIndexes() PATH, EXACTLY AS BEFORE THIS METHOD EXISTED
     final List<TypeIndex> candidates = new ArrayList<>();
     for (final TypeIndex candidate : select.fromType.getAllIndexes(true))
-      if (candidate.getPropertyNames().size() >= 2)
+      if (candidate.getPropertyNames().size() >= 2 && candidate.supportsOrderedIterations())
         candidates.add(candidate);
 
     if (candidates.isEmpty())
@@ -307,6 +314,9 @@ public class SelectExecutor {
       if (prefixLength == 0)
         continue;
 
+      // bestIndex IS GUARANTEED NON-null HERE WHEN prefixLength == bestPrefixLength: THE FIRST CANDIDATE TO EVER
+      // QUALIFY (prefixLength > 0) ALWAYS TAKES THE prefixLength > bestPrefixLength BRANCH INSTEAD, SINCE
+      // bestPrefixLength STARTS AT 0 AND ONLY A QUALIFYING CANDIDATE (prefixLength > 0) REACHES THIS LINE
       if (prefixLength > bestPrefixLength || (prefixLength == bestPrefixLength && !bestIndex.isUnique() && candidate.isUnique())) {
         bestIndex = candidate;
         bestPrefixLength = prefixLength;
