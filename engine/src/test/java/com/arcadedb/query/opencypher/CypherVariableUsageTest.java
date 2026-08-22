@@ -192,6 +192,24 @@ class CypherVariableUsageTest {
     assertThat(isReferenced("MATCH (a)-[r:KNOWS]->(b) RETURN endNode(r).name AS n", "r")).isTrue();
   }
 
+  /**
+   * Issue #6567 review: a nested {@code EXISTS { MATCH ... } } body that re-mentions an outer edge only
+   * as a relationship-pattern variable - not inside any expression - is a correlation too. {@code visit
+   * (Expression)} never fires for a pattern variable, so only the walker's {@code visitPattern} callback
+   * sees it; missing that case would drop the outer edge binding the same way the list-predicate gap did.
+   */
+  @Test
+  void aNestedExistsPatternCorrelationReadsIt() {
+    assertThat(isReferenced(
+        "MATCH (a)-[r:KNOWS]->(b) WHERE EXISTS { MATCH (p)-[r]->(x) RETURN x } RETURN count(*)", "r"))
+        .isTrue();
+    // Control: the nested MATCH binds its own, differently-named relationship - the outer "r" is not
+    // mentioned anywhere in the EXISTS body, so it must not be falsely reported as referenced.
+    assertThat(isReferenced(
+        "MATCH (a)-[r:KNOWS]->(b) WHERE EXISTS { MATCH (p)-[q:LIKES]->(x) RETURN x } RETURN count(*)", "r"))
+        .isFalse();
+  }
+
   @Test
   void expressionMatchingIsNullSafeAndBoundaryAware() {
     assertThat(CypherVariableUsage.expressionReferencesVariable((String) null, "r")).isFalse();
