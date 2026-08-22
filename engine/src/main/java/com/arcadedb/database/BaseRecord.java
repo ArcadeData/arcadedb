@@ -63,9 +63,45 @@ public abstract class BaseRecord implements Record {
 
   @Override
   public int size() {
-    if (buffer == null)
+    Binary current = buffer;
+    if (current == null) {
       reload();
-    return buffer != null ? buffer.size() : -1;
+      current = buffer;
+    }
+    return current != null ? current.size() : -1;
+  }
+
+  /**
+   * Returns the record content, or fails with a message that says WHICH record and WHY instead of letting the caller
+   * dereference a {@code null} buffer.
+   * <p>
+   * A record legitimately reaches an accessor unmaterialised. An {@code AFTER READ} listener can filter it away, in
+   * which case {@code ImmutableDocument.checkForLazyLoading()} leaves the buffer {@code null} and returns
+   * {@code false}; {@link #reload()} leaves it {@code null} for a record deleted in the meanwhile, because it swallows
+   * the {@link RecordNotFoundException} the bucket raised; and a record instance shared between threads - which the API
+   * does not allow, but applications still do - can have it nulled by a concurrent {@link #reload()} between the
+   * lazy-load and the dereference. All three used to arrive as
+   * {@code Cannot invoke "com.arcadedb.database.Binary.rewind()" because "this.buffer" is null}, which names no
+   * record, no operation and no reason, or - on the read path, one frame deeper - as an NPE the serializer swallowed
+   * and logged as "Possible corrupted record", a diagnosis pointing at corruption that is not there.
+   * <p>
+   * The field is read ONCE and handed back for the caller to use: re-reading it after the null check is precisely what
+   * lets a concurrent {@link #reload()} null it in between and reintroduce the NPE this method exists to replace.
+   *
+   * @param operation what the caller was about to do, rendered as "Cannot &lt;operation&gt; record #x:y". Pass a
+   *                  constant - the message is only built on the failure path, so it costs nothing on the hot path
+   *
+   * @return the record content, never {@code null}
+   *
+   * @throws RecordNotFoundException if the record content is not available
+   */
+  protected Binary requireBuffer(final String operation) {
+    final Binary current = buffer;
+    if (current == null)
+      throw new RecordNotFoundException("Cannot " + operation + " record " + rid
+          + ": the record content is not available (deleted, filtered by an after-read event, or unloaded concurrently"
+          + " - a record instance must not be shared between threads)", rid);
+    return current;
   }
 
   /**

@@ -54,18 +54,18 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
   public ImmutableEdge(final Database graph, final DocumentType type, final RID rid, final Binary buffer) {
     super(graph, type, rid, buffer);
     if (buffer != null)
-      parseVertexPointers();
+      parseVertexPointers(buffer);
   }
 
   /**
    * Reads the fixed edge prefix - the record-type byte followed by the out and in vertex RIDs, both compressed, so the
    * prefix has no fixed length - and leaves the buffer on the first byte of the properties.
    */
-  private void parseVertexPointers() {
-    buffer.position(1); // SKIP RECORD TYPE
-    out = (RID) database.getSerializer().deserializeValue(database, buffer, BinaryTypes.TYPE_COMPRESSED_RID, null);
-    in = (RID) database.getSerializer().deserializeValue(database, buffer, BinaryTypes.TYPE_COMPRESSED_RID, null);
-    propertiesStartingPosition = buffer.position();
+  private void parseVertexPointers(final Binary content) {
+    content.position(1); // SKIP RECORD TYPE
+    out = (RID) database.getSerializer().deserializeValue(database, content, BinaryTypes.TYPE_COMPRESSED_RID, null);
+    in = (RID) database.getSerializer().deserializeValue(database, content, BinaryTypes.TYPE_COMPRESSED_RID, null);
+    propertiesStartingPosition = content.position();
   }
 
   public synchronized MutableEdge modify() {
@@ -88,11 +88,17 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
     }
 
     checkForLazyLoading();
-    if (buffer != null) {
-      buffer.rewind();
-      return new MutableEdge(database, (EdgeType) type, rid, buffer.copyOfContent());
+    final Binary content = buffer;
+    if (content != null) {
+      content.rewind();
+      return new MutableEdge(database, (EdgeType) type, rid, content.copyOfContent());
     }
-    return new MutableEdge(database, (EdgeType) type, rid, getOut(), getIn());
+    // AN EDGE BUILT OVER ITS TWO ENDPOINTS HAS NO RECORD CONTENT TO CARRY OVER, AND MODIFYING IT IS LEGITIMATE. BOTH
+    // ENDPOINTS MISSING INSTEAD MEANS THE CONTENT SHOULD HAVE BEEN THERE AND IS NOT, AND THIS BRANCH WOULD HAND BACK A
+    // MutableEdge WITH NO ENDPOINTS THAT SILENTLY DROPS THE EDGE'S PROPERTIES ON THE NEXT save()
+    if (out == null && in == null)
+      requireBuffer("modify");
+    return new MutableEdge(database, (EdgeType) type, rid, out, in);
   }
 
   @Override
@@ -186,10 +192,21 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
     return buffer.toString();
   }
 
+  /**
+   * Same shape as {@code ImmutableVertex.checkForLazyLoading()}: the buffer is read ONCE and the guard is explicit.
+   * It used to survive {@code super} filtering the record away - which leaves the buffer {@code null} and returns
+   * {@code false} - only by the short-circuit order of the {@code ||}, by accident rather than by design.
+   */
   @Override
   protected boolean checkForLazyLoading() {
-    if (rid != null && (super.checkForLazyLoading() || (buffer != null && buffer.position() == 1))) {
-      parseVertexPointers();
+    if (rid == null)
+      return false;
+    final boolean materialised = super.checkForLazyLoading();
+    final Binary content = buffer;
+    if (content == null)
+      return false;
+    if (materialised || content.position() == 1) {
+      parseVertexPointers(content);
       return true;
     }
     return false;
@@ -202,7 +219,7 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
    * the properties rather than merely at the wrong one.
    */
   @Override
-  protected void parseRecordPrefix() {
-    parseVertexPointers();
+  protected void parseRecordPrefix(final Binary content) {
+    parseVertexPointers(content);
   }
 }
