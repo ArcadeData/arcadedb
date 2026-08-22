@@ -143,7 +143,10 @@ class CypherOptionalMatchIdentityProjectionIssue6544Test {
   }
 
   /**
-   * A named path over a bound variable, on its own, still binds one path per input row.
+   * A named path over a bound variable, on its own, still binds one path per input row. This shape
+   * cannot regress the way the ones above can - with no other pattern part there is nothing to
+   * re-seat the chain head, and the pattern cannot fail to match - so it pins the shape, not the
+   * bug: it passes with and without the fix.
    */
   @Test
   void namedPathAloneOverBoundVariable() {
