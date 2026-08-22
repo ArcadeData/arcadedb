@@ -310,6 +310,30 @@ public class Issue6565SelectIndexCandidateLimitTest extends TestHelper {
   }
 
   @Test
+  void skipAndLimitOnPlainIndexedBetweenPagesCorrectly() {
+    // CODE REVIEW GAP: between HAS A DISTINCT TWO-BOUND CURSOR SHAPE (node.index.range(...) WITH BOTH BOUNDS SET)
+    // VS THE OPEN-ENDED gt/ge/lt/le RANGES ALREADY COVERED - WORTH ITS OWN CASE RATHER THAN RELYING ON THE SHARED
+    // soleExactLeaf()/filterWithIndexesFinalNode() CLASSIFICATION BEING CORRECT BY INSPECTION.
+    // n BETWEEN 400 AND 449 MATCHES 50 OF THE 1000 ROWS (n IN [400,449]).
+    final Select select = database.select().fromType("T").where().property("n").between().values(400, 449)//
+        .limit(20).skip(10);
+    select.compile();
+
+    final SelectExecutor executor = new SelectExecutor(select);
+    final MultiIndexCursor cursor = executor.lookForIndexes();
+    try {
+      assertThat(executor.indexCandidateLimit).isEqualTo(30);
+    } finally {
+      if (cursor != null)
+        cursor.close();
+    }
+
+    final long count = database.select().fromType("T").where().property("n").between().values(400, 449)//
+        .skip(10).limit(20).count();
+    assertThat(count).isEqualTo(20);
+  }
+
+  @Test
   void andUnderOrIsNeverTreatedAsExactlyIndexed() {
     // (a = 'x' AND b = 'set') OR n = 5: PRECEDENCE-DRIVEN Select.setLogic() BUILDS A NESTED and NODE UNDER THE or
     // ROOT (and HAS HIGHER PRECEDENCE THAN or). soleExactLeaf() MUST STAY CONSERVATIVE FOR A TREE SHAPED LIKE THIS

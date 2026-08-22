@@ -273,8 +273,12 @@ public class SelectExecutor {
    * downstream {@code filterOutRecords} dedup ever sees it. That can exhaust the cap on duplicates before enough
    * distinct matches are found - the same "cap spent before the filtering it needs to survive" defect this class
    * exists to fix, just reachable again through the "or is exact" path. An {@code in_op} leaf's own internal
-   * per-value cursors don't have this problem (each value is a distinct key on the same single-valued property, so
-   * their RID sets are disjoint by construction) - but that dedup-free merge happens once, inside
+   * per-value cursors don't have this problem <i>for the indexes this method can actually resolve</i>: each value is
+   * a distinct key on a single-valued property, so their RID sets are disjoint by construction - but that
+   * assumption only holds because a {@code BY ITEM}/{@code BY KEY}/{@code BY VALUE} index (one document can
+   * contribute multiple entries for the same list/map property, breaking disjointness the same way {@code or} does)
+   * is registered under a property-name key carrying that literal suffix, which the fluent {@code Select} API this
+   * class serves has no way to produce - see #6578 if that ever changes. That dedup-free merge happens once, inside
    * {@link #filterWithIndexesFinalNode}'s own {@code in_op} handling, not through a top-level {@code or}, so
    * {@code in_op} is unaffected by excluding {@code or} here. An {@code or} also always adds one {@link IndexInfo}
    * per leaf to {@link #usedIndexes}, so {@code usedIndexes.size() == 1} - the trivial-match precondition
