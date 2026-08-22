@@ -196,12 +196,23 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // True when this snapshot was loaded from a persisted CSR file rather than produced by a scan of the graph.
     // Exposed via isRestoredFromPersistedCsr() — mainly for tests and operational visibility.
     final boolean                        restoredFromDisk;
+    // The vertex/edge/property scope actually scanned into this snapshot. Usually identical to the enclosing
+    // view's own vertexTypes/edgeTypes/propertyFilter/edgePropertyFilter fields, EXCEPT when produced by the
+    // public two-arg build(vertexTypes, edgeTypes), which lets a caller rescan a NAMED view with a scope
+    // narrower than it was constructed with — those fields are final and never updated to match. Recorded here
+    // (rather than read from the view's fields) so persistCsrIfPossible() can write a certificate that describes
+    // what this snapshot actually covers, not what the view was originally configured for (#6583 review).
+    final String[]                       vertexTypes;
+    final String[]                       edgeTypes;
+    final String[]                       propertyFilter;
+    final String[]                       edgePropertyFilter;
 
     Snapshot(final Map<String, CSRAdjacencyIndex> csrPerType, final NodeIdMapping nodeMapping,
         final ColumnStore[] bucketColumns, final Map<String, ColumnStore> edgeColumnStores,
         final Map<String, int[]> bwdToFwd,
         final DeltaOverlay overlay, final long buildTimestamp, final long buildDurationMs,
-        final long asOfTransactionId, final boolean restoredFromDisk) {
+        final long asOfTransactionId, final boolean restoredFromDisk,
+        final String[] vertexTypes, final String[] edgeTypes, final String[] propertyFilter, final String[] edgePropertyFilter) {
       this.csrPerType = csrPerType;
       this.nodeMapping = nodeMapping;
       this.bucketColumns = bucketColumns;
@@ -212,11 +223,16 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       this.buildDurationMs = buildDurationMs;
       this.asOfTransactionId = asOfTransactionId;
       this.restoredFromDisk = restoredFromDisk;
+      this.vertexTypes = vertexTypes;
+      this.edgeTypes = edgeTypes;
+      this.propertyFilter = propertyFilter;
+      this.edgePropertyFilter = edgePropertyFilter;
     }
 
     Snapshot withOverlay(final DeltaOverlay newOverlay) {
       return new Snapshot(csrPerType, nodeMapping, bucketColumns, edgeColumnStores, bwdToFwd,
-          newOverlay, buildTimestamp, buildDurationMs, asOfTransactionId, restoredFromDisk);
+          newOverlay, buildTimestamp, buildDurationMs, asOfTransactionId, restoredFromDisk,
+          vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter);
     }
 
   }
@@ -323,7 +339,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       final long durationMs = System.currentTimeMillis() - buildStart;
 
       // Atomic swap — readers see all-or-nothing
-      this.snapshot = snapshotFromResult(result, durationMs, asOfTransactionId);
+      this.snapshot = snapshotFromResult(result, durationMs, asOfTransactionId, vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter);
       this.status = Status.READY;
       this.notifyAll();
       invalidateGraphStatisticsCache();
@@ -369,7 +385,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
             final long durationMs = System.currentTimeMillis() - buildStart;
 
             synchronized (GraphAnalyticalView.this) {
-              this.snapshot = snapshotFromResult(result, durationMs, asOfTransactionId);
+              this.snapshot = snapshotFromResult(result, durationMs, asOfTransactionId, vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter);
               this.status = Status.READY;
               GraphAnalyticalView.this.notifyAll();
               if (deltaCollector == null)
@@ -1446,10 +1462,13 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   // --- Private helpers ---
 
-  private static Snapshot snapshotFromResult(final CSRBuilder.CSRResult result, final long durationMs, final long asOfTransactionId) {
+  private static Snapshot snapshotFromResult(final CSRBuilder.CSRResult result, final long durationMs, final long asOfTransactionId,
+      final String[] builtVertexTypes, final String[] builtEdgeTypes, final String[] builtPropertyFilter,
+      final String[] builtEdgePropertyFilter) {
     return new Snapshot(result.getCsrPerType(), result.getMapping(), result.getBucketColumns(),
         result.getEdgeColumnStores(), result.getBwdToFwd(),
-        null, System.currentTimeMillis(), durationMs, asOfTransactionId, false);
+        null, System.currentTimeMillis(), durationMs, asOfTransactionId, false,
+        builtVertexTypes, builtEdgeTypes, builtPropertyFilter, builtEdgePropertyFilter);
   }
 
   /**
@@ -1495,7 +1514,13 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     if (!database.getConfiguration().getValueAsBoolean(GlobalConfiguration.GAV_PERSIST_CSR))
       return;
     try {
-      GraphAnalyticalViewCSRPersistence.save(database, name, vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter, snap);
+      // Written from snap's OWN recorded scope, not this.vertexTypes/edgeTypes/propertyFilter/edgePropertyFilter:
+      // the public two-arg build(vertexTypes, edgeTypes) can rescan a named view with a scope narrower than it
+      // was constructed with, and those fields (final, never updated) would then describe more than snap actually
+      // covers - the header must match what was actually scanned, or a later reopen could restore a snapshot that
+      // silently under-covers what the view claims to (#6583 review).
+      GraphAnalyticalViewCSRPersistence.save(database, name, snap.vertexTypes, snap.edgeTypes, snap.propertyFilter,
+          snap.edgePropertyFilter, snap);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "GraphAnalyticalView '%s': failed to persist CSR to disk", e, name);
     }
@@ -1593,7 +1618,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
               // that would be lost by an unconditional swap.
               synchronized (GraphAnalyticalView.this) {
                 if (updateMode == UpdateMode.ASYNCHRONOUS) {
-                  this.snapshot = snapshotFromResult(result, durationMs, asOfTransactionId);
+                  this.snapshot = snapshotFromResult(result, durationMs, asOfTransactionId, vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter);
                   this.status = Status.READY;
                 } else
                   LogManager.instance().log(this, Level.INFO,
@@ -1710,7 +1735,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
                   LogManager.instance().log(this, Level.INFO,
                       "GraphAnalyticalView '%s': compaction result discarded (delta buffer overflowed during rebuild)", name);
                 } else {
-                  Snapshot fresh = snapshotFromResult(result, durationMs, asOfTransactionId);
+                  Snapshot fresh = snapshotFromResult(result, durationMs, asOfTransactionId, vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter);
 
                   // Re-apply any deltas that arrived during the rebuild.
                   // These may not be in the fresh CSR (committed after the CSR scan of their bucket).

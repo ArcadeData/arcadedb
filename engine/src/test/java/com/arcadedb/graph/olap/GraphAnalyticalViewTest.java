@@ -2541,6 +2541,65 @@ class GraphAnalyticalViewTest extends TestHelper {
   }
 
   /**
+   * Regression for issue #6583 code review: {@code build(vertexTypes, edgeTypes)} lets a caller rescan a
+   * NAMED, registered view with a scope narrower than it was constructed with - the constructor's
+   * vertexTypes/edgeTypes fields are final and never updated to match. Persisting the resulting snapshot
+   * must record the scope actually scanned, not the view's original (wider) construction-time fields:
+   * otherwise the file's header would claim the view's full original coverage while the payload only
+   * covers the narrower rescan, and a reopen could restore that mismatch silently - READY, but serving
+   * less than what {@code coversVertexType()}/{@code coversEdgeType()} claim.
+   */
+  @Test
+  void rescanningWithANarrowerScopePersistsThatNarrowerScopeNotTheConstructionTimeOne() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createVertexType("Company");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.getSchema().createEdgeType("WORKS_AT");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").save();
+    final MutableVertex b = database.newVertex("Person").save();
+    final MutableVertex c = database.newVertex("Company").save();
+    a.newEdge("FOLLOWS", b);
+    a.newEdge("WORKS_AT", c);
+    database.commit();
+
+    // Constructed covering BOTH vertex types and BOTH edge types.
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("csr-scope-mismatch-test")
+        .withVertexTypes("Person", "Company")
+        .withEdgeTypes("FOLLOWS", "WORKS_AT")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
+        .build();
+    assertThat(gav.getNodeCount()).isEqualTo(3);
+    assertThat(gav.getEdgeCount()).isEqualTo(2);
+
+    // Directly rescan with a NARROWER scope than construction - bypasses the builder and the SQL REBUILD
+    // path, which is exactly why this needs its own coverage.
+    gav.build(new String[] { "Person" }, new String[] { "FOLLOWS" });
+    assertThat(gav.getNodeCount()).isEqualTo(2);
+    assertThat(gav.getEdgeCount()).isEqualTo(1);
+
+    reopenDatabase();
+
+    final GraphAnalyticalView restored = GraphAnalyticalViewRegistry.get(database, "csr-scope-mismatch-test");
+    assertThat(restored).isNotNull();
+    assertThat(restored.awaitReady(10, TimeUnit.SECONDS)).isTrue();
+
+    // The view's own construction-time scope (Person+Company, FOLLOWS+WORKS_AT) no longer matches what
+    // was actually persisted (Person only, FOLLOWS only), so the certificate/definition check in load()
+    // must reject the file and fall back to a full rebuild under the view's REAL, full scope - not restore
+    // the narrower snapshot while claiming full coverage.
+    assertThat(restored.isRestoredFromPersistedCsr())
+        .as("a persisted narrower-scope snapshot must never be silently served as the view's full construction-time scope")
+        .isFalse();
+    assertThat(restored.getNodeCount()).isEqualTo(3);
+    assertThat(restored.getEdgeCount()).isEqualTo(2);
+
+    restored.drop();
+  }
+
+  /**
    * Regression for issue #6583 code review: a GAV name is a schema-privileged user's choice of SQL
    * identifier, not validated against path separators anywhere upstream, so {@code fileFor()} must not
    * let a name like {@code ../../../tmp/evil} escape the database directory - which would otherwise give
