@@ -19,6 +19,7 @@
 package com.arcadedb.graph;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.NeedRetryException;
@@ -144,6 +145,33 @@ class Issue6586MissingVertexDiagnosisTest extends TestHelper {
     }, false, 3)).isInstanceOf(VertexNotFoundException.class);
 
     assertThat(attempts.get()).as("a failure that can never succeed must not be retried").isEqualTo(1);
+  }
+
+  /**
+   * {@code force} is the documented escape hatch from every other refusal this delete can raise - a list whose
+   * chunks cannot be read, a body that will not decode - and it is precisely the flag a later reader would assume
+   * should suppress this one too. It must not: a record that is not there cannot be deleted by insisting, and
+   * succeeding quietly would hide the reference that outlived it. Pinned so the intent survives that assumption.
+   */
+  @Test
+  void forceDoesNotSuppressAMissingVertexRecord() {
+    createDanglingReference();
+
+    final GraphEngine graphEngine = ((DatabaseInternal) database).getGraphEngine();
+
+    final Throwable thrown = catchThrowable(() -> database.transaction(() -> graphEngine.deleteVertex(
+        (VertexInternal) database.lookupByRID(targetRID, false).asVertex(), true), false, 1));
+
+    assertThat(thrown).as("force must not turn a record that is gone into a deleted one: %s", thrown)
+        .isInstanceOf(VertexNotFoundException.class);
+    assertThat(thrown).isNotInstanceOf(NeedRetryException.class);
+    assertThat(((RecordNotFoundException) thrown).getRID()).isEqualTo(targetRID);
+
+    // And the tripwire for that assertion: the SAME call on a vertex that does exist goes through, so the failure
+    // above is about the missing record rather than about force being unusable from here.
+    database.transaction(
+        () -> graphEngine.deleteVertex((VertexInternal) database.lookupByRID(srcRID, true).asVertex(), true));
+    database.transaction(() -> assertThat(database.existsRecord(srcRID)).isFalse());
   }
 
   /** The same answer whichever handle the caller holds: a LAZY one (#6572's path) and a materialised one agree. */

@@ -3849,6 +3849,12 @@ keeps a conflict only for a record other than the vertex (a continuation chunk a
 a vertex that has vanished gets the same non-retryable answer as everywhere else, and the `ClassCastException` arm
 next to it no longer asserts a slot reuse this frame cannot establish.
 
+That last part is worth spelling out for anyone whose retry logic pattern-matches on the exception type: a
+*genuinely* concurrent delete - another transaction removing the vertex between the probe and that re-read, which is
+the one case the old message actually described - is now reported as `VertexNotFoundException` too, not as a
+retryable conflict. The outcome is unchanged, since a retry would only rediscover the absence at the probe on the
+next attempt and fail there; what changes is that it is reported once instead of after the budget is spent.
+
 The second is the append. `GraphEngine.getOrCreateEdgeList` read the head RID *outside* its `try`, so on a vertex
 whose record is gone the lazy load escaped raw as `RecordNotFoundException: Record #4:0 not found`. The verdict was
 right - it was never retryable - but nothing else was there: it did not say the missing record is a vertex, that it
