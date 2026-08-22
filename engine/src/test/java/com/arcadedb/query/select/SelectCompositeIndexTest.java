@@ -85,6 +85,24 @@ public class SelectCompositeIndexTest extends TestHelper {
   }
 
   @Test
+  void compositeIndexPrefixMatchWithParameterBinding() {
+    // matchCompositeIndex() HAS A DEDICATED SelectParameterValue BRANCH FOR THE MATCHED PREFIX'S KEYS, MIRRORING THE
+    // PRE-EXISTING SINGLE-PROPERTY PATH - EXERCISE IT WITH .parameter(...) RATHER THAN .value(...), THE WAY
+    // SelectIndexExecutionTest DOES FOR THAT PATH
+    final SelectCompiled select = database.select().fromType("Supplier")//
+        .where().property("key1").eq().parameter("k1")//
+        .and().property("key2").eq().parameter("k2").compile();
+
+    final List<Vertex> list = select.parameter("k1", "a").parameter("k2", "b").vertices().toList();
+
+    assertThat(list).hasSize(GROUP_SIZE);
+    list.forEach(v -> {
+      assertThat(v.getString("key1")).isEqualTo("a");
+      assertThat(v.getString("key2")).isEqualTo("b");
+    });
+  }
+
+  @Test
   void compositeIndexPrefixMatchWithOrderByDescLimitOne() {
     // EXACT SCENARIO FROM ISSUE #6592: EQUALITY ON THE LEADING TWO PROPERTIES OF THE COMPOSITE INDEX, ORDER BY THE
     // TRAILING PROPERTY DESCENDING, LIMIT 1 - MUST RETURN THE MOST RECENT MATCH WITHOUT A FULL TYPE SCAN NOR SORT
