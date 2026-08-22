@@ -1121,11 +1121,7 @@ public class GraphEngine {
     // materialised one because materialising it was itself a read. The one thing that changes is WHEN a caller
     // lacking it is told, which is now before the walk rather than during it.
     final RID vertexRID = mostUpdatedVertex.getIdentity();
-    final Bucket vertexBucket = database.getSchema().getBucketByIdIfExists(vertexRID.getBucketId());
-    if (vertexBucket == null || !vertexBucket.existsRecord(vertexRID))
-      // A bucket that no longer exists means the same thing to the caller as a slot that no longer holds a record
-      // (#4501): the RID names nothing. Answering it here also keeps getBucketById's SchemaException - a message
-      // about internal file ids - off a path whose whole subject is a reference that outlived its target.
+    if (!vertexBucketOf(vertexRID).existsRecord(vertexRID))
       throw missingVertexOnDelete(vertexRID, notFoundOnProbe(vertexRID));
 
     // The heads this delete is about to walk, kept for checkEdgeListHeadsUnchanged below.
@@ -1161,12 +1157,8 @@ public class GraphEngine {
     // and the probe a few lines up has already ruled that out for a single-threaded caller. The RID is still
     // compared rather than assumed, since the day that stops holding is exactly the day a silent mis-attribution
     // would be hardest to spot.
-    final Bucket bucketAtDelete = database.getSchema().getBucketByIdIfExists(vertexRID.getBucketId());
-    if (bucketAtDelete == null)
-      throw missingVertexOnDelete(vertexRID, notFoundOnProbe(vertexRID));
-
     try {
-      bucketAtDelete.deleteRecord(vertexRID, force);
+      vertexBucketOf(vertexRID).deleteRecord(vertexRID, force);
     } catch (final RecordNotFoundException e) {
       if (!vertexRID.equals(e.getRID()))
         throw e;
@@ -1284,6 +1276,26 @@ public class GraphEngine {
         "Vertex " + vertexRID + " does not exist, so its " + direction + " edge list cannot be modified: it was "
             + "reached through a reference to a record that is gone (a stale edge entry, or a RID held past the "
             + "delete). Retrying cannot make it exist: " + missingVertexRepairAdvice(), vertexRID, cause);
+  }
+
+  /**
+   * The bucket holding {@code vertexRID}, or the same failure a missing SLOT produces when the whole BUCKET is
+   * gone (#6586).
+   * <p>
+   * {@code getBucketByIdIfExists} and not {@code getBucketById}: a RID whose bucket has been dropped names nothing,
+   * exactly as a RID whose slot is empty does (#4501), and that is what the caller has to be told. The
+   * {@code SchemaException} the strict form raises talks about an internal file id instead, on a path whose whole
+   * subject is a reference that outlived its target.
+   * <p>
+   * Called TWICE inside {@link #deleteVertex} rather than resolved once and carried, which is the point of it being
+   * a method: the edge walk between the two can be long on a super-node, so the delete resolves the bucket again
+   * instead of writing through a reference taken before that walk began.
+   */
+  private Bucket vertexBucketOf(final RID vertexRID) {
+    final Bucket bucket = database.getSchema().getBucketByIdIfExists(vertexRID.getBucketId());
+    if (bucket == null)
+      throw missingVertexOnDelete(vertexRID, notFoundOnProbe(vertexRID));
+    return bucket;
   }
 
   /**
