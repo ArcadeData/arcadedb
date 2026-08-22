@@ -215,20 +215,30 @@ public class SelectExecutor {
     if (select.fromType != null && select.rootTreeElement != null) {
       final List<IndexCursor> cursors = new ArrayList<>();
 
-      // FIND AVAILABLE INDEXES AND ASSIGN node.index ON EVERY INDEXED LEAF: filterWithIndexesFinalNode() RELIES ON THAT
-      // SIDE EFFECT TO KNOW WHICH LEAVES CAN BECOME A CURSOR
-      isTheNodeFullyIndexed(select.rootTreeElement);
+      // #6592: A COMPOSITE (MULTI-PROPERTY) INDEX IS REGISTERED UNDER ITS FULL PROPERTY LIST (SEE
+      // LocalDocumentType.indexesByProperties), NOT UNDER ANY SUBSET OF IT - SO A PLAIN AND-CONJUNCTION OF EQUALITY
+      // LEAVES THAT ONLY COVERS THE LEADING PROPERTIES OF SUCH AN INDEX CAN NEVER BE FOUND BY THE PER-LEAF,
+      // SINGLE-PROPERTY LOOKUP BELOW (isTheNodeFullyIndexed()). TRY A PREFIX MATCH AGAINST EVERY COMPOSITE INDEX ON
+      // THE TYPE FIRST; ONLY FALL BACK TO THE SINGLE-PROPERTY PATH WHEN NO SUCH INDEX COVERS ANY LEADING PROPERTY.
+      final boolean compositeIndexUsed = matchCompositeIndex(cursors);
 
-      // #6565: A CANDIDATE CAP IS SAFE ONLY WHEN THE INDEX SCAN EXACTLY REPRODUCES THE WHERE-TREE'S RESULT SET AND
-      // THE ORDER BY (IF ANY) IS ALREADY SATISFIED BY IT - evaluateWhere(), skip AND fetchResultInCaseOfOrderBy()'s
-      // FULL-DRAIN SORT ALL REDUCE THE STREAM FURTHER OTHERWISE, SO THE SCAN MUST RUN UNCAPPED TO SURVIVE THAT.
-      // MUST RUN BEFORE filterWithIndexes() BELOW, SINCE soleExactLeaf() READS node.index BEFORE
-      // filterWithIndexesFinalNode() PRUNES AN 'and' SIBLING'S - HARMLESS TODAY ONLY BECAUSE 'and' IS ALREADY
-      // UNCONDITIONALLY DISQUALIFIED
-      final SelectTreeNode exactLeaf = soleExactLeaf(select.rootTreeElement);
-      indexCandidateLimit = exactLeaf != null && isOrderBySafeForCap(exactLeaf) ? computeExactCandidateLimit() : -1;
+      if (!compositeIndexUsed) {
+        // FIND AVAILABLE INDEXES AND ASSIGN node.index ON EVERY INDEXED LEAF: filterWithIndexesFinalNode() RELIES ON THAT
+        // SIDE EFFECT TO KNOW WHICH LEAVES CAN BECOME A CURSOR
+        isTheNodeFullyIndexed(select.rootTreeElement);
 
-      filterWithIndexes(select.rootTreeElement, cursors);
+        // #6565: A CANDIDATE CAP IS SAFE ONLY WHEN THE INDEX SCAN EXACTLY REPRODUCES THE WHERE-TREE'S RESULT SET AND
+        // THE ORDER BY (IF ANY) IS ALREADY SATISFIED BY IT - evaluateWhere(), skip AND fetchResultInCaseOfOrderBy()'s
+        // FULL-DRAIN SORT ALL REDUCE THE STREAM FURTHER OTHERWISE, SO THE SCAN MUST RUN UNCAPPED TO SURVIVE THAT.
+        // MUST RUN BEFORE filterWithIndexes() BELOW, SINCE soleExactLeaf() READS node.index BEFORE
+        // filterWithIndexesFinalNode() PRUNES AN 'and' SIBLING'S - HARMLESS TODAY ONLY BECAUSE 'and' IS ALREADY
+        // UNCONDITIONALLY DISQUALIFIED
+        final SelectTreeNode exactLeaf = soleExactLeaf(select.rootTreeElement);
+        indexCandidateLimit = exactLeaf != null && isOrderBySafeForCap(exactLeaf) ? computeExactCandidateLimit() : -1;
+
+        filterWithIndexes(select.rootTreeElement, cursors);
+      }
+
       if (!cursors.isEmpty())
         return new MultiIndexCursor(cursors, indexCandidateLimit, true);
 
@@ -238,6 +248,145 @@ public class SelectExecutor {
       indexCandidateLimit = -1;
     }
     return null;
+  }
+
+  /**
+   * Prefix-matches the where-tree against every composite index on {@link Select#fromType}: a plain AND-conjunction
+   * of equality leaves (no {@code or}/{@code not} anywhere - see {@link #isPureAndConjunction}) covering the leading
+   * N properties of an index registered on M &gt;= N properties can be answered with a single partial-key cursor,
+   * exactly like the SQL executor's {@code IndexSearchDescriptor} already does for plain {@code SELECT} statements
+   * (see {@code SelectExecutionPlanner.buildIndexSearchDescriptor}). Single-property indexes are left to the existing
+   * {@link #isTheNodeFullyIndexed}/{@link #filterWithIndexes} path, which already handles them (including the
+   * {@code or} and mixed-operator cases this method deliberately does not attempt).
+   * <p>
+   * When the trailing (N+1-th) index property is also the query's sole {@code ORDER BY} column, the cursor is built
+   * as a range scan in the requested direction instead of a plain equality lookup, so the index itself already
+   * returns the rows in the requested order - mirroring the SQL executor's {@code fullySorted} elision and letting
+   * {@link SelectIterator#fetchResultInCaseOfOrderBy} skip its full materialize-and-sort fallback.
+   *
+   * @return {@code true} when a composite-index cursor was built and appended to {@code cursors}
+   */
+  private boolean matchCompositeIndex(final List<IndexCursor> cursors) {
+    if (!isPureAndConjunction(select.rootTreeElement))
+      return false;
+
+    final Map<String, SelectTreeNode> andEqLeaves = new LinkedHashMap<>();
+    collectAndEqLeaves(select.rootTreeElement, andEqLeaves);
+    if (andEqLeaves.isEmpty())
+      return false;
+
+    TypeIndex bestIndex = null;
+    int bestPrefixLength = 0;
+
+    for (final TypeIndex candidate : select.fromType.getAllIndexes(true)) {
+      final List<String> properties = candidate.getPropertyNames();
+      if (properties.size() < 2)
+        // SINGLE-PROPERTY INDEXES ARE HANDLED BY THE EXISTING isTheNodeFullyIndexed()/filterWithIndexes() PATH
+        continue;
+
+      int prefixLength = 0;
+      while (prefixLength < properties.size() && andEqLeaves.containsKey(properties.get(prefixLength)))
+        prefixLength++;
+
+      if (prefixLength == 0)
+        continue;
+
+      if (prefixLength > bestPrefixLength || (prefixLength == bestPrefixLength && !bestIndex.isUnique() && candidate.isUnique())) {
+        bestIndex = candidate;
+        bestPrefixLength = prefixLength;
+      }
+    }
+
+    if (bestIndex == null)
+      return false;
+
+    final List<String> indexProperties = bestIndex.getPropertyNames();
+    final Object[] keys = new Object[bestPrefixLength];
+    for (int i = 0; i < bestPrefixLength; i++) {
+      final SelectTreeNode leaf = andEqLeaves.get(indexProperties.get(i));
+      keys[i] = leaf.right instanceof SelectParameterValue value ? value.eval(null) : leaf.right;
+    }
+
+    final String trailingProperty = bestPrefixLength < indexProperties.size() ? indexProperties.get(bestPrefixLength) : null;
+    final boolean orderByElided = select.orderBy != null && select.orderBy.size() == 1 && trailingProperty != null
+        && select.orderBy.getFirst().getFirst().equals(trailingProperty);
+
+    // A KEY SHORTER THAN THE INDEX'S FULL ARITY IS A PREFIX, NOT AN EXACT KEY: get() PERFORMS A SINGLE POSITIONAL
+    // LOOKUP AND ONLY RETURNS EVERY MATCH WHEN THE KEY'S ARITY MATCHES THE INDEX'S OWN EXACTLY, SO A PREFIX MUST GO
+    // THROUGH range() WITH EQUAL (INCLUSIVE) BEGIN/END BOUNDS INSTEAD - SEE LSMTreeIndexCompacted's "PARTIAL KEY
+    // COMPARISON...MATCHES BY PREFIX" (PURPOSE=2). trailingProperty == null IFF bestPrefixLength == indexProperties.size(),
+    // WHICH IS EXACTLY WHEN orderByElided CAN NEVER BE true EITHER (NO TRAILING PROPERTY LEFT TO ORDER BY).
+    final boolean fullKeyMatch = trailingProperty == null;
+    final boolean ascendingOrder = orderByElided ? select.orderBy.getFirst().getSecond() : true;
+    final IndexCursor cursor = fullKeyMatch ? bestIndex.get(keys) : bestIndex.range(ascendingOrder, keys, true, keys, true);
+
+    if (cursor == null)
+      return false;
+
+    if (usedIndexes == null)
+      usedIndexes = new ArrayList<>();
+    // fetchResultInCaseOfOrderBy()'S TRIVIAL-MATCH CHECK KEYS OFF usedIndexes.getFirst().property/order: RECORD THE
+    // TRAILING PROPERTY (NOT THE LAST *MATCHED* ONE) WHEN THE ORDER BY WAS ELIDED, SO IT RECOGNIZES THE RANGE SCAN AS
+    // ALREADY SATISFYING THE ORDER BY AND SKIPS THE FULL MATERIALIZE-AND-SORT FALLBACK.
+    usedIndexes.add(new IndexInfo(bestIndex, orderByElided ? trailingProperty : indexProperties.get(bestPrefixLength - 1), ascendingOrder));
+    cursors.add(cursor);
+
+    // THE CANDIDATE CAP (SEE #6565's computeExactCandidateLimit()) IS SAFE ONLY WHEN THIS CURSOR EXACTLY REPRODUCES
+    // THE WHOLE WHERE-TREE'S RESULT SET (EVERY LEAF WAS CONSUMED BY THE MATCHED PREFIX, NOTHING LEFT FOR
+    // evaluateWhere() TO DISCARD) AND THE ORDER BY, IF ANY, IS ALREADY SATISFIED BY THE CURSOR ITSELF - OTHERWISE
+    // fetchResultInCaseOfOrderBy()'S FULL-DRAIN SORT NEEDS EVERY MATCH, NOT JUST skip + limit OF THEM.
+    final boolean exactMatch = bestPrefixLength == countAndLeaves(select.rootTreeElement);
+    indexCandidateLimit = exactMatch && (select.orderBy == null || orderByElided) ? computeExactCandidateLimit() : -1;
+
+    return true;
+  }
+
+  /**
+   * True when {@code node} and everything under it is connected purely by {@code and} (through the synthetic
+   * {@code run} wrapper {@link Select#compile()} adds around a single bare leaf - see {@link #soleExactLeaf}) with
+   * no {@code or}/{@code not} anywhere. Only such a tree can be safely resolved through one composite-index prefix
+   * match: an {@code or}/{@code not} would need the same per-branch reasoning {@link #isTheNodeFullyIndexed} already
+   * does for the single-property case, which this method deliberately leaves untouched.
+   */
+  private boolean isPureAndConjunction(final SelectTreeNode node) {
+    if (!(node.left instanceof SelectTreeNode))
+      return true;
+    if (node.operator == SelectOperator.run)
+      return isPureAndConjunction((SelectTreeNode) node.left);
+    if (node.operator != SelectOperator.and)
+      return false;
+    return isPureAndConjunction((SelectTreeNode) node.left) && (node.right == null || isPureAndConjunction((SelectTreeNode) node.right));
+  }
+
+  /**
+   * Collects every {@code eq} leaf of a {@link #isPureAndConjunction} tree, keyed by property name. A leaf using any
+   * other operator (a range, an {@code in_op}, ...) is simply left out of the map: a composite-index prefix match
+   * only needs the leading properties bound by equality, and every leaf stays in the tree regardless for the final
+   * {@link #evaluateWhere} pass.
+   */
+  private void collectAndEqLeaves(final SelectTreeNode node, final Map<String, SelectTreeNode> target) {
+    if (!(node.left instanceof SelectTreeNode)) {
+      if (node.operator == SelectOperator.eq && node.left instanceof SelectPropertyValue leftProperty
+          && !(node.right instanceof SelectPropertyValue))
+        target.putIfAbsent(leftProperty.propertyName, node);
+      return;
+    }
+    collectAndEqLeaves((SelectTreeNode) node.left, target);
+    if (node.right != null)
+      collectAndEqLeaves((SelectTreeNode) node.right, target);
+  }
+
+  /**
+   * Counts every leaf (regardless of operator) of a {@link #isPureAndConjunction} tree - used by
+   * {@link #matchCompositeIndex} to tell whether the matched prefix consumed the whole where-tree.
+   */
+  private int countAndLeaves(final SelectTreeNode node) {
+    if (!(node.left instanceof SelectTreeNode))
+      return 1;
+    int count = countAndLeaves((SelectTreeNode) node.left);
+    if (node.right != null)
+      count += countAndLeaves((SelectTreeNode) node.right);
+    return count;
   }
 
   /**
