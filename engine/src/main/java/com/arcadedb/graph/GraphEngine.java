@@ -1271,8 +1271,7 @@ public class GraphEngine {
    * the point - a caller sweeping a graph catches ONE type whether it met the missing vertex while reading a list,
    * while extending one, or while dropping the vertex outright.
    *
-   * @param cause the not-found this diagnosis wraps - either the one the bucket raised, or the one
-   *              {@link #notFoundOnProbe} gives the slot probe's answer so the chain reads the same either way
+   * @param cause the not-found this diagnosis wraps: the bucket's own, or {@link #notFoundOnProbe}'s
    */
   private static VertexNotFoundException missingVertexOnDelete(final RID vertexRID, final Exception cause) {
     return new VertexNotFoundException(
