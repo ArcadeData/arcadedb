@@ -2126,9 +2126,13 @@ public enum GlobalConfiguration {
   GAV_RESTORE_AWAIT_TIMEOUT("arcadedb.gavRestoreAwaitTimeout", SCOPE.DATABASE,
       """
       Milliseconds database open() blocks waiting for Graph Analytical Views (GAV/CSR) restored from persisted \
-      definitions to reach READY before returning. 0 (default) does not wait: the async rebuild is still triggered, \
-      but open() returns immediately and queries issued right after it run unaccelerated until the rebuild completes. \
-      A positive value trades a slower open() for the restored view being usable by the query that triggered the reopen""",
+      definitions to reach READY before returning. 0 (default) does not wait: when no persisted CSR plausibly \
+      applies, the full rebuild is still triggered immediately in the background, but open() returns before it \
+      completes and queries issued right after run unaccelerated until it does; when a persisted CSR does plausibly \
+      apply (see arcadedb.gavPersistCsr), nothing is even started at open() time as of v26.9.1 - it is deferred to \
+      whichever query touches the view first, so the fast path costs nothing for a session that never queries it. \
+      A positive value here forces the wait either way, trading a slower open() for the restored/rebuilt view being \
+      usable by the query that triggered the reopen""",
       Long.class, 0L),
 
   GAV_PERSIST_CSR("arcadedb.gavPersistCsr", SCOPE.DATABASE,
