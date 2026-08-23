@@ -222,4 +222,43 @@ public class OpenCypherTrailDetachDeleteIssue6491Test {
       assertThat(remainingLoops.hasNext()).isFalse();
     }
   }
+
+  /**
+   * Same disconnected-pattern shape as
+   * {@link #detachDeleteOfSelfLoopCrossJoinedWithUnrelatedPatternDeletesOnceAndReturnsAllRows()}, but
+   * spelled as two separate {@code MATCH} keywords instead of one {@code MATCH} with a comma. A code
+   * review on this fix pointed out that {@code MatchClause.hasDisconnectedPathPatterns()} originally
+   * only unioned node variables within a single MATCH clause, so this exact shape - which the execution
+   * plan builders chain onto the same step chain as the comma form (see
+   * {@code CypherExecutionPlan.matchClausesHaveDisconnectedPatterns()}) - went undetected. Kept as its
+   * own test (rather than folded into the one above) so a future regression in the cross-clause
+   * overload fails here specifically, pointing straight at the two-clause spelling.
+   */
+  @Test
+  void detachDeleteOfSelfLoopSpelledAsTwoSeparateMatchClausesDeletesOnceAndReturnsAllRows() {
+    database = new DatabaseFactory("./target/databases/testopencypher-issue6491-twomatch").create();
+
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Loop {tag: null})");
+      database.command("opencypher", "CREATE (:Other {id: 1})");
+      database.command("opencypher", "CREATE (:Other {id: 2})");
+      database.command("opencypher", "CREATE (:Other {id: 3})");
+      database.command("opencypher", "MATCH (n:Loop) CREATE (n)-[:SELF]->(n)");
+    });
+
+    final List<Object> ids = new ArrayList<>();
+    database.transaction(() -> {
+      try (ResultSet result = database.command("opencypher",
+          "MATCH (n:Loop)<-[:SELF]-(n) MATCH (o:Other) WHERE n.tag IS NULL DETACH DELETE n RETURN o.id AS id")) {
+        while (result.hasNext())
+          ids.add(result.next().getProperty("id"));
+      }
+    });
+
+    assertThat(ids).containsExactlyInAnyOrder(1, 2, 3);
+
+    try (ResultSet remainingLoops = database.query("opencypher", "MATCH (n:Loop) RETURN n")) {
+      assertThat(remainingLoops.hasNext()).isFalse();
+    }
+  }
 }

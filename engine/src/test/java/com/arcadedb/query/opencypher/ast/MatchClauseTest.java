@@ -73,4 +73,39 @@ public class MatchClauseTest {
     final MatchClause match = new MatchClause(List.of(relationship("a", "b"), relationship("n", "n")), false);
     assertThat(match.hasDisconnectedPathPatterns()).isTrue();
   }
+
+  @Test
+  void threePatternsTransitivelyMergeIntoOneConnectedComponent() {
+    // MATCH (a)-->(b), (c)-->(d), (b)-->(c): the third pattern bridges the first two into one component
+    final MatchClause match = new MatchClause(
+        List.of(relationship("a", "b"), relationship("c", "d"), relationship("b", "c")), false);
+    assertThat(match.hasDisconnectedPathPatterns()).isFalse();
+  }
+
+  @Test
+  void sameHazardSpelledAsTwoSeparateMatchClausesIsDetectedAcrossClauses() {
+    // MATCH (n)<-[]-(n) MATCH (o) - same disconnected/cross-join shape as the single-clause comma
+    // form, just spelled as two consecutive MATCH keywords. Checking each clause in isolation misses
+    // it (each has exactly one path pattern), so the cross-clause overload must catch it.
+    final MatchClause selfLoopClause = new MatchClause(List.of(relationship("n", "n")), false);
+    final MatchClause otherClause = new MatchClause(List.of(singleNode("o")), false);
+
+    assertThat(selfLoopClause.hasDisconnectedPathPatterns()).isFalse();
+    assertThat(otherClause.hasDisconnectedPathPatterns()).isFalse();
+    assertThat(MatchClause.hasDisconnectedPathPatterns(List.of(selfLoopClause, otherClause))).isTrue();
+  }
+
+  @Test
+  void connectedAcrossTwoMatchClausesIsNotDisconnected() {
+    // MATCH (a)-->(b) MATCH (b)-->(c): the second clause's pattern shares "b" with the first
+    final MatchClause first = new MatchClause(List.of(relationship("a", "b")), false);
+    final MatchClause second = new MatchClause(List.of(relationship("b", "c")), false);
+    assertThat(MatchClause.hasDisconnectedPathPatterns(List.of(first, second))).isFalse();
+  }
+
+  @Test
+  void nullOrEmptyMatchClauseListIsNotDisconnected() {
+    assertThat(MatchClause.hasDisconnectedPathPatterns(null)).isFalse();
+    assertThat(MatchClause.hasDisconnectedPathPatterns(List.of())).isFalse();
+  }
 }

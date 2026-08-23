@@ -148,6 +148,34 @@ public class MatchClause {
    * @return true when the path patterns form more than one connected component by shared node variable
    */
   public boolean hasDisconnectedPathPatterns() {
+    return computeDisconnected(pathPatterns);
+  }
+
+  /**
+   * Same hazard as {@link #hasDisconnectedPathPatterns()}, but checked across every path pattern of
+   * every given MATCH clause combined, not one clause at a time. A disconnected/cross-join shape can be
+   * spelled either as comma-separated patterns within one {@code MATCH} or as separate, consecutive
+   * {@code MATCH} keywords (e.g. {@code MATCH (n)<-[]-(n) MATCH (o:Other) ...}); the execution plan
+   * builders chain path patterns from consecutive MATCH clauses onto the same step chain exactly like
+   * comma-separated ones (see {@code CypherExecutionPlan}'s MATCH-clause loop), so the two spellings
+   * carry the identical re-enumeration hazard and must be judged together, not clause by clause -
+   * checking each {@link MatchClause} in isolation misses a disconnection that only appears once their
+   * patterns are combined.
+   *
+   * @param matchClauses every MATCH clause of the statement (or of the segment feeding a DELETE)
+   * @return true when the combined path patterns form more than one connected component by shared node
+   *         variable
+   */
+  public static boolean hasDisconnectedPathPatterns(final List<MatchClause> matchClauses) {
+    if (matchClauses == null)
+      return false;
+    final List<PathPattern> allPathPatterns = new ArrayList<>();
+    for (final MatchClause match : matchClauses)
+      allPathPatterns.addAll(match.pathPatterns);
+    return computeDisconnected(allPathPatterns);
+  }
+
+  private static boolean computeDisconnected(final List<PathPattern> pathPatterns) {
     if (pathPatterns.size() < 2)
       return false;
 
