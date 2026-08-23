@@ -273,6 +273,10 @@ public class ForeachStep extends AbstractExecutionStep {
         final SetClause setClause = clauseEntry.getTypedClause();
         return new SetStep(setClause, context, functionFactory);
       case DELETE:
+        // Non-eager DeleteStep is safe here: "tail" (the chain's source, above) feeds exactly one row
+        // per FOREACH iteration - a literal iterationRow, never a MATCH's row stream - so there is no
+        // second row that could re-enumerate and dereference an entity this DELETE already removed
+        // (the hazard MatchClause#hasDisconnectedPathPatterns() guards against; see issue #6491).
         final DeleteClause deleteClause = clauseEntry.getTypedClause();
         return new DeleteStep(deleteClause, context);
       case MERGE:

@@ -144,9 +144,12 @@ public class DeleteStep extends AbstractExecutionStep {
             // (e.g. a self-loop cross-joined with an unrelated pattern) can bind the very same vertex or
             // edge from more than one output row, and deleting it while a later row is still being
             // produced makes that row dereference an already-removed record (issue #6491).
+            final long eagerBegin = context.isProfiling() ? System.nanoTime() : 0;
             materializedInput = new ArrayList<>();
             while (prevResults.hasNext())
               materializedInput.add(prevResults.next());
+            if (context.isProfiling())
+              cost += System.nanoTime() - eagerBegin;
           }
         }
 
