@@ -3136,6 +3136,105 @@ public class CypherExecutionPlan {
   }
 
   /**
+   * Variable names referenced by a WITH clause's non-aggregated (grouping-key) items, keyed by
+   * plain variable name where the item is a bare variable, or by its full expression text
+   * otherwise - matching how {@code boundVariables} containment is checked elsewhere for the
+   * same items.
+   */
+  private static Set<String> groupingKeyVariableNames(final List<ReturnClause.ReturnItem> groupingKeys) {
+    final Set<String> names = new HashSet<>();
+    for (final ReturnClause.ReturnItem key : groupingKeys)
+      names.add(key.getExpression() instanceof VariableExpression
+          ? ((VariableExpression) key.getExpression()).getVariableName()
+          : key.getExpression().getText());
+    return names;
+  }
+
+  /**
+   * Variables a single clause binds into scope, for the sole purpose of judging whether it can
+   * fan a single input row out into several. Returns {@code null} when the clause's effect on
+   * row cardinality cannot be proven safe, which the caller treats as "assume it can fan out".
+   */
+  private static Set<String> variablesIntroducedByClause(final ClauseEntry entry) {
+    switch (entry.getType()) {
+    case UNWIND:
+      final UnwindClause unwind = entry.getTypedClause();
+      return Collections.singleton(unwind.getVariable());
+
+    case LOAD_CSV:
+      final LoadCSVClause loadCsv = entry.getTypedClause();
+      return Collections.singleton(loadCsv.getVariable());
+
+    case MATCH:
+      final MatchClause match = entry.getTypedClause();
+      final Set<String> vars = new HashSet<>();
+      if (match.hasPathPatterns()) {
+        for (final PathPattern pattern : match.getPathPatterns()) {
+          for (final NodePattern node : pattern.getNodes()) {
+            // An anonymous node has no name to check against the grouping keys, so its
+            // multiplicity can never be ruled out - bail rather than silently ignore it.
+            if (node.getVariable() == null)
+              return null;
+            vars.add(node.getVariable());
+          }
+          for (final RelationshipPattern rel : pattern.getRelationships()) {
+            // Same reasoning for an anonymous relationship, plus: a variable-length relationship
+            // (named or not) can match several distinct paths between the same two endpoints,
+            // fanning a row out on its own even when every variable is otherwise accounted for.
+            if (rel.getVariable() == null || rel.isVariableLength())
+              return null;
+            vars.add(rel.getVariable());
+          }
+          if (pattern.hasPathVariable())
+            vars.add(pattern.getPathVariable());
+        }
+      }
+      return vars;
+
+    case WITH:
+    case CREATE:
+    case SET:
+    case REMOVE:
+    case DELETE:
+    case FOREACH:
+      // These clauses project, mutate or (for WITH) possibly aggregate the existing row
+      // stream - none of them can turn one input row into several, so they carry no fan-out
+      // risk regardless of which variables they touch.
+      return Collections.emptySet();
+
+    default:
+      // MERGE can return one row PER EXISTING MATCH when its pattern matches more than one
+      // element (see MergeStep, "MERGE returns ALL matching elements"), so it is a fan-out
+      // source like any MATCH and is deliberately not in the safe list above. CALL / SUBQUERY /
+      // FINISH and any future clause type are equally unanalyzed here: assume the worst rather
+      // than silently mis-optimize.
+      return null;
+    }
+  }
+
+  /**
+   * True when every clause before {@code currentIndex} is guaranteed not to fan a single input
+   * row out into several for the same combination of {@code groupingKeyVariables} - the
+   * precondition the CountEdgesStep optimization relies on, since it emits one output row PER
+   * input row rather than aggregating (issue #6629: an UNWIND before an OPTIONAL MATCH + WITH
+   * count() produced one row per UNWIND element instead of one grouped row; the same break
+   * happens through a cartesian-product MATCH, a variable-length hop, or any other clause that
+   * introduces a variable the WITH does not group by).
+   */
+  private static boolean isRowPerGroupUpToClause(final List<ClauseEntry> clausesInOrder, final int currentIndex,
+      final Set<String> groupingKeyVariables) {
+    for (int i = 0; i < currentIndex; i++) {
+      final Set<String> introduced = variablesIntroducedByClause(clausesInOrder.get(i));
+      if (introduced == null)
+        return false;
+      for (final String var : introduced)
+        if (!groupingKeyVariables.contains(var))
+          return false;
+    }
+    return true;
+  }
+
+  /**
    * Attempts to optimize chained OPTIONAL MATCH + count() pattern.
    * <p>
    * Detects pattern:
@@ -3312,6 +3411,15 @@ public class CypherExecutionPlan {
 
     // Must have exactly one count aggregation
     if (aggregationCount != 1 || countExpr == null)
+      return null;
+
+    // A preceding clause that fans a single input row out into several rows for the same
+    // grouping-key values invalidates this optimization: CountEdgesStep emits one output row
+    // PER input row, so the WITH aggregation would see per-row counts instead of one grouped
+    // count (issue #6629). Any variable introduced upstream that is not itself part of the
+    // grouping key is a potential fan-out source (UNWIND, LOAD CSV, a cartesian-product MATCH,
+    // a variable-length hop, ...) and rules the fast path out.
+    if (!isRowPerGroupUpToClause(clausesInOrder, currentIndex, groupingKeyVariableNames(groupingKeys)))
       return null;
 
     // Count argument must be the target variable
@@ -3505,6 +3613,15 @@ public class CypherExecutionPlan {
 
     // Must have exactly one aggregation
     if (aggregationCount != 1 || countExpr == null)
+      return null;
+
+    // A preceding clause that fans a single input row out into several rows for the same
+    // grouping-key values invalidates this optimization: CountEdgesStep emits one output row
+    // PER input row, so the WITH aggregation would see per-row counts instead of one grouped
+    // count (issue #6629). Any variable introduced upstream that is not itself part of the
+    // grouping key is a potential fan-out source (UNWIND, LOAD CSV, a cartesian-product MATCH,
+    // a variable-length hop, ...) and rules the fast path out.
+    if (!isRowPerGroupUpToClause(clausesInOrder, currentIndex, groupingKeyVariableNames(groupingKeys)))
       return null;
 
     // Get the count argument variable name
