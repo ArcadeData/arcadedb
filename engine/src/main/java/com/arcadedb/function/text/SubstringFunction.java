@@ -53,7 +53,11 @@ public class SubstringFunction implements StatelessFunction {
     // Issue #6609: a value outside INTEGER | FLOAT (e.g. a LIST) is a client-facing type error, not the unchecked
     // cast's ClassCastException, which used to escape as HTTP 500. Same treatment as the numeric family (#5484).
     final int start = CypherFunctionHelper.requireNumberArgument(args[1], getName()).intValue();
-    if (start < 0 || start > str.length())
+    if (start < 0)
+      // Invalid user-supplied argument value: surface as a client error (HTTP 400), matching CypherSubstringFunction
+      // (the executor Cypher's substring() actually resolves to) instead of silently returning "". See issue #6609.
+      throw new CommandSemanticException("substring(): negative start index is not supported: " + start);
+    if (start > str.length())
       return "";
     if (args.length == 3 && args[2] != null) {
       final int length = CypherFunctionHelper.requireNumberArgument(args[2], getName()).intValue();

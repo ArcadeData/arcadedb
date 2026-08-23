@@ -279,8 +279,18 @@ class TextStatelessFunctionsTest {
 
     // Start beyond string length returns empty
     assertThat(fn.execute(new Object[]{"hello", 100}, null)).isEqualTo("");
-    // Negative start returns empty
-    assertThat(fn.execute(new Object[]{"hello", -1}, null)).isEqualTo("");
+  }
+
+  @Test
+  void substringNegativeStartIsAClientErrorNotSilentlyEmpty() {
+    // A negative start is an invalid user-supplied value, so it must be a CommandSemanticException (HTTP 400),
+    // matching CypherSubstringFunction - the executor Cypher's substring() actually resolves to - rather than the
+    // silent "" this unregistered twin used to return for the same condition (issue #6609).
+    final SubstringFunction fn = new SubstringFunction();
+
+    assertThatThrownBy(() -> fn.execute(new Object[]{"hello", -1}, null))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("negative start");
   }
 
   @Test
