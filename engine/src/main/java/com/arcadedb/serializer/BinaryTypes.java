@@ -29,7 +29,6 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
 import org.locationtech.spatial4j.shape.Shape;
 
-import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -175,17 +174,23 @@ public class BinaryTypes {
         // SERIALIZE THE RESULT AS A MAP
         type = TYPE_MAP;
     } else if (value.getClass().isArray()) {
-      if (value.getClass().getComponentType().isPrimitive()) {
-        final Object firstElement = Array.getLength(value) > 0 ? Array.get(value, 0) : null;
-        type = switch (firstElement) {
-          case Short i -> TYPE_ARRAY_OF_SHORTS;
-          case Integer i -> TYPE_ARRAY_OF_INTEGERS;
-          case Long l -> TYPE_ARRAY_OF_LONGS;
-          case Float v -> TYPE_ARRAY_OF_FLOATS;
-          case Double v -> TYPE_ARRAY_OF_DOUBLES;
-          case null, default -> TYPE_LIST;
-        };
-      } else
+      // DECIDE THE BINARY TYPE FROM THE ARRAY'S DECLARED COMPONENT TYPE, NOT FROM ITS FIRST ELEMENT: SNIFFING THE
+      // FIRST ELEMENT MADE AN EMPTY PRIMITIVE ARRAY (WHOSE "FIRST ELEMENT" IS null) FALL BACK TO TYPE_LIST, SO THE
+      // SAME PROPERTY'S RUNTIME TYPE DEPENDED ON WHETHER IT HAPPENED TO BE EMPTY (ISSUE #6464). THE COMPONENT TYPE
+      // ALSO COVERS A BOXED WRAPPER ARRAY (Short[]/Integer[]/Long[]/Float[]/Double[]) SUPPLIED FOR A DECLARED
+      // ARRAY_OF_* PROPERTY, WHICH WAS PREVIOUSLY ALWAYS DOWNGRADED TO TYPE_LIST REGARDLESS OF CONTENT.
+      final Class<?> componentType = value.getClass().getComponentType();
+      if (componentType == short.class || componentType == Short.class)
+        type = TYPE_ARRAY_OF_SHORTS;
+      else if (componentType == int.class || componentType == Integer.class)
+        type = TYPE_ARRAY_OF_INTEGERS;
+      else if (componentType == long.class || componentType == Long.class)
+        type = TYPE_ARRAY_OF_LONGS;
+      else if (componentType == float.class || componentType == Float.class)
+        type = TYPE_ARRAY_OF_FLOATS;
+      else if (componentType == double.class || componentType == Double.class)
+        type = TYPE_ARRAY_OF_DOUBLES;
+      else
         type = TYPE_LIST;
 
     } else if (value instanceof Iterable)
