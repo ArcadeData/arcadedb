@@ -90,18 +90,21 @@ class Issue6534QuiesceResizeRaceTest extends TestHelper {
     }, "issue6534-quiescer");
     quiescer.start();
 
-    // Give the quiescer time to acquire resizeLock, snapshot the pool and schedule its park task - which now sits
-    // queued behind the busy task above and cannot run until releaseTask counts down.
-    Thread.sleep(300);
-
     final Thread grower = new Thread(() -> async.setParallelLevel(3), "issue6534-grower");
     grower.start();
 
-    // The grow must still be blocked on resizeLock: give it a moment, then confirm it has NOT published yet.
-    Thread.sleep(300);
-    assertThat(async.getThreadCount())
-        .as("a grow must not publish a new pool size while a quiescence is still waiting on a busy worker to park")
-        .isEqualTo(1);
+    // Polled rather than a single check after a fixed sleep (code review, PR #6661): a one-shot check could flake
+    // on a slow/contended runner that had not yet let the quiescer reach resizeLock.lock() and schedule its park
+    // task within the sleep window, reporting a false pass rather than exercising the race. Sampling continuously
+    // over a generous window means the assertion only ever fails when the grow ACTUALLY published early - which is
+    // the regression this test exists to catch - not when the scheduler was merely slow to run the quiescer.
+    final long deadline = System.currentTimeMillis() + 3_000;
+    while (System.currentTimeMillis() < deadline) {
+      assertThat(async.getThreadCount())
+          .as("a grow must not publish a new pool size while a quiescence is still waiting on a busy worker to park")
+          .isEqualTo(1);
+      Thread.sleep(20);
+    }
     assertThat(quiesceReturned.getCount()).as("the quiescence itself must still be waiting too").isEqualTo(1L);
 
     // Let the busy task finish: its park task can now run, count down the latch and let the quiescence complete.
