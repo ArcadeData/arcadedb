@@ -66,6 +66,37 @@ not vacuously passing and are not flaky.
 - `mvn -pl engine -am test -Dtest='com.arcadedb.index.**,com.arcadedb.schema.**,com.arcadedb.graph.**' -DexcludedGroups=benchmark,slow,vector` - 2213 tests, 0 failures (covers `AsyncWaitCompletionTimeoutTest`, `Issue6303AsyncQuiesceTest`, `AsyncCrossSlotSchedulingDeadlockTest`, and every index/schema/graph regression test in the module).
 - `mvn -pl engine -am compile` - clean.
 
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/6651
+
+## Review cycles
+
+- **Cycle 1** - head `1cb89451075f1409aa37a71de8c678a430acbeb9`: `claude[bot]` reviewed via issue
+  comment. Verdict: "No blocking issues found." Traced the happens-before chain of the
+  `waitCompletion()` fix independently and confirmed it sound; confirmed the `BucketIndexBuilder`
+  fix mirrors `TypeIndexBuilder`/`RebuildIndexStatement` exactly; confirmed both tests avoid
+  timing-based flakiness (latch/`completedTaskCount` polling, the one `Thread.sleep` only widens a
+  race window rather than gating an assertion, so worst case it fails to reproduce and passes
+  vacuously rather than failing falsely). One **non-blocking** observation, skipped (see below).
+  No code changes required - working tree stayed clean this cycle - so this is a clean approval on
+  cycle 1.
+
+### Deferred / skipped review items
+
+- **Skipped (nitpick, optional, explicitly non-blocking):** the reviewer noted that
+  `LocalDatabase.waitForAsyncCompletion()`'s own `do { ... } while (isAsyncProcessing())` loop
+  (#6281) is now a "loop-around-a-loop" on top of `waitCompletion()`'s new internal loop, and
+  suggested a possible follow-up to simplify it back to a single call. Not applied: the reviewer
+  itself flagged this as conditional on "not complicating the interrupt-handling special case"
+  `LocalDatabase.waitForAsyncCompletion()` currently has, explicitly called it harmless, and it
+  touches a different, separately-reasoned method than either of the two changes this issue is
+  about. Left as a possible future cleanup rather than folded into this fix.
+
+## Final state
+
+clean-approval (1 cycle)
+
 ## Scope not addressed
 
 `DatabaseAsyncExecutorImpl.quiesceWorkers()` itself (the park-task machinery `quiesceAsync()` is built
