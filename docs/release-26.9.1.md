@@ -3880,3 +3880,37 @@ read noticed first. An unreadable *chunk* of a vertex that does exist keeps the 
 `ConcurrentModificationException` and #5764's scoped advice, on both paths.
 
 [#6586](https://github.com/ArcadeData/arcadedb/issues/6586)
+
+## A Graph Analytical View that turns out not restorable from disk no longer blocks the query that found that out (#6641)
+
+Deferring a persisted CSR's read out of `open()` (#6632) removed a real cost - up to ~1s at 10M vertices - from a
+session that never queries the view, by marking it `READY` on a plausible file alone and reading it later,
+whenever a real query or an explicit `awaitReady()` asks. That worked for the case it was built for. It
+regressed a case it wasn't: when the deferred read finally runs and finds the persisted CSR unusable - its
+freshness certificate invalidated by a commit that landed between close and reopen, or the file itself
+corrupted - the query that triggered the read had, by then, already committed to the accelerated path. With
+nothing left to fall back to, it waited out a full `O(V+E)` rebuild synchronously: 5.6 seconds at 1M
+vertices in the reporter's measurements, on course for roughly a minute at 10M. Before #6632, the same
+situation cost that query nothing - `onRelevantCommit()` marked the view `STALE` eagerly, right at commit
+time, so the query planner routed straight past it to the ordinary path.
+
+Every step along the way was individually correct; the regression was in the aggregate. `GraphAnalyticalView
+.isReady()` is what `GraphTraversalProviderRegistry.findProvider()` uses to decide whether a query gets
+routed to this provider at all, and it answered `true` for a view whose persisted CSR had not actually been
+verified yet - a hint reported as a promise. By the time a query reached `checkBuilt()` on the strength of
+that answer, there was no way back: `checkBuilt()`'s callers have no unaccelerated fallback of their own, so
+finding the restore unusable there could only mean blocking through the rebuild it triggers, never stepping
+aside for it.
+
+`isReady()` now answers the question it is actually being asked - can a query safely be routed here right
+now - honestly: while a deferred restore is still unresolved, it dispatches the restore-or-rebuild in the
+background (a no-op if another caller already has) and reports not-ready for the query asking, exactly the
+answer an eagerly-marked `STALE` view would have given before #6632. That query takes the ordinary path;
+whichever query asks next sees whatever the background work resolved to - restored from disk, or freshly
+rebuilt - because by then `isReady()` reflects the real, verified state. "Never serve stale data" is
+unaffected: nothing changes about what a query sees once the view reports ready, only about which query pays
+for making it so. A caller that would rather wait out an accelerated first query than fall back keeps that
+option through `awaitReady()` (and, at `open()` time, `GAV_RESTORE_AWAIT_TIMEOUT`) - both already resolve the
+deferred restore explicitly and are unaffected by this change.
+
+[#6641](https://github.com/ArcadeData/arcadedb/issues/6641)
