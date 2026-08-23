@@ -18,7 +18,7 @@
  */
 package com.arcadedb.function.text;
 
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -58,7 +58,9 @@ public class SubstringFunction implements StatelessFunction {
     if (args.length == 3 && args[2] != null) {
       final int length = CypherFunctionHelper.requireNumberArgument(args[2], getName()).intValue();
       if (length < 0)
-        throw new CommandExecutionException("substring(): negative length is not supported: " + length);
+        // Invalid user-supplied argument value: surface as a client error (HTTP 400), matching CypherSubstringFunction
+        // (the executor Cypher's substring() actually resolves to) and left()/right(). See issue #5296/#5793.
+        throw new CommandSemanticException("substring(): negative length is not supported: " + length);
       return str.substring(start, Math.min(start + length, str.length()));
     }
     return str.substring(start);
