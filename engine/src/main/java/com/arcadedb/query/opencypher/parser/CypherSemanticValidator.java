@@ -2387,10 +2387,17 @@ public class CypherSemanticValidator {
    * <p>
    * The trailing rounding mode of {@code round(value, precision, mode)} is not numeric; it is validated against the same
    * mode names the function itself accepts.
+   * <p>
+   * {@code left()}/{@code right()}/{@code substring()} (issue #6609) declare their numeric arguments starting at
+   * {@link CypherFunctionHelper.NumericSignature#startArg()} rather than at position 0: the leading argument is the
+   * STRING being sliced, which this check leaves alone (out of scope for #6609, same as it was for #5798/#5901).
    */
   private void checkStaticallyKnownNumericArgs(final CypherFunctionHelper.NumericSignature signature,
       final List<Expression> args) {
     for (int i = 0; i < args.size(); i++) {
+      if (i < signature.startArg())
+        continue;
+
       final Expression arg = args.get(i);
       final boolean isMap = arg instanceof MapExpression;
       // A bracketed list is a ListExpression rather than a literal holding a Collection, so it has to be recognised
@@ -2405,7 +2412,7 @@ public class CypherSemanticValidator {
       // Stands in for the literal purely so the message names the type: a MAP or a LIST<ANY>.
       final Object rendered = isMap ? Map.of() : isList ? List.of() : literal;
 
-      if (i < signature.numericArgs()) {
+      if (signature.isNumericPosition(i)) {
         if (isMap || isList || !(literal instanceof Number))
           throw CypherFunctionHelper.typeMismatch(signature.name(), CypherFunctionHelper.NUMERIC_DOMAIN, rendered);
       } else if ("round".equals(signature.name()))
