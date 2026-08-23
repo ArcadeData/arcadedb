@@ -3154,6 +3154,18 @@ public class CypherExecutionPlan {
       final AbstractExecutionStep currentStep,
       final CommandContext context,
       final Set<String> boundVariables) {
+    // 0. A preceding UNWIND fans a single input row out to many rows. CountEdgesStep emits one
+    // output row PER input row, so replacing the OPTIONAL MATCH + WITH aggregation with it would
+    // yield per-row counts instead of the single grouped count the WITH boundary requires
+    // (issue #6629: `... UNWIND [...] OPTIONAL MATCH ... WITH a, count(m)` returned N rows of
+    // c=1 instead of 1 row of c=2). The optimization is only valid when the input rows are
+    // already the aggregation groups, which UNWIND / LOAD CSV break.
+    for (int i = 0; i < currentIndex; i++) {
+      final ClauseEntry.ClauseType type = clausesInOrder.get(i).getType();
+      if (type == ClauseEntry.ClauseType.UNWIND || type == ClauseEntry.ClauseType.LOAD_CSV)
+        return null;
+    }
+
     // 1. First OPTIONAL MATCH must have exactly one path pattern (single hop)
     if (!firstMatch.hasPathPatterns() || firstMatch.getPathPatterns().size() != 1)
       return null;
@@ -3434,6 +3446,18 @@ public class CypherExecutionPlan {
       final AbstractExecutionStep currentStep,
       final CommandContext context,
       final Set<String> boundVariables) {
+
+    // 0. A preceding UNWIND fans a single input row out to many rows. CountEdgesStep emits one
+    // output row PER input row, so replacing the OPTIONAL MATCH + WITH aggregation with it would
+    // yield per-row counts instead of the single grouped count the WITH boundary requires
+    // (issue #6629: `... UNWIND [...] OPTIONAL MATCH ... WITH a, count(m)` returned N rows of
+    // c=1 instead of 1 row of c=2). The optimization is only valid when the input rows are
+    // already the aggregation groups, which UNWIND / LOAD CSV break.
+    for (int i = 0; i < currentIndex; i++) {
+      final ClauseEntry.ClauseType type = clausesInOrder.get(i).getType();
+      if (type == ClauseEntry.ClauseType.UNWIND || type == ClauseEntry.ClauseType.LOAD_CSV)
+        return null;
+    }
 
     // 1. Must be OPTIONAL MATCH with exactly one path pattern
     if (!matchClause.hasPathPatterns() || matchClause.getPathPatterns().size() != 1)
