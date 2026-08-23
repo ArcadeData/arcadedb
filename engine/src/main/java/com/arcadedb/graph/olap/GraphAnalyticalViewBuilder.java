@@ -197,18 +197,19 @@ public class GraphAnalyticalViewBuilder {
   }
 
   /**
-   * Used by {@link GraphAnalyticalViewPersistence#restoreAll} on database open (see #6583): first tries to load a
-   * persisted CSR from disk whose freshness certificate still matches (nothing was committed to the database since
-   * it was written), and only falls back to the usual {@link #buildAsync()} full graph scan when there is no
-   * usable file. Either way the view is registered and returned immediately; check {@link
-   * GraphAnalyticalView#getStatus()} / {@link GraphAnalyticalView#awaitReady} for completion exactly as with
-   * {@link #buildAsync()}.
+   * Used by {@link GraphAnalyticalViewPersistence#restoreAll} on database open (see #6583, #6632): when a
+   * persisted CSR plausibly applies, marks the view READY immediately and defers the actual disk read to
+   * whatever touches it first (a real query, or an explicit {@link GraphAnalyticalView#awaitReady} call) —
+   * see {@link GraphAnalyticalView#restoreFromDiskOrBuildAsync()} — rather than reading it eagerly right
+   * here. Falls back to the usual {@link #buildAsync()} full graph scan immediately when there is no
+   * plausibly-usable file. Either way the view is registered and returned immediately; check {@link
+   * GraphAnalyticalView#getStatus()} / {@link GraphAnalyticalView#awaitReady} for completion exactly as
+   * with {@link #buildAsync()}.
    */
   GraphAnalyticalView restoreFromDiskOrBuildAsync() {
     final GraphAnalyticalView view = createView();
     try {
-      if (!view.tryRestoreFromPersistedCsr())
-        view.buildAsync();
+      view.restoreFromDiskOrBuildAsync();
     } catch (final Exception e) {
       view.shutdown();
       throw e;
