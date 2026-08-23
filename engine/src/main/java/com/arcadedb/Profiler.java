@@ -187,7 +187,11 @@ public class Profiler {
       final DatabaseAsyncExecutorImpl async = asyncIfExists(db);
       final DatabaseAsyncExecutorImpl.DBAsyncStats asyncStats = async != null ? async.getStats() : null;
       acc[STAT_ASYNC_QUEUE] += asyncStats != null ? asyncStats.queueSize : 0L;
-      acc[STAT_ASYNC_PARALLEL] = async != null ? async.getParallelLevel() : 0L;
+      // #6533: this used to be a plain assignment, so with more than one database open the exported reading was
+      // whichever database the identity-hashed iteration happened to visit last - not a sum, and unstable between
+      // consecutive scrapes of an unchanged server. Summed like every other entry in this array: the JVM-wide
+      // question this answers is "how many async worker threads does this process have", matching asyncQueueLength.
+      acc[STAT_ASYNC_PARALLEL] += async != null ? async.getParallelLevel() : 0L;
       acc[STAT_ASYNC_RETIRING] += asyncStats != null ? asyncStats.retiringWorkers : 0L;
     }
     return acc;
