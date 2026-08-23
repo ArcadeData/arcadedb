@@ -21,9 +21,15 @@ package com.arcadedb.integration.exporter;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class ExporterContext {
-  public final AtomicLong documents = new AtomicLong();
-  public final AtomicLong vertices  = new AtomicLong();
-  public final AtomicLong edges     = new AtomicLong();
+  public final AtomicLong documents      = new AtomicLong();
+  public final AtomicLong vertices       = new AtomicLong();
+  public final AtomicLong edges          = new AtomicLong();
+  /**
+   * Records that threw while being serialized and were skipped rather than aborting the whole export
+   * (issue #6471). Incremented by the format implementation's per-record catch blocks; {@link Exporter}
+   * surfaces a non-zero count as a failing outcome once the export completes.
+   */
+  public final AtomicLong skippedRecords = new AtomicLong();
   public       long       startedOn;
   public       long       lastLapOn;
   public       long       lastDocuments;

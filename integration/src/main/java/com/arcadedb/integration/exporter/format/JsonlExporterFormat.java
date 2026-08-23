@@ -156,6 +156,7 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
           writeJsonLine("v", graphSerializer.serializeGraphElement(record));
           context.vertices.incrementAndGet();
         } catch (Exception e) {
+          context.skippedRecords.incrementAndGet();
           LogManager.instance()
               .log(this, Level.SEVERE, "Error on exporting vertex %s", e, record != null ? record.getIdentity() : null);
         }
@@ -176,6 +177,7 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
           writeJsonLine("e", graphSerializer.serializeGraphElement(record));
           context.edges.incrementAndGet();
         } catch (Exception e) {
+          context.skippedRecords.incrementAndGet();
           LogManager.instance()
               .log(this, Level.SEVERE, "Error on exporting vertex %s", e, record != null ? record.getIdentity() : null);
         }
@@ -215,6 +217,7 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
             context.edges.incrementAndGet();
           }
         } catch (Exception e) {
+          context.skippedRecords.incrementAndGet();
           LogManager.instance().log(this, Level.SEVERE, "Error on exporting lightweight edges of vertex %s", e,
               vertex != null ? vertex.getIdentity() : null);
         }
@@ -235,6 +238,7 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
           writeJsonLine("d", graphSerializer.serializeGraphElement(record));
           context.documents.incrementAndGet();
         } catch (Exception e) {
+          context.skippedRecords.incrementAndGet();
           LogManager.instance()
               .log(this, Level.SEVERE, "Error on exporting vertex %s", e, record != null ? record.getIdentity() : null);
         }
