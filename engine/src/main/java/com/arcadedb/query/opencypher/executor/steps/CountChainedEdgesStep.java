@@ -32,6 +32,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -43,6 +44,12 @@ import java.util.Map;
  * OPTIONAL MATCH (bound)-[r1:TYPE1]->(intermediate)
  * OPTIONAL MATCH (target)-[r2:TYPE2]->(intermediate)
  * WITH bound, count(target) AS cnt
+ * <p>
+ * A row-multiplying clause upstream (UNWIND, an earlier fan-out MATCH hop) can feed this step
+ * more than one input row per distinct grouping-key combination - each still needs its own count,
+ * but the WITH aggregation boundary collapses them into one output row per group rather than
+ * passing every input row through (issue #6629). This step therefore groups by the pass-through
+ * key values and sums the per-row counts within each group.
  */
 public final class CountChainedEdgesStep extends AbstractExecutionStep {
   private final String boundVertexVariable;
@@ -81,7 +88,13 @@ public final class CountChainedEdgesStep extends AbstractExecutionStep {
     final String[] allTypes = mergeEdgeTypes(firstHopTypes, secondHopTypes);
     final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(db, allTypes);
 
-    final List<Result> results = new ArrayList<>();
+    final String[] aliasOutputNames = passThroughAliases.keySet().toArray(new String[0]);
+    final String[] aliasVarNames = passThroughAliases.values().toArray(new String[0]);
+
+    // One accumulated count per distinct grouping-key combination (LinkedHashMap to keep the
+    // first-seen group order, matching GroupByAggregationStep).
+    final Map<GroupKeyValues, long[]> groups = new LinkedHashMap<>();
+
     while (prevResult.hasNext()) {
       final Result inputRow = prevResult.next();
       final long begin = context.isProfiling() ? System.nanoTime() : 0;
@@ -89,13 +102,12 @@ public final class CountChainedEdgesStep extends AbstractExecutionStep {
         if (context.isProfiling())
           rowCount++;
 
-        final ResultInternal result = new ResultInternal();
+        final Object[] keyValues = new Object[aliasVarNames.length];
+        for (int i = 0; i < aliasVarNames.length; i++)
+          keyValues[i] = inputRow.getProperty(aliasVarNames[i]);
+        final GroupKeyValues groupKey = new GroupKeyValues(keyValues);
 
-        // Copy pass-through properties with their WITH aliases
-        for (final Map.Entry<String, String> entry : passThroughAliases.entrySet())
-          result.setProperty(entry.getKey(), inputRow.getProperty(entry.getValue()));
-
-        // Get the bound vertex and count through the chain
+        // Get the bound vertex and count through the chain for this row
         final Object vertexObj = inputRow.getProperty(boundVertexVariable);
         final long totalCount;
 
@@ -121,12 +133,22 @@ public final class CountChainedEdgesStep extends AbstractExecutionStep {
           totalCount = 0L; // NULL vertex = LEFT OUTER JOIN semantics
         }
 
-        result.setProperty(countOutputAlias, totalCount);
-        results.add(result);
+        final long[] accumulator = groups.computeIfAbsent(groupKey, k -> new long[1]);
+        accumulator[0] += totalCount;
       } finally {
         if (context.isProfiling())
           cost += System.nanoTime() - begin;
       }
+    }
+
+    final List<Result> results = new ArrayList<>(groups.size());
+    for (final Map.Entry<GroupKeyValues, long[]> entry : groups.entrySet()) {
+      final ResultInternal result = new ResultInternal();
+      final Object[] keyValues = entry.getKey().values;
+      for (int i = 0; i < aliasOutputNames.length; i++)
+        result.setProperty(aliasOutputNames[i], keyValues[i]);
+      result.setProperty(countOutputAlias, entry.getValue()[0]);
+      results.add(result);
     }
 
     return new IteratorResultSet(results.iterator());

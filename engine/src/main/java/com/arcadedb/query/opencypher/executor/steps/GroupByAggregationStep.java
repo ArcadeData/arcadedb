@@ -34,7 +34,6 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 
 /**
  * Execution step for GROUP BY aggregation.
@@ -415,39 +414,6 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
     AggregationItem(final String outputName, final FunctionCallExpression funcExpr) {
       this.outputName = outputName;
       this.funcExpr = funcExpr;
-    }
-  }
-
-  /**
-   * Represents the values of grouping keys for a specific group.
-   * Uses an Object array with cached hashCode for fast HashMap operations.
-   */
-  private static class GroupKeyValues {
-    final Object[] values;
-    private final int hash;
-
-    GroupKeyValues(final Object[] values) {
-      this.values = values;
-      // Pre-compute and cache hash to avoid recomputation on every HashMap lookup
-      int h = 1;
-      for (final Object v : values)
-        h = 31 * h + (v == null ? 0 : v.hashCode());
-      this.hash = h;
-    }
-
-    @Override
-    public boolean equals(final Object o) {
-      if (this == o) return true;
-      if (!(o instanceof GroupKeyValues that)) return false;
-      if (hash != that.hash || values.length != that.values.length) return false;
-      for (int i = 0; i < values.length; i++)
-        if (!Objects.equals(values[i], that.values[i])) return false;
-      return true;
-    }
-
-    @Override
-    public int hashCode() {
-      return hash;
     }
   }
 
