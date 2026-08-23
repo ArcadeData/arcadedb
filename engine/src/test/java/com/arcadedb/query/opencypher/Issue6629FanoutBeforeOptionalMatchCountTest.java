@@ -115,4 +115,49 @@ class Issue6629FanoutBeforeOptionalMatchCountTest {
     assertThat(result.hasNext()).isFalse();
     result.close();
   }
+
+  @Test
+  void anonymousPredecessorFanoutBeforeOptionalMatchCollapsesToOneGroup() {
+    // Two anonymous, unnamed R-edges into (a) fan the input stream out to 2 rows for the same
+    // a=x1 before the OPTIONAL MATCH runs, exactly like UNWIND does - but through pattern
+    // elements that have no name to check against the WITH's grouping keys.
+    database.transaction(() -> {
+      database.getSchema().createEdgeType("R");
+      database.newVertex("X").set("_id", "x3").save();
+      database.command("sql",
+          "CREATE EDGE R FROM (SELECT FROM X WHERE _id = 'x2') TO (SELECT FROM X WHERE _id = 'x1')");
+      database.command("sql",
+          "CREATE EDGE R FROM (SELECT FROM X WHERE _id = 'x3') TO (SELECT FROM X WHERE _id = 'x1')");
+    });
+
+    final ResultSet result = database.query("opencypher",
+        "MATCH ()-[:R]->(a:X {_id:'x1'}) OPTIONAL MATCH (a)-[:L]->(m:X) WITH a, count(m) AS c RETURN c");
+
+    assertThat(result.hasNext()).isTrue();
+    final Result row = result.next();
+    assertThat(row.<Long>getProperty("c")).isEqualTo(2L);
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+  }
+
+  @Test
+  void mergeMatchingMultipleExistingNodesBeforeOptionalMatchCollapsesToOneGroup() {
+    // MERGE returns one row PER EXISTING MATCH when its pattern matches more than one element
+    // (MergeStep), fanning the input stream out to 2 rows for the same a=x1 before the OPTIONAL
+    // MATCH runs, the same shape as UNWIND but through a clause the guard must not assume safe.
+    database.transaction(() -> {
+      database.getSchema().createVertexType("Y");
+      database.newVertex("Y").set("foo", 1).save();
+      database.newVertex("Y").set("foo", 1).save();
+    });
+
+    final ResultSet result = database.command("opencypher",
+        "MATCH (a:X {_id:'x1'}) MERGE (b:Y {foo: 1}) OPTIONAL MATCH (a)-[:L]->(m:X) WITH a, count(m) AS c RETURN c");
+
+    assertThat(result.hasNext()).isTrue();
+    final Result row = result.next();
+    assertThat(row.<Long>getProperty("c")).isEqualTo(2L);
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+  }
 }
