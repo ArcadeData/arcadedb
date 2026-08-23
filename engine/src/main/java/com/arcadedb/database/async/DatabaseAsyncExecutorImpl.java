@@ -1228,8 +1228,11 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
       semaphore.await();
 
-      // Rethrown here (rather than wrapped directly) so the generic catch below wraps it exactly like any other
-      // failure of this method, instead of nesting two DatabaseOperationExceptions with the same message.
+      // Rethrown here (rather than wrapped directly) so a RuntimeException is wrapped by the generic catch below
+      // exactly like any other failure of this method, instead of nesting two DatabaseOperationExceptions with the
+      // same message. An Error is deliberately NOT caught there (Error does not extend Exception) and so escapes
+      // this method raw and unwrapped - the existing convention elsewhere in this class of never dressing up an
+      // Error, kept intentionally rather than an oversight.
       final Throwable error = firstError.get();
       if (error instanceof final RuntimeException re)
         throw re;
