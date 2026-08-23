@@ -20,8 +20,10 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.executor.steps.DeleteStep;
 import com.arcadedb.query.opencypher.executor.steps.ForeachStep;
+import com.arcadedb.query.opencypher.parser.Cypher25AntlrParser;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.ExecutionStep;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -178,6 +180,46 @@ public class OpenCypherDeleteSegmentScopedEagerMaterializationIssue6631Test {
     });
   }
 
+  /**
+   * Same hazard as {@link #deleteOfADisconnectedMatchsOwnVariableForwardedThroughAPassthroughWithStillEagerlyMaterializes()},
+   * but the forwarded, tainted variable is a relationship bound by the disconnected MATCH rather than a
+   * node - {@code closeMatchSegment()} must taint relationship variables too, not just node variables,
+   * since a disconnected MATCH can rebind the same underlying edge across rows exactly as it can a
+   * vertex (see {@code DeleteStep}'s own {@code eagerMaterialize} field doc).
+   */
+  @Test
+  void deleteOfADisconnectedMatchsOwnRelationshipVariableForwardedThroughAPassthroughWithStillEagerlyMaterializes() {
+    database = new DatabaseFactory("./target/databases/testopencypher-issue6631-delete-rel-passthrough").create();
+
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:A)-[:REL]->(:B)");
+      database.command("opencypher", "CREATE (:Other {id: 1})");
+      database.command("opencypher", "CREATE (:Other {id: 2})");
+      database.command("opencypher", "CREATE (:Other {id: 3})");
+    });
+
+    database.transaction(() -> {
+      try (ResultSet result = database.command("opencypher",
+          "PROFILE MATCH (a:A)-[r:REL]->(b:B), (o:Other) "
+              + "WITH r, o "
+              + "DELETE r RETURN o.id AS id")) {
+        while (result.hasNext())
+          result.next();
+
+        final DeleteStep deleteStep = findStep(result, DeleteStep.class);
+        assertThat(eagerMaterializeOf(deleteStep))
+            .withFailMessage("A WITH that plainly forwards a disconnected-pattern MATCH's own relationship "
+                + "variable (WITH r, o) does not neutralize the issue #6491 hazard for that variable - a "
+                + "DELETE of it downstream of the WITH must still eagerly materialize")
+            .isTrue();
+      }
+    });
+
+    try (ResultSet remaining = database.query("opencypher", "MATCH ()-[r:REL]->() RETURN r")) {
+      assertThat(remaining.hasNext()).isFalse();
+    }
+  }
+
   @Test
   void foreachDeleteUnrelatedToAnEarlierSegmentsDisconnectedMatchIsNotEagerlyMaterialized() {
     database = new DatabaseFactory("./target/databases/testopencypher-issue6631-foreach-unrelated").create();
@@ -266,5 +308,30 @@ public class OpenCypherDeleteSegmentScopedEagerMaterializationIssue6631Test {
             .isTrue();
       }
     });
+  }
+
+  /**
+   * Backs the comment on {@code CypherExecutionPlan.buildExecutionStepsLegacy()}'s DELETE construction
+   * site, which leaves it using the unscoped, statement-wide {@code matchClausesHaveDisconnectedPatterns
+   * (statement.getMatchClauses())} rather than this issue's segment-scoped fix: that is only safe if a
+   * multi-segment, WITH-separated MATCH/DELETE statement - the shape #6631 is about - can never actually
+   * reach that method, because {@code CypherExecutionPlan.buildExecutionSteps()} only falls back to it
+   * when {@code statement.getClausesInOrder()} is null or empty. Parses the same query shape used by
+   * {@link #deleteUnrelatedToAnEarlierSegmentsDisconnectedMatchIsNotEagerlyMaterialized()} through the
+   * real production parser and asserts {@code getClausesInOrder()} is populated, confirming the premise
+   * with an executable check rather than an unverified comment.
+   */
+  @Test
+  void aMultiSegmentWithSeparatedStatementAlwaysPopulatesClausesInOrder() {
+    final CypherStatement statement = new Cypher25AntlrParser().parse(
+        "MATCH (a:Tag {name: 'x'}), (b:Tag {name: 'y'}) WITH a, b MATCH (n:Big) DETACH DELETE n");
+
+    assertThat(statement.getClausesInOrder())
+        .withFailMessage("A multi-segment, WITH-separated MATCH/DELETE statement must populate "
+            + "getClausesInOrder() when parsed through the real parser - otherwise "
+            + "buildExecutionStepsLegacy()'s unscoped DELETE construction site would be reachable for "
+            + "exactly the shape issue #6631 is about")
+        .isNotNull()
+        .isNotEmpty();
   }
 }

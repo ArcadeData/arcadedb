@@ -2540,8 +2540,11 @@ public class CypherExecutionPlan {
 
   /**
    * Closes the MATCH segment tracked in {@code currentSegmentMatchClauses} at a WITH boundary: if the
-   * segment being closed is itself disconnected, every node variable it bound is added to {@code
-   * disconnectedTaintedVariables} before the segment list is cleared for the next one.
+   * segment being closed is itself disconnected, every node AND relationship variable it bound is added
+   * to {@code disconnectedTaintedVariables} before the segment list is cleared for the next one - a
+   * disconnected MATCH can rebind the same underlying edge across rows exactly as it can a vertex (see
+   * {@code DeleteStep}'s own {@code eagerMaterialize} field doc), so {@code DELETE r} needs the same
+   * guard as {@code DELETE n}.
    * <p>
    * A WITH that plainly forwards such a variable (e.g. {@code WITH n, o}) does not neutralize the
    * issue #6491 hazard for it: rows out of a disconnected-pattern MATCH still flow one at a time through
@@ -2555,10 +2558,14 @@ public class CypherExecutionPlan {
       final Set<String> disconnectedTaintedVariables) {
     if (matchClausesHaveDisconnectedPatterns(currentSegmentMatchClauses))
       for (final MatchClause match : currentSegmentMatchClauses)
-        for (final PathPattern path : match.getPathPatterns())
+        for (final PathPattern path : match.getPathPatterns()) {
           for (final NodePattern node : path.getNodes())
             if (node.getVariable() != null)
               disconnectedTaintedVariables.add(node.getVariable());
+          for (final RelationshipPattern relationship : path.getRelationships())
+            if (relationship.getVariable() != null)
+              disconnectedTaintedVariables.add(relationship.getVariable());
+        }
     currentSegmentMatchClauses.clear();
   }
 
