@@ -280,4 +280,38 @@ class ExplainStatementExecutionTest extends TestHelper {
     assertThat(rs.next().<Integer>getProperty("bar")).isEqualTo(0);
     rs.close();
   }
+
+  /**
+   * Same bug, reached through a SELECT's own {@code LET} clause: {@code LetItem.query} is typed as
+   * a generic {@code Statement}, so {@code LET $x = (EXPLAIN <statement>)} parses, and
+   * {@code GlobalLetQueryStep}/{@code LetQueryStep} (built by {@code SelectExecutionPlanner}) chain
+   * whatever {@code query.createExecutionPlan()} returns exactly like every other caller this fix
+   * covers.
+   * <p>
+   * Uses {@code INSERT}, not {@code UPDATE}/{@code DELETE}: reaching this path at all requires
+   * {@code Statement.refersToParent()} on the wrapped statement, which {@code UpdateStatement},
+   * {@code DeleteStatement}, {@code CreateVertexStatement}, {@code CreateEdgeStatement} and
+   * {@code DDLStatement} have never implemented - {@code LET $x = (UPDATE ...)} throws
+   * {@code UnsupportedOperationException} regardless of EXPLAIN, so those aren't a silent-write
+   * risk here, just a pre-existing, unrelated gap out of scope for this fix.
+   * {@code InsertStatement.refersToParent()} already returns {@code false}, so INSERT is the one
+   * write statement that actually reaches {@code ExplainExecutionPlan} through this path today.
+   */
+  @Test
+  void explainInsertInsideSelectLetDoesNotExecuteWrite() {
+    final String typeName = "Issue6648SelectLetTarget";
+    database.getSchema().createDocumentType(typeName);
+
+    database.transaction(() -> {
+      final ResultSet result = database.query("sql",
+          "SELECT $explained AS explained LET $explained = (EXPLAIN INSERT INTO " + typeName + " SET bar = 1)");
+      assertThat(result.hasNext()).isTrue();
+      result.next();
+      result.close();
+    });
+
+    final ResultSet rs = database.query("sql", "SELECT count(*) as count FROM " + typeName);
+    assertThat(rs.next().<Long>getProperty("count")).isEqualTo(0L);
+    rs.close();
+  }
 }

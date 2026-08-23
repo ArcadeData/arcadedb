@@ -116,5 +116,19 @@ public class ExplainStatement extends Statement {
   public boolean isIdempotent() {
     return true;
   }
+
+  /**
+   * Delegates to the wrapped statement, same as {@link ExpressionStatement#refersToParent()} does
+   * for its expression. Without this override, {@code Statement.refersToParent()}'s default throws
+   * {@code UnsupportedOperationException}, which surfaced as a hard failure for any
+   * {@code LET $x = (EXPLAIN <statement>)} inside a SELECT's LET clause - {@code
+   * SelectExecutionPlanner.splitLet()} calls this to decide whether the LET can be hoisted to a
+   * single global evaluation or must be re-evaluated per record, and needs an answer for the
+   * wrapped statement either way.
+   */
+  @Override
+  public boolean refersToParent() {
+    return statement.refersToParent();
+  }
 }
 /* JavaCC - OriginalChecksum=9fdd24510993cbee32e38a51c838bdb4 (do not edit this line) */
