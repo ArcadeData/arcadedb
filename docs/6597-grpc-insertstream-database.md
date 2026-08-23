@@ -35,6 +35,14 @@ over `InsertOptions.database`, which remains as a fallback for callers that set 
 instead. This mirrors `graphBatchLoad`'s existing `chunk.getDatabase()` contract exactly as the
 issue recommended, keeping the two streaming ingest RPCs consistent.
 
+Only the *first* chunk's `database` field has any effect: the database is resolved once, when
+the stream's `InsertContext` is built, and cached for the rest of the stream. A later chunk
+that sends a different `InsertChunk.database` is silently ignored, exactly as
+`InsertOptions.database` already behaved on later chunks before this fix (`sameInsertContract`,
+which validates option consistency across chunks, does not compare `database` either). Not a
+regression introduced here, just an existing property of the streaming contract worth noting
+since this fix makes per-chunk `database` handling more visible.
+
 ## Test plan
 
 - New regression test `Issue6597InsertStreamChunkDatabaseIT` in
