@@ -153,9 +153,9 @@ class Issue6467ScanTypeBucketFailureTest extends TestHelper {
         allIds.add(database.newDocument(TYPE).set("id", i).save().getIdentity());
     });
 
-    final Set<RID>            scannedIds     = ConcurrentHashMap.newKeySet();
-    final AtomicInteger       scanned        = new AtomicInteger();
-    final AtomicReference<Integer> failingBucketId = new AtomicReference<>();
+    final Set<RID>      scannedIds      = ConcurrentHashMap.newKeySet();
+    final AtomicInteger scanned         = new AtomicInteger();
+    final AtomicInteger failingBucketId = new AtomicInteger(-1);
 
     assertThatThrownBy(() -> database.async().scanType(TYPE, true, record -> {
       scannedIds.add(record.getIdentity());

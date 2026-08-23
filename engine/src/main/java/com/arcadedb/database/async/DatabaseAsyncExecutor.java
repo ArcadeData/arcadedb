@@ -482,9 +482,12 @@ public interface DatabaseAsyncExecutor {
    * <p>
    * Since each worker crosses its own {@link #setCommitEvery(int)} boundary independently, this callback can now be
    * invoked far more often, and concurrently from multiple worker threads, than when it fired only at shutdown and
-   * from {@link #waitCompletion()}. The registered {@link OkCallback} must be thread-safe.
+   * from {@link #waitCompletion()}. The registered {@link OkCallback} must be thread-safe, and is invoked
+   * synchronously on the committing worker's own thread at every one of those boundaries - a slow or blocking
+   * callback directly throttles that worker's batch throughput, so keep it cheap.
    *
-   * @param callback Callback invoked every time this executor's shared batch transaction commits; must be thread-safe
+   * @param callback Callback invoked every time this executor's shared batch transaction commits; must be
+   *                 thread-safe and cheap, since it runs synchronously on the committing worker's thread
    */
   void onOk(OkCallback callback);
 
