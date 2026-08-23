@@ -84,12 +84,18 @@ public class Exporter {
         elapsedInSecs = 1;
 
       final long totalRecords = context.vertices.get() + context.edges.get() + context.documents.get();
+      final long skippedRecords = context.skippedRecords.get();
 
-      logger.logLine(0,//
-          "Database exported successfully: %,d records exported in %s secs (%,d records/secs %,d documents %,d vertices %,d edges)",
+      if (skippedRecords > 0)
+        logger.errorLine(
+            "Database export completed with errors: %,d record(s) could not be serialized and were skipped (see the log above for the per-record errors)",
+            skippedRecords);
+      else
+        logger.logLine(0,//
+            "Database exported successfully: %,d records exported in %s secs (%,d records/secs %,d documents %,d vertices %,d edges)",
 //
-          totalRecords, elapsedInSecs, totalRecords / elapsedInSecs, context.documents.get(), context.vertices.get(),
-          context.edges.get());
+            totalRecords, elapsedInSecs, totalRecords / elapsedInSecs, context.documents.get(), context.vertices.get(),
+            context.edges.get());
 
       // RETURN STATISTICS
       final Map<String, Object> result = new LinkedHashMap<>();
@@ -102,9 +108,21 @@ public class Exporter {
         result.put("vertices", context.vertices.get());
       if (context.edges.get() > 0)
         result.put("edges", context.edges.get());
+      if (skippedRecords > 0)
+        result.put("skippedRecords", skippedRecords);
+
+      // A skipped record means the export file is incomplete: the archive was still written on a best-effort
+      // basis (issue #6471), but the operation as a whole must not report success, or the gap goes unnoticed
+      // until the missing records are needed. Symmetric to the importer's default "abort" outcome on a bad row.
+      if (skippedRecords > 0)
+        throw new ExportException(
+            "Database export completed with %,d record(s) skipped because they could not be serialized: the exported file is incomplete"
+                .formatted(skippedRecords));
 
       return result;
 
+    } catch (final ExportException e) {
+      throw e;
     } catch (final Exception e) {
       throw new ExportException("Error on writing to '" + settings.file + "'", e);
     } finally {

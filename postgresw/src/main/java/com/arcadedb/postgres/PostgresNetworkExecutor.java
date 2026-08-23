@@ -385,7 +385,7 @@ public class PostgresNetworkExecutor extends Thread {
         portal.executed = true;
         if (portal.isExpectingResult) {
           portal.cachedResultSet = browseAndCacheResultSet(resultSet, 0);
-          portal.columns = getColumns(portal.cachedResultSet, resolveQueryTargetType(portal));
+          portal.columns = getColumns(portal.cachedResultSet, resolveQueryTargetType(portal), resolveAliasToSourceProperty(portal));
           if (portal.columns.isEmpty() && portal.cachedResultSet.isEmpty()) {
             final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(portal.query, portal.language,
                 getParams(portal), portal.sqlStatement);
@@ -484,7 +484,7 @@ public class PostgresNetworkExecutor extends Thread {
               final long serStart = System.nanoTime();
               // A catalog answer already carries the columns it must be announced under.
               if (!portal.catalogQuery || portal.columns == null)
-                portal.columns = getColumns(portal.cachedResultSet, resolveQueryTargetType(portal));
+                portal.columns = getColumns(portal.cachedResultSet, resolveQueryTargetType(portal), resolveAliasToSourceProperty(portal));
               if (portal.columns.isEmpty() && portal.cachedResultSet.isEmpty()) {
                 final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(portal.query, portal.language,
                     getParams(portal), portal.sqlStatement);
@@ -503,7 +503,8 @@ public class PostgresNetworkExecutor extends Thread {
         if (portal.isExpectingResult && portal.cachedResultSet != null && !portal.cachedResultSet.isEmpty()) {
           final long serStart = System.nanoTime();
           // Query returned results - send them
-          final Map<String, PostgresType> dataRowColumns = getColumns(portal.cachedResultSet, resolveQueryTargetType(portal));
+          final Map<String, PostgresType> dataRowColumns = getColumns(portal.cachedResultSet, resolveQueryTargetType(portal),
+              resolveAliasToSourceProperty(portal));
 
           if (DEBUG)
             LogManager.instance().log(this, Level.INFO,
@@ -672,7 +673,7 @@ public class PostgresNetworkExecutor extends Thread {
 
       final long serStart = System.nanoTime();
       Map<String, PostgresType> columns = catalogAnswer != null ? catalogAnswer.columns()
-          : getColumns(cachedResultSet, resolveQueryTargetType(parsedStatement));
+          : getColumns(cachedResultSet, resolveQueryTargetType(parsedStatement), resolveAliasToSourceProperty(parsedStatement));
       if (columns.isEmpty() && cachedResultSet.isEmpty()) {
         final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(query.query, query.language, NO_PARAMETERS,
             parsedStatement);
@@ -859,17 +860,21 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   private Map<String, PostgresType> getColumns(final List<Result> resultSet) {
-    return getColumns(resultSet, null);
+    return getColumns(resultSet, null, Map.of());
   }
 
   /**
-   * @param queryTargetType the schema type the query's FROM target names, or null when it is not a plain
-   *                        "FROM &lt;type&gt;" or was not resolved. Falls back {@link #getDeclaredProperty} to
-   *                        this type when a row is not itself an element - which a query that projects specific
-   *                        columns ("SELECT col FROM Type") produces for every row, since only the projected
-   *                        values travel with it, not the backing element.
+   * @param queryTargetType       the schema type the query's FROM target names, or null when it is not a plain
+   *                              "FROM &lt;type&gt;" or was not resolved. Falls back {@link #getDeclaredProperty}
+   *                              to this type when a row is not itself an element - which a query that projects
+   *                              specific columns ("SELECT col FROM Type") produces for every row, since only the
+   *                              projected values travel with it, not the backing element.
+   * @param aliasToSourceProperty maps an aliased projection's output column name back to the property it reads
+   *                              (issue #6473), e.g. {@code "x" -> "amount"} for {@code SELECT amount AS x}; see
+   *                              {@link #resolveAliasToSourceProperty(Statement)}.
    */
-  private Map<String, PostgresType> getColumns(final List<Result> resultSet, final DocumentType queryTargetType) {
+  private Map<String, PostgresType> getColumns(final List<Result> resultSet, final DocumentType queryTargetType,
+      final Map<String, String> aliasToSourceProperty) {
     final Map<String, PostgresType> columns = new LinkedHashMap<>();
 
     boolean atLeastOneElement = false;
@@ -893,10 +898,10 @@ public class PostgresNetworkExecutor extends Thread {
           // Prefer the declared "LIST OF <type>" (issue #5289) so a column's OID does not depend on whether
           // the first row's list happens to be empty.
           if (value instanceof Collection<?> collection && collection.isEmpty()) {
-            final PostgresType declaredType = getDeclaredListType(row, p, queryTargetType);
+            final PostgresType declaredType = getDeclaredListType(row, p, queryTargetType, aliasToSourceProperty);
             if (declaredType != null)
               pgType = declaredType;
-          } else if (pgType == PostgresType.DATE && isDeclaredAsDatetime(row, p, queryTargetType)) {
+          } else if (pgType == PostgresType.DATE && isDeclaredAsDatetime(row, p, queryTargetType, aliasToSourceProperty)) {
             // java.util.Date is the default Java runtime type of both Type.DATE and Type.DATETIME* (issue
             // #6447), so getTypeForValue cannot tell them apart from the value alone and always answers DATE.
             // Prefer the schema's declared type when it can be found, the same way the empty-list case above
@@ -957,6 +962,55 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   /**
+   * Memoized on the portal, mirroring {@link #resolveQueryTargetType(PostgresPortal)}.
+   */
+  private Map<String, String> resolveAliasToSourceProperty(final PostgresPortal portal) {
+    if (!portal.aliasToSourcePropertyResolved) {
+      portal.aliasToSourceProperty = resolveAliasToSourceProperty(portal.sqlStatement);
+      portal.aliasToSourcePropertyResolved = true;
+    }
+    return portal.aliasToSourceProperty;
+  }
+
+  /**
+   * Maps a SELECT projection's output column name back to the bare property it reads, when the two differ
+   * (issue #6473): {@code SELECT amount AS x} maps {@code "x" -> "amount"}. Used by {@link #getDeclaredProperty}
+   * to resolve the schema-context fallback through an alias instead of missing it, since the row only ever
+   * carries the OUTPUT name ({@code propertyName} there).
+   * <p>
+   * Only a bare property reference ({@link Expression#isBaseIdentifier()}) is mapped - a computed expression
+   * (aliased or not) has no single source property to fall back to, and is correctly left out so the caller
+   * keeps its existing value-only guess for that column. An explicit alias that happens to repeat the source
+   * property name ({@code SELECT amount AS amount}) is also left out: {@code propertyName} already equals it,
+   * so the direct lookup in {@link #getDeclaredProperty} already succeeds without this map.
+   */
+  private Map<String, String> resolveAliasToSourceProperty(final Statement statement) {
+    if (!(statement instanceof SelectStatement select) || select.getProjection() == null)
+      return Map.of();
+
+    final List<ProjectionItem> items = select.getProjection().getItems();
+    if (items == null || items.isEmpty())
+      return Map.of();
+
+    Map<String, String> aliasToProperty = null;
+    for (final ProjectionItem item : items) {
+      if (item.getAlias() == null || item.getExpression() == null || !item.getExpression().isBaseIdentifier())
+        continue;
+
+      final String alias = item.getProjectionAliasAsString();
+      final String sourceProperty = item.getExpression().getDefaultAlias().getStringValue();
+      if (alias.equals(sourceProperty))
+        continue;
+
+      if (aliasToProperty == null)
+        aliasToProperty = new HashMap<>();
+      aliasToProperty.put(alias, sourceProperty);
+    }
+
+    return aliasToProperty != null ? aliasToProperty : Map.of();
+  }
+
+  /**
    * Returns the schema property backing {@code propertyName}, or null when it cannot be found. {@code row}
    * itself is an element - and so carries its own {@link DocumentType} - only for a whole-entity projection
    * ("SELECT FROM Type" or "SELECT *"); a query that projects specific columns ("SELECT col FROM Type") produces
@@ -966,27 +1020,33 @@ public class PostgresNetworkExecutor extends Thread {
    * declared type over a guess made from a single sample value.
    * <p>
    * {@code propertyName} is the row's own column name, which for an aliased or computed projection ({@code
-   * SELECT amount AS x FROM Type}) is the alias, not the source property - so the lookup misses and the caller
-   * falls back to a value-only guess for that column. The "look up by row column name" pattern is inherited
-   * from #5289's {@link #getDeclaredListType}, which has the identical gap for an empty aliased LIST; the
-   * {@code queryTargetType} fallback added here for #6447 does not close it either. Resolving an alias back to
-   * its source property would need to walk the SELECT projection's expression tree, a materially larger piece
-   * of work than either fix.
+   * SELECT amount AS x FROM Type}) is the alias, not the source property - so a direct lookup misses. When the
+   * row is not itself an element (the {@code queryTargetType} fallback case, where this actually matters -
+   * see below), {@code aliasToSourceProperty} - resolved once per query by
+   * {@link #resolveAliasToSourceProperty(Statement)} - is tried next, closing the gap left by #5289's original
+   * {@link #getDeclaredListType} and by #6447's {@code queryTargetType} fallback (issue #6473).
    */
-  private Property getDeclaredProperty(final Result row, final String propertyName, final DocumentType queryTargetType) {
+  private Property getDeclaredProperty(final Result row, final String propertyName, final DocumentType queryTargetType,
+      final Map<String, String> aliasToSourceProperty) {
     final Document element = row.getElement().orElse(null);
     final DocumentType documentType = element != null ? element.getType() : queryTargetType;
     if (documentType == null)
       return null;
 
-    return documentType.getPolymorphicPropertyIfExists(propertyName);
+    final Property declared = documentType.getPolymorphicPropertyIfExists(propertyName);
+    if (declared != null || element != null)
+      return declared;
+
+    final String sourceProperty = aliasToSourceProperty.get(propertyName);
+    return sourceProperty != null ? documentType.getPolymorphicPropertyIfExists(sourceProperty) : null;
   }
 
   /**
    * Returns the array type declared by the schema for a LIST property, or null when it is not a declared LIST.
    */
-  private PostgresType getDeclaredListType(final Result row, final String propertyName, final DocumentType queryTargetType) {
-    final Property property = getDeclaredProperty(row, propertyName, queryTargetType);
+  private PostgresType getDeclaredListType(final Result row, final String propertyName, final DocumentType queryTargetType,
+      final Map<String, String> aliasToSourceProperty) {
+    final Property property = getDeclaredProperty(row, propertyName, queryTargetType, aliasToSourceProperty);
     if (property == null || property.getType() != Type.LIST)
       return null;
 
@@ -998,8 +1058,9 @@ public class PostgresNetworkExecutor extends Thread {
    * disambiguate a sampled {@code java.util.Date} value, which is the default Java runtime type of both
    * Type.DATE and every Type.DATETIME* and so cannot tell them apart on its own.
    */
-  private boolean isDeclaredAsDatetime(final Result row, final String propertyName, final DocumentType queryTargetType) {
-    final Property property = getDeclaredProperty(row, propertyName, queryTargetType);
+  private boolean isDeclaredAsDatetime(final Result row, final String propertyName, final DocumentType queryTargetType,
+      final Map<String, String> aliasToSourceProperty) {
+    final Property property = getDeclaredProperty(row, propertyName, queryTargetType, aliasToSourceProperty);
     if (property == null)
       return false;
 
@@ -1187,7 +1248,7 @@ public class PostgresNetworkExecutor extends Thread {
 
       if (!sampleRows.isEmpty()) {
         // Use the sample row to discover columns
-        final Map<String, PostgresType> cols = getColumns(sampleRows, docType);
+        final Map<String, PostgresType> cols = getColumns(sampleRows, docType, Map.of());
         if (DEBUG)
           LogManager.instance().log(this, Level.INFO,
               "PSQL: getColumnsFromType('%s') -> sampleQuery='%s', found %d rows, columns=%s (thread=%s)",
@@ -1411,7 +1472,7 @@ public class PostgresNetworkExecutor extends Thread {
 
       final ResultSet resultSet = sample.execute(database, parameters != null ? parameters : NO_PARAMETERS, context);
       final List<Result> sampleRows = browseAndCacheResultSet(resultSet, 1, false);
-      return sampleRows.isEmpty() ? null : getColumns(sampleRows, resolveQueryTargetType(select));
+      return sampleRows.isEmpty() ? null : getColumns(sampleRows, resolveQueryTargetType(select), resolveAliasToSourceProperty(select));
     } catch (final Exception e) {
       if (DEBUG)
         LogManager.instance().log(this, Level.WARNING, "PSQL: cannot replay the schema probe '%s': %s", parsed, e.getMessage());
