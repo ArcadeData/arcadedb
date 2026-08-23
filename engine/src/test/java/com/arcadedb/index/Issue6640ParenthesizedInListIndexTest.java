@@ -23,9 +23,11 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.StallAwareStopwatch;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
 import java.util.stream.Collectors;
 
@@ -48,6 +50,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * child list on every call (also O(n^2)). All three combined made a 15,000-value literal {@code IN()} on an
  * indexed property ~1000x slower than the identical values passed as a bound parameter; fixed, the two forms
  * perform the same.
+ * <p>
+ * Making the parenthesized list index-aware also exposed a pre-existing correctness bug shared with the bracket
+ * form: {@code isIndexAware()} never checked {@code not}, so {@code trackId NOT IN [2,5,9]} was already fetching
+ * the LISTED rows through the index instead of excluding them (same class of bug as #6575 for the native Select
+ * API - a negated leaf has no complement in {@code FetchFromIndexStep}). Fixed alongside this change by declining
+ * to use the index whenever {@code not} is set, for every right-hand shape.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -100,6 +108,28 @@ class Issue6640ParenthesizedInListIndexTest extends TestHelper {
   }
 
   @Test
+  void negatedParenthesizedInListDoesNotUseTheIndexAndExcludesTheListedRows() {
+    database.transaction(() -> {
+      for (int i = 0; i < 10; i++)
+        database.newVertex("Track").set("trackId", (long) i).save();
+    });
+
+    database.transaction(() -> {
+      // A negated IN has no complement in FetchFromIndexStep: every code path there builds a cursor over
+      // the values that DO match, not their complement. isIndexAware() must decline whenever `not` is set,
+      // for every right-hand shape (parenthesized list, bracket array, bound parameter) - not just this
+      // one - otherwise the query silently returns the listed rows instead of excluding them.
+      final ResultSet explain = database.query("sql", "explain select from Track where trackId not in (2, 5, 9)");
+      assertThat(explain.getExecutionPlan().get().prettyPrint(0, 2)).doesNotContain("FETCH FROM INDEX");
+
+      final List<Long> ids = database.query("sql", "select trackId from Track where trackId not in (2, 5, 9) order by trackId")
+          .stream().map(r -> r.<Long>getProperty("trackId")).toList();
+      assertThat(ids).containsExactly(0L, 1L, 3L, 4L, 6L, 7L, 8L);
+    });
+  }
+
+  @Test
+  @Tag("slow")
   void literalAndBoundParameterFormsAgreeOnLargeLists() {
     final int ROWS = 20_000;
     database.transaction(() -> {
@@ -113,7 +143,7 @@ class Issue6640ParenthesizedInListIndexTest extends TestHelper {
     database.transaction(() -> {
       final List<Long> viaLiteral = database.query("sql", "select from Track where trackId in (" + literalInList + ")")
           .stream().map(r -> r.<Long>getProperty("trackId")).toList();
-      final List<Long> viaBoundParam = database.query("sql", "select from Track where trackId in :ids", java.util.Map.of("ids", chosen))
+      final List<Long> viaBoundParam = database.query("sql", "select from Track where trackId in :ids", Map.of("ids", chosen))
           .stream().map(r -> r.<Long>getProperty("trackId")).toList();
 
       assertThat(viaLiteral).containsExactlyInAnyOrderElementsOf(chosen);
@@ -122,6 +152,7 @@ class Issue6640ParenthesizedInListIndexTest extends TestHelper {
   }
 
   @Test
+  @Tag("slow")
   void largeLiteralInListStaysNearLinearNotQuadratic() {
     final int ROWS = 30_000;
     database.transaction(() -> {
