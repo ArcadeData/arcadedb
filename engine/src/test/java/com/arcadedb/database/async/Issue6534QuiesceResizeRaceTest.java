@@ -20,6 +20,7 @@ package com.arcadedb.database.async;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -47,7 +48,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class Issue6534QuiesceResizeRaceTest extends TestHelper {
 
+  // The 3s polling window below (code review, PR #6661) puts this on the slower end - comparable to the
+  // WORKER_HOLD_MS-scale tests in Issue6526AsyncExecutorFollowUpsTest, which carry the same tag.
   @Test
+  @Tag("slow")
   @Timeout(60)
   void aGrowCannotPublishWhileAQuiescenceIsStillWaitingOnABusyWorker() throws Exception {
     final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) ((DatabaseInternal) database).async();
