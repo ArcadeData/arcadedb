@@ -125,5 +125,16 @@ public class ProfileStatement extends Statement {
   public boolean isIdempotent() {
     return true;
   }
+
+  /**
+   * Delegates to the wrapped statement. Same gap and same fix as
+   * {@link ExplainStatement#refersToParent()}: without this override, {@code
+   * LET $x = (PROFILE <statement>)} inside a SELECT's LET clause throws
+   * {@code UnsupportedOperationException} out of {@code Statement.refersToParent()}'s default.
+   */
+  @Override
+  public boolean refersToParent() {
+    return statement.refersToParent();
+  }
 }
 /* JavaCC - OriginalChecksum=9fdd24510993cbee32e38a51c838bdb4 (do not edit this line) */
