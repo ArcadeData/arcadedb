@@ -58,6 +58,15 @@ public class PostgresPortal {
    * current slice (what the in-flight Execute is about to write to the wire), matching what every existing
    * reader of that field already expects; this field is what makes a second slice possible without re-running
    * the statement or losing the rows a Describe already had to materialize to discover the row's columns.
+   * <p>
+   * <b>Known limitation</b> (tracked as issue #6659): this is eager, in-memory pagination over a fully
+   * materialized list, not a true streaming cursor - the whole result is pulled into memory (and retained for
+   * the portal's whole lifetime) before the first row goes out, regardless of the client's row-limit. A client
+   * that always Describes first (pgjdbc, notably) already got this treatment before #6458, since
+   * {@code describeCommand()} has to read every row to discover a sparse document's full column set - but a
+   * raw wire-protocol client that skips Describe and relies on Execute's row-limit to bound server-side memory
+   * over a large result no longer gets that bound. Real streaming would need the source {@code ResultSet} kept
+   * open across Execute calls instead of closed immediately by {@code browseAndCacheResultSet}.
    */
   public List<Result>              fullResultSet;
   /**

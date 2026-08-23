@@ -1692,6 +1692,11 @@ public class PostgresNetworkExecutor extends Thread {
 
       // Look up the prepared statement (stored during PARSE)
       // The portal name may be different (often empty for unnamed portal)
+      // KNOWN ISSUE (#6660): this reuses the SAME PostgresPortal instance in place rather than cloning it, and
+      // nothing below resets executed/fullResultSet/resultCursor/columns/rowDescriptionSent before the new
+      // parameter values are bound in. A second Bind+Execute cycle on this prepared statement (new params, no
+      // new Parse - what pgjdbc does once it promotes a repeated PreparedStatement to a named server-side
+      // statement) therefore skips re-running the query and re-serves the first run's stale result.
       PostgresPortal portal = getPortal(sourcePreparedStatement, false);
       if (portal == null) {
         // Try with portal name as fallback for backwards compatibility
