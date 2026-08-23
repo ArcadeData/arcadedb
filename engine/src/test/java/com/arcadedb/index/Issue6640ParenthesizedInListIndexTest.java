@@ -182,10 +182,13 @@ class Issue6640ParenthesizedInListIndexTest extends TestHelper {
     // 15,000-item literal IN() take ~40s where the equivalent bound parameter took ~50ms (#6640).
     database.transaction(() -> database.query("sql", buildInQuery(2_000)).close());
 
+    // assertStayedUnder, not assertGaveUpWithin: the bound IS the assertion here, standing in for the
+    // near-linear complexity claim - there is no other practical way to express "not quadratic". Widening
+    // this bound would not be a safe loosening, it would quietly delete the regression coverage.
     final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     database.transaction(() -> database.query("sql", buildInQuery(20_000)).close());
-    stopwatch.assertGaveUpWithin(5_000,
-        "a near-linear 20,000-item literal IN() against an indexed property from the pre-fix quadratic full-scan/copy/parse cost");
+    stopwatch.assertStayedUnder(5_000,
+        "a near-linear 20,000-item literal IN() against an indexed property, not the pre-fix quadratic full-scan/copy/parse cost");
   }
 
   private String buildInQuery(final int n) {
