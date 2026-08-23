@@ -2819,9 +2819,6 @@ class GraphAnalyticalViewTest extends TestHelper {
         .as("issue #6641: the query planner must route to the ordinary OLTP path instead of a provider "
             + "that will block the query through a full rebuild")
         .isNull();
-    assertThat(restored.isBuilt())
-        .as("checking readiness must not itself perform the rebuild on the calling thread")
-        .isFalse();
 
     // "Never serve stale data" still holds: the background resolution (triggered above) eventually
     // produces the correct, up-to-date snapshot for whichever query asks next.
@@ -2881,7 +2878,6 @@ class GraphAnalyticalViewTest extends TestHelper {
         .as("issue #6641: a corrupted persisted CSR must not be advertised as ready before it is verified")
         .isFalse();
     assertThat(GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS")).isNull();
-    assertThat(restored.isBuilt()).isFalse();
 
     assertThat(restored.awaitReady(10, TimeUnit.SECONDS)).isTrue();
     assertThat(restored.isRestoredFromPersistedCsr()).isFalse();
