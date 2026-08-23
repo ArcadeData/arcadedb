@@ -20,6 +20,7 @@ package com.arcadedb.function.text;
 
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
@@ -47,7 +48,9 @@ public class RightFunction implements StatelessFunction {
     if (args[0] == null || args[1] == null)
       return null;
     final String str = args[0].toString();
-    final int length = ((Number) args[1]).intValue();
+    // Issue #6609: a value outside INTEGER | FLOAT (e.g. a LIST) is a client-facing type error, not the unchecked
+    // cast's ClassCastException, which used to escape as HTTP 500. Same treatment as the numeric family (#5484).
+    final int length = CypherFunctionHelper.requireNumberArgument(args[1], getName()).intValue();
     if (length < 0)
       // Invalid user-supplied argument value: surface as a client error (HTTP 400), matching Neo4j/Memgraph.
       // CommandSemanticException extends CommandParsingException, which the HTTP handler maps to 400. See issue #5296.
