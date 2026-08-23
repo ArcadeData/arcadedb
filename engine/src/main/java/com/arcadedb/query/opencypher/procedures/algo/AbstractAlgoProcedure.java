@@ -605,12 +605,22 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
 
     // For whole-graph algorithms (null/empty relTypes), accept any ready provider that covers
     // all edge types. A partial-coverage provider would silently produce wrong results.
-    if (relTypes == null || relTypes.length == 0) {
-      for (final GraphTraversalProvider p : GraphTraversalProviderRegistry.getProviders(db))
-        if (p.isReady() && p.coversEdgeType(null))
-          return p;
+    if (relTypes != null && relTypes.length != 0)
+      return null;
+    // Coverage checked before readiness: coversEdgeType() is a pure config check, while a
+    // GraphAnalyticalView's isReady() (see #6641) dispatches its deferred restore-from-disk as a
+    // side effect when one is pending. Checking coverage first means a whole-graph algorithm only
+    // ever pays that cost for a provider it could actually use, not for every registered one -
+    // otherwise this loop would eagerly resolve every other view's deferred restore too, same
+    // regression GraphTraversalProviderRegistry.findProvider() was fixed against.
+    final Iterator<GraphTraversalProvider> iterator = GraphTraversalProviderRegistry.getProviders(db).iterator();
+    GraphTraversalProvider found = null;
+    while (found == null && iterator.hasNext()) {
+      final GraphTraversalProvider p = iterator.next();
+      if (p.coversEdgeType(null) && p.isReady())
+        found = p;
     }
-    return null;
+    return found;
   }
 
   /**

@@ -30,6 +30,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import com.arcadedb.graph.olap.GraphAnalyticalView;
+import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -233,6 +234,71 @@ class AlgoPageRankTest {
     assertThat(sum).isBetween(0.9, 1.1);
 
     gav.shutdown();
+  }
+
+  /**
+   * Regression for issue #6641 code review: {@code AbstractAlgoProcedure.findProvider()}'s whole-graph
+   * fallback loop (used when {@code relTypes} is null, e.g. plain {@code algo.pagerank()}) used to call
+   * {@code isReady()} before {@code coversEdgeType()} - the same ordering bug already fixed in
+   * {@link com.arcadedb.graph.GraphTraversalProviderRegistry#findProvider}, just at a second call site.
+   * Since {@code isReady()} now dispatches a {@link GraphAnalyticalView}'s deferred restore-from-disk as a
+   * side effect when one is pending (see #6641), calling it before checking coverage meant a whole-graph
+   * algorithm would eagerly resolve every registered view's deferred restore, not only the one it can
+   * actually use. Verifies the fix with two persisted-CSR views reopened in the same database: one that
+   * does not cover all edge types (registered first, so the loop has to skip past it) and one that does -
+   * running {@code algo.pagerank()} must resolve only the latter, leaving the former's deferred restore
+   * completely untouched.
+   */
+  @Test
+  void pageRankFindProviderDoesNotTriggerUnrelatedViewsDeferredRestore() throws Exception {
+    database.getSchema().createEdgeType("OTHER");
+    database.transaction(() -> {
+      final MutableVertex x = database.newVertex("Page").set("name", "X").save();
+      final MutableVertex y = database.newVertex("Page").set("name", "Y").save();
+      x.newEdge("OTHER", y, true, (Object[]) null).save();
+    });
+
+    // Registered first, but does not cover every edge type in the schema (LINKS and OTHER) - not a valid
+    // whole-graph candidate, so the fixed loop must skip it without ever calling isReady() on it.
+    GraphAnalyticalView.builder(database)
+        .withName("pagerank-order-other")
+        .withVertexTypes("Page")
+        .withEdgeTypes("OTHER")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
+        .build();
+    // No edge-type filter - covers every edge type, the whole-graph candidate algo.pagerank() should use.
+    GraphAnalyticalView.builder(database)
+        .withName("pagerank-order-whole")
+        .withVertexTypes("Page")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
+        .build();
+
+    final String dbPath = database.getDatabasePath();
+    database.close();
+    database = new DatabaseFactory(dbPath).open();
+
+    final GraphAnalyticalView other = GraphAnalyticalViewRegistry.get(database, "pagerank-order-other");
+    final GraphAnalyticalView whole = GraphAnalyticalViewRegistry.get(database, "pagerank-order-whole");
+    assertThat(other).isNotNull();
+    assertThat(whole).isNotNull();
+    assertThat(other.getStatus())
+        .as("both persisted CSRs must still be provisionally READY, unresolved, right after reopen")
+        .isEqualTo(GraphAnalyticalView.Status.READY);
+    assertThat(whole.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+
+    try (final ResultSet rs = database.query("opencypher",
+        "CALL algo.pagerank({dampingFactor: 0.85, maxIterations: 5, tolerance: 0.0001}) YIELD node, score RETURN count(*) AS c")) {
+      assertThat(rs.hasNext()).isTrue();
+    }
+
+    assertThat(other.getStatus())
+        .as("issue #6641: a whole-graph algorithm must not eagerly resolve an unrelated view's deferred "
+            + "restore just because it was iterated over while searching for a usable provider")
+        .isEqualTo(GraphAnalyticalView.Status.READY);
+    assertThat(other.isBuilt()).isFalse();
+
+    other.drop();
+    whole.drop();
   }
 
   @Test
