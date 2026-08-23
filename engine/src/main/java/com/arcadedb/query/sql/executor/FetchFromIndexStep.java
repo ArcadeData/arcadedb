@@ -103,6 +103,10 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
     init(context.getDatabase());
 
+    // A blocking consumer (aggregation, ORDER BY, DISTINCT) with no WHERE to guard can otherwise drain
+    // the whole index past arcadedb.command.timeout without anything ever checking it (issue #6465).
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+
     return new ResultSet() {
       int localCount = 0;
 
@@ -121,6 +125,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       public Result next() {
         if (!hasNext())
           throw new NoSuchElementException();
+
+        guard.check();
 
         final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {

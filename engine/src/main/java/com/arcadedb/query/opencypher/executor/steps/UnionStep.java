@@ -75,7 +75,7 @@ public class UnionStep extends AbstractExecutionStep {
       private ResultSet currentResultSet = null;
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
-      private final Set<String> seenResults = removeDuplicates ? new HashSet<>() : null;
+      private final Set<List<Object>> seenResults = removeDuplicates ? new HashSet<>() : null;
       private boolean finished = false;
 
       @Override
@@ -131,7 +131,7 @@ public class UnionStep extends AbstractExecutionStep {
 
               // Apply deduplication for UNION (not UNION ALL)
               if (removeDuplicates) {
-                final String resultKey = buildResultKey(result);
+                final List<Object> resultKey = buildResultKey(result);
                 if (seenResults.contains(resultKey))
                   continue; // Skip duplicate
                 seenResults.add(resultKey);
@@ -151,7 +151,7 @@ public class UnionStep extends AbstractExecutionStep {
        * DistinctNumericKey so numerically-equal values (issue #5789) and graph-element references
        * sharing one RID (issue #6488) collapse together.
        */
-      private String buildResultKey(final Result result) {
+      private List<Object> buildResultKey(final Result result) {
         return DistinctNumericKey.buildKey(result.getPropertyNames(), result::getProperty);
       }
 

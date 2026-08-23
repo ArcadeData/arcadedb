@@ -69,6 +69,10 @@ public class FetchFromRidsStep extends AbstractExecutionStep {
       this.rids = SelectExecutionPlanner.resolveRidEqualityOrInListAtRuntime(ridCondition, context);
       iterator = this.rids.iterator();
     }
+    // A RID list dominated by missing/deleted entries scans the whole list inside one fetchNext() call, the
+    // same class of unbounded-inner-loop gap ScanWithFilterStep guards for a WHERE that rejects everything
+    // (issue #6465).
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     return new ResultSet() {
       int internalNext = 0;
 
@@ -77,6 +81,7 @@ public class FetchFromRidsStep extends AbstractExecutionStep {
           return;
         }
         while (iterator.hasNext()) {
+          guard.check();
           final RID nextRid = iterator.next();
           if (nextRid == null)
             continue;
