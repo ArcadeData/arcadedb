@@ -308,8 +308,17 @@ public class DeleteStep extends AbstractExecutionStep {
             // relationships-deleted matches Neo4j (deleteObjectStatic skips any already in `deleted`).
             for (final Edge edge : collectConnectedEdges(v))
               deleteObjectStatic(edge, deleted, stats);
-          v.delete();
-          stats.incNodesDeleted();
+          try {
+            v.delete();
+            stats.incNodesDeleted();
+          } catch (final RecordNotFoundException ignored) {
+            // Already removed by an earlier FOREACH iteration's flush. `deleted` is rebuilt fresh on
+            // every flushDeferredDeletes call (one per outer row), so it cannot by itself remember a
+            // vertex an EARLIER outer row's flush already deleted - only ForeachStep's eager
+            // materialization (issue #6491) guarantees every row still sees a consistent read; distinct
+            // rows can still legitimately bind the very same vertex (a disconnected-pattern MATCH's
+            // cross join), and Neo4j treats deleting an already-deleted node as a no-op, not an error.
+          }
           deleted.add(v);
         } else {
           throw new CommandExecutionException("DeleteConnectedNode: Cannot delete node "
