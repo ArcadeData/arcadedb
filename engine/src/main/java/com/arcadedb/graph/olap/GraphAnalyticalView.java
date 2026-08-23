@@ -1652,6 +1652,22 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
             // No usable file after all (vanished, corrupted, or invalidated by a commit that landed while
             // this was pending and unwatched) — fall back exactly as the eager #6583 path always did.
             buildAsync();
+        } catch (final Exception e) {
+          // tryRestoreFromPersistedCsr() only catches around its own load() call, so anything else
+          // unexpected (e.g. the database closing mid-check) would otherwise leave status stuck at
+          // BUILDING forever - awaitDeferredDiskRestoreSettled()'s loop would then busy-spin on every
+          // future checkBuilt() call (its latch is already counted down, so await() returns instantly,
+          // and status never leaves BUILDING to end the loop). Mirrors buildAsync()'s own catch exactly.
+          synchronized (this) {
+            buildError = e;
+            status = snapshot != null ? Status.STALE : Status.NOT_BUILT;
+            notifyAll();
+          }
+          if (isBenignShutdownError(e))
+            LogManager.instance().log(this, Level.FINE,
+                "Deferred restore of GraphAnalyticalView '%s' aborted because the database is closing", name);
+          else
+            LogManager.instance().log(this, Level.WARNING, "Failed to resolve deferred restore for GraphAnalyticalView '%s'", e, name);
         } finally {
           latch.countDown();
           taskCompleted();
@@ -2306,12 +2322,20 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * {@link #getStatus()}, this method's caller has no OLTP fallback once it is already here, so this
    * blocks (no timeout — same contract {@link #build()} already has for a cold view) until the deferred
    * work resolves one way or another.
+   * <p>
+   * Gates the wait on {@code status == BUILDING} rather than on {@code pendingDiskRestore}: the latter is
+   * a "has this been dispatched yet" flag that {@link #triggerDeferredDiskRestoreIfPending} clears for
+   * every caller the instant the FIRST one dispatches it, not a "is work still in flight" flag. Gating on
+   * it directly would let a second, concurrent caller land here after dispatch but before completion, see
+   * {@code pendingDiskRestore == false}, and fall straight through to the exception below despite the
+   * view being legitimately mid-restore rather than actually broken.
    */
   private Snapshot checkBuilt() {
     Snapshot snap = this.snapshot;
-    if (snap == null && pendingDiskRestore) {
-      triggerDeferredDiskRestoreIfPending();
-      awaitDeferredDiskRestoreSettled();
+    if (snap == null) {
+      triggerDeferredDiskRestoreIfPending(); // no-op if another thread already dispatched it
+      if (status == Status.BUILDING)
+        awaitDeferredDiskRestoreSettled();
       snap = this.snapshot;
     }
     if (snap == null)

@@ -2592,6 +2592,71 @@ class GraphAnalyticalViewTest extends TestHelper {
   }
 
   /**
+   * Regression for issue #6632 code review: a second, concurrent query landing after the first has already
+   * dispatched the deferred restore, but before it completes, must wait for it too — not throw. The bug
+   * this pins: {@code pendingDiskRestore} is a "has this been dispatched yet" flag, cleared for every
+   * caller the instant the FIRST one dispatches it; a {@code checkBuilt()} that gated its wait on that flag
+   * directly would let a second caller see it already {@code false} and fall straight through to {@code
+   * IllegalStateException}, despite the view being legitimately mid-restore rather than actually broken.
+   * Two threads call {@code getNodeCount()} at (as close to) the same instant as a {@link CyclicBarrier}
+   * can arrange, immediately after reopen; both must return successfully with the correct data.
+   */
+  @Test
+  void csrLazyRestoreConcurrentFirstQueriesBothSucceed() throws Exception {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").save();
+    final MutableVertex b = database.newVertex("Person").save();
+    a.newEdge("FOLLOWS", b);
+    database.commit();
+
+    GraphAnalyticalView.builder(database)
+        .withName("csr-lazy-concurrent-test")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
+        .build();
+
+    reopenDatabase();
+
+    final GraphAnalyticalView restored = GraphAnalyticalViewRegistry.get(database, "csr-lazy-concurrent-test");
+    assertThat(restored).isNotNull();
+    assertThat(restored.isBuilt())
+        .as("nothing has triggered the deferred restore yet")
+        .isFalse();
+
+    final int threadCount = 2;
+    final CyclicBarrier barrier = new CyclicBarrier(threadCount);
+    final int[] results = new int[threadCount];
+    final Throwable[] failures = new Throwable[threadCount];
+    final Thread[] threads = new Thread[threadCount];
+    for (int t = 0; t < threadCount; t++) {
+      final int idx = t;
+      threads[t] = new Thread(() -> {
+        try {
+          barrier.await(5, TimeUnit.SECONDS);
+          results[idx] = restored.getNodeCount();
+        } catch (final Throwable e) {
+          failures[idx] = e;
+        }
+      });
+      threads[t].start();
+    }
+    for (final Thread thread : threads)
+      thread.join(10_000);
+
+    for (int t = 0; t < threadCount; t++)
+      assertThat(failures[t])
+          .as("thread %d must not throw while another thread's deferred restore is in flight", t)
+          .isNull();
+    for (int t = 0; t < threadCount; t++)
+      assertThat(results[t]).isEqualTo(2);
+
+    restored.drop();
+  }
+
+  /**
    * Regression for issue #6632: a session that opens a database with a persisted-CSR view and never
    * queries it must not pay for the deferred restore at shutdown() either — shutdown() has no reason to
    * wait for work that was never triggered, and {@code persistCsrIfPossible()} must not attempt to
