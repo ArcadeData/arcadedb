@@ -89,6 +89,17 @@ public class BucketIndexBuilder extends IndexBuilder<Index> {
     // async worker is still holding in its open batch, and produce the same silently incomplete index #6281 is about.
     // Holding it twice on the paths that already do is free: quiescence is reentrant per thread.
     //
+    // DRAINED FIRST, exactly as TypeIndexBuilder and RebuildIndexStatement already do, and not merely as a copy of
+    // their comment (issue #6462). A bidirectional cross-slot edge schedules its incoming-edge cascade task onto the
+    // destination worker from INSIDE the source task's own callback (DatabaseAsyncExecutorImpl#newEdge), which can
+    // still be sitting queued - unscheduled or unexecuted - at the instant quiesceAsync() below hands out its park
+    // tasks: a park already confirmed on that destination worker does not wait for a cascade that lands on it
+    // afterwards, so the scan below could run without ever seeing that edge's IN side. waitForAsyncCompletion()'s own
+    // re-scan loop (issue #6281) is what closes that window - it does not return until a whole pass finds nothing
+    // left to drain, cascades included - so quiesceAsync() then starts from an executor that is genuinely idle rather
+    // than racing it.
+    database.waitForAsyncCompletion();
+
     // A QUIESCENCE AND NOT JUST THE BARRIER OF #6281 (issue #6303, item 2). The barrier answers about the past, and
     // that is only half of what a build needs: the other half is that nothing writes DURING the scan. This method
     // used to reach for that half with a pause task per worker, scheduled and forgotten - the boolean scheduleTask
