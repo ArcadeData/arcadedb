@@ -422,6 +422,11 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
             // is durable), this fires only once the commit above has actually happened. Before this it fired only
             // at shutdown and from the waitCompletion() marker, so a long-running worker that kept hitting this
             // periodic boundary never told an onOk() listener anything until it stopped.
+            //
+            // onOk() only ever swallows an Exception thrown by the registered callback, not an Error - one would
+            // propagate out of this block with the commit above already done but database.begin() below not yet
+            // reached. Harmless: the next task's own `!database.isTransactionActive()` check in this same method
+            // begins a fresh transaction regardless, exactly as it would if this worker had never held one open.
             onOk();
             database.begin();
             // TransactionContext.begin()/reset() never reset useWAL/walFlush, so the stamp above would
