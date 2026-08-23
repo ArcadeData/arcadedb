@@ -130,6 +130,31 @@ public class SelectCompositeIndexTest extends TestHelper {
   }
 
   @Test
+  void compositeIndexPrefixMatchWithOrderByDescLimitOneAfterDeletingTopWithinSameTransaction() {
+    // FOLLOW-UP TO ISSUE #6592: DELETING THE CURRENT TOP OF THE GROUP AND IMMEDIATELY QUERYING BACK, ALL WITHIN
+    // THE SAME STILL-OPEN TRANSACTION, USED TO MAKE THE COMPOSITE-INDEX RANGE SCAN RETURN NOTHING AT ALL INSTEAD
+    // OF FALLING THROUGH TO THE NEXT SURVIVING ROW - SEE LSMTreeIndexCursor.getClosestEntryInTx()
+    final List<Vertex> top = database.select().fromType("Supplier")//
+        .where().property("key1").eq().value("a")//
+        .and().property("key2").eq().value("b")//
+        .and().property("orderedAt").eq().value((long) (GROUP_SIZE - 1))//
+        .compile().vertices().toList();
+    top.forEach(Vertex::delete);
+
+    final SelectCompiled select = database.select().fromType("Supplier")//
+        .where().property("key1").eq().value("a")//
+        .and().property("key2").eq().value("b")//
+        .orderBy("orderedAt", false)//
+        .limit(1)//
+        .compile();
+
+    final Vertex first = select.vertices().nextOrNull();
+
+    assertThat(first).isNotNull();
+    assertThat(first.getLong("orderedAt")).isEqualTo(GROUP_SIZE - 2);
+  }
+
+  @Test
   void compositeIndexPartialPrefixStillUsed() {
     // ONLY key1 IS BOUND: STILL A VALID (SHORTER) PREFIX OF THE SAME COMPOSITE INDEX
     final SelectCompiled select = database.select().fromType("Supplier")//
