@@ -188,6 +188,12 @@ public class OpenCypherTrailDetachDeleteIssue6491Test {
    * {@code MatchClause#hasDisconnectedPathPatterns()} is true for this MATCH) on a case the optimizer
    * plans safely without it: it must still delete exactly the one self-loop node once and return all
    * three fan-out rows unchanged.
+   * <p>
+   * This is also the only test that exercises the {@code DeleteStep} construction site inside
+   * {@code CypherExecutionPlan.buildExecutionStepsWithOptimizer()} with a disconnected-pattern MATCH -
+   * the other two construction sites (the traditional ordered-clause build and the legacy fixed-order
+   * build) are covered by the fuzzer-derived repro above, which is routed to the traditional path by
+   * its leading {@code CALL} clause.
    */
   @Test
   void detachDeleteOfSelfLoopCrossJoinedWithUnrelatedPatternDeletesOnceAndReturnsAllRows() {
