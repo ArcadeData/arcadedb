@@ -172,12 +172,13 @@ public class GraphTraversalProviderRegistry {
 
     final long deadlineNanos = System.nanoTime() + unit.toNanos(timeout);
     for (final GraphTraversalProvider provider : list) {
-      // A GraphAnalyticalView always goes through awaitReady(), regardless of isReady(): since a deferred
-      // restore-from-disk (see #6632) reports READY the moment a persisted CSR plausibly applies, before
-      // the disk read that actually resolves it has even run, isReady() alone is no longer a trustworthy
-      // "nothing left to do" signal for this provider type - awaitReady() is the one call that triggers
-      // that read. It is cheap/idempotent once nothing is pending (its own trigger call no-ops and the
-      // wait loop returns immediately), so this costs nothing extra for an already-settled view.
+      // A GraphAnalyticalView always goes through awaitReady(), regardless of isReady(): isReady() is
+      // accurate (see #6641 - it reports not-ready while a deferred restore-from-disk, #6632, is still
+      // unresolved rather than optimistically READY) but deliberately non-blocking, and this method's
+      // whole point is to actually wait for the deferred read to resolve, not just to ask whether it
+      // already has. awaitReady() is the one call that both triggers that read and blocks for it. It is
+      // cheap/idempotent once nothing is pending (its own trigger call no-ops and the wait loop returns
+      // immediately), so this costs nothing extra for an already-settled view.
       if (provider instanceof GraphAnalyticalView) {
         final long remainingNanos = deadlineNanos - System.nanoTime();
         if (remainingNanos <= 0)
