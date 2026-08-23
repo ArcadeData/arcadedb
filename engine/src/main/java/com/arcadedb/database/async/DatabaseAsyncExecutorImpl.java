@@ -141,6 +141,12 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    * Serializes {@link #setParallelLevel(int)} against itself, and is held for the WHOLE resize - the publish AND
    * the wait for whatever the publish retired (issue #6526 review, point 2).
    * <p>
+   * Since issue #6534 it has a second holder with a different bound: {@link #quiesceWorkers()} takes it for its
+   * WHOLE quiescence too - the park-task scheduling AND the wait for every worker to confirm parked - not only the
+   * scheduling loop. So contention on this lock can now mean either a resize waiting on
+   * {@code shutdownJoinTimeoutMs} (10s default) or a quiescence waiting on {@link #quiesceTimeoutMillis()} (60s
+   * default); see the javadoc of both methods for why each holds it that long.
+   * <p>
    * The drain wait cannot be taken under {@code lifecycleLock}: that lock is what a concurrent {@code close()} or
    * {@code kill()} needs to force the very workers being waited for, so holding it across the wait would make the
    * wait the thing that prevents its own end. But releasing every lock leaves a second resize free to grow the pool
