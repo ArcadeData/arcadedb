@@ -20,7 +20,9 @@ package com.arcadedb.query.opencypher.ast;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Represents a MATCH clause in a Cypher query.
@@ -127,5 +129,35 @@ public class MatchClause {
    */
   public boolean hasWhereClause() {
     return whereClause != null;
+  }
+
+  /**
+   * True when this MATCH is made of two or more path patterns that share no node variable, e.g.
+   * {@code MATCH (a)-[]->(b), (c)-[]->(d)} or a self-loop pattern such as {@code (n)<-[]-(n)}
+   * cross-joined with an unrelated pattern. Such a MATCH can bind the very same underlying vertex or
+   * edge from more than one output row (the disconnected component is re-enumerated once per row of
+   * the other component), which matters to a write clause following this MATCH with no intervening
+   * WITH: deleting/mutating the entity while it is bound by one row must not be observed by another
+   * row's read of that same entity still being produced by this MATCH (see issue #6491).
+   *
+   * @return true when the path patterns form more than one connected component by shared variable
+   */
+  public boolean hasDisconnectedPathPatterns() {
+    if (pathPatterns.size() < 2)
+      return false;
+
+    final List<Set<String>> components = new ArrayList<>();
+    for (final PathPattern path : pathPatterns) {
+      final Set<String> merged = new HashSet<>();
+      for (final NodePattern node : path.getNodes())
+        if (node.getVariable() != null)
+          merged.add(node.getVariable());
+
+      for (int i = components.size() - 1; i >= 0; i--)
+        if (!Collections.disjoint(components.get(i), merged))
+          merged.addAll(components.remove(i));
+      components.add(merged);
+    }
+    return components.size() > 1;
   }
 }
