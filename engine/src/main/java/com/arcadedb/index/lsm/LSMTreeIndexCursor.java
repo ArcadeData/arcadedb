@@ -644,7 +644,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
       final TreeMap<TransactionIndexContext.ComparableKey, Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey>> indexChanges = index.getDatabase()
           .getTransaction().getIndexChanges().getIndexKeys(index.getName());
       if (indexChanges != null) {
-        final Map.Entry<TransactionIndexContext.ComparableKey, Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey>> entry;
+        Map.Entry<TransactionIndexContext.ComparableKey, Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey>> entry;
         // #4947: biased navigation keys, never plain ComparableKeys. A PARTIAL key compares equal to every
         // entry sharing its prefix, so plain ceiling/floor/higher/lower land in the MIDDLE of the prefix run
         // (wherever the tree walk first hits equality) and silently skip the run's other entries. The biased
@@ -666,32 +666,37 @@ public class LSMTreeIndexCursor implements IndexCursor {
             entry = indexChanges.lowerEntry(TransactionIndexContext.lowNavigationKey(keys));
         }
 
-        final Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey> values =
-            entry != null ? entry.getValue() : null;
-        if (values != null) {
-          for (final TransactionIndexContext.IndexKey value : values.values()) {
-            if (value != null) {
-              if (value.operation == TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE)
-                // REMOVED
-                break;
+        // The first candidate found above can be entirely dead (every pending change on it is a REMOVE - e.g.
+        // a record inserted and deleted again within this same transaction): walk to the NEXT candidate in the
+        // same direction instead of giving up, exactly like the on-page cursor skips a fully-tombstoned key via
+        // advanceCursor()+continue in the constructor above. Stopping at the first dead key used to make the
+        // WHOLE in-tx overlay look exhausted beyond it, even though older/newer pending keys past it were still
+        // live - e.g. a composite-index prefix scan whose ORDER BY DESC starts from the just-deleted top of the
+        // group came back empty instead of falling through to the next surviving row (#6592 follow-up).
+        while (entry != null) {
+          final Object[] tmpKeys = entry.getKey().values;
 
-              final Object[] tmpKeys = entry.getKey().values;
+          if (typedToKeys != null) {
+            // #5055: toKeys bounds the FAR end of the scan, whose direction flips with the order: for an
+            // ascending scan it is the upper bound (skip entries ABOVE it), for a descending scan it is the
+            // lower bound (skip entries BELOW it). #5932: tmpKeys comes straight from the overlay's own
+            // ComparableKey, so the bound compared against it must be typedToKeys (no disk byte[]-for-String
+            // encoding), not serializedToKeys.
+            final int cmp = LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, tmpKeys, typedToKeys);
+            final boolean pastBound = (ascendingOrder && cmp > 0) || (!ascendingOrder && cmp < 0) || (!toKeysInclusive && cmp == 0);
+            if (pastBound)
+              // EVERY CANDIDATE FURTHER IN THIS DIRECTION IS EVEN FURTHER PAST THE BOUND: STOP, DON'T WALK THE
+              // REST OF THE OVERLAY FOR NOTHING
+              break;
+          }
 
-              if (typedToKeys != null) {
-                // #5055: toKeys bounds the FAR end of the scan, whose direction flips with the order: for an
-                // ascending scan it is the upper bound (skip entries ABOVE it), for a descending scan it is the
-                // lower bound (skip entries BELOW it). The filter used the ascending sense unconditionally, so
-                // a descending in-tx overlay dropped every entry above the lower bound - e.g. the top key of a
-                // range, including a committed/uncommitted collision there.
-                // #5932: tmpKeys comes straight from the overlay's own ComparableKey, so the bound compared
-                // against it must be typedToKeys (no disk byte[]-for-String encoding), not serializedToKeys.
-                final int cmp = LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, tmpKeys, typedToKeys);
-
-                if (ascendingOrder ? cmp > 0 : cmp < 0)
-                  continue;
-                else if (!toKeysInclusive && cmp == 0)
-                  continue;
-              }
+          final Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey> values = entry.getValue();
+          if (values != null) {
+            for (final TransactionIndexContext.IndexKey value : values.values()) {
+              if (value == null || value.operation == TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE)
+                // REMOVED: A NON-UNIQUE KEY CAN STILL HOLD OTHER LIVE VALUES, SO SKIP JUST THIS ONE RATHER THAN
+                // THE WHOLE KEY
+                continue;
 
               if (txChanges == null) {
                 txChanges = new HashSet<>();
@@ -703,6 +708,13 @@ public class LSMTreeIndexCursor implements IndexCursor {
               txChanges.add(new IndexCursorEntry(tmpKeys, value.rid, 1));
             }
           }
+
+          if (txChanges != null)
+            // FOUND A LIVE CANDIDATE
+            break;
+
+          // THIS KEY HAD NOTHING LIVE: TRY THE NEXT ONE IN THE SAME DIRECTION
+          entry = ascendingOrder ? indexChanges.higherEntry(entry.getKey()) : indexChanges.lowerEntry(entry.getKey());
         }
       }
 
