@@ -2425,14 +2425,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
             InsertOptions effective = defaults(sent); // your existing default-merging helper
 
-            // (Optional) If your chunk carries db/creds (recommended), you can validate/set
-            // them here
 
-            // Otherwise InsertContext will resolve them via 'effective' or server defaults
-            // Example if your proto carries these on the chunk:
-            // String dbName = c.getDatabase();
-            // DatabaseCredentials creds = c.getCredentials();
-            // and pass them to the InsertContext ctor if it expects them.
+            // Issue #6597: honour InsertChunk.database (proto contract: REQUIRED on first chunk)
+            // and fall back to InsertOptions.database for clients that still send it there.
+            // This keeps insertStream consistent with graphBatchLoad.
+            if (!c.getDatabase().isEmpty())
+              sent = sent.toBuilder().setDatabase(c.getDatabase()).build();
 
             // Create and cache context
             ctx = new InsertContext(effective); // begins tx if PER_STREAM / PER_BATCH per your logic
@@ -5103,3 +5101,4 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     }
   }
 }
+
