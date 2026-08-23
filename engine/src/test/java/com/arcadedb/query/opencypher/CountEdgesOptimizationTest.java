@@ -272,14 +272,15 @@ class CountEdgesOptimizationTest {
   }
 
   @Test
-  void boundVertexNotInGroupingKeysShouldNotOptimize() {
-    // Regression test for issue #3399
-    // When the bound vertex is NOT in the grouping keys and there are multiple
-    // bound vertices per grouping key, the optimization must not apply because
-    // CountEdgesStep doesn't aggregate - it emits one row per input row.
+  void boundVertexNotInGroupingKeysStillAggregatesCorrectly() {
+    // Regression test for issue #3399, updated for issue #6629.
+    // The bound vertex 'a' (answer) is NOT in the grouping keys (q is), and there are multiple
+    // bound vertices per grouping key. CountEdgesStep now groups its input rows by the grouping
+    // key values and sums the per-row edge count within each group, so the optimization applies
+    // here too and still produces the correct aggregated total (it no longer needs to fall back
+    // to the general GroupByAggregationStep to get a correct answer).
     //
     // Simplified test: Multiple answers per question, count comments per question
-    // The bound vertex 'a' (answer) is NOT in the grouping keys
 
     // Use a fresh database for this test; close the default one to avoid ambiguous database context
     database.drop();

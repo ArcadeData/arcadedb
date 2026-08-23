@@ -3425,19 +3425,9 @@ public class CypherExecutionPlan {
         return null;
     }
 
-    // The bound vertex must be in the grouping keys
-    boolean boundVertexInGroupingKeys = false;
-    for (final ReturnClause.ReturnItem key : groupingKeys) {
-      final String keyExprText = key.getExpression() instanceof VariableExpression
-          ? ((VariableExpression) key.getExpression()).getVariableName()
-          : key.getExpression().getText();
-      if (keyExprText.equals(boundVar)) {
-        boundVertexInGroupingKeys = true;
-        break;
-      }
-    }
-    if (!boundVertexInGroupingKeys)
-      return null;
+    // Note: the bound vertex does not need to be among the grouping keys itself - see the identical
+    // reasoning in tryOptimizeOptionalMatchCount (issue #6629): CountChainedEdgesStep groups its
+    // input rows by the grouping-key VALUES and sums the per-row count within each group.
 
     // 7. Compute directions and types
     // First hop: bound -> intermediate
@@ -3668,23 +3658,11 @@ public class CypherExecutionPlan {
         return null;
     }
 
-    // The bound vertex must be in the grouping keys to ensure correct aggregation.
-    // Without this, CountEdgesStep would emit one row per input row instead of aggregating.
-    // Example: MATCH (q)-[:HAS_ANSWER]->(a) ... WITH q, count(c) AS cnt
-    // If 'a' is the bound vertex but only 'q' is in grouping keys, and there are multiple
-    // answers per question, CountEdgesStep would produce multiple rows per question.
-    boolean boundVertexInGroupingKeys = false;
-    for (final ReturnClause.ReturnItem key : groupingKeys) {
-      final String keyExprText = key.getExpression() instanceof VariableExpression
-          ? ((VariableExpression) key.getExpression()).getVariableName()
-          : key.getExpression().getText();
-      if (keyExprText.equals(boundVar)) {
-        boundVertexInGroupingKeys = true;
-        break;
-      }
-    }
-    if (!boundVertexInGroupingKeys)
-      return null;
+    // Note: the bound vertex does not need to be among the grouping keys itself - CountEdgesStep
+    // groups its input rows by the grouping-key VALUES and sums the per-row edge count within each
+    // group (issue #6629), so it is correct even when several input rows (a fan-out MATCH hop, an
+    // UNWIND) share the same grouping key but carry different bound-vertex identities, e.g.
+    // MATCH (q)-[:HAS_ANSWER]->(a) OPTIONAL MATCH (a)-[:HAS_COMMENT]->(c) WITH q, count(c) AS cnt.
 
     // Compute direction relative to bound vertex
     // Pattern direction is from firstNode to lastNode
