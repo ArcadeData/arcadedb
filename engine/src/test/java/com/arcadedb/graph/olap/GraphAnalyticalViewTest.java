@@ -2537,6 +2537,157 @@ class GraphAnalyticalViewTest extends TestHelper {
     database = new DatabaseFactory(dbPath).open();
   }
 
+  // --- Lazy CSR restore across reopen (issue #6632, follow-up to #6583) tests ---
+
+  /**
+   * Regression for issue #6632: before this fix, {@code restoreAll()} eagerly read and deserialized the
+   * whole persisted CSR during {@code database.open()} (the #6583 fast path), so a session that opened a
+   * database with a view and never queried it still paid that cost — bounded, but real (up to ~1s at 10M
+   * vertices per the issue's own measurements) — for nothing. The read is now deferred to whatever touches
+   * the view first: a real data query ({@code checkBuilt()}) or an explicit {@link
+   * GraphAnalyticalView#awaitReady}. Verifies the deferral directly: immediately after reopen, before
+   * anything queries or awaits the view, it must already report READY (so the query planner routes to it)
+   * but NOT yet built (nothing was read from disk yet); the first real query then resolves it
+   * transparently, with the same correct data the eager path always returned.
+   */
+  @Test
+  void csrLazyRestoreIsDeferredUntilFirstQuery() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex b = database.newVertex("Person").set("name", "Bob").save();
+    a.newEdge("FOLLOWS", b);
+    database.commit();
+
+    GraphAnalyticalView.builder(database)
+        .withName("csr-lazy-test")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
+        .build();
+
+    reopenDatabase();
+
+    final GraphAnalyticalView restored = GraphAnalyticalViewRegistry.get(database, "csr-lazy-test");
+    assertThat(restored).isNotNull();
+
+    assertThat(restored.getStatus())
+        .as("a plausible persisted CSR must mark the view READY immediately so the query planner uses it")
+        .isEqualTo(GraphAnalyticalView.Status.READY);
+    assertThat(restored.isBuilt())
+        .as("but the payload must not be read from disk until something actually needs it")
+        .isFalse();
+
+    // First real query: resolves the deferred restore transparently.
+    assertThat(restored.getNodeCount()).isEqualTo(2);
+    assertThat(restored.getEdgeCount()).isEqualTo(1);
+    assertThat(restored.isBuilt()).isTrue();
+    assertThat(restored.isRestoredFromPersistedCsr())
+        .as("nothing was committed between close and reopen: the deferred read must still find the persisted CSR usable")
+        .isTrue();
+
+    restored.drop();
+  }
+
+  /**
+   * Regression for issue #6632: a session that opens a database with a persisted-CSR view and never
+   * queries it must not pay for the deferred restore at shutdown() either — shutdown() has no reason to
+   * wait for work that was never triggered, and {@code persistCsrIfPossible()} must not attempt to
+   * re-persist a snapshot that was never loaded. Confirms the round trip stays intact across such a
+   * skipped session: closing without querying must not corrupt or discard the persisted file, and the
+   * NEXT reopen must still restore from it correctly.
+   */
+  @Test
+  void csrLazyRestoreNeverTriggeredIsHarmlessAtClose() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").save();
+    final MutableVertex b = database.newVertex("Person").save();
+    a.newEdge("FOLLOWS", b);
+    database.commit();
+
+    GraphAnalyticalView.builder(database)
+        .withName("csr-lazy-skip-test")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
+        .build();
+
+    reopenDatabase();
+    assertThat(GraphAnalyticalViewCSRPersistence.fileFor(database, "csr-lazy-skip-test")).exists();
+
+    // Reopen again WITHOUT ever touching the view (no query, no awaitReady()) — reopenDatabase() itself
+    // closes then reopens, so this session's shutdown() must not choke on the never-triggered restore.
+    reopenDatabase();
+
+    final GraphAnalyticalView restored = GraphAnalyticalViewRegistry.get(database, "csr-lazy-skip-test");
+    assertThat(restored).isNotNull();
+    assertThat(restored.awaitReady(10, TimeUnit.SECONDS)).isTrue();
+    assertThat(restored.isRestoredFromPersistedCsr())
+        .as("the skipped session must not have discarded or corrupted the persisted file")
+        .isTrue();
+    assertThat(restored.getNodeCount()).isEqualTo(2);
+
+    restored.drop();
+  }
+
+  /**
+   * Regression for issue #6632: if a commit lands on a covered type AFTER reopen but BEFORE anything ever
+   * triggers the deferred restore (no query, no {@code awaitReady()} yet — so no change listeners are even
+   * registered to see it coming, unlike the already-loaded case), the deferred restore's own fresh
+   * certificate re-sample (inside {@code tryRestoreFromPersistedCsr()}, unchanged from #6583) must still
+   * catch the mismatch and fall back to a full rebuild rather than serving the now-stale persisted
+   * snapshot.
+   */
+  @Test
+  void csrLazyPendingRestoreCatchesAnInterveningCommitBeforeFirstQuery() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").save();
+    final MutableVertex b = database.newVertex("Person").save();
+    a.newEdge("FOLLOWS", b);
+    database.commit();
+    final RID bId = b.getIdentity();
+
+    GraphAnalyticalView.builder(database)
+        .withName("csr-lazy-invalidate-test")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
+        .build();
+
+    reopenDatabase();
+
+    final GraphAnalyticalView restored = GraphAnalyticalViewRegistry.get(database, "csr-lazy-invalidate-test");
+    assertThat(restored).isNotNull();
+    assertThat(restored.isBuilt())
+        .as("nothing has triggered the deferred restore yet")
+        .isFalse();
+
+    // A commit on the covered type, landing while the restore is still pending — no listener is watching
+    // for it, since the deferred tryRestoreFromPersistedCsr() hasn't run yet (and so hasn't registered
+    // any — mirrors #6583's own onRelevantCommit()/DeltaCollector wiring, which only starts after a
+    // successful build).
+    database.begin();
+    final MutableVertex c = database.newVertex("Person").save();
+    ((Vertex) database.lookupByRID(bId, true)).modify().newEdge("FOLLOWS", c);
+    database.commit();
+
+    // First query now triggers the deferred restore, which must discover the certificate no longer
+    // matches (its own fresh currentLastTransactionId() re-sample, unchanged from #6583) and rebuild.
+    assertThat(restored.getNodeCount()).isEqualTo(3);
+    assertThat(restored.getEdgeCount()).isEqualTo(2);
+    assertThat(restored.isRestoredFromPersistedCsr())
+        .as("a commit landed before the first query; the deferred restore must have rebuilt, not served stale data")
+        .isFalse();
+
+    restored.drop();
+  }
+
   /**
    * Regression for issue #6583 code review: {@code GAV_PERSIST_CSR=false} must suppress persistence
    * entirely - no file written at close, and a reopen must fall back to the full rebuild rather than

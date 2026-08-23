@@ -147,9 +147,10 @@ public class GraphAnalyticalViewPersistence {
         final int ct = gavDef.getInt("compactionThreshold", -1);
         if (ct >= 0)
           builder.withCompactionThreshold(ct);
-        // Tries a persisted CSR from disk first (issue #6583) and only falls back to the async full
-        // rebuild below when there is none usable — see restoreFromDiskOrBuildAsync() for the certificate
-        // check that decides between the two.
+        // Defers to a persisted CSR from disk if one plausibly applies (issue #6583, made lazy by #6632 —
+        // the actual read waits for a real query or an explicit awaitReady()) and only falls back to the
+        // async full rebuild below when there is none — see restoreFromDiskOrBuildAsync() for the check
+        // that decides between the two.
         restoredViews.add(builder.skipPersistence().restoreFromDiskOrBuildAsync());
         count++;
 
