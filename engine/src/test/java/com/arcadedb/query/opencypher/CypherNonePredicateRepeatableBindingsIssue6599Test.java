@@ -86,8 +86,12 @@ class CypherNonePredicateRepeatableBindingsIssue6599Test extends TestHelper {
         RETURN __expr_count > 0 AS __v
         """;
 
-    assertThat(singleBoolean(control)).isTrue();
-    assertThat(singleBoolean(identityProjection)).isTrue();
+    final boolean controlValue = singleBoolean(control);
+    final boolean projectionValue = singleBoolean(identityProjection);
+
+    assertThat(controlValue).isTrue();
+    assertThat(projectionValue).isTrue();
+    assertThat(controlValue).isEqualTo(projectionValue);
   }
 
   /** Same defect, minimized: a bare {@code none()} predicate on a relationship property alone. */
