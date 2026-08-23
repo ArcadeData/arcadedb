@@ -193,7 +193,7 @@ public class CypherExecutionPlanner {
       // Independently planned relationship components cannot evaluate an inline edge expression
       // that may read a sibling component's bindings. Keep that combined shape on the ordered
       // traditional evaluator until correlated component planning exists.
-      if (hasDisconnectedPathPatterns(match) && hasInlineRelationshipPredicates(match))
+      if (match.hasDisconnectedPathPatterns() && hasInlineRelationshipPredicates(match))
         return false;
 
       // Check if all nodes have labels, no named path variables, and no unsupported property constraints
@@ -380,26 +380,6 @@ public class CypherExecutionPlanner {
         if (relationship.hasProperties() || relationship.hasWhereExpression())
           return true;
     return false;
-  }
-
-  /** Returns true when one MATCH contains path parts with no chain of shared node variables. */
-  private static boolean hasDisconnectedPathPatterns(final MatchClause match) {
-    if (!match.hasPathPatterns() || match.getPathPatterns().size() < 2)
-      return false;
-
-    final List<Set<String>> components = new ArrayList<>();
-    for (final PathPattern path : match.getPathPatterns()) {
-      final Set<String> merged = new HashSet<>();
-      for (final NodePattern node : path.getNodes())
-        if (node.getVariable() != null)
-          merged.add(node.getVariable());
-
-      for (int i = components.size() - 1; i >= 0; i--)
-        if (!Collections.disjoint(components.get(i), merged))
-          merged.addAll(components.remove(i));
-      components.add(merged);
-    }
-    return components.size() > 1;
   }
 
   /**

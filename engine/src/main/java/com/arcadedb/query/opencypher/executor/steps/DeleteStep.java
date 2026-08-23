@@ -68,9 +68,25 @@ public class DeleteStep extends AbstractExecutionStep {
    */
   private final Set<Object> deleted = new HashSet<>();
 
+  /**
+   * When true, the whole upstream row set is read to completion before the first DELETE is applied.
+   * Needed only when the MATCH feeding this DELETE has disconnected path patterns (see
+   * {@link com.arcadedb.query.opencypher.ast.MatchClause#hasDisconnectedPathPatterns()}): such a MATCH
+   * can bind the same underlying vertex/edge across more than one output row, and deleting it while a
+   * later row is still being produced makes that row dereference an already-removed record
+   * (issue #6491). Ordinary connected patterns bind each row's variables independently, so they are
+   * left on the cheaper streaming path.
+   */
+  private final boolean eagerMaterialize;
+
   public DeleteStep(final DeleteClause deleteClause, final CommandContext context) {
+    this(deleteClause, context, false);
+  }
+
+  public DeleteStep(final DeleteClause deleteClause, final CommandContext context, final boolean eagerMaterialize) {
     super(context);
     this.deleteClause = deleteClause;
+    this.eagerMaterialize = eagerMaterialize;
   }
 
   @Override
@@ -79,6 +95,8 @@ public class DeleteStep extends AbstractExecutionStep {
 
     return new ResultSet() {
       private ResultSet prevResults = null;
+      private List<Result> materializedInput = null;
+      private int materializedIndex = 0;
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
@@ -106,6 +124,14 @@ public class DeleteStep extends AbstractExecutionStep {
         return buffer.get(bufferIndex++);
       }
 
+      private boolean hasMoreInput() {
+        return materializedInput != null ? materializedIndex < materializedInput.size() : prevResults.hasNext();
+      }
+
+      private Result nextInput() {
+        return materializedInput != null ? materializedInput.get(materializedIndex++) : prevResults.next();
+      }
+
       private void fetchMore(final int n) {
         buffer.clear();
         bufferIndex = 0;
@@ -113,11 +139,20 @@ public class DeleteStep extends AbstractExecutionStep {
         // Initialize prevResults on first call
         if (prevResults == null) {
           prevResults = prev.syncPull(context, nRecords);
+          if (eagerMaterialize) {
+            // Read the whole upstream MATCH before the first DELETE runs: a disconnected-pattern MATCH
+            // (e.g. a self-loop cross-joined with an unrelated pattern) can bind the very same vertex or
+            // edge from more than one output row, and deleting it while a later row is still being
+            // produced makes that row dereference an already-removed record (issue #6491).
+            materializedInput = new ArrayList<>();
+            while (prevResults.hasNext())
+              materializedInput.add(prevResults.next());
+          }
         }
 
         // Process each input result
-        while (buffer.size() < n && prevResults.hasNext()) {
-          final Result inputResult = prevResults.next();
+        while (buffer.size() < n && hasMoreInput()) {
+          final Result inputResult = nextInput();
           final long begin = context.isProfiling() ? System.nanoTime() : 0;
           try {
             if (context.isProfiling())
@@ -153,7 +188,7 @@ public class DeleteStep extends AbstractExecutionStep {
           }
         }
 
-        if (!prevResults.hasNext()) {
+        if (!hasMoreInput()) {
           finished = true;
         }
       }

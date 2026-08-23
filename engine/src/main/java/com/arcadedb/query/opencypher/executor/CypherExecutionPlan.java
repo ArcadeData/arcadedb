@@ -1090,7 +1090,8 @@ public class CypherExecutionPlan {
         case DELETE: {
           final DeleteClause deleteClause = entry.getTypedClause();
           if (!deleteClause.isEmpty()) {
-            final DeleteStep deleteStep = new DeleteStep(deleteClause, context);
+            final DeleteStep deleteStep = new DeleteStep(deleteClause, context,
+                matchClausesHaveDisconnectedPatterns(statement.getMatchClauses()));
             deleteStep.setPrevious(currentStep);
             currentStep = deleteStep;
           }
@@ -1470,7 +1471,7 @@ public class CypherExecutionPlan {
         final DeleteClause deleteClause = entry.getTypedClause();
         if (!deleteClause.isEmpty() && currentStep != null) {
           final DeleteStep deleteStep =
-              new DeleteStep(deleteClause, context);
+              new DeleteStep(deleteClause, context, matchClausesHaveDisconnectedPatterns(statement.getMatchClauses()));
           deleteStep.setPrevious(currentStep);
           currentStep = deleteStep;
         }
@@ -2483,6 +2484,19 @@ public class CypherExecutionPlan {
   }
 
   /**
+   * True when any MATCH clause of the statement has disconnected path patterns (see
+   * {@link MatchClause#hasDisconnectedPathPatterns()}). A DELETE fed by such a MATCH must fully read
+   * the upstream row set before deleting anything, or a later row can dereference a vertex/edge an
+   * earlier row already deleted (issue #6491).
+   */
+  private static boolean matchClausesHaveDisconnectedPatterns(final List<MatchClause> matchClauses) {
+    for (final MatchClause match : matchClauses)
+      if (match.hasDisconnectedPathPatterns())
+        return true;
+    return false;
+  }
+
+  /**
    * Legacy method for building execution steps (fixed order).
    * Used when clause order information is not available.
    */
@@ -2984,7 +2998,7 @@ public class CypherExecutionPlan {
     // Step 6: DELETE clause - delete vertices/edges
     if (statement.getDeleteClause() != null && !statement.getDeleteClause().isEmpty() && currentStep != null) {
       final DeleteStep deleteStep = new DeleteStep(
-          statement.getDeleteClause(), context);
+          statement.getDeleteClause(), context, matchClausesHaveDisconnectedPatterns(statement.getMatchClauses()));
       deleteStep.setPrevious(currentStep);
       currentStep = deleteStep;
     }
