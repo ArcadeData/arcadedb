@@ -261,4 +261,53 @@ public class OpenCypherTrailDetachDeleteIssue6491Test {
       assertThat(remainingLoops.hasNext()).isFalse();
     }
   }
+
+  /**
+   * Same disconnected-pattern shape again, but the DETACH DELETE runs inside a FOREACH body instead of
+   * directly after the MATCH. A code review on this fix pointed out that {@code ForeachStep} streams
+   * its own outer input exactly the way the pre-fix {@code DeleteStep} did, so the same disconnected
+   * MATCH re-enumeration hazard applies one level up - each of the three fan-out rows binds the very
+   * same self-loop node, and FOREACH runs its body (hence the DELETE) once per row.
+   * <p>
+   * This shape surfaces two distinct bugs, both fixed together:
+   * <ul>
+   *   <li>The read hazard from issue #6491 itself: {@code ForeachStep} now eagerly materializes its
+   *   upstream row set before running any iteration whose body contains a DELETE, mirroring
+   *   {@code DeleteStep}'s own fix (see {@code ForeachStep.eagerMaterialize} and
+   *   {@code ForeachClause#containsDelete()}).</li>
+   *   <li>A second, write-side bug this shape exposed: {@code DeleteStep.flushDeferredDeletes} rebuilds
+   *   its de-duplication set fresh on every call (one call per FOREACH outer row), so it cannot
+   *   remember a vertex an earlier row already deleted - deleting the same node bound by three
+   *   different rows threw on the second and third attempts. Neo4j treats deleting an already-deleted
+   *   node as a no-op, so {@code flushDeferredDeletes} now catches that case instead of propagating it.</li>
+   * </ul>
+   */
+  @Test
+  void detachDeleteInsideForeachOfSelfLoopCrossJoinedWithUnrelatedPatternDeletesOnceAndReturnsAllRows() {
+    database = new DatabaseFactory("./target/databases/testopencypher-issue6491-foreach").create();
+
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Loop {tag: null})");
+      database.command("opencypher", "CREATE (:Other {id: 1})");
+      database.command("opencypher", "CREATE (:Other {id: 2})");
+      database.command("opencypher", "CREATE (:Other {id: 3})");
+      database.command("opencypher", "MATCH (n:Loop) CREATE (n)-[:SELF]->(n)");
+    });
+
+    final List<Object> ids = new ArrayList<>();
+    database.transaction(() -> {
+      try (ResultSet result = database.command("opencypher",
+          "MATCH (o:Other), (n:Loop)<-[:SELF]-(n) WHERE n.tag IS NULL "
+              + "FOREACH (x IN [1] | DETACH DELETE n) RETURN o.id AS id")) {
+        while (result.hasNext())
+          ids.add(result.next().getProperty("id"));
+      }
+    });
+
+    assertThat(ids).containsExactlyInAnyOrder(1, 2, 3);
+
+    try (ResultSet remainingLoops = database.query("opencypher", "MATCH (n:Loop) RETURN n")) {
+      assertThat(remainingLoops.hasNext()).isFalse();
+    }
+  }
 }

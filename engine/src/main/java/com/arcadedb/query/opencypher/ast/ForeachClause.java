@@ -52,4 +52,27 @@ public class ForeachClause {
   public List<ClauseEntry> getInnerClauses() {
     return innerClauses;
   }
+
+  /**
+   * True when this FOREACH's body contains a DELETE clause, directly or nested inside another
+   * FOREACH. DELETE is the only inner clause type that physically removes a record - CREATE/SET/MERGE/
+   * REMOVE mutate or add, never remove - so it is the only one that can make a later row of the outer
+   * MATCH feeding this FOREACH dereference an already-deleted entity (issue #6491, same hazard as a
+   * bare {@code DETACH DELETE} following a disconnected-pattern MATCH, just running through FOREACH's
+   * own row-by-row loop instead of {@code DeleteStep}'s).
+   *
+   * @return true when a DELETE clause appears anywhere in this FOREACH's body
+   */
+  public boolean containsDelete() {
+    for (final ClauseEntry entry : innerClauses) {
+      if (entry.getType() == ClauseEntry.ClauseType.DELETE)
+        return true;
+      if (entry.getType() == ClauseEntry.ClauseType.FOREACH) {
+        final ForeachClause nested = entry.getTypedClause();
+        if (nested.containsDelete())
+          return true;
+      }
+    }
+    return false;
+  }
 }

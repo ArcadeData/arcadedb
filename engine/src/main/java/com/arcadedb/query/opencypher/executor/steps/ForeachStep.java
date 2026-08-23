@@ -55,12 +55,30 @@ public class ForeachStep extends AbstractExecutionStep {
   private final ExpressionEvaluator evaluator;
   private final CypherFunctionFactory functionFactory;
 
+  /**
+   * When true, the whole upstream row set is read to completion before the first FOREACH iteration
+   * runs. Needed only when the MATCH feeding this FOREACH has disconnected path patterns (see
+   * {@link com.arcadedb.query.opencypher.ast.MatchClause#hasDisconnectedPathPatterns(java.util.List)})
+   * AND this FOREACH's body contains a DELETE ({@link ForeachClause#containsDelete()}): such a MATCH
+   * can bind the same underlying vertex/edge across more than one output row, and a DELETE inside one
+   * iteration's body removing it while a later row is still being produced makes that row dereference
+   * an already-removed record (issue #6491) - the identical hazard {@code DeleteStep} guards against,
+   * just reached through FOREACH's own row-by-row loop instead.
+   */
+  private final boolean eagerMaterialize;
+
   public ForeachStep(final ForeachClause foreachClause, final CommandContext context,
                      final CypherFunctionFactory functionFactory) {
+    this(foreachClause, context, functionFactory, false);
+  }
+
+  public ForeachStep(final ForeachClause foreachClause, final CommandContext context,
+                     final CypherFunctionFactory functionFactory, final boolean eagerMaterialize) {
     super(context);
     this.foreachClause = foreachClause;
     this.functionFactory = functionFactory;
     this.evaluator = new ExpressionEvaluator(functionFactory);
+    this.eagerMaterialize = eagerMaterialize;
   }
 
   @Override
@@ -69,6 +87,8 @@ public class ForeachStep extends AbstractExecutionStep {
 
     return new ResultSet() {
       private ResultSet prevResults = null;
+      private List<Result> materializedInput = null;
+      private int materializedIndex = 0;
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
@@ -90,6 +110,14 @@ public class ForeachStep extends AbstractExecutionStep {
         return buffer.get(bufferIndex++);
       }
 
+      private boolean hasMoreInput() {
+        return materializedInput != null ? materializedIndex < materializedInput.size() : prevResults.hasNext();
+      }
+
+      private Result nextInput() {
+        return materializedInput != null ? materializedInput.get(materializedIndex++) : prevResults.next();
+      }
+
       private void fetchMore(final int n) {
         buffer.clear();
         bufferIndex = 0;
@@ -101,10 +129,20 @@ public class ForeachStep extends AbstractExecutionStep {
             // Standalone FOREACH - create single empty input row
             prevResults = new IteratorResultSet(List.of((ResultInternal) new ResultInternal()).iterator());
           }
+          if (eagerMaterialize) {
+            // Read the whole upstream MATCH before the first FOREACH-body DELETE runs: see the
+            // eagerMaterialize field doc and DeleteStep's identical mechanism for issue #6491.
+            final long eagerBegin = context.isProfiling() ? System.nanoTime() : 0;
+            materializedInput = new ArrayList<>();
+            while (prevResults.hasNext())
+              materializedInput.add(prevResults.next());
+            if (context.isProfiling())
+              cost += System.nanoTime() - eagerBegin;
+          }
         }
 
-        while (buffer.size() < n && prevResults.hasNext()) {
-          final Result inputRow = prevResults.next();
+        while (buffer.size() < n && hasMoreInput()) {
+          final Result inputRow = nextInput();
           final long begin = context.isProfiling() ? System.nanoTime() : 0;
           try {
             if (context.isProfiling())
@@ -119,7 +157,7 @@ public class ForeachStep extends AbstractExecutionStep {
           }
         }
 
-        if (!prevResults.hasNext())
+        if (!hasMoreInput())
           finished = true;
       }
 

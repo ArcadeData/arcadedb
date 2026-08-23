@@ -1499,7 +1499,8 @@ public class CypherExecutionPlan {
       case FOREACH:
         final ForeachClause foreachClause = entry.getTypedClause();
         final ForeachStep foreachStep =
-            new ForeachStep(foreachClause, context, functionFactory);
+            new ForeachStep(foreachClause, context, functionFactory,
+                foreachClause.containsDelete() && matchClausesHaveDisconnectedPatterns(statement.getMatchClauses()));
         if (currentStep != null) {
           foreachStep.setPrevious(currentStep);
         }
