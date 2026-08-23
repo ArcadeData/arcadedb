@@ -550,14 +550,19 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     // consistent with the multi-value handling in processInCondition().
     if (!(value instanceof Identifiable) && MultiValue.isMultiValue(value)) {
       final List<PCollection> result = new ArrayList<>();
+      // `tail` does not depend on `elemInKey`: it is `key` with its (already-consumed) first expression
+      // dropped, the same for every element `value` expands into. Computing it once here instead of once
+      // per element avoids deep-copying the whole remaining key - including a large literal IN-list still
+      // sitting in a later slot - on every one of `value`'s elements, which made this loop quadratic in the
+      // element count (#6640: a 15,000-value IN() on an indexed property took ~10s here alone).
+      final PCollection tail = key.copy();
+      tail.getExpressions().removeFirst();
       for (final Object elemInKey : MultiValue.getMultiValueIterable(value)) {
         final PCollection newHead = new PCollection();
         for (final Expression exp : head.getExpressions())
           newHead.add(exp.copy());
 
         newHead.add(toExpression(unwrapSubQueryResult(elemInKey)));
-        final PCollection tail = key.copy();
-        tail.getExpressions().remove(0);
         result.addAll(cartesianProduct(newHead, tail));
       }
       return result;

@@ -2231,12 +2231,6 @@ public class SelectExecutionPlanner {
    * the runtime caller lets it propagate as a genuine execution error.
    */
   private static Object resolveInRightHandRawValue(final InCondition in, final CommandContext context) {
-    if (in.right instanceof List<?> list) {
-      final List<Object> values = new ArrayList<>(list.size());
-      for (final Object item : list)
-        values.add(item instanceof Expression itemExpr ? extractRidValue(itemExpr, context) : item);
-      return values;
-    }
     if (in.getRightMathExpression() != null)
       return in.getRightMathExpression().execute((Result) null, context);
     if (in.getRightParam() != null)

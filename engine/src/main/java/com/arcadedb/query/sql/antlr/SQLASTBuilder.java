@@ -2149,11 +2149,15 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
             // Process right side normally
             if (ctx.LPAREN() != null) {
-              final List<Expression> expressions = new ArrayList<>();
-              for (int i = 1; i < ctx.expression().size(); i++) {
-                expressions.add((Expression) visit(ctx.expression(i)));
+              // ctx.expression() (no-arg) rescans the whole child list every call, and so does the indexed
+              // ctx.expression(i) accessor it backs - calling either in a loop condition/body is O(n) per
+              // iteration, O(n^2) overall for an N-item list (#6640). Fetch the list once and index into it.
+              final List<SQLParser.ExpressionContext> exprCtxs = ctx.expression();
+              final ArrayLiteralExpression arrayLiteral = new ArrayLiteralExpression();
+              for (int i = 1; i < exprCtxs.size(); i++) {
+                arrayLiteral.addItem((Expression) visit(exprCtxs.get(i)));
               }
-              condition.right = expressions;
+              condition.rightMathExpression = arrayLiteral;
             } else {
               final Expression rightExpr = (Expression) visit(ctx.expression(1));
               if (rightExpr.mathExpression instanceof final BaseExpression baseExpr) {
@@ -2188,9 +2192,14 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     if (ctx.LPAREN() != null) {
       // Form: IN (expr1, expr2, ...) - explicit parentheses at IN level
+      // ctx.expression() (no-arg) rescans the whole child list every call, and so does the indexed
+      // ctx.expression(i) accessor it backs - calling either of them in a loop condition/body is O(n) per
+      // iteration, O(n^2) overall for an N-item list (#6640). Fetch the list once and index into it.
+      final List<SQLParser.ExpressionContext> exprCtxs = ctx.expression();
+
       // Check if it's a single parameter: IN (?)
-      if (ctx.expression().size() == 2) {
-        final Expression rightExpr = (Expression) visit(ctx.expression(1));
+      if (exprCtxs.size() == 2) {
+        final Expression rightExpr = (Expression) visit(exprCtxs.get(1));
 
         // Check if this is an input parameter
         if (rightExpr.mathExpression instanceof final BaseExpression baseExpr) {
@@ -2203,11 +2212,16 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       }
 
       // Multiple expressions or non-parameter: IN (expr1, expr2, ...)
-      final List<Expression> expressions = new ArrayList<>();
-      for (int i = 1; i < ctx.expression().size(); i++) {
-        expressions.add((Expression) visit(ctx.expression(i)));
+      // Wrapped as an ArrayLiteralExpression (same representation as the bracket syntax IN [...]) so a
+      // literal parenthesized list is index-aware exactly like the other IN forms - see InCondition#isIndexAware.
+      // Building the FetchFromIndexStep list from a table-scan-with-per-row-contains() (#6640) instead of a
+      // single index probe per value made a 15,000-value IN() ~1000x slower than the same values as a bound
+      // parameter, even on an indexed property.
+      final ArrayLiteralExpression arrayLiteral = new ArrayLiteralExpression();
+      for (int i = 1; i < exprCtxs.size(); i++) {
+        arrayLiteral.addItem((Expression) visit(exprCtxs.get(i)));
       }
-      condition.right = expressions;
+      condition.rightMathExpression = arrayLiteral;
     } else {
       // Form: IN expression (could be array literal, input parameter, subquery, etc.)
       final SQLParser.ExpressionContext exprCtx = ctx.expression(1);
