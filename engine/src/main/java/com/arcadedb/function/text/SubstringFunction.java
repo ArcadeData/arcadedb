@@ -50,11 +50,13 @@ public class SubstringFunction implements StatelessFunction {
     if (args[0] == null || args[1] == null || CypherFunctionHelper.isExplicitNull(args, 2))
       return null;
     final String str = args[0].toString();
-    final int start = ((Number) args[1]).intValue();
+    // Issue #6609: a value outside INTEGER | FLOAT (e.g. a LIST) is a client-facing type error, not the unchecked
+    // cast's ClassCastException, which used to escape as HTTP 500. Same treatment as the numeric family (#5484).
+    final int start = CypherFunctionHelper.requireNumberArgument(args[1], getName()).intValue();
     if (start < 0 || start > str.length())
       return "";
     if (args.length == 3 && args[2] != null) {
-      final int length = ((Number) args[2]).intValue();
+      final int length = CypherFunctionHelper.requireNumberArgument(args[2], getName()).intValue();
       if (length < 0)
         throw new CommandExecutionException("substring(): negative length is not supported: " + length);
       return str.substring(start, Math.min(start + length, str.length()));

@@ -70,30 +70,49 @@ public final class CypherFunctionHelper {
 
   /**
    * A numeric Cypher function: its canonical spelling - the one the runtime check uses, so both the parse-time and the
-   * runtime path phrase an error identically - and how many of its leading arguments are declared {@code INTEGER | FLOAT}.
-   * All of them for the whole family except {@code round(value, precision, mode)}, whose third argument is the STRING name
-   * of a rounding mode.
+   * runtime path phrase an error identically - and which of its arguments are declared {@code INTEGER | FLOAT}: the
+   * {@code numericArgs} positions starting at {@code startArg}. {@code startArg} is 0 for the whole family except
+   * {@code left()}/{@code right()}/{@code substring()}, whose leading argument is the STRING being sliced and whose
+   * numeric arguments start at position 1. {@code numericArgs} covers every remaining argument for the whole family
+   * except {@code round(value, precision, mode)}, whose third argument is the STRING name of a rounding mode.
    *
    * @param name        canonical function name, without parentheses
-   * @param numericArgs number of leading arguments that must be numeric, or {@link #ALL_ARGUMENTS}
+   * @param startArg    zero-based position of the first numeric argument
+   * @param numericArgs number of arguments, starting at {@code startArg}, that must be numeric, or {@link #ALL_ARGUMENTS}
    */
-  public record NumericSignature(String name, int numericArgs) {
+  public record NumericSignature(String name, int startArg, int numericArgs) {
+    public NumericSignature(final String name, final int numericArgs) {
+      this(name, 0, numericArgs);
+    }
+
+    /**
+     * Whether argument position {@code index} falls in this signature's numeric range.
+     */
+    public boolean isNumericPosition(final int index) {
+      return index >= startArg && (numericArgs == ALL_ARGUMENTS || index < startArg + numericArgs);
+    }
   }
 
   /**
    * The numeric Cypher functions, keyed by the lower-case name the parser produces, so that an argument already readable in
    * the query text can be rejected before the query runs, as Neo4j does. Kept in step with the numeric entries of
    * {@code CypherFunctionFactory.createCypherSpecificExecutor()}, which is what supplies the matching runtime check - a test
-   * asserts the two agree in both directions. See issue #5484.
+   * asserts the two agree in both directions. See issue #5484 (the pure-numeric family) and #6609 (left/right/substring's
+   * trailing numeric arguments).
    */
-  public static final Map<String, NumericSignature> NUMERIC_ARGUMENT_FUNCTIONS = Stream.concat(//
+  public static final Map<String, NumericSignature> NUMERIC_ARGUMENT_FUNCTIONS = Stream.of(//
           allArgumentsNumeric(//
               "abs", "ceil", "ceiling", "floor", "sqrt", "sign", "isNaN", //
               "exp", "log", "ln", "log10", //
               "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "cot", "coth", "sinh", "cosh", "tanh", //
               "degrees", "radians", "haversin"), //
           // round(value, precision, mode): only the first two arguments are numeric.
-          Stream.of(new NumericSignature("round", 2)))//
+          Stream.of(new NumericSignature("round", 2)), //
+          // left(string, length) / right(string, length): the length is numeric, the leading string is not.
+          Stream.of(new NumericSignature("left", 1, 1), new NumericSignature("right", 1, 1)), //
+          // substring(string, start, length): start and the optional length are numeric, the leading string is not.
+          Stream.of(new NumericSignature("substring", 1, 2)))//
+      .flatMap(stream -> stream)//
       .collect(Collectors.toUnmodifiableMap(signature -> signature.name().toLowerCase(Locale.ROOT), signature -> signature));
 
   private static Stream<NumericSignature> allArgumentsNumeric(final String... names) {

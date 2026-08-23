@@ -31,7 +31,10 @@ import com.arcadedb.function.math.MathUnaryFunction;
 import com.arcadedb.function.math.RoundFunction;
 import com.arcadedb.function.math.SignFunction;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
+import com.arcadedb.function.text.LeftFunction;
+import com.arcadedb.function.text.RightFunction;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
+import com.arcadedb.query.opencypher.executor.CypherSubstringFunction;
 import com.arcadedb.query.opencypher.parser.FunctionValidator;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
@@ -316,9 +319,13 @@ class CypherNumericFunctionArgumentIssue5484Test extends TestHelper {
   }
 
   private static boolean isNumericExecutor(final StatelessFunction executor) {
+    // left()/right()/substring() (issue #6609) are numeric only from NumericSignature#startArg() onward - their
+    // leading argument is the STRING being sliced - but still belong in NUMERIC_ARGUMENT_FUNCTIONS so their trailing
+    // numeric arguments get the same parse-time guarantee as the rest of the family.
     return executor instanceof AbsFunction || executor instanceof MathUnaryFunction
         || executor instanceof MathBinaryFunction || executor instanceof SignFunction || executor instanceof IsNaNFunction
-        || executor instanceof RoundFunction;
+        || executor instanceof RoundFunction || executor instanceof LeftFunction || executor instanceof RightFunction
+        || executor instanceof CypherSubstringFunction;
   }
 
   @Test
