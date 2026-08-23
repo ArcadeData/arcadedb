@@ -24,9 +24,11 @@ import com.arcadedb.database.DocumentCallback;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ErrorRecordCallback;
+import com.arcadedb.log.LogManager;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Level;
 
 public class DatabaseAsyncScanBucket implements DatabaseAsyncTask {
   public final CountDownLatch             semaphore;
@@ -66,8 +68,13 @@ public class DatabaseAsyncScanBucket implements DatabaseAsyncTask {
       // onErrorCallback (typically unset) while completed() still counted this bucket down, so scanType() returned
       // as if every bucket had been scanned. Captured here so scanType() can rethrow it once every bucket is done,
       // then rethrown so the worker's own rollback/logging/onError handling in executeTask() still runs unchanged.
-      if (firstError != null)
-        firstError.compareAndSet(null, e);
+      if (firstError != null && !firstError.compareAndSet(null, e))
+        // A DIFFERENT bucket's failure already won the race to be the one scanType() rethrows: this one would
+        // otherwise vanish with no trace at all, even though it could be a distinct root cause (e.g. one bucket
+        // hitting an I/O error and another independently corrupted).
+        LogManager.instance().log(this, Level.SEVERE,
+            "Bucket '%s' failed during a parallel scan, but another bucket's failure will be the one reported to the caller",
+            e, bucket.getName());
       throw e;
     }
   }

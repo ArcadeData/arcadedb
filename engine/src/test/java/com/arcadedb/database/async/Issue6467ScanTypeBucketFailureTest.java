@@ -28,7 +28,11 @@ import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.exception.DatabaseOperationException;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -139,22 +143,31 @@ class Issue6467ScanTypeBucketFailureTest extends TestHelper {
    */
   @Test
   void scanTypePropagatesABucketLevelFailureInsteadOfReturningAPartialScan() {
+    final List<RID> allIds = new ArrayList<>();
     database.transaction(() -> {
       database.getSchema().createDocumentType(TYPE, 2);
       for (int i = 0; i < 20; i++)
-        database.newDocument(TYPE).set("id", i).save();
+        allIds.add(database.newDocument(TYPE).set("id", i).save().getIdentity());
     });
 
-    final AtomicInteger scanned = new AtomicInteger();
+    final Set<RID>            scannedIds     = ConcurrentHashMap.newKeySet();
+    final AtomicInteger       scanned        = new AtomicInteger();
+    final AtomicReference<Integer> failingBucketId = new AtomicReference<>();
 
     assertThatThrownBy(() -> database.async().scanType(TYPE, true, record -> {
-      if (scanned.incrementAndGet() == 5)
+      scannedIds.add(record.getIdentity());
+      if (scanned.incrementAndGet() == 5) {
+        failingBucketId.set(record.getIdentity().getBucketId());
         throw new DatabaseIsReadOnlyException("simulated bucket-level scan failure");
+      }
       return true;
     })).isInstanceOf(DatabaseOperationException.class);
 
-    // The failing bucket aborts after its 5th record, but the other bucket must still be drained to completion
-    // instead of the whole scan silently stopping - proving scanType() no longer just swallows the failure.
-    assertThat(scanned.get()).isGreaterThanOrEqualTo(5);
+    // Every record that lives in a DIFFERENT bucket than the one that failed must have been scanned: that bucket's
+    // task is unaffected by the other one's exception and must still drain to completion, rather than the whole
+    // scan silently stopping partway through (which is the exact bug #6467 is about).
+    final List<RID> otherBucketIds = allIds.stream().filter(rid -> rid.getBucketId() != failingBucketId.get()).toList();
+    assertThat(otherBucketIds).isNotEmpty();
+    assertThat(scannedIds).containsAll(otherBucketIds);
   }
 }

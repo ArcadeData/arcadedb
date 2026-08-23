@@ -97,6 +97,11 @@ public interface DatabaseAsyncExecutor {
    * Schedules the scan of the records contained in all the buckets defined by a type. This operation scans in sequence each bucket looking for documents, vertices and edges.
    * For each record found a call to #DocumentCallback.onRecord is invoked. If the callback returns false, the scan is terminated, otherwise it continues to
    * the next record.
+   * <p>
+   * If a bucket's own scan fails (I/O error, corruption - as opposed to a per-record error, which is instead routed
+   * to {@code errorRecordCallback} in the overload below), every other bucket is still scanned to completion and the
+   * failure is then rethrown from this call (wrapped in {@link com.arcadedb.exception.DatabaseOperationException} for
+   * a {@code RuntimeException}, raw for an {@code Error}) rather than being silently swallowed (issue #6467).
    *
    * @param typeName    The name of the type
    * @param polymorphic true if the records of all the subtypes must be included, otherwise only the records strictly contained in the #typeName
@@ -109,12 +114,17 @@ public interface DatabaseAsyncExecutor {
    * Schedules the scan of the records contained in all the buckets defined by a type. This operation scans in sequence each bucket looking for documents, vertices and edges.
    * For each record found a call to #DocumentCallback.onRecord is invoked. If the callback returns false, the scan is terminated, otherwise it continues to
    * the next record.
+   * <p>
+   * If a bucket's own scan fails (I/O error, corruption - as opposed to a per-record error, which is instead routed
+   * to {@code errorRecordCallback}), every other bucket is still scanned to completion and the failure is then
+   * rethrown from this call (wrapped in {@link com.arcadedb.exception.DatabaseOperationException} for a
+   * {@code RuntimeException}, raw for an {@code Error}) rather than being silently swallowed (issue #6467).
    *
    * @param typeName            The name of the type
    * @param polymorphic         true if the records of all the subtypes must be included, otherwise only the records strictly contained in the #typeName
    *                            will be scanned
    * @param callback            Callback to handle the loaded record document. Returns false to interrupt the scan operation, otherwise true to continue till the end
-   * @param errorRecordCallback Callback used in case of error during the scan
+   * @param errorRecordCallback Callback used in case of a per-record error during the scan
    */
   void scanType(String typeName, boolean polymorphic, DocumentCallback callback, ErrorRecordCallback errorRecordCallback);
 
