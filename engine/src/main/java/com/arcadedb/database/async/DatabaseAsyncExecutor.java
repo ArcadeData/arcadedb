@@ -461,8 +461,18 @@ public interface DatabaseAsyncExecutor {
    * fires only once that batch has actually committed. A caller that must know a specific write is durable, rather
    * than merely applied, should register this callback (or call {@link #waitCompletion()}) rather than rely on
    * timing alone.
+   * <p>
+   * "Committed" here means WAL-durable and replay-safe on the next open, which is all a commit guarantees under the
+   * default {@link #setTransactionSync(WALFile.FlushType)} setting of {@code NO} - no {@code fsync} happens at that
+   * point, so the write can still be lost to a power loss or OS crash (though not to a JVM crash or restart) unless
+   * {@code setTransactionSync(YES_NOMETADATA)}/{@code YES_FULL} is configured. A caller that needs the stronger,
+   * disk-durability guarantee must opt into that setting explicitly; this callback's timing does not change with it.
+   * <p>
+   * Since each worker crosses its own {@link #setCommitEvery(int)} boundary independently, this callback can now be
+   * invoked far more often, and concurrently from multiple worker threads, than when it fired only at shutdown and
+   * from {@link #waitCompletion()}. The registered {@link OkCallback} must be thread-safe.
    *
-   * @param callback Callback invoked every time this executor's shared batch transaction commits
+   * @param callback Callback invoked every time this executor's shared batch transaction commits; must be thread-safe
    */
   void onOk(OkCallback callback);
 
