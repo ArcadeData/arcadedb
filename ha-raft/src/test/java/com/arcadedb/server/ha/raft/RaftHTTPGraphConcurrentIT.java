@@ -99,6 +99,11 @@ class RaftHTTPGraphConcurrentIT extends BaseRaftHATest {
 
       assertThat(atomic.get()).isEqualTo(THREADS * SCRIPTS);
 
+      // Writes issued against a follower are forwarded to the leader and committed there;
+      // replication back to this follower is asynchronous, so the read below can otherwise race
+      // a still-catching-up follower. Same "assertion races a slow follower" shape as #5668/#5702.
+      waitForReplicationIsCompleted(serverIndex);
+
       final JSONObject select = executeCommand(serverIndex, "sql",
           "SELECT id FROM ( SELECT expand( outE('RaftHasUploaded" + serverIndex + "') ) FROM RaftUsers" + serverIndex
               + " WHERE id = \"u1111\" )");

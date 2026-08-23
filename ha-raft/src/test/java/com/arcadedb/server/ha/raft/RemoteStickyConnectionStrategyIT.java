@@ -80,6 +80,12 @@ class RemoteStickyConnectionStrategyIT extends BaseRaftHATest {
       db.transaction(() ->
         db.command("sql", "INSERT INTO " + TYPE_NAME + " SET tag = 'sticky-follower-write'"));
 
+      // The write is forwarded to the leader and committed there; replication back to this
+      // follower is asynchronous, so the very next read below - issued on this same follower's
+      // connection - can otherwise race the follower's own apply of that commit. Same shape as
+      // the chronic "assertion races a slow follower" flake tracked in issues #5668/#5702.
+      waitForReplicationIsCompleted(followerIndex);
+
       try (final ResultSet rs = db.query("sql",
           "SELECT count(*) AS c FROM " + TYPE_NAME + " WHERE tag = 'sticky-follower-write'")) {
         assertThat(rs.hasNext()).isTrue();
@@ -144,6 +150,10 @@ class RemoteStickyConnectionStrategyIT extends BaseRaftHATest {
       db.transaction(() ->
         db.command("sql", "INSERT INTO " + TYPE_NAME + " SET tag = 'second-commit'"));
 
+      // Both commits replicate asynchronously to this follower; wait for it to catch up before
+      // reading its own connection back (see the note in the first test method in this class).
+      waitForReplicationIsCompleted(followerIndex);
+
       try (final ResultSet rs = db.query("sql",
           "SELECT count(*) AS c FROM " + TYPE_NAME + " WHERE tag IN ['first-commit', 'second-commit']")) {
         assertThat(rs.hasNext()).isTrue();
@@ -176,6 +186,10 @@ class RemoteStickyConnectionStrategyIT extends BaseRaftHATest {
       // Second STICKY transaction must succeed; it repins fresh.
       db.transaction(() ->
         db.command("sql", "INSERT INTO " + TYPE_NAME + " SET tag = 'after-rollback'"));
+
+      // Replication back to this follower is asynchronous; wait for it before reading on this
+      // same connection (see the note in the first test method in this class).
+      waitForReplicationIsCompleted(followerIndex);
 
       try (final ResultSet rs = db.query("sql",
           "SELECT count(*) AS c FROM " + TYPE_NAME + " WHERE tag = 'after-rollback'")) {
