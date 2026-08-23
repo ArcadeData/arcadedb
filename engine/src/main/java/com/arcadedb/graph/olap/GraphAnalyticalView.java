@@ -1623,6 +1623,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * from scratch, whenever the deferred restore actually runs, and correctly falls back to a rebuild if
    * anything no longer holds by then (including a commit that landed while the restore was pending, since
    * nothing is watching for one — see {@link #restoreFromDiskOrBuildAsync()}).
+   * <p>
+   * KEEP IN SYNC with {@link #tryRestoreFromPersistedCsr()}'s own guard clauses (review on PR #6633): a
+   * drift between the two can't corrupt data — {@code tryRestoreFromPersistedCsr()} always has the final,
+   * authoritative say — but it would either waste a lazy round-trip that immediately falls back to a
+   * rebuild, or skip the lazy fast path entirely for a case that would have actually succeeded.
    */
   private boolean mayHavePersistedCsr() {
     if (name == null)
@@ -1766,6 +1771,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * database's current last committed transaction id — i.e. nothing was committed in between. Returns false
    * (leaving the view's state untouched) for a missing file, a mismatched definition or certificate, or any read
    * failure, so the caller can fall back to {@link #buildAsync()} exactly as it would have without this path.
+   * <p>
+   * The guard clauses below are mirrored (cheaply, without the file read) by {@link #mayHavePersistedCsr()} —
+   * KEEP THEM IN SYNC (review on PR #6633).
    */
   synchronized boolean tryRestoreFromPersistedCsr() {
     if (name == null)
@@ -1819,12 +1827,15 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // just above this line would be invisible to the restored snapshot (no scan ran to absorb it, unlike
     // buildAsync(), whose real scan runs AFTER its own sample so a racing commit is already captured in what
     // it reads) and invisible to onRelevantCommit()/applyDelta() too (the listeners were not live yet when it
-    // happened). Not reachable via the current call site - restoreAll() runs synchronously inside
-    // LocalDatabase.open(), before the Database is handed to any caller, so nothing holding a reference to it
-    // can commit concurrently - but checked defensively so this stays correct if that context ever changes
-    // (e.g. an HA replica replaying commits concurrently with a local open). Marking STALE mirrors exactly
-    // what onRelevantCommit() does for a real relevant commit under OFF/SYNCHRONOUS mode: conservative, but
-    // never wrong.
+    // happened). This specific few-instruction window is still only defensive - no existing test hits it -
+    // but the surrounding claim that this whole method is unreachable outside LocalDatabase.open() no longer
+    // holds since #6632 (review on PR #6633): dispatchDeferredRestore()'s background task also calls this
+    // method, well after open() has returned and the caller can freely commit against it. The COARSER case -
+    // a commit landing before this method is even dispatched, caught by the certificate mismatch in
+    // GraphAnalyticalViewCSRPersistence.load() above rather than by this specific check - is genuinely
+    // reachable and exercised by csrLazyPendingRestoreCatchesAnInterveningCommitBeforeFirstQuery. Marking
+    // STALE here mirrors exactly what onRelevantCommit() does for a real relevant commit under
+    // OFF/SYNCHRONOUS mode: conservative, but never wrong.
     if (currentLastTransactionId() != currentTxId) {
       LogManager.instance().log(this, Level.WARNING,
           "GraphAnalyticalView '%s': a commit landed while restoring its CSR from disk; marking it STALE rather than risk missing it",
