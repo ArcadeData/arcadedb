@@ -2497,6 +2497,8 @@ public class CypherExecutionPlan {
    * this DELETE" through {@code clausesInOrder}.
    */
   private static boolean matchClausesHaveDisconnectedPatterns(final List<MatchClause> matchClauses) {
+    if (matchClauses == null)
+      return false;
     for (final MatchClause match : matchClauses)
       if (match.hasDisconnectedPathPatterns())
         return true;
