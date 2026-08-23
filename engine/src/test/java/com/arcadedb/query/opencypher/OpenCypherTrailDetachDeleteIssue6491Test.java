@@ -24,6 +24,10 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 
 /**
@@ -165,5 +169,51 @@ public class OpenCypherTrailDetachDeleteIssue6491Test {
           result.next();
       }
     })).doesNotThrowAnyException();
+  }
+
+  /**
+   * Smaller, hand-written shape of a disconnected-pattern MATCH feeding a DETACH DELETE - an unrelated
+   * "fan-out" pattern ({@code (o:Other)}, three rows) cross-joined with a self-loop pattern
+   * ({@code (n:Loop)<-[:SELF]-(n)}, one row) - without the TRAIL/CALL/UNION scaffolding of the
+   * fuzzer-generated repro above.
+   * <p>
+   * This shape alone is not sufficient to reproduce issue #6491 end-to-end: the cost-based optimizer
+   * plans it as a {@code CartesianProduct} that materializes the smaller (self-loop) side once and
+   * reuses it, which never observes a mid-iteration delete. Reproducing the original hazard requires
+   * the traditional (non-optimized) execution path, which only a disqualifying construct - such as the
+   * leading {@code CALL db.schema.visualization()} in the repro above - forces; a hand-written query
+   * that adds one for the sole purpose of forcing that path stops being "minimal" in any way that
+   * earns its keep over the real repro. This test is kept instead as a correctness check of the new
+   * {@code DeleteStep} eager-materialization path itself (it does get exercised here, since
+   * {@code MatchClause#hasDisconnectedPathPatterns()} is true for this MATCH) on a case the optimizer
+   * plans safely without it: it must still delete exactly the one self-loop node once and return all
+   * three fan-out rows unchanged.
+   */
+  @Test
+  void detachDeleteOfSelfLoopCrossJoinedWithUnrelatedPatternDeletesOnceAndReturnsAllRows() {
+    database = new DatabaseFactory("./target/databases/testopencypher-issue6491-minimal").create();
+
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Loop {tag: null})");
+      database.command("opencypher", "CREATE (:Other {id: 1})");
+      database.command("opencypher", "CREATE (:Other {id: 2})");
+      database.command("opencypher", "CREATE (:Other {id: 3})");
+      database.command("opencypher", "MATCH (n:Loop) CREATE (n)-[:SELF]->(n)");
+    });
+
+    final List<Object> ids = new ArrayList<>();
+    database.transaction(() -> {
+      try (ResultSet result = database.command("opencypher",
+          "MATCH (o:Other), (n:Loop)<-[:SELF]-(n) WHERE n.tag IS NULL DETACH DELETE n RETURN o.id AS id")) {
+        while (result.hasNext())
+          ids.add(result.next().getProperty("id"));
+      }
+    });
+
+    assertThat(ids).containsExactlyInAnyOrder(1, 2, 3);
+
+    try (ResultSet remainingLoops = database.query("opencypher", "MATCH (n:Loop) RETURN n")) {
+      assertThat(remainingLoops.hasNext()).isFalse();
+    }
   }
 }

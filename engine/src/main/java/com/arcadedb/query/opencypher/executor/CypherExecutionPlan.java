@@ -2488,6 +2488,13 @@ public class CypherExecutionPlan {
    * {@link MatchClause#hasDisconnectedPathPatterns()}). A DELETE fed by such a MATCH must fully read
    * the upstream row set before deleting anything, or a later row can dereference a vertex/edge an
    * earlier row already deleted (issue #6491).
+   * <p>
+   * Deliberately statement-wide rather than scoped to the MATCH clause(s) that actually precede a
+   * given DELETE segment (relevant only for a multi-segment statement with more than one WITH-separated
+   * MATCH/DELETE pair): this is a conservative superset, so it can only force eager materialization on
+   * a DELETE that did not strictly need it, never miss one that did. Disconnected patterns are rare
+   * enough that the extra precision is not worth the bookkeeping to thread "which MATCH clauses feed
+   * this DELETE" through {@code clausesInOrder}.
    */
   private static boolean matchClausesHaveDisconnectedPatterns(final List<MatchClause> matchClauses) {
     for (final MatchClause match : matchClauses)
