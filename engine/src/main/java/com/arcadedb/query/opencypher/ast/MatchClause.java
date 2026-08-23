@@ -20,7 +20,9 @@ package com.arcadedb.query.opencypher.ast;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Represents a MATCH clause in a Cypher query.
@@ -127,5 +129,68 @@ public class MatchClause {
    */
   public boolean hasWhereClause() {
     return whereClause != null;
+  }
+
+  /**
+   * True when this MATCH is made of two or more path patterns that share no node variable, e.g.
+   * {@code MATCH (a)-[]->(b), (c)-[]->(d)} or a self-loop pattern such as {@code (n)<-[]-(n)}
+   * cross-joined with an unrelated pattern. Such a MATCH can bind the very same underlying vertex or
+   * edge from more than one output row (the disconnected component is re-enumerated once per row of
+   * the other component), which matters to a write clause following this MATCH with no intervening
+   * WITH: deleting/mutating the entity while it is bound by one row must not be observed by another
+   * row's read of that same entity still being produced by this MATCH (see issue #6491).
+   * <p>
+   * Connectivity is judged by shared node variables only, not relationship variables: two patterns
+   * that share only a relationship variable are (rare in practice, and) treated as disconnected. That
+   * only pushes such a MATCH onto the safe-but-conservative side of the callers that key off this
+   * method, never the unsafe one, so it is a precision gap rather than a correctness one.
+   *
+   * @return true when the path patterns form more than one connected component by shared node variable
+   */
+  public boolean hasDisconnectedPathPatterns() {
+    return computeDisconnected(pathPatterns);
+  }
+
+  /**
+   * Same hazard as {@link #hasDisconnectedPathPatterns()}, but checked across every path pattern of
+   * every given MATCH clause combined, not one clause at a time. A disconnected/cross-join shape can be
+   * spelled either as comma-separated patterns within one {@code MATCH} or as separate, consecutive
+   * {@code MATCH} keywords (e.g. {@code MATCH (n)<-[]-(n) MATCH (o:Other) ...}); the execution plan
+   * builders chain path patterns from consecutive MATCH clauses onto the same step chain exactly like
+   * comma-separated ones (see {@code CypherExecutionPlan}'s MATCH-clause loop), so the two spellings
+   * carry the identical re-enumeration hazard and must be judged together, not clause by clause -
+   * checking each {@link MatchClause} in isolation misses a disconnection that only appears once their
+   * patterns are combined.
+   *
+   * @param matchClauses every MATCH clause of the statement (or of the segment feeding a DELETE)
+   * @return true when the combined path patterns form more than one connected component by shared node
+   *         variable
+   */
+  public static boolean hasDisconnectedPathPatterns(final List<MatchClause> matchClauses) {
+    if (matchClauses == null)
+      return false;
+    final List<PathPattern> allPathPatterns = new ArrayList<>();
+    for (final MatchClause match : matchClauses)
+      allPathPatterns.addAll(match.pathPatterns);
+    return computeDisconnected(allPathPatterns);
+  }
+
+  private static boolean computeDisconnected(final List<PathPattern> pathPatterns) {
+    if (pathPatterns.size() < 2)
+      return false;
+
+    final List<Set<String>> components = new ArrayList<>();
+    for (final PathPattern path : pathPatterns) {
+      final Set<String> merged = new HashSet<>();
+      for (final NodePattern node : path.getNodes())
+        if (node.getVariable() != null)
+          merged.add(node.getVariable());
+
+      for (int i = components.size() - 1; i >= 0; i--)
+        if (!Collections.disjoint(components.get(i), merged))
+          merged.addAll(components.remove(i));
+      components.add(merged);
+    }
+    return components.size() > 1;
   }
 }

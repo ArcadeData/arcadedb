@@ -68,9 +68,31 @@ public class DeleteStep extends AbstractExecutionStep {
    */
   private final Set<Object> deleted = new HashSet<>();
 
+  /**
+   * When true, the whole upstream row set is read to completion before the first DELETE is applied.
+   * Needed only when the MATCH feeding this DELETE has disconnected path patterns (see
+   * {@link com.arcadedb.query.opencypher.ast.MatchClause#hasDisconnectedPathPatterns()}): such a MATCH
+   * can bind the same underlying vertex/edge across more than one output row, and deleting it while a
+   * later row is still being produced makes that row dereference an already-removed record
+   * (issue #6491). Ordinary connected patterns bind each row's variables independently, so they are
+   * left on the cheaper streaming path.
+   * <p>
+   * The cost of this path is the whole upstream row set held in memory at once (see
+   * {@code materializedInput} below) rather than streamed - acceptable for the disconnected-pattern
+   * shapes this guards (rare, and typically a deliberate, bounded cross join), but a disconnected
+   * pattern deliberately combined with a very large cartesian product feeding a DELETE would still pay
+   * that memory cost in full.
+   */
+  private final boolean eagerMaterialize;
+
   public DeleteStep(final DeleteClause deleteClause, final CommandContext context) {
+    this(deleteClause, context, false);
+  }
+
+  public DeleteStep(final DeleteClause deleteClause, final CommandContext context, final boolean eagerMaterialize) {
     super(context);
     this.deleteClause = deleteClause;
+    this.eagerMaterialize = eagerMaterialize;
   }
 
   @Override
@@ -79,6 +101,8 @@ public class DeleteStep extends AbstractExecutionStep {
 
     return new ResultSet() {
       private ResultSet prevResults = null;
+      private List<Result> materializedInput = null;
+      private int materializedIndex = 0;
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
@@ -106,6 +130,14 @@ public class DeleteStep extends AbstractExecutionStep {
         return buffer.get(bufferIndex++);
       }
 
+      private boolean hasMoreInput() {
+        return materializedInput != null ? materializedIndex < materializedInput.size() : prevResults.hasNext();
+      }
+
+      private Result nextInput() {
+        return materializedInput != null ? materializedInput.get(materializedIndex++) : prevResults.next();
+      }
+
       private void fetchMore(final int n) {
         buffer.clear();
         bufferIndex = 0;
@@ -113,11 +145,23 @@ public class DeleteStep extends AbstractExecutionStep {
         // Initialize prevResults on first call
         if (prevResults == null) {
           prevResults = prev.syncPull(context, nRecords);
+          if (eagerMaterialize) {
+            // Read the whole upstream MATCH before the first DELETE runs: a disconnected-pattern MATCH
+            // (e.g. a self-loop cross-joined with an unrelated pattern) can bind the very same vertex or
+            // edge from more than one output row, and deleting it while a later row is still being
+            // produced makes that row dereference an already-removed record (issue #6491).
+            final long eagerBegin = context.isProfiling() ? System.nanoTime() : 0;
+            materializedInput = new ArrayList<>();
+            while (prevResults.hasNext())
+              materializedInput.add(prevResults.next());
+            if (context.isProfiling())
+              cost += System.nanoTime() - eagerBegin;
+          }
         }
 
         // Process each input result
-        while (buffer.size() < n && prevResults.hasNext()) {
-          final Result inputResult = prevResults.next();
+        while (buffer.size() < n && hasMoreInput()) {
+          final Result inputResult = nextInput();
           final long begin = context.isProfiling() ? System.nanoTime() : 0;
           try {
             if (context.isProfiling())
@@ -153,7 +197,7 @@ public class DeleteStep extends AbstractExecutionStep {
           }
         }
 
-        if (!prevResults.hasNext()) {
+        if (!hasMoreInput()) {
           finished = true;
         }
       }
@@ -264,8 +308,17 @@ public class DeleteStep extends AbstractExecutionStep {
             // relationships-deleted matches Neo4j (deleteObjectStatic skips any already in `deleted`).
             for (final Edge edge : collectConnectedEdges(v))
               deleteObjectStatic(edge, deleted, stats);
-          v.delete();
-          stats.incNodesDeleted();
+          try {
+            v.delete();
+            stats.incNodesDeleted();
+          } catch (final RecordNotFoundException ignored) {
+            // Already removed by an earlier FOREACH iteration's flush. `deleted` is rebuilt fresh on
+            // every flushDeferredDeletes call (one per outer row), so it cannot by itself remember a
+            // vertex an EARLIER outer row's flush already deleted - only ForeachStep's eager
+            // materialization (issue #6491) guarantees every row still sees a consistent read; distinct
+            // rows can still legitimately bind the very same vertex (a disconnected-pattern MATCH's
+            // cross join), and Neo4j treats deleting an already-deleted node as a no-op, not an error.
+          }
           deleted.add(v);
         } else {
           throw new CommandExecutionException("DeleteConnectedNode: Cannot delete node "
