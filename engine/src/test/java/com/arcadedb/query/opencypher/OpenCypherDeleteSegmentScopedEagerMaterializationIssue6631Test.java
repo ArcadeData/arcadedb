@@ -321,6 +321,77 @@ public class OpenCypherDeleteSegmentScopedEagerMaterializationIssue6631Test {
    * real production parser and asserts {@code getClausesInOrder()} is populated, confirming the premise
    * with an executable check rather than an unverified comment.
    */
+  /**
+   * Same hazard as {@link #deleteOfADisconnectedMatchsOwnVariableForwardedThroughAPassthroughWithStillEagerlyMaterializes()},
+   * but the WITH renames the tainted variable ({@code WITH n AS m}) instead of forwarding it under the
+   * same name - a rename doesn't change how rows flow either, so it must not lose the taint. Without
+   * {@code propagateTaintThroughRenames()}, {@code closeMatchSegment()} taints {@code n} but a later
+   * {@code DELETE m} checks {@code m} against the taint set and finds nothing.
+   */
+  @Test
+  void deleteOfADisconnectedMatchsOwnVariableRenamedThroughWithStillEagerlyMaterializes() {
+    database = new DatabaseFactory("./target/databases/testopencypher-issue6631-delete-rename").create();
+
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Loop {tag: null})");
+      database.command("opencypher", "CREATE (:Other {id: 1})");
+      database.command("opencypher", "CREATE (:Other {id: 2})");
+      database.command("opencypher", "CREATE (:Other {id: 3})");
+      database.command("opencypher", "MATCH (n:Loop) CREATE (n)-[:SELF]->(n)");
+    });
+
+    database.transaction(() -> {
+      try (ResultSet result = database.command("opencypher",
+          "PROFILE MATCH (o:Other), (n:Loop)<-[:SELF]-(n) WHERE n.tag IS NULL "
+              + "WITH n AS m, o "
+              + "DETACH DELETE m RETURN o.id AS id")) {
+        while (result.hasNext())
+          result.next();
+
+        final DeleteStep deleteStep = findStep(result, DeleteStep.class);
+        assertThat(eagerMaterializeOf(deleteStep))
+            .withFailMessage("A WITH that renames a disconnected-pattern MATCH's own variable "
+                + "(WITH n AS m) does not neutralize the issue #6491 hazard for it - a DELETE of the new "
+                + "name downstream of the WITH must still eagerly materialize")
+            .isTrue();
+      }
+    });
+  }
+
+  /** Same as above, but renaming the disconnected MATCH's relationship variable rather than a node. */
+  @Test
+  void deleteOfADisconnectedMatchsOwnRelationshipVariableRenamedThroughWithStillEagerlyMaterializes() {
+    database = new DatabaseFactory("./target/databases/testopencypher-issue6631-delete-rel-rename").create();
+
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:A)-[:REL]->(:B)");
+      database.command("opencypher", "CREATE (:Other {id: 1})");
+      database.command("opencypher", "CREATE (:Other {id: 2})");
+      database.command("opencypher", "CREATE (:Other {id: 3})");
+    });
+
+    database.transaction(() -> {
+      try (ResultSet result = database.command("opencypher",
+          "PROFILE MATCH (a:A)-[r:REL]->(b:B), (o:Other) "
+              + "WITH r AS r2, o "
+              + "DELETE r2 RETURN o.id AS id")) {
+        while (result.hasNext())
+          result.next();
+
+        final DeleteStep deleteStep = findStep(result, DeleteStep.class);
+        assertThat(eagerMaterializeOf(deleteStep))
+            .withFailMessage("A WITH that renames a disconnected-pattern MATCH's own relationship "
+                + "variable (WITH r AS r2) does not neutralize the issue #6491 hazard for it - a DELETE "
+                + "of the new name downstream of the WITH must still eagerly materialize")
+            .isTrue();
+      }
+    });
+
+    try (ResultSet remaining = database.query("opencypher", "MATCH ()-[r:REL]->() RETURN r")) {
+      assertThat(remaining.hasNext()).isFalse();
+    }
+  }
+
   @Test
   void aMultiSegmentWithSeparatedStatementAlwaysPopulatesClausesInOrder() {
     final CypherStatement statement = new Cypher25AntlrParser().parse(

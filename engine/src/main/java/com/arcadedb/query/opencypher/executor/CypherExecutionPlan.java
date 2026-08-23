@@ -1422,6 +1422,7 @@ public class CypherExecutionPlan {
             applyProjectionToScope(nextWith.getItems(), boundVariables);
             // the skipped WITH starts a new segment (issue #6631)
             closeMatchSegment(currentSegmentMatchClauses, disconnectedTaintedVariables);
+            propagateTaintThroughRenames(nextWith, disconnectedTaintedVariables);
             break;
           }
 
@@ -1436,6 +1437,7 @@ public class CypherExecutionPlan {
             applyProjectionToScope(nextWith.getItems(), boundVariables);
             // the skipped WITH starts a new segment (issue #6631)
             closeMatchSegment(currentSegmentMatchClauses, disconnectedTaintedVariables);
+            propagateTaintThroughRenames(nextWith, disconnectedTaintedVariables);
             break;
           }
         }
@@ -1452,6 +1454,9 @@ public class CypherExecutionPlan {
         // hazard for that variable, since rows still flow through it one at a time rather than being
         // fully consumed; closeMatchSegment() taints it before the segment is cleared.
         closeMatchSegment(currentSegmentMatchClauses, disconnectedTaintedVariables);
+        // A rename (WITH n AS m) doesn't change how rows flow either - propagate the taint onto the
+        // new name too, or a later DELETE of m would find nothing tainted under that name.
+        propagateTaintThroughRenames(withClause, disconnectedTaintedVariables);
         break;
 
       case MERGE:
@@ -2567,6 +2572,28 @@ public class CypherExecutionPlan {
               disconnectedTaintedVariables.add(relationship.getVariable());
         }
     currentSegmentMatchClauses.clear();
+  }
+
+  /**
+   * Propagates taint through a {@code WITH ... AS alias} rename: a rename doesn't change how rows flow
+   * any more than a same-name passthrough does (see {@link #closeMatchSegment}), so if the item being
+   * renamed is a bare reference to an already-tainted variable, its new alias is tainted too - otherwise
+   * a later DELETE of the alias would find nothing tainted under that name, even though it is exactly as
+   * hazardous as deleting the original variable would have been.
+   * <p>
+   * Only a bare variable reference is recognised as "the same entity under a new name" ({@code WITH n AS
+   * m}); an item computed from a tainted variable by any other expression ({@code WITH n.id AS m}, {@code
+   * WITH count(n) AS m}) produces a value that is no longer that entity, so it carries no taint forward.
+   */
+  private static void propagateTaintThroughRenames(final WithClause withClause,
+      final Set<String> disconnectedTaintedVariables) {
+    if (disconnectedTaintedVariables.isEmpty())
+      return;
+    for (final ReturnClause.ReturnItem item : withClause.getItems())
+      if (!item.isStar() && item.getAlias() != null
+          && item.getExpression() instanceof VariableExpression variableExpression
+          && disconnectedTaintedVariables.contains(variableExpression.getVariableName()))
+        disconnectedTaintedVariables.add(item.getAlias());
   }
 
   /**
