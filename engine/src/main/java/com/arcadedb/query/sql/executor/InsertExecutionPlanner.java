@@ -131,6 +131,14 @@ public class InsertExecutionPlanner {
       tot = body.getValueExpressions().size();
     else if (body != null && body.getJsonArrayContent() != null && body.getJsonArrayContent().items.size() > 0)
       tot = body.getJsonArrayContent().items.size();
+    else if (body != null && body.getContentInputParam() != null) {
+      // A CONTENT input parameter that resolves to a List must create one record per item, exactly like the
+      // JSON-array literal form above (#6463). The parameter is already bound in the context by the time the
+      // execution plan is created (see InsertStatement.execute), so it can be sized here rather than deferred.
+      final Object paramValue = body.getContentInputParam().getValue(context.getInputParameters());
+      if (paramValue instanceof List<?> list && !list.isEmpty())
+        tot = list.size();
+    }
 
     if (targetType == null && targetBucket != null) {
       // #5636: the `else bucket = null` arm below makes this guard reachable, but ONLY for the case where no name
