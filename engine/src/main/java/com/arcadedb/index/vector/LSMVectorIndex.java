@@ -3167,6 +3167,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /**
    * Minimum graph size to use async rebuild. Below this, synchronous rebuild is fast enough.
    * Above this threshold, a full rebuild can take seconds to minutes, so async is preferred.
+   * <p>
+   * Also the threshold {@link #flush()} uses to decide whether a close-time rebuild is cheap enough to run
+   * synchronously or should be deferred to the next open instead (issue #6067).
    */
   private static final int ASYNC_REBUILD_MIN_GRAPH_SIZE = 1000;
   private static final int[] EMPTY_ORDINALS             = new int[0];
@@ -6441,6 +6444,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 + "stay on disk and are re-indexed on the next open. This means flush() was called after "
                 + "releaseBackgroundResources() - both close paths are supposed to do the reverse",
             indexName, mutationsSinceSerialize.get());
+      } else if (needsBuild && vectorIndex.size() >= ASYNC_REBUILD_MIN_GRAPH_SIZE) {
+        // A synchronous full rebuild here would block close() for as long as the whole rebuild takes - measured
+        // (issue #6067) at 43s for a single write to a 200k-vector index, scaling with total index size rather
+        // than with what was actually written, because there is no incremental persist: any rebuild is a full
+        // rebuild. The vectors themselves are already durably persisted (ordinary page/WAL writes, unrelated to
+        // the graph); only the graph TOPOLOGY is stale or absent. Leave graphState as-is - MUTABLE, or LOADING
+        // with no persisted graph - and defer the rebuild to whenever this index is next actually searched,
+        // reusing the exact lazy-load/staleness-detection path (ensureGraphAvailable()) that already handles a
+        // stale persisted graph on every ordinary reopen. A session that closes and reopens without searching
+        // this index never pays the cost at all; one that does pays it at the query instead of at close().
+        LogManager.instance().log(this, Level.FINE,
+            "Deferring graph build on close for index %s: %d vectors is at or above the async rebuild threshold "
+                + "(%d), so the rebuild is deferred to the next search on this index instead of blocking close()",
+            indexName, vectorIndex.size(), ASYNC_REBUILD_MIN_GRAPH_SIZE);
       } else if (needsBuild) {
         try {
           LogManager.instance()
