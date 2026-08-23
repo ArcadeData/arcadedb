@@ -121,10 +121,16 @@ class Raft3PhaseCommitIT extends BaseRaftHATest {
   void basicInsertReplicates() throws Exception {
     final int leaderIndex = 0;
     executeCommand(leaderIndex, "sql", "CREATE document TYPE BasicDoc");
-    waitForReplicationIsCompleted(leaderIndex);
+    waitForAllServers();
 
     executeCommand(leaderIndex, "sql", "INSERT INTO BasicDoc SET name = 'test1', value = 42");
-    waitForReplicationIsCompleted(leaderIndex);
+    // waitForReplicationIsCompleted(leaderIndex) only waits for the LEADER to catch up to its own
+    // last-applied index, which is true the instant it commits - it gives the followers queried
+    // below no time at all to apply the replicated write before this test reads them. This is the
+    // documented "assertion races a slow follower" chronic-flake shape (issues #5668/#5702);
+    // waitForAllServers() is the existing helper that actually waits for every server, not just
+    // the one that never needed to wait in the first place.
+    waitForAllServers();
 
     for (int i = 0; i < getServerCount(); i++) {
       final JSONObject result = executeCommand(i, "sql", "SELECT FROM BasicDoc WHERE name = 'test1'");
