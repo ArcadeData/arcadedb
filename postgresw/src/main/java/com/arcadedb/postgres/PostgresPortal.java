@@ -51,6 +51,26 @@ public class PostgresPortal {
    * its filters are bound parameters, whose values only arrive with the Bind message (issue #6412).
    */
   public boolean                   catalogQuery         = false;
+  /**
+   * The complete materialized result of this portal's statement (issue #6458), set once - by whichever of a
+   * Describe('P') or the first Execute runs the statement first - and read by every Execute after that to
+   * hand out {@code limit}-sized slices via {@link #resultCursor}. {@link #cachedResultSet} holds only the
+   * current slice (what the in-flight Execute is about to write to the wire), matching what every existing
+   * reader of that field already expects; this field is what makes a second slice possible without re-running
+   * the statement or losing the rows a Describe already had to materialize to discover the row's columns.
+   */
+  public List<Result>              fullResultSet;
+  /**
+   * How many rows of {@link #fullResultSet} have already been handed to the client across every Execute so
+   * far (issue #6458). The next Execute's slice starts here.
+   */
+  public int                       resultCursor         = 0;
+  /**
+   * True when the most recently computed slice of {@link #fullResultSet} stopped because Execute's row-limit
+   * was hit while rows remained - i.e. the wire must send PortalSuspended for that slice, not CommandComplete.
+   * The protocol allows exactly one of the two (issue #6458).
+   */
+  public boolean                   suspended            = false;
 
   public PostgresPortal(final String query, String language) {
     this.query = query;

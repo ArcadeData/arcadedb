@@ -374,19 +374,30 @@ public class PostgresNetworkExecutor extends Thread {
 
     if (type == 'P') {
       if (portal.sqlStatement != null) {
-        final Object[] parameters = portal.parameterValues != null ? portal.parameterValues.toArray() : new Object[0];
-        final long metricsStart = QueryMetricsRecorder.Holder.startNanos();
-        final ResultSet resultSet;
-        try {
-          resultSet = portal.sqlStatement.execute(database, parameters, createCommandContext());
-        } finally {
-          QueryMetricsRecorder.Holder.record(metricsStart, database.getName(), portal.language, "command");
+        if (!portal.executed) {
+          // Guarded so a second Describe('P') on the same portal (or one arriving after an Execute already
+          // ran the statement) reuses the materialized result instead of running the statement again - issue
+          // #6458's follow-up Execute(s) depend on this same fullResultSet being run exactly once.
+          final Object[] parameters = portal.parameterValues != null ? portal.parameterValues.toArray() : new Object[0];
+          final long metricsStart = QueryMetricsRecorder.Holder.startNanos();
+          final ResultSet resultSet;
+          try {
+            resultSet = portal.sqlStatement.execute(database, parameters, createCommandContext());
+          } finally {
+            QueryMetricsRecorder.Holder.record(metricsStart, database.getName(), portal.language, "command");
+          }
+          portal.executed = true;
+          if (portal.isExpectingResult)
+            // Materializes the whole result now (issue #6458): Describe needs every row's columns, not just
+            // the first, to catch a property that only shows up on a later row (documents can be sparse) -
+            // and the portal keeps this list so the Execute(s) that follow slice it by their own row-limit
+            // instead of re-running the statement or losing what Describe already had to read.
+            portal.fullResultSet = browseAndCacheResultSet(resultSet, 0);
         }
-        portal.executed = true;
         if (portal.isExpectingResult) {
-          portal.cachedResultSet = browseAndCacheResultSet(resultSet, 0);
-          portal.columns = getColumns(portal.cachedResultSet, resolveQueryTargetType(portal));
-          if (portal.columns.isEmpty() && portal.cachedResultSet.isEmpty()) {
+          final List<Result> forColumns = portal.fullResultSet != null ? portal.fullResultSet : Collections.emptyList();
+          portal.columns = getColumns(forColumns, resolveQueryTargetType(portal));
+          if (portal.columns.isEmpty() && forColumns.isEmpty()) {
             final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(portal.query, portal.language,
                 getParams(portal), portal.sqlStatement);
             if (schemaColumns != null)
@@ -439,7 +450,11 @@ public class PostgresNetworkExecutor extends Thread {
       if (errorInTransaction)
         return;
 
-      portal = getPortal(portalName, true);
+      // Do NOT remove the portal here (issue #6458): a limit-hit Execute suspends rather than finishes, and
+      // the follow-up Execute the client sends to continue fetching looks this same portal name up again.
+      // The portal is only ever discarded by an explicit Close ('C') message or by a later Bind reusing the
+      // name (closeCommand()/bindCommand()).
+      portal = getPortal(portalName, false);
       if (portal == null) {
         writeNoData();
         return;
@@ -476,7 +491,11 @@ public class PostgresNetworkExecutor extends Thread {
           }
           portal.executed = true;
           if (portal.isExpectingResult) {
-            portal.cachedResultSet = browseAndCacheResultSet(resultSet, limit);
+            // Materializes the whole result now (issue #6458), the same way Describe('P') does: a client that
+            // never Described this portal first (it already knows the row shape) reaches this branch instead,
+            // and every Execute on this portal from here on - including this one - slices fullResultSet by its
+            // own row-limit below rather than re-running the statement.
+            portal.fullResultSet = browseAndCacheResultSet(resultSet, 0);
             profile.addEngineNanos(System.nanoTime() - engineStart);
             // Only send RowDescription if not already sent during DESCRIBE
             // But always use columns from actual result for DataRows consistency
@@ -484,8 +503,8 @@ public class PostgresNetworkExecutor extends Thread {
               final long serStart = System.nanoTime();
               // A catalog answer already carries the columns it must be announced under.
               if (!portal.catalogQuery || portal.columns == null)
-                portal.columns = getColumns(portal.cachedResultSet, resolveQueryTargetType(portal));
-              if (portal.columns.isEmpty() && portal.cachedResultSet.isEmpty()) {
+                portal.columns = getColumns(portal.fullResultSet, resolveQueryTargetType(portal));
+              if (portal.columns.isEmpty() && portal.fullResultSet.isEmpty()) {
                 final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(portal.query, portal.language,
                     getParams(portal), portal.sqlStatement);
                 if (schemaColumns != null)
@@ -498,6 +517,22 @@ public class PostgresNetworkExecutor extends Thread {
           } else {
             profile.addEngineNanos(System.nanoTime() - engineStart);
           }
+        }
+
+        // Computes this Execute's slice of the portal's materialized result (issue #6458). Runs on every
+        // Execute, not only the one that just populated fullResultSet above: a follow-up Execute continuing a
+        // previously suspended fetch reaches here with portal.executed already true and fullResultSet already
+        // populated - by this same method on an earlier call, or by describeCommand() - and only needs the
+        // next slice, never a re-run of the statement.
+        if (portal.isExpectingResult && portal.fullResultSet != null) {
+          final int total = portal.fullResultSet.size();
+          final int start = portal.resultCursor;
+          final int end = limit > 0 ? Math.min(start + limit, total) : total;
+          portal.cachedResultSet = start < end ? new ArrayList<>(portal.fullResultSet.subList(start, end)) : Collections.emptyList();
+          portal.resultCursor = end;
+          // The protocol allows exactly one terminator after the data rows: PortalSuspended when this slice
+          // stopped on the row-limit with rows still left, CommandComplete once the portal is fully drained.
+          portal.suspended = limit > 0 && end < total;
         }
 
         if (portal.isExpectingResult && portal.cachedResultSet != null && !portal.cachedResultSet.isEmpty()) {
@@ -534,7 +569,17 @@ public class PostgresNetworkExecutor extends Thread {
           // Use the columns that were sent in RowDescription for consistency
           final Map<String, PostgresType> columnsToUse = portal.columns != null ? portal.columns : dataRowColumns;
           writeDataRows(portal.cachedResultSet, columnsToUse, portal.resultFormats);
-          writeCommandComplete(portal.query, portal.cachedResultSet.size());
+          // Exactly one terminator after the data rows (issue #6458), never both, and always after the rows
+          // rather than before them: PortalSuspended when this slice stopped short of fullResultSet with the
+          // row-limit reached, CommandComplete once the portal is fully drained - tagged with resultCursor,
+          // the running total across every slice this portal has sent (matching PostgreSQL's own convention),
+          // when this portal is the paginated fullResultSet-backed kind; a portal whose cachedResultSet was
+          // set directly (a synthetic single-row answer - SHOW/catalog/etc.) never touches resultCursor, so it
+          // keeps reporting its own size exactly as before this fix.
+          if (portal.suspended)
+            portalSuspendedResponse();
+          else
+            writeCommandComplete(portal.query, portal.fullResultSet != null ? portal.resultCursor : portal.cachedResultSet.size());
           profile.addSerializationNanos(System.nanoTime() - serStart);
         } else {
           final long serStart = System.nanoTime();
@@ -732,15 +777,17 @@ public class PostgresNetworkExecutor extends Thread {
   /**
    * Browse a result set and cache results up to the limit, then close the source ResultSet.
    * <p>
-   * <b>Ownership:</b> this method takes ownership of the supplied ResultSet and closes it
-   * before returning, in both the natural-exhaustion and the limit-hit paths. The portal
-   * keeps only the materialized {@code List<Result>} (see {@code PostgresPortal#cachedResultSet}),
-   * never a reference to the underlying ResultSet. Multi-batch portal-suspension fetching
-   * from a partially-consumed ResultSet is therefore not supported by this implementation -
-   * a follow-up Execute on the same portal re-uses the cached list rather than pulling the
-   * next chunk from the source. This is unchanged behaviour from before the #4197 audit; the
-   * audit only made the close explicit, releasing the execution plan and unblocking parallel-scan
-   * worker threads that would otherwise stay parked on a full bounded queue.
+   * <b>Ownership:</b> this method takes ownership of the supplied ResultSet and closes it before returning, in
+   * both the natural-exhaustion and the limit-hit paths. Both callers that matter for issue #6458 - Describe
+   * ('P') and the first Execute of a portal that was never Described - call this with {@code limit=0} to
+   * materialize the whole result into {@link PostgresPortal#fullResultSet}: Describe needs every row to
+   * discover every column (documents can be sparse), and Execute needs the complete list to slice by whatever
+   * row-limit each Execute call declares, including a follow-up one continuing a previously suspended fetch
+   * (see the pagination step in {@code executeCommand()}, which slices {@code fullResultSet} rather than
+   * calling this method again). The {@code limit>0} form remains for the unrelated internal callers that want
+   * a bounded sample and are happy to see the rest of the result set discarded - {@code sendSuspendedOnLimit}
+   * is {@code false} for all of them, so the always-{@code limit=0} callers are the only ones that can still
+   * reach that branch.
    *
    * @param resultSet           The result set to browse (this method closes it)
    * @param limit               Maximum number of results to cache (0 = unlimited)
