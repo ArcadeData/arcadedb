@@ -74,7 +74,7 @@
              converge. -->
         <antlr4.version>4.13.2</antlr4.version>
         <antlr4.visitor>true</antlr4.visitor>
-        <cucumber.version>7.34.6</cucumber.version>
+        <cucumber.version>7.34.7</cucumber.version>
         <jmh.version>1.37</jmh.version>
     </properties>
 
