@@ -3169,7 +3169,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * Above this threshold, a full rebuild can take seconds to minutes, so async is preferred.
    * <p>
    * Also the threshold {@link #flush()} uses to decide whether a close-time rebuild is cheap enough to run
-   * synchronously or should be deferred to the next open instead (issue #6067).
+   * synchronously or should be deferred to the next SEARCH on this index instead (issue #6067) - opening the
+   * database alone never triggers it, only {@link #ensureGraphAvailable()}/{@link #rebuildGraphBeforeSearch()}
+   * do, and that deferred rebuild is itself still synchronous on whichever search first reaches it, not async.
    */
   private static final int ASYNC_REBUILD_MIN_GRAPH_SIZE = 1000;
   private static final int[] EMPTY_ORDINALS             = new int[0];
@@ -6453,7 +6455,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // with no persisted graph - and defer the rebuild to whenever this index is next actually searched,
         // reusing the exact lazy-load/staleness-detection path (ensureGraphAvailable()) that already handles a
         // stale persisted graph on every ordinary reopen. A session that closes and reopens without searching
-        // this index never pays the cost at all; one that does pays it at the query instead of at close().
+        // this index never pays the cost at all; one that does pays it at the query instead of at close() - that
+        // follow-up rebuild is itself still synchronous on the search that triggers it (ensureGraphAvailable()'s
+        // stale-graph fallback is not gated by this same threshold), so this trades an unconditional cost on
+        // EVERY close() for a conditional one paid by at most one search, not for a non-blocking one.
         LogManager.instance().log(this, Level.FINE,
             "Deferring graph build on close for index %s: %d vectors is at or above the async rebuild threshold "
                 + "(%d), so the rebuild is deferred to the next search on this index instead of blocking close()",
