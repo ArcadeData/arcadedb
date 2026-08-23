@@ -39,21 +39,35 @@ import java.util.List;
  * DeleteExecutionPlan}/{@code UpdateExecutionPlan}/{@code DDLExecutionPlan}/{@code
  * SingleOpExecutionPlan}: {@link ScriptLineStep#syncPull} special-cases exactly those types to
  * eagerly run them, so staying outside that set is what keeps a chained EXPLAIN from being run.
+ * <p>
+ * The same reasoning covers {@code PROFILE EXPLAIN <statement>}: {@code ProfileStatement.execute()}
+ * is itself a caller that pulls whatever {@code statement.createExecutionPlan()} hands back, so an
+ * inner {@link com.arcadedb.query.sql.parser.ExplainStatement} nested under {@code PROFILE} used to
+ * be just as exploitable as the {@code sqlscript} case - {@code PROFILE EXPLAIN UPDATE ...} silently
+ * ran the update too. Wrapping here closes that path as well: EXPLAIN's non-execution contract wins
+ * regardless of what encloses it, so {@code PROFILE EXPLAIN <statement>} degrades to plan-only output
+ * with no execution and no real cost numbers, rather than {@code PROFILE} unwrapping the inner
+ * statement and running it for real.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class ExplainExecutionPlan implements InternalExecutionPlan {
-  private final CommandContext context;
-  private final ExecutionPlan  wrappedPlan;
-  private       boolean        executed = false;
+  private final CommandContext        context;
+  private final InternalExecutionPlan wrappedPlan;
+  private       boolean               executed = false;
 
-  public ExplainExecutionPlan(final CommandContext context, final ExecutionPlan wrappedPlan) {
+  public ExplainExecutionPlan(final CommandContext context, final InternalExecutionPlan wrappedPlan) {
     this.context = context;
     this.wrappedPlan = wrappedPlan;
   }
 
-  public ExecutionPlan getWrappedPlan() {
+  public InternalExecutionPlan getWrappedPlan() {
     return wrappedPlan;
+  }
+
+  @Override
+  public void close() {
+    wrappedPlan.close();
   }
 
   @Override

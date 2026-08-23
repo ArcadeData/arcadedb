@@ -169,4 +169,34 @@ class ExplainStatementExecutionTest extends TestHelper {
     assertThat(rs.next().<Integer>getProperty("bar")).isEqualTo(0);
     rs.close();
   }
+
+  /**
+   * {@code PROFILE EXPLAIN <statement>} is a third way to reach the same bug:
+   * {@code ProfileStatement.execute()} is itself a caller that pulls whatever
+   * {@code statement.createExecutionPlan()} hands back (see {@code ProfileStatement.java:58-64}), so
+   * before this fix {@code PROFILE EXPLAIN UPDATE ...} silently ran the update exactly like the
+   * {@code sqlscript} case did. EXPLAIN's non-execution contract is defined to win regardless of what
+   * encloses it, so {@code PROFILE EXPLAIN <statement>} degrades to plan-only output - no execution,
+   * no real cost numbers - rather than PROFILE unwrapping the inner statement and running it for real.
+   */
+  @Test
+  void profileExplainUpdateDoesNotExecuteWrite() {
+    final String typeName = "Issue6648ProfileExplainTarget";
+    database.getSchema().createDocumentType(typeName);
+    database.transaction(() -> database.command("sql", "INSERT INTO " + typeName + " SET bar = 0"));
+
+    database.transaction(() -> {
+      final ResultSet result = database.command("sql", "PROFILE EXPLAIN UPDATE " + typeName + " SET bar = 1");
+      assertThat(result.hasNext()).isTrue();
+      final Result next = result.next();
+      assertThat(next.<Object>getProperty("executionPlan")).isNotNull();
+      assertThat(next.<String>getProperty("executionPlanAsString")).isNotNull();
+      result.close();
+    });
+
+    final ResultSet rs = database.query("sql", "SELECT bar FROM " + typeName);
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(rs.next().<Integer>getProperty("bar")).isEqualTo(0);
+    rs.close();
+  }
 }
