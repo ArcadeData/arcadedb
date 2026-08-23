@@ -64,6 +64,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Level;
 
@@ -416,6 +417,12 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
           if (database.isTransactionActive() && count % commitEvery == 0) {
             database.commit();
+            // #6470: the executor-wide onOk() callback is the durability signal for this batch - unlike a record
+            // op's own success callback (which reports the write applied to the still-open batch, not yet that it
+            // is durable), this fires only once the commit above has actually happened. Before this it fired only
+            // at shutdown and from the waitCompletion() marker, so a long-running worker that kept hitting this
+            // periodic boundary never told an onOk() listener anything until it stopped.
+            onOk();
             database.begin();
             // TransactionContext.begin()/reset() never reset useWAL/walFlush, so the stamp above would
             // "happen to" survive this cycle via object reuse even without this - re-applied explicitly
@@ -491,6 +498,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
       try {
         database.commit();
+        // #6470: another real commit of the shared batch, so the executor-wide durability signal fires here too.
+        onOk();
       } catch (final Throwable e) {
         // This commit closes out EARLIER tasks' accumulated work, not the task that triggered this check -
         // which has not run yet - so the failure must not be attributed to it: left uncaught, the caller's
@@ -1205,14 +1214,27 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
       final List<Bucket> buckets = type.getBuckets(polymorphic);
       final CountDownLatch semaphore = new CountDownLatch(buckets.size());
+      // #6467: shared across every bucket's task, so a bucket-level failure (I/O, corruption) is not silently
+      // dropped: without it, the failing task's own exception went only to the (typically unset) executor-wide
+      // onErrorCallback while completed() still counted the bucket down, so this method returned as if the whole
+      // type had been scanned.
+      final AtomicReference<Throwable> firstError = new AtomicReference<>();
 
       for (final Bucket b : buckets) {
         final int slot = getSlot(b.getFileId());
-        scheduleTask(slot, new DatabaseAsyncScanBucket(semaphore, callback, errorRecordCallback, b), true,
+        scheduleTask(slot, new DatabaseAsyncScanBucket(semaphore, callback, errorRecordCallback, b, firstError), true,
             backPressurePercentage);
       }
 
       semaphore.await();
+
+      // Rethrown here (rather than wrapped directly) so the generic catch below wraps it exactly like any other
+      // failure of this method, instead of nesting two DatabaseOperationExceptions with the same message.
+      final Throwable error = firstError.get();
+      if (error instanceof final RuntimeException re)
+        throw re;
+      if (error instanceof final Error err)
+        throw err;
 
     } catch (final Exception e) {
       throw new DatabaseOperationException(
