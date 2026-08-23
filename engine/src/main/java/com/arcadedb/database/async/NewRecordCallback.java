@@ -23,5 +23,10 @@ import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 @ExcludeFromJacocoGeneratedReport
 public interface NewRecordCallback {
+  /**
+   * Invoked once the record has been applied to the async worker's current batch transaction, which is not yet
+   * durable: a later task in the same still-open batch can still fail and roll it back (issue #6470). See
+   * {@link DatabaseAsyncExecutor#onOk(OkCallback)} for a signal that fires only once the batch actually commits.
+   */
   void call(Record newRecord);
 }
