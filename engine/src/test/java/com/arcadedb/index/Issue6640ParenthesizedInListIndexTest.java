@@ -114,18 +114,34 @@ class Issue6640ParenthesizedInListIndexTest extends TestHelper {
         database.newVertex("Track").set("trackId", (long) i).save();
     });
 
+    // A negated IN has no complement in FetchFromIndexStep: every code path there builds a cursor over the
+    // values that DO match, not their complement. isIndexAware() must decline whenever `not` is set, for
+    // every right-hand shape - parenthesized list, bracket array, bound parameter - not just the one this
+    // PR touches, otherwise the query silently returns the listed rows instead of excluding them. The
+    // bracket-array and bound-parameter forms already reached the index before this PR, so this locks in
+    // the guard fixing a pre-existing bug for them too, not just guarding against the new parenthesized path.
     database.transaction(() -> {
-      // A negated IN has no complement in FetchFromIndexStep: every code path there builds a cursor over
-      // the values that DO match, not their complement. isIndexAware() must decline whenever `not` is set,
-      // for every right-hand shape (parenthesized list, bracket array, bound parameter) - not just this
-      // one - otherwise the query silently returns the listed rows instead of excluding them.
-      final ResultSet explain = database.query("sql", "explain select from Track where trackId not in (2, 5, 9)");
+      assertNotInDeclinesTheIndexAndExcludesTheListedRows("select from Track where trackId not in (2, 5, 9)",
+          "select trackId from Track where trackId not in (2, 5, 9) order by trackId");
+      assertNotInDeclinesTheIndexAndExcludesTheListedRows("select from Track where trackId not in [2, 5, 9]",
+          "select trackId from Track where trackId not in [2, 5, 9] order by trackId");
+    });
+    database.transaction(() -> {
+      final ResultSet explain = database.query("sql", "explain select from Track where trackId not in :ids", Map.of("ids", List.of(2L, 5L, 9L)));
       assertThat(explain.getExecutionPlan().get().prettyPrint(0, 2)).doesNotContain("FETCH FROM INDEX");
 
-      final List<Long> ids = database.query("sql", "select trackId from Track where trackId not in (2, 5, 9) order by trackId")
+      final List<Long> ids = database.query("sql", "select trackId from Track where trackId not in :ids order by trackId", Map.of("ids", List.of(2L, 5L, 9L)))
           .stream().map(r -> r.<Long>getProperty("trackId")).toList();
       assertThat(ids).containsExactly(0L, 1L, 3L, 4L, 6L, 7L, 8L);
     });
+  }
+
+  private void assertNotInDeclinesTheIndexAndExcludesTheListedRows(final String explainQuery, final String selectQuery) {
+    final ResultSet explain = database.query("sql", "explain " + explainQuery);
+    assertThat(explain.getExecutionPlan().get().prettyPrint(0, 2)).doesNotContain("FETCH FROM INDEX");
+
+    final List<Long> ids = database.query("sql", selectQuery).stream().map(r -> r.<Long>getProperty("trackId")).toList();
+    assertThat(ids).containsExactly(0L, 1L, 3L, 4L, 6L, 7L, 8L);
   }
 
   @Test
