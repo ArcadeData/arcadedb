@@ -141,6 +141,96 @@ class Issue6067DeferredCloseRebuildTest {
     }
   }
 
+  /**
+   * Sibling of the test above, covering the OTHER arm of the same {@code needsBuild} condition:
+   * {@code graphState == LOADING && !graphAlreadyOnDisk} (a graph never built at all, as opposed to one rebuilt
+   * after an existing build). Both arms reach the identical deferral branch in {@code flush()} and the identical
+   * fallback in {@code ensureGraphAvailable()}, but only the rebuilt-index arm was covered above.
+   * <p>
+   * {@code graphState} starts as {@code LOADING} on every constructed instance (both "new index" and "load
+   * existing index"), but a fresh insert into a never-built index flips it straight to {@code MUTABLE} - so a
+   * single populate-then-close session actually exercises the MUTABLE arm, same as the test above, not this one.
+   * Reaching {@code LOADING} at {@code flush()} time needs a session that touches the index NEITHER by writing
+   * NOR by searching: reopen a large index that a previous session already left un-built (deferred by the fix
+   * under test), and close it again immediately - {@code graphState} then stays exactly what the constructor set
+   * it to.
+   * <p>
+   * Unlike the test above, this one is NOT a fails-before/passes-after timing pin: the pre-fix code always builds
+   * and persists a graph on every close that has one to do, so the very state this test needs (a large index,
+   * closed twice, with no persisted graph either time) is only reachable once the fix exists - pre-fix, the
+   * first close already does the build, and the second close then finds nothing left to do and is trivially
+   * fast for an unrelated reason. So instead of timing, this pins {@code graphRebuildCount} directly: zero
+   * rebuilds across both closes, exactly one once the deferred data is finally searched.
+   */
+  @Test
+  void closeDefersTheFirstEverBuildForALargeIndexToo() throws Exception {
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+      final Database db = factory.create();
+      try {
+        populate(db);
+        // Closes with graphState == MUTABLE (see javadoc above) - the fix under test defers this build too, so
+        // no graph is persisted yet. That is the starting condition this test actually needs, not its subject.
+        db.close();
+      } finally {
+        if (db.isOpen())
+          db.close();
+      }
+    }
+
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+      final Database db = factory.open();
+      try {
+        final LSMVectorIndex index = vectorIndex(db);
+
+        assertThat(index.getStats().get("graphState"))
+            .as("precondition: LOADING - reopening alone (with no write or search in this session) must not "
+                + "advance graphState, otherwise this does not exercise the "
+                + "graphState == LOADING && !graphAlreadyOnDisk arm")
+            .isEqualTo(0L); // GraphState.LOADING
+        assertThat(index.getStats().get("totalVectors"))
+            .as("precondition: above the async-rebuild threshold, otherwise close() takes the pre-existing "
+                + "small-graph synchronous path unaffected by this fix")
+            .isGreaterThanOrEqualTo(1000L);
+        assertThat(index.getStats().get("graphRebuildCount"))
+            .as("precondition: the previous session's close must not have built anything either, or this test "
+                + "is not exercising the LOADING && !graphAlreadyOnDisk arm at all")
+            .isZero();
+
+        db.close();
+      } finally {
+        if (db.isOpen())
+          db.close();
+      }
+    }
+
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+      final Database db = factory.open();
+      try {
+        final LSMVectorIndex index = vectorIndex(db);
+        assertThat(index.getStats().get("graphRebuildCount"))
+            .as("neither close() above must have built anything: this pins the actual behaviour under test, "
+                + "since a timing bound alone cannot distinguish 'deferred' from 'nothing was ever built', see "
+                + "the class javadoc")
+            .isZero();
+
+        try (final ResultSet rs = db.query("sql", "SELECT count(*) as cnt FROM Doc")) {
+          assertThat(rs.next().<Long>getProperty("cnt")).isEqualTo((long) NUM_VECTORS);
+        }
+
+        final var results = index.findNeighborsFromVector(randomVector(new Random(7)), 5, 64);
+        assertThat(results)
+            .as("the deferred first-ever build must still make every vector reachable by search after reopen")
+            .hasSize(5);
+        assertThat(index.getStats().get("graphRebuildCount"))
+            .as("the search above must be what finally triggers the deferred build - it was owed since the "
+                + "first close two sessions ago")
+            .isEqualTo(1L);
+      } finally {
+        db.drop();
+      }
+    }
+  }
+
   private static float[] extraVector() {
     return randomVector(new Random(5));
   }
