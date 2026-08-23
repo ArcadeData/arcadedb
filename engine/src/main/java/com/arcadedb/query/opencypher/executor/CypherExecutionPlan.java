@@ -2484,10 +2484,16 @@ public class CypherExecutionPlan {
   }
 
   /**
-   * True when any MATCH clause of the statement has disconnected path patterns (see
-   * {@link MatchClause#hasDisconnectedPathPatterns()}). A DELETE fed by such a MATCH must fully read
-   * the upstream row set before deleting anything, or a later row can dereference a vertex/edge an
+   * True when the statement's MATCH clauses, combined, have disconnected path patterns (see
+   * {@link MatchClause#hasDisconnectedPathPatterns(List)}). A DELETE fed by such a MATCH must fully
+   * read the upstream row set before deleting anything, or a later row can dereference a vertex/edge an
    * earlier row already deleted (issue #6491).
+   * <p>
+   * Checked across every MATCH clause combined, not one clause at a time: a disconnected/cross-join
+   * shape can be spelled as comma-separated patterns within one {@code MATCH} or as separate,
+   * consecutive {@code MATCH} keywords, and the step-chaining below treats both spellings identically
+   * (a fresh {@code MatchNodeStep} chained onto {@code currentStep} either way), so both carry the same
+   * hazard.
    * <p>
    * Deliberately statement-wide rather than scoped to the MATCH clause(s) that actually precede a
    * given DELETE segment (relevant only for a multi-segment statement with more than one WITH-separated
@@ -2497,12 +2503,7 @@ public class CypherExecutionPlan {
    * this DELETE" through {@code clausesInOrder}.
    */
   private static boolean matchClausesHaveDisconnectedPatterns(final List<MatchClause> matchClauses) {
-    if (matchClauses == null)
-      return false;
-    for (final MatchClause match : matchClauses)
-      if (match.hasDisconnectedPathPatterns())
-        return true;
-    return false;
+    return MatchClause.hasDisconnectedPathPatterns(matchClauses);
   }
 
   /**
