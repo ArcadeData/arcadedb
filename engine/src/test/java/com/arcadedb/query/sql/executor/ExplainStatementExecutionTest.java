@@ -78,4 +78,95 @@ class ExplainStatementExecutionTest extends TestHelper {
 
     result.close();
   }
+
+  /**
+   * Regression test for issue #6648: {@code EXPLAIN <write statement>} sent through the
+   * {@code sqlscript} language engine used to actually perform the wrapped write, because
+   * {@code SQLScriptQueryEngine} chains whatever {@code Statement.createExecutionPlan()} returns
+   * and pulls it to completion, and {@code ExplainStatement.createExecutionPlan()} used to pass
+   * the wrapped statement's own executable plan straight through. Plain {@code "sql"} was never
+   * affected, since it goes through {@code ExplainStatement.execute()}, which never pulls the
+   * plan it builds.
+   */
+  @Test
+  void explainUpdateInSqlScriptDoesNotExecuteWrite() {
+    final String typeName = "Issue6648UpdateTarget";
+    database.getSchema().createDocumentType(typeName);
+    database.transaction(() -> database.command("sql", "INSERT INTO " + typeName + " SET bar = 0"));
+
+    database.transaction(() -> {
+      final ResultSet result = database.command("sqlscript", "EXPLAIN UPDATE " + typeName + " SET bar = 1;");
+      assertThat(result.hasNext()).isTrue();
+      final Result next = result.next();
+      assertThat(next.<Object>getProperty("executionPlan")).isNotNull();
+      assertThat(next.<String>getProperty("executionPlanAsString")).isNotNull();
+      result.close();
+    });
+
+    final ResultSet rs = database.query("sql", "SELECT bar FROM " + typeName);
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(rs.next().<Integer>getProperty("bar")).isEqualTo(0);
+    rs.close();
+  }
+
+  @Test
+  void explainInsertInSqlScriptDoesNotExecuteWrite() {
+    final String typeName = "Issue6648InsertTarget";
+    database.getSchema().createDocumentType(typeName);
+
+    database.transaction(() -> {
+      final ResultSet result = database.command("sqlscript", "EXPLAIN INSERT INTO " + typeName + " SET bar = 1;");
+      assertThat(result.hasNext()).isTrue();
+      result.close();
+    });
+
+    final ResultSet rs = database.query("sql", "SELECT count(*) as count FROM " + typeName);
+    assertThat(rs.next().<Long>getProperty("count")).isEqualTo(0L);
+    rs.close();
+  }
+
+  @Test
+  void explainDeleteInSqlScriptDoesNotExecuteWrite() {
+    final String typeName = "Issue6648DeleteTarget";
+    database.getSchema().createDocumentType(typeName);
+    database.transaction(() -> database.command("sql", "INSERT INTO " + typeName + " SET bar = 0"));
+
+    database.transaction(() -> {
+      final ResultSet result = database.command("sqlscript", "EXPLAIN DELETE FROM " + typeName + ";");
+      assertThat(result.hasNext()).isTrue();
+      result.close();
+    });
+
+    final ResultSet rs = database.query("sql", "SELECT count(*) as count FROM " + typeName);
+    assertThat(rs.next().<Long>getProperty("count")).isEqualTo(1L);
+    rs.close();
+  }
+
+  /**
+   * Same bug, reached through a different chaining caller: {@code IfStep} also chains whatever
+   * {@code Statement.createExecutionPlan()} returns for the statements in its branch. Confirms the
+   * fix lives where it belongs (in {@code ExplainStatement.createExecutionPlan()}), not as a
+   * one-off special case in {@code SQLScriptQueryEngine} alone.
+   */
+  @Test
+  void explainUpdateInsideIfBlockDoesNotExecuteWrite() {
+    final String typeName = "Issue6648IfBlockTarget";
+    database.getSchema().createDocumentType(typeName);
+    database.transaction(() -> database.command("sql", "INSERT INTO " + typeName + " SET bar = 0"));
+
+    database.transaction(() -> {
+      final String script = """
+              IF(true){
+                  EXPLAIN UPDATE %s SET bar = 1;
+              }
+          """.formatted(typeName);
+      final ResultSet result = database.command("sqlscript", script);
+      result.close();
+    });
+
+    final ResultSet rs = database.query("sql", "SELECT bar FROM " + typeName);
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(rs.next().<Integer>getProperty("bar")).isEqualTo(0);
+    rs.close();
+  }
 }
