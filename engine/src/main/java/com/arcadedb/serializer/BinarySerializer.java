@@ -1420,6 +1420,10 @@ public class BinarySerializer {
     this.dataEncryption = dataEncryption;
   }
 
+  public DataEncryption getDataEncryption() {
+    return dataEncryption;
+  }
+
   /**
    * Converts a spatial4j Shape object to WKT (Well-Known Text) format.
    * Optimized with cached WKT writer to avoid creating a new writer for each Point.

@@ -178,11 +178,32 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     final DeltaOverlay                   overlay;
     final long                           buildTimestamp;
     final long                           buildDurationMs;
+    // The database's last committed transaction id as of the start of the scan that produced this CSR (see
+    // #6583). Persisted alongside the CSR as its freshness certificate: on a later open, if the database's last
+    // committed transaction id still equals this value, nothing was committed in between, so the persisted CSR is
+    // still exactly correct and can be reused without a rescan. -1 for a snapshot that must never be persisted
+    // (not applicable — no build has produced one yet).
+    final long                           asOfTransactionId;
+    // True when this snapshot was loaded from a persisted CSR file rather than produced by a scan of the graph.
+    // Exposed via isRestoredFromPersistedCsr() — mainly for tests and operational visibility.
+    final boolean                        restoredFromDisk;
+    // The vertex/edge/property scope actually scanned into this snapshot. Usually identical to the enclosing
+    // view's own vertexTypes/edgeTypes/propertyFilter/edgePropertyFilter fields, EXCEPT when produced by the
+    // public two-arg build(vertexTypes, edgeTypes), which lets a caller rescan a NAMED view with a scope
+    // narrower than it was constructed with — those fields are final and never updated to match. Recorded here
+    // (rather than read from the view's fields) so persistCsrIfPossible() can write a certificate that describes
+    // what this snapshot actually covers, not what the view was originally configured for (#6583 review).
+    final String[]                       vertexTypes;
+    final String[]                       edgeTypes;
+    final String[]                       propertyFilter;
+    final String[]                       edgePropertyFilter;
 
     Snapshot(final Map<String, CSRAdjacencyIndex> csrPerType, final NodeIdMapping nodeMapping,
         final ColumnStore[] bucketColumns, final Map<String, ColumnStore> edgeColumnStores,
         final Map<String, int[]> bwdToFwd,
-        final DeltaOverlay overlay, final long buildTimestamp, final long buildDurationMs) {
+        final DeltaOverlay overlay, final long buildTimestamp, final long buildDurationMs,
+        final long asOfTransactionId, final boolean restoredFromDisk,
+        final String[] vertexTypes, final String[] edgeTypes, final String[] propertyFilter, final String[] edgePropertyFilter) {
       this.csrPerType = csrPerType;
       this.nodeMapping = nodeMapping;
       this.bucketColumns = bucketColumns;
@@ -191,11 +212,18 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       this.overlay = overlay;
       this.buildTimestamp = buildTimestamp;
       this.buildDurationMs = buildDurationMs;
+      this.asOfTransactionId = asOfTransactionId;
+      this.restoredFromDisk = restoredFromDisk;
+      this.vertexTypes = vertexTypes;
+      this.edgeTypes = edgeTypes;
+      this.propertyFilter = propertyFilter;
+      this.edgePropertyFilter = edgePropertyFilter;
     }
 
     Snapshot withOverlay(final DeltaOverlay newOverlay) {
       return new Snapshot(csrPerType, nodeMapping, bucketColumns, edgeColumnStores, bwdToFwd,
-          newOverlay, buildTimestamp, buildDurationMs);
+          newOverlay, buildTimestamp, buildDurationMs, asOfTransactionId, restoredFromDisk,
+          vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter);
     }
 
   }
@@ -295,13 +323,29 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     status = Status.BUILDING;
     buildError = null;
     try {
+      // Unlike buildAsync()/onRelevantCommit()/applyDelta()'s rebuild - each of which calls database.begin() on a
+      // fresh worker thread AFTER sampling asOfTransactionId, so the scan's transaction cannot have cached
+      // anything before that point - this method runs the scan on whatever transaction is already active on the
+      // CALLING thread (e.g. REBUILD GRAPH ANALYTICAL VIEW / a caller invoking build() directly inside its own
+      // transaction), or with none active at all. Under the default READ_COMMITTED that's harmless (no per-page
+      // caching, every read is current). Under REPEATABLE_READ, a transaction that was already open - and may
+      // already have cached some of the pages this scan is about to read - can miss a commit that landed between
+      // its own begin() and this sample, while asOfTransactionId (sampled here) claims coverage through it. The
+      // certificate would then be wrong in the direction that matters: a "complete" persisted CSR that is
+      // actually missing something. Since there is no way from here to know which pages (if any) that ambient
+      // transaction already cached, treat the certificate as unusable whenever that risk exists at all, rather
+      // than trying to bound it: asOfTransactionId=-1 makes persistCsrIfPossible() skip persisting this snapshot
+      // (see its existing "< 0" guard), the same way a snapshot that must never be persisted already reads.
+      final boolean certificateMayBeUnsound = database.isTransactionActive()
+          && database.getTransactionIsolationLevel() == Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ;
+      final long asOfTransactionId = certificateMayBeUnsound ? -1L : currentLastTransactionId();
       final long buildStart = System.currentTimeMillis();
       final CSRBuilder builder = new CSRBuilder(database, propertyFilter, edgePropertyFilter, propertySampleSize);
       final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
       final long durationMs = System.currentTimeMillis() - buildStart;
 
       // Atomic swap — readers see all-or-nothing
-      this.snapshot = snapshotFromResult(result, durationMs);
+      this.snapshot = snapshotFromResult(result, durationMs, asOfTransactionId, vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter);
       this.status = Status.READY;
       this.notifyAll();
       invalidateGraphStatisticsCache();
@@ -337,6 +381,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       getExecutor().execute(() -> {
         BUILD_PERMITS.acquireUninterruptibly();
         try {
+          final long asOfTransactionId = currentLastTransactionId();
           // The build thread needs its own read transaction for database iteration
           database.begin();
           try {
@@ -346,7 +391,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
             final long durationMs = System.currentTimeMillis() - buildStart;
 
             synchronized (GraphAnalyticalView.this) {
-              this.snapshot = snapshotFromResult(result, durationMs);
+              this.snapshot = snapshotFromResult(result, durationMs, asOfTransactionId, vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter);
               this.status = Status.READY;
               GraphAnalyticalView.this.notifyAll();
               if (deltaCollector == null)
@@ -442,9 +487,13 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * Call this when the view is no longer needed (user-initiated removal).
    */
   public void drop() {
-    shutdown();
-    if (name != null)
+    // Dropped views have no schema definition left to restore against, so persisting the CSR here
+    // would just be written and immediately deleted below.
+    shutdown(false);
+    if (name != null) {
       GraphAnalyticalViewPersistence.remove(database, name);
+      GraphAnalyticalViewCSRPersistence.delete(database, name);
+    }
   }
 
   /**
@@ -457,8 +506,17 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * (or even closed the database) and crash with a misleading SEVERE log line.
    */
   public void shutdown() {
+    shutdown(true);
+  }
+
+  private void shutdown(final boolean persistCsr) {
     awaitInFlightTasks(SHUTDOWN_AWAIT_MS);
     synchronized (this) {
+      // Runs the persist-to-disk write (when eligible) while holding this instance's monitor: any concurrent
+      // awaitReady()/getStatus() caller blocks for the duration of the write, not just of a scan - accepted
+      // because it only happens once per close and is gated by GAV_PERSIST_CSR.
+      if (persistCsr)
+        persistCsrIfPossible();
       unregisterChangeListeners();
       GraphTraversalProviderRegistry.unregister(database, this);
       if (name != null)
@@ -1116,6 +1174,16 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return snapshot != null;
   }
 
+  /**
+   * Returns true when the current CSR was loaded from a persisted file (see #6583) rather than produced by a scan
+   * of the graph on this open. Mainly useful for tests and operational visibility (e.g. confirming that a reopen
+   * skipped the O(V+E) rebuild).
+   */
+  public boolean isRestoredFromPersistedCsr() {
+    final Snapshot snap = this.snapshot;
+    return snap != null && snap.restoredFromDisk;
+  }
+
   public boolean isReady() {
     final Status s = status;
     if (s == Status.READY)
@@ -1400,10 +1468,164 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   // --- Private helpers ---
 
-  private static Snapshot snapshotFromResult(final CSRBuilder.CSRResult result, final long durationMs) {
+  private static Snapshot snapshotFromResult(final CSRBuilder.CSRResult result, final long durationMs, final long asOfTransactionId,
+      final String[] builtVertexTypes, final String[] builtEdgeTypes, final String[] builtPropertyFilter,
+      final String[] builtEdgePropertyFilter) {
     return new Snapshot(result.getCsrPerType(), result.getMapping(), result.getBucketColumns(),
         result.getEdgeColumnStores(), result.getBwdToFwd(),
-        null, System.currentTimeMillis(), durationMs);
+        null, System.currentTimeMillis(), durationMs, asOfTransactionId, false,
+        builtVertexTypes, builtEdgeTypes, builtPropertyFilter, builtEdgePropertyFilter);
+  }
+
+  /**
+   * The database's last committed transaction id, sampled before a CSR scan starts (see {@link
+   * Snapshot#asOfTransactionId}). Reading it before {@code database.begin()} for the scan — rather than after — is
+   * what makes the certificate sound: whatever the scan reads, it reads no earlier than this point, so "nothing
+   * committed since this value" on a later open implies "nothing committed since the scan ran", regardless of the
+   * read transaction's own isolation semantics.
+   */
+  private long currentLastTransactionId() {
+    return ((DatabaseInternal) database).getTransactionManager().getLastTransactionId();
+  }
+
+  /**
+   * Persists the current CSR to disk (see #6583) so the next open can reuse it instead of rescanning the graph,
+   * when doing so is both possible and safe:
+   * <ul>
+   *   <li>the view is named — an anonymous view has no schema definition to restore against on a later open, so
+   *       there would be nothing to reload the file for</li>
+   *   <li>status is READY with a valid certificate — a STALE view's on-disk certificate would already be
+   *       superseded by the very commit that made it STALE, so persisting it would only cost a write that the
+   *       next open's certificate check is guaranteed to reject; BUILDING has no completed snapshot yet</li>
+   *   <li>the overlay (if any) has no pending changes — the certificate vouches only for the base CSR, so a
+   *       SYNCHRONOUS view with buffered overlay deltas would silently drop them if reloaded from this file</li>
+   * </ul>
+   * Called from {@link #shutdown()} while holding this instance's monitor, after any in-flight build/compaction
+   * has settled. Failures are logged and otherwise ignored: the next open simply falls back to a full rebuild,
+   * exactly as it always has.
+   */
+  private void persistCsrIfPossible() {
+    if (name == null || status != Status.READY)
+      return;
+    // The certificate is only sound where TransactionManager.getLastTransactionId() reflects every commit that
+    // could have touched the covered types. That holds for a standalone database or an HA leader (the only paths
+    // that call getNextTransactionId()), but not for a follower: TransactionManager.applyChanges(), the path
+    // replicated commits are applied through, never advances that counter, so a follower's certificate would
+    // freeze at whatever value it had when this snapshot was built, then "match" on every later reopen no matter
+    // how much further replicated data has landed since - the same failure shape as the lost-recency-marker case,
+    // but permanent rather than self-healing. Leader-only mirrors the existing precedent for HA-unsafe derived
+    // state (see TimeSeriesMaintenanceScheduler.runMaintenance()) with no compile dependency on the HA module.
+    final DatabaseInternal dbInternal = (DatabaseInternal) database;
+    if (dbInternal.isReplicated() && !dbInternal.isLeader())
+      return;
+    final Snapshot snap = this.snapshot;
+    if (snap == null || snap.asOfTransactionId < 0)
+      return;
+    if (snap.overlay != null && snap.overlay.hasChanges())
+      return;
+    // Nothing has changed since this exact snapshot was loaded from disk on this open (no overlay changes,
+    // per the check above, and a fresh scan always produces a new Snapshot instance) — the file on disk
+    // already matches it byte-for-byte, so writing it again would be pure waste.
+    if (snap.restoredFromDisk)
+      return;
+    if (!database.getConfiguration().getValueAsBoolean(GlobalConfiguration.GAV_PERSIST_CSR))
+      return;
+    try {
+      // Written from snap's OWN recorded scope, not this.vertexTypes/edgeTypes/propertyFilter/edgePropertyFilter:
+      // the public two-arg build(vertexTypes, edgeTypes) can rescan a named view with a scope narrower than it
+      // was constructed with, and those fields (final, never updated) would then describe more than snap actually
+      // covers - the header must match what was actually scanned, or a later reopen could restore a snapshot that
+      // silently under-covers what the view claims to (#6583 review).
+      GraphAnalyticalViewCSRPersistence.save(database, name, snap.vertexTypes, snap.edgeTypes, snap.propertyFilter,
+          snap.edgePropertyFilter, snap);
+    } catch (final OutOfMemoryError | Exception e) {
+      // OutOfMemoryError is caught deliberately, matching load()'s equivalent guard: save() assembles the whole
+      // CSR payload into one contiguous byte[] (and a second one if encryption is configured) before writing
+      // anything, right at shutdown()/database.close() after a build/rescan has already put memory pressure on
+      // the JVM. Left uncaught, an OOM here would propagate out of GraphAnalyticalViewRegistry.shutdownAll()'s
+      // per-view loop with no try/catch of its own, aborting it and leaking every view after this one in
+      // iteration order (unregisterChangeListeners()/GraphTraversalProviderRegistry.unregister() never run for
+      // them) - directly contradicting this method's own "failures are logged and otherwise ignored" contract.
+      LogManager.instance().log(this, Level.WARNING, "GraphAnalyticalView '%s': failed to persist CSR to disk", e, name);
+    }
+  }
+
+  /**
+   * Attempts to load a persisted CSR from disk instead of scanning the graph (see #6583). Returns true and leaves
+   * the view READY with the loaded snapshot when a file exists, its definition matches this view's configuration,
+   * and its freshness certificate (the database's last committed transaction id at persist time) still matches the
+   * database's current last committed transaction id — i.e. nothing was committed in between. Returns false
+   * (leaving the view's state untouched) for a missing file, a mismatched definition or certificate, or any read
+   * failure, so the caller can fall back to {@link #buildAsync()} exactly as it would have without this path.
+   */
+  synchronized boolean tryRestoreFromPersistedCsr() {
+    if (name == null)
+      return false;
+    if (!database.getConfiguration().getValueAsBoolean(GlobalConfiguration.GAV_PERSIST_CSR))
+      return false;
+    // Mirrors the same leader-only gate in persistCsrIfPossible(): a follower's certificate can never be trusted
+    // (its TransactionManager counter is frozen against replicated commits), so this file - if one even exists,
+    // e.g. left over from a promotion/demotion - must never be restored on this node either. Checked before
+    // isRecencySignalReliable() purely because it is the cheaper of the two disqualifying checks.
+    final DatabaseInternal dbInternal = (DatabaseInternal) database;
+    if (dbInternal.isReplicated() && !dbInternal.isLeader())
+      return false;
+    // The certificate is a plain equality check against the database's last committed transaction id, which is
+    // only sound while that counter's own history is verifiably continuous. If this open couldn't reconstruct it
+    // from real evidence (a lost/corrupt recency marker with no WAL left to recover it from - a clean close
+    // removes the WAL, so the marker is the sole durable record at that point), the counter silently restarts
+    // and will climb back through every value it held before, including one a stale file on disk might still
+    // carry as its certificate. Refusing the fast path here until a fresh, trustworthy certificate is written at
+    // this session's own close is the same "no manifest reads as unverifiable, not as valid" rule #6106 already
+    // established for the vector index's correspondence artifact.
+    if (!dbInternal.getTransactionManager().isRecencySignalReliable())
+      return false;
+    final long currentTxId = currentLastTransactionId();
+    final Snapshot restored;
+    try {
+      restored = GraphAnalyticalViewCSRPersistence.load(database, name, vertexTypes, edgeTypes, propertyFilter,
+          edgePropertyFilter, currentTxId);
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "GraphAnalyticalView '%s': failed to load persisted CSR from disk", e, name);
+      return false;
+    }
+    if (restored == null)
+      return false;
+
+    // Reuse the latch already installed (by the constructor, since this is always the first status
+    // transition attempted on a freshly built view) rather than publishing a new one: the view is
+    // registered before this method runs, so a concurrent awaitReady() caller may already be waiting
+    // on that original latch. Counting down a *new* instance instead would leave that caller hanging
+    // until its timeout even though the view is READY.
+    final CountDownLatch latch = readyLatch;
+    this.snapshot = restored;
+    this.status = Status.READY;
+    this.notifyAll();
+    latch.countDown();
+    invalidateGraphStatisticsCache();
+    if (deltaCollector == null)
+      registerChangeListeners();
+
+    // A commit to a covered type landing between sampling currentTxId (above) and the listener registration
+    // just above this line would be invisible to the restored snapshot (no scan ran to absorb it, unlike
+    // buildAsync(), whose real scan runs AFTER its own sample so a racing commit is already captured in what
+    // it reads) and invisible to onRelevantCommit()/applyDelta() too (the listeners were not live yet when it
+    // happened). Not reachable via the current call site - restoreAll() runs synchronously inside
+    // LocalDatabase.open(), before the Database is handed to any caller, so nothing holding a reference to it
+    // can commit concurrently - but checked defensively so this stays correct if that context ever changes
+    // (e.g. an HA replica replaying commits concurrently with a local open). Marking STALE mirrors exactly
+    // what onRelevantCommit() does for a real relevant commit under OFF/SYNCHRONOUS mode: conservative, but
+    // never wrong.
+    if (currentLastTransactionId() != currentTxId) {
+      LogManager.instance().log(this, Level.WARNING,
+          "GraphAnalyticalView '%s': a commit landed while restoring its CSR from disk; marking it STALE rather than risk missing it",
+          name);
+      status = Status.STALE;
+    }
+
+    LogManager.instance().log(this, Level.INFO,
+        "GraphAnalyticalView '%s': restored CSR from disk (asOfTransactionId=%d), skipping full rebuild", name, currentTxId);
+    return true;
   }
 
   private void registerChangeListeners() {
@@ -1443,6 +1665,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         getExecutor().execute(() -> {
           BUILD_PERMITS.acquireUninterruptibly();
           try {
+            final long asOfTransactionId = currentLastTransactionId();
             database.begin();
             try {
               final long buildStart = System.currentTimeMillis();
@@ -1454,7 +1677,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
               // that would be lost by an unconditional swap.
               synchronized (GraphAnalyticalView.this) {
                 if (updateMode == UpdateMode.ASYNCHRONOUS) {
-                  this.snapshot = snapshotFromResult(result, durationMs);
+                  this.snapshot = snapshotFromResult(result, durationMs, asOfTransactionId, vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter);
                   this.status = Status.READY;
                 } else
                   LogManager.instance().log(this, Level.INFO,
@@ -1552,6 +1775,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         getExecutor().execute(() -> {
           BUILD_PERMITS.acquireUninterruptibly();
           try {
+            final long asOfTransactionId = currentLastTransactionId();
             database.begin();
             try {
               final long buildStart = System.currentTimeMillis();
@@ -1570,7 +1794,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
                   LogManager.instance().log(this, Level.INFO,
                       "GraphAnalyticalView '%s': compaction result discarded (delta buffer overflowed during rebuild)", name);
                 } else {
-                  Snapshot fresh = snapshotFromResult(result, durationMs);
+                  Snapshot fresh = snapshotFromResult(result, durationMs, asOfTransactionId, vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter);
 
                   // Re-apply any deltas that arrived during the rebuild.
                   // These may not be in the fresh CSR (committed after the CSR scan of their bucket).
