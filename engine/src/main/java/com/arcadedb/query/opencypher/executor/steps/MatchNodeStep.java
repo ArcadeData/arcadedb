@@ -90,6 +90,19 @@ public class MatchNodeStep extends AbstractExecutionStep {
   // need to move to a per-execution scope or be guarded.
   private       String              usedIndexName; // Track which index was used (if any)
   private       String              usedPartitionBucket; // Track partition bucket pruning (if any) - same write-once-per-execution contract as usedIndexName
+  // Fully materialized snapshot of a row-independent full-type-scan's candidates, resolved on the first
+  // getVertexIterator() call of a CHAINED match (prev != null) and replayed for every later re-open instead
+  // of re-opening a live database.iterateType() cursor per outer input row (a chained MATCH, e.g.
+  // MATCH (), p0 = (), re-opens that scan once per outer input row). Without this, a vertex a downstream
+  // MERGE/CREATE creates mid-query - whether of a brand-new type or of a type that already existed - is
+  // visible to a later re-open and retroactively grows this MATCH's cardinality after earlier rows already
+  // reached WHERE/MERGE (issue #6602). Only enabled for a pattern this class can prove is 100% independent of
+  // the current input row: no ID filter (static or dynamic), no dynamic labels, and (for a single-label
+  // pattern) no properties or inline WHERE pushdown that could route to a row-dependent index/partition
+  // lookup - see {@link #isRowIndependentFullScan()}. Scoped to prev != null: a standalone MATCH calls
+  // getVertexIterator() exactly once regardless, so caching there would only add eager materialization cost
+  // (and memory) for large scans with no correctness benefit.
+  private       List<Identifiable>  cachedFullScanCandidates;
 
   /**
    * Creates a match node step.
@@ -364,6 +377,52 @@ public class MatchNodeStep extends AbstractExecutionStep {
   }
 
   private Iterator<Identifiable> getVertexIterator(final Result currentInputResult) {
+    if (cachedFullScanCandidates != null)
+      return cachedFullScanCandidates.iterator();
+
+    final Iterator<Identifiable> computed = computeVertexIterator(currentInputResult);
+
+    // prev != null: only a chained match re-opens this scan per outer input row, which is the only
+    // situation where a live re-open can observe a downstream write made mid-query (issue #6602).
+    if (prev != null && isRowIndependentFullScan()) {
+      final List<Identifiable> materialized = new ArrayList<>();
+      computed.forEachRemaining(materialized::add);
+      cachedFullScanCandidates = materialized;
+      return materialized.iterator();
+    }
+
+    return computed;
+  }
+
+  /**
+   * True when this pattern's candidate set cannot vary from one input row to the next, so the iterator
+   * {@link #computeVertexIterator} returns is safe to materialize once and replay for every later re-open
+   * (see {@link #cachedFullScanCandidates}): no ID filter (static or dynamic) and no dynamic labels - either
+   * of those can resolve to a different, row-dependent target regardless of label count.
+   * <p>
+   * Properties and an inline WHERE pushdown ({@link #whereFilter}) only disqualify a <b>single-label</b>
+   * pattern: that is the only branch of {@code computeVertexIterator} ({@code tryFindAndUseIndex},
+   * {@code tryFindAndUseIndexFromWhere}, {@code tryPartitionPrunedIterator}) where a property value or a
+   * WHERE predicate can steer the scan itself to a row-dependent index/partition lookup. A label-less or
+   * multi-label pattern never takes any of those branches regardless of properties/whereFilter - it always
+   * resolves the same full type scan - and both are applied there only as post-fetch per-row filters (see
+   * {@code matchesProperties}/the {@code whereFilter.evaluate} call in this step's chained-mode fetch loop),
+   * which does not affect what the candidate set is.
+   */
+  private boolean isRowIndependentFullScan() {
+    if ((idFilter != null && !idFilter.isEmpty()) || dynamicIdExpression != null || pattern.hasDynamicLabels())
+      return false;
+    final List<String> labels = pattern.getLabels();
+    if (labels != null && labels.size() == 1) {
+      if (pattern.getProperties() != null && !pattern.getProperties().isEmpty())
+        return false;
+      if (whereFilter != null)
+        return false;
+    }
+    return true;
+  }
+
+  private Iterator<Identifiable> computeVertexIterator(final Result currentInputResult) {
     // OPTIMIZATION: Resolve ID filter - either static (from plan time) or dynamic (from runtime).
     // Static idFilter handles literals/parameters; dynamicIdExpression handles expressions like
     // BatchEntry.destRID that can only be resolved with the current input row (issue #3864).
