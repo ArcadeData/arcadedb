@@ -157,6 +157,63 @@ public class Issue6597InsertStreamChunkDatabaseIT extends BaseGraphServerTest {
     }
   }
 
+  @Test
+  void insertStreamMustPreferChunkDatabaseOverOptionsDatabaseWhenBothAreSet() throws Exception {
+    final String typeName = "Issue6597PrecedenceType_" + System.currentTimeMillis();
+
+    getServer(0).getDatabase(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + typeName);
+
+    final ArcadeDbGrpcService service = new ArcadeDbGrpcService(getDatabaseName(), getServer(0));
+    try {
+      final AtomicReference<InsertSummary> summaryRef = new AtomicReference<>();
+      final AtomicReference<Throwable> errorRef = new AtomicReference<>();
+      final RecordingResponseObserver resp = new RecordingResponseObserver(summaryRef, errorRef);
+
+      final StreamObserver<InsertChunk> req = service.insertStream(resp);
+
+      // Both InsertChunk.database and InsertOptions.database are set, to DIFFERENT values.
+      // InsertOptions.database is deliberately a name rejected by validateDatabaseName (it
+      // contains ".."), so if it were ever consulted instead of InsertChunk.database, the insert
+      // would fail loudly rather than silently succeeding against the wrong database. This locks
+      // in the precedence rule the fix establishes: InsertChunk.database wins.
+      final InsertChunk chunk = InsertChunk.newBuilder()
+          .setSessionId("issue-6597-precedence")
+          .setChunkSeq(0)
+          .setLast(true)
+          .setDatabase(getDatabaseName())
+          .setCredentials(credentials())
+          .setOptions(InsertOptions.newBuilder()
+              .setDatabase("../should-be-ignored")
+              .setCredentials(credentials())
+              .setTargetClass(typeName)
+              .setConflictMode(InsertOptions.ConflictMode.CONFLICT_ERROR)
+              .setTransactionMode(InsertOptions.TransactionMode.PER_STREAM)
+              .build())
+          .addRows(GrpcRecord.newBuilder().setType(typeName).putProperties("name", stringValue("precedence-row")).build())
+          .build();
+
+      req.onNext(chunk);
+      assertThat(errorRef.get()).as("onNext should not error").isNull();
+
+      req.onCompleted();
+      assertThat(errorRef.get()).as("onCompleted should not error").isNull();
+
+      final InsertSummary summary = summaryRef.get();
+      assertThat(summary).isNotNull();
+      assertThat(summary.getReceived()).isEqualTo(1);
+      assertThat(summary.getInserted()).as("InsertChunk.database must take precedence over InsertOptions.database").isEqualTo(1);
+      assertThat(summary.getFailed()).isEqualTo(0);
+      assertThat(summary.getErrorsList()).isEmpty();
+
+      final long total = getServer(0).getDatabase(getDatabaseName())
+          .query("sql", "SELECT count(*) AS total FROM " + typeName).next().<Long>getProperty("total");
+      assertThat(total).isEqualTo(1L);
+    } finally {
+      service.close();
+      getServer(0).getDatabase(getDatabaseName()).command("sql", "DROP TYPE " + typeName + " IF EXISTS UNSAFE");
+    }
+  }
+
   /**
    * Minimal {@link ServerCallStreamObserver} test double that captures the single
    * {@link InsertSummary} emitted by the handler (or the terminal error), and provides no-op
