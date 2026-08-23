@@ -1051,6 +1051,9 @@ public class CypherExecutionPlan {
     // Apply post-MATCH operations using clausesInOrder to respect the order they appear
     // in the query (e.g. WITH before UNWIND, not the other way around).
     final List<ClauseEntry> clausesInOrder = statement.getClausesInOrder();
+    // MATCH clauses seen since the last WITH (or since the start), i.e. the ones that actually feed
+    // whichever DELETE segment is reached next - see matchClausesHaveDisconnectedPatterns().
+    final List<MatchClause> currentSegmentMatchClauses = new ArrayList<>();
     if (clausesInOrder != null) {
       for (final ClauseEntry entry : clausesInOrder) {
         switch (entry.getType()) {
@@ -1058,6 +1061,7 @@ public class CypherExecutionPlan {
           // MATCH pattern is handled by the optimizer above, but WHERE clauses
           // attached to MATCH clauses still need to be applied as filters.
           final MatchClause matchClause = entry.getTypedClause();
+          currentSegmentMatchClauses.add(matchClause);
           if (matchClause.hasWhereClause()) {
             final FilterPropertiesStep filterStep =
                 new FilterPropertiesStep(matchClause.getWhereClause(), context);
@@ -1091,7 +1095,7 @@ public class CypherExecutionPlan {
           final DeleteClause deleteClause = entry.getTypedClause();
           if (!deleteClause.isEmpty()) {
             final DeleteStep deleteStep = new DeleteStep(deleteClause, context,
-                matchClausesHaveDisconnectedPatterns(statement.getMatchClauses()));
+                matchClausesHaveDisconnectedPatterns(currentSegmentMatchClauses));
             deleteStep.setPrevious(currentStep);
             currentStep = deleteStep;
           }
@@ -1127,6 +1131,9 @@ public class CypherExecutionPlan {
         case WITH: {
           final WithClause withClause = entry.getTypedClause();
           currentStep = buildWithStepForOptimizer(withClause, currentStep, context, functionFactory);
+          // A WITH boundary starts a new segment: MATCH clauses before it no longer feed a DELETE
+          // that comes after it (issue #6631).
+          currentSegmentMatchClauses.clear();
           break;
         }
 
@@ -1308,6 +1315,10 @@ public class CypherExecutionPlan {
     // can detect already-bound variables and avoid Cartesian products
     final Set<String> boundVariables = new HashSet<>(seedVariableNames);
 
+    // MATCH clauses seen since the last WITH (or since the start), i.e. the ones that actually feed
+    // whichever DELETE/FOREACH segment is reached next - see matchClausesHaveDisconnectedPatterns().
+    final List<MatchClause> currentSegmentMatchClauses = new ArrayList<>();
+
     // Both count push-downs answer from the schema and the CSR arrays alone: they read the statement's patterns and
     // never look at the incoming rows. That makes the enumerating form of them wrong the moment the seed row binds
     // one of those pattern variables - a seeded body counting `MATCH (n)-[:KNOWS]->(m)` with `n` already bound to one
@@ -1391,6 +1402,7 @@ public class CypherExecutionPlan {
 
       case MATCH:
         final MatchClause matchClause = entry.getTypedClause();
+        currentSegmentMatchClauses.add(matchClause);
         if (matchClause.isOptional()) {
           // Try chained count optimization first (handles 2 consecutive OPTIONAL MATCH + count)
           final AbstractExecutionStep chainedOptimized = tryOptimizeChainedOptionalMatchCount(
@@ -1401,6 +1413,7 @@ public class CypherExecutionPlan {
             // Update boundVariables from the WITH clause
             final WithClause nextWith = ((ClauseEntry) clausesInOrder.get(entryIndex)).getTypedClause();
             applyProjectionToScope(nextWith.getItems(), boundVariables);
+            currentSegmentMatchClauses.clear(); // the skipped WITH starts a new segment
             break;
           }
 
@@ -1413,6 +1426,7 @@ public class CypherExecutionPlan {
             // Update boundVariables from the WITH clause
             final WithClause nextWith = ((ClauseEntry) clausesInOrder.get(entryIndex)).getTypedClause();
             applyProjectionToScope(nextWith.getItems(), boundVariables);
+            currentSegmentMatchClauses.clear(); // the skipped WITH starts a new segment
             break;
           }
         }
@@ -1424,6 +1438,9 @@ public class CypherExecutionPlan {
         currentStep = buildWithStep(withClause, currentStep, context, functionFactory);
         // An explicit WITH resets the scope to its own output variables; WITH * forwards the incoming one
         applyProjectionToScope(withClause.getItems(), boundVariables);
+        // A WITH boundary starts a new segment: MATCH clauses before it no longer feed a DELETE/FOREACH
+        // that comes after it (issue #6631).
+        currentSegmentMatchClauses.clear();
         break;
 
       case MERGE:
@@ -1471,7 +1488,7 @@ public class CypherExecutionPlan {
         final DeleteClause deleteClause = entry.getTypedClause();
         if (!deleteClause.isEmpty() && currentStep != null) {
           final DeleteStep deleteStep =
-              new DeleteStep(deleteClause, context, matchClausesHaveDisconnectedPatterns(statement.getMatchClauses()));
+              new DeleteStep(deleteClause, context, matchClausesHaveDisconnectedPatterns(currentSegmentMatchClauses));
           deleteStep.setPrevious(currentStep);
           currentStep = deleteStep;
         }
@@ -1500,7 +1517,7 @@ public class CypherExecutionPlan {
         final ForeachClause foreachClause = entry.getTypedClause();
         final ForeachStep foreachStep =
             new ForeachStep(foreachClause, context, functionFactory,
-                foreachClause.containsDelete() && matchClausesHaveDisconnectedPatterns(statement.getMatchClauses()));
+                foreachClause.containsDelete() && matchClausesHaveDisconnectedPatterns(currentSegmentMatchClauses));
         if (currentStep != null) {
           foreachStep.setPrevious(currentStep);
         }
@@ -2485,7 +2502,7 @@ public class CypherExecutionPlan {
   }
 
   /**
-   * True when the statement's MATCH clauses, combined, have disconnected path patterns (see
+   * True when the given MATCH clauses, combined, have disconnected path patterns (see
    * {@link MatchClause#hasDisconnectedPathPatterns(List)}). A DELETE fed by such a MATCH must fully
    * read the upstream row set before deleting anything, or a later row can dereference a vertex/edge an
    * earlier row already deleted (issue #6491).
@@ -2496,12 +2513,12 @@ public class CypherExecutionPlan {
    * (a fresh {@code MatchNodeStep} chained onto {@code currentStep} either way), so both carry the same
    * hazard.
    * <p>
-   * Deliberately statement-wide rather than scoped to the MATCH clause(s) that actually precede a
-   * given DELETE segment (relevant only for a multi-segment statement with more than one WITH-separated
-   * MATCH/DELETE pair): this is a conservative superset, so it can only force eager materialization on
-   * a DELETE that did not strictly need it, never miss one that did. Disconnected patterns are rare
-   * enough that the extra precision is not worth the bookkeeping to thread "which MATCH clauses feed
-   * this DELETE" through {@code clausesInOrder}.
+   * Callers pass only the MATCH clause(s) of the segment feeding the DELETE/FOREACH in question
+   * (the MATCH clauses since the last WITH, tracked as {@code currentSegmentMatchClauses} while
+   * walking {@code clausesInOrder}), not every MATCH clause in the whole statement: a multi-segment
+   * statement with more than one WITH-separated MATCH/DELETE pair must not force eager materialization
+   * on a DELETE whose own segment has no disconnected pattern just because an unrelated, earlier
+   * segment does (issue #6631).
    */
   private static boolean matchClausesHaveDisconnectedPatterns(final List<MatchClause> matchClauses) {
     return MatchClause.hasDisconnectedPathPatterns(matchClauses);
