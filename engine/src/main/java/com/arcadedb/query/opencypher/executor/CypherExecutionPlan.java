@@ -3170,12 +3170,21 @@ public class CypherExecutionPlan {
       final Set<String> vars = new HashSet<>();
       if (match.hasPathPatterns()) {
         for (final PathPattern pattern : match.getPathPatterns()) {
-          for (final NodePattern node : pattern.getNodes())
-            if (node.getVariable() != null)
-              vars.add(node.getVariable());
-          for (final RelationshipPattern rel : pattern.getRelationships())
-            if (rel.getVariable() != null)
-              vars.add(rel.getVariable());
+          for (final NodePattern node : pattern.getNodes()) {
+            // An anonymous node has no name to check against the grouping keys, so its
+            // multiplicity can never be ruled out - bail rather than silently ignore it.
+            if (node.getVariable() == null)
+              return null;
+            vars.add(node.getVariable());
+          }
+          for (final RelationshipPattern rel : pattern.getRelationships()) {
+            // Same reasoning for an anonymous relationship, plus: a variable-length relationship
+            // (named or not) can match several distinct paths between the same two endpoints,
+            // fanning a row out on its own even when every variable is otherwise accounted for.
+            if (rel.getVariable() == null || rel.isVariableLength())
+              return null;
+            vars.add(rel.getVariable());
+          }
           if (pattern.hasPathVariable())
             vars.add(pattern.getPathVariable());
         }
@@ -3183,7 +3192,6 @@ public class CypherExecutionPlan {
       return vars;
 
     case WITH:
-    case MERGE:
     case CREATE:
     case SET:
     case REMOVE:
@@ -3195,8 +3203,11 @@ public class CypherExecutionPlan {
       return Collections.emptySet();
 
     default:
-      // CALL / SUBQUERY / FINISH and any future clause type: row-cardinality effects are not
-      // analyzed here, so assume the worst rather than silently mis-optimize.
+      // MERGE can return one row PER EXISTING MATCH when its pattern matches more than one
+      // element (see MergeStep, "MERGE returns ALL matching elements"), so it is a fan-out
+      // source like any MATCH and is deliberately not in the safe list above. CALL / SUBQUERY /
+      // FINISH and any future clause type are equally unanalyzed here: assume the worst rather
+      // than silently mis-optimize.
       return null;
     }
   }
