@@ -189,4 +189,61 @@ class Issue6602MergeAfterEmptyMatchCardinalityTest extends TestHelper {
     assertThat(rows).hasSize(15);
     assertThat(database.countType("Seed", true)).isEqualTo(16L);
   }
+
+  @Test
+  void singleLabelChainedPatternWithNoPropertiesIsAlsoCacheable() {
+    // The other regression tests exercise the no-label and multi-label branches; this one exercises a
+    // genuine single-label pattern with no properties/WHERE - the branch with the most conditional logic
+    // in isRowIndependentFullScan(), since it is the only one that inspects properties/whereFilter at all.
+    final ResultSet rs = database.command("opencypher", """
+        UNWIND ['D', 'eUu'] AS alias0
+        MATCH (n:Seed), (m:Seed)
+        WHERE NOT ((alias0 + alias0) >= 'a')
+        MERGE (:Seed {id: 999})
+        RETURN {alias0: alias0, n: n, m: m} AS row;
+        """);
+
+    final List<Result> rows = new ArrayList<>();
+    while (rs.hasNext())
+      rows.add(rs.next());
+
+    // 15 (outer n:Seed) * 15 (inner m:Seed) = 225, regardless of MERGE creating a 16th matching vertex.
+    assertThat(rows).hasSize(225);
+    assertThat(database.countType("Seed", true)).isEqualTo(16L);
+  }
+
+  @Test
+  void chainedMatchToleratesDownstreamDeleteOfACachedCandidate() {
+    // Flagged in code review: the same mid-query interleaving that lets a downstream MERGE retroactively
+    // grow a chained MATCH's cardinality also lets a downstream DELETE remove a vertex that is sitting in
+    // an earlier, already-cached candidate list (cachedFullScanCandidates). DeleteStep applies each
+    // deletion immediately, per row, with no barrier collecting every row first - so by the time a later
+    // outer row's re-open replays the cache, some of the RIDs in it can already be gone. Before the
+    // RecordNotFoundException guard added alongside the cache, loading one of those stale RIDs would abort
+    // the whole query instead of just skipping the now-nonexistent row.
+    //
+    // m scans a type (:Other) disjoint from what n scans (:Seed) so n's own bound vertices are never among
+    // what m deletes - isolating the one thing this test targets (MatchNodeStep's cached candidate list
+    // going stale) from an unrelated, pre-existing hazard: RETURN's lazy property access on n would itself
+    // throw if n's own vertex had been deleted by the time the RETURN clause evaluates n.id, which is a
+    // separate concern outside MatchNodeStep (and outside what this PR's cache introduces) - not something
+    // to paper over in this test, but not what this test is about either.
+    database.command("opencypher", "UNWIND range(1, 15) AS i CREATE (:Other {id: i});");
+
+    final ResultSet rs = database.command("opencypher", """
+        MATCH (n:Seed), (m:Other)
+        DELETE m
+        RETURN n.id AS n
+        """);
+
+    int count = 0;
+    while (rs.hasNext()) {
+      rs.next();
+      count++;
+    }
+
+    assertThat(count).isGreaterThan(0);
+    assertThat(database.countType("Seed", true)).isEqualTo(15L);
+    assertThat(database.countType("Other", true)).isEqualTo(0L);
+  }
 }

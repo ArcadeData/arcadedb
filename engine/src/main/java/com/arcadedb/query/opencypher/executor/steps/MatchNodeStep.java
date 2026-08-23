@@ -23,6 +23,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
@@ -86,8 +87,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
   // Display-only diagnostic fields surfaced through {@link #prettyPrint}. Mirrors the
   // {@code usedIndexName} pattern: written once during the first iterator setup and read by the
   // pretty printer at plan-print time. Not safe to share a step instance across concurrent MATCH
-  // branches - if a future change drives parallel sub-plans through the same step, both fields
-  // need to move to a per-execution scope or be guarded.
+  // branches - if a future change drives parallel sub-plans through the same step, all three fields
+  // (including cachedFullScanCandidates below) need to move to a per-execution scope or be guarded.
   private       String              usedIndexName; // Track which index was used (if any)
   private       String              usedPartitionBucket; // Track partition bucket pruning (if any) - same write-once-per-execution contract as usedIndexName
   // Fully materialized snapshot of a row-independent full-type-scan's candidates, resolved on the first
@@ -102,6 +103,13 @@ public class MatchNodeStep extends AbstractExecutionStep {
   // lookup - see {@link #isRowIndependentFullScan()}. Scoped to prev != null: a standalone MATCH calls
   // getVertexIterator() exactly once regardless, so caching there would only add eager materialization cost
   // (and memory) for large scans with no correctness benefit.
+  // <p>
+  // Memory/CPU tradeoff: for a chained label-less or multi-label pattern over a very large vertex type, this
+  // now holds every candidate's Identifiable in memory for the life of the step instead of streaming a live
+  // cursor per re-open. That is a clear win when the pattern is re-opened many times (turns O(N) per outer
+  // row into one O(N) resolve), but it does mean the full candidate set is resident for the step's lifetime
+  // rather than GC-able as it streams past - deliberate, since re-opening a live cursor per row is exactly
+  // the mechanism issue #6602 exploits, and the RID list is far lighter than the vertices it names.
   private       List<Identifiable>  cachedFullScanCandidates;
 
   /**
@@ -281,8 +289,18 @@ public class MatchNodeStep extends AbstractExecutionStep {
                   rowCount++;
 
                 final Identifiable identifiable = iterator.next();
-                // Load the record if it's not already loaded
-                final Document record = identifiable.asDocument();
+                // Load the record if it's not already loaded. A RID drawn from
+                // cachedFullScanCandidates (see getVertexIterator) can outlive the vertex it names -
+                // a downstream DELETE for an earlier outer row can remove it before a later re-open
+                // replays the cached list - so, like every other step in this codebase that resolves
+                // a previously-captured RID (FetchFromRidsStep, MatchRelationshipStep, ...), a vertex
+                // that no longer exists is skipped rather than surfaced as an uncaught exception.
+                final Document record;
+                try {
+                  record = identifiable.asDocument();
+                } catch (final RecordNotFoundException e) {
+                  continue;
+                }
                 if (record instanceof Vertex) {
                   final Vertex vertex = (Vertex) record;
 
@@ -400,14 +418,21 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * (see {@link #cachedFullScanCandidates}): no ID filter (static or dynamic) and no dynamic labels - either
    * of those can resolve to a different, row-dependent target regardless of label count.
    * <p>
-   * Properties and an inline WHERE pushdown ({@link #whereFilter}) only disqualify a <b>single-label</b>
-   * pattern: that is the only branch of {@code computeVertexIterator} ({@code tryFindAndUseIndex},
-   * {@code tryFindAndUseIndexFromWhere}, {@code tryPartitionPrunedIterator}) where a property value or a
-   * WHERE predicate can steer the scan itself to a row-dependent index/partition lookup. A label-less or
-   * multi-label pattern never takes any of those branches regardless of properties/whereFilter - it always
-   * resolves the same full type scan - and both are applied there only as post-fetch per-row filters (see
-   * {@code matchesProperties}/the {@code whereFilter.evaluate} call in this step's chained-mode fetch loop),
-   * which does not affect what the candidate set is.
+   * Properties and a WHERE-driven equality predicate on <b>this pattern's own variable</b> only disqualify a
+   * <b>single-label</b> pattern: that is the only branch of {@code computeVertexIterator}
+   * ({@code tryFindAndUseIndex}, {@code tryFindAndUseIndexFromWhere}, {@code tryPartitionPrunedIterator})
+   * where a property value or such a predicate can steer the scan itself to a row-dependent index/partition
+   * lookup. A label-less or multi-label pattern never takes any of those branches regardless of
+   * properties/whereFilter - it always resolves the same full type scan - and both are applied there only as
+   * post-fetch per-row filters (see {@code matchesProperties}/the {@code whereFilter.evaluate} call in this
+   * step's chained-mode fetch loop), which does not affect what the candidate set is.
+   * <p>
+   * {@code whereFilter} itself is checked structurally rather than just for {@code != null}:
+   * {@code tryFindAndUseIndexFromWhere} only ever acts on a {@code variable.property = <expr>} (or reversed)
+   * equality it can find inside {@code whereFilter}'s top-level AND-chain (see
+   * {@link #extractEqualityPredicates}, which recurses through AND only, exactly like this check). A pushed
+   * -down predicate that mentions unrelated variables - e.g. an UNWIND alias a WHERE clause filters on, with
+   * nothing to do with this pattern's own variable - can never route there, so it must not disable caching.
    */
   private boolean isRowIndependentFullScan() {
     if ((idFilter != null && !idFilter.isEmpty()) || dynamicIdExpression != null || pattern.hasDynamicLabels())
@@ -416,10 +441,34 @@ public class MatchNodeStep extends AbstractExecutionStep {
     if (labels != null && labels.size() == 1) {
       if (pattern.getProperties() != null && !pattern.getProperties().isEmpty())
         return false;
-      if (whereFilter != null)
+      if (whereFilterHasEqualityPredicateOnOwnVariable(whereFilter))
         return false;
     }
     return true;
+  }
+
+  /**
+   * Structural (not value-resolving) mirror of {@link #extractEqualityPredicates}'s predicate recognition:
+   * true if {@code expr}'s top-level AND-chain contains a {@code variable.property = <expr>} (or reversed)
+   * comparison against this step's own {@link #variable}, regardless of whether that expression could
+   * actually be resolved for any given row. Recursing through AND only (not OR/NOT/XOR) matches
+   * {@code extractEqualityPredicates} exactly: a predicate {@code extractEqualityPredicates} can never reach
+   * is not something {@code tryFindAndUseIndexFromWhere} can act on either, so it must not disqualify caching.
+   */
+  private boolean whereFilterHasEqualityPredicateOnOwnVariable(final BooleanExpression expr) {
+    if (expr instanceof ComparisonExpression comp) {
+      if (comp.getOperator() != ComparisonExpression.Operator.EQUALS)
+        return false;
+      return isPropertyAccessOnOwnVariable(comp.getLeft()) || isPropertyAccessOnOwnVariable(comp.getRight());
+    }
+    if (expr instanceof LogicalExpression logical && logical.getOperator() == LogicalExpression.Operator.AND)
+      return whereFilterHasEqualityPredicateOnOwnVariable(logical.getLeft())
+          || whereFilterHasEqualityPredicateOnOwnVariable(logical.getRight());
+    return false;
+  }
+
+  private boolean isPropertyAccessOnOwnVariable(final Expression expr) {
+    return expr instanceof PropertyAccessExpression propAccess && variable.equals(propAccess.getVariableName());
   }
 
   private Iterator<Identifiable> computeVertexIterator(final Result currentInputResult) {
