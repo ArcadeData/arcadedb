@@ -139,8 +139,13 @@ public class MatchClause {
    * the other component), which matters to a write clause following this MATCH with no intervening
    * WITH: deleting/mutating the entity while it is bound by one row must not be observed by another
    * row's read of that same entity still being produced by this MATCH (see issue #6491).
+   * <p>
+   * Connectivity is judged by shared node variables only, not relationship variables: two patterns
+   * that share only a relationship variable are (rare in practice, and) treated as disconnected. That
+   * only pushes such a MATCH onto the safe-but-conservative side of the callers that key off this
+   * method, never the unsafe one, so it is a precision gap rather than a correctness one.
    *
-   * @return true when the path patterns form more than one connected component by shared variable
+   * @return true when the path patterns form more than one connected component by shared node variable
    */
   public boolean hasDisconnectedPathPatterns() {
     if (pathPatterns.size() < 2)

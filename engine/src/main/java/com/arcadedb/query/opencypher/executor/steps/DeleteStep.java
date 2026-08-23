@@ -76,6 +76,12 @@ public class DeleteStep extends AbstractExecutionStep {
    * later row is still being produced makes that row dereference an already-removed record
    * (issue #6491). Ordinary connected patterns bind each row's variables independently, so they are
    * left on the cheaper streaming path.
+   * <p>
+   * The cost of this path is the whole upstream row set held in memory at once (see
+   * {@code materializedInput} below) rather than streamed - acceptable for the disconnected-pattern
+   * shapes this guards (rare, and typically a deliberate, bounded cross join), but a disconnected
+   * pattern deliberately combined with a very large cartesian product feeding a DELETE would still pay
+   * that memory cost in full.
    */
   private final boolean eagerMaterialize;
 
