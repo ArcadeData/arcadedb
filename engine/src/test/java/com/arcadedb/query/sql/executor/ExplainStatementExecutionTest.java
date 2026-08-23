@@ -199,4 +199,85 @@ class ExplainStatementExecutionTest extends TestHelper {
     assertThat(rs.next().<Integer>getProperty("bar")).isEqualTo(0);
     rs.close();
   }
+
+  /**
+   * Same bug, reached through {@code ForEachStep}: it chains whatever
+   * {@code Statement.createExecutionPlan()} returns for each statement in the loop body exactly like
+   * {@code ScriptLineStep} does, so it shared the same silent-write hazard before this fix.
+   */
+  @Test
+  void explainUpdateInsideForEachDoesNotExecuteWrite() {
+    final String typeName = "Issue6648ForEachTarget";
+    database.getSchema().createDocumentType(typeName);
+    database.transaction(() -> database.command("sql", "INSERT INTO " + typeName + " SET bar = 0"));
+
+    database.transaction(() -> {
+      final String script = """
+              FOREACH ($i IN [1]) {
+                  EXPLAIN UPDATE %s SET bar = 1;
+              }
+          """.formatted(typeName);
+      final ResultSet result = database.command("sqlscript", script);
+      result.close();
+    });
+
+    final ResultSet rs = database.query("sql", "SELECT bar FROM " + typeName);
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(rs.next().<Integer>getProperty("bar")).isEqualTo(0);
+    rs.close();
+  }
+
+  /**
+   * Same bug, reached through {@code WhileStep}.
+   */
+  @Test
+  void explainUpdateInsideWhileDoesNotExecuteWrite() {
+    final String typeName = "Issue6648WhileTarget";
+    database.getSchema().createDocumentType(typeName);
+    database.transaction(() -> database.command("sql", "INSERT INTO " + typeName + " SET bar = 0"));
+
+    database.transaction(() -> {
+      final String script = """
+              LET $i = 0;
+              WHILE ($i < 1) {
+                  EXPLAIN UPDATE %s SET bar = 1;
+                  LET $i = $i + 1;
+              }
+          """.formatted(typeName);
+      final ResultSet result = database.command("sqlscript", script);
+      result.close();
+    });
+
+    final ResultSet rs = database.query("sql", "SELECT bar FROM " + typeName);
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(rs.next().<Integer>getProperty("bar")).isEqualTo(0);
+    rs.close();
+  }
+
+  /**
+   * Same bug, reached through {@code RetryStep}: statements between {@code BEGIN} and
+   * {@code COMMIT RETRY n} are collected into a retry block and chained the same way as a plain
+   * script line.
+   */
+  @Test
+  void explainUpdateInsideRetryBlockDoesNotExecuteWrite() {
+    final String typeName = "Issue6648RetryTarget";
+    database.getSchema().createDocumentType(typeName);
+    database.transaction(() -> database.command("sql", "INSERT INTO " + typeName + " SET bar = 0"));
+
+    database.transaction(() -> {
+      final String script = """
+              BEGIN;
+              EXPLAIN UPDATE %s SET bar = 1;
+              COMMIT RETRY 5;
+          """.formatted(typeName);
+      final ResultSet result = database.command("sqlscript", script);
+      result.close();
+    });
+
+    final ResultSet rs = database.query("sql", "SELECT bar FROM " + typeName);
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(rs.next().<Integer>getProperty("bar")).isEqualTo(0);
+    rs.close();
+  }
 }
