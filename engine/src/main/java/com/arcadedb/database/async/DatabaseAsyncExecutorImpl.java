@@ -2427,19 +2427,24 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       return held;
 
     } finally {
+      // FAILURE PATH: let go of any worker that reached its park task before the failure - and do it BEFORE
+      // releasing resizeLock below - so the invariant the success path relies on holds on this path too: by the
+      // time resizeLock is released, every worker this quiescence touched is either still fully live (never
+      // reached the park task) or has already been let go, never one caught mid-release, still blocked on a latch
+      // that only this method can count down.
+      if (!handedOver && release != null)
+        release.countDown();
+
       // Released here regardless of outcome, INCLUDING success: by this point every worker snapshotted above has
-      // already confirmed parked (or the method is throwing), so a resize that starts the instant this unlocks can
-      // only retire or create workers this quiescence never promised to cover - see the class comment above.
-      // Holding it any longer, for the life of the handle the caller gets back, would put every later resize behind
-      // however long the caller keeps the scan open, which is not what "bounded by the quiesce timeout" means.
+      // already confirmed parked, or - on the failure path - just been released above, so a resize that starts the
+      // instant this unlocks can only retire or create workers this quiescence never promised to cover - see the
+      // class comment above. Holding it any longer, for the life of the handle the caller gets back, would put
+      // every later resize behind however long the caller keeps the scan open, which is not what "bounded by the
+      // quiesce timeout" means.
       resizeLock.unlock();
-      if (!handedOver) {
-        // Nothing owns the release, so it happens here: any worker that reached its park task before the failure is
-        // let go, and the lock goes back so the next caller can try.
-        if (release != null)
-          release.countDown();
+      if (!handedOver)
+        // The lock goes back so the next caller can try.
         quiesceLock.unlock();
-      }
     }
   }
 
