@@ -87,5 +87,44 @@ other RPC or code path is touched.
   `options.database` on the first chunk) can now be removed, per the issue.
 - `InsertChunk.credentials` (field 2) has the same "documented on the chunk, only read from
   `InsertOptions`" shape as `database` did; it was out of scope for this fix since the issue
-  reports only the `database` defect, but is worth a follow-up look if a similar client-contract
-  mismatch surfaces for credentials.
+  reports only the `database` defect. The cycle-3 review flagged this as security-relevant
+  (which credentials authenticate the request) and recommended opening a dedicated tracking
+  issue rather than leaving it as only a doc note here, since it is currently the only record
+  of this follow-up. Recommended for the developer to file before it is lost.
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/6606
+
+## Review cycles
+
+- **Cycle 1** - head `1ce4323` (initial push). Bot review:
+  https://github.com/ArcadeData/arcadedb/pull/6606#issuecomment-5384910307. Flagged 3 items:
+  test-coverage gap for the chunk-vs-options precedence case (applied - new test
+  `insertStreamMustPreferChunkDatabaseOverOptionsDatabaseWhenBothAreSet`), credentials
+  asymmetry (skipped - already tracked as a documented follow-up above), silent-override
+  logging (skipped - non-blocking cosmetic suggestion). Response commit `54328f7e53`.
+- **Cycle 2** - head `54328f7e53`. Bot review:
+  https://github.com/ArcadeData/arcadedb/pull/6606#issuecomment-5384965611. Flagged that the
+  cycle-1 response had added a `docs/review-deferred-1ce4323.md` meta-notes file duplicating
+  the GitHub review thread with a short SHA baked into the filename that goes stale after
+  squash/rebase - dropped it (`85069bef89`), and folded its one substantive point (only the
+  first chunk's `database` field has any effect) into this doc instead
+  (`8f2a206c39`, a same-cycle fixup for a staging miss in `85069bef89`).
+- **Cycle 3** - head `8f2a206c39`. Bot review:
+  https://github.com/ArcadeData/arcadedb/pull/6606#issuecomment-5384996791. "Nothing here
+  blocks merge." Two non-blocking notes only (credentials-tracking-issue suggestion, folded
+  into Recommendations above; confirmation that the existing `FINE`-level log of resolved
+  options is sufficient for the silent-override nitpick). No code/doc changes applied this
+  cycle - clean approval.
+
+## Deferred items
+
+None left as separate notes files (see cycle 2: that pattern was dropped per review
+feedback). The one open follow-up - filing a tracking issue for `InsertChunk.credentials` - is
+recorded above under Recommendations.
+
+## Final state
+
+`clean-approval` after 3 review cycles (within `--max-cycles=4`). Merge is the developer's
+responsibility; this PR has not been merged.
