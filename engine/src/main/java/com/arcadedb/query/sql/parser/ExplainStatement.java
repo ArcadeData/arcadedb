@@ -23,7 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Database;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.ExecutionPlan;
+import com.arcadedb.query.sql.executor.ExplainExecutionPlan;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
 import com.arcadedb.query.sql.executor.ResultSet;
 
@@ -53,10 +53,9 @@ public class ExplainStatement extends Statement {
     context.setInputParameters(args);
     context.setProfiling(true);
 
-    final ExecutionPlan executionPlan = statement.createExecutionPlan(context);
+    final ExplainExecutionPlan executionPlan = (ExplainExecutionPlan) createExecutionPlan(context);
 
-    final ExplainResultSet result = new ExplainResultSet(executionPlan);
-    return result;
+    return new ExplainResultSet(executionPlan.getWrappedPlan());
   }
 
   @Override
@@ -69,15 +68,24 @@ public class ExplainStatement extends Statement {
     context.setInputParameters(params);
     context.setProfiling(true);
 
-    final ExecutionPlan executionPlan = statement.createExecutionPlan(context);
+    final ExplainExecutionPlan executionPlan = (ExplainExecutionPlan) createExecutionPlan(context);
 
-    final ExplainResultSet result = new ExplainResultSet(executionPlan);
-    return result;
+    return new ExplainResultSet(executionPlan.getWrappedPlan());
   }
 
+  /**
+   * Builds the wrapped statement's plan without executing it, and hands it back inside an
+   * {@link ExplainExecutionPlan} rather than passing it through directly. Every caller that
+   * chains a nested statement's plan by calling this method (a sqlscript, or a FOREACH/IF/WHILE/
+   * RETRY/LET block) pulls whatever comes back to completion, so returning the wrapped statement's
+   * own executable plan here - as this used to - let a chained {@code EXPLAIN <write statement>}
+   * silently perform the write (issue #6648). {@link #execute} unwraps the result back out via
+   * {@link ExplainExecutionPlan#getWrappedPlan()} to keep returning an {@link ExplainResultSet} as
+   * before.
+   */
   @Override
   public InternalExecutionPlan createExecutionPlan(final CommandContext context) {
-    return statement.createExecutionPlan(context);
+    return new ExplainExecutionPlan(context, statement.createExecutionPlan(context));
   }
 
   @Override
@@ -107,6 +115,20 @@ public class ExplainStatement extends Statement {
   @Override
   public boolean isIdempotent() {
     return true;
+  }
+
+  /**
+   * Delegates to the wrapped statement, same as {@link ExpressionStatement#refersToParent()} does
+   * for its expression. Without this override, {@code Statement.refersToParent()}'s default throws
+   * {@code UnsupportedOperationException}, which surfaced as a hard failure for any
+   * {@code LET $x = (EXPLAIN <statement>)} inside a SELECT's LET clause - {@code
+   * SelectExecutionPlanner.splitLet()} calls this to decide whether the LET can be hoisted to a
+   * single global evaluation or must be re-evaluated per record, and needs an answer for the
+   * wrapped statement either way.
+   */
+  @Override
+  public boolean refersToParent() {
+    return statement.refersToParent();
   }
 }
 /* JavaCC - OriginalChecksum=9fdd24510993cbee32e38a51c838bdb4 (do not edit this line) */
