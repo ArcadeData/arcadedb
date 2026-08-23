@@ -1717,8 +1717,15 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         }
       });
     } catch (final RejectedExecutionException e) {
+      // Mirrors buildAsync()'s equivalent handler exactly (review on PR #6633): buildError/notifyAll()
+      // were missing here, and status was unconditionally NOT_BUILT even when a prior snapshot exists
+      // (e.g. a rebuild superseded by this same dispatch, or a stale-but-still-served one) - both quietly
+      // made getBuildError()/isReady()'s STALE+useWhenStale path less reliable for this rejection path
+      // than for every other one in this class.
       deferredRestoreInFlight = false;
-      status = Status.NOT_BUILT;
+      buildError = e;
+      status = snapshot != null ? Status.STALE : Status.NOT_BUILT;
+      notifyAll();
       latch.countDown();
       taskCompleted();
       LogManager.instance().log(this, Level.WARNING,
