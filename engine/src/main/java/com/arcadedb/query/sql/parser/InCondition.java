@@ -42,7 +42,12 @@ public class InCondition extends BooleanExpression {
   public SelectStatement       rightStatement;
   public InputParameter        rightParam;
   public MathExpression        rightMathExpression;
-  public Object                right;
+  /**
+   * Fallback for the rare {@code (SELECT ...) IN <expr>} shape whose {@code <expr>} is neither a list, an input
+   * parameter, nor a plain math expression (e.g. it wraps a nested where-condition). A literal list - parenthesized
+   * or bracketed - is normalized into {@link #rightMathExpression} instead, so index lookup only has one shape to handle.
+   */
+  public Expression            right;
   public boolean               not;
 
   private static final Object  UNSET                    = new Object();
@@ -74,19 +79,8 @@ public class InCondition extends BooleanExpression {
       rightVal = rightParam.getValue(context.getInputParameters());
     else if (rightMathExpression != null)
       rightVal = rightMathExpression.execute(currentRecord, context);
-    else if (right instanceof List<?> list) {
-      // Handle IN (expr1, expr2, ...) - evaluate each expression
-      final List<Object> values = new ArrayList<>();
-      for (final Object item : list) {
-        if (item instanceof Expression expr) {
-          values.add(expr.execute(currentRecord, context));
-        } else {
-          values.add(item);
-        }
-      }
-      rightVal = values;
-    } else if (right != null)
-      rightVal = right;
+    else if (right != null)
+      rightVal = right.execute(currentRecord, context);
 
     return rightVal;
   }
@@ -116,19 +110,8 @@ public class InCondition extends BooleanExpression {
       rightVal = rightParam.getValue(context.getInputParameters());
     else if (rightMathExpression != null)
       rightVal = rightMathExpression.execute(currentRecord, context);
-    else if (right instanceof List<?> list) {
-      // Handle IN (expr1, expr2, ...) - evaluate each expression
-      final List<Object> values = new ArrayList<>();
-      for (final Object item : list) {
-        if (item instanceof Expression expr) {
-          values.add(expr.execute(currentRecord, context));
-        } else {
-          values.add(item);
-        }
-      }
-      rightVal = values;
-    } else if (right != null)
-      rightVal = right;
+    else if (right != null)
+      rightVal = right.execute(currentRecord, context);
 
     return rightVal;
   }
@@ -252,20 +235,13 @@ public class InCondition extends BooleanExpression {
       builder.append("(");
       rightStatement.toString(params, builder);
       builder.append(")");
-    } else if (right != null) {
-      builder.append(convertToString(right));
     } else if (rightParam != null) {
       rightParam.toString(params, builder);
     } else if (rightMathExpression != null) {
       rightMathExpression.toString(params, builder);
+    } else if (right != null) {
+      right.toString(params, builder);
     }
-  }
-
-  private String convertToString(final Object o) {
-    if (o instanceof String string)
-      return "\"" + string.replace("\"", "\\\"") + "\"";
-
-    return o.toString();
   }
 
   @Override
@@ -276,7 +252,7 @@ public class InCondition extends BooleanExpression {
     result.rightMathExpression = rightMathExpression == null ? null : rightMathExpression.copy();
     result.rightStatement = rightStatement == null ? null : rightStatement.copy();
     result.rightParam = rightParam == null ? null : rightParam.copy();
-    result.right = right;
+    result.right = right == null ? null : right.copy();
     result.not = not;
     return result;
   }
