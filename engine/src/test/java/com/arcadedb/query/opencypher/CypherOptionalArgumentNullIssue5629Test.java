@@ -19,7 +19,6 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.text.SubstringFunction;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -190,8 +189,9 @@ class CypherOptionalArgumentNullIssue5629Test extends TestHelper {
     // client-facing one - a separate defect, so this asserts only that the check is reached, not the class it uses.
     assertThatThrownBy(() -> consume("RETURN date.truncate('fortnight', date('1984-10-11'), null) AS r"))
         .hasMessageContaining("fortnight");
+    // The second-argument type check is a client error (HTTP 400), fixed in #6638.
     assertThatThrownBy(() -> consume("RETURN date.truncate('year', 'not a date', null) AS r"))
-        .isInstanceOf(CommandExecutionException.class);
+        .isInstanceOf(CommandSemanticException.class);
   }
 
   @Test

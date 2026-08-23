@@ -18,7 +18,7 @@
  */
 package com.arcadedb.function.temporal;
 
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.opencypher.temporal.CypherDate;
@@ -67,7 +67,9 @@ public class LocalDateTimeTruncateFunction implements StatelessFunction {
     else if (args[1] instanceof LocalDate)
       dt = ((LocalDate) args[1]).atStartOfDay();
     else
-      throw new CommandExecutionException("localdatetime.truncate() second argument must be a temporal value");
+      // Not a recognized temporal value: determined entirely by the supplied argument, so it is a client error
+      // (HTTP 400) rather than a CommandExecutionException (HTTP 500). See issue #6638.
+      throw new CommandSemanticException("localdatetime.truncate() second argument must be a temporal value");
     LocalDateTime truncated = TemporalUtil.truncateLocalDateTime(dt, unit);
     // An explicitly written null adjustment map propagates, like every argument before it; only an omitted one means
     // "no adjustment" (issue #5629). This sits after the unit and the temporal value have been validated, so a bad unit
