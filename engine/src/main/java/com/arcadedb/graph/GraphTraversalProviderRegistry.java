@@ -24,6 +24,7 @@ import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.log.LogManager;
 
 import java.util.Collections;
+import java.util.Iterator;
 import java.util.List;
 import java.util.WeakHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -118,36 +119,36 @@ public class GraphTraversalProviderRegistry {
     }
     if (list == null)
       return null;
-    // CopyOnWriteArrayList iteration is safe outside the lock
-    for (final GraphTraversalProvider provider : list) {
+    // CopyOnWriteArrayList iteration is safe outside the lock. Loop condition (not an explicit break/return
+    // in the body) stops at the first match, so isReady() - which now dispatches a GraphAnalyticalView's
+    // deferred restore-from-disk as a side effect, see #6641 - is never called on a provider past that point.
+    GraphTraversalProvider found = null;
+    final Iterator<GraphTraversalProvider> iterator = list.iterator();
+    while (found == null && iterator.hasNext()) {
+      final GraphTraversalProvider provider = iterator.next();
       // Type coverage first, readiness second: coversEdgeType() is a pure, side-effect-free config check,
-      // while a GraphAnalyticalView's isReady() (see #6641) dispatches its deferred restore-from-disk as a
-      // side effect when one is pending. Calling isReady() first would eagerly resolve every registered
-      // view's deferred restore on every lookup - including ones this query doesn't even cover - which
-      // would quietly defeat #6632's "a view a session never actually needs shouldn't cost anything" goal
-      // for any multi-view database. Checking coverage first means isReady() only runs, and only pays that
-      // cost, for a provider that could actually be selected.
-      if (edgeTypes == null || edgeTypes.length == 0) {
-        if (!provider.coversEdgeType(null))
-          continue;
-      } else {
+      // while isReady()'s dispatch is not. Checking coverage first means isReady() - and its cost - only
+      // ever runs on a provider that could actually be selected, not on every registered one #6632's
+      // "a view a session never actually needs shouldn't cost anything" goal for a multi-view database.
+      final boolean covers;
+      if (edgeTypes == null || edgeTypes.length == 0)
+        covers = provider.coversEdgeType(null);
+      else {
         boolean allCovered = true;
         for (final String et : edgeTypes)
           if (!provider.coversEdgeType(et)) {
             allCovered = false;
             break;
           }
-        if (!allCovered)
-          continue;
+        covers = allCovered;
       }
-      if (!provider.isReady())
-        continue;
-      if (provider.isStale())
-        LogManager.instance().log(GraphTraversalProviderRegistry.class, Level.FINE,
-            "Using stale GraphTraversalProvider '%s' for query acceleration (data may not reflect latest commits)", provider.getName());
-      return provider;
+      if (covers && provider.isReady())
+        found = provider;
     }
-    return null;
+    if (found != null && found.isStale())
+      LogManager.instance().log(GraphTraversalProviderRegistry.class, Level.FINE,
+          "Using stale GraphTraversalProvider '%s' for query acceleration (data may not reflect latest commits)", found.getName());
+    return found;
   }
 
   /**
