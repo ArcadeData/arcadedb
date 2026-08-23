@@ -42,6 +42,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  * MATCH forced every DELETE/FOREACH in the statement onto the eager, whole-row-set-buffered path, even a
  * bulk delete elsewhere that has nothing to do with the disconnected pattern.
  * <p>
+ * The straightforward fix - clear the tracked MATCH clauses at every WITH boundary - has its own gap:
+ * a WITH that plainly forwards a variable bound by a disconnected-pattern MATCH (e.g. {@code WITH n, o})
+ * does not resolve the #6491 hazard for that variable, since rows out of a disconnected-pattern MATCH
+ * still flow one at a time through a non-aggregating WITH. {@code CypherExecutionPlan} guards against
+ * this with a persistent "tainted variable" set: once a segment is found disconnected, its variables stay
+ * tainted for the rest of the statement, and a later DELETE/FOREACH is still eagerly materialized if it
+ * targets one of them - regardless of how many WITH clauses forwarded it in between.
+ * <p>
  * These tests read the private {@code eagerMaterialize} field off the built {@code DeleteStep}/{@code
  * ForeachStep} via reflection - the flag has no other externally observable effect short of a memory
  * measurement, since both the eager and the streaming path delete the same rows and return the same
@@ -141,6 +149,36 @@ public class OpenCypherDeleteSegmentScopedEagerMaterializationIssue6631Test {
   }
 
   @Test
+  void deleteOfADisconnectedMatchsOwnVariableForwardedThroughAPassthroughWithStillEagerlyMaterializes() {
+    database = new DatabaseFactory("./target/databases/testopencypher-issue6631-delete-passthrough").create();
+
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Loop {tag: null})");
+      database.command("opencypher", "CREATE (:Other {id: 1})");
+      database.command("opencypher", "CREATE (:Other {id: 2})");
+      database.command("opencypher", "CREATE (:Other {id: 3})");
+      database.command("opencypher", "MATCH (n:Loop) CREATE (n)-[:SELF]->(n)");
+    });
+
+    database.transaction(() -> {
+      try (ResultSet result = database.command("opencypher",
+          "PROFILE MATCH (o:Other), (n:Loop)<-[:SELF]-(n) WHERE n.tag IS NULL "
+              + "WITH n, o "
+              + "DETACH DELETE n RETURN o.id AS id")) {
+        while (result.hasNext())
+          result.next();
+
+        final DeleteStep deleteStep = findStep(result, DeleteStep.class);
+        assertThat(eagerMaterializeOf(deleteStep))
+            .withFailMessage("A WITH that plainly forwards a disconnected-pattern MATCH's own variable "
+                + "(WITH n, o) does not neutralize the issue #6491 hazard for that variable - a DELETE of "
+                + "it downstream of the WITH must still eagerly materialize")
+            .isTrue();
+      }
+    });
+  }
+
+  @Test
   void foreachDeleteUnrelatedToAnEarlierSegmentsDisconnectedMatchIsNotEagerlyMaterialized() {
     database = new DatabaseFactory("./target/databases/testopencypher-issue6631-foreach-unrelated").create();
 
@@ -195,6 +233,36 @@ public class OpenCypherDeleteSegmentScopedEagerMaterializationIssue6631Test {
         assertThat(eagerMaterializeOf(foreachStep))
             .withFailMessage("FOREACH DELETE fed by a disconnected-pattern MATCH in its own segment must "
                 + "keep eagerly materializing - regression guard for issue #6491")
+            .isTrue();
+      }
+    });
+  }
+
+  @Test
+  void foreachDeleteOfADisconnectedMatchsOwnVariableForwardedThroughAPassthroughWithStillEagerlyMaterializes() {
+    database = new DatabaseFactory("./target/databases/testopencypher-issue6631-foreach-passthrough").create();
+
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Loop {tag: null})");
+      database.command("opencypher", "CREATE (:Other {id: 1})");
+      database.command("opencypher", "CREATE (:Other {id: 2})");
+      database.command("opencypher", "CREATE (:Other {id: 3})");
+      database.command("opencypher", "MATCH (n:Loop) CREATE (n)-[:SELF]->(n)");
+    });
+
+    database.transaction(() -> {
+      try (ResultSet result = database.command("opencypher",
+          "PROFILE MATCH (o:Other), (n:Loop)<-[:SELF]-(n) WHERE n.tag IS NULL "
+              + "WITH n, o "
+              + "FOREACH (x IN [1] | DETACH DELETE n) RETURN o.id AS id")) {
+        while (result.hasNext())
+          result.next();
+
+        final ForeachStep foreachStep = findStep(result, ForeachStep.class);
+        assertThat(eagerMaterializeOf(foreachStep))
+            .withFailMessage("A WITH that plainly forwards a disconnected-pattern MATCH's own variable "
+                + "(WITH n, o) does not neutralize the issue #6491 hazard for that variable - a FOREACH "
+                + "DELETE of it downstream of the WITH must still eagerly materialize")
             .isTrue();
       }
     });
