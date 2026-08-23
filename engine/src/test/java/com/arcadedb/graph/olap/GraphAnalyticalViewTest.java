@@ -2888,6 +2888,79 @@ class GraphAnalyticalViewTest extends TestHelper {
   }
 
   /**
+   * Regression for issue #6641 code review: {@link GraphTraversalProviderRegistry#findProvider} used to
+   * call {@code isReady()} before {@code coversEdgeType()} in its scan of registered providers. That was
+   * harmless while {@code isReady()} was a pure read, but this PR gives it a side effect - dispatching a
+   * pending deferred restore-from-disk in the background (see {@link GraphAnalyticalView#isReady()}) - so
+   * checking readiness before coverage meant a query for one view's edge type would eagerly trigger every
+   * *other* registered view's deferred restore too, just by virtue of being iterated. That quietly weakens
+   * #6632's "a view a session never actually needs shouldn't cost anything" promise for any multi-view
+   * database. Verifies the fix (coverage checked first, so {@code isReady()} - and its dispatch - only ever
+   * runs on a provider that could actually be selected): with two views covering disjoint edge types, a
+   * lookup for one type must not touch the other view's pending restore at all.
+   */
+  @Test
+  void issue6641_findProviderDoesNotTriggerUnrelatedViewsDeferredRestore() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.getSchema().createEdgeType("LIKES");
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").save();
+    final MutableVertex b = database.newVertex("Person").save();
+    a.newEdge("FOLLOWS", b);
+    a.newEdge("LIKES", b);
+    database.commit();
+
+    GraphAnalyticalView.builder(database)
+        .withName("csr-6641-follows-test")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
+        .build();
+    GraphAnalyticalView.builder(database)
+        .withName("csr-6641-likes-test")
+        .withVertexTypes("Person")
+        .withEdgeTypes("LIKES")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
+        .build();
+
+    reopenDatabase();
+
+    final GraphAnalyticalView follows = GraphAnalyticalViewRegistry.get(database, "csr-6641-follows-test");
+    final GraphAnalyticalView likes = GraphAnalyticalViewRegistry.get(database, "csr-6641-likes-test");
+    assertThat(follows).isNotNull();
+    assertThat(likes).isNotNull();
+    assertThat(follows.getStatus())
+        .as("both views' persisted CSRs must still be provisionally READY, unresolved, right after reopen")
+        .isEqualTo(GraphAnalyticalView.Status.READY);
+    assertThat(likes.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+
+    // A query for FOLLOWS only: findProvider() must resolve the FOLLOWS view's deferred restore as a side
+    // effect of checking it, but must never even look at whether LIKES is ready - it doesn't cover FOLLOWS.
+    GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS");
+
+    assertThat(follows.getStatus())
+        .as("the FOLLOWS view was a real candidate for this lookup, so its deferred restore must have been "
+            + "dispatched (status flips to BUILDING synchronously, before the background work even starts)")
+        .isEqualTo(GraphAnalyticalView.Status.BUILDING);
+    assertThat(likes.getStatus())
+        .as("issue #6641: the LIKES view does not cover FOLLOWS and must never have been asked about "
+            + "readiness at all - its deferred restore must stay untouched")
+        .isEqualTo(GraphAnalyticalView.Status.READY);
+    assertThat(likes.isBuilt())
+        .as("untouched means untouched: no restore, no rebuild, nothing read from disk for this view")
+        .isFalse();
+
+    assertThat(follows.awaitReady(10, TimeUnit.SECONDS)).isTrue();
+    assertThat(follows.isRestoredFromPersistedCsr()).isTrue();
+    assertThat(likes.awaitReady(10, TimeUnit.SECONDS)).isTrue();
+    assertThat(likes.isRestoredFromPersistedCsr()).isTrue();
+
+    follows.drop();
+    likes.drop();
+  }
+
+  /**
    * Regression for issue #6632: a session that opens a database with a persisted-CSR view and never
    * queries it must not pay for the deferred restore at shutdown() either — shutdown() has no reason to
    * wait for work that was never triggered, and {@code persistCsrIfPossible()} must not attempt to

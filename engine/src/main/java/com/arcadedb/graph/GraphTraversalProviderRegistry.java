@@ -120,15 +120,16 @@ public class GraphTraversalProviderRegistry {
       return null;
     // CopyOnWriteArrayList iteration is safe outside the lock
     for (final GraphTraversalProvider provider : list) {
-      if (!provider.isReady())
-        continue;
+      // Type coverage first, readiness second: coversEdgeType() is a pure, side-effect-free config check,
+      // while a GraphAnalyticalView's isReady() (see #6641) dispatches its deferred restore-from-disk as a
+      // side effect when one is pending. Calling isReady() first would eagerly resolve every registered
+      // view's deferred restore on every lookup - including ones this query doesn't even cover - which
+      // would quietly defeat #6632's "a view a session never actually needs shouldn't cost anything" goal
+      // for any multi-view database. Checking coverage first means isReady() only runs, and only pays that
+      // cost, for a provider that could actually be selected.
       if (edgeTypes == null || edgeTypes.length == 0) {
-        if (provider.coversEdgeType(null)) {
-          if (provider.isStale())
-            LogManager.instance().log(GraphTraversalProviderRegistry.class, Level.FINE,
-                "Using stale GraphTraversalProvider '%s' for query acceleration (data may not reflect latest commits)", provider.getName());
-          return provider;
-        }
+        if (!provider.coversEdgeType(null))
+          continue;
       } else {
         boolean allCovered = true;
         for (final String et : edgeTypes)
@@ -136,13 +137,15 @@ public class GraphTraversalProviderRegistry {
             allCovered = false;
             break;
           }
-        if (allCovered) {
-          if (provider.isStale())
-            LogManager.instance().log(GraphTraversalProviderRegistry.class, Level.FINE,
-                "Using stale GraphTraversalProvider '%s' for query acceleration (data may not reflect latest commits)", provider.getName());
-          return provider;
-        }
+        if (!allCovered)
+          continue;
       }
+      if (!provider.isReady())
+        continue;
+      if (provider.isStale())
+        LogManager.instance().log(GraphTraversalProviderRegistry.class, Level.FINE,
+            "Using stale GraphTraversalProvider '%s' for query acceleration (data may not reflect latest commits)", provider.getName());
+      return provider;
     }
     return null;
   }
