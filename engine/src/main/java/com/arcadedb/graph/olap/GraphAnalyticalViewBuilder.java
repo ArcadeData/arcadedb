@@ -18,6 +18,7 @@
  */
 package com.arcadedb.graph.olap;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 
 /**
@@ -207,6 +208,16 @@ public class GraphAnalyticalViewBuilder {
   GraphAnalyticalView restoreFromDiskOrBuildAsync() {
     final GraphAnalyticalView view = createView();
     try {
+      // LAZY (issue #6583, GAV_LAZY_RESTORE, default false): register the view and read NOTHING. The persisted
+      // CSR is read by GraphTraversalProvider.tryLazyActivate() on the first query that could use it, so a
+      // session which opens this database and never touches the view pays nothing for it.
+      //
+      // Deliberately does not call buildAsync() either. Under lazy the whole point is that open() does no work
+      // for a view the caller has not asked about, and starting a full graph scan in the background would be
+      // exactly that work, merely off the critical path.
+      if (database.getConfiguration().getValueAsBoolean(GlobalConfiguration.GAV_LAZY_RESTORE))
+        return view;
+
       if (!view.tryRestoreFromPersistedCsr())
         view.buildAsync();
     } catch (final Exception e) {

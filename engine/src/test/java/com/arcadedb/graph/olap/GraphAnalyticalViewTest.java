@@ -26,6 +26,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.DefaultDataEncryption;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.TransactionManager;
+import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.NeighborView;
@@ -33,6 +34,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
 
 import javax.crypto.SecretKey;
@@ -5429,5 +5431,216 @@ class GraphAnalyticalViewTest extends TestHelper {
     assertThat(gav.getMeanEdgesPerConnectedPair("FOLLOWS")).isNegative();
 
     gav.drop();
+  }
+
+  // --- lazy CSR restore (issue #6583 follow-up) tests ---
+
+  /**
+   * Issue #6583 follow-up. Persisting the CSR made a reopen 53x cheaper than a rebuild, but a session that
+   * opens a database and never touches the view still pays to load it: at 10M vertices / 40M edges the
+   * restore is ~984 ms of an otherwise ~3 ms open. Creating a view declares that it should be AVAILABLE,
+   * which is not the same statement as "load it the instant anyone opens this database".
+   * <p>
+   * Under {@link GlobalConfiguration#GAV_LAZY_RESTORE} the view is registered at open but nothing is read,
+   * and the first lookup that would actually use it pays the restore instead.
+   */
+  @Test
+  void lazyRestoreLeavesTheViewUnloadedAtOpenAndLoadsItOnFirstUse() {
+    final Object previous = GlobalConfiguration.GAV_LAZY_RESTORE.getValue();
+    try {
+      final String dbPath = buildPersistedCsrFixture("csr-lazy-first-use");
+
+      GlobalConfiguration.GAV_LAZY_RESTORE.setValue(true);
+      final Database db2 = new DatabaseFactory(dbPath).open();
+      try {
+        final GraphAnalyticalView view = GraphAnalyticalViewRegistry.get(db2, "csr-lazy-first-use");
+        assertThat(view).as("the view is still registered; only its DATA is deferred").isNotNull();
+        assertThat(view.getStatus())
+            .as("open() must not read the persisted CSR when lazy restore is on")
+            .isEqualTo(GraphAnalyticalView.Status.NOT_BUILT);
+        assertThat(view.isRestoredFromPersistedCsr()).isFalse();
+
+        // The first lookup that would use the view is what pays for it.
+        final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(db2, "FOLLOWS");
+        assertThat(provider).as("the first use must load the view, not skip it").isSameAs(view);
+        assertThat(view.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+        assertThat(view.isRestoredFromPersistedCsr())
+            .as("the deferred load must still come from the persisted CSR, not a fresh scan")
+            .isTrue();
+        assertThat(view.getNodeCount()).isEqualTo(3);
+        assertThat(view.getEdgeCount()).isEqualTo(2);
+      } finally {
+        db2.close();
+      }
+    } finally {
+      GlobalConfiguration.GAV_LAZY_RESTORE.setValue(previous);
+    }
+  }
+
+  /**
+   * The flag is off by default, and with it off open() must behave exactly as it did before lazy restore
+   * existed: the CSR is read eagerly and the view is READY before anyone asks for it.
+   */
+  @Test
+  void lazyRestoreIsOffByDefaultSoOpenStillRestoresEagerly() {
+    final String dbPath = buildPersistedCsrFixture("csr-lazy-default-off");
+
+    final Database db2 = new DatabaseFactory(dbPath).open();
+    try {
+      final GraphAnalyticalView view = GraphAnalyticalViewRegistry.get(db2, "csr-lazy-default-off");
+      assertThat(view).isNotNull();
+      assertThat(view.awaitReady(10, TimeUnit.SECONDS)).isTrue();
+      assertThat(view.isRestoredFromPersistedCsr())
+          .as("default behaviour is unchanged: open() restores without being asked")
+          .isTrue();
+    } finally {
+      db2.close();
+    }
+  }
+
+  /**
+   * The query PLANNER asks whether acceleration exists while costing a plan. Under lazy restore that question
+   * must stay a question: if planning could trigger the load, the stall would move from open() -- where it is
+   * predictable and happens once -- into an arbitrary query's planning phase.
+   */
+  @Test
+  void lazyRestoreIsNotTriggeredByThePlannersReadinessCheck() {
+    final Object previous = GlobalConfiguration.GAV_LAZY_RESTORE.getValue();
+    try {
+      final String dbPath = buildPersistedCsrFixture("csr-lazy-planner");
+
+      GlobalConfiguration.GAV_LAZY_RESTORE.setValue(true);
+      final Database db2 = new DatabaseFactory(dbPath).open();
+      try {
+        final GraphAnalyticalView view = GraphAnalyticalViewRegistry.get(db2, "csr-lazy-planner");
+        assertThat(view.getStatus()).isEqualTo(GraphAnalyticalView.Status.NOT_BUILT);
+
+        assertThat(GraphTraversalProviderRegistry.findProviderIfReady(db2, "FOLLOWS"))
+            .as("a readiness CHECK must not load anything")
+            .isNull();
+        assertThat(view.getStatus())
+            .as("asking whether the view is ready must leave it exactly as it was")
+            .isEqualTo(GraphAnalyticalView.Status.NOT_BUILT);
+
+        // ...and the load still happens for a caller that is actually going to use it.
+        assertThat(GraphTraversalProviderRegistry.findProvider(db2, "FOLLOWS")).isSameAs(view);
+        assertThat(view.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+      } finally {
+        db2.close();
+      }
+    } finally {
+      GlobalConfiguration.GAV_LAZY_RESTORE.setValue(previous);
+    }
+  }
+
+  /**
+   * A STALE view is not-ready for the same reason a lazily-deferred one is, but for a completely different
+   * cause, and lazy activation must not confuse the two. Whether a stale view may serve a query belongs to
+   * {@link GlobalConfiguration#GAV_USE_WHEN_STALE} and whether it gets refreshed belongs to the update mode;
+   * a first-use load has no business overriding either by kicking off a rebuild that would not otherwise run.
+   */
+  @Test
+  void lazyActivationLeavesAStaleViewAlone() {
+    final Object previous = GlobalConfiguration.GAV_LAZY_RESTORE.getValue();
+    try {
+      database.getSchema().createVertexType("Person");
+      database.getSchema().createEdgeType("FOLLOWS");
+      database.begin();
+      final MutableVertex a = database.newVertex("Person").save();
+      final MutableVertex b = database.newVertex("Person").save();
+      a.newEdge("FOLLOWS", b);
+      database.commit();
+
+      final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+          .withName("csr-lazy-stale")
+          .withVertexTypes("Person")
+          .withEdgeTypes("FOLLOWS")
+          .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
+          .build();
+      assertThat(gav.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+
+      database.begin();
+      database.newVertex("Person").save();
+      database.commit();
+      assertThat(gav.getStatus()).isEqualTo(GraphAnalyticalView.Status.STALE);
+
+      GlobalConfiguration.GAV_LAZY_RESTORE.setValue(true);
+      assertThat(GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS"))
+          .as("a stale view is still not usable when GAV_USE_WHEN_STALE is off")
+          .isNull();
+      assertThat(gav.getStatus())
+          .as("lazy activation must not rebuild a stale view behind the update mode's back")
+          .isEqualTo(GraphAnalyticalView.Status.STALE);
+
+      gav.drop();
+    } finally {
+      GlobalConfiguration.GAV_LAZY_RESTORE.setValue(previous);
+    }
+  }
+
+  /**
+   * {@link GlobalConfiguration#GAV_RESTORE_AWAIT_TIMEOUT} makes open() block until the restored views are
+   * READY. A lazily deferred view never becomes READY on its own, and its ready-latch is created up front
+   * rather than left null, so awaiting one burns the entire budget and then returns false: the two options
+   * on together would give an open() that blocks for the full timeout AND still has not loaded anything.
+   * <p>
+   * The bound below is a tripwire between "did not wait" and "waited out the whole budget", not a latency
+   * budget. Widening it is safe; narrowing it is what would break.
+   */
+  @Test
+  void lazyRestoreDoesNotWaitOutTheRestoreAwaitTimeout() {
+    final Object previousLazy = GlobalConfiguration.GAV_LAZY_RESTORE.getValue();
+    final Object previousAwait = GlobalConfiguration.GAV_RESTORE_AWAIT_TIMEOUT.getValue();
+    try {
+      final String dbPath = buildPersistedCsrFixture("csr-lazy-await");
+
+      GlobalConfiguration.GAV_LAZY_RESTORE.setValue(true);
+      GlobalConfiguration.GAV_RESTORE_AWAIT_TIMEOUT.setValue(60_000L);
+
+      final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
+      final Database db2 = new DatabaseFactory(dbPath).open();
+      try {
+        stopwatch.assertGaveUpWithin(20_000L,
+            "an open() that skipped the await from one that sat on the latch for the whole 60s budget");
+        assertThat(GraphAnalyticalViewRegistry.get(db2, "csr-lazy-await").getStatus())
+            .as("and it skipped the wait because there was nothing to wait FOR, not by loading the view")
+            .isEqualTo(GraphAnalyticalView.Status.NOT_BUILT);
+      } finally {
+        db2.close();
+      }
+    } finally {
+      GlobalConfiguration.GAV_LAZY_RESTORE.setValue(previousLazy);
+      GlobalConfiguration.GAV_RESTORE_AWAIT_TIMEOUT.setValue(previousAwait);
+    }
+  }
+
+  /**
+   * Builds a small graph, persists its CSR with a clean close, and returns the database path so a test can
+   * reopen it. The caller's {@code database} is closed; TestHelper reopens its own handle at teardown.
+   */
+  private String buildPersistedCsrFixture(final String viewName) {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").save();
+    final MutableVertex b = database.newVertex("Person").save();
+    final MutableVertex c = database.newVertex("Person").save();
+    a.newEdge("FOLLOWS", b);
+    b.newEdge("FOLLOWS", c);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName(viewName)
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
+        .build();
+    assertThat(gav.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+
+    final String dbPath = database.getDatabasePath();
+    final File csrFile = GraphAnalyticalViewCSRPersistence.fileFor(database, viewName);
+    database.close();
+    assertThat(csrFile).as("the fixture is only meaningful if the close actually persisted a CSR").exists();
+    return dbPath;
   }
 }

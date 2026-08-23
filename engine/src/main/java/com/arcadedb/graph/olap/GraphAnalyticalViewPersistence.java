@@ -189,7 +189,14 @@ public class GraphAnalyticalViewPersistence {
     // GAV_RESTORE_AWAIT_TIMEOUT, block here (bounded by the configured budget, shared across every
     // restored view) until each triggered build reaches READY, so the session that pays for the
     // rebuild is the session that benefits from it.
-    final long awaitTimeoutMs = database.getConfiguration().getValueAsLong(GlobalConfiguration.GAV_RESTORE_AWAIT_TIMEOUT);
+    //
+    // Nothing to await under GAV_LAZY_RESTORE (#6583 follow-up): a deferred view is NOT_BUILT with no build in
+    // flight, so awaitReady() would sit on a latch nobody is going to count down and burn the WHOLE budget
+    // before returning false. That turns the two options on together into the worst of both -- an open() that
+    // blocks for the full timeout AND still has not loaded the view. The load is the first caller's to pay.
+    final long awaitTimeoutMs = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.GAV_LAZY_RESTORE)
+        ? 0L
+        : database.getConfiguration().getValueAsLong(GlobalConfiguration.GAV_RESTORE_AWAIT_TIMEOUT);
     if (awaitTimeoutMs > 0 && !restoredViews.isEmpty()) {
       final long deadline = System.currentTimeMillis() + awaitTimeoutMs;
       for (final GraphAnalyticalView view : restoredViews) {

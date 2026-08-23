@@ -100,6 +100,26 @@ public class GraphTraversalProviderRegistry {
   }
 
   /**
+   * Like {@link #findProvider}, but never triggers lazy activation: a provider that is not ready is simply not
+   * returned. For callers that are ASKING WHETHER acceleration exists rather than about to use it, above all the
+   * query planner, where blocking to load a structure while costing a plan would be a surprise.
+   */
+  public static GraphTraversalProvider findProviderIfReady(final Database database, final String... edgeTypes) {
+    if (!hasAnyProviders)
+      return null;
+    final CopyOnWriteArrayList<GraphTraversalProvider> list;
+    synchronized (REGISTRY) {
+      list = REGISTRY.get(unwrap(database));
+    }
+    if (list == null)
+      return null;
+    for (final GraphTraversalProvider provider : list)
+      if (provider.isReady() && covers(provider, edgeTypes))
+        return provider;
+    return null;
+  }
+
+  /**
    * Finds the first ready provider that covers all the given edge types.
    *
    * @param database  the database
@@ -120,31 +140,41 @@ public class GraphTraversalProviderRegistry {
       return null;
     // CopyOnWriteArrayList iteration is safe outside the lock
     for (final GraphTraversalProvider provider : list) {
-      if (!provider.isReady())
+      // LAZY ACTIVATION (issue #6583). A provider that is not ready gets one chance to become ready before the
+      // query gives up on it. Under GAV_LAZY_RESTORE this is where a persisted CSR is read, instead of at
+      // database open(): a session that opens a database with a view and never runs a query the view could
+      // serve then pays nothing for it at all.
+      //
+      // Default-off, and the default path is unchanged: tryLazyActivate() returns false on the interface, so a
+      // provider that does not implement it is skipped exactly as it always was, and GraphAnalyticalView's
+      // override returns false for every state unless the flag is on.
+      //
+      // NOT called from findProviderIfReady(), which is what the query PLANNER uses. Triggering a
+      // multi-hundred-millisecond load while costing a plan would move the stall somewhere far less
+      // predictable than open(), and the planner only wants to know whether acceleration is available now.
+      if (!provider.isReady() && !provider.tryLazyActivate())
         continue;
-      if (edgeTypes == null || edgeTypes.length == 0) {
-        if (provider.coversEdgeType(null)) {
-          if (provider.isStale())
-            LogManager.instance().log(GraphTraversalProviderRegistry.class, Level.FINE,
-                "Using stale GraphTraversalProvider '%s' for query acceleration (data may not reflect latest commits)", provider.getName());
-          return provider;
-        }
-      } else {
-        boolean allCovered = true;
-        for (final String et : edgeTypes)
-          if (!provider.coversEdgeType(et)) {
-            allCovered = false;
-            break;
-          }
-        if (allCovered) {
-          if (provider.isStale())
-            LogManager.instance().log(GraphTraversalProviderRegistry.class, Level.FINE,
-                "Using stale GraphTraversalProvider '%s' for query acceleration (data may not reflect latest commits)", provider.getName());
-          return provider;
-        }
+      if (covers(provider, edgeTypes)) {
+        if (provider.isStale())
+          LogManager.instance().log(GraphTraversalProviderRegistry.class, Level.FINE,
+              "Using stale GraphTraversalProvider '%s' for query acceleration (data may not reflect latest commits)", provider.getName());
+        return provider;
       }
     }
     return null;
+  }
+
+  /**
+   * Whether a provider covers every requested edge type. A null or empty request means "all types", which is
+   * asked of the provider as {@code coversEdgeType(null)} rather than assumed here.
+   */
+  private static boolean covers(final GraphTraversalProvider provider, final String... edgeTypes) {
+    if (edgeTypes == null || edgeTypes.length == 0)
+      return provider.coversEdgeType(null);
+    for (final String edgeType : edgeTypes)
+      if (!provider.coversEdgeType(edgeType))
+        return false;
+    return true;
   }
 
   /**

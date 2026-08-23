@@ -450,7 +450,10 @@ public class StatisticsProvider {
    * entirely (#5834) instead of paying for it and then discovering a provider existed all along.
    */
   private OptionalDouble exactMeanFromTraversalProvider(final String edgeType) {
-    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(database, edgeType);
+    // findProviderIfReady, NOT findProvider: this runs while COSTING A PLAN, and under
+    // GAV_LAZY_RESTORE findProvider() would read a persisted CSR from disk here. Planning is the
+    // wrong place to discover a multi-hundred-millisecond load (issue #6583).
+    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProviderIfReady(database, edgeType);
     if (provider == null)
       return OptionalDouble.empty();
     final double exact = provider.getMeanEdgesPerConnectedPair(edgeType);

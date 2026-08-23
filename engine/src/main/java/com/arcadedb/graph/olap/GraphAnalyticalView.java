@@ -1551,6 +1551,45 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   /**
+   * Lazy activation entry point (issue #6583): under {@link GlobalConfiguration#GAV_LAZY_RESTORE} the persisted CSR
+   * is not read at database open(), so the first query that could use this view reads it here instead.
+   *
+   * <p>Falls back exactly as the eager path does. If the certificate no longer holds, or there is no usable file,
+   * this kicks off the ordinary async rebuild and returns false, so THIS query runs unaccelerated and a later one
+   * picks the view up once the rebuild completes. That is the same outcome the eager path produces for an
+   * invalidated certificate; only the moment of discovery moves.
+   */
+  @Override
+  public synchronized boolean tryLazyActivate() {
+    // Gated on the flag, so with GAV_LAZY_RESTORE off this returns false for every state and the caller
+    // behaves exactly as it did before the hook existed.
+    if (!database.getConfiguration().getValueAsBoolean(GlobalConfiguration.GAV_LAZY_RESTORE))
+      return false;
+
+    switch (status) {
+    case READY:
+      return true;
+    case BUILDING:
+      return false;                      // a build is already in flight; do not start a second one
+    case STALE:
+      // Deliberately untouched. Whether a stale view may serve a query is GAV_USE_WHEN_STALE's decision and
+      // whether it gets refreshed is UpdateMode's; a lazy FIRST load has no business overriding either.
+      return false;
+    default:
+      break;                             // NOT_BUILT: the state a lazily registered view is in at open()
+    }
+
+    if (tryRestoreFromPersistedCsr())
+      return true;
+
+    // No usable persisted CSR (missing file, changed definition, invalidated certificate). Fall back to the
+    // ordinary async rebuild and let THIS query run unaccelerated, which is what the eager path does too for
+    // an invalid certificate. Only the moment of discovery moves.
+    buildAsync();
+    return false;
+  }
+
+  /**
    * Attempts to load a persisted CSR from disk instead of scanning the graph (see #6583). Returns true and leaves
    * the view READY with the loaded snapshot when a file exists, its definition matches this view's configuration,
    * and its freshness certificate (the database's last committed transaction id at persist time) still matches the

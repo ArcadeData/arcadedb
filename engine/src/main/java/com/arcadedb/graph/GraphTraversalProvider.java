@@ -51,6 +51,23 @@ public interface GraphTraversalProvider {
   boolean isReady();
 
   /**
+   * Asked by {@link GraphTraversalProviderRegistry#findProvider} when this provider is NOT ready, to give it one
+   * chance to become ready before the query gives up on it and falls back to the ordinary path (issue #6583).
+   *
+   * <p>Exists so that loading a persisted structure can be deferred from database open() to the first query that
+   * would actually use it. Opening a database that HAS a view is not a statement that this session intends to use
+   * the view, and the eager path charges every session for it either way.
+   *
+   * <p>The default returns false, which is exactly the behaviour every provider had before this hook existed: not
+   * ready means skip me. A provider that can cheaply make itself ready overrides it.
+   *
+   * @return true if the provider is now ready and safe to use for this query
+   */
+  default boolean tryLazyActivate() {
+    return false;
+  }
+
+  /**
    * Returns the name of this provider.
    */
   String getName();

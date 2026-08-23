@@ -2123,6 +2123,15 @@ public enum GlobalConfiguration {
       When true, the query planner uses stale Graph Analytical Views (GAV/CSR) for traversals instead of falling back to OLTP. \
       Stale data is faster but may not reflect the latest committed changes""", Boolean.class, false),
 
+  GAV_LAZY_RESTORE("arcadedb.gavLazyRestore", SCOPE.DATABASE,
+      """
+      When true, a Graph Analytical View's persisted CSR is NOT read at database open(). It is read on the \
+      first query that would actually use the view, so a session that opens a database and never touches the \
+      view pays nothing for it. Creating a view declares that it should be AVAILABLE, which is not the same \
+      statement as "load it into memory the instant anyone opens this database". Default false, which keeps \
+      the eager behaviour: open() pays the restore whether or not the session goes on to use the view""",
+      Boolean.class, false),
+
   GAV_RESTORE_AWAIT_TIMEOUT("arcadedb.gavRestoreAwaitTimeout", SCOPE.DATABASE,
       """
       Milliseconds database open() blocks waiting for Graph Analytical Views (GAV/CSR) restored from persisted \
