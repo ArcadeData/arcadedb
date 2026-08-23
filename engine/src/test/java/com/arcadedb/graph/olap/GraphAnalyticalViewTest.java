@@ -2989,6 +2989,81 @@ class GraphAnalyticalViewTest extends TestHelper {
   }
 
   /**
+   * Regression for issue #6636: a direct {@code build()} (e.g. {@code REBUILD GRAPH ANALYTICAL VIEW})
+   * that runs and completes WHILE a deferred restore-from-disk is already dispatched and in flight - not
+   * merely pending, unlike {@link #csrLazyPendingRestoreSupersededByDirectRebuildIsNotReTriggered} - must
+   * not have its fresh snapshot overwritten once the in-flight restore finally gets a chance to run.
+   * <p>
+   * {@code build()} is not gated by {@code BUILD_PERMITS}, so it can complete before an already-dispatched
+   * restore even starts reading the file. If nothing was committed in the meantime, the restore's freshness
+   * certificate still matches the database's current state, so - without a fix - it "succeeds" and clobbers
+   * the just-rebuilt snapshot with the persisted one, misreporting {@code isRestoredFromPersistedCsr()}.
+   * <p>
+   * Saturates the shared {@code BUILD_PERMITS} semaphore (via the test-only hook) so the dispatched
+   * restore's background task parks right before it would read the file, then lands {@code build()} while
+   * it is stuck there, then releases the permits and lets the restore run to completion.
+   */
+  @Test
+  void csrLazyRestoreInFlightSupersededByDirectBuildIsNotOverwritten() throws Exception {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").save();
+    final MutableVertex b = database.newVertex("Person").save();
+    a.newEdge("FOLLOWS", b);
+    database.commit();
+
+    GraphAnalyticalView.builder(database)
+        .withName("csr-lazy-inflight-race-test")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
+        .build();
+
+    reopenDatabase();
+
+    final GraphAnalyticalView restored = GraphAnalyticalViewRegistry.get(database, "csr-lazy-inflight-race-test");
+    assertThat(restored).isNotNull();
+    assertThat(restored.isBuilt())
+        .as("nothing has triggered the deferred restore yet")
+        .isFalse();
+
+    GraphAnalyticalView.acquireAllBuildPermitsForTest();
+    final Thread restoreTrigger = new Thread(() -> restored.awaitReady(10, TimeUnit.SECONDS));
+    try {
+      restoreTrigger.start();
+      final long dispatchDeadline = System.currentTimeMillis() + 5_000;
+      while (!restored.isDeferredRestoreInFlightForTest() && System.currentTimeMillis() < dispatchDeadline)
+        Thread.sleep(5);
+      assertThat(restored.isDeferredRestoreInFlightForTest())
+          .as("the deferred restore must have dispatched and be parked waiting for a build permit")
+          .isTrue();
+
+      // Simulates REBUILD GRAPH ANALYTICAL VIEW: a direct build() call, bypassing checkBuilt()/awaitReady()
+      // and BUILD_PERMITS, running to completion while the restore above is still stuck acquiring a permit.
+      restored.build();
+      assertThat(restored.isRestoredFromPersistedCsr())
+          .as("a direct rebuild must produce a fresh scan, not a disk restore")
+          .isFalse();
+      assertThat(restored.getNodeCount()).isEqualTo(2);
+    } finally {
+      // Releases exactly the permits acquired above, regardless of whether an assertion failed.
+      GraphAnalyticalView.releaseAllBuildPermitsForTest();
+    }
+    restoreTrigger.join(10_000);
+
+    // The deferred restore, once unparked, must discover it was superseded by the fresher direct build()
+    // and discard its own (redundant, certificate-matching) result rather than overwriting it.
+    assertThat(restored.awaitReady(10, TimeUnit.SECONDS)).isTrue();
+    assertThat(restored.isRestoredFromPersistedCsr())
+        .as("the direct rebuild's snapshot must win over the in-flight deferred restore, even though the restore's own certificate still matched")
+        .isFalse();
+    assertThat(restored.getNodeCount()).isEqualTo(2);
+
+    restored.drop();
+  }
+
+  /**
    * Regression for issue #6583 code review: {@code GAV_PERSIST_CSR=false} must suppress persistence
    * entirely - no file written at close, and a reopen must fall back to the full rebuild rather than
    * finding (and trusting) a leftover file from before the setting was flipped off.
