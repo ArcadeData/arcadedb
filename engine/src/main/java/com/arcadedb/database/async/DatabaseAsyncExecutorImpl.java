@@ -2369,7 +2369,14 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     // The cost is symmetric: an administrative resize now waits behind an index build for as long as the build's
     // own quiescence takes, bounded by {@link #quiesceTimeoutMillis()}. That is the correct precedence - a resize is
     // an administrative convenience, a scan under a torn view is a wrong answer - and it was already true in the
-    // other direction (a quiescence already waited behind a resize's own bounded drain).
+    // other direction (a quiescence already waited behind a resize's own bounded drain). One reachable shape of that
+    // wait (code review, PR #6661): a worker task that calls {@code setParallelLevel()} on its OWN executor while a
+    // quiescence started by someone else is in progress now blocks on {@code resizeLock} for up to
+    // {@code quiesceTimeoutMillis()} (60s by default) rather than only the previous brief scheduling-loop window -
+    // and that worker being blocked also means it never reaches the queued park task this quiescence is waiting on,
+    // so the two time out together rather than deadlocking. Nothing built into the engine does this (compaction and
+    // index builds never call {@code setParallelLevel()}); it is the same category of unusual call as the self-join
+    // {@link #awaitRetiredThreads(AsyncThread[])} already guards against, just bounded instead of unrecoverable.
     //
     // What is NOT closed: a worker a PRIOR shrink retired and left draining past its own {@code shutdownJoinTimeoutMs}
     // budget is alive but off the published array and not in this quiescence's snapshot, so it is not parked by it -
