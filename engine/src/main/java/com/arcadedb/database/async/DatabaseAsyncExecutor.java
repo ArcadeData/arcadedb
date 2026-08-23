@@ -449,10 +449,12 @@ public interface DatabaseAsyncExecutor {
   void setTransactionSync(WALFile.FlushType transactionSync);
 
   /**
-   * Defines a global callback invoked every time this executor's shared batch transaction actually commits: at the
-   * periodic {@link #setCommitEvery(int)} boundary, when a durability setting
-   * ({@link #setTransactionUseWAL(boolean)}/{@link #setTransactionSync(WALFile.FlushType)}) changes mid-batch, when a
-   * worker shuts down, and at the barrier {@link #waitCompletion()}/{@link #waitCompletion(long)} relies on.
+   * Defines a global callback invoked at every point a worker's shared batch transaction can commit: the periodic
+   * {@link #setCommitEvery(int)} boundary, when a durability setting
+   * ({@link #setTransactionUseWAL(boolean)}/{@link #setTransactionSync(WALFile.FlushType)}) changes mid-batch, and
+   * the barrier {@link #waitCompletion()}/{@link #waitCompletion(long)} relies on. A worker also invokes it
+   * unconditionally on shutdown, even when it had nothing left to commit, so a shutdown firing is not on its own
+   * proof that a write became durable at that moment.
    * <p>
    * This is the durability signal for {@link #createRecord}/{@link #updateRecord}/{@link #deleteRecord}: their own
    * per-record callback (e.g. {@link NewRecordCallback}) fires as soon as the write is applied to the worker's
