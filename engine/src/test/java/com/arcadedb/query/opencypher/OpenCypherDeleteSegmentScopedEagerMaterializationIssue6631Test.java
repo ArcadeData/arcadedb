@@ -220,6 +220,43 @@ public class OpenCypherDeleteSegmentScopedEagerMaterializationIssue6631Test {
     }
   }
 
+  /**
+   * Same hazard as {@link #deleteOfADisconnectedMatchsOwnVariableForwardedThroughAPassthroughWithStillEagerlyMaterializes()},
+   * but the passthrough is spelled {@code WITH *} instead of naming the forwarded variables. {@code
+   * propagateTaintThroughRenames()} explicitly skips star items (there is no single expression/alias pair
+   * to inspect), so this pins down that the direct, same-name taint {@code closeMatchSegment()} already
+   * applies is what covers this shape - not the rename-propagation logic.
+   */
+  @Test
+  void deleteOfADisconnectedMatchsOwnVariableForwardedThroughAStarWithStillEagerlyMaterializes() {
+    database = new DatabaseFactory("./target/databases/testopencypher-issue6631-delete-star").create();
+
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Loop {tag: null})");
+      database.command("opencypher", "CREATE (:Other {id: 1})");
+      database.command("opencypher", "CREATE (:Other {id: 2})");
+      database.command("opencypher", "CREATE (:Other {id: 3})");
+      database.command("opencypher", "MATCH (n:Loop) CREATE (n)-[:SELF]->(n)");
+    });
+
+    database.transaction(() -> {
+      try (ResultSet result = database.command("opencypher",
+          "PROFILE MATCH (o:Other), (n:Loop)<-[:SELF]-(n) WHERE n.tag IS NULL "
+              + "WITH * "
+              + "DETACH DELETE n RETURN o.id AS id")) {
+        while (result.hasNext())
+          result.next();
+
+        final DeleteStep deleteStep = findStep(result, DeleteStep.class);
+        assertThat(eagerMaterializeOf(deleteStep))
+            .withFailMessage("A WITH * that forwards everything unchanged does not neutralize the issue "
+                + "#6491 hazard for a disconnected-pattern MATCH's own variable - a DELETE of it "
+                + "downstream of the WITH must still eagerly materialize")
+            .isTrue();
+      }
+    });
+  }
+
   @Test
   void foreachDeleteUnrelatedToAnEarlierSegmentsDisconnectedMatchIsNotEagerlyMaterialized() {
     database = new DatabaseFactory("./target/databases/testopencypher-issue6631-foreach-unrelated").create();
@@ -311,17 +348,6 @@ public class OpenCypherDeleteSegmentScopedEagerMaterializationIssue6631Test {
   }
 
   /**
-   * Backs the comment on {@code CypherExecutionPlan.buildExecutionStepsLegacy()}'s DELETE construction
-   * site, which leaves it using the unscoped, statement-wide {@code matchClausesHaveDisconnectedPatterns
-   * (statement.getMatchClauses())} rather than this issue's segment-scoped fix: that is only safe if a
-   * multi-segment, WITH-separated MATCH/DELETE statement - the shape #6631 is about - can never actually
-   * reach that method, because {@code CypherExecutionPlan.buildExecutionSteps()} only falls back to it
-   * when {@code statement.getClausesInOrder()} is null or empty. Parses the same query shape used by
-   * {@link #deleteUnrelatedToAnEarlierSegmentsDisconnectedMatchIsNotEagerlyMaterialized()} through the
-   * real production parser and asserts {@code getClausesInOrder()} is populated, confirming the premise
-   * with an executable check rather than an unverified comment.
-   */
-  /**
    * Same hazard as {@link #deleteOfADisconnectedMatchsOwnVariableForwardedThroughAPassthroughWithStillEagerlyMaterializes()},
    * but the WITH renames the tainted variable ({@code WITH n AS m}) instead of forwarding it under the
    * same name - a rename doesn't change how rows flow either, so it must not lose the taint. Without
@@ -392,6 +418,17 @@ public class OpenCypherDeleteSegmentScopedEagerMaterializationIssue6631Test {
     }
   }
 
+  /**
+   * Backs the comment on {@code CypherExecutionPlan.buildExecutionStepsLegacy()}'s DELETE construction
+   * site, which leaves it using the unscoped, statement-wide {@code matchClausesHaveDisconnectedPatterns
+   * (statement.getMatchClauses())} rather than this issue's segment-scoped fix: that is only safe if a
+   * multi-segment, WITH-separated MATCH/DELETE statement - the shape #6631 is about - can never actually
+   * reach that method, because {@code CypherExecutionPlan.buildExecutionSteps()} only falls back to it
+   * when {@code statement.getClausesInOrder()} is null or empty. Parses the same query shape used by
+   * {@link #deleteUnrelatedToAnEarlierSegmentsDisconnectedMatchIsNotEagerlyMaterialized()} through the
+   * real production parser and asserts {@code getClausesInOrder()} is populated, confirming the premise
+   * with an executable check rather than an unverified comment.
+   */
   @Test
   void aMultiSegmentWithSeparatedStatementAlwaysPopulatesClausesInOrder() {
     final CypherStatement statement = new Cypher25AntlrParser().parse(
