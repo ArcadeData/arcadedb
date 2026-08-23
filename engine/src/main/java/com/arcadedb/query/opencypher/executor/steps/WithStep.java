@@ -19,6 +19,7 @@ package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.function.DistinctNumericKey;
+import com.arcadedb.query.opencypher.InternalVariables;
 import com.arcadedb.query.opencypher.LoadCSVRowContext;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
@@ -79,7 +80,7 @@ public class WithStep extends AbstractExecutionStep {
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
-      private final Set<String> seenResults = withClause.isDistinct() ? new HashSet<>() : null;
+      private final Set<List<Object>> seenResults = withClause.isDistinct() ? new HashSet<>() : null;
       private int skipped = 0;
       private int returned = 0;
 
@@ -188,7 +189,14 @@ public class WithStep extends AbstractExecutionStep {
               // renders as a placeholder instead of the actual values, so two references to the
               // very same record can render two different strings depending on load state alone
               // (issue #6488).
-              final String resultKey = DistinctNumericKey.buildKey(new TreeSet<>(projectedResult.getPropertyNames()), projectedResult::getProperty);
+              // WITH * forwards every property from the input row, including the executor's own
+              // internal bindings for anonymous pattern elements; those must not affect distinctness,
+              // the same reasoning ProjectReturnStep already applies to RETURN DISTINCT * (issue
+              // #5444), or two rows that only differ by such a binding would wrongly stay distinct
+              // (issue #6541).
+              final List<String> names = new TreeSet<>(projectedResult.getPropertyNames()).stream()
+                  .filter(name -> !InternalVariables.isInternal(name)).toList();
+              final List<Object> resultKey = DistinctNumericKey.buildKey(names, projectedResult::getProperty);
               if (seenResults.contains(resultKey))
                 continue;
               seenResults.add(resultKey);
