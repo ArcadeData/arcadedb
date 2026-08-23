@@ -91,25 +91,34 @@ public class MatchNodeStep extends AbstractExecutionStep {
   // (including cachedFullScanCandidates below) need to move to a per-execution scope or be guarded.
   private       String              usedIndexName; // Track which index was used (if any)
   private       String              usedPartitionBucket; // Track partition bucket pruning (if any) - same write-once-per-execution contract as usedIndexName
-  // Fully materialized snapshot of a row-independent full-type-scan's candidates, resolved on the first
-  // getVertexIterator() call of a CHAINED match (prev != null) and replayed for every later re-open instead
-  // of re-opening a live database.iterateType() cursor per outer input row (a chained MATCH, e.g.
-  // MATCH (), p0 = (), re-opens that scan once per outer input row). Without this, a vertex a downstream
-  // MERGE/CREATE creates mid-query - whether of a brand-new type or of a type that already existed - is
-  // visible to a later re-open and retroactively grows this MATCH's cardinality after earlier rows already
-  // reached WHERE/MERGE (issue #6602). Only enabled for a pattern this class can prove is 100% independent of
-  // the current input row: no ID filter (static or dynamic), no dynamic labels, and (for a single-label
-  // pattern) no properties or inline WHERE pushdown that could route to a row-dependent index/partition
-  // lookup - see {@link #isRowIndependentFullScan()}. Scoped to prev != null: a standalone MATCH calls
-  // getVertexIterator() exactly once regardless, so caching there would only add eager materialization cost
-  // (and memory) for large scans with no correctness benefit.
+  // Full snapshot of a row-independent full-type-scan's candidates, populated (via recordingIterator) only
+  // once the first getVertexIterator() call of a CHAINED match (prev != null) has been fully drained by the
+  // caller, and replayed from then on for every later re-open instead of re-opening a live
+  // database.iterateType() cursor per outer input row (a chained MATCH, e.g. MATCH (), p0 = (), re-opens
+  // that scan once per outer input row). Without this, a vertex a downstream MERGE/CREATE creates
+  // mid-query - whether of a brand-new type or of a type that already existed - is visible to a later
+  // re-open and retroactively grows this MATCH's cardinality after earlier rows already reached WHERE/MERGE
+  // (issue #6602). Only enabled for a pattern this class can prove is 100% independent of the current input
+  // row: no ID filter (static or dynamic), no dynamic labels, and (for a single-label pattern) no properties
+  // or a WHERE-driven equality predicate on this pattern's own variable that could route to a row-dependent
+  // index/partition lookup - see {@link #isRowIndependentFullScan()}. Scoped to prev != null: a standalone
+  // MATCH calls getVertexIterator() exactly once regardless, so caching there would only add eager
+  // materialization cost (and memory) for large scans with no correctness benefit.
   // <p>
-  // Memory/CPU tradeoff: for a chained label-less or multi-label pattern over a very large vertex type, this
-  // now holds every candidate's Identifiable in memory for the life of the step instead of streaming a live
-  // cursor per re-open. That is a clear win when the pattern is re-opened many times (turns O(N) per outer
-  // row into one O(N) resolve), but it does mean the full candidate set is resident for the step's lifetime
-  // rather than GC-able as it streams past - deliberate, since re-opening a live cursor per row is exactly
-  // the mechanism issue #6602 exploits, and the RID list is far lighter than the vertices it names.
+  // Performance: staying null until the first pass is fully drained (rather than eagerly draining on the
+  // first call) matters beyond just deferring the cost - it preserves LIMIT push-down/early-termination for
+  // the common case where the outer input produces exactly one row (this scan is opened once, satisfies a
+  // LIMIT after a few elements, and is never re-opened): the bug this field guards against can only occur
+  // from a SECOND re-open onward, so a query shape that never re-opens this scan pays none of the eager-scan
+  // cost, exactly like the pre-fix behaviour. See {@link #recordingIterator}.
+  // <p>
+  // Memory/CPU tradeoff once a genuine second re-open DOES happen: for a chained label-less or multi-label
+  // pattern over a very large vertex type, this then holds every candidate's Identifiable in memory for the
+  // rest of the step's lifetime instead of streaming a live cursor per re-open. That is a clear win when the
+  // pattern is re-opened many times (turns O(N) per outer row into one O(N) resolve), but it does mean the
+  // full candidate set is resident rather than GC-able as it streams past - deliberate, since re-opening a
+  // live cursor per row is exactly the mechanism issue #6602 exploits, and the RID list is far lighter than
+  // the vertices it names.
   private       List<Identifiable>  cachedFullScanCandidates;
 
   /**
@@ -401,15 +410,48 @@ public class MatchNodeStep extends AbstractExecutionStep {
     final Iterator<Identifiable> computed = computeVertexIterator(currentInputResult);
 
     // prev != null: only a chained match re-opens this scan per outer input row, which is the only
-    // situation where a live re-open can observe a downstream write made mid-query (issue #6602).
-    if (prev != null && isRowIndependentFullScan()) {
-      final List<Identifiable> materialized = new ArrayList<>();
-      computed.forEachRemaining(materialized::add);
-      cachedFullScanCandidates = materialized;
-      return materialized.iterator();
-    }
+    // situation where a live re-open can observe a downstream write made mid-query (issue #6602). The
+    // bug this guards against can only occur from the SECOND re-open onward - the first open can never
+    // observe a downstream write, since nothing downstream has run yet - so the first pass stays fully
+    // lazy/streaming (recordingIterator only records what the caller actually consumes) rather than
+    // eagerly draining the whole candidate set. That preserves LIMIT push-down/short-circuiting for the
+    // common case where the outer input produces exactly one row (e.g.
+    // MATCH (a:Anchor {id:$x}), (n) RETURN a, n LIMIT 5) - this scan is opened once, caching would buy
+    // it nothing, and eagerly draining it would turn an O(LIMIT) scan into an O(N) one.
+    if (prev != null && isRowIndependentFullScan())
+      return recordingIterator(computed);
 
     return computed;
+  }
+
+  /**
+   * Wraps {@code source} - a freshly computed, row-independent candidate iterator - so it streams lazily
+   * exactly like the pre-fix behaviour, while recording every element as the caller consumes it. Only once
+   * {@code source} reports {@code hasNext() == false} (fully drained) does the recording get promoted to
+   * {@link #cachedFullScanCandidates}, so a genuine second {@link #getVertexIterator} call - the only
+   * situation issue #6602 can occur in - replays the cache instead of re-opening a live cursor. If the
+   * caller never drains {@code source} to exhaustion (e.g. a LIMIT satisfied after one row, with no second
+   * outer row ever produced), no full scan ever happens and no cache is ever populated - exactly the
+   * pre-fix cost profile for that case.
+   */
+  private Iterator<Identifiable> recordingIterator(final Iterator<Identifiable> source) {
+    final List<Identifiable> recorded = new ArrayList<>();
+    return new Iterator<>() {
+      @Override
+      public boolean hasNext() {
+        final boolean hasNext = source.hasNext();
+        if (!hasNext && cachedFullScanCandidates == null)
+          cachedFullScanCandidates = recorded;
+        return hasNext;
+      }
+
+      @Override
+      public Identifiable next() {
+        final Identifiable next = source.next();
+        recorded.add(next);
+        return next;
+      }
+    };
   }
 
   /**
@@ -589,13 +631,20 @@ public class MatchNodeStep extends AbstractExecutionStep {
       // Labels, the one place that knows what a disjunction means, so a node pattern is scanned the same way
       // wherever it is written - here as the anchor of a MATCH, or as the start of a pattern comprehension,
       // which used to take the first label and nothing else (issues #6338, #6352).
+      // <p>
+      // isRowIndependentFullScan() relies on this branch - like the no-label one below - never routing
+      // through the index/partition-pruning branches above (tryFindAndUseIndex,
+      // tryFindAndUseIndexFromWhere, tryPartitionPrunedIterator), which is why it treats properties/WHERE
+      // as safe to ignore for a multi-label or label-less pattern. If a future change ever gives this
+      // branch an index/partition fast path of its own, isRowIndependentFullScan() must be revisited too.
       @SuppressWarnings("unchecked") final Iterator<Identifiable> labelled =
           (Iterator<Identifiable>) (Object) Labels.iterateMatchingVertices(context.getDatabase(), labels,
               pattern.isLabelDisjunction());
       return labelled;
     }
 
-    // No label specified - iterate ALL vertex types, which is the same rule with nothing to satisfy.
+    // No label specified - iterate ALL vertex types, which is the same rule with nothing to satisfy - and,
+    // like the multi-label branch above, relied on by isRowIndependentFullScan() for the same reason.
     @SuppressWarnings("unchecked") final Iterator<Identifiable> everyVertex =
         (Iterator<Identifiable>) (Object) Labels.iterateMatchingVertices(context.getDatabase(), labels, false);
     return everyVertex;
