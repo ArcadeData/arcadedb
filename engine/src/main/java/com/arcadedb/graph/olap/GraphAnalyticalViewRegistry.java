@@ -90,6 +90,13 @@ public class GraphAnalyticalViewRegistry {
 
   /**
    * Returns all registered GAVs for a database that are ready for use.
+   * <p>
+   * Unlike {@link com.arcadedb.graph.GraphTraversalProviderRegistry#findProvider}, this has no coverage
+   * filter to check before {@code isReady()} - it means to list every view, not find one usable for a
+   * specific query. A future caller relying on this to be a cheap, side-effect-free read should know it
+   * is not one: {@code isReady()} dispatches a pending deferred restore-from-disk in the background for
+   * every view it is called on (see #6641), so calling this eagerly resolves every registered view's
+   * restore, not only the ones that turn out ready.
    */
   public static Map<String, GraphAnalyticalView> getReady(final Database database) {
     synchronized (REGISTRY) {
