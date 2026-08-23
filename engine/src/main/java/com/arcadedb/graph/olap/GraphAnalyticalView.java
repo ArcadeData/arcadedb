@@ -1238,12 +1238,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * did for a genuinely stale view; whichever query asks next sees the resolved outcome (restored from disk,
    * or rebuilt) once the background work completes. Callers that would rather wait for an accelerated first
    * query use {@link #awaitReady} explicitly instead (see {@link com.arcadedb.GlobalConfiguration#GAV_RESTORE_AWAIT_TIMEOUT}).
+   * <p>
+   * The trigger call runs unconditionally, ahead of reading {@code status}: it is a cheap no-op once nothing
+   * is pending (single volatile read), and reading {@code status} afterwards - rather than short-circuiting to
+   * {@code false} on {@code pendingDiskRestore} alone - reports the real, resolved state on the rare race
+   * where another caller's dispatch settles between the two reads, instead of being needlessly pessimistic.
    */
   public boolean isReady() {
-    if (pendingDiskRestore) {
-      triggerDeferredDiskRestoreIfPending();
-      return false;
-    }
+    triggerDeferredDiskRestoreIfPending();
     final Status s = status;
     if (s == Status.READY)
       return true;
