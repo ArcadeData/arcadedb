@@ -87,6 +87,7 @@ class CypherNonePredicateNamedPathIssue6600Test extends TestHelper {
 
     assertThat(controlAliases).containsExactly("a", "b");
     assertThat(projectionAliases).containsExactly("a", "b");
+    assertThat(controlAliases).isEqualTo(projectionAliases);
   }
 
   /** Same defect, minimized: a bare {@code none()} predicate on a relationship property alone. */
