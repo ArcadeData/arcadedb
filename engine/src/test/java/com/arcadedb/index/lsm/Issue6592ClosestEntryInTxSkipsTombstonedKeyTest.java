@@ -157,4 +157,59 @@ class Issue6592ClosestEntryInTxSkipsTombstonedKeyTest extends TestHelper {
       database.rollback();
     }
   }
+
+  @Test
+  void descendingPrefixScanWalksPastTwoConsecutiveTombstonedKeysToTheSurvivor() {
+    final TypeIndex index = createCompositeIndex();
+
+    database.begin();
+    try {
+      // DELETE THE TOP TWO OF A THREE-ROW GROUP: THE RETRY LOOP MUST HOP TWICE (orderedAt=2, THEN orderedAt=1)
+      // BEFORE LANDING ON THE SOLE SURVIVOR (orderedAt=0), NOT JUST ONE
+      final RID[] rids = new RID[3];
+      for (int i = 0; i < rids.length; ++i)
+        rids[i] = database.newDocument(TYPE_NAME).set("key1", "a", "key2", "b", "orderedAt", (long) i).save().getIdentity();
+      database.deleteRecord(rids[2].getRecord());
+      database.deleteRecord(rids[1].getRecord());
+
+      final IndexCursor cursor = index.range(false, new Object[] { "a", "b" }, true, new Object[] { "a", "b" }, true);
+      try {
+        assertThat(cursor.hasNext()).isTrue();
+        cursor.next();
+        assertThat((Long) cursor.getKeys()[2]).isEqualTo(0L);
+        assertThat(cursor.hasNext()).as("only the survivor remains").isFalse();
+      } finally {
+        cursor.close();
+      }
+    } finally {
+      database.rollback();
+    }
+  }
+
+  @Test
+  void prefixScanReturnsEmptyRatherThanLeakingIntoAnAdjacentKeyWhenTheWholeGroupIsTombstoned() {
+    final TypeIndex index = createCompositeIndex();
+
+    database.begin();
+    try {
+      // AN ADJACENT GROUP (key1=a, key2=c) SORTS RIGHT AFTER THE (a,b) PREFIX'S OWN RANGE. DELETING EVERY ROW OF
+      // (a,b) MUST MAKE THE RETRY LOOP HIT typedToKeys' BOUND (pastBound) AND STOP, RATHER THAN WALK STRAIGHT
+      // THROUGH INTO THE ADJACENT GROUP'S ENTRIES
+      final RID[] rids = new RID[2];
+      for (int i = 0; i < rids.length; ++i)
+        rids[i] = database.newDocument(TYPE_NAME).set("key1", "a", "key2", "b", "orderedAt", (long) i).save().getIdentity();
+      database.newDocument(TYPE_NAME).set("key1", "a", "key2", "c", "orderedAt", 0L).save();
+      for (final RID rid : rids)
+        database.deleteRecord(rid.getRecord());
+
+      try (final IndexCursor descCursor = index.range(false, new Object[] { "a", "b" }, true, new Object[] { "a", "b" }, true)) {
+        assertThat(descCursor.hasNext()).as("the whole (a,b) group is tombstoned - must not leak into (a,c)").isFalse();
+      }
+      try (final IndexCursor ascCursor = index.range(true, new Object[] { "a", "b" }, true, new Object[] { "a", "b" }, true)) {
+        assertThat(ascCursor.hasNext()).as("same check ascending").isFalse();
+      }
+    } finally {
+      database.rollback();
+    }
+  }
 }
