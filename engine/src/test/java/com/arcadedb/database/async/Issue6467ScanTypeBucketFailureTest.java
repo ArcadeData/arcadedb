@@ -134,12 +134,15 @@ class Issue6467ScanTypeBucketFailureTest extends TestHelper {
   }
 
   /**
-   * End-to-end: {@code LocalBucket.scan()} always rethrows a {@link DatabaseIsReadOnlyException} raised by the
-   * user's per-record callback regardless of whether an {@code errorRecordCallback} is set - a deliberate
-   * abort-the-whole-scan signal, and the real, reachable analogue of "a bucket's scan throws (I/O / corruption)"
-   * the issue describes, as opposed to an ordinary per-record error (which already correctly routes through
-   * {@code errorRecordCallback} and is not what this test is about). Two buckets are used so the fix's per-bucket
-   * capture is proven to still let the OTHER bucket be scanned to completion.
+   * End-to-end: {@code LocalBucket.scan()} rethrows a {@link DatabaseIsReadOnlyException} raised by the user's
+   * per-record callback rather than routing it through {@code errorRecordCallback} - a deliberate abort-the-whole-
+   * scan signal, and the real, reachable analogue of "a bucket's scan throws (I/O / corruption)" the issue
+   * describes, as opposed to an ordinary per-record error (which already correctly routes through
+   * {@code errorRecordCallback} and is not what this test is about). This test uses no {@code errorRecordCallback}
+   * (the 3-arg {@code scanType()} overload), which is exactly the case that always rethrows; a non-null one that
+   * returns {@code true} for this exception would too, but one that returns {@code false} would instead stop the
+   * scan without rethrowing. Two buckets are used so the fix's per-bucket capture is proven to still let the OTHER
+   * bucket be scanned to completion.
    */
   @Test
   void scanTypePropagatesABucketLevelFailureInsteadOfReturningAPartialScan() {
