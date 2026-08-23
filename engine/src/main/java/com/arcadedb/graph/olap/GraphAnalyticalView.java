@@ -341,6 +341,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * @param edgeTypes   edge type names to include (null = all)
    */
   public synchronized void build(final String[] vertexTypes, final String[] edgeTypes) {
+    // A direct build() (e.g. REBUILD GRAPH ANALYTICAL VIEW) supersedes any not-yet-resolved deferred
+    // restore-from-disk (see #6632): without clearing this, a later awaitReady() call would still see
+    // pendingDiskRestore == true and dispatch dispatchDeferredRestore(), re-reading a possibly-superseded
+    // persisted file (or a wholly redundant rebuild) right after this scan already produced a fresh,
+    // authoritative snapshot.
+    pendingDiskRestore = false;
     final CountDownLatch latch = new CountDownLatch(1);
     readyLatch = latch;
     status = Status.BUILDING;
@@ -393,6 +399,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   public synchronized void buildAsync() {
     if (!buildQueued.compareAndSet(false, true))
       return; // a build is already queued or running
+    // See build(vertexTypes, edgeTypes)'s identical guard: supersedes any not-yet-resolved deferred
+    // restore-from-disk (see #6632). Also reached, harmlessly, from dispatchDeferredRestore()'s own
+    // fallback call - pendingDiskRestore is already false there by the time it calls this.
+    pendingDiskRestore = false;
     final CountDownLatch latch = new CountDownLatch(1);
     readyLatch = latch;
     status = Status.BUILDING;

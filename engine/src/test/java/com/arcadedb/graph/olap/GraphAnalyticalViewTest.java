@@ -2657,6 +2657,105 @@ class GraphAnalyticalViewTest extends TestHelper {
   }
 
   /**
+   * Regression for issue #6632 code review round 3: {@link GraphTraversalProviderRegistry#awaitAll} is
+   * documented as ensuring "all CSR structures are built before running performance-critical queries" -
+   * it checks {@code isReady()} first and only falls back to {@code awaitReady()} when that is false. A
+   * deferred restore-from-disk reports READY the moment a persisted CSR plausibly applies, before the
+   * disk read that actually resolves it has run, so {@code isReady()} alone can no longer tell {@code
+   * awaitAll()} there is nothing left to do. Verifies {@code awaitAll()} still resolves the view rather
+   * than short-circuiting past it.
+   */
+  @Test
+  void csrLazyRestoreAwaitAllTriggersDeferredRestore() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").save();
+    final MutableVertex b = database.newVertex("Person").save();
+    a.newEdge("FOLLOWS", b);
+    database.commit();
+
+    GraphAnalyticalView.builder(database)
+        .withName("csr-lazy-awaitall-test")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
+        .build();
+
+    reopenDatabase();
+
+    final GraphAnalyticalView restored = GraphAnalyticalViewRegistry.get(database, "csr-lazy-awaitall-test");
+    assertThat(restored).isNotNull();
+    assertThat(restored.isBuilt())
+        .as("nothing has triggered the deferred restore yet")
+        .isFalse();
+
+    assertThat(GraphTraversalProviderRegistry.awaitAll(database, 10, TimeUnit.SECONDS))
+        .as("awaitAll() must resolve a lazy-pending GAV, not short-circuit past it via isReady()")
+        .isTrue();
+
+    assertThat(restored.isBuilt())
+        .as("awaitAll() must have actually triggered and completed the deferred restore")
+        .isTrue();
+    assertThat(restored.isRestoredFromPersistedCsr()).isTrue();
+    assertThat(restored.getNodeCount()).isEqualTo(2);
+
+    restored.drop();
+  }
+
+  /**
+   * Regression for issue #6632 code review round 3: {@code build()}/{@code buildAsync()} must clear
+   * {@code pendingDiskRestore}, or a later {@code awaitReady()} call (e.g. via {@code awaitAll()}) would
+   * still see it set and re-dispatch a redundant restore-from-disk attempt right after a direct rebuild
+   * (what {@code REBUILD GRAPH ANALYTICAL VIEW} does - fetch the live instance and call {@code build()}
+   * directly) already produced a fresh, authoritative snapshot - silently replacing it with a disk-restored
+   * one if the certificate happens to still match (nothing committed since reopen, which a rescan alone
+   * does not change).
+   */
+  @Test
+  void csrLazyPendingRestoreSupersededByDirectRebuildIsNotReTriggered() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").save();
+    final MutableVertex b = database.newVertex("Person").save();
+    a.newEdge("FOLLOWS", b);
+    database.commit();
+
+    GraphAnalyticalView.builder(database)
+        .withName("csr-lazy-rebuild-test")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
+        .build();
+
+    reopenDatabase();
+
+    final GraphAnalyticalView restored = GraphAnalyticalViewRegistry.get(database, "csr-lazy-rebuild-test");
+    assertThat(restored).isNotNull();
+    assertThat(restored.isBuilt())
+        .as("nothing has triggered the deferred restore yet")
+        .isFalse();
+
+    // Simulates REBUILD GRAPH ANALYTICAL VIEW: a direct build() call, bypassing checkBuilt()/awaitReady().
+    restored.build();
+    assertThat(restored.isRestoredFromPersistedCsr())
+        .as("a direct rebuild must produce a fresh scan, not a disk restore")
+        .isFalse();
+    assertThat(restored.getNodeCount()).isEqualTo(2);
+
+    // A later awaitReady() call (e.g. from awaitAll()) must not re-dispatch the now-superseded deferred
+    // restore and silently overwrite the freshly rebuilt snapshot.
+    assertThat(restored.awaitReady(5, TimeUnit.SECONDS)).isTrue();
+    assertThat(restored.isRestoredFromPersistedCsr())
+        .as("the direct rebuild's snapshot must not have been replaced by a stale disk restore")
+        .isFalse();
+    assertThat(restored.getNodeCount()).isEqualTo(2);
+
+    restored.drop();
+  }
+
+  /**
    * Regression for issue #6632: a session that opens a database with a persisted-CSR view and never
    * queries it must not pay for the deferred restore at shutdown() either — shutdown() has no reason to
    * wait for work that was never triggered, and {@code persistCsrIfPossible()} must not attempt to
