@@ -313,6 +313,13 @@ public class FromItem extends SimpleNode {
     if (functionCall != null)
       return functionCall.isCacheable();
 
+    // A "$var" target resolves against a runtime CommandContext variable (see SelectExecutionPlanner's
+    // rewriteIndexChainsAsSubqueries()), so the compiled plan is only valid for the binding it was built with.
+    // Caching it under this statement's text would replay that one binding's type for every later execution
+    // regardless of what $var is bound to then (#6669).
+    if (identifier != null && identifier.getStringValue() != null && identifier.getStringValue().startsWith("$"))
+      return false;
+
     return true;
   }
 

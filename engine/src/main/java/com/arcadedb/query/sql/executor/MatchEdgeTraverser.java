@@ -107,6 +107,31 @@ public class MatchEdgeTraverser {
     return this.edge.edge.in.alias;
   }
 
+  /**
+   * Returns {@code false} for a while/maxDepth pattern item: {@link GraphTraversalProvider#isConnectedTo} only
+   * ever answers whether two vertices are joined by a single hop, so a variable-depth item must keep going
+   * through the recursive {@link #executeTraversal} instead of taking the expand-into fast path.
+   */
+  private static boolean isSingleHopExpandable(final MatchPathItem item) {
+    if (item == null)
+      return false;
+    final var filter = item.getFilter();
+    return filter == null || (filter.getWhileCondition() == null && filter.getMaxDepth() == null);
+  }
+
+  /**
+   * Returns the {@link Vertex.DIRECTION} the GAV expand-into fast path (see {@link #init}) should query, as seen
+   * from this traverser's own starting point (i.e. the vertex {@link #getStartingPointAlias()} names): the same
+   * direction {@link #traversePatternEdge} would use by invoking {@code item.getMethod().execute(...)}. Returns
+   * {@code null} when the pattern edge has no single direction to ask a provider about - no method (a
+   * {@code FieldMatchPathItem}/{@code MultiMatchPathItem}) or a method other than out/in/both (outE/inE/bothE/
+   * outV/inV need the edge or the far vertex itself, not just a connectivity check) - in which case the fast path
+   * is skipped in favour of the slow, always-correct traversal.
+   */
+  protected Vertex.DIRECTION getExpandIntoDirection() {
+    return MatchExecutionPlanner.directionFor(item, true);
+  }
+
   protected void init(final CommandContext context) {
     if (downstream == null) {
       Identifiable startingElem = sourceRecord.getElementProperty(getStartingPointAlias());
@@ -115,7 +140,12 @@ public class MatchEdgeTraverser {
       }
 
       // Expand-into optimization: when both endpoints are already bound, use isConnectedTo()
-      // for O(log degree) binary search instead of traversing all neighbors
+      // for O(log degree) binary search instead of traversing all neighbors. This does not re-check the
+      // endpoint's own filters/class/cluster/rid (unlike executeTraversal(), which calls matchesFilters() etc.
+      // per candidate): those were already applied when the endpoint alias was first bound, and next()'s
+      // equals(prevValue, nextElement) check below (the same one the slow path relies on to reject a
+      // subsequent binding that disagrees with an earlier one) is what re-validates identity here, not a
+      // second filter pass. This is by design, not an oversight.
       final String endPointAlias = getEndpointAlias();
       final Object prevValue = sourceRecord.getProperty(endPointAlias);
       if (prevValue != null && startingElem instanceof Vertex sourceVertex) {
@@ -125,15 +155,25 @@ public class MatchEdgeTraverser {
         else if (prevValue instanceof Result r)
           targetElem = r.getElement().orElse(null);
 
-        if (targetElem != null) {
-          final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(context.getDatabase());
+        // Only a plain out()/in()/both() hop is eligible: the fast path returns just the bound vertex, which is
+        // wrong for outE()/inE()/bothE()/outV()/inV() (an edge/vertex object is expected) and item.getMethod() is
+        // null for a FieldMatchPathItem/MultiMatchPathItem (no single direction to ask the provider about). A
+        // while/maxDepth item is a variable-depth traversal - isConnectedTo() only ever answers a single hop, so
+        // it must keep going through the recursive executeTraversal() below instead.
+        final Vertex.DIRECTION direction = targetElem != null && edge != null && isSingleHopExpandable(item)
+            ? getExpandIntoDirection() : null;
+        // hasAnyProviders() short-circuits on a single volatile read, avoiding extractEdgeLabels()'s array/string
+        // work below for the overwhelmingly common case where no GAV provider is registered for any database.
+        if (direction != null && GraphTraversalProviderRegistry.hasAnyProviders()) {
+          // direction != null already proved item.getMethod() != null (see getExpandIntoDirection()), which is
+          // what extractEdgeLabels() dereferences without its own null check - keep this call after that guard.
+          final String[] edgeTypes = MatchExecutionPlanner.extractEdgeLabels(edge);
+          final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(context.getDatabase(), edgeTypes);
           if (provider != null) {
             final int srcId = provider.getNodeId(sourceVertex.getIdentity());
             final int tgtId = provider.getNodeId(targetElem.getIdentity());
             if (srcId >= 0 && tgtId >= 0) {
-              // Determine direction from the edge traversal
-              final Vertex.DIRECTION direction = edge != null && !edge.out ? Vertex.DIRECTION.IN : Vertex.DIRECTION.OUT;
-              if (provider.isConnectedTo(srcId, tgtId, direction)) {
+              if (provider.isConnectedTo(srcId, tgtId, direction, edgeTypes)) {
                 // Connected: return the target as the single result
                 final Document doc = (Document) targetElem.getRecord();
                 downstream = List.of(new ResultInternal(doc)).iterator();

@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.parser.MatchPathItem;
 import com.arcadedb.query.sql.parser.Rid;
 import com.arcadedb.query.sql.parser.WhereClause;
@@ -45,6 +46,18 @@ public class MatchReverseEdgeTraverser extends MatchEdgeTraverser {
 
   protected String targetClassName(final MatchPathItem item, final CommandContext iCommandContext) {
     return edge.getLeftClass();
+  }
+
+  /**
+   * {@code item.getMethod()} is still the pattern edge's method as parsed from its syntactic out-side (this class
+   * never rewrites it), so the direction it names is relative to that side, not to {@link #getStartingPointAlias()}
+   * (the in-side, which this reverse traverser actually starts from) - the same out<->in flip
+   * {@link com.arcadedb.query.sql.parser.MethodCall#executeReverse} applies to pick the method it actually runs.
+   * "both" has no opposite and stays as-is.
+   */
+  @Override
+  protected Vertex.DIRECTION getExpandIntoDirection() {
+    return MatchExecutionPlanner.directionFor(item, false);
   }
 
   protected String targetClusterName(final MatchPathItem item, final CommandContext iCommandContext) {
