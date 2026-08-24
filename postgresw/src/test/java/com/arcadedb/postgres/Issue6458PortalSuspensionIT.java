@@ -317,7 +317,8 @@ public class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
     properties.setProperty("password", DEFAULT_PASSWORD_FOR_TESTS);
     properties.setProperty("ssl", "false");
     properties.setProperty("sslMode", "disable");
-    return DriverManager.getConnection("jdbc:postgresql://localhost:5432/" + getDatabaseName(), properties);
+    return DriverManager.getConnection(
+        "jdbc:postgresql://localhost:" + GlobalConfiguration.POSTGRES_PORT.getValueAsInteger() + "/" + getDatabaseName(), properties);
   }
 
   // ---- raw wire-protocol helpers for executeMaxRowsSendsRowsBeforeSuspendedNeverBothTerminatorsAndThePortalSurvivesToContinue ----
