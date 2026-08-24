@@ -172,6 +172,8 @@ public class MatchEdgeTraverser {
         // hasAnyProviders() short-circuits on a single volatile read, avoiding extractEdgeLabels()'s array/string
         // work below for the overwhelmingly common case where no GAV provider is registered for any database.
         if (direction != null && GraphTraversalProviderRegistry.hasAnyProviders()) {
+          // direction != null already proved item.getMethod() != null (see getExpandIntoDirection()), which is
+          // what extractEdgeLabels() dereferences without its own null check - keep this call after that guard.
           final String[] edgeTypes = MatchExecutionPlanner.extractEdgeLabels(edge);
           final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(context.getDatabase(), edgeTypes);
           if (provider != null) {
