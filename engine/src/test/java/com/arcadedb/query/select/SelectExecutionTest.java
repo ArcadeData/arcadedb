@@ -475,6 +475,12 @@ public class SelectExecutionTest extends TestHelper {
     assertThat(database.select().fromType("Vertex")//
         .where().property("name").eq().value("John")//
         .and().property("name").isNotNull().limit(0).count()).isEqualTo(0);
+
+    // PINS THE ALREADY-SAFE INDEXED-CURSOR PATH TOO (id IS UNIQUE-INDEXED, SEE beginTest()): MultiIndexCursor
+    // ALREADY STOPS BEFORE ANY CANDIDATE IS PULLED FOR limit(0), SO THIS GUARDS AGAINST A FUTURE REGRESSION IN
+    // computeExactCandidateLimit()'S CAP LOGIC, NOT AGAINST THE BUG THIS TEST OTHERWISE EXERCISES
+    assertThat(database.select().fromType("Vertex")//
+        .where().property("id").eq().value(5).limit(0).count()).isEqualTo(0);
   }
 
   @Test

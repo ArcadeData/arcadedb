@@ -52,3 +52,16 @@ issue:
 - `mvn -pl engine -am test -Dtest='Select*Test'` - 315/315 pass (all native-select and SQL select suites)
 - `mvn -pl engine -am test -Dtest=Issue6565SelectIndexCandidateLimitTest` - 20/20 pass (adjacent
   candidate-cap logic touched by the same class, per the issue's own cross-reference to #6571/#6565)
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/6683
+
+## Review cycles
+
+- **Cycle 1** - head `e718976202d273e2d9c2957fa35d1956e5416177`. `claude` review: no blocking issues;
+  confirmed the reorder is correct, confirmed `limit > 0` behavior is unchanged by hand-tracing, and noted
+  the already-safe indexed-cursor path (`MultiIndexCursor` stops before pulling any candidate for
+  `limit(0)`). One optional nit: add an assertion pinning that indexed-cursor path against a future
+  regression in `computeExactCandidateLimit()`. Applied (see `okCountWithLimitZero`'s third assertion,
+  `.where().property("id").eq().value(5).limit(0).count()`); no deferred items.
