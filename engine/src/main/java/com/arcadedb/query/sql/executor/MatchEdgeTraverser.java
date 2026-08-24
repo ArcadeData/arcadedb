@@ -166,9 +166,7 @@ public class MatchEdgeTraverser {
             ? getExpandIntoDirection() : null;
         if (direction != null) {
           final String[] edgeTypes = MatchExecutionPlanner.extractEdgeLabels(edge);
-          final GraphTraversalProvider provider = edgeTypes.length == 0
-              ? GraphTraversalProviderRegistry.findProvider(context.getDatabase())
-              : GraphTraversalProviderRegistry.findProvider(context.getDatabase(), edgeTypes);
+          final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(context.getDatabase(), edgeTypes);
           if (provider != null) {
             final int srcId = provider.getNodeId(sourceVertex.getIdentity());
             final int tgtId = provider.getNodeId(targetElem.getIdentity());
