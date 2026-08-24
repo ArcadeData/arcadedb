@@ -1353,6 +1353,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // validation loop off of. Builders wait on this mutex; searches and inserts never touch it, so serializing
     // here does not reintroduce the stall. graphBuildLock is reentrant, so the fallback call to
     // buildGraphFromScratch() at the end of this method - which acquires the same lock - is safe from here.
+    //
+    // Set below when a stale persisted graph is instead reused as a prefix (issue #6655); read after
+    // graphBuildLock is released, so the async rebuild and inactivity-timer kicks that follow can run without
+    // holding it (same convention insert() follows for scheduleInactivityRebuild()).
+    boolean deferredPrefixReuse = false;
+
     graphBuildLock.lock();
     try {
       // Double-check after acquiring the lock
@@ -1496,10 +1502,33 @@ public class LSMVectorIndex implements Index, IndexInternal {
             staleReason = null;
 
           if (staleReason != null) {
-            LogManager.instance().log(this, Level.INFO,
-                "Persisted graph is not usable for index %s: %s - rebuilding from scratch (issues #3722, #6106)",
-                indexName, staleReason);
-            // Don't use the stale graph — fall through to buildGraphFromScratch() below
+            // ISSUE #6655: a graph stale ONLY because more vectors were added since it was built - no deletions
+            // (guaranteed by the !hasDeletedVectors guard above) and, when a manifest is present, its fingerprint
+            // proves the graph's own ordinals [0, graphSize) still resolve to exactly the records they were built
+            // from - is not wrong, only behind. That is the identical staleness rebuildGraphBeforeSearch()'s async
+            // policy already tolerates mid-session (a graph missing the newest vectors, not one describing the
+            // wrong ones), so it is reused immediately instead of paying a synchronous full rebuild on the calling
+            // search thread for however large the WHOLE index has become - the reopen-time counterpart of #6067's
+            // close-time deferral, reached through the general stale-persisted-graph path rather than only the
+            // deferred-close one. A missing manifest cannot support this: the weak node-count comparison above
+            // proves nothing about WHICH records a same-sized graph describes, and a prefix of it proves even
+            // less. Below the async-rebuild threshold a synchronous rebuild is already cheap, so it is left alone.
+            final int[] prefix = persistedManifest != null && graphSize == persistedManifest.vectorCount()
+                && graphSize < rebuiltOrdinalToVectorId.length && graphSize > 0
+                && vectorIndex.size() >= ASYNC_REBUILD_MIN_GRAPH_SIZE
+                && persistedManifest.fingerprint() == LSMVectorIndexGraphManifest.fingerprintOf(
+                Arrays.copyOf(rebuiltOrdinalToVectorId, graphSize), vectorIndex::getRid) ?
+                rebuiltOrdinalToVectorId : null;
+
+            if (prefix != null) {
+              reuseStalePrefixGraph(loadedGraph, prefix, graphSize, vectorProp);
+              deferredPrefixReuse = true;
+            } else
+              LogManager.instance().log(this, Level.INFO,
+                  "Persisted graph is not usable for index %s: %s - rebuilding from scratch (issues #3722, #6106)",
+                  indexName, staleReason);
+            // Don't use the stale graph as IMMUTABLE — fall through to buildGraphFromScratch() below unless the
+            // prefix reuse above already put it to work as MUTABLE
           } else {
             // Graph is up to date — publish it under a brief write lock (issue #6713), then finish PQ
             // (if needed) unlocked, mirroring buildGraphFromScratchExclusively's own publish step.
@@ -1544,12 +1573,79 @@ public class LSMVectorIndex implements Index, IndexInternal {
         }
       }
 
-      // No persisted graph, load failed, or it was stale - build from scratch. buildGraphFromScratch()
-      // acquires graphBuildLock itself; since it is reentrant this is safe to call while already holding it.
-      buildGraphFromScratch();
+      // No persisted graph, load failed, or it was stale with no usable prefix - build from scratch.
+      // buildGraphFromScratch() acquires graphBuildLock itself; since it is reentrant this is safe to call
+      // while already holding it. Skipped when the stale graph was instead reused as a prefix above (issue
+      // #6655): that already put the index to work as MUTABLE, and a synchronous rebuild here would throw
+      // that work away and pay for it again.
+      if (!deferredPrefixReuse)
+        buildGraphFromScratch();
     } finally {
       graphBuildLock.unlock();
     }
+
+    if (deferredPrefixReuse) {
+      // Kick the same async rebuild rebuildGraphBeforeSearch() would eventually trigger anyway, so the gap left
+      // by the reused prefix is closed promptly instead of waiting on the ordinary mutation threshold - and also
+      // arm the inactivity timer as a fallback for when the async attempt is skipped (already in progress, or
+      // still cooling down from a prior OOM deferral - see isCoolingDownFromRebuildDeferral()). Both outside
+      // graphBuildLock, just released, the same convention insert() follows.
+      startAsyncGraphRebuild();
+      scheduleInactivityRebuild();
+    }
+  }
+
+  /**
+   * Reuse a persisted graph that {@link #ensureGraphAvailable()} found stale only because more vectors were added
+   * since it was built - no deletions, and its manifest-verified ordinals {@code [0, graphSize)} still resolve to
+   * exactly the records they were built from - instead of discarding it for a synchronous full rebuild (issue
+   * #6655).
+   * <p>
+   * The vectors past {@code graphSize} are not yet in the graph, and are not in {@link #deltaVectors} either:
+   * that buffer is in-memory only (issue #3722) and this is a session that never wrote them, it is only now
+   * discovering them on reopen. Queuing them here - the same re-queue {@link #buildGraphFromScratch()} performs
+   * for a node its own build left unreachable - is what keeps every live vector searchable immediately through
+   * the ordinary delta scan, rather than trading this fix's latency win for a window where they silently do not
+   * come back.
+   *
+   * @param loadedGraph              the graph loaded from disk, already verified against the manifest by the
+   *                                 caller
+   * @param rebuiltOrdinalToVectorId every live vector's id, in ordinal order - not only the ones the graph covers
+   * @param graphSize                how many of {@code rebuiltOrdinalToVectorId}'s leading entries the graph
+   *                                 covers; the manifest-verified prefix
+   * @param vectorProp               the vector property name, for reading the gap vectors back
+   */
+  private void reuseStalePrefixGraph(final ImmutableGraphIndex loadedGraph, final int[] rebuiltOrdinalToVectorId,
+      final int graphSize, final String vectorProp) {
+    final RandomAccessVectorValues vectors = ArcadePageVectorValues.forGraphBuild(getDatabase(),
+        metadata.dimensions, vectorProp,
+        snapshotOf(vectorIndex, rebuiltOrdinalToVectorId), rebuiltOrdinalToVectorId, this,
+        computeGraphBuildCacheCapacity(rebuiltOrdinalToVectorId.length, false));
+
+    int queued = 0;
+    for (int ordinal = graphSize; ordinal < rebuiltOrdinalToVectorId.length; ordinal++) {
+      final int vectorId = rebuiltOrdinalToVectorId[ordinal];
+      final RID rid = vectorIndex.getRid(vectorId);
+      if (rid == null)
+        continue; // gone since the array above was built; the next mutation or rebuild picks it up
+      final VectorFloat<?> vector = vectors.getVector(ordinal);
+      if (vector == null || (vectors instanceof final ArcadePageVectorValues pageValues
+          && pageValues.isDeletedSentinel(vector)))
+        continue;
+      deltaVectors.add(new DeltaVectorEntry(vectorId, rid, vector));
+      queued++;
+    }
+
+    this.graphIndex = loadedGraph;
+    this.ordinalToVectorId = Arrays.copyOf(rebuiltOrdinalToVectorId, graphSize);
+    this.graphState = GraphState.MUTABLE;
+    this.mutationsSinceSerialize.set(queued);
+    metrics.incrementStalePrefixGraphReuses();
+
+    LogManager.instance().log(this, Level.INFO,
+        "Reusing persisted graph for index %s as a stale prefix: %d of %d live vectors are already in the graph, "
+            + "%d queued into the delta buffer pending an async rebuild (issue #6655)",
+        indexName, graphSize, rebuiltOrdinalToVectorId.length, queued);
   }
 
   /**
