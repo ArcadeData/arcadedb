@@ -83,15 +83,15 @@ class PostgresSetCommandParsingTest {
   }
 
   @Test
-  void anUnclosedQuoteIsLeftAsIsInsteadOfThrowing() {
+  void anUnclosedQuoteIsRejectedInsteadOfThrowing() {
     // A single stray quote is not a closed quoted value: substring(1, length - 1) on it used to throw
-    // StringIndexOutOfBoundsException instead of leaving the (malformed) value alone.
+    // StringIndexOutOfBoundsException instead of being treated as the malformed command it is.
     assertThatCode(() -> PostgresNetworkExecutor.parseSetCommand("SET x = '")).doesNotThrowAnyException();
-    assertThat(PostgresNetworkExecutor.parseSetCommand("SET x = '")).containsExactly("x", "'");
+    assertThat(PostgresNetworkExecutor.parseSetCommand("SET x = '")).isNull();
   }
 
   @Test
-  void mismatchedQuotesAreLeftAsIs() {
-    assertThat(PostgresNetworkExecutor.parseSetCommand("SET x = 'abc\"")).containsExactly("x", "'abc\"");
+  void mismatchedQuotesAreRejected() {
+    assertThat(PostgresNetworkExecutor.parseSetCommand("SET x = 'abc\"")).isNull();
   }
 }
