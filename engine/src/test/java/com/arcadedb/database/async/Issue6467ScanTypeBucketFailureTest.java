@@ -60,7 +60,47 @@ class Issue6467ScanTypeBucketFailureTest extends TestHelper {
   void failingBucketScanIsCapturedRethrownAndStillCompletes() {
     final RuntimeException injected = new RuntimeException("simulated bucket I/O failure");
 
-    final Bucket brokenBucket = new Bucket() {
+    final AtomicReference<Throwable> firstError = new AtomicReference<>();
+    final CountDownLatch             latch      = new CountDownLatch(1);
+    final DatabaseAsyncScanBucket task =
+        new DatabaseAsyncScanBucket(latch, record -> true, null, brokenBucket("brokenBucket", injected), firstError);
+
+    assertThatThrownBy(() -> task.execute(null, null)).isSameAs(injected);
+    assertThat(firstError.get()).isSameAs(injected);
+
+    task.completed();
+    assertThat(latch.getCount()).isZero();
+  }
+
+  /**
+   * A second bucket failing after {@code firstError} is already claimed must not be silently dropped: it loses the
+   * {@code compareAndSet} race to be the one {@code scanType()} rethrows, but is still logged, and its own task
+   * still rethrows so the worker's own rollback/logging/{@code onError} handling runs for it too. No real
+   * concurrency is needed to exercise this deterministically: {@code compareAndSet}'s outcome depends only on
+   * {@code firstError}'s current value, so calling the two tasks sequentially against one shared holder reproduces
+   * the "already claimed" branch exactly as a genuine race would.
+   */
+  @Test
+  void aSecondConcurrentlyFailingBucketLosesTheRaceButIsStillRethrown() {
+    final RuntimeException firstFailure  = new RuntimeException("first bucket failure");
+    final RuntimeException secondFailure = new RuntimeException("second bucket failure");
+
+    final AtomicReference<Throwable> firstError = new AtomicReference<>();
+    final DatabaseAsyncScanBucket taskA =
+        new DatabaseAsyncScanBucket(new CountDownLatch(1), record -> true, null, brokenBucket("bucketA", firstFailure), firstError);
+    final DatabaseAsyncScanBucket taskB =
+        new DatabaseAsyncScanBucket(new CountDownLatch(1), record -> true, null, brokenBucket("bucketB", secondFailure), firstError);
+
+    assertThatThrownBy(() -> taskA.execute(null, null)).isSameAs(firstFailure);
+    assertThat(firstError.get()).isSameAs(firstFailure);
+
+    // taskB still rethrows its OWN exception even though it lost the race to populate firstError.
+    assertThatThrownBy(() -> taskB.execute(null, null)).isSameAs(secondFailure);
+    assertThat(firstError.get()).as("the first bucket's failure is still the one scanType() will report").isSameAs(firstFailure);
+  }
+
+  private static Bucket brokenBucket(final String name, final RuntimeException toThrow) {
+    return new Bucket() {
       @Override
       public RID createRecord(final Record record, final boolean discardRecordAfter) {
         throw new UnsupportedOperationException();
@@ -93,7 +133,7 @@ class Issue6467ScanTypeBucketFailureTest extends TestHelper {
 
       @Override
       public void scan(final RawRecordCallback callback, final ErrorRecordCallback errorRecordCallback) {
-        throw injected;
+        throw toThrow;
       }
 
       @Override
@@ -118,19 +158,9 @@ class Issue6467ScanTypeBucketFailureTest extends TestHelper {
 
       @Override
       public String getName() {
-        return "brokenBucket";
+        return name;
       }
     };
-
-    final AtomicReference<Throwable> firstError = new AtomicReference<>();
-    final CountDownLatch             latch      = new CountDownLatch(1);
-    final DatabaseAsyncScanBucket task = new DatabaseAsyncScanBucket(latch, record -> true, null, brokenBucket, firstError);
-
-    assertThatThrownBy(() -> task.execute(null, null)).isSameAs(injected);
-    assertThat(firstError.get()).isSameAs(injected);
-
-    task.completed();
-    assertThat(latch.getCount()).isZero();
   }
 
   /**
