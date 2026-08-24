@@ -353,6 +353,8 @@ public class PostgresNetworkExecutor extends Thread {
 
     if (closeType == 'P')
       getPortal(prepStatementOrPortal, true);
+    else if (closeType == 'S')
+      preparedStatements.remove(prepStatementOrPortal);
 
     if (DEBUG)
       LogManager.instance().log(this, Level.INFO, "PSQL: close '%s' type=%s (thread=%s)", prepStatementOrPortal, (char) closeType,
@@ -1824,11 +1826,7 @@ public class PostgresNetworkExecutor extends Thread {
       final PostgresPortal template = preparedStatement != null ? preparedStatement
           // Backwards-compatible fallback: portalName may itself already name a bound portal.
           : portals.get(portalName);
-      if (template == null) {
-        writeMessage("bind complete", null, '2', 4);
-        return;
-      }
-      PostgresPortal portal = PostgresPortal.bindFrom(template);
+      final PostgresPortal portal = template != null ? PostgresPortal.bindFrom(template) : new PostgresPortal("", "sql");
 
       // Only the preparedStatements-map template above is provably never executed for a real query (parseCommand
       // writes it once and nothing ever mutates it afterwards) - the fallback template just above (portals.get
@@ -1847,7 +1845,7 @@ public class PostgresNetworkExecutor extends Thread {
       // like #6660. This deliberately excludes BEGIN/COMMIT/ROLLBACK and a RESOLVED (parameter-less) catalog
       // answer, which precompute their fixed response once during Parse via setEmptyResultSet()/direct
       // assignment and must not be reset before Execute ever sees them.
-      if (portal.executed && (portal.sqlStatement != null || portal.catalogQuery)) {
+      if (template != null && portal.executed && (portal.sqlStatement != null || portal.catalogQuery)) {
         portal.executed = false;
         portal.fullResultSet = null;
         portal.cachedResultSet = null;
@@ -1974,10 +1972,12 @@ public class PostgresNetworkExecutor extends Thread {
       // statement's own template object (issue #6660 / CodeRabbit review on #6658).
       // This is necessary because EXECUTE looks up portals by portal name, not prepared statement name.
       // PostgreSQL protocol: PARSE creates "prepared statement", BIND creates "portal" from it.
-      portals.put(portalName, portal);
-      if (DEBUG)
-        LogManager.instance().log(this, Level.INFO, "PSQL: bind stored portal under name '%s' (thread=%s)",
-            portalName, Thread.currentThread().threadId());
+      if (template != null) {
+        portals.put(portalName, portal);
+        if (DEBUG)
+          LogManager.instance().log(this, Level.INFO, "PSQL: bind stored portal under name '%s' (thread=%s)",
+              portalName, Thread.currentThread().threadId());
+      }
 
       writeMessage("bind complete", null, '2', 4);
 
