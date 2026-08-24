@@ -1051,6 +1051,9 @@ public class CypherExecutionPlan {
     // Apply post-MATCH operations using clausesInOrder to respect the order they appear
     // in the query (e.g. WITH before UNWIND, not the other way around).
     final List<ClauseEntry> clausesInOrder = statement.getClausesInOrder();
+    // MATCH clauses seen since the last WITH (or since the start), i.e. the ones that actually feed
+    // whichever DELETE segment is reached next - see matchClausesHaveDisconnectedPatterns().
+    final List<MatchClause> currentSegmentMatchClauses = new ArrayList<>();
     if (clausesInOrder != null) {
       for (final ClauseEntry entry : clausesInOrder) {
         switch (entry.getType()) {
@@ -1058,6 +1061,7 @@ public class CypherExecutionPlan {
           // MATCH pattern is handled by the optimizer above, but WHERE clauses
           // attached to MATCH clauses still need to be applied as filters.
           final MatchClause matchClause = entry.getTypedClause();
+          currentSegmentMatchClauses.add(matchClause);
           if (matchClause.hasWhereClause()) {
             final FilterPropertiesStep filterStep =
                 new FilterPropertiesStep(matchClause.getWhereClause(), context);
@@ -1091,7 +1095,7 @@ public class CypherExecutionPlan {
           final DeleteClause deleteClause = entry.getTypedClause();
           if (!deleteClause.isEmpty()) {
             final DeleteStep deleteStep = new DeleteStep(deleteClause, context,
-                matchClausesHaveDisconnectedPatterns(statement.getMatchClauses()));
+                matchClausesHaveDisconnectedPatterns(currentSegmentMatchClauses));
             deleteStep.setPrevious(currentStep);
             currentStep = deleteStep;
           }
@@ -1127,6 +1131,13 @@ public class CypherExecutionPlan {
         case WITH: {
           final WithClause withClause = entry.getTypedClause();
           currentStep = buildWithStepForOptimizer(withClause, currentStep, context, functionFactory);
+          // A WITH boundary starts a new segment: MATCH clauses before it no longer feed a DELETE
+          // that comes after it (issue #6631). Unlike buildExecutionStepsWithOrder()'s WITH case, a
+          // plain clear() here (no taint tracking for a DELETE that plainly forwards a disconnected
+          // variable through this WITH) is safe: CypherExecutionPlanner.shouldUseOptimizer() already
+          // refuses to build a physical plan at all when a mutating clause (DELETE included) follows any
+          // WITH, so this method never builds a DELETE fed by an already-cleared segment.
+          currentSegmentMatchClauses.clear();
           break;
         }
 
@@ -1308,6 +1319,13 @@ public class CypherExecutionPlan {
     // can detect already-bound variables and avoid Cartesian products
     final Set<String> boundVariables = new HashSet<>(seedVariableNames);
 
+    // MATCH clauses seen since the last WITH (or since the start), i.e. the ones that actually feed
+    // whichever DELETE/FOREACH segment is reached next - see matchClausesHaveDisconnectedPatterns().
+    final List<MatchClause> currentSegmentMatchClauses = new ArrayList<>();
+    // Variables bound by a segment that WAS disconnected, kept forever once tainted (even across a WITH
+    // that merely forwards them unchanged) - see closeMatchSegment() and deleteMayTargetTaintedVariable().
+    final Set<String> disconnectedTaintedVariables = new HashSet<>();
+
     // Both count push-downs answer from the schema and the CSR arrays alone: they read the statement's patterns and
     // never look at the incoming rows. That makes the enumerating form of them wrong the moment the seed row binds
     // one of those pattern variables - a seeded body counting `MATCH (n)-[:KNOWS]->(m)` with `n` already bound to one
@@ -1391,6 +1409,7 @@ public class CypherExecutionPlan {
 
       case MATCH:
         final MatchClause matchClause = entry.getTypedClause();
+        currentSegmentMatchClauses.add(matchClause);
         if (matchClause.isOptional()) {
           // Try chained count optimization first (handles 2 consecutive OPTIONAL MATCH + count)
           final AbstractExecutionStep chainedOptimized = tryOptimizeChainedOptionalMatchCount(
@@ -1401,6 +1420,9 @@ public class CypherExecutionPlan {
             // Update boundVariables from the WITH clause
             final WithClause nextWith = ((ClauseEntry) clausesInOrder.get(entryIndex)).getTypedClause();
             applyProjectionToScope(nextWith.getItems(), boundVariables);
+            // the skipped WITH starts a new segment (issue #6631)
+            closeMatchSegment(currentSegmentMatchClauses, disconnectedTaintedVariables);
+            propagateTaintThroughRenames(nextWith, disconnectedTaintedVariables);
             break;
           }
 
@@ -1413,6 +1435,9 @@ public class CypherExecutionPlan {
             // Update boundVariables from the WITH clause
             final WithClause nextWith = ((ClauseEntry) clausesInOrder.get(entryIndex)).getTypedClause();
             applyProjectionToScope(nextWith.getItems(), boundVariables);
+            // the skipped WITH starts a new segment (issue #6631)
+            closeMatchSegment(currentSegmentMatchClauses, disconnectedTaintedVariables);
+            propagateTaintThroughRenames(nextWith, disconnectedTaintedVariables);
             break;
           }
         }
@@ -1424,6 +1449,14 @@ public class CypherExecutionPlan {
         currentStep = buildWithStep(withClause, currentStep, context, functionFactory);
         // An explicit WITH resets the scope to its own output variables; WITH * forwards the incoming one
         applyProjectionToScope(withClause.getItems(), boundVariables);
+        // A WITH boundary starts a new segment (issue #6631) - but a WITH that plainly forwards a
+        // variable bound by a disconnected-pattern MATCH (e.g. WITH n, o) does not resolve the #6491
+        // hazard for that variable, since rows still flow through it one at a time rather than being
+        // fully consumed; closeMatchSegment() taints it before the segment is cleared.
+        closeMatchSegment(currentSegmentMatchClauses, disconnectedTaintedVariables);
+        // A rename (WITH n AS m) doesn't change how rows flow either - propagate the taint onto the
+        // new name too, or a later DELETE of m would find nothing tainted under that name.
+        propagateTaintThroughRenames(withClause, disconnectedTaintedVariables);
         break;
 
       case MERGE:
@@ -1470,8 +1503,9 @@ public class CypherExecutionPlan {
       case DELETE:
         final DeleteClause deleteClause = entry.getTypedClause();
         if (!deleteClause.isEmpty() && currentStep != null) {
-          final DeleteStep deleteStep =
-              new DeleteStep(deleteClause, context, matchClausesHaveDisconnectedPatterns(statement.getMatchClauses()));
+          final boolean eagerMaterialize = matchClausesHaveDisconnectedPatterns(currentSegmentMatchClauses)
+              || deleteMayTargetTaintedVariable(deleteClause.getVariables(), disconnectedTaintedVariables);
+          final DeleteStep deleteStep = new DeleteStep(deleteClause, context, eagerMaterialize);
           deleteStep.setPrevious(currentStep);
           currentStep = deleteStep;
         }
@@ -1498,9 +1532,11 @@ public class CypherExecutionPlan {
 
       case FOREACH:
         final ForeachClause foreachClause = entry.getTypedClause();
+        final boolean foreachEagerMaterialize = foreachClause.containsDelete()
+            && (matchClausesHaveDisconnectedPatterns(currentSegmentMatchClauses)
+                || deleteMayTargetTaintedVariable(collectForeachDeleteTargetVariables(foreachClause), disconnectedTaintedVariables));
         final ForeachStep foreachStep =
-            new ForeachStep(foreachClause, context, functionFactory,
-                foreachClause.containsDelete() && matchClausesHaveDisconnectedPatterns(statement.getMatchClauses()));
+            new ForeachStep(foreachClause, context, functionFactory, foreachEagerMaterialize);
         if (currentStep != null) {
           foreachStep.setPrevious(currentStep);
         }
@@ -2485,7 +2521,7 @@ public class CypherExecutionPlan {
   }
 
   /**
-   * True when the statement's MATCH clauses, combined, have disconnected path patterns (see
+   * True when the given MATCH clauses, combined, have disconnected path patterns (see
    * {@link MatchClause#hasDisconnectedPathPatterns(List)}). A DELETE fed by such a MATCH must fully
    * read the upstream row set before deleting anything, or a later row can dereference a vertex/edge an
    * earlier row already deleted (issue #6491).
@@ -2496,15 +2532,115 @@ public class CypherExecutionPlan {
    * (a fresh {@code MatchNodeStep} chained onto {@code currentStep} either way), so both carry the same
    * hazard.
    * <p>
-   * Deliberately statement-wide rather than scoped to the MATCH clause(s) that actually precede a
-   * given DELETE segment (relevant only for a multi-segment statement with more than one WITH-separated
-   * MATCH/DELETE pair): this is a conservative superset, so it can only force eager materialization on
-   * a DELETE that did not strictly need it, never miss one that did. Disconnected patterns are rare
-   * enough that the extra precision is not worth the bookkeeping to thread "which MATCH clauses feed
-   * this DELETE" through {@code clausesInOrder}.
+   * Callers pass only the MATCH clause(s) of the segment feeding the DELETE/FOREACH in question
+   * (the MATCH clauses since the last WITH, tracked as {@code currentSegmentMatchClauses} while
+   * walking {@code clausesInOrder}), not every MATCH clause in the whole statement: a multi-segment
+   * statement with more than one WITH-separated MATCH/DELETE pair must not force eager materialization
+   * on a DELETE whose own segment has no disconnected pattern just because an unrelated, earlier
+   * segment does (issue #6631).
    */
   private static boolean matchClausesHaveDisconnectedPatterns(final List<MatchClause> matchClauses) {
     return MatchClause.hasDisconnectedPathPatterns(matchClauses);
+  }
+
+  /**
+   * Closes the MATCH segment tracked in {@code currentSegmentMatchClauses} at a WITH boundary: if the
+   * segment being closed is itself disconnected, every node AND relationship variable it bound is added
+   * to {@code disconnectedTaintedVariables} before the segment list is cleared for the next one - a
+   * disconnected MATCH can rebind the same underlying edge across rows exactly as it can a vertex (see
+   * {@code DeleteStep}'s own {@code eagerMaterialize} field doc), so {@code DELETE r} needs the same
+   * guard as {@code DELETE n}.
+   * <p>
+   * A WITH that plainly forwards such a variable (e.g. {@code WITH n, o}) does not neutralize the
+   * issue #6491 hazard for it: rows out of a disconnected-pattern MATCH still flow one at a time through
+   * a non-aggregating WITH, so a later DELETE of that same variable can still race a not-yet-produced
+   * row exactly as it would with no WITH in between. Once tainted, a variable stays tainted for the rest
+   * of the statement - this can only make {@link #deleteMayTargetTaintedVariable} keep guarding a DELETE
+   * that no longer strictly needs it (e.g. after several more WITH-forwarding hops), never miss one that
+   * does; see the class-level trade-off note on {@link #matchClausesHaveDisconnectedPatterns}.
+   */
+  private static void closeMatchSegment(final List<MatchClause> currentSegmentMatchClauses,
+      final Set<String> disconnectedTaintedVariables) {
+    if (matchClausesHaveDisconnectedPatterns(currentSegmentMatchClauses))
+      for (final MatchClause match : currentSegmentMatchClauses)
+        for (final PathPattern path : match.getPathPatterns()) {
+          for (final NodePattern node : path.getNodes())
+            if (node.getVariable() != null)
+              disconnectedTaintedVariables.add(node.getVariable());
+          for (final RelationshipPattern relationship : path.getRelationships())
+            if (relationship.getVariable() != null)
+              disconnectedTaintedVariables.add(relationship.getVariable());
+        }
+    currentSegmentMatchClauses.clear();
+  }
+
+  /**
+   * Propagates taint through a {@code WITH ... AS alias} rename: a rename doesn't change how rows flow
+   * any more than a same-name passthrough does (see {@link #closeMatchSegment}), so if the item being
+   * renamed is a bare reference to an already-tainted variable, its new alias is tainted too - otherwise
+   * a later DELETE of the alias would find nothing tainted under that name, even though it is exactly as
+   * hazardous as deleting the original variable would have been.
+   * <p>
+   * Only a bare variable reference is recognised as "the same entity under a new name" ({@code WITH n AS
+   * m}); an item computed from a tainted variable by any other expression ({@code WITH n.id AS m}, {@code
+   * WITH count(n) AS m}) produces a value that is no longer that entity, so it carries no taint forward.
+   */
+  private static void propagateTaintThroughRenames(final WithClause withClause,
+      final Set<String> disconnectedTaintedVariables) {
+    if (disconnectedTaintedVariables.isEmpty())
+      return;
+    for (final ReturnClause.ReturnItem item : withClause.getItems())
+      if (!item.isStar() && item.getAlias() != null
+          && item.getExpression() instanceof VariableExpression variableExpression
+          && disconnectedTaintedVariables.contains(variableExpression.getVariableName()))
+        disconnectedTaintedVariables.add(item.getAlias());
+  }
+
+  /**
+   * True when at least one of the given DELETE targets might read a variable in {@code
+   * disconnectedTaintedVariables} - see {@link #closeMatchSegment}.
+   * <p>
+   * A target that is a bare variable name is checked directly. A target that is a chained-access or
+   * function-call expression (e.g. {@code endNode(r)}, {@code p.node.id}) is not parsed here - it is
+   * conservatively treated as a possible reference to any tainted variable, mirroring how {@code
+   * DeleteStep} itself only special-cases the plain-variable form and falls back to full expression
+   * evaluation otherwise.
+   */
+  private static boolean deleteMayTargetTaintedVariable(final List<String> deleteTargets,
+      final Set<String> disconnectedTaintedVariables) {
+    if (disconnectedTaintedVariables.isEmpty() || deleteTargets == null)
+      return false;
+    for (final String target : deleteTargets) {
+      if (target.indexOf('.') < 0 && target.indexOf('[') < 0 && target.indexOf('(') < 0) {
+        if (disconnectedTaintedVariables.contains(target))
+          return true;
+      } else
+        return true; // non-trivial expression: cannot rule out a reference to a tainted variable
+    }
+    return false;
+  }
+
+  /**
+   * Collects the DELETE target variables of every DELETE clause in a FOREACH body, including nested
+   * FOREACH bodies - the same traversal as {@link ForeachClause#containsDelete()}, but gathering the
+   * targets instead of just checking for their presence.
+   */
+  private static List<String> collectForeachDeleteTargetVariables(final ForeachClause foreachClause) {
+    final List<String> targets = new ArrayList<>();
+    collectForeachDeleteTargetVariables(foreachClause, targets);
+    return targets;
+  }
+
+  private static void collectForeachDeleteTargetVariables(final ForeachClause foreachClause, final List<String> targets) {
+    for (final ClauseEntry entry : foreachClause.getInnerClauses()) {
+      if (entry.getType() == ClauseEntry.ClauseType.DELETE) {
+        final DeleteClause deleteClause = entry.getTypedClause();
+        if (deleteClause.getVariables() != null)
+          targets.addAll(deleteClause.getVariables());
+      } else if (entry.getType() == ClauseEntry.ClauseType.FOREACH) {
+        collectForeachDeleteTargetVariables((ForeachClause) entry.getTypedClause(), targets);
+      }
+    }
   }
 
   /**
@@ -3007,6 +3143,13 @@ public class CypherExecutionPlan {
     }
 
     // Step 6: DELETE clause - delete vertices/edges
+    // Unscoped (statement.getMatchClauses()) is fine here, unlike the other two DeleteStep construction
+    // sites (issue #6631): this method only runs when statement.getClausesInOrder() is null/empty, which
+    // for a real parsed statement only happens when it has no tracked clauses of any kind - a
+    // WITH-containing, multi-segment statement always populates clausesInOrder. This method is also
+    // single-segment by construction regardless (it reads statement.getDeleteClause() and
+    // statement.getMatchClauses() - one flat list each, not one per WITH-delimited segment), so it never
+    // sees the multi-segment shape #6631 is about.
     if (statement.getDeleteClause() != null && !statement.getDeleteClause().isEmpty() && currentStep != null) {
       final DeleteStep deleteStep = new DeleteStep(
           statement.getDeleteClause(), context, matchClausesHaveDisconnectedPatterns(statement.getMatchClauses()));
