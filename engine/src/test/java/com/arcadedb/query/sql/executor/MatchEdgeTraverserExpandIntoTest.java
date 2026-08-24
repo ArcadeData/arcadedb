@@ -245,6 +245,57 @@ class MatchEdgeTraverserExpandIntoTest extends TestHelper {
   }
 
   @Test
+  void expandIntoReverseInDirectionMapsToOut() {
+    // Same flip as expandIntoReverseTraverserFlipsDirection(), but for the "in" method: a.in('KNOWS') scheduled
+    // backward (starting at b, the method's actual out-side) must ask the provider for OUT from b's perspective.
+    database.getSchema().createVertexType("Person");
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").save();
+    final MutableVertex b = database.newVertex("Person").save();
+    database.commit();
+
+    provider = new RecordingProvider();
+    provider.connected = true;
+    GraphTraversalProviderRegistry.register(database, provider);
+
+    final MatchPathItem item = parsePathItem("{as:a}.in('KNOWS'){as:b}");
+    final MatchEdgeTraverser traverser = new MatchReverseEdgeTraverser(boundSourceRecord(a, b), edgeTraversal(item, false));
+
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+
+    assertThat(traverser.hasNext(context)).isTrue();
+    assertThat(provider.lastDirection).isEqualTo(Vertex.DIRECTION.OUT);
+  }
+
+  @Test
+  void expandIntoSkipsUnrecognizedMethod() {
+    // outE()/inE()/bothE()/outV()/inV() return an edge/vertex object the fast path doesn't produce, so
+    // getExpandIntoDirection() must fall through to null (its default case) for any method other than
+    // out/in/both, leaving the provider untouched even though both endpoints are bound.
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").save();
+    final MutableVertex b = database.newVertex("Person").save();
+    a.newEdge("KNOWS", b);
+    database.commit();
+
+    provider = new RecordingProvider();
+    provider.connected = true;
+    GraphTraversalProviderRegistry.register(database, provider);
+
+    final MatchPathItem item = parsePathItem("{as:a}.outE('KNOWS'){as:b}");
+    final MatchEdgeTraverser traverser = new MatchEdgeTraverser(boundSourceRecord(a, b), edgeTraversal(item, true));
+
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+
+    traverser.hasNext(context);
+    assertThat(provider.isConnectedToCalls).isZero();
+  }
+
+  @Test
   void expandIntoBothDirectionStaysBoth() {
     database.getSchema().createVertexType("Person");
     database.begin();
