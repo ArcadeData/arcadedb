@@ -825,6 +825,22 @@ class CypherBuiltInFunctionsTest extends TestHelper {
   }
 
   @Test
+  void aggSliceDefaultsFromToZeroWhenNull() {
+    final StatelessFunction fn = CypherFunctionRegistry.get("agg.slice");
+    @SuppressWarnings("unchecked")
+    final List<Object> result = (List<Object>) fn.execute(new Object[] { List.of(1, 2, 3, 4, 5), null, 3 }, null);
+    assertThat(result).isEqualTo(List.of(1, 2, 3));
+  }
+
+  @Test
+  void aggSliceDefaultsToToListSizeWhenOmitted() {
+    final StatelessFunction fn = CypherFunctionRegistry.get("agg.slice");
+    @SuppressWarnings("unchecked")
+    final List<Object> result = (List<Object>) fn.execute(new Object[] { List.of(1, 2, 3, 4, 5), 2 }, null);
+    assertThat(result).isEqualTo(List.of(3, 4, 5));
+  }
+
+  @Test
   void aggMedian() {
     final StatelessFunction fn = CypherFunctionRegistry.get("agg.median");
     // Odd number of elements
