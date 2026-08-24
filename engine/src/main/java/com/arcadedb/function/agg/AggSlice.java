@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.agg;
 
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.Collections;
@@ -55,8 +56,9 @@ public class AggSlice extends AbstractAggFunction {
       return null;
 
     final List<Object> list = toObjectList(args[0]);
-    final int from = args[1] != null ? ((Number) args[1]).intValue() : 0;
-    final int to = args.length > 2 && args[2] != null ? ((Number) args[2]).intValue() : list.size();
+    final int from = args[1] != null ? CypherFunctionHelper.requireNumberArgument(args[1], getName()).intValue() : 0;
+    final int to = args.length > 2 && args[2] != null ?
+        CypherFunctionHelper.requireNumberArgument(args[2], getName()).intValue() : list.size();
 
     if (from >= list.size() || from >= to)
       return Collections.emptyList();
