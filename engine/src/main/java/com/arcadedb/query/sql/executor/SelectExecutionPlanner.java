@@ -137,11 +137,12 @@ public class SelectExecutionPlanner {
       info.projection.setDistinct(false);
     }
 
-    // Copied like every other clause below: optimizeQuery()/rewriteIndexChainsAsSubqueries() can rewrite a $var
-    // target's identifier into the resolved type name in place (#6669). Without the copy that write lands on the
-    // shared FromClause node StatementCache hands back for every execution of this SQL text, permanently pinning
-    // the cached Statement to whichever type the first execution resolved $var to - and racing any concurrent
-    // first execution on the same node.
+    // Copied like every other clause below: calculateTargetBuckets() (unconditional) and
+    // rewriteIndexChainsAsSubqueries() (only when a WHERE clause is present) can each rewrite a $var target's
+    // identifier into the resolved type name in place (#6669). Without the copy that write lands on the shared
+    // FromClause node StatementCache hands back for every execution of this SQL text, permanently pinning the
+    // cached Statement to whichever type the first execution resolved $var to - and racing any concurrent first
+    // execution on the same node.
     info.target = this.statement.getTarget() == null ? null : this.statement.getTarget().copy();
     info.whereClause = this.statement.getWhereClause() == null ? null : this.statement.getWhereClause().copy();
     info.perRecordLetClause = this.statement.getLetClause() == null ? null : this.statement.getLetClause().copy();
