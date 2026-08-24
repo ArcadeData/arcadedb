@@ -399,9 +399,11 @@ public class MatchExecutionPlanner {
   }
 
   /**
-   * Extracts edge type labels from a MATCH edge traversal's method parameters.
+   * Extracts edge type labels from a MATCH edge traversal's method parameters. Package-visible: also reused by
+   * {@link MatchEdgeTraverser}'s GAV expand-into fast path to pass the pattern's edge type(s) through to the
+   * provider instead of matching on any edge type (#6670).
    */
-  private static String[] extractEdgeLabels(final EdgeTraversal et) {
+  static String[] extractEdgeLabels(final EdgeTraversal et) {
     final var params = et.edge.item.getMethod().params;
     if (params == null || params.isEmpty())
       return new String[0];
