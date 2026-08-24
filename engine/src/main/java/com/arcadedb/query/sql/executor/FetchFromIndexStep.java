@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
@@ -44,6 +45,8 @@ import com.arcadedb.query.sql.parser.PCollection;
 import com.arcadedb.query.sql.parser.ValueExpression;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
@@ -264,6 +267,9 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     if (index == null) {
       index = (RangeIndex) db.getSchema().getIndexByName(indexName);
     }
+    // This cursor answers straight from the index, without loading each record through its bucket, so apply the
+    // same per-type read check a normal record load would go through.
+    SecurityHelper.checkAccessOnIndex((DatabaseInternal) db, index, SecurityDatabaseUser.ACCESS.READ_RECORD);
     try {
       if (condition == null) {
         processFlatIteration();

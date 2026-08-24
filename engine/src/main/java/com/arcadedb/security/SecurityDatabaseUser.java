@@ -67,6 +67,18 @@ public interface SecurityDatabaseUser {
 
   boolean requestAccessOnFile(int fileId, ACCESS access);
 
+  /**
+   * Per-type access check keyed on the type name rather than a bucket file id. Only path available to gate a type
+   * that owns no bucket of its own - a TimeSeries type stores its data in its own engine, not in a
+   * {@code LocalBucket}, so it has no file id {@link #requestAccessOnFile} could check against.
+   * <p>
+   * Defaults to {@code true} (unrestricted) so an implementation that has no notion of type-name-keyed permissions
+   * behaves exactly as it did before this method existed.
+   */
+  default boolean requestAccessOnType(String typeName, ACCESS access) {
+    return true;
+  }
+
   String getName();
 
   long getResultSetLimit();

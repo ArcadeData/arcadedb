@@ -18,12 +18,15 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.TagFilter;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.LocalTimeSeriesType;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.utility.DateUtils;
 
 import java.io.IOException;
@@ -86,6 +89,10 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
     try {
       if (!fetched) {
         try {
+          // A TimeSeries type stores its rows in its own engine, not in a bucket LocalBucket's read check could
+          // gate, so apply the equivalent per-type read check here.
+          SecurityHelper.checkAccessOnType((DatabaseInternal) context.getDatabase(), tsType, SecurityDatabaseUser.ACCESS.READ_RECORD);
+
           final TimeSeriesEngine engine = tsType.getEngine();
           if (engine == null)
             throw new CommandExecutionException(

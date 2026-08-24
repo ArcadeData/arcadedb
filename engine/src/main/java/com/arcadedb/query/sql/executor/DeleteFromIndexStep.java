@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
@@ -25,6 +26,8 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.*;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.utility.Pair;
 
 import java.io.IOException;
@@ -118,6 +121,8 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
     initialized = true;
     final long begin = context.isProfiling() ? System.nanoTime() : 0;
     try {
+      // Removing an index entry directly never goes through the bucket's own DELETE_RECORD check, so apply it here.
+      SecurityHelper.checkAccessOnIndex((DatabaseInternal) context.getDatabase(), index, SecurityDatabaseUser.ACCESS.DELETE_RECORD);
       init(condition);
       nextEntry = loadNextEntry(context);
     } catch (final IOException e) {

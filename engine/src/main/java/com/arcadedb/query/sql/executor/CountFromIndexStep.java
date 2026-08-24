@@ -18,9 +18,12 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.Index;
 import com.arcadedb.query.sql.parser.IndexIdentifier;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 
 import java.util.NoSuchElementException;
 
@@ -66,6 +69,9 @@ public class CountFromIndexStep extends AbstractExecutionStep {
         final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
           final Index idx = context.getDatabase().getSchema().getIndexByName(target.getIndexName());
+          // The index's own entry count never loads a record through its bucket, so apply the same per-type read
+          // check a normal record load would go through.
+          SecurityHelper.checkAccessOnIndex((DatabaseInternal) context.getDatabase(), idx, SecurityDatabaseUser.ACCESS.READ_RECORD);
           final long size = idx.countEntries();
           executed = true;
           final ResultInternal result = new ResultInternal(context.getDatabase());

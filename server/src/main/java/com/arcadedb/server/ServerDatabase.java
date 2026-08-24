@@ -237,6 +237,11 @@ public class ServerDatabase implements DatabaseInternal {
     wrapped.checkPermissionsOnFile(fileId, access);
   }
 
+  @Override
+  public void checkPermissionsOnType(final String typeName, final SecurityDatabaseUser.ACCESS access) {
+    wrapped.checkPermissionsOnType(typeName, access);
+  }
+
   public long getResultSetLimit() {
     return wrapped.getResultSetLimit();
   }

@@ -36,6 +36,7 @@ import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -75,7 +76,7 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
           // RemoteSchema.reload() lists every type on its first command and aborted the whole
           // listing the first time it hit a restricted type, locking the remote driver out
           // even from types the user was allowed to read.
-          if (!canReadAnyBucket(currentUser, type))
+          if (!SecurityHelper.canAccessType(currentUser, type, SecurityDatabaseUser.ACCESS.READ_RECORD))
             continue;
 
           final ResultInternal r = new ResultInternal(context.getDatabase());
@@ -235,24 +236,6 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
     final DatabaseInternal database = (DatabaseInternal) context.getDatabase();
     final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
     return dbContext != null ? dbContext.getCurrentUser() : null;
-  }
-
-  /**
-   * Returns true when the type is visible to the current user (issue #4238). With no security
-   * context (embedded usage or root) every type is visible. Otherwise, the type is visible when
-   * the user has READ_RECORD on at least one of its buckets - matching the principle that a user
-   * with partial access should still see the resource in catalog listings.
-   */
-  private static boolean canReadAnyBucket(final SecurityDatabaseUser user, final DocumentType type) {
-    if (user == null)
-      return true;
-    final List<Bucket> buckets = type.getBuckets(false);
-    if (buckets.isEmpty())
-      return true;
-    for (final Bucket b : buckets)
-      if (user.requestAccessOnFile(b.getFileId(), SecurityDatabaseUser.ACCESS.READ_RECORD))
-        return true;
-    return false;
   }
 
   /**

@@ -27,8 +27,10 @@ import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
@@ -40,6 +42,9 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
   private final        String      userName;
   private              String[]    groups;
   private volatile     boolean[][] fileAccessMap     = null;
+  // Companion to fileAccessMap, keyed by type name instead of bucket file id: the only way to gate a type that
+  // owns no bucket (a TimeSeries type). See updateFileAccess().
+  private volatile     Map<String, boolean[]> typeAccessMap = null;
   // Written under the updateDatabaseConfiguration() monitor but read by unsynchronized getters on the query
   // path, so they are volatile: without it a reader has no visibility guarantee and a 64-bit read is not
   // required to be atomic, which would let a query observe a torn limit.
@@ -130,6 +135,20 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
       return permissions[index];
     }
     return true;
+  }
+
+  @Override
+  public boolean requestAccessOnType(final String typeName, final ACCESS access) {
+    if (denyAll)
+      return false;
+
+    final Map<String, boolean[]> currentMap = typeAccessMap;
+    if (currentMap == null)
+      return true;
+
+    final boolean[] permissions = currentMap.get(typeName);
+    // Not (yet) in the map: same default-allow policy as requestAccessOnFile() for an unregistered file id.
+    return permissions == null || permissions[access.ordinal()];
   }
 
   public synchronized void updateDatabaseConfiguration(final JSONObject configuredGroups) {
@@ -223,50 +242,7 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
       if (type == null)
         continue;
 
-      final String typeName = type.getName();
-
-      for (final String groupName : groups) {
-        if (!configuredGroups.has(groupName))
-          // GROUP NOT DEFINED
-          continue;
-
-        final JSONObject group = configuredGroups.getJSONObject(groupName);
-
-        if (!group.has("types"))
-          continue;
-
-        final JSONObject types = group.getJSONObject("types");
-
-        JSONObject groupType = types.has(typeName) ? types.getJSONObject(typeName) : null;
-        if (groupType == null)
-          // GET DEFAULT TYPE FOR THE GROUP IF ANY
-          groupType = types.has(SecurityManager.ANY) ? types.getJSONObject(SecurityManager.ANY) : null;
-
-        if (groupType == null)
-          continue;
-
-        if (newFileAccessMap[i] == null)
-          // FIRST DEFINITION ENCOUNTERED: START FROM ALL REVOKED
-          newFileAccessMap[i] = new boolean[] { false, false, false, false };
-
-        // APPLY THE FOUND TYPE FROM THE FOUND GROUP
-        updateAccessArray(newFileAccessMap[i], groupType.getJSONArray("access"));
-      }
-
-      if (newFileAccessMap[i] == null) {
-        // NO GROUP+TYPE FOUND, APPLY SETTINGS FROM DEFAULT GROUP/TYPE
-        newFileAccessMap[i] = new boolean[] { false, false, false, false };
-
-        final JSONObject t;
-        if (defaultGroupTypes.has(typeName)) {
-          // APPLY THE FOUND TYPE FROM DEFAULT GROUP
-          t = defaultGroupTypes.getJSONObject(typeName);
-        } else
-          // APPLY DEFAULT TYPE FROM DEFAULT GROUP
-          t = defaultType;
-
-        updateAccessArray(newFileAccessMap[i], t.getJSONArray("access"));
-      }
+      newFileAccessMap[i] = resolveTypeAccess(type.getName(), configuredGroups, defaultGroupTypes, defaultType);
     }
 
     // SWAP WITH THE NEW MAP (VOLATILE PROPERTY)
@@ -275,6 +251,70 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
     // #5269: the refreshed map may now cover files previously reported as missing; reset the throttle so a genuinely
     // new file created later can still be reported once.
     warnedNotRegisteredFiles.clear();
+
+    // A TimeSeries type owns no bucket (its data lives in its own engine, not a LocalBucket), so it never gets an
+    // entry in newFileAccessMap above - requestAccessOnType() is the only way to gate it. Covers every type, not
+    // just bucket-less ones, so requestAccessOnType() stays consistent with requestAccessOnFile() for a type that
+    // does have buckets too.
+    final Map<String, boolean[]> newTypeAccessMap = new HashMap<>();
+    for (final DocumentType type : database.getSchema().getTypes())
+      newTypeAccessMap.put(type.getName(), resolveTypeAccess(type.getName(), configuredGroups, defaultGroupTypes, defaultType));
+    typeAccessMap = newTypeAccessMap;
+  }
+
+  /**
+   * Resolves the {@code [createRecord, readRecord, updateRecord, deleteRecord]} access array a type is entitled to
+   * under {@code configuredGroups}: the first group (in {@link #groups} order) that names the type, or failing
+   * that the group's {@code "*"} default type, or failing that the configuration's default group/type.
+   */
+  private boolean[] resolveTypeAccess(final String typeName, final JSONObject configuredGroups,
+      final JSONObject defaultGroupTypes, final JSONObject defaultType) {
+    boolean[] access = null;
+
+    for (final String groupName : groups) {
+      if (!configuredGroups.has(groupName))
+        // GROUP NOT DEFINED
+        continue;
+
+      final JSONObject group = configuredGroups.getJSONObject(groupName);
+
+      if (!group.has("types"))
+        continue;
+
+      final JSONObject types = group.getJSONObject("types");
+
+      JSONObject groupType = types.has(typeName) ? types.getJSONObject(typeName) : null;
+      if (groupType == null)
+        // GET DEFAULT TYPE FOR THE GROUP IF ANY
+        groupType = types.has(SecurityManager.ANY) ? types.getJSONObject(SecurityManager.ANY) : null;
+
+      if (groupType == null)
+        continue;
+
+      if (access == null)
+        // FIRST DEFINITION ENCOUNTERED: START FROM ALL REVOKED
+        access = new boolean[] { false, false, false, false };
+
+      // APPLY THE FOUND TYPE FROM THE FOUND GROUP
+      updateAccessArray(access, groupType.getJSONArray("access"));
+    }
+
+    if (access == null) {
+      // NO GROUP+TYPE FOUND, APPLY SETTINGS FROM DEFAULT GROUP/TYPE
+      access = new boolean[] { false, false, false, false };
+
+      final JSONObject t;
+      if (defaultGroupTypes.has(typeName)) {
+        // APPLY THE FOUND TYPE FROM DEFAULT GROUP
+        t = defaultGroupTypes.getJSONObject(typeName);
+      } else
+        // APPLY DEFAULT TYPE FROM DEFAULT GROUP
+        t = defaultType;
+
+      updateAccessArray(access, t.getJSONArray("access"));
+    }
+
+    return access;
   }
 
   private static boolean[] updateAccessArray(final boolean[] array, final JSONArray access) {

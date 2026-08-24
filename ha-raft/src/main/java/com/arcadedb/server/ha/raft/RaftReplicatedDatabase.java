@@ -1012,6 +1012,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   @Override
+  public void checkPermissionsOnType(final String typeName, final SecurityDatabaseUser.ACCESS access) {
+    proxied.checkPermissionsOnType(typeName, access);
+  }
+
+  @Override
   public long getResultSetLimit() {
     return proxied.getResultSetLimit();
   }
