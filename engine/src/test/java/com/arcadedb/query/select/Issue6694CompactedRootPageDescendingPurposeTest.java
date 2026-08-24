@@ -68,9 +68,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Tag("slow")
 class Issue6694CompactedRootPageDescendingPurposeTest extends TestHelper {
 
-  private static final int GROUP_SIZE = 4_000;
-  private static final int LOWER_GROUP_SIZE = 4_000;
-  private static final int PAGE_SIZE  = 8 * 1024;
+  private static final int GROUP_SIZE       = 4_000; // target ("a"/"b") group size
+  private static final int LOWER_GROUP_SIZE = 4_000; // independent: the noise ("0"/"x") group below it, sized separately
+  private static final int PAGE_SIZE        = 8 * 1024;
 
   @Override
   protected void beginTest() {
