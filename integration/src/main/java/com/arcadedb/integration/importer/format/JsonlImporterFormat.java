@@ -20,8 +20,10 @@ package com.arcadedb.integration.importer.format;
 
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.MutableEmbeddedDocument;
+import com.arcadedb.database.Record;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.LightEdge;
 import com.arcadedb.graph.MutableEdge;
@@ -41,7 +43,9 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.schema.LocalVertexType;
+import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
 import com.arcadedb.schema.TypeFullTextIndexBuilder;
 import com.arcadedb.schema.TypeLSMSparseVectorIndexBuilder;
 import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
@@ -54,14 +58,24 @@ import java.io.InputStreamReader;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.logging.Level;
 
 public class JsonlImporterFormat extends AbstractImporterFormat {
 
   private ConsoleLogger          logger;
   private CompressedRID2RIDIndex ridIndex;
+
+  // Issue #6460: LINK / LIST-of-LINK / MAP-of-LINK property values are remapped through ridIndex as soon as they are
+  // loaded (loadProperties() below). A value that cannot be resolved yet - it references a record appearing LATER in
+  // the source stream - is a forward reference: the referenced record's old-to-new RID mapping does not exist yet.
+  // Rather than leaving it silently wrong (the original bug) or failing the whole record, the record's own new RID
+  // and the names of its still-unresolved properties are remembered here and revisited in a reconciliation pass once
+  // the entire file has been read and every RID mapping is known (see reconcileUnresolvedLinks()).
+  private final Map<RID, Set<String>> pendingLinkReconciliation = new HashMap<>();
 
   @Override
   public void load(SourceSchema sourceSchema,
@@ -85,6 +99,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       final BufferedReader reader = new BufferedReader(inputFileReader);
 
       ridIndex = new CompressedRID2RIDIndex(database, 1000, 1000);
+      pendingLinkReconciliation.clear();
 
       if (!database.isTransactionActive())
         database.begin();
@@ -132,6 +147,11 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
           database.begin();
         }
       }
+
+      // Issue #6460: resolve any LINK / LIST-of-LINK / MAP-of-LINK property values that were still forward
+      // references when their owning record was loaded (see the field comment on pendingLinkReconciliation).
+      // Every RID mapping is known by now, so this is the only point where they can be reliably fixed up.
+      reconcileUnresolvedLinks(database, context, skipOnRowError);
     } catch (ImportException e) {
       // A per-record failure in default "abort" mode must fail the whole import loudly (issue #6468): rolling
       // back the in-flight batch here - instead of committing it below - is what keeps a partial import from
@@ -345,9 +365,11 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     var properties = document.getJSONObject("p");
     var oldRid = new RID(document.getString("r"));
     var imported = database.newDocument(document.getString("t"));
-    loadProperties(database, imported, properties);
+    var unresolvedLinks = loadProperties(database, imported, properties);
     imported.save();
     ridIndex.put(oldRid, imported.getIdentity());
+    if (!unresolvedLinks.isEmpty())
+      pendingLinkReconciliation.put(imported.getIdentity(), unresolvedLinks);
     context.createdDocuments.incrementAndGet();
   }
 
@@ -360,9 +382,11 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     var properties = vertex.getJSONObject("p");
     var oldRid = new RID(vertex.getString("r"));
     var imported = database.newVertex(vertex.getString("t"));
-    loadProperties(database, imported, properties);
+    var unresolvedLinks = loadProperties(database, imported, properties);
     imported.save();
     ridIndex.put(oldRid, imported.getIdentity());
+    if (!unresolvedLinks.isEmpty())
+      pendingLinkReconciliation.put(imported.getIdentity(), unresolvedLinks);
     context.createdVertices.incrementAndGet();
   }
 
@@ -390,8 +414,10 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     if (!(imported instanceof LightEdge)) {
       // A lightweight edge has no record: it is already connected by newEdge, carries no properties, and
       // rejects fromMap()/save() by design.
-      loadProperties(database, imported, properties);
+      var unresolvedLinks = loadProperties(database, imported, properties);
       imported.save();
+      if (!unresolvedLinks.isEmpty())
+        pendingLinkReconciliation.put(imported.getIdentity(), unresolvedLinks);
     }
 
     context.createdEdges.incrementAndGet();
@@ -413,9 +439,221 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
   }
 
   // utility methods from JsonSerializer
-  private void loadProperties(DatabaseInternal database, MutableDocument imported, JSONObject properties) {
+
+  /**
+   * Loads a record's properties and, before they are written, remaps any LINK / LIST-of-LINK / MAP-of-LINK value
+   * from the source RID the exporter emitted to the RID the referenced record was actually recreated at (issue
+   * #6460). Without this, edges are healed through {@code ridIndex} on the endpoint paths ({@link #loadEdge}) but a
+   * regular LINK-typed property was passed through untouched, so after import it silently pointed at the source
+   * database's RID - now a different, unrelated record, or none.
+   *
+   * @return the names of properties whose LINK value(s) could not be resolved yet because they reference a record
+   * that has not been imported so far (a forward reference); empty when every LINK value resolved immediately. The
+   * caller is expected to remember these against the record's own (new) identity so {@link #reconcileUnresolvedLinks}
+   * can revisit them once every RID mapping is known.
+   */
+  private Set<String> loadProperties(DatabaseInternal database, MutableDocument imported, JSONObject properties) {
     Map<String, Object> json2map = json2map(database, properties);
+    final Set<String> unresolved = remapLinkProperties(imported.getType(), json2map);
     imported.fromMap(json2map);
+    return unresolved;
+  }
+
+  /**
+   * Remaps every LINK-typed value in {@code properties} in place, consulting {@code ridIndex} for the schema-declared
+   * LINK properties of {@code type} (scalar LINK, and LIST/MAP declared {@code OF LINK}). A value that {@code
+   * ridIndex} does not (yet) know about is left untouched and its property name is added to the returned set.
+   * <p>
+   * Only schema-declared properties are inspected: without a declared type there is no reliable way to tell a LINK
+   * string ("#12:34") apart from an ordinary string that merely looks like one.
+   */
+  private Set<String> remapLinkProperties(final DocumentType type, final Map<String, Object> properties) {
+    if (type == null || properties.isEmpty())
+      return Set.of();
+
+    Set<String> unresolved = null;
+
+    for (final Map.Entry<String, Object> entry : properties.entrySet()) {
+      final Object value = entry.getValue();
+      if (value == null)
+        continue;
+
+      final Property property = type.getPolymorphicPropertyIfExists(entry.getKey());
+      if (property == null)
+        continue;
+
+      final Type propertyType = property.getType();
+
+      if (propertyType == Type.LINK) {
+        if (unresolved == null)
+          unresolved = new HashSet<>();
+        entry.setValue(remapLinkValue(value, unresolved, entry.getKey()));
+      } else if (propertyType == Type.LIST && "LINK".equalsIgnoreCase(property.getOfType()) && value instanceof List<?> list) {
+        if (unresolved == null)
+          unresolved = new HashSet<>();
+        final List<Object> remapped = new ArrayList<>(list.size());
+        for (final Object item : list)
+          remapped.add(remapLinkValue(item, unresolved, entry.getKey()));
+        entry.setValue(remapped);
+      } else if (propertyType == Type.MAP && "LINK".equalsIgnoreCase(property.getOfType()) && value instanceof Map<?, ?> valueMap) {
+        if (unresolved == null)
+          unresolved = new HashSet<>();
+        final Map<Object, Object> remapped = new HashMap<>();
+        for (final Map.Entry<?, ?> mapEntry : valueMap.entrySet())
+          remapped.put(mapEntry.getKey(), remapLinkValue(mapEntry.getValue(), unresolved, entry.getKey()));
+        entry.setValue(remapped);
+      }
+    }
+
+    return unresolved == null ? Set.of() : unresolved;
+  }
+
+  /**
+   * Resolves a single LINK value (the exported source RID, as a String) to the RID the referenced record was
+   * actually recreated at. If {@code ridIndex} has no mapping yet for it - the referenced record has not been
+   * imported so far - {@code propertyName} is recorded into {@code unresolved} and the original value is returned
+   * unchanged, to be revisited by {@link #reconcileUnresolvedLinks}.
+   */
+  private Object remapLinkValue(final Object value, final Set<String> unresolved, final String propertyName) {
+    if (!(value instanceof String string))
+      return value;
+
+    final RID oldRid;
+    try {
+      oldRid = new RID(string);
+    } catch (final Exception e) {
+      // Not a RID-shaped string. Schema says this is a LINK, but the data disagrees - leave it for the normal
+      // property conversion/validation path to deal with rather than silently swallowing it here.
+      return value;
+    }
+
+    final RID newRid = ridIndex.get(oldRid);
+    if (newRid != null)
+      return newRid.toString();
+
+    unresolved.add(propertyName);
+    return value;
+  }
+
+  /**
+   * Revisits every record that {@link #loadProperties} could not fully resolve LINK values for on first pass (a
+   * forward reference to a record imported later in the source stream), now that the whole file has been read and
+   * every old-to-new RID mapping is known. A property still unresolved after this (the referenced record was never
+   * imported at all - excluded from the export, or a genuinely dangling link in the source database) is left as-is,
+   * matching the pre-fix behavior for that case, and is not treated as an import error.
+   * <p>
+   * <b>Known limitation:</b> until this method runs, an unresolved forward-reference LINK value sits in the record
+   * as the raw <i>source</i>-database RID (see {@link #remapLinkValue}) rather than a null or otherwise-neutral
+   * placeholder. If that property backs a UNIQUE index, this transient value can coincidentally collide with
+   * another record's already-resolved value in the <i>target</i> database, raising a {@code DuplicateKeyException}
+   * for data that would otherwise import cleanly. Accepted as a known limitation for now rather than fixed, since
+   * closing it properly (a null placeholder, a pre-scan of forward references, or documenting it permanently) is a
+   * design choice, not a mechanical patch - see PR #6654's "Review follow-ups" for the options considered.
+   * <p>
+   * A failure reconciling one record (including the {@code DuplicateKeyException} above) is handled exactly like a
+   * per-record failure in the main import loop (issue #6468, {@link #load}): logged, counted into
+   * {@code context.errors}, and either aborted via {@link ImportException} or skipped per {@code skipOnRowError},
+   * rather than propagating raw and uncounted past this method.
+   */
+  private void reconcileUnresolvedLinks(final DatabaseInternal database, final ImporterContext context, final boolean skipOnRowError) {
+    if (pendingLinkReconciliation.isEmpty())
+      return;
+
+    int reconciled = 0;
+    for (final Map.Entry<RID, Set<String>> entry : pendingLinkReconciliation.entrySet()) {
+      try {
+        final Record record = database.lookupByRID(entry.getKey(), true);
+        if (!(record instanceof Document document))
+          continue;
+
+        final DocumentType type = document.getType();
+        final MutableDocument mutable = document.modify();
+        boolean changed = false;
+
+        for (final String propertyName : entry.getValue()) {
+          final Property property = type.getPolymorphicPropertyIfExists(propertyName);
+          if (property == null)
+            continue;
+
+          final Object currentValue = mutable.get(propertyName);
+          if (currentValue == null)
+            continue;
+
+          if (property.getType() == Type.LINK && currentValue instanceof RID currentRid) {
+            final RID newRid = ridIndex.get(currentRid);
+            if (newRid != null) {
+              mutable.set(propertyName, newRid);
+              changed = true;
+            }
+          } else if (currentValue instanceof List<?> list) {
+            final List<Object> updated = new ArrayList<>(list.size());
+            boolean listChanged = false;
+            for (final Object item : list) {
+              if (item instanceof RID itemRid) {
+                final RID newRid = ridIndex.get(itemRid);
+                if (newRid != null) {
+                  updated.add(newRid);
+                  listChanged = true;
+                  continue;
+                }
+              }
+              updated.add(item);
+            }
+            if (listChanged) {
+              mutable.set(propertyName, updated);
+              changed = true;
+            }
+          } else if (currentValue instanceof Map<?, ?> valueMap) {
+            final Map<Object, Object> updated = new HashMap<>();
+            boolean mapChanged = false;
+            for (final Map.Entry<?, ?> mapEntry : valueMap.entrySet()) {
+              Object mapValue = mapEntry.getValue();
+              if (mapValue instanceof RID itemRid) {
+                final RID newRid = ridIndex.get(itemRid);
+                if (newRid != null) {
+                  mapValue = newRid;
+                  mapChanged = true;
+                }
+              }
+              updated.put(mapEntry.getKey(), mapValue);
+            }
+            if (mapChanged) {
+              mutable.set(propertyName, updated);
+              changed = true;
+            }
+          }
+        }
+
+        if (changed)
+          mutable.save();
+      } catch (final Exception e) {
+        // Same per-record failure handling as the main import loop (JsonlImporterFormat.java:113-138, issue
+        // #6468): logged, counted, and either aborts the whole import or is skipped per -onRowError, exactly like
+        // any other record failure, instead of propagating raw and uncounted.
+        LogManager.instance().log(this, Level.SEVERE, "Error on reconciling forward-referenced LINK propert(y/ies) for record '%s'", e, entry.getKey());
+        context.errors.incrementAndGet();
+        if (!skipOnRowError)
+          throw new ImportException("Error on reconciling forward-referenced LINK properties for record " + entry.getKey(), e);
+
+        if (database.isTransactionActive())
+          database.rollback();
+        database.begin();
+        continue;
+      }
+
+      // Mirrors the periodic commit granularity of the main import loop (see load()): without this, every record
+      // touched here rides in the single transaction still open when the main loop finished, on top of the batches
+      // already committed for the initial load, producing one very large WAL transaction for a restore with many
+      // forward-referencing LINK properties. Skip mode commits every record individually, same reasoning as the
+      // main loop: a failed record's rollback must never discard an earlier, already-reconciled one riding in the
+      // same batch.
+      if (skipOnRowError || ++reconciled % 1000 == 0) {
+        database.commit();
+        database.begin();
+      }
+    }
+
+    pendingLinkReconciliation.clear();
   }
 
   private Map<String, Object> json2map(DatabaseInternal database, final JSONObject json) {
