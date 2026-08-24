@@ -81,3 +81,14 @@ https://github.com/ArcadeData/arcadedb/pull/6683
   `okCountWithLimitStopsEarlyDespiteReorder()` (also suggested by the review) to pin `evaluatedRecords` for
   a `WHERE` with exactly one match followed by 500 non-matching records - proved it fails against the
   single-check version before restoring the fix. No deferred items.
+- **Cycle 3** - head `4bf062d2382389b447e92a52c76ae6f4277be852`. `claude` review: clean approval. Manually
+  re-traced the pre/post-increment control flow for `limit == 0`, `limit > 0`, and `skip` interaction and
+  confirmed all three are correct; called out `okCountWithLimitStopsEarlyDespiteReorder` as "the right way
+  to catch a 'correct count, wrong complexity' regression that a value-only assertion would miss". One
+  non-blocking style nit (the new inline comment is long/all-caps, though consistent with the file's
+  existing `#6565`/`#5662` comment convention) - no action needed. No correctness, performance, or
+  security issues found; working tree stays clean. **Final state: clean-approval.**
+
+## Deferred items
+
+None.
