@@ -51,11 +51,8 @@ public class ExecutionPlanCache {
     };
   }
 
-  public long getLastInvalidation() {
-    final ExecutionPlanCache resource = db.getExecutionPlanCache();
-    synchronized (resource) {
-      return resource.lastInvalidation;
-    }
+  public synchronized long getLastInvalidation() {
+    return lastInvalidation;
   }
 
   /**
@@ -63,10 +60,8 @@ public class ExecutionPlanCache {
    *
    * @return true if the corresponding executor is present in the cache
    */
-  public boolean contains(final String statement) {
-    synchronized (map) {
-      return map.containsKey(statement);
-    }
+  public synchronized boolean contains(final String statement) {
+    return map.containsKey(statement);
   }
 
   /**
@@ -77,35 +72,44 @@ public class ExecutionPlanCache {
    *
    * @return a statement executor from the cache
    */
-  public ExecutionPlan get(final String statement, final CommandContext context) {
-    InternalExecutionPlan result;
-    synchronized (map) {
-      //LRU
-      result = map.remove(statement);
-      if (result != null) {
-        map.put(statement, result);
-        result = result.copy(context);
-      }
+  public synchronized ExecutionPlan get(final String statement, final CommandContext context) {
+    //LRU
+    InternalExecutionPlan result = map.remove(statement);
+    if (result != null) {
+      map.put(statement, result);
+      result = result.copy(context);
     }
 
     return result;
   }
 
-  public void put(final String statement, final ExecutionPlan plan) {
-    synchronized (map) {
-      InternalExecutionPlan internal = (InternalExecutionPlan) plan;
-      internal = internal.copy(null);
-      map.put(statement, internal);
-    }
+  /**
+   * Stores {@code plan} in the cache, unless a DDL has invalidated the cache since {@code planningStart} - the moment
+   * the caller began building this plan. Checking {@code planningStart} against {@link #lastInvalidation} and
+   * inserting into the map happen under the same lock this class uses for {@link #invalidate()}, so a DDL that
+   * invalidates the cache concurrently with this call is guaranteed to either be observed here (the put is skipped)
+   * or to run after this put returns (and clear it right back out) - it can never land in the gap between the check
+   * and the insert the way two separately-locked calls could (issue #6671).
+   *
+   * @param statement     the SQL statement, used as the cache key
+   * @param plan          the execution plan to cache
+   * @param planningStart the timestamp (as returned by {@link System#currentTimeMillis()}) taken before planning
+   *                      began; the plan is discarded instead of cached if a concurrent DDL invalidated the cache
+   *                      at or after that moment, since the plan may have been built against stale schema/index state
+   */
+  public synchronized void put(final String statement, final ExecutionPlan plan, final long planningStart) {
+    if (lastInvalidation >= planningStart)
+      // a DDL invalidated the cache after planning started: the plan may reference a dropped/renamed bucket or
+      // index (or be missing a new one), so it must not be cached
+      return;
+    InternalExecutionPlan internal = (InternalExecutionPlan) plan;
+    internal = internal.copy(null);
+    map.put(statement, internal);
   }
 
-  public void invalidate() {
-    synchronized (this) {
-      synchronized (map) {
-        map.clear();
-      }
-      lastInvalidation = System.currentTimeMillis();
-    }
+  public synchronized void invalidate() {
+    map.clear();
+    lastInvalidation = System.currentTimeMillis();
   }
 
   public static ExecutionPlanCache instance(final DatabaseInternal db) {
