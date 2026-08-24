@@ -108,7 +108,9 @@ class SelectVarTargetCacheTest extends TestHelper {
     // millisecond System.currentTimeMillis() reads, so a plan built in the very same millisecond as the schema
     // DDL above (which invalidates the cache) can lose that race under a busy JVM. Wait past it explicitly
     // rather than asserting on elapsed time (see StallAwareStopwatch guidance): this loop bounds nothing, it
-    // just guarantees the plan is built strictly after the invalidation it must not lose to.
+    // just guarantees the plan is built strictly after the invalidation it must not lose to. Deliberately
+    // unbounded rather than a @Timeout-guarded wait: the wall clock is guaranteed to advance, so this cannot
+    // hang - the only way to leave this loop is for time to pass, which it always does.
     final long lastInvalidation = db.getExecutionPlanCache().getLastInvalidation();
     while (System.currentTimeMillis() <= lastInvalidation) {
       Thread.onSpinWait();
