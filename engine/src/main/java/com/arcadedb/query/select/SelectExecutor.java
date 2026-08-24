@@ -49,6 +49,15 @@ public class SelectExecutor {
   // skip) TO A MultiIndexCursor
   int             indexCandidateLimit = -1;
 
+  // #6577: THE SINGLE SOURCE OF TRUTH FOR "WHICH OPERATORS CAN filterWithIndexesFinalNode() ACTUALLY TURN INTO AN
+  // IndexCursor" - isTheNodeFullyIndexed() MUST TREAT EXACTLY THIS SET, AND NO MORE, AS "THIS LEAF IS INDEXED".
+  // TREATING A WIDER SET AS INDEXED IS WHAT LET #6577 THROUGH: A neq/like/ilike LEAF PASSED THE "UNDER AN or, BOTH
+  // SIDES MUST BE INDEXED" GATE (BECAUSE ITS PROPERTY HAD AN INDEX) BUT THEN filterWithIndexesFinalNode()'S SWITCH
+  // FELL THROUGH TO A BARE return WITH NO CURSOR - SO THE WHOLE BRANCH SILENTLY CONTRIBUTED ZERO ROWS INSTEAD OF
+  // JUST RUNNING LESS EFFICIENTLY. KEEP BOTH CALL SITES READING THIS ONE FIELD SO THEY CANNOT DRIFT APART AGAIN.
+  private static final Set<SelectOperator> CURSOR_BUILDABLE_OPERATORS = EnumSet.of(SelectOperator.eq, SelectOperator.in_op,
+      SelectOperator.between, SelectOperator.gt, SelectOperator.ge, SelectOperator.lt, SelectOperator.le);
+
   static class IndexInfo {
     public final Index   index;
     public final String  property;
@@ -98,6 +107,16 @@ public class SelectExecutor {
             skipped++;
             continue;
           }
+          // #6579: A PRE-INCREMENT GUARD IS NEEDED FOR limit == 0 - OTHERWISE THE FIRST MATCH BUMPS count TO 1
+          // BEFORE count >= limit (1 >= 0) EVER GETS THE CHANCE TO STOP THE LOOP. THIS GUARD ALONE CAN ONLY EVER
+          // FIRE FOR limit == 0 THOUGH: FOR ANY limit > 0, count NEVER REACHES limit WITHOUT THE POST-INCREMENT
+          // CHECK BELOW ALREADY BREAKING THE LOOP FIRST - SO KEEPING THAT SECOND CHECK IS NOT REDUNDANT, IT IS
+          // WHAT PRESERVES THE SAME-ITERATION EARLY EXIT FOR limit > 0 (A REVIEW CAUGHT DROPPING IT: WITHOUT IT,
+          // ONCE THE LIMIT IS REACHED THE LOOP CAN ONLY BREAK ON THE *NEXT* MATCHING RECORD - VIA THE break BEING
+          // NESTED INSIDE THIS evaluateWhere() BRANCH - SO A SELECTIVE WHERE WITH NO (limit+1)TH MATCH DEGRADES A
+          // BOUNDED count() INTO A FULL SCAN OF THE REST OF THE TYPE)
+          if (select.limit > -1 && count >= select.limit)
+            break;
           if (filterOutRecords != null)
             filterOutRecords.add(record.getIdentity());
           count++;
@@ -242,9 +261,10 @@ public class SelectExecutor {
       if (!cursors.isEmpty())
         return new MultiIndexCursor(cursors, indexCandidateLimit, true);
 
-      // NO CURSOR WAS ACTUALLY BUILT (E.G. A BARE neq/like/ilike LEAF: "INDEXED" PER isTheNodeFullyIndexed()'S LOOSER
-      // CHECK - SEE #6577 - BUT filterWithIndexesFinalNode()'S switch DOESN'T HANDLE THE OPERATOR), SO NO CAP WAS
-      // EVER APPLIED EITHER: RESET THE TEST-VISIBLE FIELD RATHER THAN LEAVE IT HOLDING A MISLEADING FINITE VALUE
+      // NO CURSOR WAS ACTUALLY BUILT (E.G. A BARE is_null/is_not_null/neq/like/ilike LEAF, WHICH isTheNodeFullyIndexed()
+      // CORRECTLY REFUSES TO TREAT AS INDEXED - SEE #6577 - SO node.index STAYS null AND filterWithIndexesFinalNode()
+      // NEVER RUNS), SO NO CAP WAS EVER APPLIED EITHER: RESET THE TEST-VISIBLE FIELD RATHER THAN LEAVE IT HOLDING A
+      // MISLEADING FINITE VALUE
       indexCandidateLimit = -1;
     }
     return null;
@@ -499,11 +519,9 @@ public class SelectExecutor {
     if (node == null)
       return null;
 
-    // node.index != null MEANS "isTheNodeFullyIndexed() FOUND AN INDEX ON THIS LEAF'S PROPERTY", NOT "THIS LEAF'S
-    // OPERATOR ACTUALLY PRODUCES A CURSOR" - IT'S SET FOR neq/like/ilike TOO (SEE #6577). HARMLESS TODAY BECAUSE A
-    // BARE SUCH LEAF STILL PRODUCES NO CURSOR IN filterWithIndexesFinalNode()'S switch, SO cursors STAYS EMPTY AND
-    // lookForIndexes() RETURNS null BEFORE ANY (WRONGLY-COMPUTED) CAP IS EVER USED - BUT #6577 IS WHERE TO FIX THIS
-    // AT THE SOURCE, NOT HERE
+    // node.index != null MEANS "isTheNodeFullyIndexed() FOUND AN INDEX ON THIS LEAF'S PROPERTY AND ITS OPERATOR IS
+    // CURSOR-BUILDABLE" (SEE CURSOR_BUILDABLE_OPERATORS, FIXED BY #6577) - SO A BARE neq/like/ilike LEAF NO LONGER
+    // REACHES HERE WITH node.index SET, AND THIS METHOD DOESN'T NEED TO KNOW ABOUT THAT DISTINCTION ITSELF.
     if (!(node.left instanceof SelectTreeNode))
       return node.index != null ? node : null;
 
@@ -545,6 +563,12 @@ public class SelectExecutor {
 
   private void filterWithIndexesFinalNode(final SelectTreeNode node, final List<IndexCursor> cursors) {
     if (node.index == null)
+      return;
+
+    // #6577: node.index != null ONLY MEANS THE PROPERTY HAS AN INDEX, NOT THAT THIS OPERATOR CAN BE TURNED INTO A
+    // CURSOR - isTheNodeFullyIndexed() NOW GUARDS AGAINST THIS TOO (SEE CURSOR_BUILDABLE_OPERATORS), BUT THIS CHECK
+    // STAYS AS A CHEAP DEFENSIVE MIRROR OF THE SWITCH BELOW IN CASE THAT INVARIANT IS EVER LOOSENED ELSEWHERE.
+    if (!CURSOR_BUILDABLE_OPERATORS.contains(node.operator))
       return;
 
     if (node.getParent().operator == SelectOperator.or) {
@@ -637,7 +661,11 @@ public class SelectExecutor {
       return true;
 
     if (!(node.left instanceof SelectTreeNode)) {
-      if (node.operator == SelectOperator.is_null || node.operator == SelectOperator.is_not_null)
+      // #6577: A LEAF IS "INDEXED" ONLY WHEN filterWithIndexesFinalNode()'S SWITCH CAN ACTUALLY BUILD A CURSOR FOR
+      // ITS OPERATOR - is_null/is_not_null WERE THE ONLY EXCLUSION HERE BEFORE, BUT neq/like/ilike NEVER PRODUCE A
+      // CURSOR EITHER (SEE CURSOR_BUILDABLE_OPERATORS). A neq/like/ilike LEAF MUST FALL BACK TO A FULL SCAN, SAME AS
+      // is_null/is_not_null, RATHER THAN LET AN or SIBLING TREAT IT AS INDEXED AND SILENTLY DROP ITS MATCHES.
+      if (!CURSOR_BUILDABLE_OPERATORS.contains(node.operator))
         return false;
 
       if (!(node.right instanceof SelectPropertyValue)) {

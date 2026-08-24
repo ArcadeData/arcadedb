@@ -301,6 +301,34 @@ class CoreApiSpecTest {
   }
 
   @Test
+  void commandRequestDeclaresLimitMatchingQueryRequest() {
+    // Issue #6584: PostQueryHandler extends PostCommandHandler and overrides only executeCommand(),
+    // so both /api/v1/query/{database} and /api/v1/command/{database} run through the very same
+    // execute() and honor an optional 'limit' field identically. QueryRequest documents it; CommandRequest
+    // did not, leaving a client generated strictly from the contract with no typed way to cap a command's
+    // result set even though the server supports it.
+    final Schema<?> commandRequest = openAPI.getComponents().getSchemas().get("CommandRequest");
+    final Schema<?> queryRequest = openAPI.getComponents().getSchemas().get("QueryRequest");
+
+    assertThat(commandRequest.getProperties())
+        .as("PostCommandHandler.execute() reads an optional 'limit' field for both the command and "
+            + "query endpoints, so CommandRequest must declare it exactly like QueryRequest does")
+        .containsKey("limit");
+
+    final Schema<?> commandLimit = (Schema<?>) commandRequest.getProperties().get("limit");
+    final Schema<?> queryLimit = (Schema<?>) queryRequest.getProperties().get("limit");
+
+    assertThat(commandLimit.getType())
+        .as("CommandRequest.limit must be typed the same as QueryRequest.limit: both feed the same "
+            + "optionalIntField(requestMap, \"limit\") call")
+        .isEqualTo(queryLimit.getType());
+    assertThat(commandLimit.getDescription())
+        .as("the two endpoints share the exact same limit/truncation semantics, so the contract text "
+            + "must not diverge and confuse a reader of the generated docs")
+        .isEqualTo(queryLimit.getDescription());
+  }
+
+  @Test
   void getQuery404DoesNotClaimTheStaleSessionCasePostAndCommandDo() {
     final Operation get = openAPI.getPaths().get("/api/v1/query/{database}/{language}/{command}").getGet();
 
