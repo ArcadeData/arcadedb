@@ -2080,6 +2080,10 @@ public class PostgresNetworkExecutor extends Thread {
       return null;
 
     final String paramName = parts[0].trim().toLowerCase(Locale.ENGLISH);
+    if (paramName.isEmpty())
+      // An empty parameter name (e.g. "SET = somevalue") is as malformed as a missing separator.
+      return null;
+
     String value = parts[1].trim();
     if (value.startsWith("'") || value.startsWith("\"")) {
       // A quoted value needs a matching closing delimiter: a single stray quote (e.g. "SET x = '") is a
