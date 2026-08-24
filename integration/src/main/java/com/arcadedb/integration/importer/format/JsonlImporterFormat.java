@@ -93,6 +93,13 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     // failed record's rollback can never discard an earlier, already-successful one riding in the same batch.
     final boolean skipOnRowError = settings.isSkipOnRowError();
 
+    // "skip" mode commits/rolls back per record, so it must own the transaction outright - exactly like
+    // CSVImporterFormat/JSONImporterFormat (see ImporterSettings#isSkipOnRowError() and
+    // ImporterSettings#newExclusiveTransactionRequiredException()). Checked eagerly, before touching the database
+    // at all, so a caller-managed transaction's pending work is never at risk (issue #6561).
+    if (skipOnRowError && context.callerTransactionActiveOnEntry)
+      throw ImporterSettings.newExclusiveTransactionRequiredException();
+
     try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream(),
         DatabaseFactory.getDefaultCharset())) {
       context.startedOn = System.currentTimeMillis();
@@ -141,8 +148,11 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
         // Skip mode commits every record individually (see above and the field comment on skipOnRowError); the
         // default "abort" mode keeps the coarser periodic commit for throughput, since any failure there aborts
-        // and rolls back the whole in-flight batch anyway (see the ImportException catch below).
-        if (skipOnRowError || context.parsed.get() % 1000 == 0) {
+        // and rolls back the whole in-flight batch anyway (see the ImportException catch below). Neither runs at
+        // all when the caller already owns the active transaction (skip mode never reaches here - see the guard
+        // above): a caller-managed transaction is never ours to commit piecemeal, only to accumulate into and hand
+        // back to whoever owns it (issue #6561).
+        if (!context.callerTransactionActiveOnEntry && (skipOnRowError || context.parsed.get() % 1000 == 0)) {
           database.commit();
           database.begin();
         }
@@ -163,7 +173,10 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     } catch (ClassNotFoundException e) {
       throw new RuntimeException(e);
     } finally {
-      if (database.isTransactionActive())
+      // Gated on callerTransactionActiveOnEntry exactly like the ImportException catch above (issue #6561): a
+      // transaction that predates this import is never ours to commit, on success or on failure - it's left open
+      // for whoever owns it to decide.
+      if (!context.callerTransactionActiveOnEntry && database.isTransactionActive())
         database.commit();
     }
     context.lastLapOn = System.currentTimeMillis();
@@ -646,8 +659,10 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       // already committed for the initial load, producing one very large WAL transaction for a restore with many
       // forward-referencing LINK properties. Skip mode commits every record individually, same reasoning as the
       // main loop: a failed record's rollback must never discard an earlier, already-reconciled one riding in the
-      // same batch.
-      if (skipOnRowError || ++reconciled % 1000 == 0) {
+      // same batch. Same callerTransactionActiveOnEntry gate as load()'s own periodic commit, and for the same
+      // reason (issue #6561): skip mode never reaches here when the caller owns the transaction (rejected eagerly
+      // in load()), and the default mode must not commit a transaction it doesn't own either.
+      if (!context.callerTransactionActiveOnEntry && (skipOnRowError || ++reconciled % 1000 == 0)) {
         database.commit();
         database.begin();
       }

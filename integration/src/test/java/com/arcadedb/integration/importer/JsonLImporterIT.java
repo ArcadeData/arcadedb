@@ -42,6 +42,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class JsonLImporterIT {
@@ -399,6 +400,259 @@ class JsonLImporterIT {
     } finally {
       Files.deleteIfExists(jsonlFile);
     }
+  }
+
+  /**
+   * Issue #6561: {@code -onRowError skip} commits/rolls back per record, so - exactly like CSV/JSON (see
+   * {@code Issue5968ImporterSkipOnRowErrorTest}) - it must own the transaction outright and reject an already-active
+   * caller-managed transaction eagerly, rather than silently committing/discarding whatever the caller had pending
+   * on the first record.
+   */
+  @Test
+  void importDatabaseSkipModeRejectsInsideActiveTransaction() throws IOException {
+    Path jsonlFile = Files.createTempFile("arcadedb-6561-skip-active-tx-", ".jsonl");
+    try {
+      Files.writeString(jsonlFile, singleVertexJsonl());
+
+      var db = new DatabaseFactory(DATABASE_PATH).create();
+      try {
+        db.command("sql", "CREATE DOCUMENT TYPE CallerWork");
+
+        // The caller starts their own transaction with unrelated pending work before handing the Database to the
+        // importer, exactly like the CSV/JSON counterparts in Issue5968ImporterSkipOnRowErrorTest.
+        db.begin();
+        db.newDocument("CallerWork").set("name", "pre-existing").save();
+
+        var importer = new Importer(db, jsonlFile.toAbsolutePath().toString());
+        importer.settings.onRowError = "skip";
+
+        assertThatThrownBy(importer::load).isInstanceOf(ImportException.class)
+            .hasRootCauseInstanceOf(IllegalStateException.class);
+
+        // The guard must fire before touching the database at all: the caller's own transaction and its pending
+        // work must still be there for them to decide what to do with.
+        assertThat(db.isTransactionActive()).isTrue();
+        db.commit();
+        assertThat(db.countType("CallerWork", true)).isEqualTo(1);
+      } finally {
+        db.drop();
+      }
+    } finally {
+      Files.deleteIfExists(jsonlFile);
+    }
+  }
+
+  /**
+   * Issue #6561: default "abort" mode has no exclusive-transaction-ownership guard (only "skip" mode rejects an
+   * already-active caller transaction, see {@link #importDatabaseSkipModeRejectsInsideActiveTransaction()}), so it
+   * must run directly inside a caller's own transaction without ever committing it - on success, the transaction
+   * must be left open for the caller to commit themselves, exactly like {@code CSVImporterFormat}/
+   * {@code JSONImporterFormat} (see {@code csvDocumentImportOnAllSuccessLeavesCallersExternallyManagedTransactionOpenForThemToCommit}
+   * in {@code Issue5968ImporterSkipOnRowErrorTest}).
+   */
+  @Test
+  void importDatabaseAbortModeInsideActiveTransactionLeavesTransactionOpenOnSuccess() throws IOException {
+    Path jsonlFile = Files.createTempFile("arcadedb-6561-abort-success-active-tx-", ".jsonl");
+    try {
+      Files.writeString(jsonlFile, singleVertexJsonl());
+
+      var db = new DatabaseFactory(DATABASE_PATH).create();
+      try {
+        db.command("sql", "CREATE DOCUMENT TYPE CallerWork");
+
+        db.begin();
+        db.newDocument("CallerWork").set("name", "pre-existing").save();
+
+        var importer = new Importer(db, jsonlFile.toAbsolutePath().toString());
+        Map<String, Object> result = importer.load();
+        assertThat(result).doesNotContainKey("errors");
+
+        // The import succeeded, but the transaction was never ours to commit: it must still be active, with the
+        // caller's own pre-existing work not yet durable, for the caller to commit (or roll back) themselves.
+        assertThat(db.isTransactionActive()).isTrue();
+        db.commit();
+
+        assertThat(db.countType("CallerWork", true)).isEqualTo(1);
+        assertThat(db.countType("Person", true)).isEqualTo(1);
+      } finally {
+        db.drop();
+      }
+    } finally {
+      Files.deleteIfExists(jsonlFile);
+    }
+  }
+
+  /**
+   * Issue #6561, symmetric to {@link #importDatabaseAbortModeInsideActiveTransactionLeavesTransactionOpenOnSuccess()}
+   * but for the failure path: a failing record must still abort the import, but must not discard the caller's own
+   * pending work by committing OR rolling back a transaction this import never owned - it must be left exactly as
+   * the caller left it, active, for them alone to decide what happens to it next.
+   */
+  @Test
+  void importDatabaseAbortModeInsideActiveTransactionDoesNotCommitOrRollbackOnFailure() throws IOException {
+    Path jsonlFile = Files.createTempFile("arcadedb-6561-abort-failure-active-tx-", ".jsonl");
+    try {
+      Files.writeString(jsonlFile, ""
+          + "{\"t\":\"info\",\"c\":{\"description\":\"test\",\"exporterVersion\":1,\"dbVersion\":\"25.1.1-SNAPSHOT\",\"dbBuild\":\"\",\"dbTimestamp\":\"\"}}\n"
+          + "{\"t\":\"db\",\"c\":{\"name\":\"test\",\"executedOn\":\"2025-01-01\",\"executedOnTimestamp\":0}}\n"
+          + "{\"t\":\"schema\",\"c\":{\"schemaVersion\":1,\"dbmsVersion\":\"25.1.1-SNAPSHOT\",\"dbmsBuild\":\"\",\"settings\":{\"zoneId\":\"UTC\",\"dateFormat\":\"yyyy-MM-dd\",\"dateTimeFormat\":\"yyyy-MM-dd HH:mm:ss\"},\"types\":{\"Person\":{\"type\":\"v\",\"parents\":[],\"buckets\":[\"Person_0\"],\"properties\":{\"id\":{\"type\":\"INTEGER\",\"custom\":{}}},\"indexes\":{},\"custom\":{}}}}}\n"
+          + "{\"t\":\"v\",\"c\":{\"p\":{\"id\":1},\"r\":\"#6:0\",\"t\":\"Person\",\"o\":[],\"i\":[]}}\n"
+          + "{\"t\":\"v\",\"c\":{\"p\":{\"id\":2},\"r\":\"#6:1\",\"t\":\"NonExistentType\",\"o\":[],\"i\":[]}}\n");
+
+      var db = new DatabaseFactory(DATABASE_PATH).create();
+      try {
+        db.command("sql", "CREATE DOCUMENT TYPE CallerWork");
+
+        db.begin();
+        db.newDocument("CallerWork").set("name", "pre-existing").save();
+
+        var importer = new Importer(db, jsonlFile.toAbsolutePath().toString());
+
+        assertThatThrownBy(importer::load).isInstanceOf(ImportException.class);
+
+        // The import failed, but the caller's own transaction - and therefore their pre-existing pending work -
+        // must still be there for them to decide what to do with: neither committed nor rolled back out from under
+        // them by an import that never owned this transaction.
+        assertThat(db.isTransactionActive()).isTrue();
+        db.commit();
+
+        assertThat(db.countType("CallerWork", true)).isEqualTo(1);
+      } finally {
+        db.drop();
+      }
+    } finally {
+      Files.deleteIfExists(jsonlFile);
+    }
+  }
+
+  /**
+   * Issue #6561: the periodic {@code commit()}/{@code begin()} every 1000 records in default "abort" mode must not
+   * run at all while inside a caller-managed transaction - it must not silently commit the caller's transaction (and
+   * whatever unrelated work it holds) out from under them partway through a large import, replacing it with a fresh
+   * one the caller never asked for.
+   */
+  @Test
+  void importDatabaseAbortModeInsideActiveTransactionDoesNotCommitPeriodicallyOnLargeImport() throws IOException {
+    Path jsonlFile = Files.createTempFile("arcadedb-6561-abort-periodic-active-tx-", ".jsonl");
+    try {
+      final int vertexCount = 1500; // exceeds the 1000-record periodic commit threshold
+      Files.writeString(jsonlFile, manyVerticesJsonl(vertexCount));
+
+      var db = new DatabaseFactory(DATABASE_PATH).create();
+      try {
+        db.command("sql", "CREATE DOCUMENT TYPE CallerWork");
+
+        db.begin();
+        db.newDocument("CallerWork").set("name", "pre-existing").save();
+
+        var importer = new Importer(db, jsonlFile.toAbsolutePath().toString());
+        Map<String, Object> result = importer.load();
+        assertThat(result).doesNotContainKey("errors");
+        assertThat(result).containsEntry("createdVertices", (long) vertexCount);
+
+        // If the periodic commit had fired (unguarded), the caller's transaction would have been replaced partway
+        // through - still "active" by the time load() returns, but a DIFFERENT, freshly-begun one that no longer
+        // holds the caller's own pre-existing pending work. Asserting the pending work is still there proves the
+        // ORIGINAL transaction survived intact, not just that some transaction happens to be active.
+        assertThat(db.isTransactionActive()).isTrue();
+        db.commit();
+
+        assertThat(db.countType("CallerWork", true)).isEqualTo(1);
+        assertThat(db.countType("Person", true)).isEqualTo(vertexCount);
+      } finally {
+        db.drop();
+      }
+    } finally {
+      Files.deleteIfExists(jsonlFile);
+    }
+  }
+
+  /**
+   * Issue #6561 review follow-up: symmetric to
+   * {@link #importDatabaseAbortModeInsideActiveTransactionDoesNotCommitPeriodicallyOnLargeImport()} but for
+   * {@code reconcileUnresolvedLinks()}'s own periodic commit rather than the main loop's - the large-import fixture
+   * used there carries no LINK properties, so its reconciliation pass is a no-op and never exercises this gate.
+   * Every vertex here (bar the last) has a forward-referencing {@code next} LINK property pointing at the vertex
+   * imported immediately after it, which is guaranteed unresolved on first pass (the referenced record hasn't been
+   * imported yet) and so lands in {@code pendingLinkReconciliation}, exercising the reconciliation pass's own
+   * periodic commit at the same >1000-entry scale.
+   */
+  @Test
+  void importDatabaseAbortModeInsideActiveTransactionDoesNotCommitPeriodicallyDuringLinkReconciliation() throws IOException {
+    Path jsonlFile = Files.createTempFile("arcadedb-6561-abort-periodic-reconcile-active-tx-", ".jsonl");
+    try {
+      final int vertexCount = 1500; // exceeds the 1000-record periodic commit threshold
+      Files.writeString(jsonlFile, manyVerticesWithForwardLinksJsonl(vertexCount));
+
+      var db = new DatabaseFactory(DATABASE_PATH).create();
+      try {
+        db.command("sql", "CREATE DOCUMENT TYPE CallerWork");
+
+        db.begin();
+        db.newDocument("CallerWork").set("name", "pre-existing").save();
+
+        var importer = new Importer(db, jsonlFile.toAbsolutePath().toString());
+        Map<String, Object> result = importer.load();
+        assertThat(result).doesNotContainKey("errors");
+        assertThat(result).containsEntry("createdVertices", (long) vertexCount);
+
+        // Same reasoning as importDatabaseAbortModeInsideActiveTransactionDoesNotCommitPeriodicallyOnLargeImport:
+        // asserting the caller's own pre-existing pending work is still there proves the ORIGINAL transaction
+        // survived the reconciliation pass intact, not just that some transaction happens to be active.
+        assertThat(db.isTransactionActive()).isTrue();
+        db.commit();
+
+        assertThat(db.countType("CallerWork", true)).isEqualTo(1);
+        assertThat(db.countType("Person", true)).isEqualTo(vertexCount);
+      } finally {
+        db.drop();
+      }
+    } finally {
+      Files.deleteIfExists(jsonlFile);
+    }
+  }
+
+  private static String singleVertexJsonl() {
+    return ""
+        + "{\"t\":\"info\",\"c\":{\"description\":\"test\",\"exporterVersion\":1,\"dbVersion\":\"25.1.1-SNAPSHOT\",\"dbBuild\":\"\",\"dbTimestamp\":\"\"}}\n"
+        + "{\"t\":\"db\",\"c\":{\"name\":\"test\",\"executedOn\":\"2025-01-01\",\"executedOnTimestamp\":0}}\n"
+        + "{\"t\":\"schema\",\"c\":{\"schemaVersion\":1,\"dbmsVersion\":\"25.1.1-SNAPSHOT\",\"dbmsBuild\":\"\",\"settings\":{\"zoneId\":\"UTC\",\"dateFormat\":\"yyyy-MM-dd\",\"dateTimeFormat\":\"yyyy-MM-dd HH:mm:ss\"},\"types\":{\"Person\":{\"type\":\"v\",\"parents\":[],\"buckets\":[\"Person_0\"],\"properties\":{\"id\":{\"type\":\"INTEGER\",\"custom\":{}}},\"indexes\":{},\"custom\":{}}}}}\n"
+        + "{\"t\":\"v\",\"c\":{\"p\":{\"id\":1},\"r\":\"#6:0\",\"t\":\"Person\",\"o\":[],\"i\":[]}}\n";
+  }
+
+  private static String manyVerticesJsonl(final int vertexCount) {
+    final StringBuilder sb = new StringBuilder();
+    sb.append(
+        "{\"t\":\"info\",\"c\":{\"description\":\"test\",\"exporterVersion\":1,\"dbVersion\":\"25.1.1-SNAPSHOT\",\"dbBuild\":\"\",\"dbTimestamp\":\"\"}}\n");
+    sb.append("{\"t\":\"db\",\"c\":{\"name\":\"test\",\"executedOn\":\"2025-01-01\",\"executedOnTimestamp\":0}}\n");
+    sb.append(
+        "{\"t\":\"schema\",\"c\":{\"schemaVersion\":1,\"dbmsVersion\":\"25.1.1-SNAPSHOT\",\"dbmsBuild\":\"\",\"settings\":{\"zoneId\":\"UTC\",\"dateFormat\":\"yyyy-MM-dd\",\"dateTimeFormat\":\"yyyy-MM-dd HH:mm:ss\"},\"types\":{\"Person\":{\"type\":\"v\",\"parents\":[],\"buckets\":[\"Person_0\"],\"properties\":{\"id\":{\"type\":\"INTEGER\",\"custom\":{}}},\"indexes\":{},\"custom\":{}}}}}\n");
+    for (int i = 0; i < vertexCount; ++i)
+      sb.append("{\"t\":\"v\",\"c\":{\"p\":{\"id\":").append(i).append("},\"r\":\"#6:").append(i)
+          .append("\",\"t\":\"Person\",\"o\":[],\"i\":[]}}\n");
+    return sb.toString();
+  }
+
+  private static String manyVerticesWithForwardLinksJsonl(final int vertexCount) {
+    final StringBuilder sb = new StringBuilder();
+    sb.append(
+        "{\"t\":\"info\",\"c\":{\"description\":\"test\",\"exporterVersion\":1,\"dbVersion\":\"25.1.1-SNAPSHOT\",\"dbBuild\":\"\",\"dbTimestamp\":\"\"}}\n");
+    sb.append("{\"t\":\"db\",\"c\":{\"name\":\"test\",\"executedOn\":\"2025-01-01\",\"executedOnTimestamp\":0}}\n");
+    sb.append(
+        "{\"t\":\"schema\",\"c\":{\"schemaVersion\":1,\"dbmsVersion\":\"25.1.1-SNAPSHOT\",\"dbmsBuild\":\"\",\"settings\":{\"zoneId\":\"UTC\",\"dateFormat\":\"yyyy-MM-dd\",\"dateTimeFormat\":\"yyyy-MM-dd HH:mm:ss\"},"
+            + "\"types\":{\"Person\":{\"type\":\"v\",\"parents\":[],\"buckets\":[\"Person_0\"],\"properties\":{"
+            + "\"id\":{\"type\":\"INTEGER\",\"custom\":{}},"
+            + "\"next\":{\"type\":\"LINK\",\"custom\":{}}"
+            + "},\"indexes\":{},\"custom\":{}}}}}\n");
+    for (int i = 0; i < vertexCount; ++i) {
+      // Every vertex but the last points forward at the NEXT one in the stream (r="#6:(i+1)"), which hasn't been
+      // imported yet at the point this line is processed - guaranteed unresolved on first pass, so it lands in
+      // pendingLinkReconciliation for reconcileUnresolvedLinks() to fix up afterwards.
+      final String next = i < vertexCount - 1 ? ",\"next\":\"#6:" + (i + 1) + "\"" : "";
+      sb.append("{\"t\":\"v\",\"c\":{\"p\":{\"id\":").append(i).append(next).append("},\"r\":\"#6:").append(i)
+          .append("\",\"t\":\"Person\",\"o\":[],\"i\":[]}}\n");
+    }
+    return sb.toString();
   }
 
   private static void checkImportedDatabase() {
