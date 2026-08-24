@@ -83,6 +83,11 @@ class PostgresSetCommandParsingTest {
   }
 
   @Test
+  void emptyParamNameIsRejected() {
+    assertThat(PostgresNetworkExecutor.parseSetCommand("SET = somevalue")).isNull();
+  }
+
+  @Test
   void anUnclosedQuoteIsRejectedInsteadOfThrowing() {
     // A single stray quote is not a closed quoted value: substring(1, length - 1) on it used to throw
     // StringIndexOutOfBoundsException instead of being treated as the malformed command it is.
