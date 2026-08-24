@@ -75,8 +75,11 @@ class SelectVarTargetCacheTest extends TestHelper {
     assertThat(rs2.next().<String>getProperty("name")).isEqualTo("fromB");
     rs2.close();
 
-    // Third execution: back to TypeA. Also exercises the ExecutionPlanCache path (ctx1's plan may have been
-    // cached), which must not still be pinned to whichever type built the cached plan first.
+    // Third execution: back to TypeA. Reuses the same shared parsed Statement once more (not the
+    // ExecutionPlanCache: a $var target is non-cacheable, so createExecutionPlan() never consults that cache
+    // for this statement at all - see the assertion below), which must not still be pinned to whichever type
+    // built the first execution's plan.
+    assertThat(stmt1.executionPlanCanBeCached()).isFalse();
     final SelectStatement stmt3 = (SelectStatement) db.getStatementCache().get(sqlText);
     final BasicCommandContext ctx3 = new BasicCommandContext();
     ctx3.setDatabase(database);
@@ -85,5 +88,36 @@ class SelectVarTargetCacheTest extends TestHelper {
     assertThat(rs3.hasNext()).isTrue();
     assertThat(rs3.next().<String>getProperty("name")).isEqualTo("fromA");
     rs3.close();
+  }
+
+  @Test
+  void ordinaryTargetStillUsesExecutionPlanCache() {
+    // Companion to the test above: confirms marking a $var target non-cacheable in FromItem.isCacheable()
+    // didn't overreach and disable plan caching for a plain, literal-type target.
+    database.getSchema().createDocumentType("TypeA");
+    database.begin();
+    database.newDocument("TypeA").set("name", "fromA").save();
+    database.commit();
+
+    final String sqlText = "SELECT FROM TypeA";
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final SelectStatement stmt = (SelectStatement) db.getStatementCache().get(sqlText);
+    assertThat(stmt.executionPlanCanBeCached()).isTrue();
+
+    // ExecutionPlanCache.put() discards a plan built before the cache's own invalidation timestamp - both are
+    // millisecond System.currentTimeMillis() reads, so a plan built in the very same millisecond as the schema
+    // DDL above (which invalidates the cache) can lose that race under a busy JVM. Wait past it explicitly
+    // rather than asserting on elapsed time (see StallAwareStopwatch guidance): this loop bounds nothing, it
+    // just guarantees the plan is built strictly after the invalidation it must not lose to.
+    final long lastInvalidation = db.getExecutionPlanCache().getLastInvalidation();
+    while (System.currentTimeMillis() <= lastInvalidation) {
+      Thread.onSpinWait();
+    }
+
+    assertThat(db.getExecutionPlanCache().contains(sqlText)).isFalse();
+    final BasicCommandContext ctx = new BasicCommandContext();
+    ctx.setDatabase(database);
+    stmt.createExecutionPlan(ctx);
+    assertThat(db.getExecutionPlanCache().contains(sqlText)).isTrue();
   }
 }

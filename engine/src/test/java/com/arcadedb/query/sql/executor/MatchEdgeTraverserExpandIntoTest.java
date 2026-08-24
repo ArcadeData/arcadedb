@@ -66,6 +66,7 @@ class MatchEdgeTraverserExpandIntoTest extends TestHelper {
 
     Vertex.DIRECTION lastDirection;
     String[]         lastEdgeTypes;
+    int              isConnectedToCalls;
 
     private int idFor(final RID rid) {
       return ridToId.computeIfAbsent(rid, r -> {
@@ -122,6 +123,7 @@ class MatchEdgeTraverserExpandIntoTest extends TestHelper {
 
     @Override
     public boolean isConnectedTo(final int nodeA, final int nodeB, final Vertex.DIRECTION direction, final String... edgeTypes) {
+      isConnectedToCalls++;
       lastDirection = direction;
       lastEdgeTypes = edgeTypes;
       return connected;
@@ -288,5 +290,56 @@ class MatchEdgeTraverserExpandIntoTest extends TestHelper {
     context.setDatabase(database);
 
     assertThat(traverser.hasNext(context)).isFalse();
+  }
+
+  @Test
+  void expandIntoSkipsWhileConditionItems() {
+    // A while-conditioned item is a variable-depth traversal: isConnectedTo() only ever answers whether two
+    // vertices are joined by a single hop, so it must never be consulted here even though both endpoints are
+    // already bound - the recursive executeTraversal() has to run instead.
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").save();
+    final MutableVertex b = database.newVertex("Person").save();
+    a.newEdge("KNOWS", b);
+    database.commit();
+
+    provider = new RecordingProvider();
+    provider.connected = true;
+    GraphTraversalProviderRegistry.register(database, provider);
+
+    final MatchPathItem item = parsePathItem("{as:a}.out('KNOWS'){as:b, while: ($depth < 2)}");
+    final MatchEdgeTraverser traverser = new MatchEdgeTraverser(boundSourceRecord(a, b), edgeTraversal(item, true));
+
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+
+    traverser.hasNext(context);
+    assertThat(provider.isConnectedToCalls).isZero();
+  }
+
+  @Test
+  void expandIntoSkipsMaxDepthItems() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").save();
+    final MutableVertex b = database.newVertex("Person").save();
+    a.newEdge("KNOWS", b);
+    database.commit();
+
+    provider = new RecordingProvider();
+    provider.connected = true;
+    GraphTraversalProviderRegistry.register(database, provider);
+
+    final MatchPathItem item = parsePathItem("{as:a}.out('KNOWS'){as:b, maxDepth: 2}");
+    final MatchEdgeTraverser traverser = new MatchEdgeTraverser(boundSourceRecord(a, b), edgeTraversal(item, true));
+
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+
+    traverser.hasNext(context);
+    assertThat(provider.isConnectedToCalls).isZero();
   }
 }
