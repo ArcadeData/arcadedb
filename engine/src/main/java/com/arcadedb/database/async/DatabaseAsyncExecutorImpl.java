@@ -142,6 +142,12 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    * Serializes {@link #setParallelLevel(int)} against itself, and is held for the WHOLE resize - the publish AND
    * the wait for whatever the publish retired (issue #6526 review, point 2).
    * <p>
+   * Since issue #6534 it has a second holder with a different bound: {@link #quiesceWorkers()} takes it for its
+   * WHOLE quiescence too - the park-task scheduling AND the wait for every worker to confirm parked - not only the
+   * scheduling loop. So contention on this lock can now mean either a resize waiting on
+   * {@code shutdownJoinTimeoutMs} (10s default) or a quiescence waiting on {@link #quiesceTimeoutMillis()} (60s
+   * default); see the javadoc of both methods for why each holds it that long.
+   * <p>
    * The drain wait cannot be taken under {@code lifecycleLock}: that lock is what a concurrent {@code close()} or
    * {@code kill()} needs to force the very workers being waited for, so holding it across the wait would make the
    * wait the thing that prevents its own end. But releasing every lock leaves a second resize free to grow the pool
@@ -1662,12 +1668,13 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    * runs on. Bounded and loud (that timeout is logged at WARNING) rather than silent, and the alternative - waiting
    * without a bound - makes an administrative call hostage to a worker wedged in user code.
    * <p>
-   * <b>What it does not do.</b> A retired worker is not parked by a {@link #quiesceWorkers()} that is already in
-   * progress - the park task would land behind the exit marker on its queue - so an index build racing a shrink can
-   * still see a draining worker write under its scan. That is the same residual {@code quiesceWorkers()} already
-   * names for workers created after its own check, it is narrower here than it was under the teardown (the wait
-   * above closes it for anything that starts after the resize returns), and closing it properly means gating the
-   * async lifecycle on the quiescence, which is a lock on a path an index build has to race a resize to reach.
+   * <b>What it does not do (issue #6534, mostly closed).</b> {@code quiesceWorkers()} now takes {@code resizeLock}
+   * for its whole quiescence, not only the scheduling loop, so this method cannot publish a shrink - or a grow -
+   * while a quiescence is in progress: either blocks on {@code resizeLock} until the other finishes. The residual
+   * that survives is narrower than a plain race: a worker THIS resize retired and left draining past its own
+   * {@code shutdownJoinTimeoutMs} budget (the paragraph above) is alive, off the published array, and not covered by
+   * a quiescence that starts afterwards - the park task would land behind the exit marker already queued on it,
+   * which would never run. That corner needs the wedged worker to finish or be {@code kill()}ed, not a lock.
    */
   @Override
   public void setParallelLevel(final int parallelLevel) {
@@ -2410,8 +2417,47 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     // parked on a latch nobody will ever count down is lost until the database closes, which is a worse outcome than
     // the failure that got us there.
     CountDownLatch release = null;
+
+    // HELD FOR THE WHOLE QUIESCENCE (issue #6534), not just the scheduling loop below. A shrinking
+    // setParallelLevel() also holds this lock across its own publish-and-wait, so as long as this method holds it
+    // too, no worker this quiescence is about to snapshot can be retired - or created by a concurrent grow - between
+    // the read of executorThreads and the moment every one of them has confirmed parked:
+    // <ul>
+    //   <li>a SHRINK cannot start while this is held, so a worker cannot leave the array unparked mid-quiescence;
+    //   the residual this closes is the one named on {@link #setParallelLevel(int)}: an index build that used to be
+    //   able to start while a shrink was draining and scan data a retired, unparked worker was still writing;</li>
+    //   <li>a GROW cannot start either, so a worker created after the snapshot below - which this quiescence could
+    //   never have parked, since it schedules exactly {@code threads.length} park tasks against that snapshot - no
+    //   longer exists to write anything unparked under the scan.</li>
+    // </ul>
+    // The cost is symmetric: an administrative resize now waits behind an index build for as long as the build's
+    // own quiescence takes, bounded by {@link #quiesceTimeoutMillis()}. That is the correct precedence - a resize is
+    // an administrative convenience, a scan under a torn view is a wrong answer - and it was already true in the
+    // other direction (a quiescence already waited behind a resize's own bounded drain). One reachable shape of that
+    // wait (code review, PR #6661): a worker task that calls {@code setParallelLevel()} on its OWN executor while a
+    // quiescence started by someone else is in progress now blocks on {@code resizeLock} for up to
+    // {@code quiesceTimeoutMillis()} (60s by default) rather than only the previous brief scheduling-loop window -
+    // and that worker being blocked also means it never reaches the queued park task this quiescence is waiting on,
+    // so the two time out together rather than deadlocking. Nothing built into the engine does this (compaction and
+    // index builds never call {@code setParallelLevel()}); it is the same category of unusual call as the self-join
+    // {@link #awaitRetiredThreads(AsyncThread[])} already guards against, just bounded instead of unrecoverable.
+    //
+    // What is NOT closed: a worker a PRIOR shrink retired and left draining past its own {@code shutdownJoinTimeoutMs}
+    // budget is alive but off the published array and not in this quiescence's snapshot, so it is not parked by it -
+    // the corner {@code setParallelLevel()}'s javadoc names as "wedged inside user code", which this quiescence
+    // cannot help either since a park task behind that worker's already-queued {@code FORCE_EXIT} would never run.
+    //
+    // Lock order is quiesceLock (held) -> resizeLock -> lifecycleLock, and nothing takes them the other way round:
+    // setParallelLevel() never touches quiesceLock, and close()/kill() take only lifecycleLock.
+    resizeLock.lock();
     try {
-      final CountDownLatch parked;
+      final AsyncThread[] threads = executorThreads;
+      if (threads == null || threads.length == 0) {
+        // Shut down between the check above and here: nothing to park, and the lock this holds is given back by
+        // the handle like any other.
+        handedOver = true;
+        return new HeldQuiesce(null, true);
+      }
 
       // ONE PARK TASK PER WORKER, which needs the pool it is sized against to be the pool the tasks are scheduled
       // onto (#6526 review round 8). scheduleTask() re-reads executorThreads on every call, and since #6526 a slot
@@ -2421,41 +2467,18 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       // duplicates queued behind it never run: a latch sized for the old pool that can no longer reach zero, and a
       // caller - an index build - that waits out the whole quiesce timeout before failing. Measured: 60s and a
       // NeedRetryException where the answer should have been immediate.
-      //
-      // So the READ AND THE LOOP ARE BOTH INSIDE resizeLock, not just the loop: a snapshot taken outside it is
-      // already stale by the time the lock is acquired, which is the same bug one window earlier.
-      //
-      // Held for that ONLY, not for the quiescence: a shrink that lands afterwards is harmless, because the park
-      // task is already ahead of the exit marker on the retired worker's queue and still runs, counts down and
-      // parks. Keeping the lock any longer would put an administrative resize behind a whole index build.
-      //
-      // Lock order is quiesceLock (held) -> resizeLock -> lifecycleLock, and nothing takes them the other way
-      // round: setParallelLevel() never touches quiesceLock, and close()/kill() take only lifecycleLock.
-      resizeLock.lock();
-      try {
-        final AsyncThread[] threads = executorThreads;
-        if (threads == null || threads.length == 0) {
-          // Shut down between the check above and here: nothing to park, and the lock this holds is given back by
-          // the handle like any other.
-          handedOver = true;
-          return new HeldQuiesce(null, true);
-        }
+      final CountDownLatch parked = new CountDownLatch(threads.length);
+      release = new CountDownLatch(1);
 
-        parked = new CountDownLatch(threads.length);
-        release = new CountDownLatch(1);
-
-        for (int i = 0; i < threads.length; i++)
-          // waitIfQueueIsFull, so a busy worker is queued behind rather than skipped: an unparked worker is exactly
-          // the hole this method exists to close, and a `false` here would be one - which is why the old call
-          // site's discarded boolean mattered. Any refusal (a worker that has shut down) throws, and the finally
-          // below releases whatever was already parked.
-          if (!scheduleTask(i, new DatabaseAsyncParkWorker(parked, release), true, 0))
-            throw new NeedRetryException(
-                "Cannot quiesce the asynchronous executor of database '" + database.getName() + "': worker " + i
-                    + " refused the park task");
-      } finally {
-        resizeLock.unlock();
-      }
+      for (int i = 0; i < threads.length; i++)
+        // waitIfQueueIsFull, so a busy worker is queued behind rather than skipped: an unparked worker is exactly
+        // the hole this method exists to close, and a `false` here would be one - which is why the old call
+        // site's discarded boolean mattered. Any refusal (a worker that has shut down) throws, and the finally
+        // below releases whatever was already parked.
+        if (!scheduleTask(i, new DatabaseAsyncParkWorker(parked, release), true, 0))
+          throw new NeedRetryException(
+              "Cannot quiesce the asynchronous executor of database '" + database.getName() + "': worker " + i
+                  + " refused the park task");
 
       final long timeout = quiesceTimeoutMillis();
       try {
@@ -2475,13 +2498,24 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       return held;
 
     } finally {
-      if (!handedOver) {
-        // Nothing owns the release, so it happens here: any worker that reached its park task before the failure is
-        // let go, and the lock goes back so the next caller can try.
-        if (release != null)
-          release.countDown();
+      // FAILURE PATH: let go of any worker that reached its park task before the failure - and do it BEFORE
+      // releasing resizeLock below - so the invariant the success path relies on holds on this path too: by the
+      // time resizeLock is released, every worker this quiescence touched is either still fully live (never
+      // reached the park task) or has already been let go, never one caught mid-release, still blocked on a latch
+      // that only this method can count down.
+      if (!handedOver && release != null)
+        release.countDown();
+
+      // Released here regardless of outcome, INCLUDING success: by this point every worker snapshotted above has
+      // already confirmed parked, or - on the failure path - just been released above, so a resize that starts the
+      // instant this unlocks can only retire or create workers this quiescence never promised to cover - see the
+      // class comment above. Holding it any longer, for the life of the handle the caller gets back, would put
+      // every later resize behind however long the caller keeps the scan open, which is not what "bounded by the
+      // quiesce timeout" means.
+      resizeLock.unlock();
+      if (!handedOver)
+        // The lock goes back so the next caller can try.
         quiesceLock.unlock();
-      }
     }
   }
 
