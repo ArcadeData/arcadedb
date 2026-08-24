@@ -1617,14 +1617,23 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private void reuseStalePrefixGraph(final ImmutableGraphIndex loadedGraph, final int[] rebuiltOrdinalToVectorId,
       final int graphSize, final String vectorProp) {
+    // Trimmed to the gap before it is handed anywhere else: snapshotOf() and computeGraphBuildCacheCapacity() both
+    // size their work off whatever array they are given, and only ordinals [graphSize, length) are ever read
+    // below. Handing them the full live-vector array (as an earlier version of this fix did) made the snapshot
+    // and the build reader's cache scale with the WHOLE index - exactly the O(index size) cost this fix exists to
+    // avoid on the calling search thread - rather than with how much is actually missing from the graph (PR
+    // #6712 review).
+    final int[] gapOrdinalToVectorId = Arrays.copyOfRange(rebuiltOrdinalToVectorId, graphSize,
+        rebuiltOrdinalToVectorId.length);
+
     final RandomAccessVectorValues vectors = ArcadePageVectorValues.forGraphBuild(getDatabase(),
         metadata.dimensions, vectorProp,
-        snapshotOf(vectorIndex, rebuiltOrdinalToVectorId), rebuiltOrdinalToVectorId, this,
-        computeGraphBuildCacheCapacity(rebuiltOrdinalToVectorId.length, false));
+        snapshotOf(vectorIndex, gapOrdinalToVectorId), gapOrdinalToVectorId, this,
+        computeGraphBuildCacheCapacity(gapOrdinalToVectorId.length, false));
 
     int queued = 0;
-    for (int ordinal = graphSize; ordinal < rebuiltOrdinalToVectorId.length; ordinal++) {
-      final int vectorId = rebuiltOrdinalToVectorId[ordinal];
+    for (int ordinal = 0; ordinal < gapOrdinalToVectorId.length; ordinal++) {
+      final int vectorId = gapOrdinalToVectorId[ordinal];
       final RID rid = vectorIndex.getRid(vectorId);
       if (rid == null)
         continue; // gone since the array above was built; the next mutation or rebuild picks it up
