@@ -28,7 +28,6 @@ import com.arcadedb.query.sql.parser.WhereClause;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -58,14 +57,7 @@ public class MatchReverseEdgeTraverser extends MatchEdgeTraverser {
    */
   @Override
   protected Vertex.DIRECTION getExpandIntoDirection() {
-    if (item == null || item.getMethod() == null)
-      return null;
-    return switch (item.getMethod().methodName.getStringValue().toLowerCase(Locale.ENGLISH)) {
-      case "out" -> Vertex.DIRECTION.IN;
-      case "in" -> Vertex.DIRECTION.OUT;
-      case "both" -> Vertex.DIRECTION.BOTH;
-      default -> null;
-    };
+    return MatchExecutionPlanner.directionFor(item, false);
   }
 
   protected String targetClusterName(final MatchPathItem item, final CommandContext iCommandContext) {

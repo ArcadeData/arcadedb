@@ -129,14 +129,7 @@ public class MatchEdgeTraverser {
    * is skipped in favour of the slow, always-correct traversal.
    */
   protected Vertex.DIRECTION getExpandIntoDirection() {
-    if (item == null || item.getMethod() == null)
-      return null;
-    return switch (item.getMethod().methodName.getStringValue().toLowerCase(Locale.ENGLISH)) {
-      case "out" -> Vertex.DIRECTION.OUT;
-      case "in" -> Vertex.DIRECTION.IN;
-      case "both" -> Vertex.DIRECTION.BOTH;
-      default -> null;
-    };
+    return MatchExecutionPlanner.directionFor(item, true);
   }
 
   protected void init(final CommandContext context) {
