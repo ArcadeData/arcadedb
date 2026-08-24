@@ -62,6 +62,9 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     pullPrevious(context, nRecords);
+    // A blocking consumer (aggregation, ORDER BY, DISTINCT) with no WHERE to guard can otherwise drain
+    // the whole bucket past arcadedb.command.timeout without anything ever checking it (issue #6465).
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     final long begin = context.isProfiling() ? System.nanoTime() : 0;
     try {
       if (iterator == null) {
@@ -112,6 +115,8 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
           try {
             if (nFetched >= nRecords)
               throw new NoSuchElementException();
+
+            guard.check();
 
 //            if (ORDER_DESC == order && !iterator.hasPrevious()) {
 //              throw new NoSuchElementException();

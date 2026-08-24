@@ -80,7 +80,7 @@ public class ProjectReturnStep extends AbstractExecutionStep {
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
-      private final Set<String> seenResults = distinct ? new HashSet<>() : null;
+      private final Set<List<Object>> seenResults = distinct ? new HashSet<>() : null;
 
       @Override
       public boolean hasNext() {
