@@ -244,33 +244,37 @@ public class OptionalMatchStep extends AbstractExecutionStep {
             }
           }
         } else {
-          // No input: standalone OPTIONAL MATCH
-          // Execute match chain without input
-          matchChainStart.setPrevious(null);
-          final ResultSet matchResults = matchChainEnd.syncPull(context, Math.min(nRecords, MAX_BUFFER_SIZE));
+          // No input: standalone OPTIONAL MATCH.
+          // The match cursor is held in currentMatchResults (like the input path holds it across
+          // input rows) so that it resumes where it left off on every fetchMore call instead of
+          // re-running the pattern scan from scratch (issue #6668).
+          if (currentMatchResults == null) {
+            matchChainStart.setPrevious(null);
+            currentMatchResults = matchChainEnd.syncPull(context, Math.min(n, MAX_BUFFER_SIZE));
+          }
 
           // Collect matches with bounded buffer
           final int maxToFetch = Math.min(n, MAX_BUFFER_SIZE);
-          boolean foundAnyMatch = false;
-          while (buffer.size() < maxToFetch && matchResults.hasNext()) {
+          while (buffer.size() < maxToFetch && currentMatchResults.hasNext()) {
             guard.check();
-            buffer.add(matchResults.next());
-            foundAnyMatch = true;
+            buffer.add(currentMatchResults.next());
+            foundMatchForCurrent = true;
           }
 
-          // If no matches at all, return a single row with NULL values
-          if (!foundAnyMatch && buffer.isEmpty()) {
-            final ResultInternal nullResult = new ResultInternal();
-            for (final String varName : variableNames) {
-              nullResult.setProperty(varName, null);
-            }
-            buffer.add(nullResult);
-          }
-
-          if (!matchResults.hasNext()) {
+          if (!currentMatchResults.hasNext()) {
             finished = true;
+            currentMatchResults.close();
+            currentMatchResults = null;
+
+            // If no matches were found across the whole pattern, return a single row with NULL values
+            if (!foundMatchForCurrent) {
+              final ResultInternal nullResult = new ResultInternal();
+              for (final String varName : variableNames) {
+                nullResult.setProperty(varName, null);
+              }
+              buffer.add(nullResult);
+            }
           }
-          matchResults.close();
         }
       }
 
