@@ -137,4 +137,65 @@ public class InsertContentListParamTest extends TestHelper {
     assertThat(result.hasNext()).isFalse();
     result.close();
   }
+
+  /**
+   * An empty-list {@code CONTENT :param} deliberately keeps the pre-existing {@code tot = 1} sizing of the
+   * equivalent empty JSON-array literal ({@code CONTENT []}), rather than creating zero records. This pins that
+   * documented edge case down (see the PR description for #6463).
+   */
+  @Test
+  void insertContentWithEmptyListParamStillCreatesOneRecord() {
+    final String typeName = "Issue6463EmptyListParam";
+    database.getSchema().createDocumentType(typeName);
+
+    final Map<String, Object> params = new HashMap<>();
+    params.put("people", new ArrayList<Map<String, Object>>());
+
+    final ResultSet result = database.command("sql", "INSERT INTO " + typeName + " CONTENT :people", params);
+
+    assertThat(result.hasNext()).isTrue();
+    result.next();
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+
+    final ResultSet count = database.query("sql", "SELECT count(*) as total FROM " + typeName);
+    assertThat(count.hasNext()).isTrue();
+    assertThat(count.next().<Long>getProperty("total")).isEqualTo(1L);
+    count.close();
+  }
+
+  /**
+   * {@code CreateVertexExecutionPlanner} extends {@link InsertExecutionPlanner} and reuses its
+   * {@code handleCreateRecord()} unchanged, so {@code CREATE VERTEX ... CONTENT :param} with a {@link List}-valued
+   * parameter must get the same one-record-per-item fix as plain {@code INSERT}.
+   */
+  @Test
+  void createVertexContentWithListParamCreatesOneVertexPerItem() {
+    final String typeName = "Issue6463Vertex";
+    database.getSchema().createVertexType(typeName);
+
+    final List<Map<String, Object>> people = new ArrayList<>();
+    for (final String name : List.of("v1", "v2", "v3")) {
+      final Map<String, Object> item = new LinkedHashMap<>();
+      item.put("name", name);
+      people.add(item);
+    }
+
+    final Map<String, Object> params = new HashMap<>();
+    params.put("people", people);
+
+    final ResultSet result = database.command("sql", "CREATE VERTEX " + typeName + " CONTENT :people", params);
+
+    final List<String> insertedNames = new ArrayList<>();
+    while (result.hasNext())
+      insertedNames.add(result.next().<String>getProperty("name"));
+    result.close();
+
+    assertThat(insertedNames).containsExactlyInAnyOrder("v1", "v2", "v3");
+
+    final ResultSet count = database.query("sql", "SELECT count(*) as total FROM " + typeName);
+    assertThat(count.hasNext()).isTrue();
+    assertThat(count.next().<Long>getProperty("total")).isEqualTo(3L);
+    count.close();
+  }
 }
