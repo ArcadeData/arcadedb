@@ -20,7 +20,12 @@ package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.olap.GraphAnalyticalView;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -28,9 +33,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -50,6 +58,7 @@ class AlgoWCCTest {
     database = factory.create();
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("EDGE");
+    database.getSchema().createEdgeType("OTHER");
 
     // Two disconnected components:
     // Component 1: A -> B -> C
@@ -158,5 +167,125 @@ class AlgoWCCTest {
     } finally {
       db.drop();
     }
+  }
+
+  @Test
+  void wccWithRelTypesRestrictsToThoseEdges() {
+    bridgeComponentsWithOtherEdge();
+
+    final Map<String, Long> comp = componentsByName("CALL algo.wcc('EDGE')");
+    assertThat(comp.get("B")).isEqualTo(comp.get("A"));
+    assertThat(comp.get("C")).isEqualTo(comp.get("A"));
+    assertThat(comp.get("E")).isEqualTo(comp.get("D"));
+    assertThat(comp.get("D")).isNotEqualTo(comp.get("A"));
+  }
+
+  @Test
+  void wccWithRelTypesIgnoresOtherEdgeTypes() {
+    bridgeComponentsWithOtherEdge();
+
+    // OTHER holds only C -> D, so A, B and E stay on their own
+    final Map<String, Long> comp = componentsByName("CALL algo.wcc('OTHER')");
+    assertThat(comp.get("D")).isEqualTo(comp.get("C"));
+    assertThat(comp.get("A")).isNotEqualTo(comp.get("C"));
+    assertThat(comp.get("B")).isNotEqualTo(comp.get("C"));
+    assertThat(comp.get("E")).isNotEqualTo(comp.get("C"));
+    assertThat(Set.copyOf(List.of(comp.get("A"), comp.get("B"), comp.get("E")))).hasSize(3);
+  }
+
+  @Test
+  void wccWithUnknownRelTypeIsolatesEveryVertex() {
+    final Map<String, Long> comp = componentsByName("CALL algo.wcc('NOSUCH')");
+    assertThat(Set.copyOf(comp.values())).hasSize(5);
+  }
+
+  @Test
+  void wccWithCommaSeparatedRelTypesCoversBoth() {
+    bridgeComponentsWithOtherEdge();
+
+    final Map<String, Long> comp = componentsByName("CALL algo.wcc('EDGE,OTHER')");
+    assertThat(comp.values()).containsOnly(comp.get("A"));
+  }
+
+  @Test
+  void wccWithRelTypesIsNotWidenedByAViewCoveringMoreTypes() {
+    bridgeComponentsWithOtherEdge();
+
+    // a view covering both types matches a request for either one, so the filter has to be
+    // applied to the traversal rather than inherited from the view's topology
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node")
+        .withEdgeTypes("EDGE", "OTHER")
+        .build();
+    assertThat(gav.isBuilt()).isTrue();
+
+    final Map<String, Long> comp = componentsByName("CALL algo.wcc('EDGE')");
+    assertThat(comp.get("D")).isNotEqualTo(comp.get("A"));
+  }
+
+  @Test
+  void wccWithRelTypesStillUsesCSRAccelerationWhenViewCoversTheRequestedType() {
+    // The whole point of restricting the filter to CSR-backed calls: a relType filter must not
+    // fall back to the single-threaded OLTP BFS just because a view happens to be present. The
+    // view here covers both EDGE and OTHER, wider than the 'EDGE' request, so this also re-checks
+    // that CSR acceleration doesn't widen the result the way wccWithRelTypesIsNotWidenedByAViewCoveringMoreTypes
+    // already does for correctness - this test is the counterweight for performance: if the view
+    // were silently bypassed for a filtered call, CSR_ACCELERATED_VAR would never be set.
+    bridgeComponentsWithOtherEdge();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node")
+        .withEdgeTypes("EDGE", "OTHER")
+        .build();
+    try {
+      assertThat(gav.isBuilt()).isTrue();
+
+      database.begin();
+      try {
+        final BasicCommandContext context = new BasicCommandContext();
+        context.setDatabase(database);
+        final List<Result> rows = new AlgoWCC().execute(new Object[] { "EDGE" }, null, context)
+            .collect(Collectors.toList());
+
+        assertThat(context.getVariable(CommandContext.CSR_ACCELERATED_VAR))
+            .as("a filtered call must still be able to use the view")
+            .isEqualTo(true);
+
+        final Map<String, Long> comp = new HashMap<>();
+        for (final Result row : rows)
+          comp.put(((RID) row.getProperty("node")).asVertex().getString("name"),
+              ((Number) row.getProperty("componentId")).longValue());
+
+        assertThat(comp.get("B")).isEqualTo(comp.get("A"));
+        assertThat(comp.get("C")).isEqualTo(comp.get("A"));
+        assertThat(comp.get("E")).isEqualTo(comp.get("D"));
+        assertThat(comp.get("D")).isNotEqualTo(comp.get("A"));
+      } finally {
+        database.rollback();
+      }
+    } finally {
+      gav.drop();
+    }
+  }
+
+  private void bridgeComponentsWithOtherEdge() {
+    database.transaction(() -> {
+      final Vertex c = (Vertex) database.query("sql",
+          "SELECT FROM Node WHERE name = 'C'").next().getElement().get();
+      final Vertex d = (Vertex) database.query("sql",
+          "SELECT FROM Node WHERE name = 'D'").next().getElement().get();
+      c.newEdge("OTHER", d, true, (Object[]) null).save();
+    });
+  }
+
+  private Map<String, Long> componentsByName(final String call) {
+    final ResultSet rs = database.query("opencypher",
+        call + " YIELD node, componentId RETURN node.name AS name, componentId");
+    final Map<String, Long> byName = new HashMap<>();
+    while (rs.hasNext()) {
+      final Result result = rs.next();
+      byName.put(result.getProperty("name"), ((Number) result.getProperty("componentId")).longValue());
+    }
+    return byName;
   }
 }

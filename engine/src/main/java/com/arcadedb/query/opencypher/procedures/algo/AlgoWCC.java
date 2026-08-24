@@ -88,23 +88,29 @@ public class AlgoWCC extends AbstractAlgoProcedure {
 
     final Database db = context.getDatabase();
 
-    // Try CSR-accelerated path: delegate to native union-find on CSR arrays
-    final GraphTraversalProvider provider = findProvider(db, null);
+    final String[] relTypes = args.length > 0 ? extractRelTypes(args[0]) : null;
+
+    // Try CSR-accelerated path: delegate to native min-label propagation on CSR arrays.
+    // findProvider(relTypes) only returns a provider that covers every requested type, and
+    // GraphAlgorithms.connectedComponents() takes the same relTypes and resolves each one to its
+    // own CSR index (GraphAnalyticalView#getCSRIndex), so passing the filter through keeps the
+    // parallel algorithm for a filtered call instead of dropping to the single-threaded BFS below.
+    final GraphTraversalProvider provider = findProvider(db, relTypes);
     if (provider instanceof GraphAnalyticalView gav) {
       context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
-      return executeWithCSR(context, gav);
+      return executeWithCSR(context, gav, relTypes);
     }
 
     // Fall back to OLTP path
-    return executeWithOLTP(db);
+    return executeWithOLTP(db, relTypes);
   }
 
-  private Stream<Result> executeWithCSR(final CommandContext context, final GraphAnalyticalView gav) {
+  private Stream<Result> executeWithCSR(final CommandContext context, final GraphAnalyticalView gav, final String[] relTypes) {
     final int n = gav.getNodeCount();
     if (n == 0)
       return Stream.empty();
 
-    final int[] componentId = GraphAlgorithms.connectedComponents(gav);
+    final int[] componentId = GraphAlgorithms.connectedComponents(gav, relTypes);
     context.setVariable(CommandContext.RESULT_COUNT_HINT_VAR, (long) n);
 
     return IntStream.range(0, n).mapToObj(i -> {
@@ -115,13 +121,13 @@ public class AlgoWCC extends AbstractAlgoProcedure {
     });
   }
 
-  private Stream<Result> executeWithOLTP(final Database db) {
-    final GraphData graph = loadGraph(db, null, null, null);
+  private Stream<Result> executeWithOLTP(final Database db, final String[] relTypes) {
+    final GraphData graph = loadGraph(db, null, relTypes, null);
 
     final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
-    final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH);
+    final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH, relTypes);
 
     final int[] componentId = new int[n];
     for (int i = 0; i < n; i++)
