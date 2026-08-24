@@ -88,12 +88,12 @@ public class LSMVectorIndexGraphManifest {
    * @param vectorCount         number of ordinals the graph was built over, or {@link #UNUSABLE_VECTOR_COUNT}
    * @param fingerprint         fingerprint of the ordinal &rarr; (vector id, RID) correspondence
    * @param closeDeferredRebuild {@code true} when the pages this manifest describes are known stale because the
-   *                            most recent {@code close()} chose to defer the rebuild that would otherwise have
-   *                            brought them up to date (issue #6657), rather than run it synchronously. Always
-   *                            {@code false} again once a build actually completes - {@link #write(int, long)} and
-   *                            {@link #markUnusable(String)} both clear it - so it answers specifically "did the
-   *                            last close skip a rebuild", not the broader "is a rebuild owed" that
-   *                            {@code vectorCount}/{@code fingerprint} against the live index already answers.
+   *                             most recent {@code close()} chose to defer the rebuild that would otherwise have
+   *                             brought them up to date (issue #6657), rather than run it synchronously. Always
+   *                             {@code false} again once a build actually completes - {@link #write(int, long)} and
+   *                             {@link #markUnusable(String)} both clear it - so it answers specifically "did the
+   *                             last close skip a rebuild", not the broader "is a rebuild owed" that
+   *                             {@code vectorCount}/{@code fingerprint} against the live index already answers.
    */
   public record Content(int formatVersion, int vectorCount, long fingerprint, boolean closeDeferredRebuild) {
   }

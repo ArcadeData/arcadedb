@@ -236,6 +236,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // Serializes graph builds for this index (issue #5391). Held only by builders, never by readers or writers.
   private final ReentrantLock graphBuildLock = new ReentrantLock();
 
+  // Set only inside flush()'s two SKIP branches (issue #6657) - never by the branch that actually attempts a
+  // synchronous build, successfully or not - so releaseBackgroundResources()'s recheck of the same flag (see
+  // there) can tell "flush() chose not to pay for a rebuild" apart from "flush() tried and either failed or got
+  // re-mutated mid-build", which also leaves graphState at MUTABLE but is a different story the recheck must not
+  // relabel as a deferral. Reset at the top of every flush(), so a stale true from an earlier close on this same
+  // instance can never leak into a later, unrelated one. Plain instance field, not persisted: unlike the manifest
+  // flag it gates, its only job is to bridge flush() and releaseBackgroundResources() within ONE close() call on
+  // ONE instance, which is exactly the lifetime a field has.
+  private volatile boolean flushDeferredRebuild = false;
+
   // Index-scoped cache of materialized vectors, shared by every search on this index (issue #5412).
   // Beam search resolves one vector per distance evaluation; before this cache lived at index scope, each
   // query built its own 1024-entry map and discarded it on completion, so every query paid a full record
@@ -6423,6 +6433,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final LSMVectorIndexGraphFile gf = graphFile;
       final boolean needsBuild = needsGraphBuild(gf);
 
+      // Reset before deciding: see the field javadoc for why releaseBackgroundResources() needs this to
+      // distinguish "this flush() skipped" from "this flush() attempted (and possibly failed)".
+      flushDeferredRebuild = false;
+
       if (needsBuild && !valid) {
         // Background resources are already gone, so there is no build pool to run this on - and asking for one
         // would not fail, it would quietly BUILD one: getOrCreateGraphBuildPool() replaces a shut-down pool, and
@@ -6436,6 +6450,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 + "stay on disk and are re-indexed on the next open. This means flush() was called after "
                 + "releaseBackgroundResources() - both close paths are supposed to do the reverse",
             indexName, mutationsSinceSerialize.get());
+        flushDeferredRebuild = true;
         markCloseTimeRebuildDeferred(gf);
       } else if (needsBuild && vectorIndex.size() >= ASYNC_REBUILD_MIN_GRAPH_SIZE) {
         // A synchronous full rebuild here would block close() for as long as the whole rebuild takes - measured
@@ -6454,6 +6469,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
             "Deferring graph build on close for index %s: %d vectors is at or above the async rebuild threshold "
                 + "(%d), so the rebuild is deferred to the next search on this index instead of blocking close()",
             indexName, vectorIndex.size(), ASYNC_REBUILD_MIN_GRAPH_SIZE);
+        flushDeferredRebuild = true;
         markCloseTimeRebuildDeferred(gf);
       } else if (needsBuild) {
         try {
@@ -6657,6 +6673,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // build has been cancelled and joined (or logged above as a rare straggler that outlived the join), so
     // graphState reliably distinguishes "it finished" (no longer MUTABLE, needsGraphBuild() now false - that
     // build's own write already cleared the flag, nothing to do) from "it did not" (still MUTABLE, mark it now).
+    //
+    // Gated on flushDeferredRebuild, not on needsGraphBuild() alone (review round 4): flush()'s OTHER branch -
+    // the one that actually ATTEMPTS a synchronous build rather than skipping - can also leave graphState at
+    // MUTABLE, either because the attempt failed (buildGraphFromScratchExclusively() then correctly writes
+    // closeDeferredRebuild=false via markUnusable()) or because new mutations arrived mid-build. Neither of those
+    // is "flush() chose to defer", and rechecking unconditionally would overwrite that correct false with a
+    // misleading true - mislabeling "close attempted a rebuild and it failed" as "close skipped the rebuild for
+    // performance". flushDeferredRebuild is set only inside flush()'s two skip branches and reset at the top of
+    // every flush(), so it answers exactly the question this recheck needs: did THIS close's flush() skip, not
+    // just "is a rebuild still owed for some reason". As a side effect this also keeps the recheck from ever
+    // firing on a path that never called flush() at all - LocalDatabase.closeInternal(true) (whole-database
+    // drop) and LocalDatabase.kill() (crash simulation) both call releaseBackgroundResources() without one.
+    //
     // Idempotent with flush()'s own attempt above: on the ordinary path where that one already succeeded,
     // markCloseDeferred()'s own already-true short-circuit turns this into a single extra read, not a rewrite -
     // and only on the close of a large, recently-mutated index, not on every close.
@@ -6669,9 +6698,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // recheck exists for, there is no later "the build is definitely done by now" moment available to retry from
     // inside this method. Same acceptance as the gf == null case in markCloseTimeRebuildDeferred()'s javadoc -
     // documented rather than solved.
-    final LSMVectorIndexGraphFile gfAfterRelease = graphFile;
-    if (needsGraphBuild(gfAfterRelease))
-      markCloseTimeRebuildDeferred(gfAfterRelease);
+    if (flushDeferredRebuild) {
+      final LSMVectorIndexGraphFile gfAfterRelease = graphFile;
+      if (needsGraphBuild(gfAfterRelease))
+        markCloseTimeRebuildDeferred(gfAfterRelease);
+    }
   }
 
   @Override
