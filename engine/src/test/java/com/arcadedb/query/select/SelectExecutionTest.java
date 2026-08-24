@@ -461,6 +461,59 @@ public class SelectExecutionTest extends TestHelper {
         .where().property("name").eq().value("John").limit(10).count()).isEqualTo(10);
   }
 
+  /**
+   * Issue #6579: {@code limit(0)} must count 0, not 1, when at least one record matches. Covers both the
+   * no-WHERE (unindexed full-type-scan) path and an AND-shaped WHERE (the uncapped fallback path), since
+   * {@code SelectExecutor.executeCount()} used to increment {@code count} before comparing it to
+   * {@code select.limit}, so the very first match was counted before the {@code count >= limit} check
+   * ever saw {@code limit == 0}.
+   */
+  @Test
+  void okCountWithLimitZero() {
+    assertThat(database.select().fromType("Vertex").limit(0).count()).isEqualTo(0);
+
+    assertThat(database.select().fromType("Vertex")//
+        .where().property("name").eq().value("John")//
+        .and().property("name").isNotNull().limit(0).count()).isEqualTo(0);
+
+    // PINS THE ALREADY-SAFE INDEXED-CURSOR PATH TOO (id IS UNIQUE-INDEXED, SEE beginTest()): MultiIndexCursor
+    // ALREADY STOPS BEFORE ANY CANDIDATE IS PULLED FOR limit(0), SO THIS GUARDS AGAINST A FUTURE REGRESSION IN
+    // computeExactCandidateLimit()'S CAP LOGIC, NOT AGAINST THE BUG THIS TEST OTHERWISE EXERCISES
+    assertThat(database.select().fromType("Vertex")//
+        .where().property("id").eq().value(5).limit(0).count()).isEqualTo(0);
+  }
+
+  /**
+   * Issue #6579 review follow-up: the {@code limit == 0} fix must not turn {@code limit > 0} into a full
+   * scan. {@code executeCount()}'s {@code break} only fires from inside the {@code evaluateWhere()} match
+   * branch, so if the pre-increment {@code count >= limit} guard added for {@code limit == 0} were the
+   * <i>only</i> check, the loop could only stop on the <i>next</i> matching record after the limit was
+   * reached - degrading into a full scan whenever no such record exists. This pins the same-iteration
+   * early exit by asserting on {@code evaluatedRecords} directly: with exactly one matching record
+   * followed by 500 non-matching ones (an unindexed, full-type-scan WHERE, so every visited record goes
+   * through {@code evaluateWhere()}), a {@code limit(1)} count must stop right after that one match, not
+   * walk the other 500.
+   */
+  @Test
+  void okCountWithLimitStopsEarlyDespiteReorder() {
+    database.getSchema().createDocumentType("Issue6579EarlyExit");
+    database.transaction(() -> {
+      database.newDocument("Issue6579EarlyExit").set("flag", true).save();
+      for (int i = 0; i < 500; i++)
+        database.newDocument("Issue6579EarlyExit").set("flag", false).save();
+    });
+
+    final Select select = database.select().fromType("Issue6579EarlyExit")//
+        .where().property("flag").eq().value(true).limit(1);
+    select.compile();
+
+    final SelectExecutor executor = new SelectExecutor(select);
+    assertThat(executor.executeCount()).isEqualTo(1);
+    assertThat((Long) executor.metrics().get("evaluatedRecords")).as(
+        "evaluatedRecords must stay near the single match, not walk the 500 non-matching records after it")
+        .isLessThan(10L);
+  }
+
   @Test
   void okCountCompiled() {
     final SelectCompiled compiled = database.select().fromType("Vertex")//

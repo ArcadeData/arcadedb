@@ -98,6 +98,16 @@ public class SelectExecutor {
             skipped++;
             continue;
           }
+          // #6579: A PRE-INCREMENT GUARD IS NEEDED FOR limit == 0 - OTHERWISE THE FIRST MATCH BUMPS count TO 1
+          // BEFORE count >= limit (1 >= 0) EVER GETS THE CHANCE TO STOP THE LOOP. THIS GUARD ALONE CAN ONLY EVER
+          // FIRE FOR limit == 0 THOUGH: FOR ANY limit > 0, count NEVER REACHES limit WITHOUT THE POST-INCREMENT
+          // CHECK BELOW ALREADY BREAKING THE LOOP FIRST - SO KEEPING THAT SECOND CHECK IS NOT REDUNDANT, IT IS
+          // WHAT PRESERVES THE SAME-ITERATION EARLY EXIT FOR limit > 0 (A REVIEW CAUGHT DROPPING IT: WITHOUT IT,
+          // ONCE THE LIMIT IS REACHED THE LOOP CAN ONLY BREAK ON THE *NEXT* MATCHING RECORD - VIA THE break BEING
+          // NESTED INSIDE THIS evaluateWhere() BRANCH - SO A SELECTIVE WHERE WITH NO (limit+1)TH MATCH DEGRADES A
+          // BOUNDED count() INTO A FULL SCAN OF THE REST OF THE TYPE)
+          if (select.limit > -1 && count >= select.limit)
+            break;
           if (filterOutRecords != null)
             filterOutRecords.add(record.getIdentity());
           count++;
