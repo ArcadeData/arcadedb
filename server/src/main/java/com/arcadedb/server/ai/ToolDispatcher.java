@@ -18,9 +18,11 @@
  */
 package com.arcadedb.server.ai;
 
-import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseContext;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
@@ -88,34 +90,49 @@ public class ToolDispatcher {
     if (!user.canAccessToDatabase(databaseName))
       return errorJson("User '" + user.getName() + "' is not authorized to access database '" + databaseName + "'");
 
-    final Database database = server.getDatabase(databaseName);
+    final DatabaseInternal database = server.getDatabase(databaseName);
 
-    // Read-only: use query() (not command()). Writes will surface as the engine's
-    // "not idempotent" exception, which the LLM is prompted to recover by returning
-    // the command as a fenced block for the user to review.
-try (ResultSet rs = database.query(language, command)) {
-      final JSONArray records = new JSONArray();
-      long approxBytes = 0;
-      boolean truncated = false;
-      while (rs.hasNext()) {
-        final Result row = rs.next();
-        final JSONObject rowJson = new JSONObject(row.toJSON());
-        final int sz = rowJson.toString().length();
-        // Always allow the first row through so the LLM gets at least one record
-        // even when a single row is bigger than the budget.
-        if (approxBytes + sz > MAX_RESULT_BYTES && records.length() > 0) {
-          truncated = true;
-          break;
+    // Bind the authenticated principal onto this database's DatabaseContext so the engine's per-type/bucket
+    // ACL layer enforces (LocalDatabase.checkPermissionsOnFile is a no-op when no principal is bound) -
+    // mirrors AbstractServerHttpHandler.checkAuthorizationOnDatabase, which every other query path uses.
+    // Bound/restored per call rather than for the whole request: the tool argument above can name a database
+    // other than the chat's default one, and this dispatcher's worker thread is reused across requests, so a
+    // leaked binding must never survive past this single query.
+    DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+    if (context == null)
+      context = DatabaseContext.INSTANCE.init(database);
+    final SecurityDatabaseUser previousUser = context.getCurrentUser();
+    context.setCurrentUser(user.getDatabaseUser(database));
+    try {
+      // Read-only: use query() (not command()). Writes will surface as the engine's
+      // "not idempotent" exception, which the LLM is prompted to recover by returning
+      // the command as a fenced block for the user to review.
+      try (ResultSet rs = database.query(language, command)) {
+        final JSONArray records = new JSONArray();
+        long approxBytes = 0;
+        boolean truncated = false;
+        while (rs.hasNext()) {
+          final Result row = rs.next();
+          final JSONObject rowJson = new JSONObject(row.toJSON());
+          final int sz = rowJson.toString().length();
+          // Always allow the first row through so the LLM gets at least one record
+          // even when a single row is bigger than the budget.
+          if (approxBytes + sz > MAX_RESULT_BYTES && records.length() > 0) {
+            truncated = true;
+            break;
+          }
+          records.put(rowJson);
+          approxBytes += sz;
         }
-        records.put(rowJson);
-        approxBytes += sz;
+        final JSONObject envelope = new JSONObject();
+        envelope.put("user", user.getName());
+        envelope.put("result", records);
+        if (truncated)
+          envelope.put("truncated", true);
+        return envelope.toString();
       }
-      final JSONObject envelope = new JSONObject();
-      envelope.put("user", user.getName());
-      envelope.put("result", records);
-      if (truncated)
-        envelope.put("truncated", true);
-      return envelope.toString();
+    } finally {
+      context.setCurrentUser(previousUser);
     }
   }
 
