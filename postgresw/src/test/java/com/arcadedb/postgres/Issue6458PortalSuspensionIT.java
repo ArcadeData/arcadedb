@@ -128,6 +128,78 @@ public class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
     }
   }
 
+  /**
+   * The counterpart to {@link #executeMaxRowsSendsRowsBeforeSuspendedNeverBothTerminatorsAndThePortalSurvivesToContinue}:
+   * this client DOES send a Describe('P') before its first Execute, like pgjdbc always does - so
+   * {@code describeCommand()} is the one that materializes {@code fullResultSet} and sends the RowDescription,
+   * and {@code executeCommand()} reaches its already-executed branch straight away. The pgjdbc-driven tests in
+   * this class exercise this path indirectly through a JDBC {@link ResultSet}, which cannot observe the wire
+   * sequence itself; this test asserts directly, at the wire level, that a small Execute limit after Describe('P')
+   * still returns only that many rows with exactly one terminator - the more consequential of the two defects
+   * #6458 reports, since {@code describeCommand()} used to run before the row-limit fix and read the query's
+   * result in full regardless of what the first Execute would go on to ask for.
+   */
+  @Test
+  void describePortalThenExecuteWithASmallLimitReturnsOnlyThatManyRowsThenSuspends() throws Exception {
+    try (final Socket socket = new Socket()) {
+      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+
+      sendStartupMessage(out, "root", getDatabaseName());
+      readMessage(in); // AuthenticationCleartextPassword
+      sendPasswordMessage(out, DEFAULT_PASSWORD_FOR_TESTS);
+      readMessageOfType(in, 'Z'); // drain AuthenticationOk/BackendKeyData/ParameterStatus.../ReadyForQuery
+
+      // Schema and data setup over the simple query protocol - irrelevant to what this test is checking.
+      runSimpleQueryToCompletion(out, in, "CREATE DOCUMENT TYPE DescribeThenSuspend6458 IF NOT EXISTS");
+      runSimpleQueryToCompletion(out, in, "CREATE PROPERTY DescribeThenSuspend6458.id IF NOT EXISTS INTEGER");
+      for (int i = 0; i < 10; i++)
+        runSimpleQueryToCompletion(out, in, "INSERT INTO DescribeThenSuspend6458 SET id = " + i);
+
+      sendParse(out, "SELECT id FROM DescribeThenSuspend6458 ORDER BY id");
+      assertThat(readOneMessage(in).type).as("ParseComplete").isEqualTo('1');
+      sendBind(out, "P2");
+      assertThat(readOneMessage(in).type).as("BindComplete").isEqualTo('2');
+
+      // Describe('P') before any Execute: this is describeCommand()'s branch, not executeCommand()'s - it runs
+      // the statement, materializes portal.fullResultSet in full, and sends the RowDescription on its own.
+      sendDescribe(out, "P2");
+      sendSync(out);
+      assertThat(readOneMessage(in).type).as("RowDescription, sent by describeCommand()").isEqualTo('T');
+      assertThat(readOneMessage(in).type).as("ReadyForQuery closes this Sync").isEqualTo('Z');
+
+      // First Execute: limit=4 with 10 rows available and portal.executed already true from Describe - this is
+      // executeCommand()'s already-executed branch, which must still slice fullResultSet down to just 4 rows
+      // rather than returning everything Describe had to read.
+      sendExecute(out, "P2", 4);
+      sendSync(out);
+      assertThat(readNextBatchOfIds(in, 4))
+          .as("first batch after Describe('P'): exactly 4 rows, not the full 10 describeCommand() read")
+          .containsExactly(0, 1, 2, 3);
+      assertThat(readOneMessage(in).type).as("PortalSuspended, not CommandComplete - 6 rows remain unread").isEqualTo('s');
+      assertThat(readOneMessage(in).type).as("ReadyForQuery closes this Sync").isEqualTo('Z');
+
+      // Second Execute on the same portal, no further Bind/Describe: continues exactly where the first left off.
+      sendExecute(out, "P2", 4);
+      sendSync(out);
+      assertThat(readNextBatchOfIds(in, 4))
+          .as("second batch continues from row 4")
+          .containsExactly(4, 5, 6, 7);
+      assertThat(readOneMessage(in).type).as("PortalSuspended again - 2 rows remain unread").isEqualTo('s');
+      assertThat(readOneMessage(in).type).as("ReadyForQuery closes this Sync").isEqualTo('Z');
+
+      // Third Execute drains the remaining 2 rows.
+      sendExecute(out, "P2", 4);
+      sendSync(out);
+      assertThat(readNextBatchOfIds(in, 2))
+          .as("final batch: the last 2 rows, in order")
+          .containsExactly(8, 9);
+      assertThat(readOneMessage(in).type).as("CommandComplete - the portal is now fully drained").isEqualTo('C');
+      assertThat(readOneMessage(in).type).as("ReadyForQuery closes this Sync").isEqualTo('Z');
+    }
+  }
+
   @Test
   void aFetchSizeSmallerThanTheResultReturnsEveryRowAcrossSeveralSuspendedBatches() throws Exception {
     // 23 rows with a fetch size of 7 batches as 7, 7, 7, 2 - the last batch stops short of the limit, so it
@@ -328,6 +400,21 @@ public class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
 
     final byte[] bodyBytes = body.toByteArray();
     out.writeByte('B');
+    out.writeInt(4 + bodyBytes.length);
+    out.write(bodyBytes);
+    out.flush();
+  }
+
+  /**
+   * Sends Describe('P') for the given portal name, the message pgjdbc always sends before its first Execute.
+   */
+  private static void sendDescribe(final DataOutputStream out, final String portalName) throws Exception {
+    final ByteArrayOutputStream body = new ByteArrayOutputStream();
+    body.write('P');
+    writeCString(body, portalName);
+
+    final byte[] bodyBytes = body.toByteArray();
+    out.writeByte('D');
     out.writeInt(4 + bodyBytes.length);
     out.write(bodyBytes);
     out.flush();
