@@ -461,6 +461,22 @@ public class SelectExecutionTest extends TestHelper {
         .where().property("name").eq().value("John").limit(10).count()).isEqualTo(10);
   }
 
+  /**
+   * Issue #6579: {@code limit(0)} must count 0, not 1, when at least one record matches. Covers both the
+   * no-WHERE (unindexed full-type-scan) path and an AND-shaped WHERE (the uncapped fallback path), since
+   * {@code SelectExecutor.executeCount()} used to increment {@code count} before comparing it to
+   * {@code select.limit}, so the very first match was counted before the {@code count >= limit} check
+   * ever saw {@code limit == 0}.
+   */
+  @Test
+  void okCountWithLimitZero() {
+    assertThat(database.select().fromType("Vertex").limit(0).count()).isEqualTo(0);
+
+    assertThat(database.select().fromType("Vertex")//
+        .where().property("name").eq().value("John")//
+        .and().property("name").isNotNull().limit(0).count()).isEqualTo(0);
+  }
+
   @Test
   void okCountCompiled() {
     final SelectCompiled compiled = database.select().fromType("Vertex")//

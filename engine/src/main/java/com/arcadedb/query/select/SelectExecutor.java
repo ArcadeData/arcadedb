@@ -98,11 +98,13 @@ public class SelectExecutor {
             skipped++;
             continue;
           }
+          // #6579: THE LIMIT MUST BE CHECKED BEFORE INCREMENTING count, NOT AFTER - OTHERWISE limit(0) COUNTS THE
+          // FIRST MATCH (count REACHES 1) BEFORE count >= limit (1 >= 0) EVER GETS THE CHANCE TO STOP THE LOOP
+          if (select.limit > -1 && count >= select.limit)
+            break;
           if (filterOutRecords != null)
             filterOutRecords.add(record.getIdentity());
           count++;
-          if (select.limit > -1 && count >= select.limit)
-            break;
         }
       }
       return count;
