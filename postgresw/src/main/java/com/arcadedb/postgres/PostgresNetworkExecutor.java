@@ -125,6 +125,12 @@ public class PostgresNetworkExecutor extends Thread {
   private final ChannelBinaryServer         channel;
   private final byte[]                      buffer                = new byte[BUFFER_LENGTH];
   private final Map<String, PostgresPortal> portals               = new HashMap<>();
+  // Prepared statements registered by PARSE, keyed by statement name (issue #6660 / CodeRabbit on #6658).
+  // Read-only after PARSE creates the entry - bindCommand() clones from here via PostgresPortal.bindFrom()
+  // rather than handing out this same instance, so that two portal names bound from one statement (or the
+  // same portal name re-bound without a new Parse) never share mutable per-execution state. `portals` above
+  // holds only the independent, already-bound portals that describeCommand('P')/executeCommand() operate on.
+  private final Map<String, PostgresPortal> preparedStatements    = new HashMap<>();
   private final boolean                     DEBUG                 = GlobalConfiguration.POSTGRES_DEBUG.getValueAsBoolean();
   private final boolean                     QUOTED_IDENTIFIERS    = GlobalConfiguration.POSTGRES_QUOTED_IDENTIFIERS.getValueAsBoolean();
   private final Map<String, Object>         connectionProperties  = new HashMap<>();
@@ -370,7 +376,13 @@ public class PostgresNetworkExecutor extends Thread {
     if (errorInTransaction)
       return;
 
-    final PostgresPortal portal = getPortal(portalName, false);
+    // Describe('S') names a PREPARED STATEMENT (registered by PARSE); Describe('P') names a bound PORTAL
+    // (registered by BIND) - two different registries since #6660 / CodeRabbit split them apart so portals
+    // stop sharing mutable state. A statement's column info, once resolved here from its schema, is a
+    // property of the statement itself (independent of any parameter values), so it is cached directly on
+    // the template - every portal bound from it afterwards inherits it via PostgresPortal.bindFrom(), the
+    // same way queryTargetType/aliasToSourceProperty are already memoized per statement.
+    final PostgresPortal portal = type == 'S' ? preparedStatements.get(portalName) : getPortal(portalName, false);
     if (portal == null) {
       writeNoData();
       return;
@@ -378,19 +390,30 @@ public class PostgresNetworkExecutor extends Thread {
 
     if (type == 'P') {
       if (portal.sqlStatement != null) {
-        final Object[] parameters = portal.parameterValues != null ? portal.parameterValues.toArray() : new Object[0];
-        final long metricsStart = QueryMetricsRecorder.Holder.startNanos();
-        final ResultSet resultSet;
-        try {
-          resultSet = portal.sqlStatement.execute(database, parameters, createCommandContext());
-        } finally {
-          QueryMetricsRecorder.Holder.record(metricsStart, database.getName(), portal.language, "command");
+        if (!portal.executed) {
+          // Guarded so a second Describe('P') on the same portal (or one arriving after an Execute already
+          // ran the statement) reuses the materialized result instead of running the statement again - issue
+          // #6458's follow-up Execute(s) depend on this same fullResultSet being run exactly once.
+          final Object[] parameters = portal.parameterValues != null ? portal.parameterValues.toArray() : new Object[0];
+          final long metricsStart = QueryMetricsRecorder.Holder.startNanos();
+          final ResultSet resultSet;
+          try {
+            resultSet = portal.sqlStatement.execute(database, parameters, createCommandContext());
+          } finally {
+            QueryMetricsRecorder.Holder.record(metricsStart, database.getName(), portal.language, "command");
+          }
+          portal.executed = true;
+          if (portal.isExpectingResult)
+            // Materializes the whole result now (issue #6458): Describe needs every row's columns, not just
+            // the first, to catch a property that only shows up on a later row (documents can be sparse) -
+            // and the portal keeps this list so the Execute(s) that follow slice it by their own row-limit
+            // instead of re-running the statement or losing what Describe already had to read.
+            portal.fullResultSet = browseAndCacheResultSet(resultSet, 0);
         }
-        portal.executed = true;
         if (portal.isExpectingResult) {
-          portal.cachedResultSet = browseAndCacheResultSet(resultSet, 0);
-          portal.columns = getColumns(portal.cachedResultSet, resolveQueryTargetType(portal), resolveAliasToSourceProperty(portal));
-          if (portal.columns.isEmpty() && portal.cachedResultSet.isEmpty()) {
+          final List<Result> forColumns = portal.fullResultSet != null ? portal.fullResultSet : Collections.emptyList();
+          portal.columns = getColumns(forColumns, resolveQueryTargetType(portal), resolveAliasToSourceProperty(portal));
+          if (portal.columns.isEmpty() && forColumns.isEmpty()) {
             final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(portal.query, portal.language,
                 getParams(portal), portal.sqlStatement);
             if (schemaColumns != null)
@@ -443,7 +466,11 @@ public class PostgresNetworkExecutor extends Thread {
       if (errorInTransaction)
         return;
 
-      portal = getPortal(portalName, true);
+      // Do NOT remove the portal here (issue #6458): a limit-hit Execute suspends rather than finishes, and
+      // the follow-up Execute the client sends to continue fetching looks this same portal name up again.
+      // The portal is only ever discarded by an explicit Close ('C') message or by a later Bind reusing the
+      // name (closeCommand()/bindCommand()).
+      portal = getPortal(portalName, false);
       if (portal == null) {
         writeNoData();
         return;
@@ -480,7 +507,11 @@ public class PostgresNetworkExecutor extends Thread {
           }
           portal.executed = true;
           if (portal.isExpectingResult) {
-            portal.cachedResultSet = browseAndCacheResultSet(resultSet, limit);
+            // Materializes the whole result now (issue #6458), the same way Describe('P') does: a client that
+            // never Described this portal first (it already knows the row shape) reaches this branch instead,
+            // and every Execute on this portal from here on - including this one - slices fullResultSet by its
+            // own row-limit below rather than re-running the statement.
+            portal.fullResultSet = browseAndCacheResultSet(resultSet, 0);
             profile.addEngineNanos(System.nanoTime() - engineStart);
             // Only send RowDescription if not already sent during DESCRIBE
             // But always use columns from actual result for DataRows consistency
@@ -488,8 +519,8 @@ public class PostgresNetworkExecutor extends Thread {
               final long serStart = System.nanoTime();
               // A catalog answer already carries the columns it must be announced under.
               if (!portal.catalogQuery || portal.columns == null)
-                portal.columns = getColumns(portal.cachedResultSet, resolveQueryTargetType(portal), resolveAliasToSourceProperty(portal));
-              if (portal.columns.isEmpty() && portal.cachedResultSet.isEmpty()) {
+                portal.columns = getColumns(portal.fullResultSet, resolveQueryTargetType(portal), resolveAliasToSourceProperty(portal));
+              if (portal.columns.isEmpty() && portal.fullResultSet.isEmpty()) {
                 final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(portal.query, portal.language,
                     getParams(portal), portal.sqlStatement);
                 if (schemaColumns != null)
@@ -502,6 +533,22 @@ public class PostgresNetworkExecutor extends Thread {
           } else {
             profile.addEngineNanos(System.nanoTime() - engineStart);
           }
+        }
+
+        // Computes this Execute's slice of the portal's materialized result (issue #6458). Runs on every
+        // Execute, not only the one that just populated fullResultSet above: a follow-up Execute continuing a
+        // previously suspended fetch reaches here with portal.executed already true and fullResultSet already
+        // populated - by this same method on an earlier call, or by describeCommand() - and only needs the
+        // next slice, never a re-run of the statement.
+        if (portal.isExpectingResult && portal.fullResultSet != null) {
+          final int total = portal.fullResultSet.size();
+          final int start = portal.resultCursor;
+          final int end = limit > 0 ? Math.min(start + limit, total) : total;
+          portal.cachedResultSet = start < end ? new ArrayList<>(portal.fullResultSet.subList(start, end)) : Collections.emptyList();
+          portal.resultCursor = end;
+          // The protocol allows exactly one terminator after the data rows: PortalSuspended when this slice
+          // stopped on the row-limit with rows still left, CommandComplete once the portal is fully drained.
+          portal.suspended = limit > 0 && end < total;
         }
 
         if (portal.isExpectingResult && portal.cachedResultSet != null && !portal.cachedResultSet.isEmpty()) {
@@ -539,7 +586,17 @@ public class PostgresNetworkExecutor extends Thread {
           // Use the columns that were sent in RowDescription for consistency
           final Map<String, PostgresType> columnsToUse = portal.columns != null ? portal.columns : dataRowColumns;
           writeDataRows(portal.cachedResultSet, columnsToUse, portal.resultFormats);
-          writeCommandComplete(portal.query, portal.cachedResultSet.size());
+          // Exactly one terminator after the data rows (issue #6458), never both, and always after the rows
+          // rather than before them: PortalSuspended when this slice stopped short of fullResultSet with the
+          // row-limit reached, CommandComplete once the portal is fully drained - tagged with resultCursor,
+          // the running total across every slice this portal has sent (matching PostgreSQL's own convention),
+          // when this portal is the paginated fullResultSet-backed kind; a portal whose cachedResultSet was
+          // set directly (a synthetic single-row answer - SHOW/catalog/etc.) never touches resultCursor, so it
+          // keeps reporting its own size exactly as before this fix.
+          if (portal.suspended)
+            portalSuspendedResponse();
+          else
+            writeCommandComplete(portal.query, portal.fullResultSet != null ? portal.resultCursor : portal.cachedResultSet.size());
           profile.addSerializationNanos(System.nanoTime() - serStart);
         } else {
           final long serStart = System.nanoTime();
@@ -738,15 +795,17 @@ public class PostgresNetworkExecutor extends Thread {
   /**
    * Browse a result set and cache results up to the limit, then close the source ResultSet.
    * <p>
-   * <b>Ownership:</b> this method takes ownership of the supplied ResultSet and closes it
-   * before returning, in both the natural-exhaustion and the limit-hit paths. The portal
-   * keeps only the materialized {@code List<Result>} (see {@code PostgresPortal#cachedResultSet}),
-   * never a reference to the underlying ResultSet. Multi-batch portal-suspension fetching
-   * from a partially-consumed ResultSet is therefore not supported by this implementation -
-   * a follow-up Execute on the same portal re-uses the cached list rather than pulling the
-   * next chunk from the source. This is unchanged behaviour from before the #4197 audit; the
-   * audit only made the close explicit, releasing the execution plan and unblocking parallel-scan
-   * worker threads that would otherwise stay parked on a full bounded queue.
+   * <b>Ownership:</b> this method takes ownership of the supplied ResultSet and closes it before returning, in
+   * both the natural-exhaustion and the limit-hit paths. Both callers that matter for issue #6458 - Describe
+   * ('P') and the first Execute of a portal that was never Described - call this with {@code limit=0} to
+   * materialize the whole result into {@link PostgresPortal#fullResultSet}: Describe needs every row to
+   * discover every column (documents can be sparse), and Execute needs the complete list to slice by whatever
+   * row-limit each Execute call declares, including a follow-up one continuing a previously suspended fetch
+   * (see the pagination step in {@code executeCommand()}, which slices {@code fullResultSet} rather than
+   * calling this method again). The {@code limit>0} form remains for the unrelated internal callers that want
+   * a bounded sample and are happy to see the rest of the result set discarded - {@code sendSuspendedOnLimit}
+   * is {@code false} for all of them, so the always-{@code limit=0} callers are the only ones that can still
+   * reach that branch.
    *
    * @param resultSet           The result set to browse (this method closes it)
    * @param limit               Maximum number of results to cache (0 = unlimited)
@@ -1754,16 +1813,49 @@ public class PostgresNetworkExecutor extends Thread {
       final String portalName = readString();
       final String sourcePreparedStatement = readString();
 
-      // Look up the prepared statement (stored during PARSE)
-      // The portal name may be different (often empty for unnamed portal)
-      PostgresPortal portal = getPortal(sourcePreparedStatement, false);
-      if (portal == null) {
-        // Try with portal name as fallback for backwards compatibility
-        portal = getPortal(portalName, false);
-      }
-      if (portal == null) {
+      // Look up the prepared statement (stored during PARSE) and create THIS Bind's own independent portal
+      // from it (issue #6660 / CodeRabbit review on #6658). PARSE's PostgresPortal is a read-only template
+      // from here on - bindFrom() copies what PARSE already fixed for the statement (query, sqlStatement,
+      // parameter types, and any response PARSE precomputed for BEGIN/COMMIT/ROLLBACK or a resolved catalog
+      // answer) into a fresh object, so that two portal names bound from the same statement - or the same
+      // portal name re-bound without a new Parse, which is exactly what asyncpg's/pgjdbc's statement caching
+      // does for a repeated query - never share mutable execution state (parameterValues, fullResultSet,
+      // resultCursor, suspended, rowDescriptionSent...). Without this, a later Bind on one portal name could
+      // silently reset or overwrite another already-bound (possibly suspended) portal from the same statement,
+      // since both names used to point at the very same object.
+      final PostgresPortal preparedStatement = preparedStatements.get(sourcePreparedStatement);
+      final PostgresPortal template = preparedStatement != null ? preparedStatement
+          // Backwards-compatible fallback: portalName may itself already name a bound portal.
+          : portals.get(portalName);
+      if (template == null) {
         writeMessage("bind complete", null, '2', 4);
         return;
+      }
+      PostgresPortal portal = PostgresPortal.bindFrom(template);
+
+      // Only the preparedStatements-map template above is provably never executed for a real query (parseCommand
+      // writes it once and nothing ever mutates it afterwards) - the fallback template just above (portals.get
+      // (portalName), reached when sourcePreparedStatement does not name a real prepared statement) is a normal,
+      // mutable portal that may already have run. bindFrom() copies executed/cachedResultSet from whichever
+      // template it was given but leaves fullResultSet at null, so without this reset a portal cloned from an
+      // already-executed fallback template would skip both executeCommand()'s "not yet executed" branch
+      // (portal.executed is already true) and its fullResultSet-pagination branch (fullResultSet is null), and
+      // would serve the OLD run's stale cachedResultSet instead of running this Bind's own execution. Same reset
+      // #6660 originally applied (105cdbb0b8), reinstated here for this one remaining path that can reach it -
+      // the preparedStatements-only redesign above made the reset a no-op for its own template source, since
+      // that source's `executed` is never true for a real query, but did not make it a no-op for this fallback.
+      // Gated on sqlStatement != null (a real, engine-parsed query) OR catalogQuery (a catalog query whose
+      // filters are bound parameters, deferred by parseCommand to be answered - and genuinely re-executed - in
+      // executeCommand once the values arrive) - both are actually re-run per Execute and can go stale exactly
+      // like #6660. This deliberately excludes BEGIN/COMMIT/ROLLBACK and a RESOLVED (parameter-less) catalog
+      // answer, which precompute their fixed response once during Parse via setEmptyResultSet()/direct
+      // assignment and must not be reset before Execute ever sees them.
+      if (portal.executed && (portal.sqlStatement != null || portal.catalogQuery)) {
+        portal.executed = false;
+        portal.fullResultSet = null;
+        portal.cachedResultSet = null;
+        portal.resultCursor = 0;
+        portal.suspended = false;
       }
 
       if (DEBUG)
@@ -1880,15 +1972,15 @@ public class PostgresNetworkExecutor extends Thread {
         return;
       }
 
-      // Store the portal under the portal name (which may be empty for unnamed portal)
-      // This is necessary because EXECUTE looks up portals by portal name, not prepared statement name
-      // PostgreSQL protocol: PARSE creates "prepared statement", BIND creates "portal" from it
-      if (!portalName.equals(sourcePreparedStatement)) {
-        portals.put(portalName, portal);
-        if (DEBUG)
-          LogManager.instance().log(this, Level.INFO, "PSQL: bind stored portal under name '%s' (thread=%s)",
-              portalName, Thread.currentThread().getId());
-      }
+      // Store this Bind's own portal under the portal name (which may be empty for unnamed portal) - always,
+      // even when portalName equals sourcePreparedStatement, since this is a fresh clone now rather than the
+      // statement's own template object (issue #6660 / CodeRabbit review on #6658).
+      // This is necessary because EXECUTE looks up portals by portal name, not prepared statement name.
+      // PostgreSQL protocol: PARSE creates "prepared statement", BIND creates "portal" from it.
+      portals.put(portalName, portal);
+      if (DEBUG)
+        LogManager.instance().log(this, Level.INFO, "PSQL: bind stored portal under name '%s' (thread=%s)",
+            portalName, Thread.currentThread().threadId());
 
       writeMessage("bind complete", null, '2', 4);
 
@@ -1997,7 +2089,7 @@ public class PostgresNetworkExecutor extends Thread {
           // regardless of which of the three keywords the client actually sent (see queryCommand()).
           portal.query = "ROLLBACK";
           setEmptyResultSet(portal);
-          portals.put(portalName, portal);
+          preparedStatements.put(portalName, portal);
           writeMessage("parse complete", null, '1', 4);
         }
         return;
@@ -2085,7 +2177,7 @@ public class PostgresNetworkExecutor extends Thread {
         }
       }
 
-      portals.put(portalName, portal);
+      preparedStatements.put(portalName, portal);
 
       // ParseComplete
       writeMessage("parse complete", null, '1', 4);
