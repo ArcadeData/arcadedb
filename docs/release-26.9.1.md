@@ -3942,3 +3942,16 @@ index may be noticeably slower than the queries that follow it, where `close()` 
 instead. Below the 1,000-vector threshold, `close()` keeps rebuilding synchronously as before, unaffected.
 
 [#6067](https://github.com/ArcadeData/arcadedb/issues/6067)
+
+## `LSMVectorIndex.getStats()` reports whether the last close deferred a graph rebuild (#6657)
+
+The deferral above (#6067) is only visible in the log, at `FINE` level, unless an operator goes looking for it.
+`getStats()` now also carries a `closeTimeRebuildPending` entry: `1` when the most recent `close()` chose to skip a
+rebuild it would otherwise have run, `0` otherwise. It answers a narrower question than the existing `graphState`/
+`mutationsSinceRebuild` entries, which cannot by themselves distinguish "pending mutations because a session is
+mid-flight" from "pending mutations because close() chose not to pay for them" - and, unlike a plain in-memory
+counter would, it still reads `1` on a freshly reopened index, before that index has been searched again, which is
+the moment the question is actually useful: right before a query pays the deferred cost, not after. It clears back
+to `0` the moment that rebuild - deferred or not - actually completes.
+
+[#6657](https://github.com/ArcadeData/arcadedb/issues/6657)

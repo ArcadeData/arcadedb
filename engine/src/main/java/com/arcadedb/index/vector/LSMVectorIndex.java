@@ -6446,6 +6446,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 + "stay on disk and are re-indexed on the next open. This means flush() was called after "
                 + "releaseBackgroundResources() - both close paths are supposed to do the reverse",
             indexName, mutationsSinceSerialize.get());
+        markCloseTimeRebuildDeferred(gf);
       } else if (needsBuild && vectorIndex.size() >= ASYNC_REBUILD_MIN_GRAPH_SIZE) {
         // A synchronous full rebuild here would block close() for as long as the whole rebuild takes - measured
         // (issue #6067) at 43s for a single write to a 200k-vector index, scaling with total index size rather
@@ -6463,6 +6464,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
             "Deferring graph build on close for index %s: %d vectors is at or above the async rebuild threshold "
                 + "(%d), so the rebuild is deferred to the next search on this index instead of blocking close()",
             indexName, vectorIndex.size(), ASYNC_REBUILD_MIN_GRAPH_SIZE);
+        markCloseTimeRebuildDeferred(gf);
       } else if (needsBuild) {
         try {
           LogManager.instance()
@@ -6487,6 +6489,28 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 graphState);
       }
     }
+  }
+
+  /**
+   * Records, in the graph's manifest sidecar, that this close chose to skip a rebuild it would otherwise have run
+   * (issue #6657) - so {@link #getStats()} can answer "did the last close defer a rebuild" directly instead of an
+   * operator having to go looking for the {@code FINE} log line above. Deliberately a manifest write rather than an
+   * in-memory field: a fresh {@link LSMVectorIndex} instance is constructed on every database open (see the two
+   * {@code open()}/{@code create()} factory methods), so a plain field set here would be gone by the time anyone
+   * could read it - the whole point is to answer the question the moment BEFORE the next search would otherwise
+   * silently pay for it.
+   * <p>
+   * A no-op when {@code gf} is {@code null}: a never-yet-built index that was also never discovered on a previous
+   * load has no manifest path to write to. That index has no on-disk graph either, so the deferral is still fully
+   * recoverable - {@link #ensureGraphAvailable()} builds it from scratch on the next search - only the stats
+   * signal for the gap between reopen and that search is unavailable, which is the narrower of the two arms this
+   * covers.
+   *
+   * @param gf the graph file captured at the top of {@link #flush()}, before this close decided to skip the build
+   */
+  private void markCloseTimeRebuildDeferred(final LSMVectorIndexGraphFile gf) {
+    if (gf != null)
+      gf.getManifest().markCloseDeferred();
   }
 
   /**
@@ -6695,6 +6719,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
     stats.put("mutationsSinceRebuild", (long) mutationsSinceSerialize.get());
     stats.put("asyncRebuildInProgress", asyncRebuildInProgress ? 1L : 0L);
     stats.put("rebuildSnapshotGeneration", rebuildSnapshotGeneration);
+
+    // Whether the LAST close() skipped a rebuild it would otherwise have run (issue #6657), as opposed to
+    // graphState/mutationsSinceRebuild above, which cannot tell that apart from ordinary mid-session mutations.
+    // A small manifest read rather than a cached field: unlike the other stats above, this one specifically has
+    // to survive being read on a freshly reopened index, before that index's own first search - see
+    // markCloseTimeRebuildDeferred() for why a field would not.
+    final LSMVectorIndexGraphFile statsGraphFile = graphFile;
+    final LSMVectorIndexGraphManifest.Content manifestContent =
+        statsGraphFile != null ? statsGraphFile.getManifest().read() : null;
+    stats.put("closeTimeRebuildPending", manifestContent != null && manifestContent.closeDeferredRebuild() ? 1L : 0L);
 
     // Calculate mutations threshold (use configured value or default)
     final int defaultMutationsThreshold = getDatabase().getConfiguration()

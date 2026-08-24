@@ -84,11 +84,18 @@ public class LSMVectorIndexGraphManifest {
   /**
    * What a persisted manifest says about the graph next to it.
    *
-   * @param formatVersion version of this file's own layout
-   * @param vectorCount   number of ordinals the graph was built over, or {@link #UNUSABLE_VECTOR_COUNT}
-   * @param fingerprint   fingerprint of the ordinal &rarr; (vector id, RID) correspondence
+   * @param formatVersion       version of this file's own layout
+   * @param vectorCount         number of ordinals the graph was built over, or {@link #UNUSABLE_VECTOR_COUNT}
+   * @param fingerprint         fingerprint of the ordinal &rarr; (vector id, RID) correspondence
+   * @param closeDeferredRebuild {@code true} when the pages this manifest describes are known stale because the
+   *                            most recent {@code close()} chose to defer the rebuild that would otherwise have
+   *                            brought them up to date (issue #6657), rather than run it synchronously. Always
+   *                            {@code false} again once a build actually completes - {@link #write(int, long)} and
+   *                            {@link #markUnusable(String)} both clear it - so it answers specifically "did the
+   *                            last close skip a rebuild", not the broader "is a rebuild owed" that
+   *                            {@code vectorCount}/{@code fingerprint} against the live index already answers.
    */
-  public record Content(int formatVersion, int vectorCount, long fingerprint) {
+  public record Content(int formatVersion, int vectorCount, long fingerprint, boolean closeDeferredRebuild) {
   }
 
   private final Path path;
@@ -175,15 +182,34 @@ public class LSMVectorIndexGraphManifest {
    * @param reason human-readable note stored in the file; nothing reads it back
    */
   public void markUnusable(final String reason) {
-    write(UNUSABLE_VECTOR_COUNT, 0L, reason);
+    write(UNUSABLE_VECTOR_COUNT, 0L, reason, false);
   }
 
   /**
    * Records the correspondence the just-committed graph was built over. Written through a temporary file so a
-   * crash mid-write cannot leave a truncated manifest that reads as a valid one.
+   * crash mid-write cannot leave a truncated manifest that reads as a valid one. Always clears
+   * {@link Content#closeDeferredRebuild()}: a build that reached this call completed, so whatever a previous
+   * {@code close()} deferred has now been paid for.
    */
   public void write(final int vectorCount, final long fingerprint) {
-    write(vectorCount, fingerprint, null);
+    write(vectorCount, fingerprint, null, false);
+  }
+
+  /**
+   * Marks the currently-described graph as stale because {@code close()} deferred the rebuild that would have
+   * refreshed it (issue #6657), rather than running it. Preserves whatever {@code vectorCount}/{@code fingerprint}
+   * are already on disk - this is not a new build, just a note that the existing pages are now known outdated -
+   * or falls back to {@link #UNUSABLE_VECTOR_COUNT} when nothing has ever been persisted here, so a first-ever
+   * build that a large index's close deferred is recorded too.
+   * <p>
+   * Cleared automatically the next time {@link #write(int, long)} or {@link #markUnusable(String)} runs, which is
+   * exactly when a rebuild - deferred or not - actually completes.
+   */
+  public void markCloseDeferred() {
+    final Content existing = read();
+    final int vectorCount = existing != null ? existing.vectorCount() : UNUSABLE_VECTOR_COUNT;
+    final long fingerprint = existing != null ? existing.fingerprint() : 0L;
+    write(vectorCount, fingerprint, null, true);
   }
 
   /**
@@ -193,7 +219,8 @@ public class LSMVectorIndexGraphManifest {
    * two different places, and a shared temp name would turn a future change to either of them into a corrupted
    * manifest. A unique name costs nothing and removes the assumption.
    */
-  private void write(final int vectorCount, final long fingerprint, final String reason) {
+  private void write(final int vectorCount, final long fingerprint, final String reason,
+      final boolean closeDeferredRebuild) {
     final Path temporary = path.resolveSibling(
         path.getFileName() + "." + Long.toHexString(System.nanoTime()) + ".tmp");
     try {
@@ -213,6 +240,7 @@ public class LSMVectorIndexGraphManifest {
       json.put("vectorCount", vectorCount);
       // As a string: a 64-bit fingerprint is not representable in the double a JSON number decodes to.
       json.put("fingerprint", Long.toString(fingerprint));
+      json.put("closeDeferredRebuild", closeDeferredRebuild);
       if (reason != null)
         json.put("reason", reason);
 
@@ -272,7 +300,8 @@ public class LSMVectorIndexGraphManifest {
         return null;
       }
       return new Content(formatVersion, json.getInt("vectorCount", -1),
-          Long.parseLong(json.getString("fingerprint", "0")));
+          Long.parseLong(json.getString("fingerprint", "0")),
+          json.getBoolean("closeDeferredRebuild", false));
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "Could not read the vector graph manifest '%s': %s", path,
           e.getMessage());
