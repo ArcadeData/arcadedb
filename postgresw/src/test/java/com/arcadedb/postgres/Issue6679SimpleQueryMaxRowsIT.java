@@ -106,6 +106,14 @@ class Issue6679SimpleQueryMaxRowsIT extends PostgresWireProtocolTestBase {
 
         // The session must stay usable afterwards: not left aborted/wedged by the refusal.
         assertThat(readyForQueryStatusOf(response)).isEqualTo('I');
+
+        // Prove it, rather than just trusting the status byte: the same socket must still accept and answer a
+        // normal query, not merely report idle while actually closed/wedged.
+        sendSimpleQuery(out, "SELECT 1 AS one");
+        final List<WireMessage> followUp = readUntilReadyForQuery(in);
+        assertThat(messageTypesOf(followUp)).as("a normal query after the refusal must succeed").doesNotContain('E');
+        assertThat(messageTypesOf(followUp)).as("a normal query after the refusal must return its row").contains('D');
+        assertThat(readyForQueryStatusOf(followUp)).isEqualTo('I');
       });
     }
   }
