@@ -108,6 +108,18 @@ public class MatchEdgeTraverser {
   }
 
   /**
+   * Returns {@code false} for a while/maxDepth pattern item: {@link com.arcadedb.graph.GraphTraversalProvider
+   * #isConnectedTo} only ever answers whether two vertices are joined by a single hop, so a variable-depth item
+   * must keep going through the recursive {@link #executeTraversal} instead of taking the expand-into fast path.
+   */
+  private static boolean isSingleHopExpandable(final MatchPathItem item) {
+    if (item == null)
+      return false;
+    final var filter = item.getFilter();
+    return filter == null || (filter.getWhileCondition() == null && filter.getMaxDepth() == null);
+  }
+
+  /**
    * Returns the {@link Vertex.DIRECTION} the GAV expand-into fast path (see {@link #init}) should query, as seen
    * from this traverser's own starting point (i.e. the vertex {@link #getStartingPointAlias()} names): the same
    * direction {@link #traversePatternEdge} would use by invoking {@code item.getMethod().execute(...)}. Returns
@@ -147,8 +159,11 @@ public class MatchEdgeTraverser {
 
         // Only a plain out()/in()/both() hop is eligible: the fast path returns just the bound vertex, which is
         // wrong for outE()/inE()/bothE()/outV()/inV() (an edge/vertex object is expected) and item.getMethod() is
-        // null for a FieldMatchPathItem/MultiMatchPathItem (no single direction to ask the provider about).
-        final Vertex.DIRECTION direction = targetElem != null && edge != null ? getExpandIntoDirection() : null;
+        // null for a FieldMatchPathItem/MultiMatchPathItem (no single direction to ask the provider about). A
+        // while/maxDepth item is a variable-depth traversal - isConnectedTo() only ever answers a single hop, so
+        // it must keep going through the recursive executeTraversal() below instead.
+        final Vertex.DIRECTION direction = targetElem != null && edge != null && isSingleHopExpandable(item)
+            ? getExpandIntoDirection() : null;
         if (direction != null) {
           final String[] edgeTypes = MatchExecutionPlanner.extractEdgeLabels(edge);
           final GraphTraversalProvider provider = edgeTypes.length == 0
