@@ -593,6 +593,17 @@ public class CoreApiSpec implements OpenApiContributor {
         {"$bytes": "<base64>"} for byte[] (standard or URL-safe base64), \
         {"$int8": [v0, v1, ...]} for byte[] from integers in [-128, 127] (used to send \
         INT8-encoded vectors to LSM_VECTOR indexes without a float32 round-trip)."""));
+    // PostQueryHandler extends PostCommandHandler and overrides only executeCommand(), not execute(), so
+    // both /api/v1/query/{database} and /api/v1/command/{database} honor 'limit' identically (issue #6584).
+    schema.addProperty("limit", SpecBuilders.integer(
+        """
+        Maximum number of rows to serialize into the response. When omitted, a LIMIT stated by the query is \
+        honored as written and only a query stating none is capped by the server default \
+        ('arcadedb.server.httpQueryDefaultLimit'). Use -1 for no cap. The response always reports the cap \
+        that was applied ('limit'), how many rows it carries ('returned') and whether rows were left \
+        behind ('truncated'). No value here can widen a single response past the server's hard ceiling \
+        ('arcadedb.server.httpQueryMaxResultRows'): a result that would exceed it is refused with 413 \
+        instead of being truncated.""").example(100));
     schema.setRequired(List.of("command", "language"));
     return schema;
   }
