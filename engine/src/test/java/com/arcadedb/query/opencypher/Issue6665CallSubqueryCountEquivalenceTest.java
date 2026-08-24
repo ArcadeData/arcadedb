@@ -73,7 +73,7 @@ class Issue6665CallSubqueryCountEquivalenceTest {
             WHERE single(item IN r2.k11 WHERE item IS NOT NULL)
             RETURN count(*) AS __expr_count
           }
-          RETURN __expr_count > 0 AS __v
+          RETURN __expr_count AS __v
           """;
 
       // Query B: identical, but the matched bindings are first materialized through collect()/UNWIND before the
@@ -95,18 +95,18 @@ class Issue6665CallSubqueryCountEquivalenceTest {
             UNWIND __rows AS __layer_row
             RETURN count(*) AS __expr_count
           }
-          RETURN __expr_count > 0 AS __v
+          RETURN __expr_count AS __v
           """;
 
-      final Object resultA;
+      final long resultA;
       try (ResultSet rs = database.query("cypher", queryA)) {
         assertThat(rs.hasNext()).isTrue();
-        resultA = rs.next().getProperty("__v");
+        resultA = ((Number) rs.next().getProperty("__v")).longValue();
       }
-      final Object resultB;
+      final long resultB;
       try (ResultSet rs = database.query("cypher", queryB)) {
         assertThat(rs.hasNext()).isTrue();
-        resultB = rs.next().getProperty("__v");
+        resultB = ((Number) rs.next().getProperty("__v")).longValue();
       }
 
       // Ground truth: the same inner pattern, matched standalone (bound to r0/r1/p0 via WITH instead of CALL) and
@@ -133,8 +133,8 @@ class Issue6665CallSubqueryCountEquivalenceTest {
       }
 
       assertThat(groundTruthCount).as("the inner pattern matches exactly one row").isEqualTo(1L);
-      assertThat(resultA).as("direct count(*)").isEqualTo(true);
-      assertThat(resultB).as("collect()/UNWIND-materialized count(*)").isEqualTo(true);
+      assertThat(resultA).as("direct count(*) must match the ground-truth count").isEqualTo(groundTruthCount);
+      assertThat(resultB).as("collect()/UNWIND-materialized count(*) must match the ground-truth count").isEqualTo(groundTruthCount);
       assertThat(resultA).as("direct and materialized count(*) must agree").isEqualTo(resultB);
     } finally {
       database.drop();
