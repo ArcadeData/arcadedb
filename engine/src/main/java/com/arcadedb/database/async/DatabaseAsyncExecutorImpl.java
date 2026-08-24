@@ -768,6 +768,34 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       timeout = Long.MAX_VALUE;
     final long beginTime = System.currentTimeMillis();
 
+    // LOOPED, not a single pass (issue #6462). One marker per worker answers about a snapshot taken
+    // at the moment each marker is OFFERED - not one consistent instant across every worker, because
+    // the offers are not simultaneous. A bidirectional cross-slot edge schedules its incoming-edge
+    // cascade task onto the DESTINATION worker from INSIDE the source task's own callback
+    // (DatabaseAsyncExecutorImpl#newEdge), so the cascade can land on that worker AFTER its marker
+    // already fired - the source worker's own marker, still queued behind the still-running source
+    // task, is the only thing left for a single pass to wait on, and once IT completes (the moment
+    // the source task's execute() returns, having already scheduled the cascade) this method could
+    // return with the cascade merely scheduled, not executed. LocalDatabase#waitForAsyncCompletion()
+    // has always re-scanned with exactly this do-while for the same reason (issue #6281); this method
+    // promises the identical thing in its own javadoc ("waits for the completion of all pending
+    // operations") and needs the identical loop to keep that promise for a caller who reaches it
+    // directly instead of through LocalDatabase.
+    do {
+      if (!waitCompletionOnePass(beginTime, timeout))
+        return false;
+    } while (isProcessing());
+
+    return true;
+  }
+
+  /**
+   * One marker-per-worker pass of {@link #waitCompletion(long)}: waits for everything queued or
+   * executing on every worker <b>at the moment each marker is offered</b> to finish. See that
+   * method's javadoc for why a single pass is not, on its own, a sound answer to "has everything
+   * finished".
+   */
+  private boolean waitCompletionOnePass(final long beginTime, final long timeout) {
     // FIRST, because an async command can submit async record tasks of its own and those must end up behind the
     // markers below rather than in front of them (issue #6303, item 3). Costs nothing when nothing was dispatched.
     if (!awaitCommands(beginTime, timeout))
