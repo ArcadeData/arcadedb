@@ -143,7 +143,7 @@ public class ShortestPathExpression implements Expression {
     if (constraint != null) {
       final String[] typesArray = edgeTypes == null || edgeTypes.isEmpty() ? null : edgeTypes.toArray(new String[0]);
       final List<Object> filtered = ShortestPathStep.computeFilteredShortestPath(startVertex, endVertex,
-          traversalDirection, typesArray, constraint);
+          traversalDirection, typesArray, constraint, context);
       if (filtered == null || filtered.isEmpty())
         return allPaths ? new ArrayList<>() : null;
       // allShortestPaths() in expression position still yields the single shortest path found, matching the

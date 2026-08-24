@@ -36,6 +36,7 @@ import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.function.sql.FunctionOptions;
 import com.arcadedb.function.sql.math.SQLFunctionMathAbstract;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
 
@@ -203,6 +204,12 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
     shortestPathContext.queueRight.add(shortestPathContext.destinationVertex);
     shortestPathContext.rightVisited.add(shortestPathContext.destinationVertex.getIdentity());
 
+    // With no maxDepth (the default) the only bound left is graph exhaustion, and arcadedb.command.timeout was
+    // never consulted here - only the thread-interrupt check below, which needs an explicit cancel rather than
+    // the configured timeout (issue #6459). The deadline is checked once per BFS layer, matching the
+    // per-layer granularity already used by the Cypher unconstrained allShortestPaths() BFS.
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+
     int depth = 1;
     while (true) {
       if (shortestPathContext.maxDepth != null && shortestPathContext.maxDepth <= depth) {
@@ -213,6 +220,7 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
 
       if (Thread.interrupted())
         throw new CommandExecutionException("The shortestPath() function has been interrupted");
+      guard.check();
 
       List<RID> neighborIdentity;
 
