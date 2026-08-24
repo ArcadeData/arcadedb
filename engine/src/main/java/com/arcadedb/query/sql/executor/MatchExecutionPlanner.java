@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.parser.AndBlock;
 import com.arcadedb.query.sql.parser.Bucket;
 import com.arcadedb.query.sql.parser.Expression;
@@ -411,6 +412,32 @@ public class MatchExecutionPlanner {
     for (int i = 0; i < params.size(); i++)
       labels[i] = params.get(i).toString().replace("'", "").replace("\"", "").trim();
     return labels;
+  }
+
+  /**
+   * Returns the {@link Vertex.DIRECTION} a GAV-accelerated traversal must query for a pattern edge's method
+   * (out/in/both), as seen from the vertex the traversal actually starts from - {@code forward} says whether
+   * that's the edge's syntactic out-side ({@code true}, e.g. {@link MatchEdgeTraverser}/a fused chain hop with
+   * {@code et.out}) or its in-side ({@code false}, e.g. {@link MatchReverseEdgeTraverser}/a hop with
+   * {@code !et.out}, which runs the method's reverse - the same out&harr;in flip
+   * {@link com.arcadedb.query.sql.parser.MethodCall#executeReverse} applies elsewhere). "both" has no opposite
+   * and stays as-is regardless of {@code forward}.
+   * <p>
+   * Returns {@code null} when the item has no single direction to ask a provider about (no method, or a method
+   * other than out/in/both) - the caller must then fall back to the slow, always-correct traversal instead.
+   * Package-visible: shared by {@link MatchEdgeTraverser}/{@link MatchReverseEdgeTraverser}'s single-hop
+   * expand-into fast path and {@link MatchGAVFusedStep}'s multi-hop fused DFS, both of which need the identical
+   * mapping (#6670).
+   */
+  static Vertex.DIRECTION directionFor(final MatchPathItem item, final boolean forward) {
+    if (item == null || item.getMethod() == null)
+      return null;
+    return switch (item.getMethod().methodName.getStringValue().toLowerCase(Locale.ENGLISH)) {
+      case "out" -> forward ? Vertex.DIRECTION.OUT : Vertex.DIRECTION.IN;
+      case "in" -> forward ? Vertex.DIRECTION.IN : Vertex.DIRECTION.OUT;
+      case "both" -> Vertex.DIRECTION.BOTH;
+      default -> null;
+    };
   }
 
   /**

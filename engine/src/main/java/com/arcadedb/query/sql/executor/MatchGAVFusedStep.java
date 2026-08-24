@@ -137,17 +137,12 @@ class MatchGAVFusedStep extends AbstractExecutionStep {
 
     for (int i = 0; i < chainLen; i++) {
       final EdgeTraversal et = edges.get(i);
-      directions[i] = et.out ? Vertex.DIRECTION.OUT : Vertex.DIRECTION.IN;
-      // Extract edge labels from the method call parameters
-      final var methodParams = et.edge.item.getMethod().params;
-      if (methodParams != null && !methodParams.isEmpty()) {
-        final String[] labels = new String[methodParams.size()];
-        for (int p = 0; p < methodParams.size(); p++)
-          labels[p] = methodParams.get(p).toString().replace("'", "").replace("\"", "").trim();
-        edgeLabelsPerHop[i] = labels;
-      } else {
-        edgeLabelsPerHop[i] = new String[0];
-      }
+      // et.out is the schedule's forward/reverse flag, not the pattern's actual out()/in()/both() method - a
+      // reverse-scheduled in()/both() hop needs the same out<->in flip MatchReverseEdgeTraverser applies to its
+      // single-hop expand-into fast path (#6670). isFusibleEdge() already guarantees a plain out/in/both method,
+      // so this can never fall back to null here.
+      directions[i] = MatchExecutionPlanner.directionFor(et.edge.item, et.out);
+      edgeLabelsPerHop[i] = MatchExecutionPlanner.extractEdgeLabels(et);
       // The alias for this hop's endpoint
       aliases[i] = et.out ? et.edge.in.alias : et.edge.out.alias;
     }
