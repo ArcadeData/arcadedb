@@ -25,6 +25,8 @@ import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -203,6 +205,107 @@ public class Issue6607InsertStreamExternalTransactionIT extends BaseGraphServerT
       }
     } finally {
       service.close();
+    }
+  }
+
+  /**
+   * {@code bulkInsert}'s external-transaction path only had authorization-status coverage before this
+   * PR; it never had a rollback/commit lifecycle test the way {@code insertStream} now does above.
+   * Rows inserted via {@code bulkInsert} under an external transaction must not survive its rollback.
+   */
+  @Test
+  void bulkInsertWithExternalTransactionRowsDoNotSurviveRollback() throws Exception {
+    final String typeName = "Issue6607BulkExtTxRollback_" + System.currentTimeMillis();
+    getServer(0).getDatabase(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + typeName);
+
+    final ArcadeDbGrpcService service = new ArcadeDbGrpcService(getDatabaseName(), getServer(0));
+    try {
+      final BeginTransactionResponse begin = beginTransaction(service);
+      final String txId = begin.getTransactionId();
+
+      final List<GrpcRecord> records = new ArrayList<>();
+      for (int i = 0; i < 10; i++)
+        records.add(GrpcRecord.newBuilder().setType(typeName).putProperties("name", stringValue("v" + i)).build());
+
+      final BulkInsertRequest request = BulkInsertRequest.newBuilder()
+          .setDatabase(getDatabaseName())
+          .setCredentials(credentials())
+          .setTransaction(TransactionContext.newBuilder().setTransactionId(txId).build())
+          .setOptions(InsertOptions.newBuilder()
+              .setDatabase(getDatabaseName())
+              .setTargetClass(typeName)
+              .setConflictMode(InsertOptions.ConflictMode.CONFLICT_ERROR)
+              .build())
+          .addAllRows(records)
+          .build();
+
+      final CapturingInsertSummaryObserver resp = new CapturingInsertSummaryObserver();
+      service.bulkInsert(request, resp);
+
+      assertThat(resp.errorRef.get()).isNull();
+      assertThat(resp.summaryRef.get()).isNotNull();
+      assertThat(resp.summaryRef.get().getInserted()).isEqualTo(10);
+
+      final RollbackTransactionResponse rollback = rollbackTransaction(service, txId);
+      assertThat(rollback.getRolledBack()).isTrue();
+
+      assertThat(countRows(typeName))
+          .as("rows bulk-inserted under an external transaction must not survive its rollback")
+          .isZero();
+    } finally {
+      service.close();
+      getServer(0).getDatabase(getDatabaseName()).command("sql", "DROP TYPE " + typeName + " IF EXISTS UNSAFE");
+    }
+  }
+
+  /**
+   * Sanity companion: {@code bulkInsert} rows under an external transaction must still commit normally.
+   */
+  @Test
+  void bulkInsertWithExternalTransactionRowsPersistOnCommit() throws Exception {
+    final String typeName = "Issue6607BulkExtTxCommit_" + System.currentTimeMillis();
+    getServer(0).getDatabase(getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE " + typeName);
+
+    final ArcadeDbGrpcService service = new ArcadeDbGrpcService(getDatabaseName(), getServer(0));
+    try {
+      final BeginTransactionResponse begin = beginTransaction(service);
+      final String txId = begin.getTransactionId();
+
+      final List<GrpcRecord> records = new ArrayList<>();
+      for (int i = 0; i < 7; i++)
+        records.add(GrpcRecord.newBuilder().setType(typeName).putProperties("name", stringValue("v" + i)).build());
+
+      final BulkInsertRequest request = BulkInsertRequest.newBuilder()
+          .setDatabase(getDatabaseName())
+          .setCredentials(credentials())
+          .setTransaction(TransactionContext.newBuilder().setTransactionId(txId).build())
+          .setOptions(InsertOptions.newBuilder()
+              .setDatabase(getDatabaseName())
+              .setTargetClass(typeName)
+              .setConflictMode(InsertOptions.ConflictMode.CONFLICT_ERROR)
+              .build())
+          .addAllRows(records)
+          .build();
+
+      final CapturingInsertSummaryObserver resp = new CapturingInsertSummaryObserver();
+      service.bulkInsert(request, resp);
+
+      assertThat(resp.errorRef.get()).isNull();
+      assertThat(resp.summaryRef.get().getInserted()).isEqualTo(7);
+
+      final AtomicReference<CommitTransactionResponse> commitRef = new AtomicReference<>();
+      service.commitTransaction(
+          CommitTransactionRequest.newBuilder()
+              .setTransaction(TransactionContext.newBuilder().setTransactionId(txId).build())
+              .setCredentials(credentials())
+              .build(),
+          capturing(commitRef));
+      assertThat(commitRef.get().getSuccess()).isTrue();
+
+      assertThat(countRows(typeName)).isEqualTo(7L);
+    } finally {
+      service.close();
+      getServer(0).getDatabase(getDatabaseName()).command("sql", "DROP TYPE " + typeName + " IF EXISTS UNSAFE");
     }
   }
 

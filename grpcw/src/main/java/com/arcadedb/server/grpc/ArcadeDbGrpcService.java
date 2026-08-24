@@ -2365,9 +2365,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       if (txCtx != null) {
         // External transaction — run on the transaction's dedicated thread
         try {
-          InsertSummary summary = txCtx.executor.submit(() -> {
+          final InsertSummary summary = txCtx.executor.submit(() -> {
             try (InsertContext ctx = new InsertContext(txCtx.db, opts)) {
-              Counts totals = insertRows(ctx, req.getRowsList().iterator());
+              final Counts totals = insertRows(ctx, req.getRowsList().iterator());
               ctx.flushCommit(true); // no-op in external tx mode
               return ctx.summary(totals, started);
             }
