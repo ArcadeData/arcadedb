@@ -90,28 +90,27 @@ public class AlgoWCC extends AbstractAlgoProcedure {
 
     final String[] relTypes = args.length > 0 ? extractRelTypes(args[0]) : null;
 
-    // Try CSR-accelerated path: delegate to native union-find on CSR arrays. Only for an
-    // unfiltered call: connectedComponents() walks the whole view, and a provider is selected
-    // for covering the requested types, not for covering only those, so a filtered call would
-    // union edges it was asked to leave out. loadGraph() applies the filter to CSR adjacency.
-    if (relTypes == null || relTypes.length == 0) {
-      final GraphTraversalProvider provider = findProvider(db, null);
-      if (provider instanceof GraphAnalyticalView gav) {
-        context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
-        return executeWithCSR(context, gav);
-      }
+    // Try CSR-accelerated path: delegate to native min-label propagation on CSR arrays.
+    // findProvider(relTypes) only returns a provider that covers every requested type, and
+    // GraphAlgorithms.connectedComponents() takes the same relTypes and resolves each one to its
+    // own CSR index (GraphAnalyticalView#getCSRIndex), so passing the filter through keeps the
+    // parallel algorithm for a filtered call instead of dropping to the single-threaded BFS below.
+    final GraphTraversalProvider provider = findProvider(db, relTypes);
+    if (provider instanceof GraphAnalyticalView gav) {
+      context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
+      return executeWithCSR(context, gav, relTypes);
     }
 
     // Fall back to OLTP path
     return executeWithOLTP(db, relTypes);
   }
 
-  private Stream<Result> executeWithCSR(final CommandContext context, final GraphAnalyticalView gav) {
+  private Stream<Result> executeWithCSR(final CommandContext context, final GraphAnalyticalView gav, final String[] relTypes) {
     final int n = gav.getNodeCount();
     if (n == 0)
       return Stream.empty();
 
-    final int[] componentId = GraphAlgorithms.connectedComponents(gav);
+    final int[] componentId = GraphAlgorithms.connectedComponents(gav, relTypes);
     context.setVariable(CommandContext.RESULT_COUNT_HINT_VAR, (long) n);
 
     return IntStream.range(0, n).mapToObj(i -> {

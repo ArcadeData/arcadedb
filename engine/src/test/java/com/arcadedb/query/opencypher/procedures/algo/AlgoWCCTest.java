@@ -20,9 +20,12 @@ package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -35,6 +38,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -217,6 +221,51 @@ class AlgoWCCTest {
 
     final Map<String, Long> comp = componentsByName("CALL algo.wcc('EDGE')");
     assertThat(comp.get("D")).isNotEqualTo(comp.get("A"));
+  }
+
+  @Test
+  void wccWithRelTypesStillUsesCSRAccelerationWhenViewCoversTheRequestedType() {
+    // The whole point of restricting the filter to CSR-backed calls: a relType filter must not
+    // fall back to the single-threaded OLTP BFS just because a view happens to be present. The
+    // view here covers both EDGE and OTHER, wider than the 'EDGE' request, so this also re-checks
+    // that CSR acceleration doesn't widen the result the way wccWithRelTypesIsNotWidenedByAViewCoveringMoreTypes
+    // already does for correctness - this test is the counterweight for performance: if the view
+    // were silently bypassed for a filtered call, CSR_ACCELERATED_VAR would never be set.
+    bridgeComponentsWithOtherEdge();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node")
+        .withEdgeTypes("EDGE", "OTHER")
+        .build();
+    try {
+      assertThat(gav.isBuilt()).isTrue();
+
+      database.begin();
+      try {
+        final BasicCommandContext context = new BasicCommandContext();
+        context.setDatabase(database);
+        final List<Result> rows = new AlgoWCC().execute(new Object[] { "EDGE" }, null, context)
+            .collect(Collectors.toList());
+
+        assertThat(context.getVariable(CommandContext.CSR_ACCELERATED_VAR))
+            .as("a filtered call must still be able to use the view")
+            .isEqualTo(true);
+
+        final Map<String, Long> comp = new HashMap<>();
+        for (final Result row : rows)
+          comp.put(((RID) row.getProperty("node")).asVertex().getString("name"),
+              ((Number) row.getProperty("componentId")).longValue());
+
+        assertThat(comp.get("B")).isEqualTo(comp.get("A"));
+        assertThat(comp.get("C")).isEqualTo(comp.get("A"));
+        assertThat(comp.get("E")).isEqualTo(comp.get("D"));
+        assertThat(comp.get("D")).isNotEqualTo(comp.get("A"));
+      } finally {
+        database.rollback();
+      }
+    } finally {
+      gav.drop();
+    }
   }
 
   private void bridgeComponentsWithOtherEdge() {
