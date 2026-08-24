@@ -210,9 +210,16 @@ public class LSMVectorIndexGraphManifest {
    * WARNING by {@link #read()}, not thrown) - indistinguishable from here. Accepted rather than plumbed through:
    * the fallback only downgrades an otherwise-valid manifest to "not usable", which forces one extra rebuild on
    * the next load and self-heals from there, the same cost a genuinely corrupt manifest would already pay.
+   * <p>
+   * Short-circuits to a single {@link #read()} (no write at all) when the flag already reads {@code true}: a
+   * large index left with pending mutations and closed repeatedly with no intervening search - each close still
+   * seeing the same {@code needsGraphBuild()} - would otherwise re-persist an identical manifest (temp file,
+   * write, atomic rename) on every single one of those closes for no observable change.
    */
   public void markCloseDeferred() {
     final Content existing = read();
+    if (existing != null && existing.closeDeferredRebuild())
+      return;
     final int vectorCount = existing != null ? existing.vectorCount() : UNUSABLE_VECTOR_COUNT;
     final long fingerprint = existing != null ? existing.fingerprint() : 0L;
     write(vectorCount, fingerprint, null, true);

@@ -6657,9 +6657,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // build has been cancelled and joined (or logged above as a rare straggler that outlived the join), so
     // graphState reliably distinguishes "it finished" (no longer MUTABLE, needsGraphBuild() now false - that
     // build's own write already cleared the flag, nothing to do) from "it did not" (still MUTABLE, mark it now).
-    // Idempotent with flush()'s own attempt above: on the ordinary path where that one already succeeded, this
-    // re-write repeats the same true, at the cost of one extra small file read+write on the close of a large,
-    // recently-mutated index - not on every close.
+    // Idempotent with flush()'s own attempt above: on the ordinary path where that one already succeeded,
+    // markCloseDeferred()'s own already-true short-circuit turns this into a single extra read, not a rewrite -
+    // and only on the close of a large, recently-mutated index, not on every close.
+    //
+    // Known residual gap, same shape one layer further out: markCloseTimeRebuildDeferred()'s own tryLock() can
+    // still lose to a STRAGGLER build thread - one that outlived shutdownNow()'s 5s budget and the pool's
+    // awaitTermination() above (see the WARNING logged a few lines up) - if that straggler happens to be the one
+    // holding graphBuildLock at the exact moment this recheck runs. Narrow (needs both an unresponsive build AND
+    // it specifically being the lock holder right now) and not chased further: unlike the cancellation case this
+    // recheck exists for, there is no later "the build is definitely done by now" moment available to retry from
+    // inside this method. Same acceptance as the gf == null case in markCloseTimeRebuildDeferred()'s javadoc -
+    // documented rather than solved.
     final LSMVectorIndexGraphFile gfAfterRelease = graphFile;
     if (needsGraphBuild(gfAfterRelease))
       markCloseTimeRebuildDeferred(gfAfterRelease);
