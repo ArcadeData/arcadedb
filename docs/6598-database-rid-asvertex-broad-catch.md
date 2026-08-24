@@ -57,7 +57,31 @@ New test: `engine/src/test/java/com/arcadedb/database/Issue6598DatabaseRidAsVert
 
 ## Verification
 
-- `mvn -pl engine -am test -Dtest=Issue6598DatabaseRidAsVertexBroadCatchTest` (new test, RED before the fix,
-  GREEN after).
-- Existing regression suite for the family this belongs to: `Issue6586MissingVertexDiagnosisTest`,
-  `Issue6572*`, `Issue4501*` (bucket-gone RID), run to confirm no regression.
+- `mvn -pl engine -am test -Dtest=Issue6598DatabaseRidAsVertexBroadCatchTest` - RED before the fix (3 of 5
+  assertions failed: the `SecurityException` and `ConcurrentModificationException` passthrough unit tests,
+  plus the end-to-end permission scenario), GREEN after.
+- `mvn -pl engine -am test -Dtest=Issue6598DatabaseRidAsVertexBroadCatchTest,DatabaseRIDTest,Issue6586MissingVertexDiagnosisTest,Issue6572DanglingVertexReferenceTest`
+  - 32 tests, 0 failures.
+- `mvn -pl engine -am test -Dtest=Issue687ClassCastEdgeCheckTest,Issue5279ConcurrentUpdateTest,RecordNotMaterialisedTest`
+  - 21 tests, 0 failures.
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/6681
+
+## Review cycles
+
+- Cycle 1: head `5ae25f9d0b` - claude bot review (issue comment, posted 2026-08-24T15:08:23Z): "looks
+  correct, safe, and ready to merge pending CI." No actionable items - two minor/non-blocking observations
+  only (a note that any other `RuntimeException` besides `SecurityException`/`ConcurrentModificationException`
+  now also propagates unwrapped, which is the intended, matching-`RID.asVertex()` behavior; and a sanity-check
+  suggestion on the end-to-end test's `factory.close()` after `restricted.drop()`, which the reviewer itself
+  judged "almost certainly fine"). Working tree stayed clean - no code change made in response.
+
+## Deferred items
+
+None. Both of the bot's observations were non-blocking FYI notes, not requests for a code change.
+
+## Final state
+
+clean-approval (cycle 1 of 4 max).
