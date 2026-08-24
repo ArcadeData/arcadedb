@@ -151,7 +151,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       // Issue #6460: resolve any LINK / LIST-of-LINK / MAP-of-LINK property values that were still forward
       // references when their owning record was loaded (see the field comment on pendingLinkReconciliation).
       // Every RID mapping is known by now, so this is the only point where they can be reliably fixed up.
-      reconcileUnresolvedLinks(database);
+      reconcileUnresolvedLinks(database, context, skipOnRowError);
     } catch (ImportException e) {
       // A per-record failure in default "abort" mode must fail the whole import loudly (issue #6468): rolling
       // back the in-flight batch here - instead of committing it below - is what keeps a partial import from
@@ -541,83 +541,106 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
    * every old-to-new RID mapping is known. A property still unresolved after this (the referenced record was never
    * imported at all - excluded from the export, or a genuinely dangling link in the source database) is left as-is,
    * matching the pre-fix behavior for that case, and is not treated as an import error.
+   * <p>
+   * A failure reconciling one record (e.g. a {@code DuplicateKeyException} from the transiently-wrong placeholder
+   * RID a UNIQUE-indexed property may carry until this point - see {@code docs/review-deferred-*.md}) is handled
+   * exactly like a per-record failure in the main import loop (issue #6468, {@link #load}): logged, counted into
+   * {@code context.errors}, and either aborted via {@link ImportException} or skipped per {@code skipOnRowError},
+   * rather than propagating raw and uncounted past this method.
    */
-  private void reconcileUnresolvedLinks(final DatabaseInternal database) {
+  private void reconcileUnresolvedLinks(final DatabaseInternal database, final ImporterContext context, final boolean skipOnRowError) {
     if (pendingLinkReconciliation.isEmpty())
       return;
 
     int reconciled = 0;
     for (final Map.Entry<RID, Set<String>> entry : pendingLinkReconciliation.entrySet()) {
-      final Record record = database.lookupByRID(entry.getKey(), true);
-      if (!(record instanceof Document document))
-        continue;
-
-      final DocumentType type = document.getType();
-      final MutableDocument mutable = document.modify();
-      boolean changed = false;
-
-      for (final String propertyName : entry.getValue()) {
-        final Property property = type.getPolymorphicPropertyIfExists(propertyName);
-        if (property == null)
+      try {
+        final Record record = database.lookupByRID(entry.getKey(), true);
+        if (!(record instanceof Document document))
           continue;
 
-        final Object currentValue = mutable.get(propertyName);
-        if (currentValue == null)
-          continue;
+        final DocumentType type = document.getType();
+        final MutableDocument mutable = document.modify();
+        boolean changed = false;
 
-        if (property.getType() == Type.LINK && currentValue instanceof RID currentRid) {
-          final RID newRid = ridIndex.get(currentRid);
-          if (newRid != null) {
-            mutable.set(propertyName, newRid);
-            changed = true;
-          }
-        } else if (currentValue instanceof List<?> list) {
-          final List<Object> updated = new ArrayList<>(list.size());
-          boolean listChanged = false;
-          for (final Object item : list) {
-            if (item instanceof RID itemRid) {
-              final RID newRid = ridIndex.get(itemRid);
-              if (newRid != null) {
-                updated.add(newRid);
-                listChanged = true;
-                continue;
-              }
+        for (final String propertyName : entry.getValue()) {
+          final Property property = type.getPolymorphicPropertyIfExists(propertyName);
+          if (property == null)
+            continue;
+
+          final Object currentValue = mutable.get(propertyName);
+          if (currentValue == null)
+            continue;
+
+          if (property.getType() == Type.LINK && currentValue instanceof RID currentRid) {
+            final RID newRid = ridIndex.get(currentRid);
+            if (newRid != null) {
+              mutable.set(propertyName, newRid);
+              changed = true;
             }
-            updated.add(item);
-          }
-          if (listChanged) {
-            mutable.set(propertyName, updated);
-            changed = true;
-          }
-        } else if (currentValue instanceof Map<?, ?> valueMap) {
-          final Map<Object, Object> updated = new HashMap<>();
-          boolean mapChanged = false;
-          for (final Map.Entry<?, ?> mapEntry : valueMap.entrySet()) {
-            Object mapValue = mapEntry.getValue();
-            if (mapValue instanceof RID itemRid) {
-              final RID newRid = ridIndex.get(itemRid);
-              if (newRid != null) {
-                mapValue = newRid;
-                mapChanged = true;
+          } else if (currentValue instanceof List<?> list) {
+            final List<Object> updated = new ArrayList<>(list.size());
+            boolean listChanged = false;
+            for (final Object item : list) {
+              if (item instanceof RID itemRid) {
+                final RID newRid = ridIndex.get(itemRid);
+                if (newRid != null) {
+                  updated.add(newRid);
+                  listChanged = true;
+                  continue;
+                }
               }
+              updated.add(item);
             }
-            updated.put(mapEntry.getKey(), mapValue);
-          }
-          if (mapChanged) {
-            mutable.set(propertyName, updated);
-            changed = true;
+            if (listChanged) {
+              mutable.set(propertyName, updated);
+              changed = true;
+            }
+          } else if (currentValue instanceof Map<?, ?> valueMap) {
+            final Map<Object, Object> updated = new HashMap<>();
+            boolean mapChanged = false;
+            for (final Map.Entry<?, ?> mapEntry : valueMap.entrySet()) {
+              Object mapValue = mapEntry.getValue();
+              if (mapValue instanceof RID itemRid) {
+                final RID newRid = ridIndex.get(itemRid);
+                if (newRid != null) {
+                  mapValue = newRid;
+                  mapChanged = true;
+                }
+              }
+              updated.put(mapEntry.getKey(), mapValue);
+            }
+            if (mapChanged) {
+              mutable.set(propertyName, updated);
+              changed = true;
+            }
           }
         }
-      }
 
-      if (changed)
-        mutable.save();
+        if (changed)
+          mutable.save();
+      } catch (final Exception e) {
+        // Same per-record failure handling as the main import loop (JsonlImporterFormat.java:113-138, issue
+        // #6468): logged, counted, and either aborts the whole import or is skipped per -onRowError, exactly like
+        // any other record failure, instead of propagating raw and uncounted.
+        LogManager.instance().log(this, Level.SEVERE, "Error on reconciling forward-referenced LINK propert(y/ies) for record '%s'", e, entry.getKey());
+        context.errors.incrementAndGet();
+        if (!skipOnRowError)
+          throw new ImportException("Error on reconciling forward-referenced LINK properties for record " + entry.getKey(), e);
+
+        if (database.isTransactionActive())
+          database.rollback();
+        database.begin();
+        continue;
+      }
 
       // Mirrors the periodic commit granularity of the main import loop (see load()): without this, every record
       // touched here rides in the single transaction still open when the main loop finished, on top of the batches
       // already committed for the initial load, producing one very large WAL transaction for a restore with many
-      // forward-referencing LINK properties.
-      if (++reconciled % 1000 == 0) {
+      // forward-referencing LINK properties. Skip mode commits every record individually, same reasoning as the
+      // main loop: a failed record's rollback must never discard an earlier, already-reconciled one riding in the
+      // same batch.
+      if (skipOnRowError || ++reconciled % 1000 == 0) {
         database.commit();
         database.begin();
       }
