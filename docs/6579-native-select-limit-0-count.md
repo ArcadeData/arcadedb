@@ -65,3 +65,19 @@ https://github.com/ArcadeData/arcadedb/pull/6683
   `limit(0)`). One optional nit: add an assertion pinning that indexed-cursor path against a future
   regression in `computeExactCandidateLimit()`. Applied (see `okCountWithLimitZero`'s third assertion,
   `.where().property("id").eq().value(5).limit(0).count()`); no deferred items.
+- **Cycle 2** - head `bc85c6c51f9abaea4317eabdd6ee97019d77ae73`. `claude` review found a real regression
+  the cycle-1 fix introduced: the pre-increment `limit == 0` guard, on its own, moves the `break` so it
+  only fires from inside the `evaluateWhere()` match branch - so once `limit` is reached, the loop can
+  only stop on the *next* matching record, not the current one. With a selective WHERE and no
+  `(limit+1)`th match, `.where(...).limit(N).count()` degrades from an early-exit scan into a full scan of
+  the rest of the type. None of the existing tests caught it because they all use a WHERE matching every
+  row (or a unique-indexed single hit), so there's always an "(N+1)th" match available - and the returned
+  count is identical either way, only the number of records scanned changes. Verified the analysis by hand
+  and by reproducing it (temporarily reverting to the single-check version and confirming the suggested
+  regression test goes red). Fixed by restoring the original post-increment `count >= limit` check
+  alongside the new pre-increment one (the post-check is what gives the same-iteration early exit for
+  `limit > 0`; the pre-check only ever fires for `limit == 0`, since `count` can't reach a `limit > 0`
+  without the post-check already breaking the loop first). Added
+  `okCountWithLimitStopsEarlyDespiteReorder()` (also suggested by the review) to pin `evaluatedRecords` for
+  a `WHERE` with exactly one match followed by 500 non-matching records - proved it fails against the
+  single-check version before restoring the fix. No deferred items.

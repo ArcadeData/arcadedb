@@ -483,6 +483,37 @@ public class SelectExecutionTest extends TestHelper {
         .where().property("id").eq().value(5).limit(0).count()).isEqualTo(0);
   }
 
+  /**
+   * Issue #6579 review follow-up: the {@code limit == 0} fix must not turn {@code limit > 0} into a full
+   * scan. {@code executeCount()}'s {@code break} only fires from inside the {@code evaluateWhere()} match
+   * branch, so if the pre-increment {@code count >= limit} guard added for {@code limit == 0} were the
+   * <i>only</i> check, the loop could only stop on the <i>next</i> matching record after the limit was
+   * reached - degrading into a full scan whenever no such record exists. This pins the same-iteration
+   * early exit by asserting on {@code evaluatedRecords} directly: with exactly one matching record
+   * followed by 500 non-matching ones (an unindexed, full-type-scan WHERE, so every visited record goes
+   * through {@code evaluateWhere()}), a {@code limit(1)} count must stop right after that one match, not
+   * walk the other 500.
+   */
+  @Test
+  void okCountWithLimitStopsEarlyDespiteReorder() {
+    database.getSchema().createDocumentType("Issue6579EarlyExit");
+    database.transaction(() -> {
+      database.newDocument("Issue6579EarlyExit").set("flag", true).save();
+      for (int i = 0; i < 500; i++)
+        database.newDocument("Issue6579EarlyExit").set("flag", false).save();
+    });
+
+    final Select select = database.select().fromType("Issue6579EarlyExit")//
+        .where().property("flag").eq().value(true).limit(1);
+    select.compile();
+
+    final SelectExecutor executor = new SelectExecutor(select);
+    assertThat(executor.executeCount()).isEqualTo(1);
+    assertThat((Long) executor.metrics().get("evaluatedRecords")).as(
+        "evaluatedRecords must stay near the single match, not walk the 500 non-matching records after it")
+        .isLessThan(10L);
+  }
+
   @Test
   void okCountCompiled() {
     final SelectCompiled compiled = database.select().fromType("Vertex")//
