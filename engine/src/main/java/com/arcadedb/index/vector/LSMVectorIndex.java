@@ -1337,6 +1337,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * A persisted graph {@link #ensureGraphAvailable()} decided is eligible for reuse as a prefix (issue #6655),
+   * carrying exactly what {@link #reuseStalePrefixGraph} needs to act on that decision after the write lock
+   * detecting it has been released.
+   *
+   * @param loadedGraph              the graph loaded from disk, already verified against the manifest
+   * @param liveOrdinalToVectorId    every live vector's id, in ordinal order - not only the ones the graph covers
+   * @param graphSize                how many of {@code liveOrdinalToVectorId}'s leading entries the graph covers
+   * @param vectorProp               the vector property name, for reading the gap vectors back
+   */
+  private record ReuseCandidate(ImmutableGraphIndex loadedGraph, int[] liveOrdinalToVectorId, int graphSize,
+                                 String vectorProp) {
+  }
+
+  /**
    * Ensure graph is available for searching. Lazy-loads from disk if needed.
    * This is the entry point for all search operations.
    */
@@ -1360,10 +1374,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // lock.writeLock() is held - it would stall every other reader and writer of this index for as long as the
     // read takes, exactly the stall buildGraphFromScratchWithRetry()'s own javadoc moved the (much larger)
     // full-rebuild validation off this same lock for (issue #5391; PR #6712 review).
-    ImmutableGraphIndex prefixReuseGraph      = null;
-    int[]               prefixReuseOrdinals   = null;
-    int                 prefixReuseGraphSize  = 0;
-    String              prefixReuseVectorProp = null;
+    ReuseCandidate prefixReuseCandidate = null;
 
     graphBuildLock.lock();
     try {
@@ -1519,6 +1530,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
             // deferred-close one. A missing manifest cannot support this: the weak node-count comparison above
             // proves nothing about WHICH records a same-sized graph describes, and a prefix of it proves even
             // less. Below the async-rebuild threshold a synchronous rebuild is already cheap, so it is left alone.
+            // vectorIndex.size(), not graphIndex.size() as rebuildGraphBeforeSearch()'s analogous check uses:
+            // graphIndex is not yet set on this path (that is the whole point - the persisted graph has not been
+            // published to it yet), so the only live-vector count available here is the index's, which is also
+            // the more conservative of the two whenever they would differ (rebuiltOrdinalToVectorId.length can
+            // be smaller after validation filtering, never larger) - "is this worth deferring" errs towards yes.
             final int[] prefix = persistedManifest != null && graphSize == persistedManifest.vectorCount()
                 && graphSize < rebuiltOrdinalToVectorId.length && graphSize > 0
                 && vectorIndex.size() >= ASYNC_REBUILD_MIN_GRAPH_SIZE
@@ -1530,10 +1546,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
               // Deliberately not done here: reuseStalePrefixGraph() does real I/O for the gap and must run
               // unlocked (see the field javadoc above). Only the decision - not the read - belongs under this
               // lock, same as every other branch in this method.
-              prefixReuseGraph = loadedGraph;
-              prefixReuseOrdinals = prefix;
-              prefixReuseGraphSize = graphSize;
-              prefixReuseVectorProp = vectorProp;
+              prefixReuseCandidate = new ReuseCandidate(loadedGraph, prefix, graphSize, vectorProp);
             } else
               LogManager.instance().log(this, Level.INFO,
                   "Persisted graph is not usable for index %s: %s - rebuilding from scratch (issues #3722, #6106)",
@@ -1589,16 +1602,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // while already holding it. Skipped when the stale graph was instead reused as a prefix above (issue
       // #6655): that already put the index to work as MUTABLE, and a synchronous rebuild here would throw
       // that work away and pay for it again.
-      if (prefixReuseGraph == null)
+      if (prefixReuseCandidate == null)
         buildGraphFromScratch();
     } finally {
       graphBuildLock.unlock();
     }
 
-    if (prefixReuseGraph != null) {
+    if (prefixReuseCandidate != null) {
       // Unlocked with respect to lock.writeLock(): reuseStalePrefixGraph() does its own graphBuildLock-serialized
       // I/O and a brief re-lock only to publish (see its javadoc).
-      reuseStalePrefixGraph(prefixReuseGraph, prefixReuseOrdinals, prefixReuseGraphSize, prefixReuseVectorProp);
+      reuseStalePrefixGraph(prefixReuseCandidate);
     }
   }
 
@@ -1627,15 +1640,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * the ordinary delta scan, rather than trading this fix's latency win for a window where they silently do not
    * come back.
    *
-   * @param loadedGraph              the graph loaded from disk, already verified against the manifest by the
-   *                                 caller
-   * @param rebuiltOrdinalToVectorId every live vector's id, in ordinal order - not only the ones the graph covers
-   * @param graphSize                how many of {@code rebuiltOrdinalToVectorId}'s leading entries the graph
-   *                                 covers; the manifest-verified prefix
-   * @param vectorProp               the vector property name, for reading the gap vectors back
+   * @param candidate the eligibility decision {@link #ensureGraphAvailable()} made under its write lock
    */
-  private void reuseStalePrefixGraph(final ImmutableGraphIndex loadedGraph, final int[] rebuiltOrdinalToVectorId,
-      final int graphSize, final String vectorProp) {
+  private void reuseStalePrefixGraph(final ReuseCandidate candidate) {
+    final ImmutableGraphIndex loadedGraph = candidate.loadedGraph();
+    final int[] rebuiltOrdinalToVectorId = candidate.liveOrdinalToVectorId();
+    final int graphSize = candidate.graphSize();
+    final String vectorProp = candidate.vectorProp();
+
     graphBuildLock.lock();
     try {
       // Double-check: graphState is volatile and this is the same fast-path re-check ensureGraphAvailable()
