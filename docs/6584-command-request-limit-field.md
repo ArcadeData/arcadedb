@@ -68,4 +68,42 @@ language).
 
 ## Test results
 
-See "Review cycles" section below for the verification run once implemented.
+- `mvn -pl server -am test -Dtest=CoreApiSpecTest` — 23/23 pass (new test proven to
+  fail against `main` first, then pass after the fix).
+- `mvn -pl server -am test -Dtest=PostCommandHandlerAutoLimitTest,PostCommandHandlerLargeContentTest,AbstractQueryHandlerTypedJsonMarkersTest`
+  — all pass (regression check on related handler behavior).
+- `PostCommandHandlerDecodeTest.javaScriptFunctionWithLogicalAndOperatorViaHTTP` fails
+  in this environment with "HTTP Port 2480 not available" — a pre-existing local port
+  conflict (another process already bound to 2480), unrelated to this change: the test
+  spins its own embedded server and doesn't touch the OpenAPI spec at all.
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/6682
+
+## Review cycles
+
+- **Cycle 1** — head `9bdf75e40b34617346e6fb00d8337e1269882d1a` (the fix commit).
+  `claude` bot review (posted as a PR issue comment, per this org's review-bot
+  behavior): **LGTM**, zero actionable items. It independently verified the root-cause
+  claim by reading `PostCommandHandler.execute()` directly, confirmed the added
+  `limit` property is "byte-for-byte identical" to `QueryRequest`'s, and called the
+  new test well-targeted ("asserts equality of type/description ... so it will
+  actually catch future divergence, not just absence"). Its one note - a shared
+  helper/constant so the `limit` property text can't drift between the two schemas
+  again - is explicitly framed as "not required for this fix" and "could be deferred
+  to whenever the broader ... parity audit ... happens", which is exactly the
+  follow-up already named in this PR's "Scope note" above. No code change applied;
+  working tree stayed empty. Treated as a clean approval.
+
+## Deferred items
+
+None requiring separate tracking. The reviewer's one optional suggestion (a shared
+`limit`-property helper to prevent `QueryRequest`/`CommandRequest` drift structurally)
+overlaps entirely with the broader `CommandRequest`/`QueryRequest` parity audit already
+called out in this doc's "Scope note" section as future follow-up work, so it is not
+duplicated into a separate notes file.
+
+## Final state
+
+`clean-approval` — 1 review cycle, LGTM, no code changes requested.
