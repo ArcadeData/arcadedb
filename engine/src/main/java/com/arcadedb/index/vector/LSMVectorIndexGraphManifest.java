@@ -204,6 +204,12 @@ public class LSMVectorIndexGraphManifest {
    * <p>
    * Cleared automatically the next time {@link #write(int, long)} or {@link #markUnusable(String)} runs, which is
    * exactly when a rebuild - deferred or not - actually completes.
+   * <p>
+   * {@code read() == null} is treated as "nothing persisted yet" and takes the {@link #UNUSABLE_VECTOR_COUNT}
+   * fallback, which is also what a transient read failure or a format-version mismatch report (both logged as
+   * WARNING by {@link #read()}, not thrown) - indistinguishable from here. Accepted rather than plumbed through:
+   * the fallback only downgrades an otherwise-valid manifest to "not usable", which forces one extra rebuild on
+   * the next load and self-heals from there, the same cost a genuinely corrupt manifest would already pay.
    */
   public void markCloseDeferred() {
     final Content existing = read();

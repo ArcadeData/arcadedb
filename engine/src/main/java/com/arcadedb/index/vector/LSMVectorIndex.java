@@ -6505,12 +6505,33 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * recoverable - {@link #ensureGraphAvailable()} builds it from scratch on the next search - only the stats
    * signal for the gap between reopen and that search is unavailable, which is the narrower of the two arms this
    * covers.
-   *
-   * @param gf the graph file captured at the top of {@link #flush()}, before this close decided to skip the build
+   * <p>
+   * Guarded by {@link #graphBuildLock} - {@code tryLock()}, not {@code lock()} - because every other writer of
+   * this manifest (the normal post-build persist, both {@code markUnusable} failure paths) already holds it via
+   * {@code buildGraphFromScratchWithRetry()}, and {@code LSMVectorIndexGraphManifest}'s own class javadoc requires
+   * callers not to write one manifest concurrently: {@code markCloseDeferred()}'s read-then-write is not atomic,
+   * so racing it against an in-flight build's completion write could clobber a just-persisted fresh
+   * manifest with stale pre-build values. An async rebuild can still be running when {@code close()} calls
+   * {@code flush()} - {@code releaseBackgroundResources()} is what cancels it, and {@code close()} runs that
+   * AFTER {@code flush()} (see the "flush FIRST, release SECOND" note below) - so the race is real, not
+   * theoretical. A plain {@code lock()} would fix that only by blocking this close on whatever that other build
+   * still has left to do, which is exactly the synchronous-close cost issue #6067/#6653 exists to avoid; skipping
+   * the write when the lock is already held is safe instead of merely convenient - a build holding the lock is,
+   * by definition, about to run its own completion write, which clears this same flag on its own.
    */
   private void markCloseTimeRebuildDeferred(final LSMVectorIndexGraphFile gf) {
-    if (gf != null)
-      gf.getManifest().markCloseDeferred();
+    if (gf == null)
+      return;
+    if (graphBuildLock.tryLock()) {
+      try {
+        gf.getManifest().markCloseDeferred();
+      } finally {
+        graphBuildLock.unlock();
+      }
+    } else
+      LogManager.instance().log(this, Level.FINE,
+          "Not recording the close-time rebuild deferral for index %s: a graph build already holds the build "
+              + "lock and its own completion will supersede this note anyway", indexName);
   }
 
   /**
