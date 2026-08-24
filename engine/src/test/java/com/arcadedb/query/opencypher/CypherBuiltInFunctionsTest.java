@@ -25,8 +25,11 @@ import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.Function;
 import com.arcadedb.function.FunctionRegistry;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.agg.PercentileContFunction;
+import com.arcadedb.function.agg.PercentileDiscFunction;
 import com.arcadedb.function.procedure.Procedure;
 import com.arcadedb.function.procedure.ProcedureRegistry;
+import com.arcadedb.function.vector.VectorCreateFunction;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.function.CypherFunctionRegistry;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
@@ -822,6 +825,22 @@ class CypherBuiltInFunctionsTest extends TestHelper {
   }
 
   @Test
+  void aggSliceDefaultsFromToZeroWhenNull() {
+    final StatelessFunction fn = CypherFunctionRegistry.get("agg.slice");
+    @SuppressWarnings("unchecked")
+    final List<Object> result = (List<Object>) fn.execute(new Object[] { List.of(1, 2, 3, 4, 5), null, 3 }, null);
+    assertThat(result).isEqualTo(List.of(1, 2, 3));
+  }
+
+  @Test
+  void aggSliceDefaultsToToListSizeWhenOmitted() {
+    final StatelessFunction fn = CypherFunctionRegistry.get("agg.slice");
+    @SuppressWarnings("unchecked")
+    final List<Object> result = (List<Object>) fn.execute(new Object[] { List.of(1, 2, 3, 4, 5), 2 }, null);
+    assertThat(result).isEqualTo(List.of(3, 4, 5));
+  }
+
+  @Test
   void aggMedian() {
     final StatelessFunction fn = CypherFunctionRegistry.get("agg.median");
     // Odd number of elements
@@ -884,6 +903,96 @@ class CypherBuiltInFunctionsTest extends TestHelper {
     @SuppressWarnings("unchecked")
     final List<Object> items = (List<Object>) result.get("items");
     assertThat(items).hasSize(2).contains("c", "e");
+  }
+
+  // Issue #6672: agg.statistics()/agg.maxItems() seeded their running max with Double.MIN_VALUE, the smallest
+  // POSITIVE double (~4.9E-324), not the most-negative double. For a dataset whose true maximum is <= 0 the seed
+  // was never beaten, so agg.statistics() reported a bogus tiny-positive max and agg.maxItems() returned a bogus
+  // value with an empty items list.
+  @Test
+  void aggStatisticsMaxOfAllNegativeValuesIsTheActualMaximum() {
+    final StatelessFunction fn = CypherFunctionRegistry.get("agg.statistics");
+    @SuppressWarnings("unchecked")
+    final Map<String, Object> result = (Map<String, Object>) fn.execute(new Object[] { List.of(-5.0, -3.0, -1.0) }, null);
+
+    assertThat(result.get("max")).isEqualTo(-1.0);
+    assertThat(result.get("min")).isEqualTo(-5.0);
+  }
+
+  @Test
+  void aggStatisticsMaxOfAllZeroValuesIsZero() {
+    final StatelessFunction fn = CypherFunctionRegistry.get("agg.statistics");
+    @SuppressWarnings("unchecked")
+    final Map<String, Object> result = (Map<String, Object>) fn.execute(new Object[] { List.of(0.0, 0.0, 0.0) }, null);
+
+    assertThat(result.get("max")).isEqualTo(0.0);
+  }
+
+  @Test
+  void aggMaxItemsOfAllNegativeValuesReturnsTheActualMaximumAndItsItems() {
+    final StatelessFunction fn = CypherFunctionRegistry.get("agg.maxItems");
+    @SuppressWarnings("unchecked")
+    final Map<String, Object> result = (Map<String, Object>) fn.execute(
+        new Object[] { List.of(-5.0, -3.0, -1.0), List.of("a", "b", "c") }, null);
+
+    assertThat(result.get("value")).isEqualTo(-1.0);
+    @SuppressWarnings("unchecked")
+    final List<Object> items = (List<Object>) result.get("items");
+    assertThat(items).containsExactly("c");
+  }
+
+  // Issue #6677: several functions cast a positional argument to (Number) with no type check, so a non-numeric
+  // argument threw a raw ClassCastException (HTTP 500) instead of a clean client type error. Fixed by routing
+  // through CypherFunctionHelper.requireNumberArgument(), the same mechanism #6609 introduced for left/right/substring.
+  // (RangeFunction, also named in #6677, already validated its arguments before this issue was filed - see #5909 -
+  // so it is not part of this fix.)
+  @Test
+  void aggNthOfNonNumericIndexIsAClientTypeErrorNotAClassCastException() {
+    final StatelessFunction fn = CypherFunctionRegistry.get("agg.nth");
+    assertThatThrownBy(() -> fn.execute(new Object[] { List.of("a", "b", "c"), List.of() }, null))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("agg.nth()")
+        .hasMessageContaining("LIST");
+  }
+
+  @Test
+  void aggSliceOfNonNumericBoundIsAClientTypeErrorNotAClassCastException() {
+    final StatelessFunction fn = CypherFunctionRegistry.get("agg.slice");
+    assertThatThrownBy(() -> fn.execute(new Object[] { List.of(1, 2, 3), "not-a-number", 2 }, null))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("agg.slice()")
+        .hasMessageContaining("STRING");
+    assertThatThrownBy(() -> fn.execute(new Object[] { List.of(1, 2, 3), 0, "not-a-number" }, null))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("agg.slice()")
+        .hasMessageContaining("STRING");
+  }
+
+  @Test
+  void percentileContOfNonNumericPercentileIsAClientTypeErrorNotAClassCastException() {
+    final StatelessFunction fn = new PercentileContFunction();
+    assertThatThrownBy(() -> fn.execute(new Object[] { 3.0, List.of() }, null))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("percentileCont()")
+        .hasMessageContaining("LIST");
+  }
+
+  @Test
+  void percentileDiscOfNonNumericPercentileIsAClientTypeErrorNotAClassCastException() {
+    final StatelessFunction fn = new PercentileDiscFunction();
+    assertThatThrownBy(() -> fn.execute(new Object[] { 3.0, List.of() }, null))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("percentileDisc()")
+        .hasMessageContaining("LIST");
+  }
+
+  @Test
+  void vectorCreateOfNonNumericDimensionIsAClientTypeErrorNotAClassCastException() {
+    final StatelessFunction fn = new VectorCreateFunction();
+    assertThatThrownBy(() -> fn.execute(new Object[] { List.of(1.0, 2.0), List.of() }, null))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("vector_create()")
+        .hasMessageContaining("LIST");
   }
 
   // ===================== NODE FUNCTION TESTS =====================

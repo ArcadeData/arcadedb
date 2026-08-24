@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.agg;
 
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.List;
@@ -54,7 +55,7 @@ public class AggNth extends AbstractAggFunction {
       return null;
 
     final List<Object> list = toObjectList(args[0]);
-    final int index = ((Number) args[1]).intValue();
+    final int index = CypherFunctionHelper.requireNumberArgument(args[1], getName()).intValue();
 
     if (index < 0 || index >= list.size())
       return null;

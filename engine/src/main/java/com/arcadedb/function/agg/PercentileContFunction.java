@@ -20,6 +20,7 @@ package com.arcadedb.function.agg;
 
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
@@ -55,7 +56,7 @@ public class PercentileContFunction implements StatelessFunction {
     if (percentile < 0) {
       if (args[1] == null)
         throw new CommandExecutionException("percentileCont() percentile argument must not be null");
-      percentile = ((Number) args[1]).doubleValue();
+      percentile = CypherFunctionHelper.requireNumberArgument(args[1], getName()).doubleValue();
       if (percentile < 0.0 || percentile > 1.0)
         throw new CommandExecutionException("NumberOutOfRange: percentile must be between 0.0 and 1.0, got: " + percentile);
     }

@@ -70,7 +70,7 @@ public class AggStatistics extends AbstractAggFunction {
     final long count = values.size();
     double sum = 0.0;
     double min = Double.MAX_VALUE;
-    double max = Double.MIN_VALUE;
+    double max = Double.NEGATIVE_INFINITY; // NOT Double.MIN_VALUE, which is the smallest POSITIVE double (issue #6672)
 
     for (final Double value : values) {
       sum += value;
