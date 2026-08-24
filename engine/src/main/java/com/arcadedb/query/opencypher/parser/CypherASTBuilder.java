@@ -1112,6 +1112,19 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   }
 
   /**
+   * Visits a GQL standalone {@code FILTER (WHERE)? expression} clause (issue #6574, ISO/IEC
+   * 39075:2024 GQL). Semantically equivalent to a leading WHERE: parses the predicate as a
+   * boolean expression, simplifying boolean constants the same way {@link #visitWhereClause}
+   * does.
+   */
+  public WhereClause visitFilterClause(final Cypher25Parser.FilterClauseContext ctx) {
+    // Grammar: FILTER WHERE? expression
+    final BooleanExpression parsed = parseBooleanExpression(ctx.expression());
+    final BooleanExpression condition = (BooleanExpression) AST_REWRITER.rewrite(parsed);
+    return new WhereClause(condition);
+  }
+
+  /**
    * Parse an expression context into a BooleanExpression for WHERE clauses.
    * Handles logical operators (AND, OR, NOT), comparisons, IS NULL, IN, regex, etc.
    */
