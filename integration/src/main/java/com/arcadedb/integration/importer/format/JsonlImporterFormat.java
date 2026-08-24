@@ -546,6 +546,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     if (pendingLinkReconciliation.isEmpty())
       return;
 
+    int reconciled = 0;
     for (final Map.Entry<RID, Set<String>> entry : pendingLinkReconciliation.entrySet()) {
       final Record record = database.lookupByRID(entry.getKey(), true);
       if (!(record instanceof Document document))
@@ -611,6 +612,15 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
       if (changed)
         mutable.save();
+
+      // Mirrors the periodic commit granularity of the main import loop (see load()): without this, every record
+      // touched here rides in the single transaction still open when the main loop finished, on top of the batches
+      // already committed for the initial load, producing one very large WAL transaction for a restore with many
+      // forward-referencing LINK properties.
+      if (++reconciled % 1000 == 0) {
+        database.commit();
+        database.begin();
+      }
     }
 
     pendingLinkReconciliation.clear();
