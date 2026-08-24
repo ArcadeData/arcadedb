@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.schema.Type;
 
 import java.util.*;
 
@@ -43,11 +44,14 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
     private final int hashCode;
 
     DistinctKey(final Result result) {
-      // Extract only the properties (not the element reference, metadata, etc.)
+      // Extract only the properties (not the element reference, metadata, etc.), normalising numeric values to a
+      // canonical form so that the same logical number represented with different boxed numeric types (e.g.
+      // Integer(1) vs Long(1)) is deduplicated as one value instead of splitting into separate rows (issue #6676),
+      // matching the canonicalization SQL GROUP BY already applies (AggregateProjectionCalculationStep.GroupByKey).
       final Set<String> propertyNames = result.getPropertyNames();
       this.properties = new HashMap<>(propertyNames.size());
       for (final String propName : propertyNames) {
-        this.properties.put(propName, result.getProperty(propName));
+        this.properties.put(propName, Type.normalizeNumberForKey(result.getProperty(propName)));
       }
       // Pre-compute hashCode for performance
       this.hashCode = properties.hashCode();

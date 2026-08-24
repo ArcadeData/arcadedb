@@ -331,6 +331,33 @@ class DistinctExecutionStepTest extends TestHelper {
     result.close();
   }
 
+  /**
+   * Issue #6676: {@code DISTINCT} keyed on the raw boxed property value, so a schemaless/mixed-type column
+   * carrying the same logical number as different Java numeric types (Integer vs Long) split into separate
+   * rows instead of collapsing, unlike SQL GROUP BY (issue #4516) which already canonicalizes.
+   */
+  @Test
+  void shouldCollapseNumericallyEqualCrossTypeValues() {
+    database.getSchema().createDocumentType("MixedNumeric");
+
+    database.transaction(() -> {
+      database.newDocument("MixedNumeric").set("v", 1).save();   // Integer
+      database.newDocument("MixedNumeric").set("v", 1L).save();  // Long
+      database.newDocument("MixedNumeric").set("v", 2).save();
+    });
+
+    final ResultSet result = database.query("sql", "SELECT DISTINCT v FROM MixedNumeric");
+
+    int count = 0;
+    while (result.hasNext()) {
+      result.next();
+      count++;
+    }
+
+    assertThat(count).isEqualTo(2); // 1 (Integer) and 1 (Long) collapse into one row, plus 2
+    result.close();
+  }
+
   @Test
   void shouldHandleDistinctWithNullValues() {
     database.getSchema().createDocumentType("Data");

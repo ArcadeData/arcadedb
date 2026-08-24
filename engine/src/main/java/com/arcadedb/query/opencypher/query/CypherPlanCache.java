@@ -39,6 +39,12 @@ import java.util.Map;
  * - Eliminates plan building overhead (50-100ms per query)
  * <p>
  * Total savings: 200-500ms per cached query execution.
+ * <p>
+ * {@link #put} and {@link #invalidate()} synchronize on {@code this}, so the {@code lastInvalidation} check and the
+ * insert into {@code cache} happen atomically with respect to a concurrent invalidation (issue #6671). {@link #get}
+ * does not need that lock - it never reads {@link #lastInvalidation} - and instead relies on {@code cache} being a
+ * {@link Collections#synchronizedMap} for its own thread safety, so the frequent read path stays uncontended by the
+ * much rarer {@code put}/{@code invalidate}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -71,12 +77,22 @@ public class CypherPlanCache {
   }
 
   /**
-   * Puts a physical plan into the cache.
+   * Puts a physical plan into the cache, unless a DDL has invalidated the cache since {@code planningStart} - the
+   * moment the caller began building this plan. Without this guard a plan built against a schema that a concurrent
+   * {@code DROP INDEX}/{@code ALTER TYPE}/create-index already made stale could be cached right after the
+   * invalidation that was supposed to keep it out, leaving future executions running against a dropped/renamed
+   * bucket or index (or missing a new one) until the next invalidation happens to clear it (issue #6671). The check
+   * and the insert run under the same lock as {@link #invalidate()}, so a concurrent invalidation is guaranteed to
+   * either be observed here (the put is skipped) or to run after this put returns (and clear it right back out).
    *
-   * @param query the OpenCypher query string (cache key)
-   * @param plan  the optimized PhysicalPlan to cache
+   * @param query         the OpenCypher query string (cache key)
+   * @param plan          the optimized PhysicalPlan to cache
+   * @param planningStart the timestamp (as returned by {@link System#currentTimeMillis()}) taken before planning
+   *                      began
    */
-  public void put(final String query, final PhysicalPlan plan) {
+  public synchronized void put(final String query, final PhysicalPlan plan, final long planningStart) {
+    if (lastInvalidation >= planningStart)
+      return;
     cache.put(query, plan);
   }
 

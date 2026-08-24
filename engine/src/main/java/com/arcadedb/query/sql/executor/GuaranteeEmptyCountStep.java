@@ -24,16 +24,22 @@ import com.arcadedb.query.sql.parser.ProjectionItem;
 
 import java.util.NoSuchElementException;
 
+/**
+ * Guarantees that a no-GROUP-BY aggregation (count(*), sum(), avg(), min(), max(), ...) always produces exactly one
+ * row, even when the upstream produced none. Without this step {@link AggregateProjectionCalculationStep} emits no
+ * row at all over an empty input, which is inconsistent with the single-row-with-identity-value semantics SQL callers
+ * expect from a scalar aggregate (issue #6680).
+ */
 public class GuaranteeEmptyCountStep extends AbstractExecutionStep {
 
-  private final ProjectionItem item;
-  private final Projection     preAggregateProjection;
-  private       boolean        executed = false;
+  private final Projection aggregateProjection;
+  private final Projection preAggregateProjection;
+  private       boolean    executed = false;
 
-  public GuaranteeEmptyCountStep(final ProjectionItem countItem, final Projection preAggregateProjection,
+  public GuaranteeEmptyCountStep(final Projection aggregateProjection, final Projection preAggregateProjection,
       final CommandContext context) {
     super(context);
-    this.item = countItem;
+    this.aggregateProjection = aggregateProjection;
     this.preAggregateProjection = preAggregateProjection;
   }
 
@@ -60,7 +66,17 @@ public class GuaranteeEmptyCountStep extends AbstractExecutionStep {
             return upstream.next();
 
           final ResultInternal result = new ResultInternal(context.getDatabase());
-          result.setProperty(item.getProjectionAliasAsString(), 0L);
+          for (final ProjectionItem item : aggregateProjection.getItems()) {
+            final Object value = item.isAggregate(context) ?
+                // No row was ever aggregated: read the aggregate function's identity value (e.g. 0 for count()/sum(),
+                // null for min()/max()/avg()) without ever calling apply(), consistent with a group whose rows are
+                // all-null.
+                item.getAggregationContext(context).getFinalValue() :
+                // A non-aggregate item mixed into a GROUP-BY-less aggregation projection (e.g. a constant) has no row
+                // to evaluate against.
+                item.execute((Result) null, context);
+            result.setProperty(item.getProjectionAliasAsString(), value);
+          }
           if (preAggregateProjection != null) {
             for (final ProjectionItem preAggItem : preAggregateProjection.getItems()) {
               result.setProperty(preAggItem.getProjectionAliasAsString(), preAggItem.execute((Result) null, context));
@@ -81,7 +97,8 @@ public class GuaranteeEmptyCountStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new GuaranteeEmptyCountStep(item.copy(), preAggregateProjection != null ? preAggregateProjection.copy() : null, context);
+    return new GuaranteeEmptyCountStep(aggregateProjection.copy(), preAggregateProjection != null ? preAggregateProjection.copy() : null,
+        context);
   }
 
   public boolean canBeCached() {
@@ -90,6 +107,6 @@ public class GuaranteeEmptyCountStep extends AbstractExecutionStep {
 
   @Override
   public String prettyPrint(final int depth, final int indent) {
-    return ExecutionStepInternal.getIndent(depth, indent) + "+ GUARANTEE FOR ZERO COUNT ";
+    return ExecutionStepInternal.getIndent(depth, indent) + "+ GUARANTEE SINGLE ROW FOR EMPTY AGGREGATION ";
   }
 }

@@ -18,6 +18,8 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.function.DistinctNumericKey;
+
 import java.util.Objects;
 
 /**
@@ -25,18 +27,29 @@ import java.util.Objects;
  * aggregation steps (issue #6629: a row-multiplying clause upstream of a GROUP BY, such as
  * UNWIND, must still collapse into one output row per distinct key combination). Caches its
  * hash code since the same instance is hashed on every row of its group.
+ * <p>
+ * Equality/hashing is computed on {@link DistinctNumericKey#canonicalize(Object)} of each value rather than on the
+ * raw boxed value, so that the same logical number represented with different Java numeric types (e.g. Integer 1 vs
+ * Long 1 vs Double 1.0) groups together instead of splitting, matching Cypher's own {@code =} operator and the
+ * sibling DISTINCT paths that already canonicalize this way (issue #6676, following #5789). {@link #values} itself
+ * stays the raw, first-seen values, since those - not the canonical form - are what the group's output row reports.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class GroupKeyValues {
   final Object[] values;
-  private final int hash;
+  private final Object[] canonicalValues;
+  private final int      hash;
 
   GroupKeyValues(final Object[] values) {
     this.values = values;
+    this.canonicalValues = new Object[values.length];
     int h = 1;
-    for (final Object v : values)
-      h = 31 * h + (v == null ? 0 : v.hashCode());
+    for (int i = 0; i < values.length; i++) {
+      final Object canonical = DistinctNumericKey.canonicalize(values[i]);
+      canonicalValues[i] = canonical;
+      h = 31 * h + (canonical == null ? 0 : canonical.hashCode());
+    }
     this.hash = h;
   }
 
@@ -46,10 +59,10 @@ final class GroupKeyValues {
       return true;
     if (!(o instanceof GroupKeyValues that))
       return false;
-    if (hash != that.hash || values.length != that.values.length)
+    if (hash != that.hash || canonicalValues.length != that.canonicalValues.length)
       return false;
-    for (int i = 0; i < values.length; i++)
-      if (!Objects.equals(values[i], that.values[i]))
+    for (int i = 0; i < canonicalValues.length; i++)
+      if (!Objects.equals(canonicalValues[i], that.canonicalValues[i]))
         return false;
     return true;
   }

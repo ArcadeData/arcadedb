@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.function.DistinctNumericKey;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.opencypher.ast.*;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
@@ -145,10 +146,14 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
       final FunctionCallExpression[] aggExpressions, final String[] aggOutputNames, final int aggCount,
       final CommandContext context, final int nRecords) {
 
-    // Map: raw grouping value -> array of aggregation functions (indexed, not HashMap)
+    // Map: canonicalized grouping value -> group state (representative raw key + aggregation functions).
+    // Keying on the canonicalized value (DistinctNumericKey#canonicalize) rather than the raw boxed value means the
+    // same logical number represented with different Java numeric types (Integer 1 vs Long 1 vs Double 1.0) groups
+    // together instead of splitting, matching Cypher's own `=` operator and the sibling DISTINCT paths (#5789,
+    // issue #6676). The group's raw, first-seen key value is kept in SingleKeyGroupState for the output row.
     // LinkedHashMap preserves insertion order, needed because ORDER BY in WITH clauses
     // may fail to resolve aggregation expressions and fall back to iteration order
-    final Map<Object, StatelessFunction[]> groups = new LinkedHashMap<>();
+    final Map<Object, SingleKeyGroupState> groups = new LinkedHashMap<>();
 
     final ResultSet prevResults = prev.syncPull(context, CONFIGURED_BATCH_SIZE != null ? CONFIGURED_BATCH_SIZE : nRecords);
 
@@ -162,15 +167,17 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
 
         // Evaluate grouping key directly (no wrapper)
         final Object keyValue = evaluator.evaluate(groupingKey.expression, inputRow, context);
+        final Object canonicalKey = DistinctNumericKey.canonicalize(keyValue);
 
         // Get or create aggregators for this group using array (not HashMap)
-        StatelessFunction[] aggregators = groups.get(keyValue);
-        if (aggregators == null) {
-          aggregators = new StatelessFunction[aggCount];
+        SingleKeyGroupState group = groups.get(canonicalKey);
+        if (group == null) {
+          final StatelessFunction[] aggregators = new StatelessFunction[aggCount];
           for (int i = 0; i < aggCount; i++)
             aggregators[i] = functionFactory.getFunctionExecutor(
                 aggExpressions[i].getFunctionName(), aggExpressions[i].isDistinct());
-          groups.put(keyValue, aggregators);
+          group = new SingleKeyGroupState(keyValue, aggregators);
+          groups.put(canonicalKey, group);
         }
 
         // Feed row to aggregators using direct array access
@@ -179,7 +186,7 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
           final Object[] args = new Object[funcArgs.size()];
           for (int j = 0; j < args.length; j++)
             args[j] = evaluator.evaluate(funcArgs.get(j), inputRow, context);
-          aggregators[i].execute(args, context);
+          group.aggregators[i].execute(args, context);
         }
       } finally {
         if (context.isProfiling())
@@ -191,13 +198,12 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
     final List<Result> results = new ArrayList<>(groups.size());
     final long beginBuild = context.isProfiling() ? System.nanoTime() : 0;
     try {
-      for (final Map.Entry<Object, StatelessFunction[]> entry : groups.entrySet()) {
+      for (final SingleKeyGroupState group : groups.values()) {
         final ResultInternal groupResult = new ResultInternal();
-        groupResult.setProperty(groupingKey.outputName, entry.getKey());
+        groupResult.setProperty(groupingKey.outputName, group.representativeKey);
 
-        final StatelessFunction[] aggregators = entry.getValue();
         for (int i = 0; i < aggCount; i++)
-          groupResult.setProperty(aggOutputNames[i], aggregators[i].getAggregatedResult());
+          groupResult.setProperty(aggOutputNames[i], group.aggregators[i].getAggregatedResult());
 
         results.add(groupResult);
       }
@@ -206,6 +212,20 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
         cost += System.nanoTime() - beginBuild;
     }
     return results;
+  }
+
+  /**
+   * Holds the aggregation functions for a single-key group together with the raw, first-seen grouping value used
+   * for the output row (the map itself is keyed on the canonicalized value - see {@link #aggregateSingleKey}).
+   */
+  private static final class SingleKeyGroupState {
+    final Object              representativeKey;
+    final StatelessFunction[] aggregators;
+
+    SingleKeyGroupState(final Object representativeKey, final StatelessFunction[] aggregators) {
+      this.representativeKey = representativeKey;
+      this.aggregators = aggregators;
+    }
   }
 
   /**

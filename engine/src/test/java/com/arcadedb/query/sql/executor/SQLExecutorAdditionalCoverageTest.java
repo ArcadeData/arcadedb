@@ -357,6 +357,57 @@ class SQLExecutorAdditionalCoverageTest extends TestHelper {
     rs.close();
   }
 
+  /**
+   * Issue #6680: a non-count aggregate (sum/avg/min/max) over an empty input used to return zero rows instead of the
+   * single row with a null/identity value that SQL callers expect (and that count(*) already returns).
+   */
+  @Test
+  void nonCountAggregatesOnEmptyTypeReturnSingleRow() {
+    database.getSchema().createDocumentType("EmptyAggType");
+
+    try (final ResultSet rs = database.query("sql", "SELECT max(x) as m FROM EmptyAggType")) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result item = rs.next();
+      assertThat(item.<Object>getProperty("m")).isNull();
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    try (final ResultSet rs = database.query("sql", "SELECT min(x) as m FROM EmptyAggType")) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<Object>getProperty("m")).isNull();
+    }
+
+    try (final ResultSet rs = database.query("sql", "SELECT avg(x) as a FROM EmptyAggType")) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<Object>getProperty("a")).isNull();
+    }
+
+    try (final ResultSet rs = database.query("sql", "SELECT sum(x) as s FROM EmptyAggType")) {
+      assertThat(rs.hasNext()).isTrue();
+      // Consistent with a group whose rows are all-null: sum() never sees a non-null value and its identity is 0.
+      assertThat(rs.next().<Number>getProperty("s")).isEqualTo(0);
+    }
+
+    // Mixed with count(*): both aggregates must land in the same synthesized row.
+    try (final ResultSet rs = database.query("sql", "SELECT count(*) as c, max(x) as m FROM EmptyAggType")) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result item = rs.next();
+      assertThat(item.<Long>getProperty("c")).isEqualTo(0L);
+      assertThat(item.<Object>getProperty("m")).isNull();
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    // A non-aggregate field column mixed with count(*) and no GROUP BY: the field has no group to bind to over an
+    // empty input, so it resolves to null rather than throwing - the synthesized row still carries the aggregate.
+    try (final ResultSet rs = database.query("sql", "SELECT x, count(*) as c FROM EmptyAggType")) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result item = rs.next();
+      assertThat(item.<Object>getProperty("x")).isNull();
+      assertThat(item.<Long>getProperty("c")).isEqualTo(0L);
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
   // --- EmptyDataGeneratorStep ---
   @Test
   void selectWithoutTarget() {

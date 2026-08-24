@@ -30,6 +30,7 @@ import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.database.QueryMetricsRecorder;
 import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.exception.CauseChain;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.ErrorCategory;
@@ -668,7 +669,8 @@ public class PostgresNetworkExecutor extends Thread {
           resultSet = database.command(query.language, query.query, server.getConfiguration());
         }
       }
-      final List<Result> cachedResultSet = browseAndCacheResultSet(resultSet, 0);
+      final List<Result> cachedResultSet = browseAndCacheBoundedResultSet(resultSet,
+          GlobalConfiguration.POSTGRES_SIMPLE_QUERY_MAX_ROWS.getValueAsInteger());
       profile.addEngineNanos(System.nanoTime() - engineStart);
 
       final long serStart = System.nanoTime();
@@ -765,6 +767,51 @@ public class PostgresNetworkExecutor extends Thread {
           break;
         }
       }
+      return cachedResultSet;
+    }
+  }
+
+  /**
+   * Browses and caches a result set for the simple-query ('Q' message) protocol path, refusing (rather than
+   * silently truncating) a result larger than {@code maxRows} - and stopping the scan as soon as that is known,
+   * rather than paying to read the rest of an oversized source just to reject it.
+   * <p>
+   * Unlike the extended query protocol - where a portal's {@code Execute} message carries its own client-chosen
+   * max-rows and a limit hit is a normal, expected {@code PortalSuspended} the client explicitly asked for by
+   * fetching in batches - the simple-query protocol has no such mechanism: a 'Q' message always means "give me
+   * the complete result". This path is also why the whole result had to be held in memory in the first place:
+   * determining the row description (the union of columns and their types across heterogeneous/schemaless rows)
+   * genuinely requires having seen every row before the first one can be sent, since Postgres's wire protocol
+   * fixes the column set in {@code RowDescription}, sent before any {@code DataRow}.
+   * <p>
+   * Aborting the scan early is safe for a write statement too: {@code UpdateExecutionPlan.executeInternal()} (and
+   * {@code DeleteExecutionPlan}, which extends it) fully executes every matched row's write and buffers the whole
+   * {@code RETURN AFTER}/{@code RETURN BEFORE} result internally <em>before</em> {@code UpdateStatement.execute()}
+   * / {@code DeleteStatement.execute()} ever return a {@link ResultSet} to this method - so by the time this loop
+   * runs, an {@code UPDATE}/{@code DELETE} ... {@code RETURN} statement has already fully applied every write
+   * regardless of how many rows of its result this loop goes on to pull. Stopping early here only shortens how
+   * much of that already-complete result gets copied into {@code cachedResultSet}; it can never leave a write
+   * half-done.
+   *
+   * @param maxRows the maximum number of rows to buffer, 0 = unlimited (matches {@link GlobalConfiguration#POSTGRES_SIMPLE_QUERY_MAX_ROWS})
+   */
+  private List<Result> browseAndCacheBoundedResultSet(final ResultSet resultSet, final int maxRows) {
+    try (resultSet) {
+      final List<Result> cachedResultSet = new ArrayList<>();
+      while (resultSet.hasNext()) {
+        final Result row = resultSet.next();
+        if (row == null)
+          continue;
+
+        cachedResultSet.add(row);
+
+        if (maxRows > 0 && cachedResultSet.size() > maxRows)
+          throw new CommandExecutionException(
+              "Result set exceeds the configured limit of " + maxRows + " rows for the Postgres simple-query protocol ("
+                  + GlobalConfiguration.POSTGRES_SIMPLE_QUERY_MAX_ROWS.getKey()
+                  + "); use the extended query protocol with a bounded portal fetch size for large result sets");
+      }
+
       return cachedResultSet;
     }
   }
