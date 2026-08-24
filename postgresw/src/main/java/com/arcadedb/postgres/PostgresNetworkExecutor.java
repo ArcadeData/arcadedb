@@ -1794,10 +1794,13 @@ public class PostgresNetworkExecutor extends Thread {
       // #6660 originally applied (105cdbb0b8), reinstated here for this one remaining path that can reach it -
       // the preparedStatements-only redesign above made the reset a no-op for its own template source, since
       // that source's `executed` is never true for a real query, but did not make it a no-op for this fallback.
-      // Gated on sqlStatement != null for the same reason as #6660: BEGIN/COMMIT/ROLLBACK and a resolved catalog
-      // answer precompute their fixed response during Parse via setEmptyResultSet()/direct assignment, and must
-      // not be reset before Execute ever sees them.
-      if (portal.executed && portal.sqlStatement != null) {
+      // Gated on sqlStatement != null (a real, engine-parsed query) OR catalogQuery (a catalog query whose
+      // filters are bound parameters, deferred by parseCommand to be answered - and genuinely re-executed - in
+      // executeCommand once the values arrive) - both are actually re-run per Execute and can go stale exactly
+      // like #6660. This deliberately excludes BEGIN/COMMIT/ROLLBACK and a RESOLVED (parameter-less) catalog
+      // answer, which precompute their fixed response once during Parse via setEmptyResultSet()/direct
+      // assignment and must not be reset before Execute ever sees them.
+      if (portal.executed && (portal.sqlStatement != null || portal.catalogQuery)) {
         portal.executed = false;
         portal.fullResultSet = null;
         portal.cachedResultSet = null;

@@ -332,6 +332,75 @@ public class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
   }
 
   /**
+   * Regression test for a review finding on PR #6658 (2026-08-24, cycle 5): the reset added in {@link
+   * #bindFallbackOnAnUnknownSourceStatementReRunsInsteadOfServingTheStaleExecutedPortal}'s fix was gated on
+   * {@code portal.sqlStatement != null}, which correctly excludes BEGIN/COMMIT/ROLLBACK and a RESOLVED
+   * (parameter-less) catalog answer - both precomputed once during Parse - but also, unintentionally, a
+   * DEFERRED catalog query ({@code portal.catalogQuery = true}, set by {@code parseCommand()} when the query
+   * names an emulated catalog relation - {@code pg_class} here - but its filter is a bound parameter whose
+   * value only arrives with Bind). That case's {@code sqlStatement} is null too, but unlike BEGIN/COMMIT/
+   * ROLLBACK it genuinely re-runs the query per Execute in {@code executeCommand()}'s {@code
+   * if (portal.catalogQuery)} branch, so it can go stale through {@code bindCommand()}'s fallback exactly like
+   * the plain-SQL case, just missed by the original gate. Confirmed failing without {@code || portal
+   * .catalogQuery} in the gate (second run replays the stale one-row answer instead of the two rows a type
+   * created in between should have added).
+   */
+  @Test
+  void bindFallbackOnAnUnknownSourceStatementReRunsADeferredCatalogQueryTooNotJustPlainSql() throws Exception {
+    try (final Socket socket = new Socket()) {
+      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+
+      sendStartupMessage(out, "root", getDatabaseName());
+      readMessage(in); // AuthenticationCleartextPassword
+      sendPasswordMessage(out, DEFAULT_PASSWORD_FOR_TESTS);
+      readMessageOfType(in, 'Z'); // drain AuthenticationOk/BackendKeyData/ParameterStatus.../ReadyForQuery
+
+      runSimpleQueryToCompletion(out, in, "CREATE DOCUMENT TYPE CatalogFB6458First IF NOT EXISTS");
+
+      // $1 is detected from the query text alone (parseCommand()'s placeholder-detection fallback, since this
+      // Parse declares paramCount=0 like every real client using the simple wire helpers here) and typed
+      // VARCHAR, which is what makes parseCommand() defer this to portal.catalogQuery = true instead of
+      // resolving it immediately: a query naming an emulated catalog relation (pg_class) whose filter is a
+      // bound parameter, mirroring the shape pgjdbc's DatabaseMetaData table/column lookups actually send.
+      sendParse(out, "SELECT relname FROM pg_class WHERE relname LIKE $1");
+      assertThat(readOneMessage(in).type).as("ParseComplete").isEqualTo('1');
+
+      // First Bind+Execute: a normal Bind naming the real (unnamed) statement, filtered to just the one type
+      // created so far.
+      sendBindWithOneTextParam(out, "PCQ1", "", "CatalogFB6458%");
+      assertThat(readOneMessage(in).type).as("BindComplete").isEqualTo('2');
+      sendExecute(out, "PCQ1", 0);
+      sendSync(out);
+      assertThat(readOneMessage(in).type).as("RowDescription - first execution of this portal").isEqualTo('T');
+      assertThat(readNextBatchOfStrings(in, 1)).as("first run matches only the one type created so far")
+          .containsExactly("CatalogFB6458First");
+      assertThat(readOneMessage(in).type).as("CommandComplete - fully drained").isEqualTo('C');
+      assertThat(readOneMessage(in).type).as("ReadyForQuery closes this Sync").isEqualTo('Z');
+
+      // A second matching type appears between the two Binds, so a stale vs. fresh catalog answer is observable.
+      runSimpleQueryToCompletion(out, in, "CREATE DOCUMENT TYPE CatalogFB6458Second IF NOT EXISTS");
+
+      // Second Bind on the SAME portal name, naming a source prepared statement that was never Parsed -
+      // bindCommand()'s preparedStatements.get(...) lookup misses, so it falls back to portals.get(portalName),
+      // which is the already-executed PCQ1 catalog-query portal from above.
+      sendBindWithOneTextParam(out, "PCQ1", "never-parsed-statement-name", "CatalogFB6458%");
+      assertThat(readOneMessage(in).type).as("BindComplete").isEqualTo('2');
+      sendExecute(out, "PCQ1", 0);
+      sendSync(out);
+      assertThat(readOneMessage(in).type)
+          .as("RowDescription again - this must be a fresh execution, not the stale first run replayed")
+          .isEqualTo('T');
+      assertThat(readNextBatchOfStrings(in, 2))
+          .as("re-runs the catalog query and picks up the type created in between, instead of replaying the stale one-row answer")
+          .containsExactlyInAnyOrder("CatalogFB6458First", "CatalogFB6458Second");
+      assertThat(readOneMessage(in).type).as("CommandComplete - fully drained").isEqualTo('C');
+      assertThat(readOneMessage(in).type).as("ReadyForQuery closes this Sync").isEqualTo('Z');
+    }
+  }
+
+  /**
    * Regression test for the CodeRabbit review finding on PR #6658: {@code bindCommand()} used to look up the
    * portal to bind by the PREPARED STATEMENT's name and store that exact object under the new portal name too
    * - so two portal names bound from the same statement were not independent portals at all, just two names
@@ -543,13 +612,31 @@ public class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
   }
 
   private static int parseSingleIntColumnDataRow(final byte[] payload) throws Exception {
+    return Integer.parseInt(parseSingleStringColumnDataRow(payload));
+  }
+
+  /**
+   * Same shape as {@link #readNextBatchOfIds} but for a single VARCHAR column (the catalog-query test's
+   * {@code relname}), read as text rather than parsed into an int.
+   */
+  private static List<String> readNextBatchOfStrings(final DataInputStream in, final int expectedCount) throws Exception {
+    final List<String> values = new ArrayList<>(expectedCount);
+    for (int i = 0; i < expectedCount; i++) {
+      final Msg m = readOneMessage(in);
+      assertThat(m.type).as("row %d of this batch must be a DataRow ('D'), sent before any terminator", i).isEqualTo('D');
+      values.add(parseSingleStringColumnDataRow(m.payload));
+    }
+    return values;
+  }
+
+  private static String parseSingleStringColumnDataRow(final byte[] payload) throws Exception {
     final DataInputStream p = new DataInputStream(new ByteArrayInputStream(payload));
     final int fieldCount = p.readUnsignedShort();
     assertThat(fieldCount).as("this query projects exactly one column").isEqualTo(1);
     final int len = p.readInt();
     final byte[] valueBytes = new byte[len];
     p.readFully(valueBytes);
-    return Integer.parseInt(new String(valueBytes, StandardCharsets.UTF_8));
+    return new String(valueBytes, StandardCharsets.UTF_8);
   }
 
   private static void runSimpleQueryToCompletion(final DataOutputStream out, final DataInputStream in, final String sql) throws Exception {
@@ -597,6 +684,35 @@ public class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
     body.write(0); // int16 numParamFormatCodes = 0
     body.write(0);
     body.write(0); // int16 numParamValues = 0
+    body.write(0);
+    body.write(0); // int16 numResultFormatCodes = 0 (all text)
+
+    final byte[] bodyBytes = body.toByteArray();
+    out.writeByte('B');
+    out.writeInt(4 + bodyBytes.length);
+    out.write(bodyBytes);
+    out.flush();
+  }
+
+  /**
+   * Same as {@link #sendBind(DataOutputStream, String, String)} but binds exactly one text-format parameter
+   * value, for a query with a single {@code $1} placeholder.
+   */
+  private static void sendBindWithOneTextParam(final DataOutputStream out, final String portalName,
+      final String sourcePreparedStatement, final String paramValue) throws Exception {
+    final byte[] paramBytes = paramValue.getBytes(StandardCharsets.UTF_8);
+    final ByteArrayOutputStream body = new ByteArrayOutputStream();
+    writeCString(body, portalName);
+    writeCString(body, sourcePreparedStatement);
+    body.write(0);
+    body.write(0); // int16 numParamFormatCodes = 0 (all text)
+    body.write(0);
+    body.write(1); // int16 numParamValues = 1
+    body.write((paramBytes.length >>> 24) & 0xFF);
+    body.write((paramBytes.length >>> 16) & 0xFF);
+    body.write((paramBytes.length >>> 8) & 0xFF);
+    body.write(paramBytes.length & 0xFF);
+    body.write(paramBytes);
     body.write(0);
     body.write(0); // int16 numResultFormatCodes = 0 (all text)
 
