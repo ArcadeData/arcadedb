@@ -69,6 +69,7 @@ import io.micrometer.core.instrument.Metrics;
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
+import com.arcadedb.utility.StringUtils;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -2096,35 +2097,52 @@ public class PostgresNetworkExecutor extends Thread {
     }
   }
 
-  private void setConfiguration(final String query) {
-    final String q = query.substring("SET ".length());
+  /**
+   * Parses a Postgres {@code SET <param> = <value>} or {@code SET <param> TO <value>} command into its
+   * {@code {paramName, value}} pair. Splits on the FIRST separator only, so a value containing a further
+   * '=' (e.g. a connection string) is kept whole instead of truncated (issue #6423). {@code paramName} is
+   * lower-cased for case-insensitive comparison; a quoted {@code value} has its surrounding quotes
+   * stripped. Returns null when the command has neither a '=' nor a ' TO ' separator.
+   */
+  static String[] parseSetCommand(final String query) {
+    final int setLength = "SET ".length();
+    // Use original query to preserve case of values
+    final String q = query.substring(setLength);
 
-    // Try to split by either '=' or ' TO ' (case-insensitive)
-    String[] parts = q.split("=");
+    String[] parts = StringUtils.splitKeyValue(q);
+    if (parts == null)
+      // Fall back to a case-insensitive " TO " split, also on the first occurrence only
+      parts = q.split("(?i)\\s+TO\\s+", 2);
+
     if (parts.length < 2)
-      parts = q.split("(?i)\\s+TO\\s+");
+      return null;
 
-    if (parts.length < 2) {
+    final String paramName = parts[0].trim().toLowerCase(Locale.ENGLISH);
+    String value = parts[1].trim();
+    if (value.startsWith("'") || value.startsWith("\""))
+      value = value.substring(1, value.length() - 1);
+
+    return new String[] { paramName, value };
+  }
+
+  private void setConfiguration(final String query) {
+    final String[] parts = parseSetCommand(query);
+    if (parts == null) {
       LogManager.instance().log(this, Level.WARNING, "Invalid SET command format: %s", query);
       return;
     }
 
-    parts[0] = parts[0].trim();
-    parts[1] = parts[1].trim();
+    final String paramName = parts[0];
+    final String value = parts[1];
 
-    if (parts[1].startsWith("'") || parts[1].startsWith("\""))
-      parts[1] = parts[1].substring(1, parts[1].length() - 1);
-
-    // Use case-insensitive comparison for parameter names
-    final String paramName = parts[0].toLowerCase(Locale.ENGLISH);
     if ("datestyle".equals(paramName)) {
-      if ("ISO".equalsIgnoreCase(parts[1]))
+      if ("ISO".equalsIgnoreCase(value))
         database.getSchema().setDateTimeFormat(DateUtils.DATE_TIME_ISO_8601_FORMAT);
       else
-        LogManager.instance().log(this, Level.INFO, "datestyle '%s' not supported", parts[1]);
+        LogManager.instance().log(this, Level.INFO, "datestyle '%s' not supported", value);
     }
 
-    connectionProperties.put(parts[0], parts[1]);
+    connectionProperties.put(paramName, value);
   }
 
   /**

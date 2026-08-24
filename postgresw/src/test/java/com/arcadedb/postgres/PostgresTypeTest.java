@@ -1338,13 +1338,12 @@ class PostgresTypeTest {
 
   @Test
   void serializeAsTextNullBoolean() {
+    // A null BOOLEAN must use the SQL-NULL sentinel (length -1) in text format, exactly like every
+    // other type, not the 1-byte value "0" (which a client would read back as false) - issue #6674
     Binary buffer = new Binary();
     PostgresType.BOOLEAN.serializeAsText(PostgresType.BOOLEAN, buffer, null);
     buffer.flip();
-    int length = buffer.getInt();
-    byte[] data = new byte[length];
-    buffer.getByteBuffer().get(data);
-    assertThat(new String(data)).isEqualTo("0");
+    assertThat(buffer.getInt()).isEqualTo(-1);
   }
 
   @Test
@@ -1395,6 +1394,21 @@ class PostgresTypeTest {
     // DATE (OID 1082) must be serialized as "YYYY-MM-DD" only
     assertThat(result).matches("\\d{4}-\\d{2}-\\d{2}");
     assertThat(result).isEqualTo("2024-05-19");
+  }
+
+  @Test
+  void serializeAsTextTimestampBackedByDate() {
+    // With arcadedb.dateTimeImplementation = java.util.Date, a DATETIME property announced as
+    // TIMESTAMP (OID 1114) must keep its time-of-day in text format, not truncate to a date-only
+    // value the way DATE (OID 1082) does - issue #6675
+    Binary buffer = new Binary();
+    Date date = new Date(1716138311000L); // 2024-05-19 17:05:11 UTC
+    PostgresType.TIMESTAMP.serializeAsText(PostgresType.TIMESTAMP, buffer, date);
+    buffer.flip();
+    int length = buffer.getInt();
+    byte[] data = new byte[length];
+    buffer.getByteBuffer().get(data);
+    assertThat(new String(data)).isEqualTo("2024-05-19 17:05:11.000000");
   }
 
   @Test
