@@ -110,6 +110,13 @@ public interface DatabaseInternal extends Database {
 
   void checkPermissionsOnFile(int fileId, SecurityDatabaseUser.ACCESS access);
 
+  /**
+   * Per-type equivalent of {@link #checkPermissionsOnFile(int, SecurityDatabaseUser.ACCESS)} for a type that owns
+   * no bucket to check a file id against (a TimeSeries type: its data lives in its own engine, not a
+   * {@code LocalBucket}).
+   */
+  void checkPermissionsOnType(String typeName, SecurityDatabaseUser.ACCESS access);
+
   boolean checkTransactionIsActive(boolean createTx);
 
   boolean isAsyncProcessing();

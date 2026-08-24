@@ -18,9 +18,12 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.RangeIndex;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 
 import java.util.NoSuchElementException;
 
@@ -72,6 +75,10 @@ public class MaxMinFromIndexStep extends AbstractExecutionStep {
 
         final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
+          // Reading the index's own key range directly never loads a record through its bucket, so apply the same
+          // per-type read check a normal record load would go through.
+          SecurityHelper.checkAccessOnIndex((DatabaseInternal) context.getDatabase(), index, SecurityDatabaseUser.ACCESS.READ_RECORD);
+
           Object resultValue = null;
 
           // For MAX: iterate descending (false), for MIN: iterate ascending (true)

@@ -736,6 +736,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       // TimeSeries types store data in their own engine, not in regular buckets
       if (type instanceof LocalTimeSeriesType tsType) {
+        // Counting samples never loads a record through a bucket, so apply the equivalent per-type read check here.
+        checkPermissionsOnType(typeName, SecurityDatabaseUser.ACCESS.READ_RECORD);
         try {
           return tsType.getEngine().countSamples();
         } catch (final IOException e) {
@@ -890,6 +892,24 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       resource = "type '" + type + "'";
 
     throw new SecurityException("User '" + user.getName() + "' is not allowed to " + access.fullName + " on " + resource);
+  }
+
+  @Override
+  public void checkPermissionsOnType(final String typeName, final SecurityDatabaseUser.ACCESS access) {
+    if (security == null)
+      return;
+
+    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContextIfExists(databasePath);
+    if (dbContext == null)
+      return;
+    final SecurityDatabaseUser user = dbContext.getCurrentUser();
+    if (user == null)
+      return;
+
+    if (user.requestAccessOnType(typeName, access))
+      return;
+
+    throw new SecurityException("User '" + user.getName() + "' is not allowed to " + access.fullName + " on type '" + typeName + "'");
   }
 
   @Override

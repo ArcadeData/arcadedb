@@ -226,6 +226,10 @@ class SQLMethodTransformTest {
       }
 
       @Override
+      public void checkPermissionsOnType(String typeName, SecurityDatabaseUser.ACCESS access) {
+      }
+
+      @Override
       public boolean checkTransactionIsActive(boolean createTx) {
         return false;
       }

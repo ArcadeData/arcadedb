@@ -18,13 +18,18 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.database.DatabaseContext;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.IOException;
@@ -56,8 +61,15 @@ public class FetchFromSchemaIndexesStep extends AbstractExecutionStep {
       final long begin = context.isProfiling() ? System.nanoTime() : 0;
       try {
         final Schema schema = context.getDatabase().getSchema();
+        final SecurityDatabaseUser currentUser = currentUser(context);
 
         for (final Index index : schema.getIndexes()) {
+          // Hide, rather than throw on, an index the current user cannot read the owning type of - matching how
+          // schema:types treats a restricted type (issue #4238).
+          final DocumentType type = index.getTypeName() == null ? null : schema.getType(index.getTypeName());
+          if (!SecurityHelper.canAccessType(currentUser, type, SecurityDatabaseUser.ACCESS.READ_RECORD))
+            continue;
+
           final ResultInternal r = new ResultInternal(context.getDatabase());
           result.add(r);
 
@@ -139,6 +151,12 @@ public class FetchFromSchemaIndexesStep extends AbstractExecutionStep {
         cursor = 0;
       }
     };
+  }
+
+  private static SecurityDatabaseUser currentUser(final CommandContext context) {
+    final DatabaseInternal database = (DatabaseInternal) context.getDatabase();
+    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+    return dbContext != null ? dbContext.getCurrentUser() : null;
   }
 
   @Override
