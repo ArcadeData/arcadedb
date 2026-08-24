@@ -93,6 +93,39 @@ public class PostgresPortal {
     this.isExpectingResult = true;
   }
 
+  /**
+   * Creates a fresh, independent portal for one Bind of the prepared statement {@code template} (issue
+   * #6660 / CodeRabbit review on #6658). PARSE builds one {@code PostgresPortal} per prepared statement and
+   * it must stay a read-only template from then on: two portal names bound from the same statement, or the
+   * same portal name re-bound without a new Parse (asyncpg's/pgjdbc's statement caching, both), are logically
+   * independent portals and must never share mutable per-execution state - sharing it let a Bind on one
+   * portal name silently reset or overwrite another already-bound (possibly suspended) portal from the same
+   * statement, since both names pointed at the same object.
+   * <p>
+   * This copies only what PARSE already fixed for the statement for good (query text/language/parameter
+   * types, the parsed {@code sqlStatement}, and - for BEGIN/COMMIT/ROLLBACK and a resolved catalog answer -
+   * the response PARSE precomputed into {@code executed}/{@code cachedResultSet}/{@code columns}) and leaves
+   * every per-Bind field (parameter values, {@code fullResultSet}, {@code resultCursor}, {@code suspended},
+   * {@code rowDescriptionSent}, ...) at its fresh default, so each returned portal starts its own independent
+   * lifecycle.
+   */
+  public static PostgresPortal bindFrom(final PostgresPortal template) {
+    final PostgresPortal portal = new PostgresPortal(template.query, template.language);
+    portal.sqlStatement = template.sqlStatement;
+    portal.parameterTypes = template.parameterTypes;
+    portal.ignoreExecution = template.ignoreExecution;
+    portal.isExpectingResult = template.isExpectingResult;
+    portal.catalogQuery = template.catalogQuery;
+    portal.executed = template.executed;
+    portal.cachedResultSet = template.cachedResultSet;
+    portal.columns = template.columns;
+    portal.queryTargetType = template.queryTargetType;
+    portal.queryTargetTypeResolved = template.queryTargetTypeResolved;
+    portal.aliasToSourceProperty = template.aliasToSourceProperty;
+    portal.aliasToSourcePropertyResolved = template.aliasToSourcePropertyResolved;
+    return portal;
+  }
+
   @Override
   public String toString() {
     return query;

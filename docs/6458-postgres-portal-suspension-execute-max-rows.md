@@ -193,10 +193,50 @@ specific IT (`Issue6457AbortedTransactionSimpleQueryIT`, `Issue6543RollbackExten
 repro re-run end-to-end against a freshly built server, confirming the second `SELECT` now returns the
 inserted row instead of an empty result.
 
+### Post-#6660: CodeRabbit found the deeper design bug the #6660 patch only papered over
+
+A second bot review, from `coderabbitai[bot]` (`#pullrequestreview-5008648991`, on head `105cdbb0b8` - the
+#6660 fix above), flagged the actual root cause: `bindCommand()` looked up the portal to bind by the
+*prepared statement's* name (`getPortal(sourcePreparedStatement, false)`) and stored that same mutable
+object under the new portal name too. Two portal names bound from one statement were never independent
+portals - they were two names for the same object. Concretely: bind `P1`, suspend it mid-fetch, then bind
+`P2` from the same statement with different parameters - `P2`'s Bind (and Execute) would silently
+reset/overwrite `P1`'s suspended progress, and a later `Execute(P1)` would resume or lose `P2`'s state
+instead of its own. The user asked "is it related?" for this one too, checked it directly against the code
+(confirmed: `getPortal(sourcePreparedStatement, false)` predates this PR by a long history - not something
+#6458 introduced), and chose to fix it now rather than defer to a follow-up issue.
+
+The #6660 patch (resetting `executed`/`fullResultSet`/etc. on a stale rebind) treated the symptom on one
+axis (same name, re-bound) but not the other (two different names, same object) - CodeRabbit's finding
+applies to the same lines that patch touched.
+
+**Real fix**: split "prepared statement" (PARSE's immutable output: query text, language, parameter types,
+the parsed `sqlStatement`, and - for `BEGIN`/`COMMIT`/`ROLLBACK`/a resolved catalog answer - PARSE's own
+precomputed response) from "portal" (one Bind's independent, mutable execution state). Added
+`PostgresPortal.bindFrom(template)`, which `bindCommand()` now calls to create a **fresh** portal for every
+single Bind, rather than mutating and re-storing the statement's own object. A new `preparedStatements` map
+(keyed by statement name, written once by `parseCommand()`, never mutated afterwards) sits alongside the
+existing `portals` map (keyed by portal name, written by `bindCommand()`, read by `describeCommand()`/
+`executeCommand()`/`closeCommand()`); `describeCommand()`'s `Describe('S')` branch (which names a *statement*,
+not a portal) now reads/writes `preparedStatements` instead. This **removed the #6660 patch's reset code
+entirely** - cloning from a never-mutated template makes every rebind start fresh on its own, more simply
+than the earlier gated reset did.
+
+Regression tests: extended `reBindingAnAlreadyExecutedPortalWithNoNewParseReRunsInsteadOfServingTheExhaustedFirstRun`
+(now expects a fresh `RowDescription` on the second run too, since it's a genuinely new portal - not the
+"preserve rowDescriptionSent" behavior the #6660 patch had), plus a new
+`twoPortalsFromOneStatementDoNotShareStateEvenWhenOneIsSuspended` matching CodeRabbit's exact scenario (bind
+`P1`, suspend it, bind+drain `P2` from the same statement, then confirm `P1` resumes from exactly where it
+left off). Both confirmed red against the pre-fix code, green after. Full `postgresw` module re-verified
+green (408 unit + 184 IT tests - one more IT than before, the new test), and the original `asyncpg` repro
+re-run end-to-end once more against a freshly built server.
+
 ## Final state
 
-**Clean approval after 4 review cycles, plus a post-review fix for #6660** once merging `main` turned it from
-a filed-but-deferred issue into a demonstrated regression in this PR's own CI (`python-e2e-tests`). #6659
-(eager result materialization) remains open and out of scope. See PR #6658 for the full comment history.
+**Clean approval after 4 review cycles, then a two-stage post-review fix** once merging `main` triggered this
+PR's own CI: #6660 first (a filed-but-deferred issue turned into a demonstrated `python-e2e-tests` regression
+by #6458 itself), then a `coderabbitai` review on that fix exposed the deeper root cause (portal identity
+shared across Bind names) and the real fix replaced the #6660 patch entirely. #6659 (eager result
+materialization) remains open and out of scope. See PR #6658 for the full comment history.
 
 Merge remains the developer's responsibility - this loop does not merge PRs.

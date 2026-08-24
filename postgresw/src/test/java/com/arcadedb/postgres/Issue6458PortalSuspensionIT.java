@@ -204,12 +204,15 @@ public class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
    * Regression test for issue #6660, surfaced by #6458 itself: keeping a portal alive after it completes
    * (rather than removing it, which #6458 needed for suspension to work) means a second Bind on the same
    * portal name with no new Parse in between - what asyncpg's statement cache and pgjdbc's server-side
-   * prepared-statement promotion both do for a repeated identical query - reused the exact same {@link
+   * prepared-statement promotion both do for a repeated identical query - used to reuse the exact same {@link
    * PostgresPortal} instance from the first run. Before the fix, that instance's {@code executed}/{@code
    * fullResultSet}/{@code resultCursor} from the first, already-exhausted run survived into the second Bind,
    * so the second Execute served an empty slice of the old result instead of re-running the query - confirmed
    * failing pre-fix with the second run's Execute jumping straight to an empty CommandComplete instead of the
-   * RowDescription + 5 rows the first run got.
+   * RowDescription + 5 rows the first run got. Fixed via {@link PostgresPortal#bindFrom}: every Bind now
+   * creates its own fresh portal from the (never mutated) prepared-statement template, so the second run
+   * starts as clean as the first - including its own RowDescription, since a brand new portal has never sent
+   * one before.
    */
   @Test
   void reBindingAnAlreadyExecutedPortalWithNoNewParseReRunsInsteadOfServingTheExhaustedFirstRun() throws Exception {
@@ -248,12 +251,74 @@ public class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
       assertThat(readOneMessage(in).type).as("BindComplete").isEqualTo('2');
       sendExecute(out, "PR1", 0);
       sendSync(out);
-      // No RowDescription this time: rowDescriptionSent/columns are deliberately preserved across the reset
-      // (they describe the statement's row shape, invariant across re-binds) - only the data is re-run.
+      assertThat(readOneMessage(in).type)
+          .as("RowDescription again - this is a brand new portal, not the exhausted first one; it has never sent one")
+          .isEqualTo('T');
       assertThat(readNextBatchOfIds(in, 5))
           .as("second run re-executes and reads every row again, not an empty slice of the exhausted first run")
           .containsExactly(0, 1, 2, 3, 4);
       assertThat(readOneMessage(in).type).as("CommandComplete - fully drained").isEqualTo('C');
+      assertThat(readOneMessage(in).type).as("ReadyForQuery closes this Sync").isEqualTo('Z');
+    }
+  }
+
+  /**
+   * Regression test for the CodeRabbit review finding on PR #6658: {@code bindCommand()} used to look up the
+   * portal to bind by the PREPARED STATEMENT's name and store that exact object under the new portal name too
+   * - so two portal names bound from the same statement were not independent portals at all, just two names
+   * for the same mutable object. Binding a second portal ({@code P2}) from a statement that already had a
+   * SUSPENDED portal ({@code P1}, mid-fetch) would silently reset/overwrite {@code P1}'s progress, and a
+   * later {@code Execute(P1)} would resume (or lose) {@code P2}'s state instead of its own. Fixed via {@link
+   * PostgresPortal#bindFrom}: every Bind creates its own fresh portal from the statement's read-only template,
+   * so {@code P1} and {@code P2} never share state no matter how many times the same statement is re-bound.
+   */
+  @Test
+  void twoPortalsFromOneStatementDoNotShareStateEvenWhenOneIsSuspended() throws Exception {
+    try (final Socket socket = new Socket()) {
+      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+
+      sendStartupMessage(out, "root", getDatabaseName());
+      readMessage(in); // AuthenticationCleartextPassword
+      sendPasswordMessage(out, DEFAULT_PASSWORD_FOR_TESTS);
+      readMessageOfType(in, 'Z'); // drain AuthenticationOk/BackendKeyData/ParameterStatus.../ReadyForQuery
+
+      runSimpleQueryToCompletion(out, in, "CREATE DOCUMENT TYPE AliasedPortals6458 IF NOT EXISTS");
+      runSimpleQueryToCompletion(out, in, "CREATE PROPERTY AliasedPortals6458.id IF NOT EXISTS INTEGER");
+      for (int i = 0; i < 10; i++)
+        runSimpleQueryToCompletion(out, in, "INSERT INTO AliasedPortals6458 SET id = " + i);
+
+      sendParse(out, "SELECT id FROM AliasedPortals6458 ORDER BY id");
+      assertThat(readOneMessage(in).type).as("ParseComplete").isEqualTo('1');
+
+      // P1: bind and partially fetch, leaving it suspended with 6 rows unread.
+      sendBind(out, "P1");
+      assertThat(readOneMessage(in).type).as("BindComplete").isEqualTo('2');
+      sendExecute(out, "P1", 4);
+      sendSync(out);
+      assertThat(readOneMessage(in).type).as("RowDescription for P1's first execution").isEqualTo('T');
+      assertThat(readNextBatchOfIds(in, 4)).as("P1 first batch").containsExactly(0, 1, 2, 3);
+      assertThat(readOneMessage(in).type).as("P1 suspended - 6 rows remain unread").isEqualTo('s');
+      assertThat(readOneMessage(in).type).as("ReadyForQuery closes this Sync").isEqualTo('Z');
+
+      // P2: bind from the SAME statement (no new Parse) and drain it fully. Before the fix this reused P1's
+      // own object, so this Bind+Execute would corrupt P1's suspended progress.
+      sendBind(out, "P2");
+      assertThat(readOneMessage(in).type).as("BindComplete").isEqualTo('2');
+      sendExecute(out, "P2", 0);
+      sendSync(out);
+      assertThat(readOneMessage(in).type).as("RowDescription for P2's own, independent first execution").isEqualTo('T');
+      assertThat(readNextBatchOfIds(in, 10)).as("P2 reads every row, independently of P1's in-progress fetch").containsExactly(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
+      assertThat(readOneMessage(in).type).as("P2 fully drained").isEqualTo('C');
+      assertThat(readOneMessage(in).type).as("ReadyForQuery closes this Sync").isEqualTo('Z');
+
+      // P1 must still be resumable from exactly where it left off (row 4) - not empty, not restarted, and not
+      // showing P2's already-exhausted cursor.
+      sendExecute(out, "P1", 10);
+      sendSync(out);
+      assertThat(readNextBatchOfIds(in, 6)).as("P1 continues from row 4, unaffected by P2's Bind+Execute").containsExactly(4, 5, 6, 7, 8, 9);
+      assertThat(readOneMessage(in).type).as("P1 now fully drained too").isEqualTo('C');
       assertThat(readOneMessage(in).type).as("ReadyForQuery closes this Sync").isEqualTo('Z');
     }
   }

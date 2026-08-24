@@ -121,6 +121,12 @@ public class PostgresNetworkExecutor extends Thread {
   private final ChannelBinaryServer         channel;
   private final byte[]                      buffer                = new byte[BUFFER_LENGTH];
   private final Map<String, PostgresPortal> portals               = new HashMap<>();
+  // Prepared statements registered by PARSE, keyed by statement name (issue #6660 / CodeRabbit on #6658).
+  // Read-only after PARSE creates the entry - bindCommand() clones from here via PostgresPortal.bindFrom()
+  // rather than handing out this same instance, so that two portal names bound from one statement (or the
+  // same portal name re-bound without a new Parse) never share mutable per-execution state. `portals` above
+  // holds only the independent, already-bound portals that describeCommand('P')/executeCommand() operate on.
+  private final Map<String, PostgresPortal> preparedStatements    = new HashMap<>();
   private final boolean                     DEBUG                 = GlobalConfiguration.POSTGRES_DEBUG.getValueAsBoolean();
   private final boolean                     QUOTED_IDENTIFIERS    = GlobalConfiguration.POSTGRES_QUOTED_IDENTIFIERS.getValueAsBoolean();
   private final Map<String, Object>         connectionProperties  = new HashMap<>();
@@ -366,7 +372,13 @@ public class PostgresNetworkExecutor extends Thread {
     if (errorInTransaction)
       return;
 
-    final PostgresPortal portal = getPortal(portalName, false);
+    // Describe('S') names a PREPARED STATEMENT (registered by PARSE); Describe('P') names a bound PORTAL
+    // (registered by BIND) - two different registries since #6660 / CodeRabbit split them apart so portals
+    // stop sharing mutable state. A statement's column info, once resolved here from its schema, is a
+    // property of the statement itself (independent of any parameter values), so it is cached directly on
+    // the template - every portal bound from it afterwards inherits it via PostgresPortal.bindFrom(), the
+    // same way queryTargetType/aliasToSourceProperty are already memoized per statement.
+    final PostgresPortal portal = type == 'S' ? preparedStatements.get(portalName) : getPortal(portalName, false);
     if (portal == null) {
       writeNoData();
       return;
@@ -1751,44 +1763,25 @@ public class PostgresNetworkExecutor extends Thread {
       final String portalName = readString();
       final String sourcePreparedStatement = readString();
 
-      // Look up the prepared statement (stored during PARSE)
-      // The portal name may be different (often empty for unnamed portal)
-      // This reuses the SAME PostgresPortal instance in place rather than cloning it, so a second
-      // Bind+Execute cycle on this prepared statement (new params, no new Parse - what pgjdbc does once it
-      // promotes a repeated PreparedStatement to a named server-side statement, and what asyncpg's statement
-      // cache does for a repeated query string) lands on an object that already ran once. The reset below
-      // (issue #6660) clears that prior run's materialized result so this Bind's new parameters actually get
-      // re-executed instead of replaying or exhausting the first run's cached/sliced result.
-      // columns/rowDescriptionSent are deliberately NOT reset: they describe the statement's row SHAPE, which
-      // is invariant across re-binds of the same prepared statement, only the data changes. A client that
-      // skipped Describe on this re-bind (because it already cached the shape from the first run - what real
-      // PostgreSQL clients that never re-Describe an unchanged prepared statement do) does not expect an
-      // unsolicited second RowDescription.
-      // Gated on sqlStatement != null - only a real, engine-parsed query defers its execution to Execute and
-      // can go stale like this. BEGIN/COMMIT/ROLLBACK and a resolved catalog answer precompute their (fixed,
-      // always-identical) response during PARSE itself via setEmptyResultSet()/direct assignment, which sets
-      // executed=true on THIS SAME first Bind - not a leftover from a prior cycle - and never touches
-      // sqlStatement; resetting that pre-computed state here broke it before Execute ever saw it (verified:
-      // an earlier, ungated version of this reset made 3 of this class's own pgjdbc-driven tests fail with
-      // "Received resultset tuples, but no field structure for them", because pgjdbc pipelines its own
-      // internal BEGIN/COMMIT through the extended protocol using a cached statement).
-      PostgresPortal portal = getPortal(sourcePreparedStatement, false);
-      if (portal == null) {
-        // Try with portal name as fallback for backwards compatibility
-        portal = getPortal(portalName, false);
-      }
-      if (portal == null) {
+      // Look up the prepared statement (stored during PARSE) and create THIS Bind's own independent portal
+      // from it (issue #6660 / CodeRabbit review on #6658). PARSE's PostgresPortal is a read-only template
+      // from here on - bindFrom() copies what PARSE already fixed for the statement (query, sqlStatement,
+      // parameter types, and any response PARSE precomputed for BEGIN/COMMIT/ROLLBACK or a resolved catalog
+      // answer) into a fresh object, so that two portal names bound from the same statement - or the same
+      // portal name re-bound without a new Parse, which is exactly what asyncpg's/pgjdbc's statement caching
+      // does for a repeated query - never share mutable execution state (parameterValues, fullResultSet,
+      // resultCursor, suspended, rowDescriptionSent...). Without this, a later Bind on one portal name could
+      // silently reset or overwrite another already-bound (possibly suspended) portal from the same statement,
+      // since both names used to point at the very same object.
+      final PostgresPortal preparedStatement = preparedStatements.get(sourcePreparedStatement);
+      final PostgresPortal template = preparedStatement != null ? preparedStatement
+          // Backwards-compatible fallback: portalName may itself already name a bound portal.
+          : portals.get(portalName);
+      if (template == null) {
         writeMessage("bind complete", null, '2', 4);
         return;
       }
-
-      if (portal.executed && portal.sqlStatement != null) {
-        portal.executed = false;
-        portal.fullResultSet = null;
-        portal.cachedResultSet = null;
-        portal.resultCursor = 0;
-        portal.suspended = false;
-      }
+      PostgresPortal portal = PostgresPortal.bindFrom(template);
 
       if (DEBUG)
         LogManager.instance()
@@ -1904,15 +1897,15 @@ public class PostgresNetworkExecutor extends Thread {
         return;
       }
 
-      // Store the portal under the portal name (which may be empty for unnamed portal)
-      // This is necessary because EXECUTE looks up portals by portal name, not prepared statement name
-      // PostgreSQL protocol: PARSE creates "prepared statement", BIND creates "portal" from it
-      if (!portalName.equals(sourcePreparedStatement)) {
-        portals.put(portalName, portal);
-        if (DEBUG)
-          LogManager.instance().log(this, Level.INFO, "PSQL: bind stored portal under name '%s' (thread=%s)",
-              portalName, Thread.currentThread().threadId());
-      }
+      // Store this Bind's own portal under the portal name (which may be empty for unnamed portal) - always,
+      // even when portalName equals sourcePreparedStatement, since this is a fresh clone now rather than the
+      // statement's own template object (issue #6660 / CodeRabbit review on #6658).
+      // This is necessary because EXECUTE looks up portals by portal name, not prepared statement name.
+      // PostgreSQL protocol: PARSE creates "prepared statement", BIND creates "portal" from it.
+      portals.put(portalName, portal);
+      if (DEBUG)
+        LogManager.instance().log(this, Level.INFO, "PSQL: bind stored portal under name '%s' (thread=%s)",
+            portalName, Thread.currentThread().threadId());
 
       writeMessage("bind complete", null, '2', 4);
 
@@ -2021,7 +2014,7 @@ public class PostgresNetworkExecutor extends Thread {
           // regardless of which of the three keywords the client actually sent (see queryCommand()).
           portal.query = "ROLLBACK";
           setEmptyResultSet(portal);
-          portals.put(portalName, portal);
+          preparedStatements.put(portalName, portal);
           writeMessage("parse complete", null, '1', 4);
         }
         return;
@@ -2109,7 +2102,7 @@ public class PostgresNetworkExecutor extends Thread {
         }
       }
 
-      portals.put(portalName, portal);
+      preparedStatements.put(portalName, portal);
 
       // ParseComplete
       writeMessage("parse complete", null, '1', 4);
