@@ -24,10 +24,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 
 /**
- * Regression tests for issue #6423: {@code PostgresNetworkExecutor.setConfiguration()} used to split a
- * {@code SET <param> = <value>} command on EVERY '=', so a value containing a further '=' (e.g. a connection
- * string) was silently truncated - and, because the quote-stripping that followed assumed the truncated value
- * still ended in the closing quote, it chopped off the value's last character too.
+ * Regression tests for {@code PostgresNetworkExecutor.parseSetCommand()}.
+ * <p>
+ * Issue #6423: the parser used to split a {@code SET <param> = <value>} command on EVERY '=', so a value
+ * containing a further '=' (e.g. a connection string) was silently truncated - and, because the
+ * quote-stripping that followed assumed the truncated value still ended in the closing quote, it chopped
+ * off the value's last character too.
+ * <p>
+ * Issue #6701: a {@code SET} command prefixed with the PostgreSQL {@code SESSION}/{@code LOCAL} scope
+ * modifiers must resolve to the same parameter name as a plain {@code SET}, not a mangled
+ * {@code "session <name>"}/{@code "local <name>"}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -98,5 +104,35 @@ class PostgresSetCommandParsingTest {
   @Test
   void mismatchedQuotesAreRejected() {
     assertThat(PostgresNetworkExecutor.parseSetCommand("SET x = 'abc\"")).isNull();
+  }
+
+  @Test
+  void sessionModifierIsStrippedWithEquals() {
+    final String[] parsed = PostgresNetworkExecutor.parseSetCommand("SET SESSION datestyle = 'ISO'");
+    assertThat(parsed).as("SESSION modifier must not become part of the parameter name").containsExactly("datestyle", "ISO");
+  }
+
+  @Test
+  void sessionModifierIsStrippedWithTo() {
+    assertThat(PostgresNetworkExecutor.parseSetCommand("SET SESSION datestyle TO 'ISO'")).containsExactly("datestyle", "ISO");
+  }
+
+  @Test
+  void localModifierIsStripped() {
+    final String[] parsed = PostgresNetworkExecutor.parseSetCommand("SET LOCAL datestyle = 'ISO'");
+    assertThat(parsed).as("LOCAL modifier must not become part of the parameter name").containsExactly("datestyle", "ISO");
+  }
+
+  @Test
+  void modifierIsCaseInsensitive() {
+    assertThat(PostgresNetworkExecutor.parseSetCommand("SET session datestyle = 'ISO'")[0]).isEqualTo("datestyle");
+    assertThat(PostgresNetworkExecutor.parseSetCommand("SET Local datestyle = 'ISO'")[0]).isEqualTo("datestyle");
+  }
+
+  @Test
+  void aParamNameThatMerelyStartsWithSessionIsNotMistakenForTheModifier() {
+    // "sessiontimeout" must not have its first 8 characters ("session ") sliced off as if they were the
+    // SESSION modifier: the modifier match requires a following space, which "sessiontimeout" has not got.
+    assertThat(PostgresNetworkExecutor.parseSetCommand("SET sessiontimeout = '30'")).containsExactly("sessiontimeout", "30");
   }
 }

@@ -2086,7 +2086,14 @@ public class PostgresNetworkExecutor extends Thread {
           upperCaseText.startsWith("ROLLBACK TO ")) {
         portal.ignoreExecution = true;
       } else if (upperCaseText.startsWith("SET ")) {
-        setConfiguration(portal.query);
+        // Strip a trailing ';' before dispatch, mirroring what queryCommand() already does for its own
+        // queryText on the simple-query protocol - a Parse message keeps the terminator glued onto the
+        // text, which otherwise reaches setConfiguration() attached to the value (issue #6701).
+        // portal.query itself is left untouched: nothing downstream needs the terminator removed.
+        String setText = portal.query.trim();
+        if (setText.endsWith(";"))
+          setText = setText.substring(0, setText.length() - 1);
+        setConfiguration(setText);
         portal.ignoreExecution = true;
       } else if (systemQuery != null) {
         createResultSet(portal, systemQuery.columnName, systemQueryValue(systemQuery.function));
@@ -2171,18 +2178,31 @@ public class PostgresNetworkExecutor extends Thread {
 
   /**
    * Parses a Postgres {@code SET <param> = <value>} or {@code SET <param> TO <value>} command into its
-   * {@code {paramName, value}} pair. A command can only use one of the two separators, but its value may
-   * legitimately contain the other one as plain text (e.g. {@code SET search_path TO 'a=b'} or
-   * {@code SET x = 'a TO b'}), so this picks whichever separator - the first '=' or the first case-
-   * insensitive ' TO ' - occurs FIRST in the string and splits on that one only, leaving every other
-   * occurrence of either inside the value untouched (issue #6423). {@code paramName} is lower-cased for
-   * case-insensitive comparison; a quoted {@code value} has its surrounding quotes stripped. Returns null
-   * when the command has neither separator.
+   * {@code {paramName, value}} pair, honoring the optional PostgreSQL {@code SESSION}/{@code LOCAL} scope
+   * modifiers (issue #6701): {@code SET SESSION datestyle = 'ISO'} and {@code SET LOCAL datestyle = 'ISO'}
+   * must resolve to the same {@code datestyle} parameter name as a plain {@code SET datestyle = 'ISO'}, not
+   * a literal {@code "session datestyle"}/{@code "local datestyle"} that no special case ever matches.
+   * ArcadeDB has no notion of transaction-scoped config distinct from session-scoped config, so both
+   * modifiers - and no modifier at all - end up folded into the same connection-wide
+   * {@link #connectionProperties} map; that already matches the de facto behavior of a plain {@code SET}
+   * today.
+   * <p>
+   * A command can only use one of the two separators, but its value may legitimately contain the other
+   * one as plain text (e.g. {@code SET search_path TO 'a=b'} or {@code SET x = 'a TO b'}), so this picks
+   * whichever separator - the first '=' or the first case-insensitive ' TO ' - occurs FIRST in the string
+   * and splits on that one only, leaving every other occurrence of either inside the value untouched
+   * (issue #6423). {@code paramName} is lower-cased for case-insensitive comparison; a quoted {@code value}
+   * has its surrounding quotes stripped. Returns null when the command has neither separator.
    */
   static String[] parseSetCommand(final String query) {
     final int setLength = "SET ".length();
     // Use original query to preserve case of values
-    final String q = query.substring(setLength);
+    String q = query.substring(setLength);
+
+    if (q.regionMatches(true, 0, "SESSION ", 0, "SESSION ".length()))
+      q = q.substring("SESSION ".length());
+    else if (q.regionMatches(true, 0, "LOCAL ", 0, "LOCAL ".length()))
+      q = q.substring("LOCAL ".length());
 
     final int eqPos = q.indexOf('=');
     final Matcher toMatcher = SET_TO_SEPARATOR.matcher(q);
