@@ -323,8 +323,13 @@ public class GetDynamicContentHandler extends AbstractServerHttpHandler {
    * {@link ArrayIndexOutOfBoundsException} out of the page render (issue #6423).
    */
   static void parseIncludeParameters(final String params, final String include, final Map<String, Object> variables) {
-    final String[] parameterPairs = params.split(" ");
+    // Split on a run of whitespace, not a single space: a run of consecutive spaces between parameters
+    // (or a trailing one) would otherwise produce an empty-string element that logs a spurious "malformed
+    // parameter ''" warning below.
+    final String[] parameterPairs = params.trim().split("\\s+");
     for (final String pair : parameterPairs) {
+      if (pair.isEmpty())
+        continue;
       final String[] kv = StringUtils.splitKeyValue(pair);
       if (kv == null) {
         LogManager.instance().log(GetDynamicContentHandler.class, Level.WARNING,
