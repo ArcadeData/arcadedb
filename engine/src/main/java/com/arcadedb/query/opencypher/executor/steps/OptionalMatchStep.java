@@ -97,6 +97,8 @@ public class OptionalMatchStep extends AbstractExecutionStep {
       private ResultSet prevResults = null;
       private Result currentInputRow = null;
       private ResultSet currentMatchResults = null;
+      // With input: whether the current input row matched. Standalone (no input): whether the
+      // pattern matched at all across the whole scan, since there is no per-row input to reset it.
       private boolean foundMatchForCurrent = false;
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
