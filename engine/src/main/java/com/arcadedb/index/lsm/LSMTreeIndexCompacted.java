@@ -352,7 +352,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
   }
 
   protected LookupResult compareKey(final Binary currentPageBuffer, final int startIndexArray, final Object[] convertedKeys,
-      final int mid, final int count,
+      int mid, final int count,
       final int purpose) {
 
     final int result = compareKey(currentPageBuffer, startIndexArray, convertedKeys, mid, count);
@@ -384,6 +384,21 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
         positionsArray[i - firstKeyPos] = currentPageBuffer.getInt(startIndexArray + (i * INT_SERIALIZED_SIZE)) + keySerializedSize;
 
       return new LookupResult(true, false, lastKeyPos, positionsArray);
+    }
+
+    if (convertedKeys.length < binaryKeyTypes.length) {
+      // PARTIAL MATCHING: mid is an arbitrary position inside the run of entries sharing this prefix (wherever the
+      // binary search happened to converge) - walk to the run's boundary in the requested scan direction, exactly
+      // like LSMTreeIndexMutable.compareKey() does. Without this, a descending partial-key scan (composite-index
+      // prefix match, e.g. #6592) can start anywhere inside the matching group instead of at its highest entry,
+      // silently skipping the very rows ORDER BY ... DESC is supposed to return first.
+      if (purpose == 2) {
+        // ASCENDING ITERATOR: FIND THE MOST LEFT ITEM
+        mid = findFirstEntryOfSameKey(currentPageBuffer, convertedKeys, startIndexArray, mid);
+      } else if (purpose == 3) {
+        // DESCENDING ITERATOR: FIND THE MOST RIGHT ITEM
+        mid = findLastEntryOfSameKey(count, currentPageBuffer, convertedKeys, startIndexArray, mid);
+      }
     }
 
     // TODO: SET CORRECT VALUE POSITION FOR PARTIAL KEYS
@@ -563,8 +578,23 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
 
       int startingPageNumber;
       if (result.outside) {
-        // STARTS FROM THE BEGINNING OF THE NEXT PAGE
-        startingPageNumber = firstPageNumber + 1;
+        // lookupInPage()'s purpose=2/3 boundary handling is asymmetric (see LSMTreeIndexAbstract#lookupInPage): an
+        // ascending search only ever reports "outside" when the whole page sorts BELOW the search key (the
+        // "HIGHER than last" branch - purpose=2 has no special case there), so the next (higher-keyed) page is the
+        // right place to keep looking. A descending search only ever reports "outside" when the whole page sorts
+        // ABOVE the search key (the "LOWER than first" branch - purpose=3's special case is the "HIGHER than last"
+        // one instead), so it is the PREVIOUS (lower-keyed) page that can still hold the match, not the next one.
+        // Stepping +1 unconditionally here used to walk a descending partial-key (composite-index prefix) scan
+        // straight into an unrelated, higher-keyed page - possibly the next series' root page or another series
+        // entirely - and return whatever it found there as if it matched the search key (#6592 follow-up).
+        if (ascendingOrder) {
+          // STARTS FROM THE BEGINNING OF THE NEXT PAGE
+          startingPageNumber = firstPageNumber + 1;
+        } else
+          // STARTS FROM THE END OF THE PREVIOUS PAGE. If firstPageNumber was already this series' first data page,
+          // this lands below lastPageNumber and loadNextNonEmptyPage()'s loop simply does not run - the series
+          // correctly contributes no cursor rather than reading into the previous series' pages.
+          startingPageNumber = firstPageNumber - 1;
         posInPage = -1;
       } else {
         startingPageNumber = firstPageNumber;
