@@ -100,6 +100,7 @@ class Issue6679SimpleQueryMaxRowsIT extends PostgresWireProtocolTestBase {
 
         assertThat(messageTypesOf(response)).as("an ErrorResponse instead of a truncated result").contains('E');
         assertThat(messageTypesOf(response)).as("no CommandComplete for a refused query").doesNotContain('C');
+        assertThat(messageTypesOf(response)).as("no DataRow for a refused query").doesNotContain('D');
         final WireMessage error = response.stream().filter(m -> m.type() == 'E').findFirst()
             .orElseThrow(() -> new AssertionError("expected an ErrorResponse"));
         assertThat(errorFields(error).get('M')).contains("exceeds the configured limit").contains(String.valueOf(ROW_CAP));
