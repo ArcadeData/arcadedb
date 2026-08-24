@@ -231,12 +231,50 @@ left off). Both confirmed red against the pre-fix code, green after. Full `postg
 green (408 unit + 184 IT tests - one more IT than before, the new test), and the original `asyncpg` repro
 re-run end-to-end once more against a freshly built server.
 
+## Session 2: resuming the review loop (2026-08-24, later)
+
+A second `resolve-issue-with-review` run picked this issue back up and found PR #6658 already open,
+mergeable, and several review cycles in. Rather than open a duplicate PR, it continued iterating on the
+existing one from its worktree at `.worktrees/fix/6458-postgres-portal-suspension-execute-max-rows`.
+
+### Review cycles (this session)
+
+- **cycle 1** (head `8a6c710050`): cleanup only, in response to the prior session's last recorded review -
+  imported `IntStream` instead of a fully-qualified reference in the test class, and removed
+  `docs/review-deferred-0875952.md` / `docs/review-deferred-59f3975.md` (per-cycle scratch logs the review had
+  flagged as process artifacts that don't belong in the repo; their content was folded into the PR body
+  instead). Verified: 408 unit + 185 IT tests green. -> next `claude` review found a real gap (below).
+- **cycle 2** (head `abcfe5ac95`): fixed a genuine correctness regression the review found in `bindCommand()`'s
+  `portals.get(portalName)` fallback path - `PostgresPortal.bindFrom()` could clone from an already-executed,
+  mutable portal picked up via that fallback (reached when a Bind's `sourcePreparedStatement` name is not a
+  real, Parsed prepared statement), inheriting a stale `executed=true`/`cachedResultSet` while `fullResultSet`
+  stayed `null`, so `executeCommand()` served the OLD run's result instead of re-executing. Reinstated the
+  `#6660` reset (gated on `sqlStatement != null`) right after `bindFrom()`. New test
+  `bindFallbackOnAnUnknownSourceStatementReRunsInsteadOfServingTheStaleExecutedPortal` (TDD: red pre-fix,
+  green post-fix). 408 unit + 186 IT tests green. -> next review found the gate missed one more case (below).
+- **cycle 3** (head `1c94596efa`): extended cycle 2's reset gate to also cover a **deferred catalog query**
+  (`portal.catalogQuery = true`, `sqlStatement` null but genuinely re-executed per Execute, e.g. pgjdbc's
+  `DatabaseMetaData` table/column lookups against `pg_class`) - the un-extended gate missed this case since it
+  checked `sqlStatement != null` alone. New test
+  `bindFallbackOnAnUnknownSourceStatementReRunsADeferredCatalogQueryTooNotJustPlainSql` (TDD: red with the
+  un-extended gate, green post-fix). 408 unit + 187 IT tests green. -> next review: clean.
+- **cycle 4/"cycle 6" in PR-body numbering** (head `1c94596efa`, no new push): the `claude` review re-traced
+  the whole control flow end to end and found no further correctness issues ("Nothing here blocks merging").
+  Two minor, explicitly optional/out-of-scope notes: an edge case in the fallback template when a mismatched
+  client Binds onto a stale BEGIN/COMMIT/ROLLBACK portal (reviewer's own words: "arguably out of scope"), and
+  the `preparedStatements` map never being pruned on `Close('S')` (reviewer: "worth a follow-up issue"). Filed
+  the latter as #6698 rather than expanding this PR's scope; made no code change this cycle.
+
+### Deferred items
+
+None left unaddressed. #6659 (eager full materialization) and #6660 (fixed within this PR) were already
+tracked by the prior session. #6698 (`preparedStatements` never pruned on `Close('S')`) filed this session.
+
 ## Final state
 
-**Clean approval after 4 review cycles, then a two-stage post-review fix** once merging `main` triggered this
-PR's own CI: #6660 first (a filed-but-deferred issue turned into a demonstrated `python-e2e-tests` regression
-by #6458 itself), then a `coderabbitai` review on that fix exposed the deeper root cause (portal identity
-shared across Bind names) and the real fix replaced the #6660 patch entirely. #6659 (eager result
-materialization) remains open and out of scope. See PR #6658 for the full comment history.
+**Clean approval** after this session's 3 fix cycles plus a clean confirming review, layered on top of the
+prior session's 4 review cycles and its own two-stage post-review fix (see above). Two follow-up issues remain
+open and explicitly out of scope for this PR: #6659 (eager result materialization) and #6698 (statement-map
+pruning). See PR #6658 for the full comment history.
 
 Merge remains the developer's responsibility - this loop does not merge PRs.
