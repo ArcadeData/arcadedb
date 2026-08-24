@@ -69,6 +69,7 @@ import io.micrometer.core.instrument.Metrics;
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
+import com.arcadedb.utility.StringUtils;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -117,6 +118,8 @@ public class PostgresNetworkExecutor extends Thread {
   /** Bind-message parameter length denoting a NULL value (wire value -1, read unsigned). */
   private static final long                                           NULL_PARAM_LENGTH = 0xFFFFFFFFL;
   private static final Object[]                                       NO_PARAMETERS     = new Object[0];
+  /** Case-insensitive {@code TO} separator for the {@code SET <param> TO <value>} syntax. */
+  private static final Pattern                                        SET_TO_SEPARATOR  = Pattern.compile("(?i)\\s+TO\\s+");
 
   private final ArcadeDBServer              server;
   private final ChannelBinaryServer         channel;
@@ -2188,39 +2191,71 @@ public class PostgresNetworkExecutor extends Thread {
     }
   }
 
-  private void setConfiguration(final String query) {
+  /**
+   * Parses a Postgres {@code SET <param> = <value>} or {@code SET <param> TO <value>} command into its
+   * {@code {paramName, value}} pair. A command can only use one of the two separators, but its value may
+   * legitimately contain the other one as plain text (e.g. {@code SET search_path TO 'a=b'} or
+   * {@code SET x = 'a TO b'}), so this picks whichever separator - the first '=' or the first case-
+   * insensitive ' TO ' - occurs FIRST in the string and splits on that one only, leaving every other
+   * occurrence of either inside the value untouched (issue #6423). {@code paramName} is lower-cased for
+   * case-insensitive comparison; a quoted {@code value} has its surrounding quotes stripped. Returns null
+   * when the command has neither separator.
+   */
+  static String[] parseSetCommand(final String query) {
     final int setLength = "SET ".length();
     // Use original query to preserve case of values
     final String q = query.substring(setLength);
 
-    // Try to split by either '=' or ' TO ' (case-insensitive)
-    String[] parts = q.split("=");
-    if (parts.length < 2) {
-      // Try case-insensitive split for " TO "
-      parts = q.split("(?i)\\s+TO\\s+");
+    final int eqPos = q.indexOf('=');
+    final Matcher toMatcher = SET_TO_SEPARATOR.matcher(q);
+    final boolean toFound = toMatcher.find();
+
+    final String[] parts;
+    if (toFound && (eqPos < 0 || toMatcher.start() < eqPos))
+      parts = new String[] { q.substring(0, toMatcher.start()), q.substring(toMatcher.end()) };
+    else if (eqPos >= 0)
+      parts = StringUtils.splitKeyValue(q);
+    else
+      return null;
+
+    final String paramName = parts[0].trim().toLowerCase(Locale.ENGLISH);
+    if (paramName.isEmpty())
+      // An empty parameter name (e.g. "SET = somevalue") is as malformed as a missing separator.
+      return null;
+
+    String value = parts[1].trim();
+    if (value.startsWith("'") || value.startsWith("\"")) {
+      // A quoted value needs a matching closing delimiter: a single stray quote (e.g. "SET x = '") is a
+      // malformed command, not a closed quoted value, so it is rejected the same way a missing separator
+      // is - rather than throw StringIndexOutOfBoundsException on an unconditional substring(1, length - 1),
+      // or silently store a value still carrying its opening quote.
+      final char quote = value.charAt(0);
+      if (value.length() < 2 || value.charAt(value.length() - 1) != quote)
+        return null;
+      value = value.substring(1, value.length() - 1);
     }
 
-    if (parts.length < 2) {
+    return new String[] { paramName, value };
+  }
+
+  private void setConfiguration(final String query) {
+    final String[] parts = parseSetCommand(query);
+    if (parts == null) {
       LogManager.instance().log(this, Level.WARNING, "Invalid SET command format: %s", query);
       return;
     }
 
-    parts[0] = parts[0].trim();
-    parts[1] = parts[1].trim();
+    final String paramName = parts[0];
+    final String value = parts[1];
 
-    if (parts[1].startsWith("'") || parts[1].startsWith("\""))
-      parts[1] = parts[1].substring(1, parts[1].length() - 1);
-
-    // Use case-insensitive comparison for parameter names
-    final String paramName = parts[0].toLowerCase(Locale.ENGLISH);
     if ("datestyle".equals(paramName)) {
-      if ("ISO".equalsIgnoreCase(parts[1]))
+      if ("ISO".equalsIgnoreCase(value))
         database.getSchema().setDateTimeFormat(DateUtils.DATE_TIME_ISO_8601_FORMAT);
       else
-        LogManager.instance().log(this, Level.INFO, "datestyle '%s' not supported", parts[1]);
+        LogManager.instance().log(this, Level.INFO, "datestyle '%s' not supported", value);
     }
 
-    connectionProperties.put(paramName, parts[1]);
+    connectionProperties.put(paramName, value);
   }
 
   /**
