@@ -542,9 +542,16 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
    * imported at all - excluded from the export, or a genuinely dangling link in the source database) is left as-is,
    * matching the pre-fix behavior for that case, and is not treated as an import error.
    * <p>
-   * A failure reconciling one record (e.g. a {@code DuplicateKeyException} from the transiently-wrong placeholder
-   * RID a UNIQUE-indexed property may carry until this point - see {@code docs/review-deferred-*.md}) is handled
-   * exactly like a per-record failure in the main import loop (issue #6468, {@link #load}): logged, counted into
+   * <b>Known limitation:</b> until this method runs, an unresolved forward-reference LINK value sits in the record
+   * as the raw <i>source</i>-database RID (see {@link #remapLinkValue}) rather than a null or otherwise-neutral
+   * placeholder. If that property backs a UNIQUE index, this transient value can coincidentally collide with
+   * another record's already-resolved value in the <i>target</i> database, raising a {@code DuplicateKeyException}
+   * for data that would otherwise import cleanly. Accepted as a known limitation for now rather than fixed, since
+   * closing it properly (a null placeholder, a pre-scan of forward references, or documenting it permanently) is a
+   * design choice, not a mechanical patch - see PR #6654's "Review follow-ups" for the options considered.
+   * <p>
+   * A failure reconciling one record (including the {@code DuplicateKeyException} above) is handled exactly like a
+   * per-record failure in the main import loop (issue #6468, {@link #load}): logged, counted into
    * {@code context.errors}, and either aborted via {@link ImportException} or skipped per {@code skipOnRowError},
    * rather than propagating raw and uncounted past this method.
    */
