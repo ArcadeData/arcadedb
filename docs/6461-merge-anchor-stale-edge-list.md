@@ -70,3 +70,34 @@ pass after the fix.
   `Issue6602MergeAfterEmptyMatchCardinalityTest` (7) + `MergeInsertSlowdownTest` (1) +
   `RefactorMergeNodesTest` (13): all green, no regressions.
 - Full `com.arcadedb.query.opencypher.**` package (excluding `benchmark`/`slow`/`vector` lanes): see below.
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/6652
+
+## Review cycles
+
+- **Cycle 1** - head SHA `0e7de9f6` (push `2026-08-23T20:28:24Z`). Polled all three review surfaces
+  (`reviews[]`, inline `pulls/6652/comments`, and `claude`-authored PR issue comments newer than the push)
+  for the full 15-minute per-iteration window: no review landed on any surface.
+  - Cross-checked against the Actions run directly: `Claude Code Review` workflow run
+    [32664545721](https://github.com/ArcadeData/arcadedb/actions/runs/32664545721) triggered on this SHA,
+    ran to completion (`status=completed`, `conclusion=success`, 28 turns, ~186s), and its own log shows
+    `permission_denials_count: 6` and a final "No buffered inline comments" from the
+    post-buffered-inline-comments step - i.e. the bot's run finished without ever posting a top-level
+    `gh pr comment`, despite `Bash(gh pr comment:*)` being in its allowed-tools list. This is not a slow-bot
+    case (the workflow itself finished in ~5 minutes and never posted); as of this update, over 11 hours have
+    passed since the push with still no comment on the PR from `claude`.
+  - No code changes were made this cycle since no review feedback was ever received to act on.
+
+## Deferred items
+
+None - no review comments were received to categorize.
+
+## Final state
+
+**timeout** - the `claude` review bot's workflow run completed without posting a review comment on head
+SHA `0e7de9f6`. The PR is left open with the fix as pushed. This looks like the same class of infra issue
+tracked in `reference_review_bot_can_time_out_before_posting` (bot completes without posting, rather than
+never running at all) and may warrant a manual `@claude review` comment or maintainer trigger to get a
+review on this PR.
