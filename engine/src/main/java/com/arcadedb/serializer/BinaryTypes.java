@@ -179,17 +179,33 @@ public class BinaryTypes {
       // SAME PROPERTY'S RUNTIME TYPE DEPENDED ON WHETHER IT HAPPENED TO BE EMPTY (ISSUE #6464). THE COMPONENT TYPE
       // ALSO COVERS A BOXED WRAPPER ARRAY (Short[]/Integer[]/Long[]/Float[]/Double[]) SUPPLIED FOR A DECLARED
       // ARRAY_OF_* PROPERTY, WHICH WAS PREVIOUSLY ALWAYS DOWNGRADED TO TYPE_LIST REGARDLESS OF CONTENT.
+      //
+      // A WRAPPER ARRAY CAN HOLD A null ELEMENT (A PRIMITIVE ARRAY CANNOT), AND BinarySerializer's
+      // TYPE_ARRAY_OF_* BRANCHES UNBOX EACH ELEMENT WITH AN ENHANCED FOR-LOOP, WHICH WOULD THROW AN UNCAUGHT NPE ON
+      // A null ENTRY. FALL BACK TO TYPE_LIST WHEN A WRAPPER ARRAY CONTAINS ANY null ELEMENT: TYPE_LIST SERIALIZES
+      // EACH ELEMENT INDIVIDUALLY WITH ITS OWN TYPE_NULL TAG, WHICH IS EXACTLY HOW SUCH AN ARRAY WAS HANDLED
+      // BEFORE #6464 AND KEEPS THAT CASE BACKWARD COMPATIBLE.
       final Class<?> componentType = value.getClass().getComponentType();
-      if (componentType == short.class || componentType == Short.class)
+      if (componentType == short.class)
         type = TYPE_ARRAY_OF_SHORTS;
-      else if (componentType == int.class || componentType == Integer.class)
+      else if (componentType == Short.class)
+        type = arrayHasNullElement((Object[]) value) ? TYPE_LIST : TYPE_ARRAY_OF_SHORTS;
+      else if (componentType == int.class)
         type = TYPE_ARRAY_OF_INTEGERS;
-      else if (componentType == long.class || componentType == Long.class)
+      else if (componentType == Integer.class)
+        type = arrayHasNullElement((Object[]) value) ? TYPE_LIST : TYPE_ARRAY_OF_INTEGERS;
+      else if (componentType == long.class)
         type = TYPE_ARRAY_OF_LONGS;
-      else if (componentType == float.class || componentType == Float.class)
+      else if (componentType == Long.class)
+        type = arrayHasNullElement((Object[]) value) ? TYPE_LIST : TYPE_ARRAY_OF_LONGS;
+      else if (componentType == float.class)
         type = TYPE_ARRAY_OF_FLOATS;
-      else if (componentType == double.class || componentType == Double.class)
+      else if (componentType == Float.class)
+        type = arrayHasNullElement((Object[]) value) ? TYPE_LIST : TYPE_ARRAY_OF_FLOATS;
+      else if (componentType == double.class)
         type = TYPE_ARRAY_OF_DOUBLES;
+      else if (componentType == Double.class)
+        type = arrayHasNullElement((Object[]) value) ? TYPE_LIST : TYPE_ARRAY_OF_DOUBLES;
       else
         type = TYPE_LIST;
 
@@ -222,6 +238,18 @@ public class BinaryTypes {
     }
 
     return type;
+  }
+
+  /**
+   * Scans a boxed wrapper array (Short[]/Integer[]/Long[]/Float[]/Double[]) for a null element. Used by
+   * {@link #getTypeFromValue(Object, Property)} to decide whether the array is safe to classify as one of the
+   * TYPE_ARRAY_OF_* binary types, whose serializer unboxes every element and would NPE on a null one.
+   */
+  private static boolean arrayHasNullElement(final Object[] array) {
+    for (final Object element : array)
+      if (element == null)
+        return true;
+    return false;
   }
 
   public static int getTypeSize(final byte type) {

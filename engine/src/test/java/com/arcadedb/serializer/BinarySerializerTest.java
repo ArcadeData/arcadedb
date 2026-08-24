@@ -471,6 +471,45 @@ class BinarySerializerTest extends TestHelper {
   }
 
   @Test
+  void boxedPrimitiveArrayWithNullElementFallsBackToListInsteadOfNPE() throws Exception {
+    // A WRAPPER ARRAY CONTAINING A null ELEMENT MUST NOT BE CLASSIFIED AS A TYPE_ARRAY_OF_* BINARY TYPE: THAT
+    // SERIALIZER UNBOXES EACH ELEMENT WITH AN ENHANCED FOR-LOOP AND WOULD NPE ON THE null ENTRY (REGRESSION GUARD
+    // FOR THE REVIEW COMMENT ON ISSUE #6464 / PR #6649).
+    assertThat(BinaryTypes.getTypeFromValue(new Short[] { 1, null, 3 }, null)).isEqualTo(BinaryTypes.TYPE_LIST);
+    assertThat(BinaryTypes.getTypeFromValue(new Integer[] { 1, null, 3 }, null)).isEqualTo(BinaryTypes.TYPE_LIST);
+    assertThat(BinaryTypes.getTypeFromValue(new Long[] { 1L, null, 3L }, null)).isEqualTo(BinaryTypes.TYPE_LIST);
+    assertThat(BinaryTypes.getTypeFromValue(new Float[] { 1.1f, null, 3.3f }, null)).isEqualTo(BinaryTypes.TYPE_LIST);
+    assertThat(BinaryTypes.getTypeFromValue(new Double[] { 1.1, null, 3.3 }, null)).isEqualTo(BinaryTypes.TYPE_LIST);
+
+    final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
+
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Test");
+      database.commit();
+
+      final Integer[] withNull = { 1, null, 3 };
+
+      database.begin();
+      final MutableDocument v = database.newDocument("Test");
+
+      v.set("someIntArrayProp", withNull);
+
+      // MUST NOT THROW: BEFORE THIS FIX, SERIALIZING A BOXED WRAPPER ARRAY WITH A null ELEMENT THREW AN UNCAUGHT NPE
+      final Binary buffer = serializer.serialize((DatabaseInternal) database, v);
+
+      final ByteBuffer buffer2 = ByteBuffer.allocate((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue());
+      buffer2.put(buffer.toByteArray());
+      buffer2.flip();
+
+      final Binary buffer3 = new Binary(buffer2);
+      buffer3.getByte(); // SKIP RECORD TYPE
+      final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, null, null);
+
+      assertThat((List<Object>) record2.get("someIntArrayProp")).containsExactly(1, null, 3);
+    });
+  }
+
+  @Test
   void mapPropertiesInDocument() throws Exception {
     final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
 
