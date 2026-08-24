@@ -2009,6 +2009,15 @@ public enum GlobalConfiguration {
       "Maximum size in bytes accepted for a single bind-message parameter value on the Postgres wire protocol. Values declaring a larger size are rejected before allocation. Default is 16MB",
       Integer.class, 16 * 1024 * 1024),
 
+  POSTGRES_SIMPLE_QUERY_MAX_ROWS("arcadedb.postgres.simpleQueryMaxRows", SCOPE.SERVER, """
+      Maximum number of rows a simple-query protocol ('Q' message) SELECT is allowed to buffer server-side before \
+      the first row is sent. Unlike the extended query protocol, the simple-query protocol has no client-driven \
+      cursor/max-rows mechanism and always expects the complete result set in one response, so the server has to \
+      hold it in memory to determine the row description (column set and types) before streaming it. A SELECT whose \
+      result exceeds this limit is refused with an error instead of risking an OutOfMemoryError; the client should \
+      use the extended query protocol with a bounded portal fetch size for very large result sets. Default is \
+      1000000""", Integer.class, 1_000_000),
+
   // BOLT (Neo4j)
   BOLT_PORT("arcadedb.bolt.port", SCOPE.SERVER,
       "TCP/IP port number used for incoming connections for BOLT plugin. Default is 7687", Integer.class, 7687),

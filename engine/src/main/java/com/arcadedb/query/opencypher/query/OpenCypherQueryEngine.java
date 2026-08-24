@@ -349,14 +349,17 @@ public class OpenCypherQueryEngine implements QueryEngine {
         plan = new CypherExecutionPlan(
             execDb, statement, parameters, configuration, physicalPlan, EXPRESSION_EVALUATOR);
       } else {
-        // Create new plan from scratch and cache it
+        // Create new plan from scratch and cache it. planningStart is taken before planning begins so put() can
+        // detect a DDL (DROP INDEX/ALTER TYPE/create-index) that invalidated the cache concurrently with this
+        // planning and skip caching a plan already built against stale schema/index state (issue #6671).
+        final long planningStart = System.currentTimeMillis();
         final CypherExecutionPlanner planner = new CypherExecutionPlanner(execDb, statement, parameters,
             EXPRESSION_EVALUATOR);
         plan = planner.createExecutionPlan(configuration);
 
         // Cache the physical plan for future use
         if (plan.getPhysicalPlan() != null)
-          database.getCypherPlanCache().put(queryString, plan.getPhysicalPlan());
+          database.getCypherPlanCache().put(queryString, plan.getPhysicalPlan(), planningStart);
       }
     } else {
       // explain/profile mode: always create new plan without caching

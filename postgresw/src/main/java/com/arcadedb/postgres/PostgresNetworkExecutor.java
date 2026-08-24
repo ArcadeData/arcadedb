@@ -30,6 +30,7 @@ import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.database.QueryMetricsRecorder;
 import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.exception.CauseChain;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.ErrorCategory;
@@ -668,7 +669,8 @@ public class PostgresNetworkExecutor extends Thread {
           resultSet = database.command(query.language, query.query, server.getConfiguration());
         }
       }
-      final List<Result> cachedResultSet = browseAndCacheResultSet(resultSet, 0);
+      final List<Result> cachedResultSet = browseAndCacheBoundedResultSet(resultSet,
+          GlobalConfiguration.POSTGRES_SIMPLE_QUERY_MAX_ROWS.getValueAsInteger());
       profile.addEngineNanos(System.nanoTime() - engineStart);
 
       final long serStart = System.nanoTime();
@@ -764,6 +766,45 @@ public class PostgresNetworkExecutor extends Thread {
             portalSuspendedResponse();
           break;
         }
+      }
+      return cachedResultSet;
+    }
+  }
+
+  /**
+   * Browses and caches a result set for the simple-query ('Q' message) protocol path, refusing (rather than
+   * silently truncating) a result larger than {@code maxRows}.
+   * <p>
+   * Unlike the extended query protocol - where a portal's {@code Execute} message carries its own client-chosen
+   * max-rows and a limit hit is a normal, expected {@code PortalSuspended} the client explicitly asked for by
+   * fetching in batches - the simple-query protocol has no such mechanism: a 'Q' message always means "give me
+   * the complete result", and {@link #browseAndCacheResultSet(ResultSet, int, boolean)}'s silent-truncate-plus-
+   * suspend behaviour would misreport a partial result as the whole answer (a {@code CommandComplete} row count
+   * that undercounts what the query actually matches). This path is also why the whole result had to be held in
+   * memory in the first place: determining the row description (the union of columns and their types across
+   * heterogeneous/schemaless rows) genuinely requires having seen every row before the first one can be sent,
+   * since Postgres's wire protocol fixes the column set in {@code RowDescription}, sent before any {@code
+   * DataRow}. Rather than risk an OutOfMemoryError on an unbounded SELECT (issue #6679), refuse once the result
+   * grows past {@code maxRows} with a clear, actionable error instead: the client should use the extended query
+   * protocol with a bounded portal fetch size for a result set that large.
+   *
+   * @param maxRows the maximum number of rows to buffer, 0 = unlimited (matches {@link GlobalConfiguration#POSTGRES_SIMPLE_QUERY_MAX_ROWS})
+   */
+  private List<Result> browseAndCacheBoundedResultSet(final ResultSet resultSet, final int maxRows) {
+    try (resultSet) {
+      final List<Result> cachedResultSet = new ArrayList<>();
+      while (resultSet.hasNext()) {
+        final Result row = resultSet.next();
+        if (row == null)
+          continue;
+
+        cachedResultSet.add(row);
+
+        if (maxRows > 0 && cachedResultSet.size() > maxRows)
+          throw new CommandExecutionException(
+              "Result set exceeds the configured limit of " + maxRows + " rows for the Postgres simple-query protocol ("
+                  + GlobalConfiguration.POSTGRES_SIMPLE_QUERY_MAX_ROWS.getKey()
+                  + "); use the extended query protocol with a bounded portal fetch size for large result sets");
       }
       return cachedResultSet;
     }
