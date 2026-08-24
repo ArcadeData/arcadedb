@@ -60,7 +60,49 @@ pre-fix hardcoded URL could not have done.
 
 ## Test results (this environment, isolated `-Dmaven.repo.local`)
 
-- `RedisErrorClassificationTest`: 7/7 passed
-- `RedisAuthenticationTest`: 9/9 passed (7 pre-existing + 2 new)
+- `RedisErrorClassificationTest`: 7/7 passed (later 7/7 unchanged)
+- `RedisAuthenticationTest`: 9/9 passed initially, 11/11 after cycle 1's review addition
 - `RedisQueryLanguageTest`: 19/19 passed, with port 2480 occupied by an unrelated process
-- Full `redisw` module test run (`mvn test -pl redisw -am`): see PR for final summary
+- Full non-IT `redisw` unit-test set (`RedisAuthenticationTest`, `RedisErrorClassificationTest`,
+  `RedisPortConfigurationTest`, `RedisProtocolLimitsTest`, `RedisQueryLanguageTest`,
+  `RedisRespCorrectnessTest`, `RedisWTest`): 76/76 passed, no regressions
+- `ha-raft` unit tests touching `RaftReplicatedDatabase` (`RaftReplicatedDatabaseTest`,
+  `RaftReplicatedDatabaseLeaderWaitTest`): passed, unaffected by the Javadoc-only change
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/6691
+
+## Review cycles
+
+- **Cycle 1** - head `7080e167`: initial PR. `claude` review: solid overall; flagged a coverage gap - only
+  `WRONGPASS`/`NOPERM` were asserted at the wire level (via `RedisAuthenticationTest`), not `NOPROTO`/plain
+  `NOAUTH` (the `HELLO` paths). Addressed in `057a321d`: added `helloWithoutAuthErrorKindIsNotMaskedByErr`
+  and `helloWithBadProtocolVersionErrorKindIsNotMaskedByErr` to `RedisAuthenticationTest` (11/11 passed).
+- **Cycle 2** - head `057a321d`: `claude` review: approved overall; nitpicked that the shared "these four
+  accessors" Javadoc comment was physically placed above only `getGlobalVariable()`, so it would not surface
+  in generated docs/IDE hover for the other three overrides (a Javadoc comment attaches to the single
+  declaration it precedes). Also noted `getGlobalVariables()` (plural) was outside the "four accessors"
+  comment's scope. Addressed in `71b99af8`: gave each of the five node-local accessors its own short Javadoc
+  pointing back to the caveat on `DatabaseInternal`.
+- **Cycle 3** - head `71b99af8`: `claude` review: "Approving from a code-review standpoint"; one minor
+  non-blocking nit that `DatabaseInternal.getGlobalVariables()` itself (the interface method, not just the
+  Raft override) still lacked its own "not replicated" caveat. Addressed in `d1129bac`: added the caveat to
+  the interface method's own Javadoc for full symmetry with the other three.
+- **Cycle 4** - head `d1129bac`: `claude` review: clean; the only note was an explicitly non-blocking
+  "optional polish" observation that `respErrorPrefix()`'s explicit-kind check looks only at the outer
+  exception, not the full cause chain the way `ErrorCategory.of()` does - a latent gotcha only if a future
+  call site wraps a `withKind()` exception in another type before it reaches `respErrorPrefix()`, which none
+  do today. Categorized as a nitpick (bot's own words: "not worth blocking on"), not applied. **Clean
+  approval** - working tree empty, no actionable items remaining.
+
+## Deferred items
+
+None. The one item not applied (cycle 4's cause-chain observation) was explicitly framed by the reviewer
+itself as optional polish rather than a defect, so it was categorized as a nitpick and skipped rather than
+deferred to a notes file.
+
+## Final state
+
+`clean-approval` after 4 review cycles (the maximum configured). Merge remains the developer's
+responsibility.
