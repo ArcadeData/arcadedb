@@ -22,6 +22,7 @@ import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.OrderByClause;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
+import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
 import com.arcadedb.query.opencypher.rewriter.ProjectedOrderByNormalizer;
@@ -52,6 +53,7 @@ class ClauseDispatcher {
     register(Cypher25Parser.ClauseContext::mergeClause, this::handleMerge);
     register(Cypher25Parser.ClauseContext::unwindClause, this::handleUnwind);
     register(Cypher25Parser.ClauseContext::forUnwindClause, this::handleForUnwind);
+    register(Cypher25Parser.ClauseContext::filterClause, this::handleFilter);
     register(Cypher25Parser.ClauseContext::withClause, this::handleWith);
     register(Cypher25Parser.ClauseContext::returnClause, this::handleReturn);
     register(Cypher25Parser.ClauseContext::orderBySkipLimitClause, this::handleOrderBySkipLimit);
@@ -135,6 +137,20 @@ class ClauseDispatcher {
   private void handleWith(final Cypher25Parser.ClauseContext ctx, final StatementBuilder builder,
                           final CypherASTBuilder astBuilder) {
     builder.addWith(astBuilder.visitWithClause(ctx.withClause()));
+  }
+
+  private void handleFilter(final Cypher25Parser.ClauseContext ctx, final StatementBuilder builder,
+                            final CypherASTBuilder astBuilder) {
+    // GQL standalone FILTER is semantically equivalent to a leading WHERE (issue #6574,
+    // ISO/IEC 39075:2024 GQL). Represented as an implicit `WITH * WHERE <predicate>` so the
+    // filter is applied at the correct position in clausesInOrder, the same technique
+    // handleOrderBySkipLimit uses for a standalone ORDER BY / SKIP / LIMIT (issue #3950).
+    final WhereClause whereClause = astBuilder.visitFilterClause(ctx.filterClause());
+
+    final List<ReturnClause.ReturnItem> starItems = new ArrayList<>();
+    starItems.add(ReturnClause.ReturnItem.star());
+    final WithClause implicitWith = new WithClause(starItems, false, whereClause, null, null, null);
+    builder.addWith(implicitWith);
   }
 
   private void handleReturn(final Cypher25Parser.ClauseContext ctx, final StatementBuilder builder,

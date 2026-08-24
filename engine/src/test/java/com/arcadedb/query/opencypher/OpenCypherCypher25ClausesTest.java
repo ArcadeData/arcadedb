@@ -161,6 +161,56 @@ class OpenCypherCypher25ClausesTest {
   }
 
   // ---------------------------------------------------------------------------
+  // FILTER clause (issue #6574)
+  // ---------------------------------------------------------------------------
+
+  // Issue #6574: a standalone FILTER with a false predicate must suppress all rows
+  // instead of being silently ignored.
+  @Test
+  void filterFalsePredicateProducesNoRows() {
+    final ResultSet result = database.query("opencypher", "FILTER (0 IN range(12, 1, -1)) RETURN 1 AS x");
+    assertThat(result.hasNext()).isFalse();
+  }
+
+  // Issue #6574: a standalone FILTER with a true predicate must let rows through.
+  @Test
+  void filterTruePredicateProducesRow() {
+    final ResultSet result = database.query("opencypher", "FILTER (1 IN range(12, 1, -1)) RETURN 1 AS x");
+    assertThat(result.hasNext()).isTrue();
+    assertThat(((Number) result.next().getProperty("x")).intValue()).isEqualTo(1);
+    assertThat(result.hasNext()).isFalse();
+  }
+
+  // Issue #6574: the grammar's optional WHERE keyword form (FILTER WHERE <expr>) must also filter.
+  @Test
+  void filterWithWhereKeywordFalsePredicateProducesNoRows() {
+    final ResultSet result = database.query("opencypher", "FILTER WHERE 1 = 2 RETURN 1 AS x");
+    assertThat(result.hasNext()).isFalse();
+  }
+
+  @Test
+  void filterWithWhereKeywordTruePredicateProducesRow() {
+    final ResultSet result = database.query("opencypher", "FILTER WHERE 1 = 1 RETURN 1 AS x");
+    assertThat(result.hasNext()).isTrue();
+  }
+
+  // Issue #6574: FILTER must actually restrict rows produced by a preceding MATCH,
+  // the same way an equivalent WHERE would - not just no-op on a constant.
+  @Test
+  void filterAfterMatchRestrictsRowsByProperty() {
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Person {name: 'Alice', age: 40})");
+      database.command("opencypher", "CREATE (:Person {name: 'Bob', age: 20})");
+    });
+
+    final ResultSet result = database.query("opencypher", "MATCH (n:Person) FILTER (n.age > 30) RETURN n.name AS name");
+    final List<String> names = new ArrayList<>();
+    while (result.hasNext())
+      names.add(result.next().getProperty("name"));
+    assertThat(names).containsExactly("Alice");
+  }
+
+  // ---------------------------------------------------------------------------
   // INSERT clause (issue #3365 section 1.1)
   // ---------------------------------------------------------------------------
 
