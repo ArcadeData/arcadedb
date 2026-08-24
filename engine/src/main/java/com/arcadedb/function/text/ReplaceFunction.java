@@ -47,12 +47,17 @@ public class ReplaceFunction implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     checkArity(args);
-    // The primary argument is type-checked before a null secondary argument decides the answer, so an
-    // out-of-domain primary argument is still reported even when args[1] or args[2] happens to be null
-    // (issue #5798 review: replace(5, null, 'b') must still be a type error, not a silent null).
+    // Every argument is STRING-typed and type-checked before any of them being null decides the answer, so
+    // an out-of-domain argument is still reported regardless of which other position happens to be null
+    // (issue #5798 review: replace(5, null, 'b') must still be a type error, not a silent null). The search
+    // and replacement arguments are STRING-typed too, same as the primary one - issue #6608: #5798 only
+    // covered this function's primary argument position, leaving these two to silently coerce via
+    // toString().
     final String source = CypherFunctionHelper.requireStringArgument(args[0], getName());
-    if (source == null || args[1] == null || args[2] == null)
+    final String search = CypherFunctionHelper.requireStringArgument(args[1], getName());
+    final String replacement = CypherFunctionHelper.requireStringArgument(args[2], getName());
+    if (source == null || search == null || replacement == null)
       return null;
-    return source.replace(args[1].toString(), args[2].toString());
+    return source.replace(search, replacement);
   }
 }

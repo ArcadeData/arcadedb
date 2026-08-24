@@ -59,25 +59,31 @@ public class CypherTrimFunction implements StatelessFunction {
     }
 
     if (args.length == 2) {
-      // 2-arg form: btrim(source, trimCharacter). The primary argument is type-checked before a null
-      // trim character decides the answer, so an out-of-domain primary argument is still reported even
-      // when args[1] happens to be null (issue #5798 review: btrim(5, null) must still be a type error,
-      // not a silent null).
+      // 2-arg form: btrim(source, trimCharacter). Both arguments are STRING-typed and type-checked before
+      // either being null decides the answer, so an out-of-domain argument is still reported regardless of
+      // which position happens to be null (issue #5798 review: btrim(5, null) must still be a type error,
+      // not a silent null). The trim-character argument is STRING-typed too, same as the primary one -
+      // issue #6608: #5798 only covered this function's primary argument position, leaving the trim
+      // character to silently coerce via toString().
       final String source = CypherFunctionHelper.requireStringArgument(args[0], getName());
-      if (source == null || args[1] == null)
+      final String trimChar = CypherFunctionHelper.requireStringArgument(args[1], getName());
+      if (source == null || trimChar == null)
         return null;
-      final String trimChar = args[1].toString();
       if (trimChar.isEmpty())
         return source.strip();
       return stripLeading(stripTrailing(source, trimChar), trimChar);
     }
 
     if (args.length == 3) {
-      // SQL-style: trim(BOTH/LEADING/TRAILING char FROM string)
+      // SQL-style: trim(BOTH/LEADING/TRAILING char FROM string). The mode is not user data: the parser
+      // (CypherExpressionBuilder#parseTrimFunction) always supplies one of the three literal mode strings,
+      // never an arbitrary expression, so it needs no type check. The source (primary) argument is
+      // type-checked first, same ordering convention as every other function in this family, followed by
+      // the trim character - STRING-typed too, issue #6608: #5798 only reached this function's primary
+      // argument, at position 2 in this form.
       final String mode = args[0] != null ? args[0].toString() : null;
-      final String trimChar = args[1] != null ? args[1].toString() : null;
-
       final String source = CypherFunctionHelper.requireStringArgument(args[2], getName());
+      final String trimChar = CypherFunctionHelper.requireStringArgument(args[1], getName());
       if (source == null || trimChar == null)
         return null;
       if (trimChar.isEmpty()) {
