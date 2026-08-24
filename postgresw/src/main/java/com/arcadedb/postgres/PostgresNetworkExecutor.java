@@ -2128,11 +2128,16 @@ public class PostgresNetworkExecutor extends Thread {
 
     final String paramName = parts[0].trim().toLowerCase(Locale.ENGLISH);
     String value = parts[1].trim();
-    // Only strip a matching pair of quotes: a single stray quote (e.g. "SET x = '") is not a closed
-    // quoted value and must be left as-is rather than throw StringIndexOutOfBoundsException on the
-    // unconditional substring(1, length - 1) a bare startsWith() check used to attempt.
-    if (value.length() >= 2 && (value.charAt(0) == '\'' || value.charAt(0) == '"') && value.charAt(value.length() - 1) == value.charAt(0))
+    if (value.startsWith("'") || value.startsWith("\"")) {
+      // A quoted value needs a matching closing delimiter: a single stray quote (e.g. "SET x = '") is a
+      // malformed command, not a closed quoted value, so it is rejected the same way a missing separator
+      // is - rather than throw StringIndexOutOfBoundsException on an unconditional substring(1, length - 1),
+      // or silently store a value still carrying its opening quote.
+      final char quote = value.charAt(0);
+      if (value.length() < 2 || value.charAt(value.length() - 1) != quote)
+        return null;
       value = value.substring(1, value.length() - 1);
+    }
 
     return new String[] { paramName, value };
   }
