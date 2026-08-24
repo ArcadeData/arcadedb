@@ -18,16 +18,15 @@
  */
 package com.arcadedb.server.ai;
 
-import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.info.SchemaInfo;
 import com.arcadedb.server.info.ServerInfo;
+import com.arcadedb.server.security.DatabaseUserContext;
 import com.arcadedb.server.security.ServerSecurityUser;
 
 /**
@@ -92,18 +91,12 @@ public class ToolDispatcher {
 
     final DatabaseInternal database = server.getDatabase(databaseName);
 
-    // Bind the authenticated principal onto this database's DatabaseContext so the engine's per-type/bucket
-    // ACL layer enforces (LocalDatabase.checkPermissionsOnFile is a no-op when no principal is bound) -
-    // mirrors AbstractServerHttpHandler.checkAuthorizationOnDatabase, which every other query path uses.
-    // Bound/restored per call rather than for the whole request: the tool argument above can name a database
-    // other than the chat's default one, and this dispatcher's worker thread is reused across requests, so a
-    // leaked binding must never survive past this single query.
-    DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
-    if (context == null)
-      context = DatabaseContext.INSTANCE.init(database);
-    final SecurityDatabaseUser previousUser = context.getCurrentUser();
-    context.setCurrentUser(user.getDatabaseUser(database));
-    try {
+    // Bind the authenticated principal for the duration of the read so the engine's per-type/bucket ACL
+    // layer enforces (LocalDatabase.checkPermissionsOnFile is a no-op when no principal is bound) - mirrors
+    // SchemaInfo.forUser's use of the same helper for the get_schema tool. Scoped per call rather than for
+    // the whole request because the tool argument above can name a database other than the chat's default
+    // one, and this dispatcher's worker thread is reused across requests.
+    return DatabaseUserContext.runAs(database, user, () -> {
       // Read-only: use query() (not command()). Writes will surface as the engine's
       // "not idempotent" exception, which the LLM is prompted to recover by returning
       // the command as a fenced block for the user to review.
@@ -131,9 +124,7 @@ public class ToolDispatcher {
           envelope.put("truncated", true);
         return envelope.toString();
       }
-    } finally {
-      context.setCurrentUser(previousUser);
-    }
+    });
   }
 
   private String executeGetSchema(final JSONObject args) {
