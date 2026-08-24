@@ -216,7 +216,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
     // matching edges only.
     final EdgeConstraint constraint = edgeConstraint(inputResult, context);
     if (constraint != null)
-      return computeFilteredShortestPath(source, target, patternDirection(), patternEdgeTypesArray(), constraint);
+      return computeFilteredShortestPath(source, target, patternDirection(), patternEdgeTypesArray(), constraint, context);
 
     // Collect every relationship type declared in the pattern. Variable-length type alternation
     // (e.g. [:R1|R2*]) is expressed as a single relationship with multiple types - all of them
@@ -290,7 +290,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
     final EdgeConstraint constraint = edgeConstraint(inputResult, context);
     if (constraint != null)
       return computeFilteredAllShortestPaths(source, target, patternDirection(), patternEdgeTypesArray(), constraint,
-          context.getDatabase());
+          context.getDatabase(), context);
 
     final List<String> edgeTypes;
     if (pattern.getRelationshipCount() > 0 && pattern.getRelationship(0).hasTypes())
@@ -526,9 +526,13 @@ public class ShortestPathStep extends AbstractExecutionStep {
    * with different property values are disambiguated correctly.
    *
    * @param edgeTypes restrict edges to these types, or null/empty to allow any type
+   * @param context   the command context the deadline is read from; {@code null} leaves only the interrupt check
+   *                  (issue #6459 - this constrained BFS previously consulted neither, unlike the unconstrained
+   *                  frontier walk it falls back from)
    */
   public static List<Object> computeFilteredShortestPath(final Vertex source, final Vertex target,
-      final Vertex.DIRECTION direction, final String[] edgeTypes, final EdgeConstraint constraint) {
+      final Vertex.DIRECTION direction, final String[] edgeTypes, final EdgeConstraint constraint,
+      final CommandContext context) {
     final RID sourceRid = source.getIdentity();
     final RID targetRid = target.getIdentity();
     if (sourceRid.equals(targetRid)) {
@@ -548,9 +552,12 @@ public class ShortestPathStep extends AbstractExecutionStep {
     Deque<Vertex> frontier = new ArrayDeque<>();
     frontier.add(source);
 
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+
     while (!frontier.isEmpty()) {
       if (Thread.interrupted())
         throw new CommandExecutionException("The shortestPath() function has been interrupted");
+      guard.check();
 
       final Deque<Vertex> next = new ArrayDeque<>();
       for (final Vertex v : frontier) {
@@ -606,10 +613,13 @@ public class ShortestPathStep extends AbstractExecutionStep {
    * distinct paths OpenCypher requires.
    *
    * @param edgeTypes restrict edges to these types, or null/empty to allow any type
+   * @param context   the command context the deadline is read from; {@code null} leaves only the interrupt check
+   *                  (issue #6459 - this constrained BFS previously consulted neither, unlike the unconstrained
+   *                  layered BFS it falls back from)
    */
   public static List<List<Object>> computeFilteredAllShortestPaths(final Vertex source, final Vertex target,
       final Vertex.DIRECTION direction, final String[] edgeTypes, final EdgeConstraint constraint,
-      final Database database) {
+      final Database database, final CommandContext context) {
     final RID sourceRid = source.getIdentity();
     final RID targetRid = target.getIdentity();
     if (sourceRid.equals(targetRid)) {
@@ -630,9 +640,12 @@ public class ShortestPathStep extends AbstractExecutionStep {
     int currentDepth = 0;
     int foundDepth = -1;
 
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+
     while (!currentLayer.isEmpty()) {
       if (Thread.interrupted())
         throw new CommandExecutionException("The allShortestPaths() function has been interrupted");
+      guard.check();
 
       if (foundDepth >= 0 && currentDepth >= foundDepth)
         break;
