@@ -500,13 +500,19 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       if (fromKeys != null) {
         final Binary rootPageBuffer = new Binary(rootPage.slice());
 
-        // Use purpose=2 (ascending iterator) instead of 1 (retrieve) for root page lookups when
+        // Use purpose=2/3 (ascending/descending iterator) instead of 1 (retrieve) for root page lookups when
         // keys are partial (fewer components than the composite index defines). Purpose=1 rejects
         // partial keys with "key is composed of N items, while the index defined M items".
-        // Purpose=2 allows partial key comparison which correctly matches by prefix.
+        // Purpose=2/3 allows partial key comparison, which correctly matches by prefix, and - like the data-page
+        // lookup in searchInCurrentPage() below - must follow the scan direction: compareKey()'s PARTIAL MATCHING
+        // walk resolves an ambiguous binary-search landing point to the FIRST entry of a same-prefix run for
+        // purpose=2 and the LAST entry for purpose=3. Using purpose=2 unconditionally made a descending scan's
+        // root-page probe always land on the series' FIRST (lowest-keyed) data page instead of its LAST
+        // (highest-keyed) one whenever a composite-index prefix match spanned multiple data pages within one
+        // compacted series, so the scan started too low and silently dropped whole series/pages (#6694).
         // For full keys, keep purpose=1 to preserve exact boundary behavior for descending ranges and the shared-leaf
         // (multi-page duplicate) positioning, both of which depend on purpose=1's value-run result.
-        final int fromPurpose = fromKeys.length < binaryKeyTypes.length ? 2 : 1;
+        final int fromPurpose = fromKeys.length < binaryKeyTypes.length ? (ascendingOrder ? 2 : 3) : 1;
         final LookupResult resultInRootPage = lookupInPage(rootPageNumber, rootPageCount + 1, rootPageBuffer, fromKeys,
             fromPurpose);
         if (!resultInRootPage.outside)
