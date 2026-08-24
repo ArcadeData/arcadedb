@@ -56,4 +56,13 @@ class GetDynamicContentHandlerIncludeParametersTest {
         .doesNotThrowAnyException();
     assertThat(variables).containsEntry("a", "1").containsEntry("b", "2").doesNotContainKey("noequals");
   }
+
+  @Test
+  void repeatedOrTrailingSpacesDoNotProduceAMalformedParameter() {
+    // A run of whitespace between parameters (or a trailing one) used to split into an empty-string
+    // element that logged a spurious "malformed parameter ''" warning.
+    final Map<String, Object> variables = new HashMap<>();
+    GetDynamicContentHandler.parseIncludeParameters("a=1   b=2  ", "test.html", variables);
+    assertThat(variables).containsExactlyInAnyOrderEntriesOf(Map.of("a", "1", "b", "2"));
+  }
 }
