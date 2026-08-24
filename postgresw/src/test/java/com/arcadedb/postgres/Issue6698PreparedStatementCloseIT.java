@@ -27,7 +27,6 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -224,6 +223,48 @@ class Issue6698PreparedStatementCloseIT extends PostgresWireProtocolTestBase {
         sendSync(out);
         messages = readUntilReadyForQuery(in);
         assertThat(messageTypesOf(messages)).containsExactly('n', 'Z');
+      });
+    }
+  }
+
+  @Test
+  @DisplayName("[#6698] Rebinding an existing portal name from a closed prepared statement invalidates portal")
+  void rebindPortalFromClosedStatementClearsExistingPortalAndReturnsNoData() throws Exception {
+    try (final Socket socket = new Socket()) {
+      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+      authenticate(out, in);
+
+      assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
+        // 1. Parse statement "S1"
+        sendParse(out, "S1", "SELECT 42");
+        // 2. Bind portal "P1" from "S1"
+        sendBind(out, "P1", "S1");
+        sendSync(out);
+        List<WireMessage> messages = readUntilReadyForQuery(in);
+        assertThat(messageTypesOf(messages)).containsExactly('1', '2', 'Z');
+
+        // 3. Execute "P1" before statement close - returns result
+        sendExecute(out, "P1", 0);
+        sendSync(out);
+        messages = readUntilReadyForQuery(in);
+        assertThat(messageTypesOf(messages)).containsExactly('T', 'D', 'C', 'Z');
+
+        // 4. Close statement "S1"
+        sendClose(out, 'S', "S1");
+        sendSync(out);
+        messages = readUntilReadyForQuery(in);
+        assertThat(messageTypesOf(messages)).containsExactly('3', 'Z');
+
+        // 5. Rebind portal "P1" naming closed statement "S1": portal P1 must be invalidated, not cloned from existing P1
+        sendBind(out, "P1", "S1");
+        sendExecute(out, "P1", 0);
+        sendSync(out);
+        messages = readUntilReadyForQuery(in);
+        assertThat(messageTypesOf(messages))
+            .as("Execute on portal rebound from closed statement must return NoData")
+            .containsExactly('2', 'n', 'Z');
       });
     }
   }

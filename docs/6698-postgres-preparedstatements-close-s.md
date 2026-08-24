@@ -29,7 +29,7 @@ Additionally, in `bindCommand()`, when a statement was not found (`template == n
    ```
 
 2. In `PostgresNetworkExecutor.java` (`bindCommand()`):
-   Allowed `bindCommand()` to fully consume format codes and parameter bytes off the wire even if `template == null`, avoiding channel framing corruption, while only storing the portal in `portals` when `template != null`.
+   Allowed `bindCommand()` to fully consume format codes and parameter bytes off the wire even if `preparedStatement == null`, avoiding channel framing corruption, while only storing the portal in `portals` when `preparedStatement != null` (and removing any previous portal under that name if `preparedStatement == null`).
 
 ## Test Results
 
@@ -39,11 +39,11 @@ Added comprehensive integration tests in `com.arcadedb.postgres.Issue6698Prepare
 - `closePreparedStatementPreservesExistingBoundPortals`: Verified closing a prepared statement does not affect previously bound active portals.
 - `closeNonExistentTargetReturnsCloseComplete`: Verified closing non-existent statement or portal returns `CloseComplete` ('3') without error.
 - `closePortalRemovesFromMap`: Verified `Close('P', "P1")` continues to remove portals.
+- `rebindPortalFromClosedStatementClearsExistingPortalAndReturnsNoData`: Verified rebinding an existing portal name from a closed prepared statement invalidates the portal rather than reusing old portal state.
 
-All 408 unit tests and 196 integration tests in `postgresw` passed with 0 failures:
-- `Issue6698PreparedStatementCloseIT`: 5/5 passed
+All 408 unit tests and integration tests in `postgresw` passed with 0 failures:
+- `Issue6698PreparedStatementCloseIT`: 6/6 passed
 - `postgresw` unit tests: 408/408 passed
-- `postgresw` integration tests: 196/196 passed
 
 ## Impact Analysis
 
@@ -58,4 +58,5 @@ All 408 unit tests and 196 integration tests in `postgresw` passed with 0 failur
 - [x] Write failing reproducing test (`Issue6698PreparedStatementCloseIT` - TDD red)
 - [x] Implement fix in `PostgresNetworkExecutor.java` (TDD green)
 - [x] Run full regression suite (408 unit + 196 IT tests pass)
+- [x] Address PR review feedback (remove unused import, invalidate rebound portals on closed statements)
 - [x] Update tracking documentation
