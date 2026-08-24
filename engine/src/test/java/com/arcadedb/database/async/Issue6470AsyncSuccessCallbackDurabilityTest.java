@@ -21,6 +21,7 @@ package com.arcadedb.database.async;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.WALFile;
 import com.arcadedb.event.AfterRecordCreateListener;
 import org.junit.jupiter.api.Test;
 
@@ -129,5 +130,41 @@ class Issue6470AsyncSuccessCallbackDurabilityTest extends TestHelper {
     assertThat(onOkInvocations.get()).isGreaterThanOrEqualTo(2);
 
     database.transaction(() -> assertThat(database.countType(TYPE, true)).isEqualTo(12));
+  }
+
+  /**
+   * The other real commit point {@code onOk()} was extended to cover: a durability-setting change
+   * ({@code setTransactionSync}/{@code setTransactionUseWAL}) mid-batch forces the worker to commit its
+   * already-open transaction under its OLD flags before applying the new ones - see
+   * {@code DatabaseAsyncExecutorImpl.closeTransactionBoundaryIfDurabilityPolicyChanged()}.
+   */
+  @Test
+  void executorWideOnOkFiresAtTheDurabilityPolicyBoundary() throws Exception {
+    database.transaction(() -> database.getSchema().createDocumentType(TYPE, 1));
+    // Large enough that the periodic commitEvery boundary this test is NOT about never fires here.
+    database.async().setCommitEvery(100);
+
+    final AtomicInteger  onOkInvocations = new AtomicInteger();
+    final CountDownLatch fired           = new CountDownLatch(1);
+    database.async().onOk(() -> {
+      onOkInvocations.incrementAndGet();
+      fired.countDown();
+    });
+
+    // Single bucket, so both creates land on the same worker in submission order: the 1st opens a
+    // transaction stamped with the CURRENT durability flags and leaves it open (commitEvery is nowhere
+    // near reached); the flag flip in between is picked up only when the 2nd create is dispatched, at
+    // which point that still-open transaction's stamped flags no longer match and must be committed first.
+    database.async().createRecord(database.newDocument(TYPE), null);
+    database.async().setTransactionSync(WALFile.FlushType.YES_NOMETADATA);
+    database.async().createRecord(database.newDocument(TYPE), null);
+
+    assertThat(fired.await(30, TimeUnit.SECONDS))
+        .as("onOk() must fire when a durability-setting change forces a boundary commit mid-batch")
+        .isTrue();
+
+    database.async().waitCompletion();
+    assertThat(onOkInvocations.get()).isGreaterThanOrEqualTo(1);
+    database.transaction(() -> assertThat(database.countType(TYPE, true)).isEqualTo(2));
   }
 }
