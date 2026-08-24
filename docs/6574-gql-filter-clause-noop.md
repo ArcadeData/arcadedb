@@ -65,3 +65,30 @@ between true and false).
 - Full `com.arcadedb.query.opencypher.**` package (excluding `benchmark`, `slow`, `vector`
   lanes) - 8907/8907 pass, 98 skipped, 0 failures, 0 errors. No regressions.
 - `mvn -pl engine -am compile` - clean compile.
+
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/6688
+
+## Review cycles
+
+- **Cycle 1** - head `05556cb8d493e8588a397ae982dbd5cbca37536c` (initial commit). `claude` bot
+  review (issue comment, 2026-08-24T15:43:50Z): positive assessment, no actionable items.
+  Confirmed the fix's reasoning, the shared `WithClause` AST node claim, and the test coverage
+  design (false-predicate tests are what actually pin the fix, since a no-op also lets rows
+  through). One informational, explicitly non-blocking observation: `letClause`
+  (`LET letItem (COMMA letItem)*`) is in the same grammar `clause` alternative list and has the
+  same missing-handler gap `filterClause` had before this PR - suggested as a follow-up
+  issue/PR, out of scope for this one since `LET` binds a value rather than filtering rows and
+  may need its own AST node rather than reusing `WithClause`. No code changes required; working
+  tree stayed clean.
+
+## Deferred items
+
+None requiring developer follow-up in this PR. See "Review cycles" above for the one
+out-of-scope observation (`letClause` handler gap) the reviewer flagged for a possible
+separate issue.
+
+## Final state
+
+`clean-approval` after 1 review cycle.
