@@ -117,6 +117,8 @@ public class PostgresNetworkExecutor extends Thread {
   /** Bind-message parameter length denoting a NULL value (wire value -1, read unsigned). */
   private static final long                                           NULL_PARAM_LENGTH = 0xFFFFFFFFL;
   private static final Object[]                                       NO_PARAMETERS     = new Object[0];
+  /** Case-insensitive {@code TO} separator for the {@code SET <param> TO <value>} syntax. */
+  private static final Pattern                                        SET_TO_SEPARATOR  = Pattern.compile("(?i)\\s+TO\\s+");
 
   private final ArcadeDBServer              server;
   private final ChannelBinaryServer         channel;
@@ -2049,8 +2051,6 @@ public class PostgresNetworkExecutor extends Thread {
       writeError(ERROR_SEVERITY.ERROR, "Error on parsing query: " + e.getMessage(), sqlStateFor(e));
     }
   }
-
-  private static final Pattern SET_TO_SEPARATOR = Pattern.compile("(?i)\\s+TO\\s+");
 
   /**
    * Parses a Postgres {@code SET <param> = <value>} or {@code SET <param> TO <value>} command into its
