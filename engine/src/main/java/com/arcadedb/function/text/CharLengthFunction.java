@@ -19,6 +19,7 @@
 package com.arcadedb.function.text;
 
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
@@ -45,8 +46,11 @@ public class CharLengthFunction implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     checkArity(args);
-    if (args[0] == null)
+    // STRING-only argument, same declared input domain as toUpper()/toLower()/trim() and the rest of the
+    // #5798 family - this function predates that fix and was never brought in line with it (issue #6608).
+    final String source = CypherFunctionHelper.requireStringArgument(args[0], getName());
+    if (source == null)
       return null;
-    return (long) args[0].toString().length();
+    return (long) source.length();
   }
 }
