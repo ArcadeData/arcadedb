@@ -2097,24 +2097,33 @@ public class PostgresNetworkExecutor extends Thread {
     }
   }
 
+  private static final Pattern SET_TO_SEPARATOR = Pattern.compile("(?i)\\s+TO\\s+");
+
   /**
    * Parses a Postgres {@code SET <param> = <value>} or {@code SET <param> TO <value>} command into its
-   * {@code {paramName, value}} pair. Splits on the FIRST separator only, so a value containing a further
-   * '=' (e.g. a connection string) is kept whole instead of truncated (issue #6423). {@code paramName} is
-   * lower-cased for case-insensitive comparison; a quoted {@code value} has its surrounding quotes
-   * stripped. Returns null when the command has neither a '=' nor a ' TO ' separator.
+   * {@code {paramName, value}} pair. A command can only use one of the two separators, but its value may
+   * legitimately contain the other one as plain text (e.g. {@code SET search_path TO 'a=b'} or
+   * {@code SET x = 'a TO b'}), so this picks whichever separator - the first '=' or the first case-
+   * insensitive ' TO ' - occurs FIRST in the string and splits on that one only, leaving every other
+   * occurrence of either inside the value untouched (issue #6423). {@code paramName} is lower-cased for
+   * case-insensitive comparison; a quoted {@code value} has its surrounding quotes stripped. Returns null
+   * when the command has neither separator.
    */
   static String[] parseSetCommand(final String query) {
     final int setLength = "SET ".length();
     // Use original query to preserve case of values
     final String q = query.substring(setLength);
 
-    String[] parts = StringUtils.splitKeyValue(q);
-    if (parts == null)
-      // Fall back to a case-insensitive " TO " split, also on the first occurrence only
-      parts = q.split("(?i)\\s+TO\\s+", 2);
+    final int eqPos = q.indexOf('=');
+    final Matcher toMatcher = SET_TO_SEPARATOR.matcher(q);
+    final boolean toFound = toMatcher.find();
 
-    if (parts.length < 2)
+    final String[] parts;
+    if (toFound && (eqPos < 0 || toMatcher.start() < eqPos))
+      parts = new String[] { q.substring(0, toMatcher.start()), q.substring(toMatcher.end()) };
+    else if (eqPos >= 0)
+      parts = StringUtils.splitKeyValue(q);
+    else
       return null;
 
     final String paramName = parts[0].trim().toLowerCase(Locale.ENGLISH);

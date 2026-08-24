@@ -53,6 +53,20 @@ class PostgresSetCommandParsingTest {
   }
 
   @Test
+  void toKeywordAssignmentWithValueContainingEqualsIsKeptWhole() {
+    // The command uses ' TO ' as its separator, so the '=' inside the value must NOT be mistaken for
+    // the (unused) '=' separator - the earlier-occurring separator wins, not '=' unconditionally.
+    assertThat(PostgresNetworkExecutor.parseSetCommand("SET search_path TO 'a=b'")).containsExactly("search_path", "a=b");
+  }
+
+  @Test
+  void equalsAssignmentWithValueContainingToIsKeptWhole() {
+    // Symmetric case: the command uses '=' as its separator, so a ' TO ' inside the value must not be
+    // mistaken for the (unused) TO separator.
+    assertThat(PostgresNetworkExecutor.parseSetCommand("SET search_path = 'a TO b'")).containsExactly("search_path", "a TO b");
+  }
+
+  @Test
   void unquotedValueIsNotStripped() {
     assertThat(PostgresNetworkExecutor.parseSetCommand("SET timezone = UTC")).containsExactly("timezone", "UTC");
   }
