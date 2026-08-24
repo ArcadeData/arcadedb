@@ -164,6 +164,36 @@ public class RedisAuthenticationTest extends BaseGraphServerTest {
   }
 
   @Test
+  void helloWithoutAuthErrorKindIsNotMaskedByErr() {
+    // Issue #6560, review follow-up: the WRONGPASS/NOPERM wire-level coverage above did not extend to HELLO's
+    // own NOAUTH and NOPROTO RedisException.withKind() call sites, so exercise them here too rather than only
+    // through the respErrorPrefix() unit test - a future regression in hello()'s dispatch could otherwise slip
+    // through with only the classification logic pinned, not the actual wire reply hello() produces.
+    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+      final JedisDataException error = catchThrowableOfType(JedisDataException.class,
+          () -> jedis.sendCommand(Protocol.Command.HELLO, "2"));
+      assertThat(error).isNotNull();
+      assertThat(error.getMessage()).as("RESP error kind must be NOAUTH, not masked by a leading ERR")
+          .startsWith("NOAUTH")
+          .doesNotStartWith("ERR");
+    }
+  }
+
+  @Test
+  void helloWithBadProtocolVersionErrorKindIsNotMaskedByErr() {
+    // Issue #6560, review follow-up: see helloWithoutAuthErrorKindIsNotMaskedByErr() above. HELLO's protocol-
+    // version check runs before the NOAUTH check, so a bad version is reachable on an unauthenticated connection.
+    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+      final JedisDataException error = catchThrowableOfType(JedisDataException.class,
+          () -> jedis.sendCommand(Protocol.Command.HELLO, "9"));
+      assertThat(error).isNotNull();
+      assertThat(error.getMessage()).as("RESP error kind must be NOPROTO, not masked by a leading ERR")
+          .startsWith("NOPROTO")
+          .doesNotStartWith("ERR");
+    }
+  }
+
+  @Test
   void helloWithWrongCredentialsIsRejected() {
     try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
       final JedisDataException error = catchThrowableOfType(JedisDataException.class,
