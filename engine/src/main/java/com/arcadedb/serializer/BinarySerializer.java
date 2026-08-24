@@ -653,38 +653,71 @@ public class BinarySerializer {
       break;
     }
     case BinaryTypes.TYPE_ARRAY_OF_SHORTS: {
-      final int length = Array.getLength(value);
-      content.putUnsignedNumber(length);
-      for (int i = 0; i < length; ++i)
-        content.putNumber(Array.getShort(value, i));
+      // `Array.getShort()` is the fast primitive-array path: java.lang.reflect.Array's typed getters reject a boxed
+      // Short[] with IllegalArgumentException ("not an array of primitive type"), so a wrapper array - now also
+      // classified TYPE_ARRAY_OF_SHORTS, issue #6464 - is unboxed explicitly instead.
+      if (value instanceof short[] shorts) {
+        content.putUnsignedNumber(shorts.length);
+        for (final short v : shorts)
+          content.putNumber(v);
+      } else {
+        final Short[] shorts = (Short[]) value;
+        content.putUnsignedNumber(shorts.length);
+        for (final Short v : shorts)
+          content.putNumber(v);
+      }
       break;
     }
     case BinaryTypes.TYPE_ARRAY_OF_INTEGERS: {
-      final int length = Array.getLength(value);
-      content.putUnsignedNumber(length);
-      for (int i = 0; i < length; ++i)
-        content.putNumber(Array.getInt(value, i));
+      if (value instanceof int[] ints) {
+        content.putUnsignedNumber(ints.length);
+        for (final int v : ints)
+          content.putNumber(v);
+      } else {
+        final Integer[] ints = (Integer[]) value;
+        content.putUnsignedNumber(ints.length);
+        for (final Integer v : ints)
+          content.putNumber(v);
+      }
       break;
     }
     case BinaryTypes.TYPE_ARRAY_OF_LONGS: {
-      final int length = Array.getLength(value);
-      content.putUnsignedNumber(length);
-      for (int i = 0; i < length; ++i)
-        content.putNumber(Array.getLong(value, i));
+      if (value instanceof long[] longs) {
+        content.putUnsignedNumber(longs.length);
+        for (final long v : longs)
+          content.putNumber(v);
+      } else {
+        final Long[] longs = (Long[]) value;
+        content.putUnsignedNumber(longs.length);
+        for (final Long v : longs)
+          content.putNumber(v);
+      }
       break;
     }
     case BinaryTypes.TYPE_ARRAY_OF_FLOATS: {
-      final int length = Array.getLength(value);
-      content.putUnsignedNumber(length);
-      for (int i = 0; i < length; ++i)
-        content.putNumber(Float.floatToIntBits(Array.getFloat(value, i)));
+      if (value instanceof float[] floats) {
+        content.putUnsignedNumber(floats.length);
+        for (final float v : floats)
+          content.putNumber(Float.floatToIntBits(v));
+      } else {
+        final Float[] floats = (Float[]) value;
+        content.putUnsignedNumber(floats.length);
+        for (final Float v : floats)
+          content.putNumber(Float.floatToIntBits(v));
+      }
       break;
     }
     case BinaryTypes.TYPE_ARRAY_OF_DOUBLES: {
-      final int length = Array.getLength(value);
-      content.putUnsignedNumber(length);
-      for (int i = 0; i < length; ++i)
-        content.putNumber(Double.doubleToLongBits(Array.getDouble(value, i)));
+      if (value instanceof double[] doubles) {
+        content.putUnsignedNumber(doubles.length);
+        for (final double v : doubles)
+          content.putNumber(Double.doubleToLongBits(v));
+      } else {
+        final Double[] doubles = (Double[]) value;
+        content.putUnsignedNumber(doubles.length);
+        for (final Double v : doubles)
+          content.putNumber(Double.doubleToLongBits(v));
+      }
       break;
     }
     default:

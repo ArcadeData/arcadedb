@@ -361,6 +361,154 @@ class BinarySerializerTest extends TestHelper {
     });
   }
 
+  /**
+   * Issue #6464: an EMPTY typed primitive-array property used to round-trip to an empty {@code ArrayList} instead
+   * of an array, because {@link BinaryTypes#getTypeFromValue(Object, com.arcadedb.schema.Property)} decided the
+   * binary type of a primitive array from its FIRST element - a {@code null} for an empty array - rather than from
+   * the array's component type. So the runtime type of the same property depended on whether it happened to be
+   * empty. Asserted both via the direct classifier ({@link BinaryTypes#getTypeFromValue}) and via a full
+   * serialize/deserialize round trip.
+   */
+  @Test
+  void emptyPrimitiveArrayKeepsItsArrayType() throws Exception {
+    assertThat(BinaryTypes.getTypeFromValue(new short[0], null)).isEqualTo(BinaryTypes.TYPE_ARRAY_OF_SHORTS);
+    assertThat(BinaryTypes.getTypeFromValue(new int[0], null)).isEqualTo(BinaryTypes.TYPE_ARRAY_OF_INTEGERS);
+    assertThat(BinaryTypes.getTypeFromValue(new long[0], null)).isEqualTo(BinaryTypes.TYPE_ARRAY_OF_LONGS);
+    assertThat(BinaryTypes.getTypeFromValue(new float[0], null)).isEqualTo(BinaryTypes.TYPE_ARRAY_OF_FLOATS);
+    assertThat(BinaryTypes.getTypeFromValue(new double[0], null)).isEqualTo(BinaryTypes.TYPE_ARRAY_OF_DOUBLES);
+
+    final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
+
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Test");
+      database.commit();
+
+      database.begin();
+      final MutableDocument v = database.newDocument("Test");
+
+      v.set("arrayOfIntegers", new int[0]);
+      v.set("arrayOfLongs", new long[0]);
+      v.set("arrayOfShorts", new short[0]);
+      v.set("arrayOfFloats", new float[0]);
+      v.set("arrayOfDoubles", new double[0]);
+
+      final Binary buffer = serializer.serialize((DatabaseInternal) database, v);
+
+      final ByteBuffer buffer2 = ByteBuffer.allocate((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue());
+      buffer2.put(buffer.toByteArray());
+      buffer2.flip();
+
+      final Binary buffer3 = new Binary(buffer2);
+      buffer3.getByte(); // SKIP RECORD TYPE
+      final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, null, null);
+
+      assertThat(record2.get("arrayOfIntegers")).isInstanceOf(int[].class);
+      assertThat((int[]) record2.get("arrayOfIntegers")).isEmpty();
+      assertThat(record2.get("arrayOfLongs")).isInstanceOf(long[].class);
+      assertThat((long[]) record2.get("arrayOfLongs")).isEmpty();
+      assertThat(record2.get("arrayOfShorts")).isInstanceOf(short[].class);
+      assertThat((short[]) record2.get("arrayOfShorts")).isEmpty();
+      assertThat(record2.get("arrayOfFloats")).isInstanceOf(float[].class);
+      assertThat((float[]) record2.get("arrayOfFloats")).isEmpty();
+      assertThat(record2.get("arrayOfDoubles")).isInstanceOf(double[].class);
+      assertThat((double[]) record2.get("arrayOfDoubles")).isEmpty();
+    });
+  }
+
+  /**
+   * Issue #6464: a boxed {@code Short[]/Integer[]/Long[]/Float[]/Double[]} value was always classified
+   * {@code TYPE_LIST} regardless of content, so it silently downgraded to a {@code List} on read even though the
+   * equivalent primitive array (or a non-empty one, before the fix above) round-tripped as an array. The array's
+   * wrapper component type is now enough on its own to pick the matching {@code TYPE_ARRAY_OF_*} binary type, and
+   * it deserializes as the canonical primitive array - matching what {@code Type.ARRAY_OF_INTEGERS} et al. already
+   * declare as their Java class ({@code int[].class}, not {@code Integer[].class}).
+   */
+  @Test
+  void boxedPrimitiveArraysSerializeAsTypedArrays() throws Exception {
+    assertThat(BinaryTypes.getTypeFromValue(new Short[0], null)).isEqualTo(BinaryTypes.TYPE_ARRAY_OF_SHORTS);
+    assertThat(BinaryTypes.getTypeFromValue(new Integer[0], null)).isEqualTo(BinaryTypes.TYPE_ARRAY_OF_INTEGERS);
+    assertThat(BinaryTypes.getTypeFromValue(new Long[0], null)).isEqualTo(BinaryTypes.TYPE_ARRAY_OF_LONGS);
+    assertThat(BinaryTypes.getTypeFromValue(new Float[0], null)).isEqualTo(BinaryTypes.TYPE_ARRAY_OF_FLOATS);
+    assertThat(BinaryTypes.getTypeFromValue(new Double[0], null)).isEqualTo(BinaryTypes.TYPE_ARRAY_OF_DOUBLES);
+
+    final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
+
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Test");
+      database.commit();
+
+      final Short[] boxedShorts = { 1, 2, 3 };
+      final Integer[] boxedIntegers = { 1, 2, 3 };
+      final Long[] boxedLongs = { 1L, 2L, 3L };
+      final Float[] boxedFloats = { 1.1f, 2.2f, 3.3f };
+      final Double[] boxedDoubles = { 1.1, 2.2, 3.3 };
+
+      database.begin();
+      final MutableDocument v = database.newDocument("Test");
+
+      v.set("arrayOfShorts", boxedShorts);
+      v.set("arrayOfIntegers", boxedIntegers);
+      v.set("arrayOfLongs", boxedLongs);
+      v.set("arrayOfFloats", boxedFloats);
+      v.set("arrayOfDoubles", boxedDoubles);
+
+      final Binary buffer = serializer.serialize((DatabaseInternal) database, v);
+
+      final ByteBuffer buffer2 = ByteBuffer.allocate((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue());
+      buffer2.put(buffer.toByteArray());
+      buffer2.flip();
+
+      final Binary buffer3 = new Binary(buffer2);
+      buffer3.getByte(); // SKIP RECORD TYPE
+      final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, null, null);
+
+      assertThat((short[]) record2.get("arrayOfShorts")).containsExactly((short) 1, (short) 2, (short) 3);
+      assertThat((int[]) record2.get("arrayOfIntegers")).containsExactly(1, 2, 3);
+      assertThat((long[]) record2.get("arrayOfLongs")).containsExactly(1L, 2L, 3L);
+      assertThat((float[]) record2.get("arrayOfFloats")).containsExactly(1.1f, 2.2f, 3.3f);
+      assertThat((double[]) record2.get("arrayOfDoubles")).containsExactly(1.1, 2.2, 3.3);
+    });
+  }
+
+  @Test
+  void boxedPrimitiveArrayWithNullElementFallsBackToListInsteadOfNPE() throws Exception {
+    // A WRAPPER ARRAY CONTAINING A null ELEMENT MUST NOT BE CLASSIFIED AS A TYPE_ARRAY_OF_* BINARY TYPE: THAT
+    // SERIALIZER UNBOXES EACH ELEMENT WITH AN ENHANCED FOR-LOOP AND WOULD NPE ON THE null ENTRY (REGRESSION GUARD
+    // FOR THE REVIEW COMMENT ON ISSUE #6464 / PR #6649).
+    assertThat(BinaryTypes.getTypeFromValue(new Short[] { 1, null, 3 }, null)).isEqualTo(BinaryTypes.TYPE_LIST);
+    assertThat(BinaryTypes.getTypeFromValue(new Integer[] { 1, null, 3 }, null)).isEqualTo(BinaryTypes.TYPE_LIST);
+    assertThat(BinaryTypes.getTypeFromValue(new Long[] { 1L, null, 3L }, null)).isEqualTo(BinaryTypes.TYPE_LIST);
+    assertThat(BinaryTypes.getTypeFromValue(new Float[] { 1.1f, null, 3.3f }, null)).isEqualTo(BinaryTypes.TYPE_LIST);
+    assertThat(BinaryTypes.getTypeFromValue(new Double[] { 1.1, null, 3.3 }, null)).isEqualTo(BinaryTypes.TYPE_LIST);
+
+    final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
+
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Test");
+      database.commit();
+
+      final Integer[] withNull = { 1, null, 3 };
+
+      database.begin();
+      final MutableDocument v = database.newDocument("Test");
+
+      v.set("someIntArrayProp", withNull);
+
+      // MUST NOT THROW: BEFORE THIS FIX, SERIALIZING A BOXED WRAPPER ARRAY WITH A null ELEMENT THREW AN UNCAUGHT NPE
+      final Binary buffer = serializer.serialize((DatabaseInternal) database, v);
+
+      final ByteBuffer buffer2 = ByteBuffer.allocate((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue());
+      buffer2.put(buffer.toByteArray());
+      buffer2.flip();
+
+      final Binary buffer3 = new Binary(buffer2);
+      buffer3.getByte(); // SKIP RECORD TYPE
+      final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, null, null);
+
+      assertThat((List<Object>) record2.get("someIntArrayProp")).containsExactly(1, null, 3);
+    });
+  }
+
   @Test
   void mapPropertiesInDocument() throws Exception {
     final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
