@@ -97,6 +97,11 @@ public interface DatabaseAsyncExecutor {
    * Schedules the scan of the records contained in all the buckets defined by a type. This operation scans in sequence each bucket looking for documents, vertices and edges.
    * For each record found a call to #DocumentCallback.onRecord is invoked. If the callback returns false, the scan is terminated, otherwise it continues to
    * the next record.
+   * <p>
+   * If a bucket's own scan fails (I/O error, corruption - as opposed to a per-record error, which is instead routed
+   * to {@code errorRecordCallback} in the overload below), every other bucket is still scanned to completion and the
+   * failure is then rethrown from this call (wrapped in {@link com.arcadedb.exception.DatabaseOperationException} for
+   * a {@code RuntimeException}, raw for an {@code Error}) rather than being silently swallowed (issue #6467).
    *
    * @param typeName    The name of the type
    * @param polymorphic true if the records of all the subtypes must be included, otherwise only the records strictly contained in the #typeName
@@ -109,12 +114,17 @@ public interface DatabaseAsyncExecutor {
    * Schedules the scan of the records contained in all the buckets defined by a type. This operation scans in sequence each bucket looking for documents, vertices and edges.
    * For each record found a call to #DocumentCallback.onRecord is invoked. If the callback returns false, the scan is terminated, otherwise it continues to
    * the next record.
+   * <p>
+   * If a bucket's own scan fails (I/O error, corruption - as opposed to a per-record error, which is instead routed
+   * to {@code errorRecordCallback}), every other bucket is still scanned to completion and the failure is then
+   * rethrown from this call (wrapped in {@link com.arcadedb.exception.DatabaseOperationException} for a
+   * {@code RuntimeException}, raw for an {@code Error}) rather than being silently swallowed (issue #6467).
    *
    * @param typeName            The name of the type
    * @param polymorphic         true if the records of all the subtypes must be included, otherwise only the records strictly contained in the #typeName
    *                            will be scanned
    * @param callback            Callback to handle the loaded record document. Returns false to interrupt the scan operation, otherwise true to continue till the end
-   * @param errorRecordCallback Callback used in case of error during the scan
+   * @param errorRecordCallback Callback used in case of a per-record error during the scan
    */
   void scanType(String typeName, boolean polymorphic, DocumentCallback callback, ErrorRecordCallback errorRecordCallback);
 
@@ -162,17 +172,24 @@ public interface DatabaseAsyncExecutor {
 
   /**
    * Schedules the request to create a record. If the record is created successfully, the callback @{@link NewRecordCallback} is executed.
+   * <p>
+   * The callback fires as soon as the create is applied to the worker's current batch transaction, which is not yet
+   * durable: a later task in the same still-open batch can fail and roll the whole batch back, discarding this
+   * record even though the callback already fired (issue #6470). Register {@link #onOk(OkCallback)} (or call
+   * {@link #waitCompletion()}) for a signal that fires only once the batch has actually committed.
    *
    * @param record            Record to create
-   * @param newRecordCallback Callback invoked after the record has been created
+   * @param newRecordCallback Callback invoked after the record has been applied to the current batch
    */
   void createRecord(MutableDocument record, NewRecordCallback newRecordCallback);
 
   /**
    * Schedules the request to create a record. If the record is created successfully, the callback @{@link NewRecordCallback} is executed.
+   * <p>
+   * See {@link #createRecord(MutableDocument, NewRecordCallback)} for when the callback fires relative to durability.
    *
    * @param record            Record to create
-   * @param newRecordCallback Callback invoked after the record has been created
+   * @param newRecordCallback Callback invoked after the record has been applied to the current batch
    * @param errorCallback     Callback invoked in case of error
    */
   void createRecord(MutableDocument record, NewRecordCallback newRecordCallback, final ErrorCallback errorCallback);
@@ -180,52 +197,70 @@ public interface DatabaseAsyncExecutor {
   /**
    * Schedules the request to create a record in a specific bucket. The bucket must be one defined in the schema to store the records of the current type.
    * If the record is created successfully, the callback @{@link NewRecordCallback} is executed.
+   * <p>
+   * See {@link #createRecord(MutableDocument, NewRecordCallback)} for when the callback fires relative to durability.
    *
    * @param record            Record to create
-   * @param newRecordCallback Callback invoked after the record has been created
+   * @param newRecordCallback Callback invoked after the record has been applied to the current batch
    */
   void createRecord(Record record, String bucketName, NewRecordCallback newRecordCallback);
 
   /**
    * Schedules the request to create a record in a specific bucket. The bucket must be one defined in the schema to store the records of the current type.
    * If the record is created successfully, the callback @{@link NewRecordCallback} is executed.
+   * <p>
+   * See {@link #createRecord(MutableDocument, NewRecordCallback)} for when the callback fires relative to durability.
    *
    * @param record            Record to create
-   * @param newRecordCallback Callback invoked after the record has been created
+   * @param newRecordCallback Callback invoked after the record has been applied to the current batch
    * @param errorCallback     Callback invoked in case of error
    */
   void createRecord(Record record, String bucketName, NewRecordCallback newRecordCallback, final ErrorCallback errorCallback);
 
   /**
    * Schedules the request to update a record. If the record is updated successfully, the callback @{@link UpdatedRecordCallback} is executed.
+   * <p>
+   * The callback fires as soon as the update is applied to the worker's current batch transaction, which is not yet
+   * durable: a later task in the same still-open batch can fail and roll the whole batch back, undoing this update
+   * even though the callback already fired (issue #6470). Register {@link #onOk(OkCallback)} (or call
+   * {@link #waitCompletion()}) for a signal that fires only once the batch has actually committed.
    *
    * @param record               Record to update
-   * @param updateRecordCallback Callback invoked after the record has been updated
+   * @param updateRecordCallback Callback invoked after the record has been applied to the current batch
    */
   void updateRecord(MutableDocument record, UpdatedRecordCallback updateRecordCallback);
 
   /**
    * Schedules the request to update a record. If the record is updated successfully, the callback @{@link UpdatedRecordCallback} is executed.
+   * <p>
+   * See {@link #updateRecord(MutableDocument, UpdatedRecordCallback)} for when the callback fires relative to durability.
    *
    * @param record               Record to update
-   * @param updateRecordCallback Callback invoked after the record has been updated
+   * @param updateRecordCallback Callback invoked after the record has been applied to the current batch
    * @param errorCallback        Callback invoked in case of error
    */
   void updateRecord(MutableDocument record, UpdatedRecordCallback updateRecordCallback, final ErrorCallback errorCallback);
 
   /**
    * Schedules the request to delete a record. If the record is deleted successfully, the callback @{@link DeletedRecordCallback} is executed.
+   * <p>
+   * The callback fires as soon as the delete is applied to the worker's current batch transaction, which is not yet
+   * durable: a later task in the same still-open batch can fail and roll the whole batch back, undoing this delete
+   * even though the callback already fired (issue #6470). Register {@link #onOk(OkCallback)} (or call
+   * {@link #waitCompletion()}) for a signal that fires only once the batch has actually committed.
    *
    * @param record               Record to delete
-   * @param deleteRecordCallback Callback invoked after the record has been deleted
+   * @param deleteRecordCallback Callback invoked after the record has been applied to the current batch
    */
   void deleteRecord(Record record, DeletedRecordCallback deleteRecordCallback);
 
   /**
    * Schedules the request to delete a record. If the record is deleted successfully, the callback @{@link DeletedRecordCallback} is executed.
+   * <p>
+   * See {@link #deleteRecord(Record, DeletedRecordCallback)} for when the callback fires relative to durability.
    *
    * @param record               Record to delete
-   * @param deleteRecordCallback Callback invoked after the record has been deleted
+   * @param deleteRecordCallback Callback invoked after the record has been applied to the current batch
    * @param errorCallback        Callback invoked in case of error
    */
   void deleteRecord(Record record, DeletedRecordCallback deleteRecordCallback, final ErrorCallback errorCallback);
@@ -424,9 +459,35 @@ public interface DatabaseAsyncExecutor {
   void setTransactionSync(WALFile.FlushType transactionSync);
 
   /**
-   * Defines a global callback to handle all the returns from asynchronous operations completed without errors.
+   * Defines a global callback invoked at every point a worker's shared batch transaction can commit: the periodic
+   * {@link #setCommitEvery(int)} boundary, when a durability setting
+   * ({@link #setTransactionUseWAL(boolean)}/{@link #setTransactionSync(WALFile.FlushType)}) changes mid-batch, and
+   * the barrier {@link #waitCompletion()}/{@link #waitCompletion(long)} relies on. A worker also invokes it
+   * unconditionally on shutdown, even when it had nothing left to commit, so a shutdown firing is not on its own
+   * proof that a write became durable at that moment.
+   * <p>
+   * This is the durability signal for {@link #createRecord}/{@link #updateRecord}/{@link #deleteRecord}: their own
+   * per-record callback (e.g. {@link NewRecordCallback}) fires as soon as the write is applied to the worker's
+   * current batch, which is not necessarily durable yet - a later task in the same still-open batch can fail and
+   * roll the whole batch back, undoing an op whose callback already fired (issue #6470). This callback, by contrast,
+   * fires only once that batch has actually committed. A caller that must know a specific write is durable, rather
+   * than merely applied, should register this callback (or call {@link #waitCompletion()}) rather than rely on
+   * timing alone.
+   * <p>
+   * "Committed" here means WAL-durable and replay-safe on the next open, which is all a commit guarantees under the
+   * default {@link #setTransactionSync(WALFile.FlushType)} setting of {@code NO} - no {@code fsync} happens at that
+   * point, so the write can still be lost to a power loss or OS crash (though not to a JVM crash or restart) unless
+   * {@code setTransactionSync(YES_NOMETADATA)}/{@code YES_FULL} is configured. A caller that needs the stronger,
+   * disk-durability guarantee must opt into that setting explicitly; this callback's timing does not change with it.
+   * <p>
+   * Since each worker crosses its own {@link #setCommitEvery(int)} boundary independently, this callback can now be
+   * invoked far more often, and concurrently from multiple worker threads, than when it fired only at shutdown and
+   * from {@link #waitCompletion()}. The registered {@link OkCallback} must be thread-safe, and is invoked
+   * synchronously on the committing worker's own thread at every one of those boundaries - a slow or blocking
+   * callback directly throttles that worker's batch throughput, so keep it cheap.
    *
-   * @param callback Callback invoked when an asynchronous operation succeeds
+   * @param callback Callback invoked every time this executor's shared batch transaction commits; must be
+   *                 thread-safe and cheap, since it runs synchronously on the committing worker's thread
    */
   void onOk(OkCallback callback);
 
