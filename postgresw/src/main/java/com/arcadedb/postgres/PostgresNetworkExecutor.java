@@ -1783,6 +1783,28 @@ public class PostgresNetworkExecutor extends Thread {
       }
       PostgresPortal portal = PostgresPortal.bindFrom(template);
 
+      // Only the preparedStatements-map template above is provably never executed for a real query (parseCommand
+      // writes it once and nothing ever mutates it afterwards) - the fallback template just above (portals.get
+      // (portalName), reached when sourcePreparedStatement does not name a real prepared statement) is a normal,
+      // mutable portal that may already have run. bindFrom() copies executed/cachedResultSet from whichever
+      // template it was given but leaves fullResultSet at null, so without this reset a portal cloned from an
+      // already-executed fallback template would skip both executeCommand()'s "not yet executed" branch
+      // (portal.executed is already true) and its fullResultSet-pagination branch (fullResultSet is null), and
+      // would serve the OLD run's stale cachedResultSet instead of running this Bind's own execution. Same reset
+      // #6660 originally applied (105cdbb0b8), reinstated here for this one remaining path that can reach it -
+      // the preparedStatements-only redesign above made the reset a no-op for its own template source, since
+      // that source's `executed` is never true for a real query, but did not make it a no-op for this fallback.
+      // Gated on sqlStatement != null for the same reason as #6660: BEGIN/COMMIT/ROLLBACK and a resolved catalog
+      // answer precompute their fixed response during Parse via setEmptyResultSet()/direct assignment, and must
+      // not be reset before Execute ever sees them.
+      if (portal.executed && portal.sqlStatement != null) {
+        portal.executed = false;
+        portal.fullResultSet = null;
+        portal.cachedResultSet = null;
+        portal.resultCursor = 0;
+        portal.suspended = false;
+      }
+
       if (DEBUG)
         LogManager.instance()
             .log(this, Level.INFO, "PSQL: bind (portal=%s) -> %s (thread=%s)", portalName, sourcePreparedStatement,

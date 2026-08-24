@@ -264,6 +264,74 @@ public class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
   }
 
   /**
+   * Regression test for a review finding on PR #6658 (2026-08-24 cycle): {@code bindCommand()}'s
+   * "backwards-compatible fallback" - reached when a Bind's own {@code sourcePreparedStatement} name is not a
+   * real, Parsed prepared statement, so the lookup falls back to treating {@code portalName} itself as the
+   * template ({@code portals.get(portalName)}) - can pick up an already-executed, real portal as that template.
+   * {@link PostgresPortal#bindFrom} copies {@code executed}/{@code cachedResultSet} from whatever template it
+   * is given (safe for the {@code preparedStatements}-map template, which parseCommand writes once and never
+   * mutates afterwards, so its {@code executed} is never true for a real query) but this fallback template is a
+   * normal, mutable portal that may already have run a real query - without a reset, the clone would inherit a
+   * stale {@code executed=true} and stale {@code cachedResultSet} while {@code fullResultSet} stays at its
+   * fresh {@code null} default, so {@code executeCommand()} would skip both its "not yet executed" branch and
+   * its {@code fullResultSet}-pagination branch and serve the OLD run's stale result instead of re-executing
+   * this Bind. Confirmed failing without the reset (second run replays the stale first-run row count instead
+   * of picking up rows inserted in between).
+   */
+  @Test
+  void bindFallbackOnAnUnknownSourceStatementReRunsInsteadOfServingTheStaleExecutedPortal() throws Exception {
+    try (final Socket socket = new Socket()) {
+      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+
+      sendStartupMessage(out, "root", getDatabaseName());
+      readMessage(in); // AuthenticationCleartextPassword
+      sendPasswordMessage(out, DEFAULT_PASSWORD_FOR_TESTS);
+      readMessageOfType(in, 'Z'); // drain AuthenticationOk/BackendKeyData/ParameterStatus.../ReadyForQuery
+
+      runSimpleQueryToCompletion(out, in, "CREATE DOCUMENT TYPE FallbackBind6458 IF NOT EXISTS");
+      runSimpleQueryToCompletion(out, in, "CREATE PROPERTY FallbackBind6458.id IF NOT EXISTS INTEGER");
+      for (int i = 0; i < 5; i++)
+        runSimpleQueryToCompletion(out, in, "INSERT INTO FallbackBind6458 SET id = " + i);
+
+      sendParse(out, "SELECT id FROM FallbackBind6458 ORDER BY id");
+      assertThat(readOneMessage(in).type).as("ParseComplete").isEqualTo('1');
+
+      // First Bind+Execute: a normal Bind naming the real (unnamed) statement, fully drained.
+      sendBind(out, "PF1");
+      assertThat(readOneMessage(in).type).as("BindComplete").isEqualTo('2');
+      sendExecute(out, "PF1", 0);
+      sendSync(out);
+      assertThat(readOneMessage(in).type).as("RowDescription - first execution of this portal").isEqualTo('T');
+      assertThat(readNextBatchOfIds(in, 5)).as("first run reads every row").containsExactly(0, 1, 2, 3, 4);
+      assertThat(readOneMessage(in).type).as("CommandComplete - fully drained").isEqualTo('C');
+      assertThat(readOneMessage(in).type).as("ReadyForQuery closes this Sync").isEqualTo('Z');
+
+      // Data changes between the two Binds, so a stale vs. fresh cachedResultSet is observable.
+      runSimpleQueryToCompletion(out, in, "INSERT INTO FallbackBind6458 SET id = 5");
+      runSimpleQueryToCompletion(out, in, "INSERT INTO FallbackBind6458 SET id = 6");
+      runSimpleQueryToCompletion(out, in, "INSERT INTO FallbackBind6458 SET id = 7");
+
+      // Second Bind on the SAME portal name, naming a source prepared statement that was never Parsed -
+      // bindCommand()'s preparedStatements.get(...) lookup misses, so it falls back to portals.get(portalName),
+      // which is the already-executed PF1 portal from above.
+      sendBind(out, "PF1", "never-parsed-statement-name");
+      assertThat(readOneMessage(in).type).as("BindComplete").isEqualTo('2');
+      sendExecute(out, "PF1", 0);
+      sendSync(out);
+      assertThat(readOneMessage(in).type)
+          .as("RowDescription again - this must be a fresh execution, not the stale first run replayed")
+          .isEqualTo('T');
+      assertThat(readNextBatchOfIds(in, 8))
+          .as("re-executes against the now-8-row table instead of replaying the first run's stale 5-row result")
+          .containsExactly(0, 1, 2, 3, 4, 5, 6, 7);
+      assertThat(readOneMessage(in).type).as("CommandComplete - fully drained").isEqualTo('C');
+      assertThat(readOneMessage(in).type).as("ReadyForQuery closes this Sync").isEqualTo('Z');
+    }
+  }
+
+  /**
    * Regression test for the CodeRabbit review finding on PR #6658: {@code bindCommand()} used to look up the
    * portal to bind by the PREPARED STATEMENT's name and store that exact object under the new portal name too
    * - so two portal names bound from the same statement were not independent portals at all, just two names
@@ -513,9 +581,18 @@ public class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
    * Execute exactly as issue #6458's report describes.
    */
   private static void sendBind(final DataOutputStream out, final String portalName) throws Exception {
+    sendBind(out, portalName, ""); // unnamed statement
+  }
+
+  /**
+   * Same as {@link #sendBind(DataOutputStream, String)} but lets the caller name an explicit source prepared
+   * statement, so a test can Bind against a statement name that was never Parsed and exercise bindCommand()'s
+   * fallback onto {@code portals.get(portalName)}.
+   */
+  private static void sendBind(final DataOutputStream out, final String portalName, final String sourcePreparedStatement) throws Exception {
     final ByteArrayOutputStream body = new ByteArrayOutputStream();
     writeCString(body, portalName);
-    writeCString(body, ""); // unnamed statement
+    writeCString(body, sourcePreparedStatement);
     body.write(0);
     body.write(0); // int16 numParamFormatCodes = 0
     body.write(0);
