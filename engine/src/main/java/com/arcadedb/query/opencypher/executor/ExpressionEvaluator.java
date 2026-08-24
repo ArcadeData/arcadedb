@@ -31,7 +31,6 @@ import com.arcadedb.query.opencypher.ast.ComparisonExpressionWrapper;
 import com.arcadedb.query.opencypher.ast.ListComprehensionExpression;
 import com.arcadedb.query.opencypher.ast.ListExpression;
 import com.arcadedb.query.opencypher.ast.ListIndexExpression;
-import com.arcadedb.query.opencypher.ast.ListPredicateExpression;
 import com.arcadedb.query.opencypher.ast.ListSliceExpression;
 import com.arcadedb.query.opencypher.ast.MapExpression;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
@@ -101,8 +100,6 @@ public class ExpressionEvaluator {
       return evaluateMap(me, result, context);
     } else if (aggregationOverrides() != null && expression instanceof ListComprehensionExpression) {
       return evaluateListComprehension((ListComprehensionExpression) expression, result, context);
-    } else if (aggregationOverrides() != null && expression instanceof ListPredicateExpression) {
-      return evaluateListPredicate((ListPredicateExpression) expression, result, context);
     } else if (aggregationOverrides() != null && expression instanceof CaseExpression ce) {
       // Route CASE branches through this evaluator so a pre-computed aggregation nested inside a
       // branch (e.g. CASE WHEN ... THEN sum(v) END) resolves to its accumulated value instead of
@@ -237,48 +234,6 @@ public class ExpressionEvaluator {
         resultList.add(item);
     }
     return resultList;
-  }
-
-  /**
-   * Evaluates a list predicate expression (ALL/ANY/NONE/SINGLE) using this evaluator.
-   */
-  private Object evaluateListPredicate(final ListPredicateExpression expression,
-      final Result result, final CommandContext context) {
-    final Object listValue = evaluate(expression.getListExpression(), result, context);
-    if (listValue == null)
-      return null;
-
-    final Iterable<?> iterable;
-    if (listValue instanceof Iterable)
-      iterable = (Iterable<?>) listValue;
-    else
-      return expression.evaluate(result, context); // fallback
-
-    int matchCount = 0;
-    int totalCount = 0;
-    for (final Object item : iterable) {
-      totalCount++;
-      final ResultInternal iterResult = new ResultInternal();
-      if (result != null)
-        for (final String prop : result.getPropertyNames())
-          iterResult.setProperty(prop, result.getProperty(prop));
-      iterResult.setProperty(expression.getVariable(), item);
-
-      if (expression.getWhereExpression() != null) {
-        final Object filterValue = evaluate(expression.getWhereExpression(), iterResult, context);
-        if (filterValue instanceof Boolean && (Boolean) filterValue)
-          matchCount++;
-      } else {
-        matchCount++;
-      }
-    }
-
-    return switch (expression.getPredicateType()) {
-      case ALL -> matchCount == totalCount;
-      case ANY -> matchCount > 0;
-      case NONE -> matchCount == 0;
-      case SINGLE -> matchCount == 1;
-    };
   }
 
   private Object evaluateListSlice(final ListSliceExpression expression, final Result result,
