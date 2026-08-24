@@ -86,3 +86,66 @@ The issue's repro and suggested fix are both scoped to the five numeric `ARRAY_O
 (`SHORT`/`INTEGER`/`LONG`/`FLOAT`/`DOUBLE`). `byte[]` is unaffected by the original bug (handled
 earlier in `getTypeFromValue` as `TYPE_BINARY`, unconditionally, regardless of emptiness) and is out
 of scope here.
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/6649
+
+## Review cycles
+
+- **Cycle 1** - head `f8bb9109` (PR open). `claude` bot review (posted as a PR issue comment, no
+  commit SHA - see note below) found one real bug: `getTypeFromValue()` classified any
+  `Short[]/Integer[]/Long[]/Float[]/Double[]` as `TYPE_ARRAY_OF_*` purely from component type,
+  regardless of content, but `BinarySerializer.serializeValue()`'s new `TYPE_ARRAY_OF_*` branches
+  unbox each wrapper element with an enhanced for-loop (`for (final Integer v : ints)
+  content.putNumber(v)`), which auto-unboxes and throws an uncaught `NullPointerException` on a
+  `null` element. Reachable via the ordinary public API for a schemaless property
+  (`doc.set("someIntArrayProp", new Integer[]{1, null, 3})`). **Verified** by reading
+  `BinarySerializer.java:663-720` - confirmed the auto-unboxing NPE is real for all five wrapper
+  types. **Applied**: added `BinaryTypes.arrayHasNullElement()` and fell back to `TYPE_LIST` in
+  `getTypeFromValue()` whenever a wrapper array contains a `null` element (the reviewer's first
+  suggested option - mirrors the pre-existing `Object[]` fallback and keeps the pre-#6464 behavior
+  for this case unchanged). Added regression test
+  `boxedPrimitiveArrayWithNullElementFallsBackToListInsteadOfNPE` covering the classifier and a full
+  serialize/deserialize round trip. Verification: `BinarySerializerTest` 20/20,
+  `com.arcadedb.serializer.**` + `com.arcadedb.schema.**` 621/621, `BUILD SUCCESS`. Pushed as
+  `ce4942b`.
+- **Cycle 2** - head `ce4942b`. `claude` bot review (PR issue comment) confirmed the
+  `arrayHasNullElement` fallback closes the NPE gap and the new regression test pins it; traced the
+  schema-declared-property path (`Type.convert()`'s `requireNonNullNumber`/`narrowToIntegral`) and
+  confirmed the null-fallback in this PR matters for schemaless properties and other
+  direct-serialization callers, which is the scope the added test exercises. **No blocking issues
+  found.** Three items raised, all explicitly non-blocking and left as-is (see below) - no code
+  change made this cycle, working tree stayed clean.
+
+### Nitpicks raised in cycle 2, not actioned (reviewer marked all three non-blocking)
+
+- `Type.TYPES_BY_USERTYPE` has no entries for the boxed wrapper array classes
+  (`Short[].class`/`Integer[].class`/...), only their primitive counterparts. Reviewer: "not touched
+  by this PR and not a regression... possibly worth a follow-up issue if that path exists." No such
+  call site was identified as in-scope for this issue; left as a possible future follow-up, not filed
+  separately since it is speculative ("if that path exists").
+- The five-way `componentType == X.class ? arrayHasNullElement(...) : ...` chain in
+  `getTypeFromValue()` repeats the same ternary shape and could be a small helper. Reviewer's own
+  words: "a nitpick, not a blocker... matches the existing style of the surrounding if/else chain."
+  Left as-is - the current form stays consistent with the chain's existing if/else style, which the
+  reviewer confirmed is more readable than the alternative here.
+- `Byte[]` (boxed) still falls through to `TYPE_LIST`, unlike the other four wrapper types. Reviewer:
+  "consistent with the stated scoping, just flagging it's not 'fixed' by symmetry." `byte[]`/`Byte[]`
+  were explicitly out of scope for issue #6464 from the start (see "Scope not addressed" above,
+  `byte[]` is handled earlier as `TYPE_BINARY` and was never affected by the original bug) - no change
+  needed.
+
+### Note on the review-polling bug this run started from
+
+Cycle 1's review (`f8bb9109`, 2026-08-23T20:28:27Z) was originally missed by a version of this skill's
+Phase 3a that only polled `reviews[]` and inline PR comments (both keyed by commit SHA) - the `claude`
+bot on this repo posts its review as a plain PR **issue comment** with no SHA at all. That polling gap
+is fixed in the current skill (adds a third surface: `gh pr view --json comments`, filtered to
+`claude`-authored comments newer than the push timestamp). Both cycles in this run were detected
+correctly by the fixed polling on the first or near-first poll.
+
+## Final state
+
+`clean-approval` - cycle 2 review found no blocking issues and required no further changes. Ready
+for developer review and merge (merge intentionally not performed by this skill).
