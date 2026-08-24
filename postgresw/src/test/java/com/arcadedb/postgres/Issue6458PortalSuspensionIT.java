@@ -200,6 +200,64 @@ public class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
     }
   }
 
+  /**
+   * Regression test for issue #6660, surfaced by #6458 itself: keeping a portal alive after it completes
+   * (rather than removing it, which #6458 needed for suspension to work) means a second Bind on the same
+   * portal name with no new Parse in between - what asyncpg's statement cache and pgjdbc's server-side
+   * prepared-statement promotion both do for a repeated identical query - reused the exact same {@link
+   * PostgresPortal} instance from the first run. Before the fix, that instance's {@code executed}/{@code
+   * fullResultSet}/{@code resultCursor} from the first, already-exhausted run survived into the second Bind,
+   * so the second Execute served an empty slice of the old result instead of re-running the query - confirmed
+   * failing pre-fix with the second run's Execute jumping straight to an empty CommandComplete instead of the
+   * RowDescription + 5 rows the first run got.
+   */
+  @Test
+  void reBindingAnAlreadyExecutedPortalWithNoNewParseReRunsInsteadOfServingTheExhaustedFirstRun() throws Exception {
+    try (final Socket socket = new Socket()) {
+      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+
+      sendStartupMessage(out, "root", getDatabaseName());
+      readMessage(in); // AuthenticationCleartextPassword
+      sendPasswordMessage(out, DEFAULT_PASSWORD_FOR_TESTS);
+      readMessageOfType(in, 'Z'); // drain AuthenticationOk/BackendKeyData/ParameterStatus.../ReadyForQuery
+
+      runSimpleQueryToCompletion(out, in, "CREATE DOCUMENT TYPE Rebind6458 IF NOT EXISTS");
+      runSimpleQueryToCompletion(out, in, "CREATE PROPERTY Rebind6458.id IF NOT EXISTS INTEGER");
+      for (int i = 0; i < 5; i++)
+        runSimpleQueryToCompletion(out, in, "INSERT INTO Rebind6458 SET id = " + i);
+
+      // Parse once. A max-rows of 0 (unlimited) drains the whole portal in a single Execute, so this run
+      // completes with CommandComplete rather than suspending - the state the second Bind below reuses.
+      sendParse(out, "SELECT id FROM Rebind6458 ORDER BY id");
+      assertThat(readOneMessage(in).type).as("ParseComplete").isEqualTo('1');
+
+      sendBind(out, "PR1");
+      assertThat(readOneMessage(in).type).as("BindComplete").isEqualTo('2');
+      sendExecute(out, "PR1", 0);
+      sendSync(out);
+      assertThat(readOneMessage(in).type).as("RowDescription - first execution of this portal").isEqualTo('T');
+      assertThat(readNextBatchOfIds(in, 5)).as("first run reads every row").containsExactly(0, 1, 2, 3, 4);
+      assertThat(readOneMessage(in).type).as("CommandComplete - fully drained").isEqualTo('C');
+      assertThat(readOneMessage(in).type).as("ReadyForQuery closes this Sync").isEqualTo('Z');
+
+      // Second Bind on the SAME portal name, no new Parse: must re-run the query, not replay the first run's
+      // now-exhausted fullResultSet/resultCursor.
+      sendBind(out, "PR1");
+      assertThat(readOneMessage(in).type).as("BindComplete").isEqualTo('2');
+      sendExecute(out, "PR1", 0);
+      sendSync(out);
+      // No RowDescription this time: rowDescriptionSent/columns are deliberately preserved across the reset
+      // (they describe the statement's row shape, invariant across re-binds) - only the data is re-run.
+      assertThat(readNextBatchOfIds(in, 5))
+          .as("second run re-executes and reads every row again, not an empty slice of the exhausted first run")
+          .containsExactly(0, 1, 2, 3, 4);
+      assertThat(readOneMessage(in).type).as("CommandComplete - fully drained").isEqualTo('C');
+      assertThat(readOneMessage(in).type).as("ReadyForQuery closes this Sync").isEqualTo('Z');
+    }
+  }
+
   @Test
   void aFetchSizeSmallerThanTheResultReturnsEveryRowAcrossSeveralSuspendedBatches() throws Exception {
     // 23 rows with a fetch size of 7 batches as 7, 7, 7, 2 - the last batch stops short of the limit, so it

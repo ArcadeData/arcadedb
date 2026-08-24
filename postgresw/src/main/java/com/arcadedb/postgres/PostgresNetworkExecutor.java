@@ -1753,11 +1753,25 @@ public class PostgresNetworkExecutor extends Thread {
 
       // Look up the prepared statement (stored during PARSE)
       // The portal name may be different (often empty for unnamed portal)
-      // KNOWN ISSUE (#6660): this reuses the SAME PostgresPortal instance in place rather than cloning it, and
-      // nothing below resets executed/fullResultSet/resultCursor/columns/rowDescriptionSent before the new
-      // parameter values are bound in. A second Bind+Execute cycle on this prepared statement (new params, no
-      // new Parse - what pgjdbc does once it promotes a repeated PreparedStatement to a named server-side
-      // statement) therefore skips re-running the query and re-serves the first run's stale result.
+      // This reuses the SAME PostgresPortal instance in place rather than cloning it, so a second
+      // Bind+Execute cycle on this prepared statement (new params, no new Parse - what pgjdbc does once it
+      // promotes a repeated PreparedStatement to a named server-side statement, and what asyncpg's statement
+      // cache does for a repeated query string) lands on an object that already ran once. The reset below
+      // (issue #6660) clears that prior run's materialized result so this Bind's new parameters actually get
+      // re-executed instead of replaying or exhausting the first run's cached/sliced result.
+      // columns/rowDescriptionSent are deliberately NOT reset: they describe the statement's row SHAPE, which
+      // is invariant across re-binds of the same prepared statement, only the data changes. A client that
+      // skipped Describe on this re-bind (because it already cached the shape from the first run - what real
+      // PostgreSQL clients that never re-Describe an unchanged prepared statement do) does not expect an
+      // unsolicited second RowDescription.
+      // Gated on sqlStatement != null - only a real, engine-parsed query defers its execution to Execute and
+      // can go stale like this. BEGIN/COMMIT/ROLLBACK and a resolved catalog answer precompute their (fixed,
+      // always-identical) response during PARSE itself via setEmptyResultSet()/direct assignment, which sets
+      // executed=true on THIS SAME first Bind - not a leftover from a prior cycle - and never touches
+      // sqlStatement; resetting that pre-computed state here broke it before Execute ever saw it (verified:
+      // an earlier, ungated version of this reset made 3 of this class's own pgjdbc-driven tests fail with
+      // "Received resultset tuples, but no field structure for them", because pgjdbc pipelines its own
+      // internal BEGIN/COMMIT through the extended protocol using a cached statement).
       PostgresPortal portal = getPortal(sourcePreparedStatement, false);
       if (portal == null) {
         // Try with portal name as fallback for backwards compatibility
@@ -1766,6 +1780,14 @@ public class PostgresNetworkExecutor extends Thread {
       if (portal == null) {
         writeMessage("bind complete", null, '2', 4);
         return;
+      }
+
+      if (portal.executed && portal.sqlStatement != null) {
+        portal.executed = false;
+        portal.fullResultSet = null;
+        portal.cachedResultSet = null;
+        portal.resultCursor = 0;
+        portal.suspended = false;
       }
 
       if (DEBUG)

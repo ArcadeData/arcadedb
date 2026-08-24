@@ -145,10 +145,58 @@ blocking," "not a real issue," "not asking for it here"). Working tree stayed em
 `review-deferred-*.md` file was needed since nothing new required a rationale beyond what cycles 2-3 already
 recorded.
 
+### Post-review: merge conflict with `main`, and #6660 turned out to be a live regression, not pre-existing
+
+Merging `main` into this branch conflicted in `PostgresNetworkExecutor.java`: `main` had picked up #6473
+(alias-column-type resolution), which added a third `resolveAliasToSourceProperty(portal)` argument to
+`getColumns()` at the same two call sites this PR changed to read from the new `portal.fullResultSet`
+instead of the pre-existing `portal.cachedResultSet`. Resolved by keeping this branch's `fullResultSet`
+reads and adding main's new argument; verified via `postgresw` compiling clean and
+`Issue6458PortalSuspensionIT` + `Issue6473AliasedColumnTypeResolutionIT` passing.
+
+That merge triggered the PR's CI, and `python-e2e-tests` failed on `test_asyncpg.py::test_parameterized_insert`
+(`assert len(rows) == 1` / `where 0 = len([])`) - a test that passed cleanly on `main` immediately before this
+merge. Reproduced directly against a locally built server with a minimal `asyncpg` script: a parameterized
+INSERT (which independently still hits a pre-existing, unrelated column-count `ProtocolError` the test already
+tolerates) succeeds and is visible to an immediate `SELECT ... WHERE id = $1`, but the exact same `SELECT`
+re-run moments later on the same connection returns zero rows.
+
+Root cause: **this was #6660**, already filed as "pre-existing and out of scope" during cycles 2-4 above - but
+it was #6458 itself that made it reachable from ordinary client behavior. Before #6458, a portal was removed
+right after its Execute completed, so a client reusing a cached prepared statement (asyncpg's default
+statement cache reusing a `PreparedStatement` for a repeated identical query, exactly like pgjdbc's
+server-side-statement promotion) always rebound onto a fresh portal. After #6458 deliberately stopped removing
+portals (needed for suspension to survive across Executes), that same reuse pattern now rebinds onto the
+*same, already-exhausted* `PostgresPortal` instance - `bindCommand()` never reset `executed`/`fullResultSet`/
+`resultCursor`, so the second run's Execute sliced an already-fully-consumed `fullResultSet` and returned an
+empty result instead of re-running the query. Confirmed at the wire level with a new regression test,
+`Issue6458PortalSuspensionIT#reBindingAnAlreadyExecutedPortalWithNoNewParseReRunsInsteadOfServingTheExhaustedFirstRun`
+(TDD: fails pre-fix with the second Execute jumping straight to an empty `CommandComplete`; passes post-fix).
+
+Fixed by resetting `executed`/`fullResultSet`/`cachedResultSet`/`resultCursor`/`suspended` in `bindCommand()`
+whenever it reuses an already-executed portal - but **only** when `portal.sqlStatement != null` (a real,
+engine-parsed query deferred to Execute). An earlier, ungated version of this reset also fired for
+`BEGIN`/`COMMIT`/`ROLLBACK`, whose response is precomputed once during `Parse` itself via
+`setEmptyResultSet()` and never touches `sqlStatement` - resetting that pre-computed state broke it before
+Execute ever ran, which surfaced as 3 of this class's own pgjdbc-driven tests failing with "Received
+resultset tuples, but no field structure for them" (pgjdbc pipelines its own internal `BEGIN`/`COMMIT`
+through the extended protocol using a cached statement, the same pattern as the bug itself). `columns`/
+`rowDescriptionSent` are deliberately left untouched by the reset too: they describe the statement's row
+shape, invariant across re-binds, and a client that skips `Describe` on a re-bind doesn't expect an
+unsolicited second `RowDescription`.
+
+Verified: the new regression test (red pre-fix, green post-fix, isolated and full-class runs); the full
+`postgresw` module - 408 unit tests + 183 integration tests, including every `BEGIN`/`COMMIT`/`ROLLBACK`-
+specific IT (`Issue6457AbortedTransactionSimpleQueryIT`, `Issue6543RollbackExtendedProtocolIT`,
+`Issue6545AbortedTransactionExtendedQueryIT`, `Issue6548AbortedTransactionRollbackExtendedProtocolIT`),
+`PostgresProtocolIT` (75 tests), and `PostgresWJdbcIT` (45 tests) - all green; and the original `asyncpg`
+repro re-run end-to-end against a freshly built server, confirming the second `SELECT` now returns the
+inserted row instead of an empty result.
+
 ## Final state
 
-**Clean approval after 4 review cycles.** The `claude` bot's cycle-4 review found the fix correct with no
-outstanding actionable items; the two still-open follow-ups (#6659, #6660) are pre-existing/out-of-scope and
-already tracked. See PR #6658 for the full comment history.
+**Clean approval after 4 review cycles, plus a post-review fix for #6660** once merging `main` turned it from
+a filed-but-deferred issue into a demonstrated regression in this PR's own CI (`python-e2e-tests`). #6659
+(eager result materialization) remains open and out of scope. See PR #6658 for the full comment history.
 
 Merge remains the developer's responsibility - this loop does not merge PRs.
