@@ -22,5 +22,10 @@ import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 @ExcludeFromJacocoGeneratedReport
 public interface OkCallback {
+  /**
+   * Invoked by {@link DatabaseAsyncExecutor#onOk(OkCallback)}, potentially concurrently from multiple worker
+   * threads (each worker crosses its own batch-commit boundary independently) - implementations must be
+   * thread-safe.
+   */
   void call();
 }

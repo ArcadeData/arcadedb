@@ -49,7 +49,9 @@ public class CypherSubstringFunction implements StatelessFunction {
     if (args[0] == null || args[1] == null)
       return null;
     final String str = args[0].toString();
-    final int start = ((Number) args[1]).intValue();
+    // Issue #6609: a value outside INTEGER | FLOAT (e.g. a LIST) is a client-facing type error, not the unchecked
+    // cast's ClassCastException, which used to escape as HTTP 500. Same treatment as the numeric family (#5484).
+    final int start = CypherFunctionHelper.requireNumberArgument(args[1], getName()).intValue();
     if (start < 0)
       // Invalid user-supplied argument value: surface as a client error (HTTP 400), matching left()/right().
       // CommandSemanticException extends CommandParsingException, which the HTTP handler maps to 400. See issue #5793/#5296.
@@ -62,7 +64,7 @@ public class CypherSubstringFunction implements StatelessFunction {
     if (start >= str.length())
       return "";
     if (args.length == 3) {
-      final int length = ((Number) args[2]).intValue();
+      final int length = CypherFunctionHelper.requireNumberArgument(args[2], getName()).intValue();
       if (length < 0)
         throw new CommandSemanticException("substring(): negative length is not supported: " + length);
       return str.substring(start, Math.min(start + length, str.length()));

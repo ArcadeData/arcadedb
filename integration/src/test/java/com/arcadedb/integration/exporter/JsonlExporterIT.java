@@ -20,6 +20,8 @@ package com.arcadedb.integration.exporter;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Record;
 import com.arcadedb.integration.TestHelper;
 import com.arcadedb.integration.importer.OrientDBImporter;
 import com.arcadedb.integration.importer.OrientDBImporterIT;
@@ -35,7 +37,10 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.InputStreamReader;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.net.URL;
+import java.util.Iterator;
 import java.util.zip.GZIPInputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -186,6 +191,96 @@ class JsonlExporterIT {
 
     assertThat(foundNonUniqueIndex).as("Should find the non-unique index on age").isTrue();
     assertThat(foundUniqueIndex).as("Should find the unique index on email").isTrue();
+  }
+
+  /**
+   * Issue #6471: a record that throws while being serialized must not make the export look complete. The
+   * per-record catch in {@code JsonlExporterFormat} still skips the broken record and keeps going (that part
+   * is deliberate, issue #6471's own description), but the export as a whole must now report failure and the
+   * skipped count, instead of silently printing its counters as if nothing were missing.
+   */
+  @Test
+  void exportFailsLoudlyWhenARecordCannotBeSerialized() throws Exception {
+    final File file = new File(FILE);
+
+    try (final Database db = new DatabaseFactory(DATABASE_PATH).create()) {
+      db.transaction(() -> {
+        final DocumentType type = db.getSchema().createVertexType("Widget");
+        type.createProperty("name", String.class);
+      });
+      db.transaction(() -> {
+        db.newVertex("Widget").set("name", "first").save();
+        db.newVertex("Widget").set("name", "second").save();
+      });
+    }
+
+    final DatabaseInternal realDatabase = (DatabaseInternal) new DatabaseFactory(DATABASE_PATH).open();
+    try {
+      // A JDK dynamic proxy that forwards every call to the real, already-open database, except
+      // iterateType("Widget", false): that call still returns a real iterator over the real records, but the
+      // first record it hands back throws once (simulating a record that fails to serialize, e.g. #6471's own
+      // DATE-unit example) before behaving normally for the rest. Forwarding through method.invoke() keeps every
+      // internal self-call running with the REAL database as "this", which matters here: the engine keys its
+      // per-thread transaction context by database identity (LocalDatabase#getTransactionIfExists), so a copied
+      // instance (e.g. a Mockito spy(), which clones state onto a new object) is rejected as "a different db".
+      final DatabaseInternal proxyDatabase = (DatabaseInternal) Proxy.newProxyInstance(
+          DatabaseInternal.class.getClassLoader(), new Class<?>[] { DatabaseInternal.class },
+          (proxy, method, args) -> {
+            if ("iterateType".equals(method.getName()) && "Widget".equals(args[0]) && Boolean.FALSE.equals(args[1])) {
+              final Iterator<Record> real = (Iterator<Record>) method.invoke(realDatabase, args);
+              return new Iterator<Record>() {
+                private boolean thrown = false;
+
+                @Override
+                public boolean hasNext() {
+                  return real.hasNext();
+                }
+
+                @Override
+                public Record next() {
+                  final Record record = real.next();
+                  if (!thrown) {
+                    thrown = true;
+                    throw new RuntimeException("Simulated export serialization failure");
+                  }
+                  return record;
+                }
+              };
+            }
+            try {
+              return method.invoke(realDatabase, args);
+            } catch (final InvocationTargetException e) {
+              throw e.getCause();
+            }
+          });
+
+      final Exporter exporter = new Exporter(proxyDatabase, FILE);
+      exporter.setFormat("jsonl").setOverwrite(true);
+
+      assertThatThrownBy(exporter::exportDatabase)//
+          .isInstanceOf(ExportException.class)//
+          .hasMessageContaining("skipped");
+
+      // Best-effort: the file is still written with whatever did serialize successfully.
+      assertThat(file.exists()).isTrue();
+
+      int vertexLines = 0;
+      try (final BufferedReader in = new BufferedReader(new InputStreamReader(new GZIPInputStream(new FileInputStream(file))))) {
+        while (in.ready()) {
+          final String line = in.readLine();
+          final JSONObject json = new JSONObject(line);
+          if ("v".equals(json.getString("t")))
+            ++vertexLines;
+        }
+      }
+      // Two vertex-type iterations touch "Widget" (exportVertices and exportLightweightEdges), each one skips
+      // its own first record: only the second, unaffected widget makes it into exportVertices' output.
+      assertThat(vertexLines).isEqualTo(1);
+
+    } finally {
+      if (realDatabase.isOpen())
+        realDatabase.close();
+    }
   }
 
 }

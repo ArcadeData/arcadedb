@@ -19,6 +19,9 @@
 package com.arcadedb.integration.importer;
 
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.Document;
+import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract.NULL_STRATEGY;
 import com.arcadedb.integration.TestHelper;
 import com.arcadedb.schema.Schema;
@@ -33,6 +36,9 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.ZoneId;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -191,6 +197,204 @@ class JsonLImporterIT {
       try (var db = new DatabaseFactory(DATABASE_PATH).open()) {
         assertThat(db.countType("Person", true)).isEqualTo(2L);
         assertThat(db.countType("Friend", true)).isEqualTo(0L);
+      }
+    } finally {
+      Files.deleteIfExists(jsonlFile);
+    }
+  }
+
+  @Test
+  void importDatabaseRemapsLinkTypedPropertyValues() throws IOException {
+    // Issue #6460: a LINK-typed property (and a LIST-of-LINK one) must be remapped through the same old-RID -> new-RID
+    // index edges already use, not passed through with the source database's RID. The source "r" fields below are
+    // deliberately NOT #6:0, #6:1, ... : a fresh import always allocates sequential positions starting at #6:0 in an
+    // empty bucket, so any "r" that doesn't already follow that sequence is guaranteed to land at a DIFFERENT RID on
+    // import - exactly the "restore into fresh buckets" scenario the issue describes - which is what makes a
+    // still-unremapped (still equal to the old "r") link value observable.
+    //
+    // Person#2.bestFriend -> Person#1 is a BACKWARD reference (Person#1 was already imported): resolved immediately.
+    // Person#3.friends -> [Person#4] is a FORWARD reference (Person#4 is imported LATER in the stream): only the
+    // reconciliation pass fixes this one up, once every RID mapping is known.
+    Path jsonlFile = Files.createTempFile("arcadedb-link-remap-import-", ".jsonl");
+    try {
+      Files.writeString(jsonlFile, ""
+          + "{\"t\":\"info\",\"c\":{\"description\":\"test\",\"exporterVersion\":1,\"dbVersion\":\"25.1.1-SNAPSHOT\",\"dbBuild\":\"\",\"dbTimestamp\":\"\"}}\n"
+          + "{\"t\":\"db\",\"c\":{\"name\":\"test\",\"executedOn\":\"2025-01-01\",\"executedOnTimestamp\":0}}\n"
+          + "{\"t\":\"schema\",\"c\":{\"schemaVersion\":1,\"dbmsVersion\":\"25.1.1-SNAPSHOT\",\"dbmsBuild\":\"\",\"settings\":{\"zoneId\":\"UTC\",\"dateFormat\":\"yyyy-MM-dd\",\"dateTimeFormat\":\"yyyy-MM-dd HH:mm:ss\"},"
+          + "\"types\":{\"Person\":{\"type\":\"v\",\"parents\":[],\"buckets\":[\"Person_0\"],\"properties\":{"
+          + "\"id\":{\"type\":\"INTEGER\",\"custom\":{}},"
+          + "\"bestFriend\":{\"type\":\"LINK\",\"custom\":{}},"
+          + "\"friends\":{\"type\":\"LIST\",\"of\":\"LINK\",\"custom\":{}}"
+          + "},\"indexes\":{},\"custom\":{}}}}}\n"
+          + "{\"t\":\"v\",\"c\":{\"p\":{\"id\":1},\"r\":\"#6:5\",\"t\":\"Person\",\"o\":[],\"i\":[]}}\n"
+          + "{\"t\":\"v\",\"c\":{\"p\":{\"id\":2,\"bestFriend\":\"#6:5\"},\"r\":\"#6:7\",\"t\":\"Person\",\"o\":[],\"i\":[]}}\n"
+          + "{\"t\":\"v\",\"c\":{\"p\":{\"id\":3,\"friends\":[\"#6:9\"]},\"r\":\"#6:8\",\"t\":\"Person\",\"o\":[],\"i\":[]}}\n"
+          + "{\"t\":\"v\",\"c\":{\"p\":{\"id\":4},\"r\":\"#6:9\",\"t\":\"Person\",\"o\":[],\"i\":[]}}\n");
+
+      var importer = new Importer(
+          ("-url " + jsonlFile.toAbsolutePath() + " -database " + DATABASE_PATH + " -forceDatabaseCreate true").split(" "));
+      Map<String, Object> result = importer.load();
+
+      assertThat(result).containsEntry("createdVertices", 4L);
+      assertThat(result).doesNotContainKey("errors");
+
+      try (var db = new DatabaseFactory(DATABASE_PATH).open()) {
+        assertThat(db.countType("Person", true)).isEqualTo(4L);
+
+        final Map<Integer, Document> byId = new HashMap<>();
+        for (final Iterator<Record> it = db.iterateType("Person", true); it.hasNext(); ) {
+          final Document doc = it.next().asDocument(true);
+          byId.put((Integer) doc.get("id"), doc);
+        }
+
+        final RID person1Rid = byId.get(1).getIdentity();
+        final RID person4Rid = byId.get(4).getIdentity();
+
+        // None of the freshly assigned RIDs coincide with the source "r" values used above - proof that a still-wrong
+        // (unremapped) value in either assertion below could not pass by accident.
+        assertThat(person1Rid.toString()).isNotIn("#6:5", "#6:7", "#6:8", "#6:9");
+        assertThat(person4Rid.toString()).isNotIn("#6:5", "#6:7", "#6:8", "#6:9");
+
+        // Backward reference: bestFriend must point at Person#1's NEW identity, not at the source RID "#6:5".
+        assertThat(byId.get(2).get("bestFriend")).isEqualTo(person1Rid);
+
+        // Forward reference, fixed up by the reconciliation pass: friends must point at Person#4's NEW identity,
+        // not at the source RID "#6:9".
+        final List<?> friends = (List<?>) byId.get(3).get("friends");
+        assertThat(friends).hasSize(1);
+        assertThat(friends.get(0)).isEqualTo(person4Rid);
+      }
+    } finally {
+      Files.deleteIfExists(jsonlFile);
+    }
+  }
+
+  @Test
+  void importDatabaseRemapsMapOfLinkPropertyValues() throws IOException {
+    // Issue #6460 follow-up (review on PR #6654): MAP-of-LINK is implemented by the same remapLinkProperties()/
+    // reconcileUnresolvedLinks() code path as LIST-of-LINK, but was not exercised by any test. Same fixture shape
+    // as importDatabaseRemapsLinkTypedPropertyValues: a backward reference resolved on first pass and a forward
+    // reference fixed up only by the reconciliation pass.
+    Path jsonlFile = Files.createTempFile("arcadedb-map-link-remap-import-", ".jsonl");
+    try {
+      Files.writeString(jsonlFile, ""
+          + "{\"t\":\"info\",\"c\":{\"description\":\"test\",\"exporterVersion\":1,\"dbVersion\":\"25.1.1-SNAPSHOT\",\"dbBuild\":\"\",\"dbTimestamp\":\"\"}}\n"
+          + "{\"t\":\"db\",\"c\":{\"name\":\"test\",\"executedOn\":\"2025-01-01\",\"executedOnTimestamp\":0}}\n"
+          + "{\"t\":\"schema\",\"c\":{\"schemaVersion\":1,\"dbmsVersion\":\"25.1.1-SNAPSHOT\",\"dbmsBuild\":\"\",\"settings\":{\"zoneId\":\"UTC\",\"dateFormat\":\"yyyy-MM-dd\",\"dateTimeFormat\":\"yyyy-MM-dd HH:mm:ss\"},"
+          + "\"types\":{\"Person\":{\"type\":\"v\",\"parents\":[],\"buckets\":[\"Person_0\"],\"properties\":{"
+          + "\"id\":{\"type\":\"INTEGER\",\"custom\":{}},"
+          + "\"relations\":{\"type\":\"MAP\",\"of\":\"LINK\",\"custom\":{}}"
+          + "},\"indexes\":{},\"custom\":{}}}}}\n"
+          + "{\"t\":\"v\",\"c\":{\"p\":{\"id\":1},\"r\":\"#6:5\",\"t\":\"Person\",\"o\":[],\"i\":[]}}\n"
+          + "{\"t\":\"v\",\"c\":{\"p\":{\"id\":2,\"relations\":{\"parent\":\"#6:5\"}},\"r\":\"#6:7\",\"t\":\"Person\",\"o\":[],\"i\":[]}}\n"
+          + "{\"t\":\"v\",\"c\":{\"p\":{\"id\":3,\"relations\":{\"child\":\"#6:9\"}},\"r\":\"#6:8\",\"t\":\"Person\",\"o\":[],\"i\":[]}}\n"
+          + "{\"t\":\"v\",\"c\":{\"p\":{\"id\":4},\"r\":\"#6:9\",\"t\":\"Person\",\"o\":[],\"i\":[]}}\n");
+
+      var importer = new Importer(
+          ("-url " + jsonlFile.toAbsolutePath() + " -database " + DATABASE_PATH + " -forceDatabaseCreate true").split(" "));
+      Map<String, Object> result = importer.load();
+
+      assertThat(result).containsEntry("createdVertices", 4L);
+      assertThat(result).doesNotContainKey("errors");
+
+      try (var db = new DatabaseFactory(DATABASE_PATH).open()) {
+        final Map<Integer, Document> byId = new HashMap<>();
+        for (final Iterator<Record> it = db.iterateType("Person", true); it.hasNext(); ) {
+          final Document doc = it.next().asDocument(true);
+          byId.put((Integer) doc.get("id"), doc);
+        }
+
+        final RID person1Rid = byId.get(1).getIdentity();
+        final RID person4Rid = byId.get(4).getIdentity();
+
+        // Backward reference: resolved on first pass.
+        final Map<?, ?> person2Relations = (Map<?, ?>) byId.get(2).get("relations");
+        assertThat(person2Relations.get("parent")).isEqualTo(person1Rid);
+
+        // Forward reference: fixed up only by the reconciliation pass.
+        final Map<?, ?> person3Relations = (Map<?, ?>) byId.get(3).get("relations");
+        assertThat(person3Relations.get("child")).isEqualTo(person4Rid);
+      }
+    } finally {
+      Files.deleteIfExists(jsonlFile);
+    }
+  }
+
+  @Test
+  void importDatabaseLeavesNeverResolvedLinkUnchanged() throws IOException {
+    // Issue #6460 follow-up (review on PR #6654): a LINK value that references a record never present in the
+    // source stream at all (excluded via -includeTypes/-excludeTypes, or a genuinely dangling link) must be left
+    // as-is - matching pre-fix behavior for that case - and must NOT be counted as an import error.
+    Path jsonlFile = Files.createTempFile("arcadedb-link-never-resolves-import-", ".jsonl");
+    try {
+      Files.writeString(jsonlFile, ""
+          + "{\"t\":\"info\",\"c\":{\"description\":\"test\",\"exporterVersion\":1,\"dbVersion\":\"25.1.1-SNAPSHOT\",\"dbBuild\":\"\",\"dbTimestamp\":\"\"}}\n"
+          + "{\"t\":\"db\",\"c\":{\"name\":\"test\",\"executedOn\":\"2025-01-01\",\"executedOnTimestamp\":0}}\n"
+          + "{\"t\":\"schema\",\"c\":{\"schemaVersion\":1,\"dbmsVersion\":\"25.1.1-SNAPSHOT\",\"dbmsBuild\":\"\",\"settings\":{\"zoneId\":\"UTC\",\"dateFormat\":\"yyyy-MM-dd\",\"dateTimeFormat\":\"yyyy-MM-dd HH:mm:ss\"},"
+          + "\"types\":{\"Person\":{\"type\":\"v\",\"parents\":[],\"buckets\":[\"Person_0\"],\"properties\":{"
+          + "\"id\":{\"type\":\"INTEGER\",\"custom\":{}},"
+          + "\"bestFriend\":{\"type\":\"LINK\",\"custom\":{}}"
+          + "},\"indexes\":{},\"custom\":{}}}}}\n"
+          + "{\"t\":\"v\",\"c\":{\"p\":{\"id\":1,\"bestFriend\":\"#6:99\"},\"r\":\"#6:5\",\"t\":\"Person\",\"o\":[],\"i\":[]}}\n");
+
+      var importer = new Importer(
+          ("-url " + jsonlFile.toAbsolutePath() + " -database " + DATABASE_PATH + " -forceDatabaseCreate true").split(" "));
+      Map<String, Object> result = importer.load();
+
+      assertThat(result).containsEntry("createdVertices", 1L);
+      assertThat(result).doesNotContainKey("errors");
+
+      try (var db = new DatabaseFactory(DATABASE_PATH).open()) {
+        final Document person1 = db.iterateType("Person", true).next().asDocument(true);
+        // Never resolved: left as the original (now unreachable) source RID, exactly like pre-fix behavior.
+        assertThat(person1.get("bestFriend")).isEqualTo(new RID("#6:99"));
+      }
+    } finally {
+      Files.deleteIfExists(jsonlFile);
+    }
+  }
+
+  @Test
+  void importDatabaseRemapsLinkPropertyOnEdge() throws IOException {
+    // Issue #6460 follow-up (review on PR #6654): loadVertex/loadDocument were both covered, but loadEdge wires
+    // pendingLinkReconciliation through a different call site with the same shape - a LINK-typed property on a
+    // (non-lightweight) edge must be remapped too, including the forward-reference case fixed up only by the
+    // reconciliation pass.
+    Path jsonlFile = Files.createTempFile("arcadedb-edge-link-remap-import-", ".jsonl");
+    try {
+      Files.writeString(jsonlFile, ""
+          + "{\"t\":\"info\",\"c\":{\"description\":\"test\",\"exporterVersion\":1,\"dbVersion\":\"25.1.1-SNAPSHOT\",\"dbBuild\":\"\",\"dbTimestamp\":\"\"}}\n"
+          + "{\"t\":\"db\",\"c\":{\"name\":\"test\",\"executedOn\":\"2025-01-01\",\"executedOnTimestamp\":0}}\n"
+          + "{\"t\":\"schema\",\"c\":{\"schemaVersion\":1,\"dbmsVersion\":\"25.1.1-SNAPSHOT\",\"dbmsBuild\":\"\",\"settings\":{\"zoneId\":\"UTC\",\"dateFormat\":\"yyyy-MM-dd\",\"dateTimeFormat\":\"yyyy-MM-dd HH:mm:ss\"},"
+          + "\"types\":{"
+          + "\"Person\":{\"type\":\"v\",\"parents\":[],\"buckets\":[\"Person_0\"],\"properties\":{\"id\":{\"type\":\"INTEGER\",\"custom\":{}}},\"indexes\":{},\"custom\":{}},"
+          + "\"Knows\":{\"type\":\"e\",\"parents\":[],\"buckets\":[\"Knows_0\"],\"properties\":{\"referrer\":{\"type\":\"LINK\",\"custom\":{}}},\"indexes\":{},\"custom\":{}}"
+          + "}}}\n"
+          + "{\"t\":\"v\",\"c\":{\"p\":{\"id\":1},\"r\":\"#6:5\",\"t\":\"Person\",\"o\":[],\"i\":[]}}\n"
+          + "{\"t\":\"v\",\"c\":{\"p\":{\"id\":2},\"r\":\"#6:6\",\"t\":\"Person\",\"o\":[],\"i\":[]}}\n"
+          + "{\"t\":\"e\",\"c\":{\"p\":{\"referrer\":\"#6:7\"},\"t\":\"Knows\",\"o\":\"#6:5\",\"i\":\"#6:6\"}}\n"
+          + "{\"t\":\"v\",\"c\":{\"p\":{\"id\":3},\"r\":\"#6:7\",\"t\":\"Person\",\"o\":[],\"i\":[]}}\n");
+
+      var importer = new Importer(
+          ("-url " + jsonlFile.toAbsolutePath() + " -database " + DATABASE_PATH + " -forceDatabaseCreate true").split(" "));
+      Map<String, Object> result = importer.load();
+
+      assertThat(result).containsEntry("createdVertices", 3L);
+      assertThat(result).containsEntry("createdEdges", 1L);
+      assertThat(result).doesNotContainKey("errors");
+
+      try (var db = new DatabaseFactory(DATABASE_PATH).open()) {
+        Document person3 = null;
+        for (final Iterator<Record> it = db.iterateType("Person", true); it.hasNext(); ) {
+          final Document doc = it.next().asDocument(true);
+          if (Integer.valueOf(3).equals(doc.get("id")))
+            person3 = doc;
+        }
+        assertThat(person3).isNotNull();
+
+        final var knowsEdge = db.iterateType("Knows", true).next().asEdge(true);
+        // Forward reference (Person#3 imported after the edge): fixed up only by the reconciliation pass.
+        assertThat(knowsEdge.get("referrer")).isEqualTo(person3.getIdentity());
       }
     } finally {
       Files.deleteIfExists(jsonlFile);

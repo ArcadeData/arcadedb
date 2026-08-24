@@ -35,6 +35,7 @@ import com.arcadedb.function.sql.FunctionOptions;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.utility.FileUtils;
 
 import java.util.HashMap;
@@ -159,6 +160,11 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
     final Vertex start = paramSourceVertex;
     final Vertex goal = paramDestinationVertex;
 
+    // Neither maxDepth (defaults to Long.MAX_VALUE) nor graph exhaustion is a bound the caller controls, so
+    // arcadedb.command.timeout has to be consulted from inside this loop like every other graph-driven
+    // algorithm (issue #6459) - astar()/dijkstra() previously had no timeout/interrupt check at all.
+    final WorkGuard guard = WorkGuard.forCommand(ctx, NAME + "()");
+
     open.add(start);
 
     // The cost of going from start to start is zero.
@@ -167,6 +173,8 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
     fScore.put(start, getHeuristicCost(start, null, goal, ctx));
 
     while (!open.isEmpty()) {
+      guard.check();
+
       Vertex current = open.poll();
 
       // we discussed about this feature in https://github.com/orientechnologies/orientdb/pull/6002#issuecomment-212492687

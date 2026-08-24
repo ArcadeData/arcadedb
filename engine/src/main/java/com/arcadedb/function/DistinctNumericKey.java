@@ -21,6 +21,8 @@ package com.arcadedb.function;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.function.Function;
 
 /**
@@ -87,17 +89,25 @@ public final class DistinctNumericKey {
   }
 
   /**
-   * Builds a composite string key from {@code names}, in iteration order, by rendering each name's
-   * canonicalized value as {@code name=value|}. Shared by every Cypher duplicate-elimination step
-   * (RETURN DISTINCT, WITH DISTINCT, UNION) that dedups on a set of named values, so the
-   * {@link #canonicalize(Object)} behavior - including the RID canonicalization above - only needs
-   * to be applied in one place. Callers control ordering (and hence key stability across rows) by
-   * choosing what {@code names} they pass; this method does not sort or otherwise reorder it.
+   * Builds a composite key from {@code names}, in iteration order, as a flat {@code [name, value, name,
+   * value, ...]} list of each name paired with its canonicalized value. Shared by every Cypher
+   * duplicate-elimination step (RETURN DISTINCT, WITH DISTINCT, UNION) that dedups on a set of named
+   * values, so the {@link #canonicalize(Object)} behavior - including the RID canonicalization above -
+   * only needs to be applied in one place. Callers control ordering (and hence key stability across
+   * rows) by choosing what {@code names} they pass; this method does not sort or otherwise reorder it.
+   * <p>
+   * The key is a {@link List}, not a delimited string: {@link List#equals(Object)} compares elements
+   * structurally, so a value whose canonicalized {@code toString()} happens to contain a delimiter
+   * character can never collide with a differently-shaped row the way a rendered {@code name=value|}
+   * string could (issue #6540) - e.g. one property {@code a = "1|b=2"} and two properties
+   * {@code a=1, b=2} used to both render as {@code "a=1|b=2|"}.
    */
-  public static String buildKey(final Iterable<String> names, final Function<String, Object> valueOf) {
-    final StringBuilder keyBuilder = new StringBuilder();
-    for (final String name : names)
-      keyBuilder.append(name).append('=').append(canonicalize(valueOf.apply(name))).append('|');
-    return keyBuilder.toString();
+  public static List<Object> buildKey(final Iterable<String> names, final Function<String, Object> valueOf) {
+    final List<Object> key = new ArrayList<>();
+    for (final String name : names) {
+      key.add(name);
+      key.add(canonicalize(valueOf.apply(name)));
+    }
+    return key;
   }
 }

@@ -47,6 +47,12 @@ public class PostgresPortal {
   public DocumentType               queryTargetType;
   public boolean                    queryTargetTypeResolved = false;
   /**
+   * Memoizes {@code PostgresNetworkExecutor.resolveAliasToSourceProperty(sqlStatement)} (issue #6473), for the
+   * same reason and on the same lifecycle as {@link #queryTargetType}.
+   */
+  public Map<String, String>        aliasToSourceProperty;
+  public boolean                    aliasToSourcePropertyResolved = false;
+  /**
    * True when the query is about the emulated system catalog and could not be answered at Parse time because
    * its filters are bound parameters, whose values only arrive with the Bind message (issue #6412).
    */

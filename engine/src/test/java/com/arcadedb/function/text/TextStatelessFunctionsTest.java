@@ -279,8 +279,18 @@ class TextStatelessFunctionsTest {
 
     // Start beyond string length returns empty
     assertThat(fn.execute(new Object[]{"hello", 100}, null)).isEqualTo("");
-    // Negative start returns empty
-    assertThat(fn.execute(new Object[]{"hello", -1}, null)).isEqualTo("");
+  }
+
+  @Test
+  void substringNegativeStartIsAClientErrorNotSilentlyEmpty() {
+    // A negative start is an invalid user-supplied value, so it must be a CommandSemanticException (HTTP 400),
+    // matching CypherSubstringFunction - the executor Cypher's substring() actually resolves to - rather than the
+    // silent "" this unregistered twin used to return for the same condition (issue #6609).
+    final SubstringFunction fn = new SubstringFunction();
+
+    assertThatThrownBy(() -> fn.execute(new Object[]{"hello", -1}, null))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("negative start");
   }
 
   @Test
@@ -289,6 +299,32 @@ class TextStatelessFunctionsTest {
 
     assertThatThrownBy(() -> fn.execute(new Object[]{"hello"}, null))
         .isInstanceOf(CommandSemanticException.class);
+  }
+
+  @Test
+  void substringNegativeLengthIsAClientErrorNotAnInternalOne() {
+    // A negative length is an invalid user-supplied value, so it must be a CommandSemanticException (HTTP 400),
+    // matching CypherSubstringFunction - the executor Cypher's substring() actually resolves to - rather than the
+    // CommandExecutionException (HTTP 500) this unregistered twin used to throw for the same condition (issue #6609).
+    final SubstringFunction fn = new SubstringFunction();
+
+    assertThatThrownBy(() -> fn.execute(new Object[]{"hello", 0, -1}, null))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("negative length");
+  }
+
+  @Test
+  void substringOfListArgumentIsAClientTypeError() {
+    // Same unchecked-cast class of bug as left()/right() (issue #6609): a LIST at the start/length position must be
+    // a client type error, not the java.lang.ClassCastException the unchecked cast used to let escape.
+    final SubstringFunction fn = new SubstringFunction();
+
+    assertThatThrownBy(() -> fn.execute(new Object[]{"hello", List.of(1, 2)}, null))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("LIST");
+    assertThatThrownBy(() -> fn.execute(new Object[]{"hello", 0, List.of(1, 2)}, null))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("LIST");
   }
 
   // ============ SplitFunction tests ============

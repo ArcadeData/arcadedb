@@ -258,6 +258,24 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   // which never sets this flag at all — keeps that method's own documented fail-fast contract unchanged.
   private volatile boolean           deferredRestoreInFlight;
 
+  // Monotonic ticket bumped by every path that DISPATCHES a snapshot-producing operation - build(),
+  // buildAsync(), onRelevantCommit()'s async rebuild, applyDelta()'s compaction rebuild, and
+  // dispatchDeferredRestore() - captured as that operation's own "myGeneration" at dispatch time. Right
+  // before actually committing a result to this.snapshot/this.status, an operation compares its captured
+  // value against the current field: if another, later-dispatched operation has since bumped it, this one
+  // has been superseded and skips the commit instead of overwriting a newer result with an older one
+  // (issue #6636). Every read and write of this field happens inside a block synchronized on `this`
+  // (build()/buildAsync()/onRelevantCommit()/applyDelta()/dispatchDeferredRestore() are themselves
+  // synchronized methods, and every executor-task commit site below re-enters synchronized(this) to write
+  // it), so a plain long - not volatile, not an Atomic - is sufficient: the monitor alone establishes the
+  // happens-before edge between one thread's bump and another's later read.
+  // Deliberately NOT bumped by applyDelta()'s own synchronous overlay merge (this.snapshot =
+  // current.withOverlay(merged)): that merge is cooperative with a concurrent compaction rebuild - which
+  // buffers and re-applies exactly those deltas against its own captured generation - not competing with
+  // it, so bumping here would make the compaction's own commit spuriously stale on every rebuild that
+  // overlaps so much as one incoming delta.
+  private long generation;
+
   // Incremental auto-update
   private DeltaCollector         deltaCollector;
   public static final int        DEFAULT_COMPACTION_THRESHOLD = 10_000;
@@ -338,6 +356,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // persisted file (or a wholly redundant rebuild) right after this scan already produced a fresh,
     // authoritative snapshot.
     pendingDiskRestore = false;
+    // Bumping unconditionally (no commit-time check needed here, unlike every other path below): this
+    // whole method is synchronized and runs the scan on the calling thread, so it holds this instance's
+    // monitor for its entire duration - nothing else that reads/writes `generation` can interleave. The
+    // bump alone is what matters: it retroactively supersedes any snapshot-producing task dispatched
+    // earlier but still in flight (issue #6636), e.g. an already-dispatched deferred restore-from-disk.
+    ++generation;
     final CountDownLatch latch = new CountDownLatch(1);
     readyLatch = latch;
     status = Status.BUILDING;
@@ -394,6 +418,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // restore-from-disk (see #6632). Also reached, harmlessly, from dispatchDeferredRestore()'s own
     // fallback call - pendingDiskRestore is already false there by the time it calls this.
     pendingDiskRestore = false;
+    // Captured at dispatch time, not when the background task actually starts its scan: see the
+    // `generation` field javadoc (issue #6636) - this is what lets a later-dispatched build correctly
+    // supersede an earlier one regardless of which finishes first.
+    final long myGeneration = ++generation;
     final CountDownLatch latch = new CountDownLatch(1);
     readyLatch = latch;
     status = Status.BUILDING;
@@ -414,29 +442,38 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
             final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
             final long durationMs = System.currentTimeMillis() - buildStart;
 
+            boolean committed = false;
             synchronized (GraphAnalyticalView.this) {
-              this.snapshot = snapshotFromResult(result, durationMs, asOfTransactionId, vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter);
-              this.status = Status.READY;
-              GraphAnalyticalView.this.notifyAll();
-              if (deltaCollector == null)
-                registerChangeListeners();
+              if (myGeneration == generation) {
+                this.snapshot = snapshotFromResult(result, durationMs, asOfTransactionId, vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter);
+                this.status = Status.READY;
+                GraphAnalyticalView.this.notifyAll();
+                if (deltaCollector == null)
+                  registerChangeListeners();
+                committed = true;
+              } else
+                LogManager.instance().log(this, Level.FINE,
+                    "GraphAnalyticalView '%s': async build result discarded (superseded by a newer build/restore)", name);
             }
-            invalidateGraphStatisticsCache();
+            if (committed)
+              invalidateGraphStatisticsCache();
           } finally {
             if (database.isTransactionActive())
               database.rollback();
           }
         } catch (final Exception e) {
           synchronized (GraphAnalyticalView.this) {
-            this.buildError = e;
-            if (snapshot != null) {
-              this.status = Status.STALE;
-            } else {
-              this.status = Status.NOT_BUILT;
-              // Unregister failed GAV so the name can be reused for a fresh build
-              GraphTraversalProviderRegistry.unregister(database, this);
-              if (name != null)
-                GraphAnalyticalViewRegistry.unregister(database, name);
+            if (myGeneration == generation) {
+              this.buildError = e;
+              if (snapshot != null) {
+                this.status = Status.STALE;
+              } else {
+                this.status = Status.NOT_BUILT;
+                // Unregister failed GAV so the name can be reused for a fresh build
+                GraphTraversalProviderRegistry.unregister(database, this);
+                if (name != null)
+                  GraphAnalyticalViewRegistry.unregister(database, name);
+              }
             }
             GraphAnalyticalView.this.notifyAll();
           }
@@ -1213,7 +1250,30 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return snap != null && snap.restoredFromDisk;
   }
 
+  /**
+   * Whether this provider can be handed to a query right now (see {@link GraphTraversalProviderRegistry#findProvider}).
+   * <p>
+   * A deferred restore-from-disk (see #6632) reports {@code status == READY} the moment a persisted CSR
+   * plausibly applies, before the disk read that actually verifies it has run - a hint, not a promise. Taking
+   * that at face value here would let a query commit to this provider and then, inside {@link #checkBuilt()},
+   * discover the file is unusable and block through a full {@code O(V+E)} rebuild with no way back to the
+   * ordinary path (issue #6641): every {@code checkBuilt()} caller reaches it only after this method has
+   * already said yes, so there is nothing left to fall back to once it is in there.
+   * <p>
+   * While a deferred restore is still pending, this triggers it in the background (a no-op if another caller
+   * already has) and reports not-ready for THIS call - exactly the answer an eagerly-marked {@code STALE} view
+   * would have given before #6632. The query this call belongs to takes the ordinary path, same as it always
+   * did for a genuinely stale view; whichever query asks next sees the resolved outcome (restored from disk,
+   * or rebuilt) once the background work completes. Callers that would rather wait for an accelerated first
+   * query use {@link #awaitReady} explicitly instead (see {@link com.arcadedb.GlobalConfiguration#GAV_RESTORE_AWAIT_TIMEOUT}).
+   * <p>
+   * The trigger call runs unconditionally, ahead of reading {@code status}: it is a cheap no-op once nothing
+   * is pending (single volatile read), and reading {@code status} afterwards - rather than short-circuiting to
+   * {@code false} on {@code pendingDiskRestore} alone - reports the real, resolved state on the rare race
+   * where another caller's dispatch settles between the two reads, instead of being needlessly pessimistic.
+   */
   public boolean isReady() {
+    triggerDeferredDiskRestoreIfPending();
     final Status s = status;
     if (s == Status.READY)
       return true;
@@ -1667,6 +1727,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // this method actually started, never for an unrelated buildAsync()/onRelevantCommit() rebuild on a
     // brand-new view built directly (which keeps its own documented fail-fast contract unchanged).
     deferredRestoreInFlight = true;
+    // See the `generation` field javadoc (issue #6636): captured at dispatch time, before the executor
+    // task even queues, so a direct build()/buildAsync() call that runs and completes while this restore
+    // is still parked (e.g. waiting on BUILD_PERMITS) correctly supersedes it - even though the restore's
+    // own freshness certificate, re-sampled from scratch when it finally runs, would otherwise still
+    // "match" (nothing needs to have been committed for a redundant rescan to be dispatched).
+    final long myGeneration = ++generation;
     final CountDownLatch latch = new CountDownLatch(1);
     readyLatch = latch;
     status = Status.BUILDING;
@@ -1677,16 +1743,16 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
           BUILD_PERMITS.acquireUninterruptibly();
           final boolean restored;
           try {
-            restored = tryRestoreFromPersistedCsr();
+            restored = tryRestoreFromPersistedCsr(myGeneration);
           } finally {
             BUILD_PERMITS.release();
           }
           if (!restored) {
-            // No usable file after all (vanished, corrupted, or invalidated by a commit that landed while
-            // this was pending and unwatched) — fall back exactly as the eager #6583 path always did.
-            // Waited out here (this virtual thread parking costs nothing) rather than left to complete on
-            // its own dispatched task, so deferredRestoreInFlight stays true for the fallback's own
-            // duration too, not just for the near-instant hand-off to it.
+            // No usable file after all (vanished, corrupted, invalidated by a commit that landed while
+            // this was pending and unwatched, or superseded by a newer build/restore) — fall back exactly
+            // as the eager #6583 path always did. Waited out here (this virtual thread parking costs
+            // nothing) rather than left to complete on its own dispatched task, so deferredRestoreInFlight
+            // stays true for the fallback's own duration too, not just for the near-instant hand-off to it.
             buildAsync();
             awaitDeferredDiskRestoreSettled();
           }
@@ -1697,8 +1763,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
           // future checkBuilt() call (its latch is already counted down, so await() returns instantly,
           // and status never leaves BUILDING to end the loop). Mirrors buildAsync()'s own catch exactly.
           synchronized (this) {
-            buildError = e;
-            status = snapshot != null ? Status.STALE : Status.NOT_BUILT;
+            if (myGeneration == generation) {
+              buildError = e;
+              status = snapshot != null ? Status.STALE : Status.NOT_BUILT;
+            }
             notifyAll();
           }
           if (isBenignShutdownError(e))
@@ -1765,8 +1833,17 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * <p>
    * The guard clauses below are mirrored (cheaply, without the file read) by {@link #mayHavePersistedCsr()} —
    * KEEP THEM IN SYNC (review on PR #6633).
+   * <p>
+   * {@code expectedGeneration} is {@link #dispatchDeferredRestore()}'s own {@code myGeneration}, captured
+   * when it dispatched this restore. Checked right before the write to {@code this.snapshot}/{@code
+   * this.status}: a direct {@code build()}/{@code buildAsync()} that ran and completed while this restore
+   * was still in flight (e.g. parked on {@code BUILD_PERMITS}, which does not gate {@code build()}) bumps
+   * {@link #generation} past this value even when nothing was committed in between - so the certificate
+   * above can still "match" a now-superseded snapshot. Returns {@code true} (not {@code false}) in that
+   * case: a usable file WAS found, so {@link #dispatchDeferredRestore()} must not additionally trigger a
+   * redundant {@link #buildAsync()} fallback on top of the build that already won (issue #6636).
    */
-  synchronized boolean tryRestoreFromPersistedCsr() {
+  synchronized boolean tryRestoreFromPersistedCsr(final long expectedGeneration) {
     if (name == null)
       return false;
     if (!database.getConfiguration().getValueAsBoolean(GlobalConfiguration.GAV_PERSIST_CSR))
@@ -1806,6 +1883,19 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // awaitReady() caller may already be waiting on that installed latch. Counting down a *new* instance
     // instead would leave that caller hanging until its timeout even though the view is READY.
     final CountDownLatch latch = readyLatch;
+
+    if (expectedGeneration != generation) {
+      // A direct build()/buildAsync() (or another restore) already completed and published a fresher
+      // snapshot while this one was in flight — see this method's javadoc (issue #6636). The file we just
+      // loaded is redundant, not wrong; discard it without touching this.snapshot/this.status, but still
+      // wake any waiter parked on the latch/monitor this restore itself installed.
+      LogManager.instance().log(this, Level.FINE,
+          "GraphAnalyticalView '%s': persisted CSR restore discarded (superseded by a newer build/restore)", name);
+      this.notifyAll();
+      latch.countDown();
+      return true;
+    }
+
     this.snapshot = restored;
     this.status = Status.READY;
     this.notifyAll();
@@ -1868,6 +1958,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         return;
       }
       asyncRebuildNeeded = false;
+      // See the `generation` field javadoc (issue #6636): captured at dispatch time so a later-dispatched
+      // build (e.g. a direct build()/buildAsync() call racing this rebuild) correctly supersedes it.
+      final long myGeneration = ++generation;
       final CountDownLatch latch = new CountDownLatch(1);
       this.readyLatch = latch;
       this.status = Status.BUILDING;
@@ -1885,14 +1978,16 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
               final long durationMs = System.currentTimeMillis() - buildStart;
               // Synchronized swap: check that the mode hasn't changed to SYNCHRONOUS during rebuild.
               // If it did, applyDelta() may have enriched the current snapshot with overlay deltas
-              // that would be lost by an unconditional swap.
+              // that would be lost by an unconditional swap. Also check generation: a direct build()/
+              // buildAsync() dispatched after this rebuild started must win even if this one finishes
+              // last (issue #6636).
               synchronized (GraphAnalyticalView.this) {
-                if (updateMode == UpdateMode.ASYNCHRONOUS) {
+                if (updateMode == UpdateMode.ASYNCHRONOUS && myGeneration == generation) {
                   this.snapshot = snapshotFromResult(result, durationMs, asOfTransactionId, vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter);
                   this.status = Status.READY;
                 } else
                   LogManager.instance().log(this, Level.INFO,
-                      "GraphAnalyticalView '%s': async rebuild result discarded (update mode changed to %s during rebuild)", name, updateMode);
+                      "GraphAnalyticalView '%s': async rebuild result discarded (update mode changed to %s during rebuild, or superseded by a newer build/restore)", name, updateMode);
               }
 
             } finally {
@@ -1900,8 +1995,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
                 database.rollback();
             }
           } catch (final Exception e) {
-            this.buildError = e;
-            this.status = Status.STALE;
+            synchronized (GraphAnalyticalView.this) {
+              if (myGeneration == generation) {
+                this.buildError = e;
+                this.status = Status.STALE;
+              }
+            }
             if (isBenignShutdownError(e))
               LogManager.instance().log(this, Level.FINE,
                   "Async rebuild of GraphAnalyticalView '%s' aborted because the database is closing", name);
@@ -1981,6 +2080,13 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       // Start buffering raw deltas for re-application after the swap
       pendingDeltas = new ArrayList<>();
 
+      // See the `generation` field javadoc (issue #6636): captured at dispatch time, deliberately NOT
+      // bumped by the synchronous overlay merge just above (or by any applyDelta() call re-entering while
+      // this compaction is in flight) - those deltas are buffered and re-applied against this same
+      // generation below, cooperatively, not competing with it. A direct build()/buildAsync() dispatched
+      // after this compaction started must still win if it finishes first.
+      final long myGeneration = ++generation;
+
       inFlightTasks.incrementAndGet();
       try {
         getExecutor().execute(() -> {
@@ -2004,6 +2110,13 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
                   // The current overlay is still valid and already has all deltas merged.
                   LogManager.instance().log(this, Level.INFO,
                       "GraphAnalyticalView '%s': compaction result discarded (delta buffer overflowed during rebuild)", name);
+                } else if (myGeneration != generation) {
+                  // Superseded by a newer build/restore (issue #6636): the buffered deltas were already
+                  // merged into the pre-compaction overlay by applyDelta() as they arrived, and that
+                  // overlay was discarded together with its base snapshot by whatever won instead, so
+                  // there is nothing left here to reapply them onto.
+                  LogManager.instance().log(this, Level.INFO,
+                      "GraphAnalyticalView '%s': compaction result discarded (superseded by a newer build/restore)", name);
                 } else {
                   Snapshot fresh = snapshotFromResult(result, durationMs, asOfTransactionId, vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter);
 
@@ -2401,6 +2514,28 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     if (snap == null)
       throw new IllegalStateException("GraphAnalyticalView has not been built yet. Call build() first.");
     return snap;
+  }
+
+  /**
+   * Test-only hook: saturates the shared, JVM-wide {@link #BUILD_PERMITS} semaphore so any subsequently
+   * dispatched async build/restore/compaction task blocks right before it starts its scan or disk read,
+   * letting a test deterministically land a direct {@link #build()}/{@link #buildAsync()} call while that
+   * task is in flight but stalled. Must be paired with {@link #releaseAllBuildPermitsForTest()} in a
+   * {@code finally} block: forkCount=1 runs this module's tests in a single, sequential JVM, but a leaked
+   * acquisition would still starve every later test in that JVM of build permits.
+   */
+  static void acquireAllBuildPermitsForTest() {
+    BUILD_PERMITS.acquireUninterruptibly(MAX_CONCURRENT_BUILDS);
+  }
+
+  /** Test-only hook: releases the permits taken by {@link #acquireAllBuildPermitsForTest()}. */
+  static void releaseAllBuildPermitsForTest() {
+    BUILD_PERMITS.release(MAX_CONCURRENT_BUILDS);
+  }
+
+  /** Test-only hook: exposes {@link #deferredRestoreInFlight} so a test can poll for the dispatch. */
+  boolean isDeferredRestoreInFlightForTest() {
+    return deferredRestoreInFlight;
   }
 
   private static int sortedIntersectionCount(final int[] a, int startA, final int endA,

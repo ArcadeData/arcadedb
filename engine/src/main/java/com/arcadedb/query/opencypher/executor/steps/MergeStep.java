@@ -23,6 +23,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
@@ -386,7 +387,8 @@ public class MergeStep extends AbstractExecutionStep {
       return results;
     }
 
-    final Vertex anchorVertex = (Vertex) baseResult.getProperty(pathPattern.getNode(anchorIdx).getVariable());
+    // #6461: reload before walking its edges below - see reloadAnchorVertex.
+    final Vertex anchorVertex = reloadAnchorVertex((Vertex) baseResult.getProperty(pathPattern.getNode(anchorIdx).getVariable()));
     traverseFromAnchor(pathPattern, anchorIdx, anchorVertex, copyResult(baseResult), results);
     return results;
   }
@@ -733,7 +735,10 @@ public class MergeStep extends AbstractExecutionStep {
       if (bound instanceof Vertex v) {
         if (vertex != null && !vertex.equals(v))
           return;
-        vertex = v;
+        // #6461: vertex == null here means v is the row's own anchor instance (forcedVertex is only
+        // ever non-null when this node was just reached via a live edge traversal below, which is
+        // already fresh) - reload it before its edges are enumerated below. See reloadAnchorVertex.
+        vertex = vertex == null ? reloadAnchorVertex(v) : v;
       }
     }
 
@@ -1105,6 +1110,37 @@ public class MergeStep extends AbstractExecutionStep {
       // Record may have been removed or be inaccessible
     }
     return null;
+  }
+
+  /**
+   * Re-resolves a bound anchor vertex to its latest committed state before its edges are enumerated
+   * (issue #6461). {@code executeMerge} wraps each row in its own {@code database.transaction(..., true)}
+   * (see that method's Javadoc / issue #6367); when the caller has no outer transaction open, each row's
+   * MERGE owns and commits its own transaction. A vertex instance the row carries - bound by an earlier
+   * MATCH, or reused across UNWIND rows of the same MERGE - was loaded before its row's transaction
+   * started, so once a PRIOR row's MERGE appends the first edge in a direction to it (the one write that
+   * rewrites the vertex record's edge-list head pointer) the row's own instance still reflects the
+   * pre-append state and a direct {@code vertex.getEdges(...)} on it would miss that edge.
+   * <p>
+   * {@code database.lookupByRID} re-reads that RID - the current transaction's cache first, the page
+   * store otherwise - so it observes the latest COMMITTED state regardless of which transaction wrote it,
+   * unlike the row's own possibly-stale instance. Mirrors {@code SetStep.reloadLatestDoc} (issue #5227).
+   *
+   * @return the reloaded vertex, or {@code anchor} unchanged if it has no identity yet (not persisted) or
+   * was concurrently deleted (left for the ordinary not-found handling downstream to react to)
+   */
+  private Vertex reloadAnchorVertex(final Vertex anchor) {
+    if (anchor == null)
+      return null;
+    final RID rid = anchor.getIdentity();
+    if (rid == null)
+      return anchor;
+    try {
+      final Record fresh = context.getDatabase().lookupByRID(rid, true);
+      return fresh instanceof Vertex v ? v : anchor;
+    } catch (final RecordNotFoundException e) {
+      return anchor;
+    }
   }
 
   /**

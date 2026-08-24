@@ -24,6 +24,7 @@ import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.log.LogManager;
 
 import java.util.Collections;
+import java.util.Iterator;
 import java.util.List;
 import java.util.WeakHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -118,33 +119,36 @@ public class GraphTraversalProviderRegistry {
     }
     if (list == null)
       return null;
-    // CopyOnWriteArrayList iteration is safe outside the lock
-    for (final GraphTraversalProvider provider : list) {
-      if (!provider.isReady())
-        continue;
-      if (edgeTypes == null || edgeTypes.length == 0) {
-        if (provider.coversEdgeType(null)) {
-          if (provider.isStale())
-            LogManager.instance().log(GraphTraversalProviderRegistry.class, Level.FINE,
-                "Using stale GraphTraversalProvider '%s' for query acceleration (data may not reflect latest commits)", provider.getName());
-          return provider;
-        }
-      } else {
+    // CopyOnWriteArrayList iteration is safe outside the lock. Loop condition (not an explicit break/return
+    // in the body) stops at the first match, so isReady() - which now dispatches a GraphAnalyticalView's
+    // deferred restore-from-disk as a side effect, see #6641 - is never called on a provider past that point.
+    GraphTraversalProvider found = null;
+    final Iterator<GraphTraversalProvider> iterator = list.iterator();
+    while (found == null && iterator.hasNext()) {
+      final GraphTraversalProvider provider = iterator.next();
+      // Type coverage first, readiness second: coversEdgeType() is a pure, side-effect-free config check,
+      // while isReady()'s dispatch is not. Checking coverage first means isReady() - and its cost - only
+      // ever runs on a provider that could actually be selected, not on every registered one #6632's
+      // "a view a session never actually needs shouldn't cost anything" goal for a multi-view database.
+      final boolean covers;
+      if (edgeTypes == null || edgeTypes.length == 0)
+        covers = provider.coversEdgeType(null);
+      else {
         boolean allCovered = true;
         for (final String et : edgeTypes)
           if (!provider.coversEdgeType(et)) {
             allCovered = false;
             break;
           }
-        if (allCovered) {
-          if (provider.isStale())
-            LogManager.instance().log(GraphTraversalProviderRegistry.class, Level.FINE,
-                "Using stale GraphTraversalProvider '%s' for query acceleration (data may not reflect latest commits)", provider.getName());
-          return provider;
-        }
+        covers = allCovered;
       }
+      if (covers && provider.isReady())
+        found = provider;
     }
-    return null;
+    if (found != null && found.isStale())
+      LogManager.instance().log(GraphTraversalProviderRegistry.class, Level.FINE,
+          "Using stale GraphTraversalProvider '%s' for query acceleration (data may not reflect latest commits)", found.getName());
+    return found;
   }
 
   /**
@@ -172,12 +176,13 @@ public class GraphTraversalProviderRegistry {
 
     final long deadlineNanos = System.nanoTime() + unit.toNanos(timeout);
     for (final GraphTraversalProvider provider : list) {
-      // A GraphAnalyticalView always goes through awaitReady(), regardless of isReady(): since a deferred
-      // restore-from-disk (see #6632) reports READY the moment a persisted CSR plausibly applies, before
-      // the disk read that actually resolves it has even run, isReady() alone is no longer a trustworthy
-      // "nothing left to do" signal for this provider type - awaitReady() is the one call that triggers
-      // that read. It is cheap/idempotent once nothing is pending (its own trigger call no-ops and the
-      // wait loop returns immediately), so this costs nothing extra for an already-settled view.
+      // A GraphAnalyticalView always goes through awaitReady(), regardless of isReady(): isReady() is
+      // accurate (see #6641 - it reports not-ready while a deferred restore-from-disk, #6632, is still
+      // unresolved rather than optimistically READY) but deliberately non-blocking, and this method's
+      // whole point is to actually wait for the deferred read to resolve, not just to ask whether it
+      // already has. awaitReady() is the one call that both triggers that read and blocks for it. It is
+      // cheap/idempotent once nothing is pending (its own trigger call no-ops and the wait loop returns
+      // immediately), so this costs nothing extra for an already-settled view.
       if (provider instanceof GraphAnalyticalView) {
         final long remainingNanos = deadlineNanos - System.nanoTime();
         if (remainingNanos <= 0)
