@@ -2756,6 +2756,211 @@ class GraphAnalyticalViewTest extends TestHelper {
   }
 
   /**
+   * Regression for issue #6641: a follow-up to #6632/#6633. Deferring the CSR read out of {@code open()}
+   * left the view reporting {@code READY} (via {@code pendingDiskRestore}) before the restore had actually
+   * been verified. When a commit landed in between - invalidating the persisted CSR's freshness certificate
+   * - the query that happened to trigger the deferred read discovered the file was unusable only once
+   * already committed to the accelerated path, and paid for a full {@code O(V+E)} rebuild synchronously
+   * instead of the ordinary OLTP path it would have used before #6632 (when {@code onRelevantCommit()} eagerly
+   * marked the view {@code STALE} and provider resolution rejected it up front).
+   * <p>
+   * The fix moves the "is this actually resolved yet" check to {@link GraphAnalyticalView#isReady()} itself:
+   * while a deferred restore is still pending, {@code isReady()} triggers it in the background but reports
+   * not-ready for the caller that asks, so {@link GraphTraversalProviderRegistry#findProvider} routes that
+   * query to the ordinary path - exactly as an eagerly-marked {@code STALE} view would have. Verifies both
+   * that this query-time gate reports not-ready synchronously (no query ever blocks on it) and that the
+   * background resolution still reaches the correct, freshly-rebuilt answer afterwards - "never serve stale
+   * data" is preserved even though nobody waited for it.
+   */
+  @Test
+  void issue6641_interveningCommitInvalidatesDeferredRestoreWithoutBlockingQuery() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.begin();
+    final RID aId = database.newVertex("Person").save().getIdentity();
+    final RID bId = database.newVertex("Person").save().getIdentity();
+    ((Vertex) database.lookupByRID(aId, true)).modify().newEdge("FOLLOWS", (Vertex) database.lookupByRID(bId, true));
+    database.commit();
+
+    GraphAnalyticalView.builder(database)
+        .withName("csr-6641-commit-test")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
+        .build();
+
+    reopenDatabase();
+
+    final GraphAnalyticalView restored = GraphAnalyticalViewRegistry.get(database, "csr-6641-commit-test");
+    assertThat(restored).isNotNull();
+    assertThat(restored.getStatus())
+        .as("a plausible persisted CSR must still mark the view provisionally READY on reopen (#6632)")
+        .isEqualTo(GraphAnalyticalView.Status.READY);
+    assertThat(restored.isBuilt())
+        .as("nothing has triggered the deferred restore yet")
+        .isFalse();
+
+    // Invalidates the persisted CSR's freshness certificate - the deferred read, whenever it runs, must
+    // find it unusable and require a full rebuild.
+    database.begin();
+    final RID cId = database.newVertex("Person").save().getIdentity();
+    ((Vertex) database.lookupByRID(bId, true)).modify().newEdge("FOLLOWS", (Vertex) database.lookupByRID(cId, true));
+    database.commit();
+
+    // The query planner's gate must not hand out a provider it hasn't actually verified is usable: this
+    // must return false/null synchronously, without waiting for (or triggering, from the caller's point of
+    // view) any O(V+E) rebuild - it only kicks that off in the background.
+    assertThat(restored.isReady())
+        .as("issue #6641: a provisionally-READY view with an unresolved deferred restore must not be "
+            + "advertised as ready until it is actually verified - the caller has no way to recover once "
+            + "committed to a provider that turns out to need a synchronous rebuild")
+        .isFalse();
+    assertThat(GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS"))
+        .as("issue #6641: the query planner must route to the ordinary OLTP path instead of a provider "
+            + "that will block the query through a full rebuild")
+        .isNull();
+
+    // "Never serve stale data" still holds: the background resolution (triggered above) eventually
+    // produces the correct, up-to-date snapshot for whichever query asks next.
+    assertThat(restored.awaitReady(10, TimeUnit.SECONDS)).isTrue();
+    assertThat(restored.isRestoredFromPersistedCsr())
+        .as("the certificate mismatch must have forced a real rebuild, not a stale disk restore")
+        .isFalse();
+    assertThat(restored.getNodeCount()).isEqualTo(3);
+    assertThat(restored.getEdgeCount()).isEqualTo(2);
+    assertThat(restored.isReady())
+        .as("once the background rebuild has completed, the view is genuinely ready")
+        .isTrue();
+    assertThat(GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS")).isNotNull();
+
+    restored.drop();
+  }
+
+  /**
+   * Regression for issue #6641, corrupted-file variant: the same query-time gate must also protect against
+   * a persisted CSR that is present and passes its certificate check, but is otherwise unusable (truncated
+   * or corrupted) - not only against a certificate invalidated by an intervening commit.
+   */
+  @Test
+  void issue6641_corruptedPersistedCsrInvalidatesDeferredRestoreWithoutBlockingQuery() throws Exception {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").save();
+    final MutableVertex b = database.newVertex("Person").save();
+    a.newEdge("FOLLOWS", b);
+    database.commit();
+
+    GraphAnalyticalView.builder(database)
+        .withName("csr-6641-corrupt-test")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
+        .build();
+
+    // fileFor() resolves through the schema (for its filename encoding), so it must run before close().
+    final File csrFile = GraphAnalyticalViewCSRPersistence.fileFor(database, "csr-6641-corrupt-test");
+    final String dbPath = database.getDatabasePath();
+    database.close();
+
+    assertThat(csrFile).exists();
+    try (final RandomAccessFile raf = new RandomAccessFile(csrFile, "rw")) {
+      raf.setLength(Math.min(raf.length(), 64));
+    }
+
+    database = new DatabaseFactory(dbPath).open();
+
+    final GraphAnalyticalView restored = GraphAnalyticalViewRegistry.get(database, "csr-6641-corrupt-test");
+    assertThat(restored).isNotNull();
+    assertThat(restored.isBuilt()).isFalse();
+
+    assertThat(restored.isReady())
+        .as("issue #6641: a corrupted persisted CSR must not be advertised as ready before it is verified")
+        .isFalse();
+    assertThat(GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS")).isNull();
+
+    assertThat(restored.awaitReady(10, TimeUnit.SECONDS)).isTrue();
+    assertThat(restored.isRestoredFromPersistedCsr()).isFalse();
+    assertThat(restored.getNodeCount()).isEqualTo(2);
+    assertThat(restored.getEdgeCount()).isEqualTo(1);
+
+    restored.drop();
+  }
+
+  /**
+   * Regression for issue #6641 code review: {@link GraphTraversalProviderRegistry#findProvider} used to
+   * call {@code isReady()} before {@code coversEdgeType()} in its scan of registered providers. That was
+   * harmless while {@code isReady()} was a pure read, but this PR gives it a side effect - dispatching a
+   * pending deferred restore-from-disk in the background (see {@link GraphAnalyticalView#isReady()}) - so
+   * checking readiness before coverage meant a query for one view's edge type would eagerly trigger every
+   * *other* registered view's deferred restore too, just by virtue of being iterated. That quietly weakens
+   * #6632's "a view a session never actually needs shouldn't cost anything" promise for any multi-view
+   * database. Verifies the fix (coverage checked first, so {@code isReady()} - and its dispatch - only ever
+   * runs on a provider that could actually be selected): with two views covering disjoint edge types, a
+   * lookup for one type must not touch the other view's pending restore at all.
+   */
+  @Test
+  void issue6641_findProviderDoesNotTriggerUnrelatedViewsDeferredRestore() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+    database.getSchema().createEdgeType("LIKES");
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").save();
+    final MutableVertex b = database.newVertex("Person").save();
+    a.newEdge("FOLLOWS", b);
+    a.newEdge("LIKES", b);
+    database.commit();
+
+    GraphAnalyticalView.builder(database)
+        .withName("csr-6641-follows-test")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
+        .build();
+    GraphAnalyticalView.builder(database)
+        .withName("csr-6641-likes-test")
+        .withVertexTypes("Person")
+        .withEdgeTypes("LIKES")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.OFF)
+        .build();
+
+    reopenDatabase();
+
+    final GraphAnalyticalView follows = GraphAnalyticalViewRegistry.get(database, "csr-6641-follows-test");
+    final GraphAnalyticalView likes = GraphAnalyticalViewRegistry.get(database, "csr-6641-likes-test");
+    assertThat(follows).isNotNull();
+    assertThat(likes).isNotNull();
+    assertThat(follows.getStatus())
+        .as("both views' persisted CSRs must still be provisionally READY, unresolved, right after reopen")
+        .isEqualTo(GraphAnalyticalView.Status.READY);
+    assertThat(likes.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+
+    // A query for FOLLOWS only: findProvider() must resolve the FOLLOWS view's deferred restore as a side
+    // effect of checking it, but must never even look at whether LIKES is ready - it doesn't cover FOLLOWS.
+    GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS");
+
+    assertThat(follows.getStatus())
+        .as("the FOLLOWS view was a real candidate for this lookup, so its deferred restore must have been "
+            + "dispatched (status flips to BUILDING synchronously, before the background work even starts)")
+        .isEqualTo(GraphAnalyticalView.Status.BUILDING);
+    assertThat(likes.getStatus())
+        .as("issue #6641: the LIKES view does not cover FOLLOWS and must never have been asked about "
+            + "readiness at all - its deferred restore must stay untouched")
+        .isEqualTo(GraphAnalyticalView.Status.READY);
+    assertThat(likes.isBuilt())
+        .as("untouched means untouched: no restore, no rebuild, nothing read from disk for this view")
+        .isFalse();
+
+    assertThat(follows.awaitReady(10, TimeUnit.SECONDS)).isTrue();
+    assertThat(follows.isRestoredFromPersistedCsr()).isTrue();
+    assertThat(likes.awaitReady(10, TimeUnit.SECONDS)).isTrue();
+    assertThat(likes.isRestoredFromPersistedCsr()).isTrue();
+
+    follows.drop();
+    likes.drop();
+  }
+
+  /**
    * Regression for issue #6632: a session that opens a database with a persisted-CSR view and never
    * queries it must not pay for the deferred restore at shutdown() either — shutdown() has no reason to
    * wait for work that was never triggered, and {@code persistCsrIfPossible()} must not attempt to

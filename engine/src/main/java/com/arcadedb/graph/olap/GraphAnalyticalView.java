@@ -1250,7 +1250,30 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return snap != null && snap.restoredFromDisk;
   }
 
+  /**
+   * Whether this provider can be handed to a query right now (see {@link GraphTraversalProviderRegistry#findProvider}).
+   * <p>
+   * A deferred restore-from-disk (see #6632) reports {@code status == READY} the moment a persisted CSR
+   * plausibly applies, before the disk read that actually verifies it has run - a hint, not a promise. Taking
+   * that at face value here would let a query commit to this provider and then, inside {@link #checkBuilt()},
+   * discover the file is unusable and block through a full {@code O(V+E)} rebuild with no way back to the
+   * ordinary path (issue #6641): every {@code checkBuilt()} caller reaches it only after this method has
+   * already said yes, so there is nothing left to fall back to once it is in there.
+   * <p>
+   * While a deferred restore is still pending, this triggers it in the background (a no-op if another caller
+   * already has) and reports not-ready for THIS call - exactly the answer an eagerly-marked {@code STALE} view
+   * would have given before #6632. The query this call belongs to takes the ordinary path, same as it always
+   * did for a genuinely stale view; whichever query asks next sees the resolved outcome (restored from disk,
+   * or rebuilt) once the background work completes. Callers that would rather wait for an accelerated first
+   * query use {@link #awaitReady} explicitly instead (see {@link com.arcadedb.GlobalConfiguration#GAV_RESTORE_AWAIT_TIMEOUT}).
+   * <p>
+   * The trigger call runs unconditionally, ahead of reading {@code status}: it is a cheap no-op once nothing
+   * is pending (single volatile read), and reading {@code status} afterwards - rather than short-circuiting to
+   * {@code false} on {@code pendingDiskRestore} alone - reports the real, resolved state on the rare race
+   * where another caller's dispatch settles between the two reads, instead of being needlessly pessimistic.
+   */
   public boolean isReady() {
+    triggerDeferredDiskRestoreIfPending();
     final Status s = status;
     if (s == Status.READY)
       return true;
