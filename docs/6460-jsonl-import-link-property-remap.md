@@ -63,3 +63,30 @@ Verified TDD-style: reverted the fix (`git stash` on the production file only) a
   `-excludeTypes`, or was already a dangling link in the source database) is left as the original source RID
   string, same as the pre-fix behavior for that specific case - there is nothing more correct to do without
   external knowledge of intent, and it is not counted as an import error.
+- An unresolved forward-reference LINK value is transiently persisted as the raw *source*-database RID until
+  `reconcileUnresolvedLinks()` runs. If that property backs a UNIQUE index this can coincidentally collide with
+  another record's already-resolved value, raising a `DuplicateKeyException`. Confirmed real by tracing the code;
+  accepted as a known, documented (in `reconcileUnresolvedLinks`'s Javadoc and the PR's "Review follow-ups"
+  section) limitation rather than fixed, since a proper fix is a design choice (null placeholder / pre-scan /
+  keep documented) surfaced during review but not resolved in this PR - see "Review cycles" below.
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/6654
+
+## Review cycles
+
+Ran via the `resolve-issue-with-review` skill, `--max-cycles=4`. The `claude` bot on this repo posts its review
+as a plain PR issue comment (no commit SHA attached), gated on `createdAt` vs. the push timestamp.
+
+| Cycle | Head SHA | Review outcome | What was applied / deferred / skipped |
+|---|---|---|---|
+| 1 | `a0aedaa9f4` (initial PR) | Review posted 2026-08-23T20:53:47Z: 5 findings (2 correctness, 1 perf, 2 test-coverage, 1 minor) | Applied: periodic commit in `reconcileUnresolvedLinks()`; regression tests for MAP-of-LINK, the never-resolves case, and a LINK property on an edge. Deferred: UNIQUE-index collision on the transient placeholder RID (design decision). Skipped (rationale recorded): `pendingLinkReconciliation`'s memory footprint, duplicate list/map-walking logic between the two remap methods. |
+| 2 | `8c588accee` | Review posted 2026-08-24T07:44:40Z: `reconcileUnresolvedLinks()` had no error isolation, unlike the main loop | Applied: wrapped the per-entry reconciliation body in the same log/count/abort-or-skip handling as `loadDocument`/`loadVertex`/`loadEdge`; skip mode now commits every reconciled record. Skipped (rationale recorded): broad `catch (Exception e)` in `remapLinkValue`, eager allocation in `remapLinkProperties`, and a process question about committing review-transcript docs under `docs/`. |
+| 3 | `c83f2f7d72` | Review posted 2026-08-24T07:50:30Z: recommended an in-code Javadoc note for the UNIQUE-index limitation, and repeated the `docs/review-deferred-*.md` convention concern | Applied: added the limitation directly to `reconcileUnresolvedLinks()`'s Javadoc; removed the two `docs/review-deferred-*.md` sidecar files and folded their content into the PR body's new "Review follow-ups" section (two consecutive review cycles flagged permanent per-PR review transcripts under `docs/` as the wrong home for this). Skipped (rationale recorded in the PR body): minor asymmetries between `remapLinkProperties`/`reconcileUnresolvedLinks`, and the pre-existing (not a regression) fact that edge records are never added to `ridIndex`. |
+| 4 | `5383bcb1a0` | **Timeout** - the `claude-review` GitHub Action ran and completed successfully (`gh run view`: `status=completed`, `conclusion=success`) but posted no PR comment within the 15-minute poll window (checked again ~17 minutes after push: still nothing). Most likely read: nothing left to flag on this small, mostly-documentation diff, so the bot stayed silent rather than posting a redundant approval. | No new findings to act on. |
+
+**Final state: timeout** (cycle 4). All findings from cycles 1-3 were resolved (applied, or deferred/skipped with
+recorded rationale, now living in the PR body rather than in `docs/`) before the loop ran out of its configured
+cycles. Nothing is left pending review from this session's side; the PR is left open for the developer, per this
+skill's merge policy.
