@@ -2342,16 +2342,40 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     ProtocolContext.set("grpc");
     try {
-      final InsertOptions opts = defaults(req.getOptions()); // apply defaults (batch size, tx mode, etc.)
+      final boolean hasTx = req.hasTransaction();
+      final String incomingTxId = hasTx ? req.getTransaction().getTransactionId() : "";
+      final TransactionContext txCtx = resolveAuthorizedTransaction(incomingTxId, req.getCredentials());
 
-      try (InsertContext ctx = new InsertContext(opts)) {
+      if (isUnknownSuppliedTransaction(incomingTxId, txCtx)) {
+        resp.onError(unknownTransactionStatus(incomingTxId).asException());
+        return;
+      }
 
-        Counts totals = insertRows(ctx, req.getRowsList().iterator());
+      final InsertOptions opts = defaults(req.getOptions());
 
-        ctx.flushCommit(true);
-
-        resp.onNext(ctx.summary(totals, started));
-        resp.onCompleted();
+      if (txCtx != null) {
+        // External transaction — run on the transaction's dedicated thread
+        try {
+          InsertSummary summary = txCtx.executor.submit(() -> {
+            try (InsertContext ctx = new InsertContext(txCtx.db, opts)) {
+              Counts totals = insertRows(ctx, req.getRowsList().iterator());
+              ctx.flushCommit(true); // no-op in external tx mode
+              return ctx.summary(totals, started);
+            }
+          }).get();
+          resp.onNext(summary);
+          resp.onCompleted();
+        } catch (ExecutionException e) {
+          resp.onError(Status.INTERNAL.withDescription(
+              "bulkInsert: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage())).asException());
+        }
+      } else {
+        try (InsertContext ctx = new InsertContext(opts)) {
+          Counts totals = insertRows(ctx, req.getRowsList().iterator());
+          ctx.flushCommit(true);
+          resp.onNext(ctx.summary(totals, started));
+          resp.onCompleted();
+        }
       }
     } catch (Exception e) {
       resp.onError(Status.INTERNAL.withDescription("bulkInsert: " + e.getMessage()).asException());
@@ -2431,8 +2455,29 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             if (!c.getDatabase().isEmpty())
               effective = effective.toBuilder().setDatabase(c.getDatabase()).build();
 
+            // Issue #6607: honour TransactionContext on the first chunk
+            final boolean hasTx = c.hasTransaction();
+            final String incomingTxId = hasTx ? c.getTransaction().getTransactionId() : "";
+            final TransactionContext txCtx = resolveAuthorizedTransaction(incomingTxId, c.getCredentials());
+
+            if (isUnknownSuppliedTransaction(incomingTxId, txCtx)) {
+              streamFailed.set(true);
+              totals.received += c.getRowsCount();
+              totals.err(-1, "UNKNOWN_TRANSACTION", "Unknown or expired transaction id: " + incomingTxId, "");
+              if (!cancelled.get())
+                call.request(1);
+              return;
+            }
+
             // Create and cache context
-            ctx = new InsertContext(effective); // begins tx if PER_STREAM / PER_BATCH per your logic
+            if (txCtx != null) {
+              // External transaction — build InsertContext with the transaction's database.
+              // The InsertContext skips begin/commit/rollback; the external TransactionContext
+              // manages the lifecycle on its dedicated executor thread.
+              ctx = new InsertContext(txCtx.db, effective);
+            } else {
+              ctx = new InsertContext(effective); // begins tx if PER_STREAM / PER_BATCH per your logic
+            }
 
             ctxRef.set(ctx);
 
@@ -3952,6 +3997,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // Mutable latch (single-stream, no concurrent access): set once after the "out/in in
     // update_columns ignored for edges" warning fires so it is logged at most once per stream.
     boolean warnedEdgeEndpointUpdateCols;
+    final boolean externalTransaction;
 
     long startedAt;
 
@@ -3977,6 +4023,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       this.keyColsSet = Set.copyOf(this.keyCols);
 
       this.updateCols = opts.getUpdateColumnsOnConflictList();
+      this.externalTransaction = false;
 
       if (!opts.getValidateOnly()) {
         if (opts.getTransactionMode() == TransactionMode.PER_STREAM || opts.getTransactionMode() == TransactionMode.PER_BATCH
@@ -3995,6 +4042,22 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         abortTransaction();
         throw e;
       }
+    }
+
+    /**
+     * Constructs an InsertContext that uses the given database (typically from an external
+     * {@link TransactionContext}) instead of resolving one from the options. The caller is
+     * responsible for managing the transaction lifecycle: begin/commit/rollback are skipped.
+     */
+    InsertContext(final Database externalDb, final InsertOptions opts) {
+      this.opts = opts;
+      this.db = externalDb;
+      this.externalTransaction = true;
+      this.keyCols = opts.getKeyColumnsList();
+      this.keyColsSet = Set.copyOf(this.keyCols);
+      this.updateCols = opts.getUpdateColumnsOnConflictList();
+      // Skip db.begin() — the external transaction is already active on the executor thread.
+      // Skip captureTransaction() — the external TransactionContext manages its own lifecycle.
     }
 
     /**
@@ -4079,6 +4142,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     void flushCommit(boolean end) {
 
+      if (externalTransaction)
+        return; // external transaction owns commit/rollback
+
       if (opts.getValidateOnly()) {
         if (end) {
           db.rollback();
@@ -4151,6 +4217,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
      */
     @Override
     public void close() {
+      if (externalTransaction)
+        return; // external transaction owns cleanup
       final boolean hadTransaction = tx != null;
       try {
         if (hadTransaction) {
