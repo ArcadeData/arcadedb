@@ -116,6 +116,28 @@ class CypherVariableUsageTest {
     assertThat(isReferenced("MATCH (a)-[r:KNOWS]->(b) FOREACH (x IN [1] | DELETE r) RETURN a", "r")).isTrue();
   }
 
+  /**
+   * Issue #6573: an inline property expression inside a top-level CREATE or MERGE pattern reads the
+   * variable. The top-level switch had no {@code case CREATE}/{@code case MERGE} - unlike its sibling
+   * {@code foreachReferencesVariable}, which already treats a nested CREATE/MERGE conservatively - so
+   * it fell to {@code default} and the clause was never inspected. That anonymized the edge binding
+   * whenever nothing else in the query mentioned it, so {@code CREATE (c {prop: r.x})} silently read a
+   * missing binding and evaluated to null instead of the real value.
+   */
+  @Test
+  void createReadsItInAnInlineProperty() {
+    assertThat(isReferenced(
+        "MATCH (a)-[r:KNOWS]->(b) CREATE (c:Note {since: r.since}) RETURN c.since", "r"))
+        .isTrue();
+  }
+
+  @Test
+  void mergeReadsItInAnInlineProperty() {
+    assertThat(isReferenced(
+        "MATCH (a)-[r:KNOWS]->(b) MERGE (c:Note {since: r.since}) RETURN c.since", "r"))
+        .isTrue();
+  }
+
   @Test
   void aCallSubqueryReadsItByImportAndInsideItsBody() {
     assertThat(isReferenced("MATCH (a)-[r:KNOWS]->(b) CALL (r) { RETURN 1 AS one } RETURN one", "r")).isTrue();

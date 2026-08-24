@@ -197,6 +197,14 @@ public final class CypherVariableUsage {
             return true;
           break;
         }
+        case CREATE:
+        case MERGE:
+          // Inline property expressions inside a top-level CREATE/MERGE pattern may reference the
+          // variable (e.g. CREATE (c {prop: r.x})). Enumerating them cheaply is awkward, so stay
+          // conservative like foreachReferencesVariable's own CREATE/MERGE case: keep the edge binding.
+          // A false positive only forgoes the CSR/GAV fast path; a false negative would silently drop
+          // a still-referenced edge (the class of bug this method exists to prevent - issue #6573).
+          return true;
         default:
           break;
         }
