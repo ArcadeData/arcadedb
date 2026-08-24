@@ -253,16 +253,17 @@ public class CypherExecutionPlanner {
             // Multi-label nodes: conjunction (n:A:B) is unsupported in the optimizer
             // (NodeByLabelScan uses a composite type name that does not match supersets,
             // e.g. A~B~C does not extend A~B). Disjunction (n:A|B) is routed to
-            // NodeByLabelDisjunctionScan, but only when the node has no incident
-            // relationships — ExpandAll/ExpandInto carry a single targetLabel and
-            // cannot represent OR semantics, so target-side disjunction falls back to
-            // the legacy path.
-            if (node.getLabels().size() > 1) {
-              if (!node.isLabelDisjunction())
-                return false;
-              if (path.getRelationshipCount() > 0)
-                return false;
-            }
+            // NodeByLabelDisjunctionScan or NodeByLabelDisjunctionIndexSeek (issue #6397), but only
+            // when the disjunction ends up seeding the pattern - ExpandAll/ExpandInto/VarLengthExpand
+            // carry a single targetLabel and cannot represent OR semantics for a node reached over a
+            // relationship (issue #6482). Which node becomes the anchor is a cost decision made later,
+            // per connected component, so this AST-level gate can only rule out what it already knows is
+            // unrepresentable (a conjunction); it does not yet know which node will anchor its component.
+            // CypherOptimizer#optimize() re-checks every disjunction node once the concrete anchor is
+            // chosen and declines (returns null, falling back to this same legacy path) whenever a
+            // disjunction landed on a non-anchor node instead.
+            if (node.getLabels().size() > 1 && !node.isLabelDisjunction())
+              return false;
 
             // An inline property map is an equality predicate, and LogicalPlan lowers it into one, so
             // the optimizer plans it exactly like the same comparison written in WHERE. Two shapes
