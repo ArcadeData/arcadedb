@@ -66,9 +66,12 @@ public class LocalDocumentType implements DocumentType {
   protected final RecordEventsRegistry              events                       = new RecordEventsRegistry();
   protected final Map<String, Object>               custom                       = new HashMap<>();
   protected       List<Bucket>                      buckets                      = new ArrayList<>();
-  protected       List<Bucket>                      cachedPolymorphicBuckets     = new ArrayList<>(); // PRE COMPILED LIST TO SPEED UP RUN-TIME OPERATIONS
+  // Copy-on-write reassigned under schema mutation and read lock-free by query planning (getBuckets(true)/
+  // getBucketIds(true)): volatile so a planning thread has a happens-before edge against a concurrent
+  // ALTER TYPE ... BUCKET, matching the LocalSchema.bucketId2TypeMap publication pattern (issue #6678).
+  protected volatile List<Bucket>                   cachedPolymorphicBuckets     = new ArrayList<>(); // PRE COMPILED LIST TO SPEED UP RUN-TIME OPERATIONS
   protected       List<Integer>                     bucketIds                    = new ArrayList<>();
-  protected       List<Integer>                     cachedPolymorphicBucketIds   = new ArrayList<>(); // PRE COMPILED LIST TO SPEED UP RUN-TIME OPERATIONS
+  protected volatile List<Integer>                  cachedPolymorphicBucketIds   = new ArrayList<>(); // PRE COMPILED LIST TO SPEED UP RUN-TIME OPERATIONS
   protected       BucketSelectionStrategy           bucketSelectionStrategy      = new RoundRobinBucketSelectionStrategy();
   protected       Set<String>                       propertiesWithDefaultDefined = Collections.emptySet();
   // Map: primary bucket id -> external bucket id. Populated lazily when the first EXTERNAL property is

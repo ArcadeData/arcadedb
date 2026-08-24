@@ -20,6 +20,7 @@ package com.arcadedb.function.vector;
 
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.CommandContext;
 
@@ -59,7 +60,7 @@ public class VectorCreateFunction implements StatelessFunction {
 
     // Validate dimension if provided
     if (args.length >= 2 && args[1] != null) {
-      final int expectedDimension = ((Number) args[1]).intValue();
+      final int expectedDimension = CypherFunctionHelper.requireNumberArgument(args[1], getName()).intValue();
       if (result.length != expectedDimension)
         throw new CommandExecutionException(
             "Vector dimension mismatch: expected " + expectedDimension + " but got " + result.length);

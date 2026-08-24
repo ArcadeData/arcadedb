@@ -66,7 +66,7 @@ public class AggMaxItems extends AbstractAggFunction {
       return result;
     }
 
-    double maxValue = Double.MIN_VALUE;
+    double maxValue = Double.NEGATIVE_INFINITY; // NOT Double.MIN_VALUE, which is the smallest POSITIVE double (issue #6672)
     final List<Object> maxItems = new ArrayList<>();
 
     for (int i = 0; i < values.size(); i++) {
