@@ -36,6 +36,7 @@ import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -383,7 +384,7 @@ public class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
       assertThat(fetchedIds)
           .as("every row must come back exactly once, in order, across every suspended batch - not just the first")
           .hasSize(totalRows)
-          .containsExactlyElementsOf(java.util.stream.IntStream.range(0, totalRows).boxed().toList());
+          .containsExactlyElementsOf(IntStream.range(0, totalRows).boxed().toList());
     }
   }
 
