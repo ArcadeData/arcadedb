@@ -75,7 +75,7 @@ public class DatabaseRID extends RID {
       return (Vertex) database.lookupByRID(this, loadContent);
     } catch (final RecordNotFoundException e) {
       throw e;
-    } catch (final Exception e) {
+    } catch (final ClassCastException e) {
       throw new RecordNotFoundException("Record " + this + " not found", this, e);
     }
   }
