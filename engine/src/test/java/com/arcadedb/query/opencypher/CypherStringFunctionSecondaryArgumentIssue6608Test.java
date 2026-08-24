@@ -168,6 +168,23 @@ class CypherStringFunctionSecondaryArgumentIssue6608Test extends TestHelper {
     assertThat(single("RETURN char_length('ab') AS r")).isEqualTo(2L);
   }
 
+  // ===================== pre-existing ambiguity noted by review, out of scope for this fix =====================
+
+  @Test
+  void btrimCalledWithThreePositionalArgumentsIsAPreExistingAmbiguityNotIntroducedByThisFix() {
+    // btrim() has no dedicated SQL-style grammar rule (only the reserved TRIM keyword does - see
+    // CypherExpressionBuilder#findTrimFunctionRecursive), so a 3-argument call to it is parsed as an
+    // ordinary function call and reaches CypherTrimFunction's args.length == 3 branch positionally:
+    // args[0] is read as "mode" (never LEADING/TRAILING, so it silently falls through to "trim both"),
+    // args[1] as the trim character, and args[2] as the source - NOT args[0] as the source a caller
+    // writing btrim(source, char, somethingElse) by analogy with the 2-arg form would expect. This
+    // predates #6608 (this fix only added the type check on args[1]/args[2], it did not change which
+    // position plays which role) and is pinned here as documented, current behaviour rather than fixed,
+    // since resolving it is a separate, unscoped question of whether btrim() should even accept 3
+    // arguments at all.
+    assertThat(single("RETURN btrim('unused-as-mode', 'x', 'xxabcxx') AS r")).isEqualTo("abc");
+  }
+
   private Object single(final String query) {
     try (final ResultSet rs = database.query("opencypher", query)) {
       assertThat(rs.hasNext()).isTrue();
