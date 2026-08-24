@@ -528,8 +528,15 @@ public class RedisQueryLanguageTest extends BaseGraphServerTest {
   }
 
   protected JSONObject executeQuery(final int serverIndex, final String language, final String command) throws Exception {
+    // Ask the server which port it actually bound (issue #6560), rather than assuming the 2480+serverIndex
+    // default: SERVER_HTTP_INCOMING_PORT is a range (2480-2489 by default) and binds the first free port in
+    // it, so with 2480 already held by anything else - another local ArcadeDB instance, an IDE debug session
+    // for a different project - this test's own server listens elsewhere. A port-less/wrong-port URL would
+    // then reach that foreign server instead, and every test in this class would fail with a confusing
+    // "403 Too many failed authentication attempts" / "User/Password not valid" that reads as an auth bug
+    // rather than a port collision. Same pattern as #6437's fix for ConsoleAsyncInsertTest.
     final HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/query/" + getDatabaseName()).openConnection();
+        "http://127.0.0.1:" + getServer(serverIndex).getHttpServer().getPort() + "/api/v1/query/" + getDatabaseName()).openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
@@ -555,8 +562,10 @@ public class RedisQueryLanguageTest extends BaseGraphServerTest {
   }
 
   protected JSONObject executeCommand(final int serverIndex, final String language, final String command) throws Exception {
+    // See the comment in executeQuery() above: ask the server for its actual bound port instead of assuming
+    // 2480+serverIndex (issue #6560).
     final HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + getDatabaseName()).openConnection();
+        "http://127.0.0.1:" + getServer(serverIndex).getHttpServer().getPort() + "/api/v1/command/" + getDatabaseName()).openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
