@@ -1303,7 +1303,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   @Override
   public void transaction(final Database.TransactionScope txBlock, final int retries, final OkCallback ok,
                           final ErrorCallback error, final int slot) {
-    scheduleTask(slot, new DatabaseAsyncTransaction(txBlock, retries, ok, error), true, backPressurePercentage);
+    scheduleTask(slot, new DatabaseAsyncTransaction(txBlock, retries, ok, error, captureCurrentUser()), true, backPressurePercentage);
   }
 
   @Override

@@ -19,20 +19,33 @@
 package com.arcadedb.database.async;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.security.SecurityDatabaseUser;
 
 public class DatabaseAsyncTransaction implements DatabaseAsyncTask {
   public final Database.TransactionScope tx;
   public final  int           retries;
   private final OkCallback    onOkCallback;
   private final ErrorCallback onErrorCallback;
+  // The principal that submitted the transaction, captured on the calling thread. It is bound onto the worker
+  // thread's DatabaseContext before execution so the engine per-user permission gates enforce on this async path
+  // too, the same as DatabaseAsyncCommand. Null in embedded/internal use, where no user is bound and the gates
+  // are a no-op.
+  public final SecurityDatabaseUser requestUser;
 
   public DatabaseAsyncTransaction(final Database.TransactionScope tx, final int retries, final OkCallback okCallback, final ErrorCallback errorCallback) {
+    this(tx, retries, okCallback, errorCallback, null);
+  }
+
+  public DatabaseAsyncTransaction(final Database.TransactionScope tx, final int retries, final OkCallback okCallback,
+      final ErrorCallback errorCallback, final SecurityDatabaseUser requestUser) {
     this.tx = tx;
     this.retries = retries;
     this.onOkCallback = okCallback;
     this.onErrorCallback = errorCallback;
+    this.requestUser = requestUser;
   }
 
   @Override
@@ -42,6 +55,24 @@ public class DatabaseAsyncTransaction implements DatabaseAsyncTask {
 
   @Override
   public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
+    // Bind the submitting principal onto this thread's DatabaseContext so the engine permission gates
+    // (LocalDatabase.checkPermissionsOnFile) enforce exactly as on the synchronous transports. Restore the
+    // previous binding afterwards, since the thread and its DatabaseContext are reused across tasks submitted
+    // by different users.
+    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+    final SecurityDatabaseUser previousUser = dbContext != null ? dbContext.getCurrentUser() : null;
+    if (dbContext != null)
+      dbContext.setCurrentUser(requestUser);
+
+    try {
+      executeTransaction(async, database);
+    } finally {
+      if (dbContext != null)
+        dbContext.setCurrentUser(previousUser);
+    }
+  }
+
+  private void executeTransaction(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
     ConcurrentModificationException lastException = null;
 
     if (database.isTransactionActive())
