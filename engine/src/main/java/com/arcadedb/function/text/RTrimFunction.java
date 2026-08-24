@@ -52,13 +52,15 @@ public class RTrimFunction implements StatelessFunction {
       return source.stripTrailing();
     }
     if (args.length == 2) {
-      // The primary argument is type-checked before a null trim character decides the answer, so an
-      // out-of-domain primary argument is still reported even when args[1] happens to be null (issue
-      // #5798 review: rTrim(5, null) must still be a type error, not a silent null).
+      // Both arguments are STRING-typed and type-checked before either being null decides the answer, so an
+      // out-of-domain argument is still reported regardless of which position happens to be null (issue
+      // #5798 review: rTrim(5, null) must still be a type error, not a silent null). The trim-character
+      // argument is STRING-typed too, same as the primary one - issue #6608: #5798 only covered this
+      // function's primary argument position, leaving the trim character to silently coerce via toString().
       final String source = CypherFunctionHelper.requireStringArgument(args[0], getName());
-      if (source == null || args[1] == null)
+      final String trimChar = CypherFunctionHelper.requireStringArgument(args[1], getName());
+      if (source == null || trimChar == null)
         return null;
-      final String trimChar = args[1].toString();
       if (trimChar.isEmpty())
         return source.stripTrailing();
       return stripTrailing(source, trimChar);

@@ -49,13 +49,18 @@ public class CypherSplitFunction implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     checkArity(args);
-    // The primary argument is type-checked before a null delimiter decides the answer, so an out-of-domain
-    // primary argument is still reported even when args[1] happens to be null (issue #5798 review:
-    // split(5, null) must still be a type error, not a silent null).
+    // Both arguments are STRING-typed and type-checked before either being null decides the answer, so an
+    // out-of-domain argument is still reported regardless of which position happens to be null (issue #5798
+    // review: split(5, null) must still be a type error, not a silent null). The delimiter is STRING-typed
+    // too, same as the primary argument - issue #6608: #5798 only covered this function's primary argument
+    // position, leaving the delimiter to silently coerce via toString(). Neo4j itself coerces a non-STRING
+    // delimiter, but ArcadeDB's own #5798 policy already rejects it in the primary position of this same
+    // function, so accepting it here would be an inconsistency within this build rather than a Neo4j
+    // compatibility concern.
     final String str = CypherFunctionHelper.requireStringArgument(args[0], getName());
-    if (str == null || args[1] == null)
+    final String delimiter = CypherFunctionHelper.requireStringArgument(args[1], getName());
+    if (str == null || delimiter == null)
       return null;
-    final String delimiter = args[1].toString();
 
     // An empty delimiter splits the string into its individual characters (Neo4j/Memgraph semantics).
     // Java's String.split("", -1) appends a spurious trailing empty string, so handle this case explicitly.
