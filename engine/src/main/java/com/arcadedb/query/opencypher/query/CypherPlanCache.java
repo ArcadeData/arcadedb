@@ -39,6 +39,12 @@ import java.util.Map;
  * - Eliminates plan building overhead (50-100ms per query)
  * <p>
  * Total savings: 200-500ms per cached query execution.
+ * <p>
+ * {@link #put} and {@link #invalidate()} synchronize on {@code this}, so the {@code lastInvalidation} check and the
+ * insert into {@code cache} happen atomically with respect to a concurrent invalidation (issue #6671). {@link #get}
+ * does not need that lock - it never reads {@link #lastInvalidation} - and instead relies on {@code cache} being a
+ * {@link Collections#synchronizedMap} for its own thread safety, so the frequent read path stays uncontended by the
+ * much rarer {@code put}/{@code invalidate}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

@@ -396,6 +396,16 @@ class SQLExecutorAdditionalCoverageTest extends TestHelper {
       assertThat(item.<Object>getProperty("m")).isNull();
       assertThat(rs.hasNext()).isFalse();
     }
+
+    // A non-aggregate field column mixed with count(*) and no GROUP BY: the field has no group to bind to over an
+    // empty input, so it resolves to null rather than throwing - the synthesized row still carries the aggregate.
+    try (final ResultSet rs = database.query("sql", "SELECT x, count(*) as c FROM EmptyAggType")) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result item = rs.next();
+      assertThat(item.<Object>getProperty("x")).isNull();
+      assertThat(item.<Long>getProperty("c")).isEqualTo(0L);
+      assertThat(rs.hasNext()).isFalse();
+    }
   }
 
   // --- EmptyDataGeneratorStep ---
