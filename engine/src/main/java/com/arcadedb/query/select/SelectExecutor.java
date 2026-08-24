@@ -571,6 +571,16 @@ public class SelectExecutor {
     if (!CURSOR_BUILDABLE_OPERATORS.contains(node.operator))
       return;
 
+    if (node.getParent().operator == SelectOperator.not)
+      // #6575: A LEAF DIRECTLY UNDER not WOULD OTHERWISE BUILD A "POSITIVE" CURSOR FOR THE UN-NEGATED CONDITION
+      // (E.G. AN eq CURSOR FOR NOT a = 'x' YIELDS THE RECORDS WHERE a = 'x' IS TRUE) - evaluateWhere() THEN
+      // REJECTS EVERY ONE OF THOSE CANDIDATES SINCE THEY ALL SATISFY THE POSITIVE CONDITION BY CONSTRUCTION, SO
+      // THE QUERY WOULD SILENTLY RETURN ZERO ROWS INSTEAD OF "EVERY RECORD WHERE a != 'x'". isTheNodeFullyIndexed()
+      // STILL SETS node.index HERE (SEE ITS not BRANCH), SO REFUSE THE CURSOR HERE INSTEAD, THE SAME WAY
+      // is_null/is_not_null LEAVES ARE ALREADY EXCLUDED THERE. NEITHER A FLUENT .not() NOR Select.json() REACH THIS
+      // TODAY, BUT THE DEFENSIVE POSTURE MUST HOLD THE MOMENT EITHER PATH OPENS UP.
+      return;
+
     if (node.getParent().operator == SelectOperator.or) {
       // UNDER AN 'OR' OPERATOR: BOTH SIDES MUST BE INDEXED, OTHERWISE CANNOT USE INDEXES
       if (node != node.getParent().right) {
