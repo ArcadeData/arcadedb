@@ -37,18 +37,6 @@ public class StringUtils {
   }
 
   /**
-   * Case-insensitive {@code contains} that allocates nothing.
-   * <p>
-   * The obvious form, {@code haystack.toUpperCase().contains(needle)}, copies the whole haystack to answer a question
-   * about a needle a dozen characters long - which is why every caller of this had written its own copy rather than
-   * use it: the async DDL classifier scanning a whole script, the Cypher parser deciding on its own parse hot path,
-   * the HTTP handler looking for a LIMIT in a command, and the MCP prompt fence looking for its own delimiter. Four
-   * private copies of six lines, and this is the one they share.
-   *
-   * @return true when {@code needle} occurs anywhere in {@code haystack}, ignoring case. An empty needle is contained
-   *     by everything, as {@code String.contains} has it.
-   */
-  /**
    * Splits a {@code <key>=<value>} pair on the FIRST '=' only, so a value that contains further separators (a
    * connection string, a base64 padding, a date pattern) is kept whole and an empty value is a value, not a missing
    * one. Returns null when there is no separator at all, leaving to the caller the choice between rejecting the
@@ -65,6 +53,18 @@ public class StringUtils {
     return new String[] { pair.substring(0, separatorPos), pair.substring(separatorPos + 1) };
   }
 
+  /**
+   * Case-insensitive {@code contains} that allocates nothing.
+   * <p>
+   * The obvious form, {@code haystack.toUpperCase().contains(needle)}, copies the whole haystack to answer a question
+   * about a needle a dozen characters long - which is why every caller of this had written its own copy rather than
+   * use it: the async DDL classifier scanning a whole script, the Cypher parser deciding on its own parse hot path,
+   * the HTTP handler looking for a LIMIT in a command, and the MCP prompt fence looking for its own delimiter. Four
+   * private copies of six lines, and this is the one they share.
+   *
+   * @return true when {@code needle} occurs anywhere in {@code haystack}, ignoring case. An empty needle is contained
+   *     by everything, as {@code String.contains} has it.
+   */
   public static boolean containsIgnoreCase(final String haystack, final String needle) {
     final int needleLength = needle.length();
     if (needleLength == 0)

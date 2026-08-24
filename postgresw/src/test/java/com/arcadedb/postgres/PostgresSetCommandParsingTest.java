@@ -21,6 +21,7 @@ package com.arcadedb.postgres;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 
 /**
  * Regression tests for issue #6423: {@code PostgresNetworkExecutor.setConfiguration()} used to split a
@@ -79,5 +80,18 @@ class PostgresSetCommandParsingTest {
   @Test
   void noSeparatorReturnsNull() {
     assertThat(PostgresNetworkExecutor.parseSetCommand("SET justaname")).isNull();
+  }
+
+  @Test
+  void anUnclosedQuoteIsLeftAsIsInsteadOfThrowing() {
+    // A single stray quote is not a closed quoted value: substring(1, length - 1) on it used to throw
+    // StringIndexOutOfBoundsException instead of leaving the (malformed) value alone.
+    assertThatCode(() -> PostgresNetworkExecutor.parseSetCommand("SET x = '")).doesNotThrowAnyException();
+    assertThat(PostgresNetworkExecutor.parseSetCommand("SET x = '")).containsExactly("x", "'");
+  }
+
+  @Test
+  void mismatchedQuotesAreLeftAsIs() {
+    assertThat(PostgresNetworkExecutor.parseSetCommand("SET x = 'abc\"")).containsExactly("x", "'abc\"");
   }
 }
