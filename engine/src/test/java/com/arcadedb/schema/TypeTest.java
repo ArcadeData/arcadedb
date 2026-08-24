@@ -914,6 +914,58 @@ class TypeTest extends TestHelper {
     assertThat(result).isNotNull();
   }
 
+  /**
+   * Issue #6469: with the datetime implementation configured as {@code ZonedDateTime}, converting a
+   * {@code java.util.Date} used to return a {@code LocalDateTime} (a copy-paste slip: the {@code Date} arm passed
+   * {@code LocalDateTime.class} instead of {@code ZonedDateTime.class}, unlike the {@code Calendar} arm right below
+   * it which already used the correct target). The underlying instant was preserved, but the runtime type was wrong,
+   * which broke {@code instanceof ZonedDateTime} and {@code equals()} against a {@code ZonedDateTime}.
+   */
+  @Test
+  void convertToZonedDateTimeFromDateReturnsZonedDateTime() {
+    final Date now = new Date();
+    final Object result = Type.convert(database, now, ZonedDateTime.class);
+    assertThat(result).isInstanceOf(ZonedDateTime.class);
+    assertThat(((ZonedDateTime) result).toInstant().toEpochMilli()).isEqualTo(now.getTime());
+  }
+
+  /**
+   * Issue #6469: the {@code ZonedDateTime} target had no {@code Number} branch at all (unlike the
+   * {@code LocalDateTime} target), so an epoch-millis {@code Number} set on such a property fell through
+   * {@code convert} unconverted instead of becoming a {@code ZonedDateTime}.
+   */
+  @Test
+  void convertToZonedDateTimeFromNumber() {
+    final long epochMillis = 1_700_000_000_123L;
+    final Object result = Type.convert(database, epochMillis, ZonedDateTime.class);
+    assertThat(result).isInstanceOf(ZonedDateTime.class);
+    assertThat(((ZonedDateTime) result).toInstant().toEpochMilli()).isEqualTo(epochMillis);
+  }
+
+  /**
+   * Issue #6469: same copy-paste slip as {@link #convertToZonedDateTimeFromDateReturnsZonedDateTime()}, but for the
+   * {@code Instant} target - the {@code Date} arm returned a {@code LocalDateTime} instead of an {@code Instant}.
+   */
+  @Test
+  void convertToInstantFromDateReturnsInstant() {
+    final Date now = new Date();
+    final Object result = Type.convert(database, now, Instant.class);
+    assertThat(result).isInstanceOf(Instant.class);
+    assertThat(((Instant) result).toEpochMilli()).isEqualTo(now.getTime());
+  }
+
+  /**
+   * Issue #6469: the {@code Instant} target had no {@code Number} branch at all, matching the missing branch on the
+   * {@code ZonedDateTime} target.
+   */
+  @Test
+  void convertToInstantFromNumber() {
+    final long epochMillis = 1_700_000_000_123L;
+    final Object result = Type.convert(database, epochMillis, Instant.class);
+    assertThat(result).isInstanceOf(Instant.class);
+    assertThat(((Instant) result).toEpochMilli()).isEqualTo(epochMillis);
+  }
+
   @Test
   void convertToRIDFromString() {
     database.transaction(() -> {
