@@ -200,6 +200,18 @@ public class CypherOptimizer {
         AnchorSelection componentAnchor = anchorSelector.selectAnchor(logicalPlan, excludedVariables);
         componentAnchor = validateAnchorForUnidirectionalEdges(componentAnchor, logicalPlan,
             component.relationships(), component.variables());
+
+        // Issue #6482: a label-disjunction node only seeds a NodeByLabelDisjunctionScan/IndexSeek when it
+        // IS the anchor. Any other node in this component that still carries a disjunction would be reached
+        // by ExpandAll/ExpandInto/VarLengthExpand, whose single targetLabel (addTargetLabelFilter) can only
+        // filter on the disjunction's first label - silently dropping rows that matched a later alternative.
+        // shouldUseOptimizer() admits the statement without knowing which node the cost-based selection
+        // above would land on, so verify it here, now that the concrete anchor is known, and decline the
+        // whole plan (falling back to the legacy pipeline, which evaluates every alternative correctly)
+        // rather than build an operator tree that would return an incomplete result.
+        if (hasUnanchoredLabelDisjunction(logicalPlan, component.variables(), componentAnchor.getVariable()))
+          return null;
+
         final PhysicalOperator componentAnchorOperator = createAnchorOperator(componentAnchor);
         final ExpansionPlan expansion = buildExpansionChain(logicalPlan, component.relationships(),
             componentAnchor, componentAnchorOperator, needsEdgeTracking, syntheticEdgeVarCounter);
@@ -460,6 +472,32 @@ public class CypherOptimizer {
     });
 
     return typeNames;
+  }
+
+  /**
+   * Returns {@code true} when some node in {@code componentVariables} other than {@code anchorVariable}
+   * carries a label disjunction (issue #6482). Such a node cannot be represented once it is not the
+   * anchor: it is reached by {@code ExpandAll}/{@code ExpandInto}/{@code VarLengthExpand}, and
+   * {@code addTargetLabelFilter} pushes only the disjunction's first label into those operators'
+   * single-label {@code targetLabel} field, which would silently filter out rows that matched a later
+   * alternative instead of raising an error.
+   *
+   * @param logicalPlan        the logical plan (for looking up each variable's {@link LogicalNode})
+   * @param componentVariables every node variable in the connected component the anchor was chosen for
+   * @param anchorVariable     the variable of the anchor {@link #buildExpansionChain} will expand from
+   * @return {@code true} if the plan is unsafe to build as-is and {@link #optimize()} should decline
+   * (return {@code null}) instead, falling back to the legacy pipeline
+   */
+  private boolean hasUnanchoredLabelDisjunction(final LogicalPlan logicalPlan, final Set<String> componentVariables,
+      final String anchorVariable) {
+    for (final String variable : componentVariables) {
+      if (variable.equals(anchorVariable))
+        continue;
+      final LogicalNode node = logicalPlan.getPatternNode(variable);
+      if (node != null && node.isLabelDisjunction() && node.getLabels().size() > 1)
+        return true;
+    }
+    return false;
   }
 
   /**
