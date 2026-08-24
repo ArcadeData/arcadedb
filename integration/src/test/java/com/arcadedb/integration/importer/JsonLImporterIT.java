@@ -567,6 +567,51 @@ class JsonLImporterIT {
     }
   }
 
+  /**
+   * Issue #6561 review follow-up: symmetric to
+   * {@link #importDatabaseAbortModeInsideActiveTransactionDoesNotCommitPeriodicallyOnLargeImport()} but for
+   * {@code reconcileUnresolvedLinks()}'s own periodic commit rather than the main loop's - the large-import fixture
+   * used there carries no LINK properties, so its reconciliation pass is a no-op and never exercises this gate.
+   * Every vertex here (bar the last) has a forward-referencing {@code next} LINK property pointing at the vertex
+   * imported immediately after it, which is guaranteed unresolved on first pass (the referenced record hasn't been
+   * imported yet) and so lands in {@code pendingLinkReconciliation}, exercising the reconciliation pass's own
+   * periodic commit at the same >1000-entry scale.
+   */
+  @Test
+  void importDatabaseAbortModeInsideActiveTransactionDoesNotCommitPeriodicallyDuringLinkReconciliation() throws IOException {
+    Path jsonlFile = Files.createTempFile("arcadedb-6561-abort-periodic-reconcile-active-tx-", ".jsonl");
+    try {
+      final int vertexCount = 1500; // exceeds the 1000-record periodic commit threshold
+      Files.writeString(jsonlFile, manyVerticesWithForwardLinksJsonl(vertexCount));
+
+      var db = new DatabaseFactory(DATABASE_PATH).create();
+      try {
+        db.command("sql", "CREATE DOCUMENT TYPE CallerWork");
+
+        db.begin();
+        db.newDocument("CallerWork").set("name", "pre-existing").save();
+
+        var importer = new Importer(db, jsonlFile.toAbsolutePath().toString());
+        Map<String, Object> result = importer.load();
+        assertThat(result).doesNotContainKey("errors");
+        assertThat(result).containsEntry("createdVertices", (long) vertexCount);
+
+        // Same reasoning as importDatabaseAbortModeInsideActiveTransactionDoesNotCommitPeriodicallyOnLargeImport:
+        // asserting the caller's own pre-existing pending work is still there proves the ORIGINAL transaction
+        // survived the reconciliation pass intact, not just that some transaction happens to be active.
+        assertThat(db.isTransactionActive()).isTrue();
+        db.commit();
+
+        assertThat(db.countType("CallerWork", true)).isEqualTo(1);
+        assertThat(db.countType("Person", true)).isEqualTo(vertexCount);
+      } finally {
+        db.drop();
+      }
+    } finally {
+      Files.deleteIfExists(jsonlFile);
+    }
+  }
+
   private static String singleVertexJsonl() {
     return ""
         + "{\"t\":\"info\",\"c\":{\"description\":\"test\",\"exporterVersion\":1,\"dbVersion\":\"25.1.1-SNAPSHOT\",\"dbBuild\":\"\",\"dbTimestamp\":\"\"}}\n"
@@ -585,6 +630,28 @@ class JsonLImporterIT {
     for (int i = 0; i < vertexCount; ++i)
       sb.append("{\"t\":\"v\",\"c\":{\"p\":{\"id\":").append(i).append("},\"r\":\"#6:").append(i)
           .append("\",\"t\":\"Person\",\"o\":[],\"i\":[]}}\n");
+    return sb.toString();
+  }
+
+  private static String manyVerticesWithForwardLinksJsonl(final int vertexCount) {
+    final StringBuilder sb = new StringBuilder();
+    sb.append(
+        "{\"t\":\"info\",\"c\":{\"description\":\"test\",\"exporterVersion\":1,\"dbVersion\":\"25.1.1-SNAPSHOT\",\"dbBuild\":\"\",\"dbTimestamp\":\"\"}}\n");
+    sb.append("{\"t\":\"db\",\"c\":{\"name\":\"test\",\"executedOn\":\"2025-01-01\",\"executedOnTimestamp\":0}}\n");
+    sb.append(
+        "{\"t\":\"schema\",\"c\":{\"schemaVersion\":1,\"dbmsVersion\":\"25.1.1-SNAPSHOT\",\"dbmsBuild\":\"\",\"settings\":{\"zoneId\":\"UTC\",\"dateFormat\":\"yyyy-MM-dd\",\"dateTimeFormat\":\"yyyy-MM-dd HH:mm:ss\"},"
+            + "\"types\":{\"Person\":{\"type\":\"v\",\"parents\":[],\"buckets\":[\"Person_0\"],\"properties\":{"
+            + "\"id\":{\"type\":\"INTEGER\",\"custom\":{}},"
+            + "\"next\":{\"type\":\"LINK\",\"custom\":{}}"
+            + "},\"indexes\":{},\"custom\":{}}}}}\n");
+    for (int i = 0; i < vertexCount; ++i) {
+      // Every vertex but the last points forward at the NEXT one in the stream (r="#6:(i+1)"), which hasn't been
+      // imported yet at the point this line is processed - guaranteed unresolved on first pass, so it lands in
+      // pendingLinkReconciliation for reconcileUnresolvedLinks() to fix up afterwards.
+      final String next = i < vertexCount - 1 ? ",\"next\":\"#6:" + (i + 1) + "\"" : "";
+      sb.append("{\"t\":\"v\",\"c\":{\"p\":{\"id\":").append(i).append(next).append("},\"r\":\"#6:").append(i)
+          .append("\",\"t\":\"Person\",\"o\":[],\"i\":[]}}\n");
+    }
     return sb.toString();
   }
 
