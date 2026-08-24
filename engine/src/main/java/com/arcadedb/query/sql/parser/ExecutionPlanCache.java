@@ -29,6 +29,13 @@ import java.util.Map;
 /**
  * This class is an LRU cache for already prepared SQL execution plans. It stores itself in the storage as a resource. It also acts
  * an an entry point for the SQL executor.
+ * <p>
+ * Every accessor synchronizes on {@code this}, deliberately trading the finer-grained locking a previous version had
+ * (a separate lock for the map versus {@link #lastInvalidation}) for the atomicity {@link #put} needs to check-and-
+ * insert without a race against a concurrent {@link #invalidate()} (issue #6671). {@link #get} - called on every
+ * cached query execution - now contends with the much rarer {@link #put}/{@link #invalidate}, rather than with
+ * nothing; deliberate, since correctness here outweighs the lock-contention cost on a path this infrequent relative
+ * to query execution itself.
  *
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
