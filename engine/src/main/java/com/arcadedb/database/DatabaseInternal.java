@@ -417,6 +417,9 @@ public interface DatabaseInternal extends Database {
 
   /**
    * Gets all global variables as an unmodifiable map.
+   * <p>
+   * <b>Not replicated in an HA cluster</b> - see {@link #getGlobalVariable(String)}. Each entry is this node's
+   * own local value, not a cluster-wide view.
    * @return Map of variable name to value
    */
   Map<String, Object> getGlobalVariables();
