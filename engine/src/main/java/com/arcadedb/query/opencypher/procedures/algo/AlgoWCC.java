@@ -88,15 +88,22 @@ public class AlgoWCC extends AbstractAlgoProcedure {
 
     final Database db = context.getDatabase();
 
-    // Try CSR-accelerated path: delegate to native union-find on CSR arrays
-    final GraphTraversalProvider provider = findProvider(db, null);
-    if (provider instanceof GraphAnalyticalView gav) {
-      context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
-      return executeWithCSR(context, gav);
+    final String[] relTypes = args.length > 0 ? extractRelTypes(args[0]) : null;
+
+    // Try CSR-accelerated path: delegate to native union-find on CSR arrays. Only for an
+    // unfiltered call: connectedComponents() walks the whole view, and a provider is selected
+    // for covering the requested types, not for covering only those, so a filtered call would
+    // union edges it was asked to leave out. loadGraph() applies the filter to CSR adjacency.
+    if (relTypes == null || relTypes.length == 0) {
+      final GraphTraversalProvider provider = findProvider(db, null);
+      if (provider instanceof GraphAnalyticalView gav) {
+        context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
+        return executeWithCSR(context, gav);
+      }
     }
 
     // Fall back to OLTP path
-    return executeWithOLTP(db);
+    return executeWithOLTP(db, relTypes);
   }
 
   private Stream<Result> executeWithCSR(final CommandContext context, final GraphAnalyticalView gav) {
@@ -115,13 +122,13 @@ public class AlgoWCC extends AbstractAlgoProcedure {
     });
   }
 
-  private Stream<Result> executeWithOLTP(final Database db) {
-    final GraphData graph = loadGraph(db, null, null, null);
+  private Stream<Result> executeWithOLTP(final Database db, final String[] relTypes) {
+    final GraphData graph = loadGraph(db, null, relTypes, null);
 
     final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
-    final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH);
+    final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH, relTypes);
 
     final int[] componentId = new int[n];
     for (int i = 0; i < n; i++)
