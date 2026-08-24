@@ -728,9 +728,7 @@ public enum PostgresType {
   public void serializeAsText(final PostgresType pgType, final Binary typeBuffer, final Object value) {
     String serializedValue = null;
     final byte[] byteaValue = pgType == BYTEA ? byteaValueOf(value) : null;
-    if (value == null && pgType.code == BOOLEAN.code) {
-      serializedValue = "0";
-    } else if (pgType == JSON && value != null && (value instanceof Collection<?> || value.getClass().isArray())) {
+    if (pgType == JSON && value != null && (value instanceof Collection<?> || value.getClass().isArray())) {
       // The column was announced as a json document holding an array (issue #5366): emit a real JSON array
       // instead of a Postgres array literal, so the payload matches the announced OID.
       serializedValue = serializeCollectionAsJson(
@@ -753,9 +751,13 @@ public enum PostgresType {
       // BigDecimal.toString() switches to scientific notation outside a small exponent range (e.g. "1E+10"),
       // which is not a NUMERIC text value PostgreSQL itself would ever emit or a client would expect to parse.
       serializedValue = bd.toPlainString();
-    } else if (value instanceof Date date) {
+    } else if (value instanceof Date date && pgType == DATE) {
       // DATE (OID 1082) expects "YYYY-MM-DD" in text format
       serializedValue = date.toInstant().atZone(ZoneOffset.UTC).format(DateTimeFormatter.ISO_LOCAL_DATE);
+    } else if (value instanceof Date date) {
+      // TIMESTAMP (or any other non-DATE column) backed by a java.util.Date: keep the time-of-day
+      // instead of truncating to a date-only value (issue #6675)
+      serializedValue = LocalDateTime.ofInstant(date.toInstant(), ZoneOffset.UTC).format(POSTGRES_DATETIME_FORMATTER);
     } else if (value instanceof LocalDateTime ldt) {
       // TIMESTAMP (OID 1114) expects "yyyy-MM-dd HH:mm:ss.SSSSSS" in text format
       serializedValue = ldt.format(POSTGRES_DATETIME_FORMATTER);

@@ -45,6 +45,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.AnsiCode;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.RecordTableFormatter;
+import com.arcadedb.utility.StringUtils;
 import com.arcadedb.utility.TableFormatter;
 import org.jline.reader.Completer;
 import org.jline.reader.EndOfFileException;
@@ -1188,17 +1189,13 @@ public class Console {
   }
 
   /**
-   * Splits a `&lt;key&gt;=&lt;value&gt;` pair on the FIRST '=' only, so a value that contains further separators (a connection
-   * string, a base64 padding, a date pattern) is kept whole and an empty value is a value, not a missing one. Returns null when
-   * there is no separator at all, leaving to the caller the choice between rejecting the input and reading it as an empty value.
-   * Shared by the `-D&lt;key&gt;=&lt;value&gt;` arguments (issue #5928) and by the SET command (issue #6392), which used to
-   * disagree on the rule.
+   * Splits a `&lt;key&gt;=&lt;value&gt;` pair on the FIRST '=' only. Shared by the `-D&lt;key&gt;=&lt;value&gt;`
+   * arguments (issue #5928) and by the SET command (issue #6392), which used to disagree on the rule; delegates to
+   * {@link StringUtils#splitKeyValue} so the Postgres wire's SET command and the Studio include directive
+   * (issue #6423) follow the same rule instead of each carrying their own truncating copy.
    */
   static String[] splitKeyValue(final String pair) {
-    final int separatorPos = pair.indexOf('=');
-    if (separatorPos < 0)
-      return null;
-    return new String[] { pair.substring(0, separatorPos), pair.substring(separatorPos + 1) };
+    return StringUtils.splitKeyValue(pair);
   }
 
   private static boolean setGlobalConfiguration(final String key, final String value, final boolean printError) {

@@ -26,6 +26,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.StringUtils;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.Headers;
@@ -248,11 +249,7 @@ public class GetDynamicContentHandler extends AbstractServerHttpHandler {
 
           include = include.substring(0, sep);
 
-          final String[] parameterPairs = params.split(" ");
-          for (final String pair : parameterPairs) {
-            final String[] kv = pair.split("=");
-            variables.put(kv[0].trim(), kv[1].trim());
-          }
+          parseIncludeParameters(params, include, variables);
         }
 
         final InputStream fis = getClass().getClassLoader().getResourceAsStream("static/" + include);
@@ -317,5 +314,24 @@ public class GetDynamicContentHandler extends AbstractServerHttpHandler {
     buffer.append(file.substring(pos));
 
     return buffer.toString();
+  }
+
+  /**
+   * Parses the space-separated {@code key=value} parameters of an {@code ${include:file.html k=v ...}} directive
+   * into {@code variables}. Each pair is split on the FIRST '=' only, so a value containing a further '=' is kept
+   * whole, and a parameter with no '=' at all is reported and skipped instead of throwing
+   * {@link ArrayIndexOutOfBoundsException} out of the page render (issue #6423).
+   */
+  static void parseIncludeParameters(final String params, final String include, final Map<String, Object> variables) {
+    final String[] parameterPairs = params.split(" ");
+    for (final String pair : parameterPairs) {
+      final String[] kv = StringUtils.splitKeyValue(pair);
+      if (kv == null) {
+        LogManager.instance().log(GetDynamicContentHandler.class, Level.WARNING,
+            "Malformed include parameter '%s' in '%s', ignoring it", pair, include);
+        continue;
+      }
+      variables.put(kv[0].trim(), kv[1].trim());
+    }
   }
 }

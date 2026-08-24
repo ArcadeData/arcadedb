@@ -48,6 +48,23 @@ public class StringUtils {
    * @return true when {@code needle} occurs anywhere in {@code haystack}, ignoring case. An empty needle is contained
    *     by everything, as {@code String.contains} has it.
    */
+  /**
+   * Splits a {@code <key>=<value>} pair on the FIRST '=' only, so a value that contains further separators (a
+   * connection string, a base64 padding, a date pattern) is kept whole and an empty value is a value, not a missing
+   * one. Returns null when there is no separator at all, leaving to the caller the choice between rejecting the
+   * input and reading it as an empty value.
+   * <p>
+   * Shared by the console's {@code -D<key>=<value>} arguments and {@code SET} command (issue #6392), the Postgres
+   * wire's {@code SET} command, and the Studio include directive's parameters (issue #6423), which used to each
+   * carry their own {@code split("=")} that truncated a value containing a further '='.
+   */
+  public static String[] splitKeyValue(final String pair) {
+    final int separatorPos = pair.indexOf('=');
+    if (separatorPos < 0)
+      return null;
+    return new String[] { pair.substring(0, separatorPos), pair.substring(separatorPos + 1) };
+  }
+
   public static boolean containsIgnoreCase(final String haystack, final String needle) {
     final int needleLength = needle.length();
     if (needleLength == 0)
