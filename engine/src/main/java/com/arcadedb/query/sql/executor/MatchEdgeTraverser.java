@@ -147,7 +147,12 @@ public class MatchEdgeTraverser {
       }
 
       // Expand-into optimization: when both endpoints are already bound, use isConnectedTo()
-      // for O(log degree) binary search instead of traversing all neighbors
+      // for O(log degree) binary search instead of traversing all neighbors. This does not re-check the
+      // endpoint's own filters/class/cluster/rid (unlike executeTraversal(), which calls matchesFilters() etc.
+      // per candidate): those were already applied when the endpoint alias was first bound, and next()'s
+      // equals(prevValue, nextElement) check below (the same one the slow path relies on to reject a
+      // subsequent binding that disagrees with an earlier one) is what re-validates identity here, not a
+      // second filter pass. This is by design, not an oversight.
       final String endPointAlias = getEndpointAlias();
       final Object prevValue = sourceRecord.getProperty(endPointAlias);
       if (prevValue != null && startingElem instanceof Vertex sourceVertex) {
