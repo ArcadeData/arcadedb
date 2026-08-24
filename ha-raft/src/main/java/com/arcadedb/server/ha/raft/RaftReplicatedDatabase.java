@@ -947,26 +947,55 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     proxied.setWrapper(name, instance);
   }
 
+  // Global variables are NOT replicated through Raft: unlike every other mutating method on this class, the five
+  // accessors below (getGlobalVariable, setGlobalVariable, setGlobalVariableIfAbsent, setGlobalVariableIfPresent,
+  // getGlobalVariables) all delegate straight to the local node's own database, with no consensus proposal
+  // involved at all. A value set on one node of an HA cluster is invisible to every other node, including after a
+  // failover, so setGlobalVariableIfAbsent/setGlobalVariableIfPresent's per-node atomicity does NOT make Redis
+  // "SET k v NX" (or any other caller) a real cluster-wide distributed lock. A full fix would mean replicating
+  // global variables through Raft, which none of these five methods attempt (issue #6560). Each accessor below
+  // carries its own Javadoc pointer to the full caveat on DatabaseInternal, since a Javadoc comment attaches only
+  // to the single declaration it precedes and would not otherwise show up in generated docs/IDE hover for the
+  // other four.
+
+  /**
+   * Not replicated in an HA cluster - see the caveat on {@link DatabaseInternal#getGlobalVariable(String)}.
+   */
   @Override
   public Object getGlobalVariable(final String name) {
     return proxied.getGlobalVariable(name);
   }
 
+  /**
+   * Not replicated in an HA cluster - see the caveat on {@link DatabaseInternal#getGlobalVariable(String)}.
+   */
   @Override
   public Object setGlobalVariable(final String name, final Object value) {
     return proxied.setGlobalVariable(name, value);
   }
 
+  /**
+   * Not a cluster-wide distributed lock in an HA cluster - see the caveat on
+   * {@link DatabaseInternal#setGlobalVariableIfAbsent(String, Object)}.
+   */
   @Override
   public Object setGlobalVariableIfAbsent(final String name, final Object value) {
     return proxied.setGlobalVariableIfAbsent(name, value);
   }
 
+  /**
+   * Not a cluster-wide distributed lock in an HA cluster - see the caveat on
+   * {@link DatabaseInternal#setGlobalVariableIfAbsent(String, Object)}.
+   */
   @Override
   public Object setGlobalVariableIfPresent(final String name, final Object value) {
     return proxied.setGlobalVariableIfPresent(name, value);
   }
 
+  /**
+   * Not replicated in an HA cluster - see the caveat on {@link DatabaseInternal#getGlobalVariable(String)}. Each
+   * entry of the returned map is this node's own local value, not a cluster-wide view.
+   */
   @Override
   public Map<String, Object> getGlobalVariables() {
     return proxied.getGlobalVariables();

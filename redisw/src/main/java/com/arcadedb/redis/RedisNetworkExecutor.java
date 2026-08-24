@@ -385,15 +385,20 @@ public class RedisNetworkExecutor extends Thread {
    * which carries no kind at all: a client had nothing to branch on, and an optimistic-concurrency conflict - the
    * one failure worth repeating the command for - looked exactly like a permanent one.
    * <p>
-   * The classification itself lives in {@link ErrorCategory} so every wire protocol answers it the same way. RESP
-   * has no vocabulary for the client-error categories Postgres and Bolt distinguish, so they all keep Redis'
-   * generic {@code ERR}.
+   * A {@link RedisException} carrying an explicit kind (see {@link RedisException#withKind}) wins first - that
+   * covers the kinds {@link ErrorCategory} has no concept of at all, such as {@code WRONGPASS}, {@code NOAUTH} and
+   * {@code NOPROTO} (issue #6560). Everything else falls back to {@link ErrorCategory} so every wire protocol
+   * answers the question the same way. RESP has no vocabulary for the client-error categories Postgres and Bolt
+   * distinguish, so they all keep Redis' generic {@code ERR}.
    * <p>
    * {@code TRYAGAIN} is the closest RESP2 offers, but in real Redis it is a cluster-mode error, so several client
    * libraries will not auto-retry on it. The retry hint is therefore weaker here than Postgres' {@code 40001} or
    * Bolt's transient status - it is the best signal the protocol has, not an equivalent one.
    */
   static String respErrorPrefix(final Throwable error) {
+    if (error instanceof RedisException redisException && redisException.getKind() != null)
+      return redisException.getKind();
+
     return switch (ErrorCategory.of(error)) {
       case RETRY -> "TRYAGAIN";
       case SECURITY -> "NOPERM";
@@ -775,16 +780,17 @@ public class RedisNetworkExecutor extends Thread {
     } else if (list.size() == 2) {
       // Single-argument AUTH targets Redis' "default" user, which ArcadeDB does not model.
       markUnauthenticated();
-      throw new RedisException("WRONGPASS ArcadeDB requires the 'AUTH <username> <password>' form");
+      throw RedisException.withKind("WRONGPASS", "ArcadeDB requires the 'AUTH <username> <password>' form");
     } else
-      throw new RedisException("ERR wrong number of arguments for 'auth' command");
+      // ERR is already respErrorPrefix()'s default kind, so the message no longer needs to repeat it.
+      throw new RedisException("wrong number of arguments for 'auth' command");
 
     try {
       markAuthenticated(server.getSecurity().authenticate(userName, password, null));
       value.append("+OK");
     } catch (final ServerSecurityException e) {
       markUnauthenticated();
-      throw new RedisException("WRONGPASS invalid username-password pair or user is disabled");
+      throw RedisException.withKind("WRONGPASS", "invalid username-password pair or user is disabled");
     }
   }
 
@@ -843,7 +849,7 @@ public class RedisNetworkExecutor extends Thread {
       if (NumberUtils.isIntegerNumber(maybeVersion)) {
         final int proto = Integer.parseInt(maybeVersion);
         if (proto < 2 || proto > 3)
-          throw new RedisException("NOPROTO unsupported protocol version");
+          throw RedisException.withKind("NOPROTO", "unsupported protocol version");
         idx++;
       }
     }
@@ -851,20 +857,21 @@ public class RedisNetworkExecutor extends Thread {
     // Optional AUTH <username> <password> option.
     if (list.size() > idx && "AUTH".equalsIgnoreCase((String) list.get(idx))) {
       if (list.size() < idx + 3)
-        throw new RedisException("ERR Syntax error in HELLO");
+        // ERR is already respErrorPrefix()'s default kind, so the message no longer needs to repeat it.
+        throw new RedisException("Syntax error in HELLO");
       final String userName = (String) list.get(idx + 1);
       final String password = (String) list.get(idx + 2);
       try {
         markAuthenticated(server.getSecurity().authenticate(userName, password, null));
       } catch (final ServerSecurityException e) {
         markUnauthenticated();
-        throw new RedisException("WRONGPASS invalid username-password pair or user is disabled");
+        throw RedisException.withKind("WRONGPASS", "invalid username-password pair or user is disabled");
       }
     }
 
     if (authenticatedUser == null)
-      throw new RedisException(
-          "NOAUTH HELLO must be called with the client already authenticated, otherwise the HELLO <proto> AUTH <user> <pass> option can be used to authenticate the client and select the RESP protocol version at the same time");
+      throw RedisException.withKind("NOAUTH",
+          "HELLO must be called with the client already authenticated, otherwise the HELLO <proto> AUTH <user> <pass> option can be used to authenticate the client and select the RESP protocol version at the same time");
 
     // RESP2 map reply: a flat array of alternating key/value elements (7 pairs = 14 elements).
     value.append("*14");
@@ -908,10 +915,10 @@ public class RedisNetworkExecutor extends Thread {
    */
   private DatabaseInternal getAuthorizedDatabase(final String databaseName) {
     if (authenticatedUser == null)
-      throw new RedisException("NOAUTH Authentication required.");
+      throw RedisException.withKind("NOAUTH", "Authentication required.");
 
     if (!authenticatedUser.canAccessToDatabase(databaseName))
-      throw new RedisException("NOPERM this user has no permissions to access the database '" + databaseName + "'");
+      throw RedisException.withKind("NOPERM", "this user has no permissions to access the database '" + databaseName + "'");
 
     final DatabaseInternal database = (DatabaseInternal) server.getDatabase(databaseName);
     DatabaseContext.INSTANCE.init(database).setCurrentUser(authenticatedUser.getDatabaseUser(database));

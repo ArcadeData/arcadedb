@@ -341,6 +341,11 @@ public interface DatabaseInternal extends Database {
 
   /**
    * Gets a global variable value by name.
+   * <p>
+   * <b>Not replicated in an HA cluster.</b> Global variables are per-node state: under Raft replication
+   * ({@code RaftReplicatedDatabase}) every accessor here - this one included - delegates straight to the local
+   * node's own {@link LocalDatabase}, with no Raft consensus or replication involved. A value set on one node is
+   * invisible to every other node, including after a failover (issue #6560).
    * @param name Variable name (with or without $ prefix)
    * @return The variable value, or null if not set
    */
@@ -348,6 +353,8 @@ public interface DatabaseInternal extends Database {
 
   /**
    * Sets a global variable. Setting to null removes the variable.
+   * <p>
+   * <b>Not replicated in an HA cluster</b> - see {@link #getGlobalVariable(String)}.
    * @param name Variable name (with or without $ prefix)
    * @param value The value to set, or null to remove
    * @return The previous value, or null
@@ -357,11 +364,19 @@ public interface DatabaseInternal extends Database {
   /**
    * Atomically sets a global variable only if it is not already set. Unlike calling
    * {@link #getGlobalVariable(String)} followed by {@link #setGlobalVariable(String, Object)}, this check-and-set
-   * happens as one operation, so two callers racing on the same name cannot both observe "absent" and both write -
-   * the property a caller using this as a distributed lock (e.g. Redis {@code SET k v NX}) depends on.
+   * happens as one operation, so two callers racing on the same name on the SAME node cannot both observe "absent"
+   * and both write.
+   * <p>
+   * <b>Not a cluster-wide distributed lock.</b> The atomicity above is per-node only - see
+   * {@link #getGlobalVariable(String)} for why. A caller reaching different nodes of an HA cluster (e.g. two
+   * Redis-wire clients connected to different nodes, or the same client across a failover) can each observe
+   * "absent" and each believe they won a lock acquired with e.g. Redis {@code SET k v NX}: every node keeps its
+   * own independent copy, so two nodes granting the same "lock" simultaneously is expected behavior today, not a
+   * bug in this method. Do not rely on this as a real distributed lock in an HA deployment; that would need global
+   * variables replicated through Raft, which this method does not do (issue #6560).
    * <p>
    * The default falls back to a non-atomic get-then-set for implementations (e.g. test doubles) that do not need
-   * the atomicity guarantee; {@link LocalDatabase} overrides it with a genuinely atomic implementation.
+   * the atomicity guarantee; {@link LocalDatabase} overrides it with a genuinely atomic (per-node) implementation.
    * @param name Variable name (with or without $ prefix)
    * @param value The value to set
    * @return The existing value if the variable was already set (value left untouched), or null if it was absent
@@ -381,8 +396,12 @@ public interface DatabaseInternal extends Database {
    * happens as one operation - the counterpart to {@link #setGlobalVariableIfAbsent(String, Object)} (e.g. Redis
    * {@code SET k v XX}).
    * <p>
+   * <b>Not replicated in an HA cluster</b> - see {@link #setGlobalVariableIfAbsent(String, Object)}: the atomicity
+   * this method gives is per-node only, and different nodes of an HA cluster keep independent copies of the
+   * variable.
+   * <p>
    * The default falls back to a non-atomic get-then-set for implementations (e.g. test doubles) that do not need
-   * the atomicity guarantee; {@link LocalDatabase} overrides it with a genuinely atomic implementation.
+   * the atomicity guarantee; {@link LocalDatabase} overrides it with a genuinely atomic (per-node) implementation.
    * @param name Variable name (with or without $ prefix)
    * @param value The value to set
    * @return The previous value if the variable was set (value was replaced), or null if it was absent (value left
@@ -398,6 +417,9 @@ public interface DatabaseInternal extends Database {
 
   /**
    * Gets all global variables as an unmodifiable map.
+   * <p>
+   * <b>Not replicated in an HA cluster</b> - see {@link #getGlobalVariable(String)}. Each entry is this node's
+   * own local value, not a cluster-wide view.
    * @return Map of variable name to value
    */
   Map<String, Object> getGlobalVariables();
