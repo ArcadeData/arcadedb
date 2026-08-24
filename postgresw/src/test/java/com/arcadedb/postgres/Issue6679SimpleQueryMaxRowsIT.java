@@ -20,6 +20,7 @@ package com.arcadedb.postgres;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.query.sql.executor.ResultSet;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -129,6 +130,62 @@ class Issue6679SimpleQueryMaxRowsIT extends PostgresWireProtocolTestBase {
         assertThat(dataRows).isEqualTo(ROW_CAP - 2);
         assertThat(readyForQueryStatusOf(response)).isEqualTo('I');
       });
+    }
+  }
+
+  @Test
+  @DisplayName("[#6679] a simple-query SELECT of exactly the configured cap is returned in full")
+  void resultAtTheCapIsReturnedInFull() throws Exception {
+    createRows(ROW_CAP);
+
+    try (final Socket socket = new Socket()) {
+      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+      authenticate(out, in);
+
+      assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
+        sendSimpleQuery(out, "SELECT FROM " + TYPE);
+        final List<WireMessage> response = readUntilReadyForQuery(in);
+
+        assertThat(messageTypesOf(response)).as("a result of exactly the cap must not be refused").doesNotContain('E');
+        final long dataRows = response.stream().filter(m -> m.type() == 'D').count();
+        assertThat(dataRows).isEqualTo(ROW_CAP);
+        assertThat(readyForQueryStatusOf(response)).isEqualTo('I');
+      });
+    }
+  }
+
+  /**
+   * The row cap must never leave a write statement partially executed: {@code UPDATE ... RETURN} still updates
+   * every matching row even when its RETURN result exceeds the cap, and only the (now fully-applied) result is
+   * refused.
+   */
+  @Test
+  @DisplayName("[#6679] an UPDATE ... RETURN over the cap still updates every row; only the RETURN result is refused")
+  void updateReturnOverTheCapStillAppliesEveryWrite() throws Exception {
+    createRows(ROW_CAP + 10);
+
+    try (final Socket socket = new Socket()) {
+      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+      authenticate(out, in);
+
+      assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
+        sendSimpleQuery(out, "UPDATE " + TYPE + " SET touched = true RETURN AFTER");
+        final List<WireMessage> response = readUntilReadyForQuery(in);
+
+        assertThat(messageTypesOf(response)).as("the oversized RETURN result is refused").contains('E');
+        assertThat(readyForQueryStatusOf(response)).isEqualTo('I');
+      });
+    }
+
+    final Database database = getServerDatabase(0, getDatabaseName());
+    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM " + TYPE + " WHERE touched = true")) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(((Number) rs.next().getProperty("c")).longValue())
+          .as("every matching row must be updated even though the RETURN result was refused").isEqualTo(ROW_CAP + 10);
     }
   }
 
