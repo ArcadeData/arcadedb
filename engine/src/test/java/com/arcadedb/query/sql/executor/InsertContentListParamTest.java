@@ -92,6 +92,33 @@ public class InsertContentListParamTest extends TestHelper {
   }
 
   @Test
+  void insertContentWithPositionalListParamCreatesOneRecordPerItem() {
+    final String typeName = "Issue6463PositionalPerson";
+    database.getSchema().createDocumentType(typeName);
+
+    final List<Map<String, Object>> people = new ArrayList<>();
+    for (final String name : List.of("x", "y", "z")) {
+      final Map<String, Object> item = new LinkedHashMap<>();
+      item.put("name", name);
+      people.add(item);
+    }
+
+    final ResultSet result = database.command("sql", "INSERT INTO " + typeName + " CONTENT ?", (Object) people);
+
+    final List<String> insertedNames = new ArrayList<>();
+    while (result.hasNext())
+      insertedNames.add(result.next().<String>getProperty("name"));
+    result.close();
+
+    assertThat(insertedNames).containsExactlyInAnyOrder("x", "y", "z");
+
+    final ResultSet count = database.query("sql", "SELECT count(*) as total FROM " + typeName);
+    assertThat(count.hasNext()).isTrue();
+    assertThat(count.next().<Long>getProperty("total")).isEqualTo(3L);
+    count.close();
+  }
+
+  @Test
   void insertContentWithSingleMapParamStillCreatesOneRecord() {
     final String typeName = "Issue6463MapParam";
     database.getSchema().createDocumentType(typeName);
