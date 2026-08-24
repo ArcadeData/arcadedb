@@ -169,7 +169,9 @@ public class MatchEdgeTraverser {
         // it must keep going through the recursive executeTraversal() below instead.
         final Vertex.DIRECTION direction = targetElem != null && edge != null && isSingleHopExpandable(item)
             ? getExpandIntoDirection() : null;
-        if (direction != null) {
+        // hasAnyProviders() short-circuits on a single volatile read, avoiding extractEdgeLabels()'s array/string
+        // work below for the overwhelmingly common case where no GAV provider is registered for any database.
+        if (direction != null && GraphTraversalProviderRegistry.hasAnyProviders()) {
           final String[] edgeTypes = MatchExecutionPlanner.extractEdgeLabels(edge);
           final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(context.getDatabase(), edgeTypes);
           if (provider != null) {

@@ -101,6 +101,17 @@ public class GraphTraversalProviderRegistry {
   }
 
   /**
+   * Returns true if any provider is registered for any database, without the lock/unwrap/WeakHashMap lookup
+   * {@link #findProvider} needs once it establishes that. Lets a caller that would otherwise do non-trivial work
+   * (e.g. building an edge-types array) just to pass it to {@link #findProvider} skip that work first in the
+   * overwhelmingly common case where no provider is registered at all - the same single-volatile-read short
+   * circuit {@link #findProvider} itself takes, exposed for callers that need it before they can call that method.
+   */
+  public static boolean hasAnyProviders() {
+    return hasAnyProviders;
+  }
+
+  /**
    * Finds the first ready provider that covers all the given edge types.
    *
    * @param database  the database
