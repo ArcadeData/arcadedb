@@ -21,6 +21,7 @@ package com.arcadedb.query.select;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.Schema;
@@ -30,6 +31,7 @@ import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -50,8 +52,16 @@ import static org.assertj.core.api.Assertions.assertThat;
  * starts multiple pages too low and returns the wrong (or incomplete) rows.
  * <p>
  * The existing #6692 regression test ({@code Issue6592CompactedCompositePrefixDescTest}) used a target group small
- * enough to live in a single data page, so it never exercised this specific branch - confirmed by the automated code
- * review comment that filed this issue.
+ * enough to live in a single data page, so it never exercised this specific branch.
+ * <p>
+ * A second, independent gap: switching the root-page purpose to 3 for a descending scan also changes which
+ * {@code lookupInPage} boundary branch fires when {@code fromKeys} sorts higher than every entry of an ENTIRE
+ * compacted series (not just one page within it) - the "outside" shortcut that used to emit that whole series as a
+ * single cursor (purpose=2's HIGHER-than-last branch, #5214) now instead routes through
+ * {@code searchInCurrentPage()}'s normal per-page probe via purpose=3's own HIGHER-than-last special case.
+ * {@link #descendingPartialKeyIteratorIncludesAnEntireLowerSeries()} builds a second, alphabetically LOWER prefix
+ * group large enough to compact into its own series and confirms a descending partial-key iterator starting above
+ * it still returns every one of its rows, in order, with none dropped.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -59,6 +69,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class Issue6694CompactedRootPageDescendingPurposeTest extends TestHelper {
 
   private static final int GROUP_SIZE = 4_000;
+  private static final int LOWER_GROUP_SIZE = 4_000;
   private static final int PAGE_SIZE  = 8 * 1024;
 
   @Override
@@ -75,6 +86,11 @@ class Issue6694CompactedRootPageDescendingPurposeTest extends TestHelper {
         .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Supplier", new String[] { "key1", "key2", "orderedAt" }, PAGE_SIZE);
 
     database.transaction(() -> {
+      // A prefix group alphabetically BELOW the target ("0" < "a"), large enough to compact into its own series -
+      // exercises a descending scan whose fromKeys sorts above this series' ENTIRE key range, not just one page of it.
+      for (int i = 0; i < LOWER_GROUP_SIZE; i++)
+        database.newVertex("Supplier").set("key1", "0", "key2", "x", "orderedAt", (long) i).save();
+
       // A single prefix group large enough to span several data pages within one compacted series - the root page
       // then holds a run of multiple page-boundary entries that all compare equal under the partial key (key1,key2).
       for (int i = 0; i < GROUP_SIZE; i++)
@@ -126,6 +142,38 @@ class Issue6694CompactedRootPageDescendingPurposeTest extends TestHelper {
         assertThat(list.get(i).getString("key1")).isEqualTo("a");
         assertThat(list.get(i).getString("key2")).isEqualTo("b");
         assertThat(list.get(i).getLong("orderedAt")).isEqualTo(GROUP_SIZE - 1 - i);
+      }
+    });
+  }
+
+  @Test
+  void descendingPartialKeyIteratorIncludesAnEntireLowerSeries() {
+    database.transaction(() -> {
+      final TypeIndex typeIndex = database.getSchema().getType("Supplier").getIndexesByProperties("key1", "key2", "orderedAt")
+          .getFirst();
+
+      // Partial (2-of-3 component) descending iterator starting at the target group, with no lower bound: it must
+      // walk straight through the target group and then through the entire "0"/"x" series below it, dropping nothing.
+      final List<Object[]> keys = new ArrayList<>();
+      try (final IndexCursor cursor = typeIndex.iterator(false, new Object[] { "a", "b" }, true)) {
+        while (cursor.hasNext()) {
+          cursor.next();
+          keys.add(cursor.getKeys());
+        }
+      }
+
+      assertThat(keys).as("no rows from either group must be dropped").hasSize(GROUP_SIZE + LOWER_GROUP_SIZE);
+
+      for (int i = 0; i < GROUP_SIZE; i++) {
+        assertThat(keys.get(i)[0]).isEqualTo("a");
+        assertThat(keys.get(i)[1]).isEqualTo("b");
+        assertThat(keys.get(i)[2]).isEqualTo((long) (GROUP_SIZE - 1 - i));
+      }
+      for (int i = 0; i < LOWER_GROUP_SIZE; i++) {
+        final Object[] key = keys.get(GROUP_SIZE + i);
+        assertThat(key[0]).isEqualTo("0");
+        assertThat(key[1]).isEqualTo("x");
+        assertThat(key[2]).isEqualTo((long) (LOWER_GROUP_SIZE - 1 - i));
       }
     });
   }
