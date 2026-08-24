@@ -59,6 +59,30 @@ class RedisErrorClassificationTest {
   }
 
   @Test
+  void anExplicitKindWinsOverTheDefaultErrCategory() {
+    // Issue #6560: a RedisException whose message already baked in a kind word (e.g. "WRONGPASS ...") used to be
+    // reported with the generic "ERR" kind anyway, since none of WRONGPASS/NOAUTH/NOPROTO/NOPERM's call sites
+    // raise a real java.lang.SecurityException that ErrorCategory.of() would recognise - the wire reply came out
+    // as "-ERR WRONGPASS ..." (or "-ERR NOAUTH ...", "-ERR NOPROTO ...", "-ERR NOPERM ..."), so the RESP error
+    // *kind* (the token right after '-') a client can branch on was always ERR, never the specific one.
+    assertThat(RedisNetworkExecutor.respErrorPrefix(RedisException.withKind("WRONGPASS", "bad credentials")))
+        .isEqualTo("WRONGPASS");
+    assertThat(RedisNetworkExecutor.respErrorPrefix(RedisException.withKind("NOAUTH", "Authentication required.")))
+        .isEqualTo("NOAUTH");
+    assertThat(RedisNetworkExecutor.respErrorPrefix(RedisException.withKind("NOPROTO", "unsupported protocol version")))
+        .isEqualTo("NOPROTO");
+    assertThat(RedisNetworkExecutor.respErrorPrefix(RedisException.withKind("NOPERM", "no permission")))
+        .isEqualTo("NOPERM");
+  }
+
+  @Test
+  void aPlainRedisExceptionWithoutAnExplicitKindKeepsTheDefault() {
+    // A RedisException that never called withKind() (e.g. "syntax error", "Key 'x' is not a number") still falls
+    // back to the ErrorCategory-derived default, exactly as before this exception carried a kind at all.
+    assertThat(RedisNetworkExecutor.respErrorPrefix(new RedisException("syntax error"))).isEqualTo("ERR");
+  }
+
+  @Test
   void anEmptyMessageStillNamesTheFailure() {
     // A bare `-` reply, or `-null`, tells the client nothing at all.
     assertThat(RedisNetworkExecutor.respErrorMessage(new IllegalStateException())).isEqualTo("IllegalStateException");

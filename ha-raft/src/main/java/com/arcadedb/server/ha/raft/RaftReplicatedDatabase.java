@@ -947,6 +947,16 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     proxied.setWrapper(name, instance);
   }
 
+  /**
+   * Global variables are NOT replicated through Raft: unlike every other mutating method on this class, these four
+   * accessors delegate straight to the local node's own database, with no consensus proposal involved at all. A
+   * value set on one node of an HA cluster is invisible to every other node, including after a failover, so
+   * {@code setGlobalVariableIfAbsent}/{@code setGlobalVariableIfPresent}'s per-node atomicity does NOT make Redis
+   * {@code SET k v NX} (or any other caller) a real cluster-wide distributed lock - see the caveats on
+   * {@link DatabaseInternal#getGlobalVariable(String)} and {@link DatabaseInternal#setGlobalVariableIfAbsent(String, Object)}.
+   * A full fix would mean replicating global variables through Raft, which none of these four methods attempt
+   * (issue #6560).
+   */
   @Override
   public Object getGlobalVariable(final String name) {
     return proxied.getGlobalVariable(name);

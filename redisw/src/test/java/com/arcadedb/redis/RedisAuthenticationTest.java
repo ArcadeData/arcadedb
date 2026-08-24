@@ -92,6 +92,21 @@ public class RedisAuthenticationTest extends BaseGraphServerTest {
   }
 
   @Test
+  void wrongCredentialsErrorKindIsNotMaskedByErr() {
+    // Issue #6560: respErrorPrefix() used to always report "ERR" for this failure (none of the call sites raise a
+    // real java.lang.SecurityException that ErrorCategory.of() recognises as SECURITY), so the wire reply came out
+    // as "-ERR WRONGPASS ..." - a client branching on the RESP error kind (the token right after '-') saw ERR, not
+    // WRONGPASS, even though the message text happened to still mention WRONGPASS further along.
+    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+      final JedisDataException error = catchThrowableOfType(JedisDataException.class, () -> jedis.auth(USER, "wrong-password"));
+      assertThat(error).isNotNull();
+      assertThat(error.getMessage()).as("RESP error kind must be WRONGPASS, not masked by a leading ERR")
+          .startsWith("WRONGPASS")
+          .doesNotStartWith("ERR");
+    }
+  }
+
+  @Test
   void authenticatedCommandsSucceed() {
     try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
       assertThat(jedis.auth(USER, PASSWORD)).isEqualTo("OK");
@@ -180,6 +195,13 @@ public class RedisAuthenticationTest extends BaseGraphServerTest {
       error = catchThrowableOfType(JedisDataException.class, () -> jedis.get(getDatabaseName() + ".anyKey"));
       assertThat(error).isNotNull();
       assertThat(error.getMessage()).contains("NOPERM");
+
+      // Issue #6560: the RESP error kind itself (the token right after '-') must be NOPERM, not masked by a
+      // leading ERR - getAuthorizedDatabase()'s NOPERM RedisException never raised a real
+      // java.lang.SecurityException, so ErrorCategory.of() never classified it as SECURITY.
+      assertThat(error.getMessage()).as("RESP error kind must be NOPERM, not masked by a leading ERR")
+          .startsWith("NOPERM")
+          .doesNotStartWith("ERR");
     } finally {
       security.dropUser("limited");
     }
