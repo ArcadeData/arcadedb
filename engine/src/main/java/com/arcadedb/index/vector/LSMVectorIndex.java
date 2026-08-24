@@ -6418,20 +6418,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
   public void flush() {
     if (status.compareAndSet(INDEX_STATUS.AVAILABLE, INDEX_STATUS.UNAVAILABLE)) {
 
-      // Build and persist graph if it hasn't been built yet
-      // This ensures the graph is available on next database open (fast restart)
-      // Build graph if it's in LOADING (never built) or MUTABLE (has pending changes) state
-      //
-      // LOADING means "not loaded into memory", which is not the same as "not
-      // persisted on disk": the graph loads lazily on the first search, so a
-      // session that never searched leaves it LOADING even when a complete
-      // graph is already on disk, and rebuilding then only reproduces a file
-      // that already exists. initializeGraphIndex() already draws exactly this
-      // distinction with the same predicate.
+      // Build and persist graph if it hasn't been built yet. This ensures the graph is available on next
+      // database open (fast restart). See needsGraphBuild() for exactly which states count as "needs one".
       final LSMVectorIndexGraphFile gf = graphFile;
-      final boolean graphAlreadyOnDisk = gf != null && gf.hasPersistedGraph();
-      final boolean needsBuild = vectorIndex.size() > 0 && (graphState == GraphState.MUTABLE
-          || (graphState == GraphState.LOADING && !graphAlreadyOnDisk));
+      final boolean needsBuild = needsGraphBuild(gf);
 
       if (needsBuild && !valid) {
         // Background resources are already gone, so there is no build pool to run this on - and asking for one
@@ -6492,6 +6482,22 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * {@code true} when the graph is behind the live vector set and a build has not been persisted for it yet.
+   * Shared between {@link #flush()} and {@link #releaseBackgroundResources()} (issue #6657's post-cancellation
+   * recheck) so the two cannot silently drift onto different predicates.
+   * <p>
+   * LOADING means "not loaded into memory", which is not the same as "not persisted on disk": the graph loads
+   * lazily on the first search, so a session that never searched leaves it LOADING even when a complete graph is
+   * already on disk, and rebuilding then only reproduces a file that already exists.
+   * {@code initializeGraphIndex()} already draws exactly this distinction with the same predicate.
+   */
+  private boolean needsGraphBuild(final LSMVectorIndexGraphFile gf) {
+    final boolean graphAlreadyOnDisk = gf != null && gf.hasPersistedGraph();
+    return vectorIndex.size() > 0 && (graphState == GraphState.MUTABLE
+        || (graphState == GraphState.LOADING && !graphAlreadyOnDisk));
+  }
+
+  /**
    * Records, in the graph's manifest sidecar, that this close chose to skip a rebuild it would otherwise have run
    * (issue #6657) - so {@link #getStats()} can answer "did the last close defer a rebuild" directly instead of an
    * operator having to go looking for the {@code FINE} log line above. Deliberately a manifest write rather than an
@@ -6515,9 +6521,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * {@code flush()} - {@code releaseBackgroundResources()} is what cancels it, and {@code close()} runs that
    * AFTER {@code flush()} (see the "flush FIRST, release SECOND" note below) - so the race is real, not
    * theoretical. A plain {@code lock()} would fix that only by blocking this close on whatever that other build
-   * still has left to do, which is exactly the synchronous-close cost issue #6067/#6653 exists to avoid; skipping
-   * the write when the lock is already held is safe instead of merely convenient - a build holding the lock is,
-   * by definition, about to run its own completion write, which clears this same flag on its own.
+   * still has left to do, which is exactly the synchronous-close cost issue #6067/#6653 exists to avoid, so a
+   * held lock is skipped here rather than waited for. That skip is not the full story on its own, though: a build
+   * holding the lock might go on to complete (its own write then correctly clears this flag) or might instead be
+   * CANCELLED by {@link #releaseBackgroundResources()} right after this method returns - and a cancelled build's
+   * {@code CancellationException} path does not touch the manifest at all. {@link #releaseBackgroundResources()}
+   * calls this method again, unconditionally, after it has cancelled and joined any in-flight build, by which
+   * point {@code graphState} reliably says which of the two happened - that second call is the actual backstop
+   * for a skip here, not "the build's completion write" alone.
    */
   private void markCloseTimeRebuildDeferred(final LSMVectorIndexGraphFile gf) {
     if (gf == null)
@@ -6636,6 +6647,22 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final GraphSearcherPool searchers = searcherPool;
     if (searchers != null)
       searchers.clear();
+
+    // Issue #6657, closing a false-negative gap in the deferral flag above: flush() runs BEFORE this method, so
+    // an async rebuild that flush() found already holding graphBuildLock - and therefore skipped marking, trusting
+    // "its own completion write" to account for it - may have been CANCELLED by the shutdown just above rather
+    // than actually completing. A cancelled build's CancellationException path (see the catch block around it)
+    // does not touch the manifest at all, successful or not, so the flag would otherwise sit wherever the last
+    // real build left it - typically false - even though a rebuild is now genuinely owed. By this point that
+    // build has been cancelled and joined (or logged above as a rare straggler that outlived the join), so
+    // graphState reliably distinguishes "it finished" (no longer MUTABLE, needsGraphBuild() now false - that
+    // build's own write already cleared the flag, nothing to do) from "it did not" (still MUTABLE, mark it now).
+    // Idempotent with flush()'s own attempt above: on the ordinary path where that one already succeeded, this
+    // re-write repeats the same true, at the cost of one extra small file read+write on the close of a large,
+    // recently-mutated index - not on every close.
+    final LSMVectorIndexGraphFile gfAfterRelease = graphFile;
+    if (needsGraphBuild(gfAfterRelease))
+      markCloseTimeRebuildDeferred(gfAfterRelease);
   }
 
   @Override
