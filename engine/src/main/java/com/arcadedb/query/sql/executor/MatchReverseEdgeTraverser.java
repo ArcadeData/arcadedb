@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.parser.MatchPathItem;
 import com.arcadedb.query.sql.parser.Rid;
 import com.arcadedb.query.sql.parser.WhereClause;
@@ -27,6 +28,7 @@ import com.arcadedb.query.sql.parser.WhereClause;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -45,6 +47,25 @@ public class MatchReverseEdgeTraverser extends MatchEdgeTraverser {
 
   protected String targetClassName(final MatchPathItem item, final CommandContext iCommandContext) {
     return edge.getLeftClass();
+  }
+
+  /**
+   * {@code item.getMethod()} is still the pattern edge's method as parsed from its syntactic out-side (this class
+   * never rewrites it), so the direction it names is relative to that side, not to {@link #getStartingPointAlias()}
+   * (the in-side, which this reverse traverser actually starts from) - the same out<->in flip
+   * {@link com.arcadedb.query.sql.parser.MethodCall#executeReverse} applies to pick the method it actually runs.
+   * "both" has no opposite and stays as-is.
+   */
+  @Override
+  protected Vertex.DIRECTION getExpandIntoDirection() {
+    if (item == null || item.getMethod() == null)
+      return null;
+    return switch (item.getMethod().methodName.getStringValue().toLowerCase(Locale.ENGLISH)) {
+      case "out" -> Vertex.DIRECTION.IN;
+      case "in" -> Vertex.DIRECTION.OUT;
+      case "both" -> Vertex.DIRECTION.BOTH;
+      default -> null;
+    };
   }
 
   protected String targetClusterName(final MatchPathItem item, final CommandContext iCommandContext) {
