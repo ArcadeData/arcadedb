@@ -22,7 +22,12 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.olap.GraphAnalyticalView;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -58,7 +63,11 @@ class Issue6300AlgoMSAEdgeBudgetTest {
       factory.open().drop();
     database = factory.create();
     database.getSchema().createVertexType("Node");
-    database.getSchema().createEdgeType("LINK");
+    // Declared so a Graph Analytical View can materialise "w" as an edge property column (Issue6301's setup
+    // note: without a schema-known property the view falls back to edge records, which would leave the
+    // columnar reservation path - weightedAdjacencyFromColumns - untested by
+    // theWeightedAdjacencyRowHeadersAreRefusedOnTheCSRColumnarPathToo).
+    database.getSchema().createEdgeType("LINK").createProperty("w", Type.DOUBLE);
 
     // A directed chain of EDGE_COUNT + 1 nodes rooted at node 0: every non-root vertex has exactly one incoming
     // edge, so the arborescence is the whole chain and no edge is redundant.
@@ -96,6 +105,53 @@ class Issue6300AlgoMSAEdgeBudgetTest {
         .hasStackTraceContaining("algo.msa(): the edge arrays would need")
         .hasStackTraceContaining(EDGE_COUNT + " edges")
         .hasStackTraceContaining(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getKey());
+  }
+
+  /**
+   * PR #6714 review round 13: the tests around this one only exercise {@code weightedAdjacencyFromRecords}
+   * (the OLTP fallback) since no Graph Analytical View is built - {@code weightedAdjacencyFromColumns}, the
+   * path actually used once a view is ready, was never exercised by a budget-refusal test on the {@code
+   * algo.msa} side either (see {@code Issue6300AlgoMSTEdgeBudgetTest#theWeightedAdjacencyRowHeadersAreRefusedOnTheCSRColumnarPathToo}
+   * for the {@code algo.mst} counterpart and the reasoning behind the budget). {@code CSR_ACCELERATED_VAR}
+   * confirms the columnar path was actually taken.
+   * <p>
+   * A CSR-backed {@code GraphData} pays none of {@link #theEdgeArraysAreRefusedWhenTheyDoNotFitTheBudget}'s
+   * 1056-byte OLTP_VERTEX_BYTES graph-loading charge, so the budget here is sized only to the row headers common
+   * to both paths - 11 nodes x 2 x 32 bytes/node = 704 bytes.
+   */
+  @Test
+  void theWeightedAdjacencyRowHeadersAreRefusedOnTheCSRColumnarPathToo() {
+    final GraphAnalyticalView view = GraphAnalyticalView.builder(database)
+        .withName("msa-budget-csr-view")
+        .withVertexTypes("Node")
+        .withEdgeTypes("LINK")
+        .withEdgeProperties("w")
+        .build();
+    try {
+      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 500L);
+
+      final BasicCommandContext context = new BasicCommandContext();
+      context.setDatabase(database);
+      database.begin();
+      try {
+        final Vertex root;
+        try (final ResultSet rs = database.query("sql", "SELECT FROM Node WHERE idx = 0")) {
+          root = rs.next().getVertex().orElseThrow();
+        }
+        assertThatThrownBy(() -> new AlgoMinSpanningArborescence().execute(new Object[] { root, "LINK", "w" }, null, context))
+            .as("weightedAdjacencyFromColumns must be priced the same way weightedAdjacencyFromRecords is")
+            .hasStackTraceContaining("algo.msa(): the weighted adjacency list would need")
+            .hasStackTraceContaining("0 edge entries")
+            .hasStackTraceContaining(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getKey());
+        assertThat(context.getVariable(CommandContext.CSR_ACCELERATED_VAR))
+            .as("the view must actually back the call, or this test pins nothing beyond the OLTP path already covered above")
+            .isEqualTo(true);
+      } finally {
+        database.rollback();
+      }
+    } finally {
+      view.drop();
+    }
   }
 
   @Test
