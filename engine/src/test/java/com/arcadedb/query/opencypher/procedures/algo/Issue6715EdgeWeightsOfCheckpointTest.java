@@ -30,6 +30,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -161,8 +163,8 @@ class Issue6715EdgeWeightsOfCheckpointTest {
     assertThat(provider.edgePropertyCalls.get()).isEqualTo(nodeCount * degreePerNode);
   }
 
-  private java.util.List<Object> drain(final String query) {
-    final java.util.List<Object> rows = new java.util.ArrayList<>();
+  private List<Object> drain(final String query) {
+    final List<Object> rows = new ArrayList<>();
     try (final ResultSet resultSet = database.query("opencypher", query)) {
       while (resultSet.hasNext())
         rows.add(resultSet.next());
