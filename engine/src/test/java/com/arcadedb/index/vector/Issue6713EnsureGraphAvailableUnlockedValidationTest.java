@@ -52,22 +52,28 @@ import static org.assertj.core.api.Assertions.assertThat;
  * all, only the validation - the one path #5391 never touched because it predates #5391 and sits in a different
  * method.
  * <p>
- * Reproduction: a large index (200,000 vectors of 1536 dimensions - large enough that the validation loop reliably
- * takes several hundred milliseconds, dimension chosen so the per-vector cost is dominated by the property read
- * and conversion rather than the document lookup alone) is built, persisted and closed cleanly, so the persisted
- * graph and its manifest describe exactly the live set. On reopen, a background thread runs the first search, which
- * drives {@code ensureGraphAvailable()} into the validation loop. While that is in flight, the main thread inserts
- * one more vector - an operation that only ever needs {@code lock.writeLock()} briefly - and times it. Before the
- * fix this insert would queue behind the whole validation loop; after the fix it returns promptly regardless of how
- * long the validation takes, because the loop no longer holds that lock.
+ * Reproduction: a large index (600,000 vectors of 128 dimensions - vector count, not dimension, is what drives the
+ * validation loop long enough to matter here, since each vector still costs one document lookup regardless of its
+ * width; a higher dimension was tried first and reproduced the same locking bug, but its ~7x larger heap footprint
+ * (600,000 x 1536 floats vs x 128) turned out to make the fixed-size validation workload itself GC-pressure-bound on
+ * a memory-constrained CI runner - confirmed locally by reproducing the same order-of-magnitude slowdown, and
+ * outright OutOfMemoryError, under a matching -Xmx2g. 128 dimensions keeps the same reproduction memory-safe) is
+ * built, persisted and closed cleanly, so the persisted graph and its manifest describe exactly the live set. On
+ * reopen, a background thread runs the first search, which drives {@code ensureGraphAvailable()} into the
+ * validation loop. While that is in flight, the main thread inserts one more vector - an operation that only ever
+ * needs {@code lock.writeLock()} briefly - and times it. Before the fix this insert would queue behind the whole
+ * validation loop; after the fix it returns promptly regardless of how long the validation takes, because the loop
+ * no longer holds that lock. The search thread is joined with a generous (not tight) timeout: how long the search
+ * itself takes to finish is a function of hardware speed, not of what this fix changed, so only insert latency -
+ * measured with {@link StallAwareStopwatch} - is asserted against a tight bound.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 @Tag("slow")
 class Issue6713EnsureGraphAvailableUnlockedValidationTest {
   private static final String DB_ROOT         = "target/test-databases/Issue6713EnsureGraphAvailableUnlockedValidationTest";
-  private static final int    DIMENSIONS      = 1536;
-  private static final int    NUM_VECTORS     = 200_000;
+  private static final int    DIMENSIONS      = 128;
+  private static final int    NUM_VECTORS     = 600_000;
   private static final int    MAX_CONNECTIONS = 8;
   private static final int    BEAM_WIDTH      = 16;
 
@@ -122,25 +128,51 @@ class Issue6713EnsureGraphAvailableUnlockedValidationTest {
             searchFailure.set(t);
           }
         }, "issue-6713-first-search");
+        // Measures the search thread's own total duration, not a fixed millisecond guess: how long an
+        // O(NUM_VECTORS) validation loop takes is a function of hardware speed (a >100x gap was measured between a
+        // fast workstation and a memory-constrained CI runner for the identical fixture), so the bound the
+        // concurrent insert below is measured against is a FRACTION of this run's own search duration rather than
+        // an absolute number - self-calibrating to whatever this machine turns out to be.
+        final StallAwareStopwatch searchStopwatch = StallAwareStopwatch.start();
         searchThread.start();
         assertThat(searchStarted.await(10, TimeUnit.SECONDS)).as("the search thread must have started").isTrue();
-        // A head start into ensureGraphAvailable()'s validation loop, which on this fixture reliably takes several
-        // hundred milliseconds - comfortably longer than this fixed wait plus the bound asserted below.
+        // A head start into ensureGraphAvailable()'s validation loop: negligible next to the loop's own total
+        // duration on any hardware where this fixture is even worth running.
         Thread.sleep(50);
 
         // A concurrent insert only ever needs lock.writeLock() briefly. Before the fix, ensureGraphAvailable() held
         // that same lock for its ENTIRE persisted-graph validation, so this insert would queue behind the search
-        // thread for as long as the (multi-hundred-millisecond) validation loop over NUM_VECTORS took.
-        final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
+        // thread for as long as the validation loop over NUM_VECTORS took - effectively all of searchMs below, not
+        // a small fraction of it.
+        final StallAwareStopwatch insertStopwatch = StallAwareStopwatch.start();
         db.transaction(() -> db.command("sql", "INSERT INTO Doc SET id = ?, vector = ?", NUM_VECTORS,
             embedding(NUM_VECTORS)));
-        stopwatch.assertGaveUpWithin(400,
-            "an insert that only ever needs the write lock briefly, from one queued behind the whole persisted-graph "
-                + "validation loop");
+        final long insertMs = insertStopwatch.effectiveMs();
 
-        searchThread.join(TimeUnit.SECONDS.toMillis(30));
-        assertThat(searchThread.isAlive()).as("the search must complete on its own").isFalse();
+        // Generous, not tight: how long the search itself takes to finish is a function of hardware speed for an
+        // O(NUM_VECTORS) validation loop, not of what this fix changed (the fix is about the LOCK, not the loop's
+        // own duration) - a fixed tight bound here previously flaked on a slower CI runner even though nothing was
+        // stuck.
+        searchThread.join(TimeUnit.MINUTES.toMillis(5));
+        assertThat(searchThread.isAlive()).as("the search must complete on its own, not hang").isFalse();
         assertThat(searchFailure.get()).as("the search must not have failed").isNull();
+        final long searchMs = searchStopwatch.effectiveMs();
+
+        assertThat(searchMs)
+            .as("precondition: NUM_VECTORS must be large enough that the validation loop takes real time on this "
+                + "hardware, or the comparison below has no discriminating power")
+            .isGreaterThanOrEqualTo(100L);
+
+        // The self-calibrating tripwire: an insert that only ever needs the write lock briefly must take a small
+        // FRACTION of however long this run's own validation search took - not scale with it the way a lock held
+        // for the whole validation would. A fixed millisecond bound cannot separate the two cases across hardware
+        // that differs by two orders of magnitude on the identical fixture; this ratio does, because both
+        // measurements come from the same run on the same machine (PR #6720 review: the original fixed 400ms/30s
+        // bounds flaked on a CI runner where the whole fixture ran ~100x slower than on a fast workstation).
+        assertThat(insertMs)
+            .as("an insert that only ever needs the write lock briefly, out of a search that took %,d ms on this "
+                + "hardware - not one queued behind the whole persisted-graph validation loop", searchMs)
+            .isLessThan(searchMs / 3);
 
         // Not asserted here: graphRebuildCount. The concurrent insert above is itself a mutation, which - once
         // published - is exactly what schedules the ordinary async rebuild any mutation on a MUTABLE large graph
