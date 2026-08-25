@@ -58,7 +58,7 @@ class CypherFullTextSearchTest extends TestHelper {
       database.newVertex("Article").set("title", "Doc3").set("content", "python scripting").save();
       // Same token count as Doc1/Doc2 (so BM25 length normalization is equal) but "java" repeated 3x instead of
       // once, so it must score strictly higher - used to verify the procedure's own ranking below.
-      database.newVertex("Article").set("title", "Doc4").set("content", "java java java repository").save();
+      database.newVertex("Article").set("title", "Doc4").set("content", "java java java").save();
     });
   }
 
