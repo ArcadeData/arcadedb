@@ -88,7 +88,12 @@ class Issue6318AlgoGuardCoverageBackstopTest {
       Map.entry("AlgoWCC.java", "single union-find pass over every edge, O(V + E)")
   );
 
-  private static final Pattern GUARD_REFERENCE = Pattern.compile("WorkGuard|WorkCheckpoint|guard\\.|guard::");
+  // Call-site patterns, not bare "WorkGuard"/"WorkCheckpoint" tokens (PR #6714 review round 11): the earlier,
+  // looser regex would have passed a procedure that merely mentions "WorkGuard" in a comment without actually
+  // wiring a checkpoint into its dominant loop. newWorkGuard(/guard.check cover a procedure guarding itself
+  // directly; delegating to a checkpointed GraphAlgorithms kernel (the LCC CSR path) passes the guard as a
+  // WorkCheckpoint-shaped lambda, which the guard::check method-reference pattern already matches.
+  private static final Pattern GUARD_REFERENCE = Pattern.compile("newWorkGuard\\(|guard\\.check|guard::check");
 
   @Test
   void everyAlgoProcedureIsEitherSelfGuardedOrAJustifiedSinglePassExemption() throws IOException {

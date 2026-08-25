@@ -59,13 +59,31 @@ public final class GraphAlgorithms {
 
   private static final int PARALLELISM           = Runtime.getRuntime().availableProcessors();
   private static final int PARALLEL_THRESHOLD     = 8192;
-  /** How many checkpointed batches {@link #parallelForRangeCheckpointed} splits a full range into, at most. */
+  /**
+   * How many checkpointed batches {@link #parallelForRangeCheckpointed} aims for on a range small enough that
+   * dividing it by this count still keeps every batch at least {@link #PARALLEL_THRESHOLD} large (below that,
+   * fewer, larger-than-this-count batches are used instead, down to a single one). Above
+   * {@link #MAX_CHECKPOINT_BATCH_SIZE} nodes this count is no longer the driver: batch size is capped there
+   * instead, so batch count keeps growing with the range and abort latency per batch stays bounded (issue
+   * PR #6714 review round 11 - without the cap, batch size grew unboundedly with the range for any n above
+   * {@code CHECKPOINT_BATCHES x PARALLEL_THRESHOLD}, since batch count was pinned at exactly this many).
+   */
   private static final int CHECKPOINT_BATCHES     = 16;
-  /** Bitmask for how often {@link #lccBuildAndIntersect}'s sequential prep passes check in - {@code (u & MASK) ==
-   *  MASK} is true every 4096th node, not every {@code MASK}th one. Cheap enough per node that checking every one
-   *  would cost more than the check saves, same tradeoff {@code GraphData.adjacency}'s node-count checkpoint
-   *  strikes. */
-  private static final int LCC_PREP_CHECKPOINT_MASK = 4095;
+  /** Upper bound on a single checkpointed batch's size, so abort latency stays bounded as the range grows past
+   *  it instead of scaling with the range - see {@link #CHECKPOINT_BATCHES}. */
+  private static final int MAX_CHECKPOINT_BATCH_SIZE = CHECKPOINT_BATCHES * PARALLEL_THRESHOLD;
+  /** Bitmask for how often {@link #lccBuildAndIntersect}'s sequential prep passes check in between nodes -
+   *  {@code (u & MASK) == MASK} is true every 1024th node, not every {@code MASK}th one. Matches the 1024-node
+   *  stride {@code WorkGuard.checkPeriodically} and {@code GraphData.adjacency} both use elsewhere in the
+   *  codebase (PR #6714 review round 11: this used to be 4x coarser, with no reason for the difference). */
+  private static final int LCC_PREP_CHECKPOINT_MASK = 1023;
+  /** Entry-count threshold at which {@link #lccBuildAndIntersect}'s per-node prep passes checkpoint mid-row,
+   *  inside a single node's own edge walk rather than only between nodes - otherwise one supernode row is an
+   *  unabortable unit regardless of its own size, the same class of gap issue #6715 names for
+   *  {@code weightedAdjacencyFromColumns} (PR #6714 review round 11). Same magnitude as
+   *  {@code AbstractAlgoProcedure.ADJACENCY_CHECKPOINT_ENTRIES}, duplicated here rather than shared because
+   *  that constant is {@code protected} on a class in a different package with no public accessor. */
+  private static final int LCC_ROW_CHECKPOINT_ENTRIES = 1_048_576;
   private static final int PARALLEL_BFS_THRESHOLD = 4096;
   private static final double ALPHA              = 8.0;  // edge ratio for push->pull switch
   private static final int PULL_ENTER_DIVISOR    = 8;    // push->pull when frontier > n/8
@@ -157,7 +175,10 @@ public final class GraphAlgorithms {
    * contract as {@link WorkCheckpoint#check()} documents.
    * <p>
    * A batch is never smaller than {@link #PARALLEL_THRESHOLD}, so a small-but-nonzero range still runs as one
-   * batch with one checkpoint call, exactly like a plain {@link #parallelForRange} call would have. {@code n == 0}
+   * batch with one checkpoint call, exactly like a plain {@link #parallelForRange} call would have. A batch is
+   * also never larger than {@link #MAX_CHECKPOINT_BATCH_SIZE}, so a range large enough to need more than
+   * {@link #CHECKPOINT_BATCHES} of them gets more, smaller batches instead of {@link #CHECKPOINT_BATCHES} ever-
+   * larger ones - otherwise abort latency would grow with the range without bound. {@code n == 0}
    * is the one exception: the batch loop never runs at all, so {@code checkpoint} is never called - harmless
    * today because every current caller ({@link #pageRank}, {@link #labelPropagation}, the LCC kernel) already
    * returns before reaching a checkpointed loop on an empty graph, but a future caller without that guarantee
@@ -168,7 +189,9 @@ public final class GraphAlgorithms {
    * and {@link #labelPropagation} do), and it narrows their own between-iterations latency to within a single pass.
    */
   static void parallelForRangeCheckpointed(final int n, final WorkCheckpoint checkpoint, final BiConsumer<Integer, Integer> work) {
-    final int batchSize = Math.max(PARALLEL_THRESHOLD, (n + CHECKPOINT_BATCHES - 1) / CHECKPOINT_BATCHES);
+    final int batchSize = Math.min(
+        Math.max(PARALLEL_THRESHOLD, (n + CHECKPOINT_BATCHES - 1) / CHECKPOINT_BATCHES),
+        MAX_CHECKPOINT_BATCH_SIZE);
     for (int start = 0; start < n; start += batchSize) {
       checkpoint.check();
       final int batchStart = start;
@@ -1233,26 +1256,23 @@ public final class GraphAlgorithms {
 
     final int maxDeg = maxDegree;
 
-    // One buffer per thread that ever runs a chunk of this call, reused across every batch
-    // parallelForRangeCheckpointed splits a pass into and every iteration of the outer loop - not
-    // reallocated per chunk invocation. Before issue #6318 threaded checkpointing through this loop's
-    // parallel phase, a fresh neighborBuf per chunk cost PARALLELISM allocations per iteration; batching
-    // into up to CHECKPOINT_BATCHES chunks-of-chunks would have multiplied that up to CHECKPOINT_BATCHES x
-    // without this (PR #6714 review round 9).
-    final ThreadLocal<int[]> neighborBufTL = new ThreadLocal<>();
-
     for (int iter = 0; iter < maxIters; iter++) {
       checkpoint.check();
       System.arraycopy(labels, 0, newLabels, 0, n);
 
       final AtomicBoolean anyChanged = new AtomicBoolean(false);
 
+      // A fresh neighborBuf per chunk invocation rather than a shared/pooled one: PR #6714 review round 9
+      // found parallelForRangeCheckpointed's batching (issue #6318) multiplies how often this closure runs per
+      // iteration - up to CHECKPOINT_BATCHES x, versus once per parallelForRange chunk before. A round-9 fix
+      // moved this into a ThreadLocal to reuse across batches/iterations, but round 11 found that trades a
+      // small, bounded per-call allocation for unbounded retention on the engine's long-lived shared thread
+      // pool: a ThreadLocal set on a pool thread outlives this call, so a supernode-sized maxDeg (e.g. a
+      // 10M-degree hub, ~40 MB) stays retained on every thread that ever ran a chunk, indefinitely, until that
+      // thread happens to touch an unrelated ThreadLocal and expunges the stale entry. A retained-indefinitely
+      // large buffer is worse than a reallocated-but-GC'd small one, so this reverts to the simpler shape.
       parallelForRangeCheckpointed(n, checkpoint, (start, end) -> {
-        int[] neighborBuf = neighborBufTL.get();
-        if (neighborBuf == null || neighborBuf.length < maxDeg) {
-          neighborBuf = new int[maxDeg];
-          neighborBufTL.set(neighborBuf);
-        }
+        final int[] neighborBuf = new int[maxDeg];
         boolean localChanged = false;
 
         for (int u = start; u < end; u++) {
@@ -1409,6 +1429,11 @@ public final class GraphAlgorithms {
         int ib = bwdOffsets[u], bEnd = bwdOffsets[u + 1];
         int p = offsets[u];
         while (ia < aEnd && ib < bEnd) {
+          // Checkpointed on entries written for THIS node, not just between nodes: a single supernode row
+          // (millions of entries) is otherwise one unabortable unit regardless of its own size, the same class
+          // of gap issue #6715 names for weightedAdjacencyFromColumns (PR #6714 review round 11).
+          if (((p - offsets[u]) & (LCC_ROW_CHECKPOINT_ENTRIES - 1)) == 0)
+            checkpoint.check();
           if (fwdNeighbors[ia] <= bwdNeighbors[ib])
             neighbors[p++] = fwdNeighbors[ia++];
           else
@@ -1430,16 +1455,22 @@ public final class GraphAlgorithms {
         for (int u = 0; u < n; u++) {
           if ((u & LCC_PREP_CHECKPOINT_MASK) == LCC_PREP_CHECKPOINT_MASK)
             checkpoint.check();
-          for (int j = fwdOffsets[u]; j < fwdOffsets[u + 1]; j++)
+          for (int j = fwdOffsets[u]; j < fwdOffsets[u + 1]; j++) {
+            if (((j - fwdOffsets[u]) & (LCC_ROW_CHECKPOINT_ENTRIES - 1)) == 0)
+              checkpoint.check();
             neighbors[pos[u]++] = fwdNeighbors[j];
+          }
         }
         final int[] bwdOffsets = csr.getBackwardOffsets();
         final int[] bwdNeighbors = csr.getBackwardNeighbors();
         for (int u = 0; u < n; u++) {
           if ((u & LCC_PREP_CHECKPOINT_MASK) == LCC_PREP_CHECKPOINT_MASK)
             checkpoint.check();
-          for (int j = bwdOffsets[u]; j < bwdOffsets[u + 1]; j++)
+          for (int j = bwdOffsets[u]; j < bwdOffsets[u + 1]; j++) {
+            if (((j - bwdOffsets[u]) & (LCC_ROW_CHECKPOINT_ENTRIES - 1)) == 0)
+              checkpoint.check();
             neighbors[pos[u]++] = bwdNeighbors[j];
+          }
         }
       }
       // Sort each adjacency list — parallel for large graphs, checkpointed between batches (issue #6318)
@@ -1465,6 +1496,8 @@ public final class GraphAlgorithms {
       offsets[u] = write;
       int last = -1; // node IDs are non-negative sequential integers, so -1 never matches
       for (int j = readStart; j < readEnd; j++) {
+        if (((j - readStart) & (LCC_ROW_CHECKPOINT_ENTRIES - 1)) == 0)
+          checkpoint.check();
         final int neighbor = neighbors[j];
         if (neighbor != u && neighbor != last)
           neighbors[write++] = last = neighbor;
