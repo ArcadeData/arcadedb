@@ -20,7 +20,10 @@ package com.arcadedb.index.vector;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.RID;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.Pair;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -157,11 +160,16 @@ class Issue6657CloseTimeRebuildPendingStatTest {
         // by exactly the one vector written above - a stale-prefix-reuse candidate under issue #6655's fix - so
         // it answers immediately from the reused graph plus the queued gap vector and only kicks the rebuild
         // asynchronously (reuseStalePrefixGraph() -> startAsyncGraphRebuild()), rather than running it inline.
+        final RID gapDocRid = ridOf(db, NUM_VECTORS);
         final var results = reopenedIndex.findNeighborsFromVector(extraVector(), 5, 64);
         assertThat(results)
             .as("the queued gap vector must already be searchable via the reused prefix graph's delta buffer, "
                 + "before the deferred rebuild it kicked off has even finished")
             .hasSize(5);
+        assertThat(results.stream().map(Pair::getFirst))
+            .as("the gap record must actually be found by its own embedding - a record is always its own "
+                + "nearest neighbour - not merely that the search returned five OTHER results")
+            .contains(gapDocRid);
 
         // The async rebuild kicked off by the search above eventually folds the gap into the graph proper - the
         // same deferred rebuild the deferring close() owed, now actually paid.
@@ -216,5 +224,12 @@ class Issue6657CloseTimeRebuildPendingStatTest {
   private static LSMVectorIndex vectorIndex(final Database db) {
     return (LSMVectorIndex) db.getSchema().getType("Doc")
         .getPolymorphicIndexByProperties("vector").getIndexesOnBuckets()[0];
+  }
+
+  private static RID ridOf(final Database db, final int id) {
+    try (final ResultSet rs = db.query("sql", "SELECT @rid FROM Doc WHERE id = ?", id)) {
+      assertThat(rs.hasNext()).as("the gap record must exist").isTrue();
+      return rs.next().getProperty("@rid");
+    }
   }
 }
