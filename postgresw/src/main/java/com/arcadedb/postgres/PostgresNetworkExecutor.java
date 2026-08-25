@@ -120,6 +120,8 @@ public class PostgresNetworkExecutor extends Thread {
   private static final Object[]                                       NO_PARAMETERS     = new Object[0];
   /** Case-insensitive {@code TO} separator for the {@code SET <param> TO <value>} syntax. */
   private static final Pattern                                        SET_TO_SEPARATOR  = Pattern.compile("(?i)\\s+TO\\s+");
+  /** Case-insensitive {@code SESSION}/{@code LOCAL} scope modifier leading a {@code SET} command (issue #6701). */
+  private static final Pattern                                        SET_SCOPE_MODIFIER = Pattern.compile("(?i)^(?:SESSION|LOCAL)\\s+");
 
   private final ArcadeDBServer              server;
   private final ChannelBinaryServer         channel;
