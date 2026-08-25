@@ -975,26 +975,28 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
      * re-derived here, so the CSR path of an {@code algo.*} procedure, of {@code astar} and of
      * {@code bellmanFord} cannot drift apart from one another.
      * <p>
-     * {@code guard.checkPeriodically(i)} is throttled per <em>node</em>, not per edge: {@code edgeWeightsOf}'s
-     * only implementation (the default method; no provider overrides it) is O(degree) with no checkpoint inside
-     * its own loop, so one call for a supernode is a single unabortable unit of work regardless of how large its
-     * fan-out is - unlike {@link #weightedAdjacencyFromRecords}, which still throttles per edge. This is a
-     * pre-existing property of this shared helper (issue #6316 review, PR #6714): a proper fix needs a checkpoint
-     * hook inside {@code edgeWeightsOf} itself, which is an SPI change tracked separately as issue #6715 rather
-     * than folded into this PR.
+     * {@code guard::checkPeriodically} is threaded into {@code edgeWeightsOf} itself rather than only checked
+     * between two calls to it: one call already returns a fully-built row for one node, so a single supernode
+     * would otherwise be one unabortable unit of work regardless of how tightly the per-node loop below is
+     * checkpointed (issue #6715). The memory side of the same gap - a supernode's row is fully allocated before
+     * {@link #reserveWeightedAdjacency} ever runs - cannot be closed the same way without handing this SPI a
+     * dependency on {@link MemoryBudget}, so what is priced here is the cumulative cost across nodes, the same
+     * bound {@link #reserveAdjacency} already gives the unweighted adjacency build; a single node whose row alone
+     * exceeds the budget is still refused, just after that one row is built rather than during it.
      */
     private WeightedAdjacency weightedAdjacencyFromColumns(final WorkGuard guard, final Vertex.DIRECTION dir,
         final String weightProperty, final String[] types) {
       reserveWeightedAdjacency(nodeCount, 0);
       final int[][] neighbors = new int[nodeCount][];
       final double[][] weights = new double[nodeCount][];
+      reserveWeightedAdjacency(nodeCount, 0);
       long entries = 0;
       for (int i = 0; i < nodeCount; i++) {
         guard.checkPeriodically(i);
-        final NodeEdgeWeights edges = provider.edgeWeightsOf(i, dir, weightProperty, 1.0, types);
+        final NodeEdgeWeights edges = provider.edgeWeightsOf(i, dir, weightProperty, 1.0, guard::checkPeriodically, types);
         neighbors[i] = edges.neighbors();
         weights[i] = edges.weights();
-        entries += neighbors[i].length;
+        entries += edges.neighbors().length;
         if (entries >= ADJACENCY_CHECKPOINT_ENTRIES || (i & 1023) == 1023) {
           reserveWeightedAdjacency(0, entries);
           entries = 0;
@@ -1002,6 +1004,19 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
       }
       reserveWeightedAdjacency(0, entries);
       return new WeightedAdjacency(neighbors, weights);
+    }
+
+    /**
+     * Charges {@code rows} neighbour/weight row-header pairs and {@code entries} (neighbour id + weight) pairs to
+     * the call's budget - the weighted counterpart of {@link #reserveAdjacency}, doubled because a
+     * {@link WeightedAdjacency} holds a neighbour array AND a weight array per node rather than one.
+     */
+    private void reserveWeightedAdjacency(final long rows, final long entries) {
+      if (rows == 0 && entries == 0)
+        return;
+      memory.reserve(saturatingSum(saturatingProduct(rows, MATRIX_ROW_OVERHEAD_BYTES * 2),
+              saturatingProduct(entries, INT_BYTES + DOUBLE_BYTES)), "the weighted adjacency",
+          rows > 0 ? rows + " nodes, " + entries + " edge entries" : entries + " edge entries");
     }
 
     /**
