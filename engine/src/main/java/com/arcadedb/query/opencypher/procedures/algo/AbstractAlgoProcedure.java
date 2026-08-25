@@ -796,9 +796,9 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
      * <p>
      * CSR-backed, this reads the count straight off {@link GraphTraversalProvider#getDegrees}, which for a
      * {@code GraphAnalyticalView} is an O(1)-per-node offset subtraction rather than an O(degree) walk - no
-     * neighbour-id array is ever allocated. {@code getDegrees} takes one edge type at a time (issue #6316:
-     * it has exactly one caller, {@code DegreeProductOp}, and always with a single type), so an "all/several
-     * types" request is resolved to the provider's materialised types and summed per type, the same resolution
+     * neighbour-id array is ever allocated. {@code getDegrees} takes one edge type at a time (issue #6316: its
+     * other caller, {@code DegreeProductOp}, also calls it once per type), so an "all/several types" request is
+     * resolved to the provider's materialised types and summed per type, the same resolution
      * {@link #weightedAdjacency} uses for its columnar path.
      */
     public int[] degrees(final Vertex.DIRECTION dir, final String... relTypes) {
