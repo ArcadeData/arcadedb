@@ -18,6 +18,9 @@
  */
 package com.arcadedb.graph.olap;
 
+import com.arcadedb.utility.StallAwareStopwatch;
+
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.AtomicInteger;
@@ -92,5 +95,66 @@ class Issue6318ParallelForRangeCheckpointedTest {
     assertThat(processed.get())
         .as("batches after the one that threw must never run their work")
         .isLessThan(n);
+  }
+
+  /**
+   * Code review counterweight for issue #6318 (PR #6714): splitting a range into up to {@code CHECKPOINT_BATCHES}
+   * batches means up to that many separate {@link GraphAlgorithms#parallelForRange} dispatches - each with its
+   * own thread-pool submission round-trip - where {@code pageRank}/{@code labelPropagation}'s hot parallel phases
+   * used to issue exactly one. This measures that the added dispatch overhead stays small relative to a
+   * pageRank-shaped amount of per-node work (a handful of flops over a small fixed-size neighbour array, not a
+   * bare store - a trivial per-node body would be dispatch-dominated and overstate the overhead in a way real
+   * kernels never see), rather than asserting it from the shape of the code alone.
+   * <p>
+   * {@link StallAwareStopwatch#effectiveMs()} discounts JVM-wide stalls from each of the two measurements before
+   * they are compared, so the ratio is not a raw wall-clock reading (#6260) - a shared stop-the-world pause moves
+   * both sides together and the ratio is unaffected either way.
+   */
+  @Test
+  @Tag("benchmark")
+  void checkpointedBatchingOverheadIsSmallRelativeToPageRankShapedWork() {
+    final int n = 2_000_000;
+    final int neighborsPerNode = 4;
+    final double[] contrib = new double[n];
+    final double[] next = new double[n];
+    for (int i = 0; i < n; i++)
+      contrib[i] = 1.0 / (i + 1);
+
+    // A stand-in for pageRank's pull phase: each node sums a small fixed number of neighbours' contributions,
+    // the same order of magnitude of work per node as the real kernel does.
+    final java.util.function.BiConsumer<Integer, Integer> pageRankShapedWork = (start, end) -> {
+      for (int u = start; u < end; u++) {
+        double sum = 0.0;
+        for (int k = 0; k < neighborsPerNode; k++)
+          sum += contrib[(u + k * 7919) % n];
+        next[u] = 0.15 + 0.85 * sum;
+      }
+    };
+
+    // Warm up the JIT for both call shapes before any measurement is taken.
+    for (int i = 0; i < 3; i++) {
+      GraphAlgorithms.parallelForRange(n, pageRankShapedWork);
+      GraphAlgorithms.parallelForRangeCheckpointed(n, WorkCheckpoint.NONE, pageRankShapedWork);
+    }
+
+    long plainMs = Long.MAX_VALUE;
+    long checkpointedMs = Long.MAX_VALUE;
+    for (int round = 0; round < 3; round++) {
+      final StallAwareStopwatch plainWatch = StallAwareStopwatch.start();
+      GraphAlgorithms.parallelForRange(n, pageRankShapedWork);
+      plainMs = Math.min(plainMs, plainWatch.effectiveMs());
+
+      final StallAwareStopwatch checkpointedWatch = StallAwareStopwatch.start();
+      GraphAlgorithms.parallelForRangeCheckpointed(n, WorkCheckpoint.NONE, pageRankShapedWork);
+      checkpointedMs = Math.min(checkpointedMs, checkpointedWatch.effectiveMs());
+    }
+
+    // Generous on purpose - the point separated is "a handful of extra thread-pool round-trips" from "something
+    // pathological", not a tight throughput budget. 50ms floors the comparison so two sub-millisecond, noise-
+    // dominated readings cannot fail this by chance.
+    assertThat(checkpointedMs)
+        .as("up to CHECKPOINT_BATCHES=16 dispatches instead of 1 must not multiply wall-clock time on "
+            + "pageRank-shaped work (best-of-3: unbatched=" + plainMs + "ms, batched=" + checkpointedMs + "ms)")
+        .isLessThan(Math.max(50L, plainMs * 3));
   }
 }
