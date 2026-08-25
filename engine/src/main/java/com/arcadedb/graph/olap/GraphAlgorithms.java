@@ -1233,6 +1233,14 @@ public final class GraphAlgorithms {
 
     final int maxDeg = maxDegree;
 
+    // One buffer per thread that ever runs a chunk of this call, reused across every batch
+    // parallelForRangeCheckpointed splits a pass into and every iteration of the outer loop - not
+    // reallocated per chunk invocation. Before issue #6318 threaded checkpointing through this loop's
+    // parallel phase, a fresh neighborBuf per chunk cost PARALLELISM allocations per iteration; batching
+    // into up to CHECKPOINT_BATCHES chunks-of-chunks would have multiplied that up to CHECKPOINT_BATCHES x
+    // without this (PR #6714 review round 9).
+    final ThreadLocal<int[]> neighborBufTL = new ThreadLocal<>();
+
     for (int iter = 0; iter < maxIters; iter++) {
       checkpoint.check();
       System.arraycopy(labels, 0, newLabels, 0, n);
@@ -1240,7 +1248,11 @@ public final class GraphAlgorithms {
       final AtomicBoolean anyChanged = new AtomicBoolean(false);
 
       parallelForRangeCheckpointed(n, checkpoint, (start, end) -> {
-        final int[] neighborBuf = new int[maxDeg];
+        int[] neighborBuf = neighborBufTL.get();
+        if (neighborBuf == null || neighborBuf.length < maxDeg) {
+          neighborBuf = new int[maxDeg];
+          neighborBufTL.set(neighborBuf);
+        }
         boolean localChanged = false;
 
         for (int u = start; u < end; u++) {
