@@ -145,7 +145,7 @@ public class AlgoLocalClusteringCoefficient extends AbstractAlgoProcedure {
     for (int u = 0; u < n; u++) {
       // One node intersects its neighbour list against each of its neighbours', which is O(degree²) on a
       // supernode and O(m x sqrt(m)) over the graph - nothing but the graph sizes it (issue #6302). The CSR
-      // path below is checkpointed too (issue #6318), via the same guard, threaded into
+      // path (executeWithCSR, above) is checkpointed too (issue #6318), via the same guard, threaded into
       // GraphAlgorithms#localClusteringCoefficient as a WorkCheckpoint.
       guard.check();
       final int[] neighborsU = adj[u];
