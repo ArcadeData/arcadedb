@@ -21,6 +21,7 @@ package com.arcadedb.index.vector;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.utility.FileUtils;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
@@ -28,6 +29,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 
 import java.io.File;
+import java.time.Duration;
 import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -42,10 +44,17 @@ import static org.assertj.core.api.Assertions.assertThat;
  * stat must turn on exactly when {@code close()} defers a rebuild, it must still read {@code 1} on a <b>freshly
  * reopened</b> index - i.e. a brand-new {@link LSMVectorIndex} instance, not the one that set it - before that
  * index has been searched (the whole point: answering the question BEFORE the next search silently pays for it),
- * and it must clear back to {@code 0} once that search actually runs the deferred rebuild.
+ * and it must clear back to {@code 0} once the deferred rebuild that search triggers actually completes.
  * <p>
  * A normal close that never deferred anything (below the async-rebuild threshold) is also pinned at {@code 0}, to
  * catch a stat that reads "true" unconditionally.
+ * <p>
+ * The search that pays for the deferral does not itself run the rebuild synchronously: the fixture's reopened
+ * state - a persisted graph short by exactly one vector, both above {@code ASYNC_REBUILD_MIN_GRAPH_SIZE} - is
+ * exactly what issue #6655's stale-prefix-reuse fix ({@link LSMVectorIndex#ensureGraphAvailable()}) now reuses
+ * as a verified prefix instead of rebuilding, so the search answers immediately from the reused graph plus the
+ * queued gap vector and only kicks the rebuild asynchronously. The stat therefore has to be awaited, not read
+ * the instant the search returns.
  *
  * @author Roberto Franchini (r.franchini@arcadedata.com)
  */
@@ -144,17 +153,24 @@ class Issue6657CloseTimeRebuildPendingStatTest {
             .as("precondition: nothing has rebuilt yet in this fresh instance")
             .isZero();
 
-        // The search that finally pays for the deferred rebuild (ensureGraphAvailable() -> buildGraphFromScratch(),
-        // synchronous on this call since the graph is not yet loaded this session).
+        // The search that finally pays for the deferral: ensureGraphAvailable() finds the persisted graph short
+        // by exactly the one vector written above - a stale-prefix-reuse candidate under issue #6655's fix - so
+        // it answers immediately from the reused graph plus the queued gap vector and only kicks the rebuild
+        // asynchronously (reuseStalePrefixGraph() -> startAsyncGraphRebuild()), rather than running it inline.
         final var results = reopenedIndex.findNeighborsFromVector(extraVector(), 5, 64);
         assertThat(results)
-            .as("the deferred rebuild must still make the vector written right before the deferring close() "
-                + "reachable by search")
+            .as("the queued gap vector must already be searchable via the reused prefix graph's delta buffer, "
+                + "before the deferred rebuild it kicked off has even finished")
             .hasSize(5);
 
-        assertThat(reopenedIndex.getStats().get("graphRebuildCount"))
-            .as("the search above must be what finally runs the deferred build")
-            .isEqualTo(1L);
+        // The async rebuild kicked off by the search above eventually folds the gap into the graph proper - the
+        // same deferred rebuild the deferring close() owed, now actually paid.
+        Awaitility.await("the async rebuild kicked off by the deferred-rebuild search completes")
+            .atMost(Duration.ofSeconds(60))
+            .pollInterval(Duration.ofMillis(200))
+            .untilAsserted(() -> assertThat(reopenedIndex.getStats().get("graphRebuildCount"))
+                .as("the search above must be what finally runs the deferred build")
+                .isEqualTo(1L));
         assertThat(reopenedIndex.getStats().get("closeTimeRebuildPending"))
             .as("the deferred rebuild caught up - the stat must clear")
             .isEqualTo(0L);
