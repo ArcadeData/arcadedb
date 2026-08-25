@@ -284,6 +284,75 @@ class LSMVectorIndexLazyLocationLoadTest {
     FileUtils.deleteRecursively(new File(pqPath));
   }
 
+  /**
+   * The deferred parse is O(index size) page reads. Whichever call triggers it, it must not run inside the
+   * index-wide exclusive section, or the first write against a freshly reopened index blocks every other reader
+   * and writer of that index for the whole scan - which would trade the stall at open for a worse one later, and
+   * is exactly why the materialisation has a lock of its own (PR #6731 review).
+   * <p>
+   * Asserted rather than timed: the property is "the write lock was not held while the scan ran", and the index
+   * records that directly. A timing test for the same thing would be a race with a scan that takes microseconds
+   * at test scale.
+   */
+  @Test
+  void materialisationNeverRunsUnderTheIndexWriteLock() {
+    final float[] query = createDatabaseWithVectorIndex();
+
+    // The insert path: put() reaches the locations through the id sequence
+    try (final DatabaseFactory factory = new DatabaseFactory(DB_PATH)) {
+      final Database db = factory.open();
+      try {
+        final LSMVectorIndex index = vectorIndexOf(db);
+        assertThat(index.areLocationsMaterializedForTest()).isFalse();
+
+        db.transaction(() -> db.newDocument("Doc").set("id", VECTORS).set("embedding", query).save());
+
+        assertThat(index.areLocationsMaterializedForTest()).isTrue();
+        assertThat(index.didMaterializeUnderWriteLockForTest())
+            .as("put() must materialise the locations before it takes the write lock")
+            .isFalse();
+      } finally {
+        db.close();
+      }
+    }
+
+    // The delete path
+    try (final DatabaseFactory factory = new DatabaseFactory(DB_PATH)) {
+      final Database db = factory.open();
+      try {
+        final LSMVectorIndex index = vectorIndexOf(db);
+        assertThat(index.areLocationsMaterializedForTest()).isFalse();
+
+        db.transaction(() -> db.command("sql", "DELETE FROM Doc WHERE id = 0"));
+
+        assertThat(index.areLocationsMaterializedForTest()).isTrue();
+        assertThat(index.didMaterializeUnderWriteLockForTest())
+            .as("remove() must materialise the locations before it takes the write lock")
+            .isFalse();
+      } finally {
+        db.close();
+      }
+    }
+
+    // The search path, which also reaches the write lock through the graph build it triggers
+    try (final DatabaseFactory factory = new DatabaseFactory(DB_PATH)) {
+      final Database db = factory.open();
+      try {
+        final LSMVectorIndex index = vectorIndexOf(db);
+        assertThat(index.areLocationsMaterializedForTest()).isFalse();
+
+        index.findNeighborsFromVector(query, 5);
+
+        assertThat(index.areLocationsMaterializedForTest()).isTrue();
+        assertThat(index.didMaterializeUnderWriteLockForTest())
+            .as("a search must materialise the locations before any exclusive section it goes on to take")
+            .isFalse();
+      } finally {
+        db.close();
+      }
+    }
+  }
+
   private LSMVectorIndex vectorIndexOf(final Database db) {
     final TypeIndex typeIndex = (TypeIndex) db.getSchema().getIndexByName("Doc[embedding]");
     return (LSMVectorIndex) typeIndex.getIndexesOnBuckets()[0];

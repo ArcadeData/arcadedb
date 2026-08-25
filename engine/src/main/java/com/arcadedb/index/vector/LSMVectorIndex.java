@@ -225,6 +225,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private final    ReentrantLock                 locationsLoadLock        = new ReentrantLock();
   // What loadVectorsAfterSchemaLoad() deferred: load the PQ codebooks together with the locations, or not at all.
   private volatile boolean                       deferredPQLoad;
+  // Set if a materialisation ever ran while its own thread held the index-wide write lock, which is the one thing
+  // the dedicated load lock exists to prevent (PR #6731 review). Only a test reads it.
+  private volatile boolean                       materializedUnderWriteLock;
   private final    AtomicInteger                 nextId;
   private final    AtomicReference<INDEX_STATUS> status;
   // Set once the ignored location-cache limit has been reported, so a rebuild does not repeat the warning.
@@ -1163,13 +1166,26 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // The loader reaches the location index through the field, not through vectorIndex(), so this cannot normally
     // recurse. Kept anyway because a future call site inside the load would otherwise deadlock on a non-reentrant
     // lock or, worse, load twice: a re-entrant caller is inside the population and must see the instance as it is.
-    if (locationsLoadLock.isHeldByCurrentThread())
+    // It says so at WARNING rather than returning quietly: handing back a half-filled map is the right thing to do
+    // for a caller that is inside the fill, but it is a silent under-materialisation for anyone else, and the
+    // comment above will not catch it if the invariant is ever broken (PR #6731 review).
+    if (locationsLoadLock.isHeldByCurrentThread()) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Re-entrant materialisation of the location index of %s: a call site inside the load asked for the map "
+              + "it is filling, so it sees only what has been read so far", indexName);
       return;
+    }
 
     locationsLoadLock.lock();
     try {
       if (locationsMaterialized)
         return; // another thread materialised it while this one waited
+
+      // The whole point of the dedicated lock is that this scan does NOT run inside the index-wide exclusive
+      // section, so record whether it did and let a test assert on it (PR #6731 review) - the invariant lives in
+      // the call sites, which is exactly the kind of thing that regresses silently when one of them moves.
+      if (lock.isWriteLockedByCurrentThread())
+        materializedUnderWriteLock = true;
 
       try {
         LogManager.instance()
@@ -5791,8 +5807,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @return true if PQ data is loaded and ready for zero-disk-I/O search
    */
   public boolean isPQSearchAvailable() {
-    if (!locationsMaterialized)
-      vectorIndex(); // the PQ codebooks are loaded with the locations (issue #6722)
+    vectorIndex(); // the PQ codebooks are loaded with the locations (issue #6722)
     return pqVectors != null && productQuantization != null;
   }
 
@@ -5802,8 +5817,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @return Number of PQ-encoded vectors, or 0 if PQ is not available
    */
   public int getPQVectorCount() {
-    if (!locationsMaterialized)
-      vectorIndex(); // the PQ codebooks are loaded with the locations (issue #6722)
+    vectorIndex(); // the PQ codebooks are loaded with the locations (issue #6722)
     return pqVectors != null ? pqVectors.count() : 0;
   }
 
@@ -5980,6 +5994,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 new Object[] { new ComparableVector(vector) }, rid);
 
       } else {
+        // Materialise the locations BEFORE taking the write lock (issue #6722; PR #6731 review). The deferred parse
+        // is O(index size) page reads, and the first write against a freshly reopened index is what triggers it, so
+        // running it inside the exclusive section would block every other reader and writer of this index for the
+        // whole scan - the stall the dedicated load lock exists to avoid, and the one #5391 moved the graph-build
+        // validation off this same lock for. Once materialised the flag never goes back, so this single call is
+        // what makes every allocateVectorId() below a plain volatile read.
+        vectorIndex();
+
         // No transaction OR during commit replay: apply immediately
         // During commit phases, TransactionIndexContext.commit() calls this method directly
         lock.writeLock().lock();
@@ -6065,6 +6087,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
       return;
 
     final long startTime = System.currentTimeMillis();
+
+    // Materialise the locations BEFORE taking the write lock (issue #6722; PR #6731 review). The deferred parse
+    // is O(index size) page reads, and the first write against a freshly reopened index is what triggers it, so
+    // running it inside the exclusive section would block every other reader and writer of this index for the
+    // whole scan - the stall the dedicated load lock exists to avoid, and the one #5391 moved the graph-build
+    // validation off this same lock for. Once materialised the flag never goes back, so this single call is
+    // what makes every allocateVectorId() below a plain volatile read.
+    vectorIndex();
 
     lock.writeLock().lock();
     try {
@@ -6160,6 +6190,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
               new Object[] { new ComparableVector(new float[metadata.dimensions]) }, rid);
 
     } else {
+      // Materialise the locations BEFORE taking the write lock (issue #6722; PR #6731 review). The deferred parse
+      // is O(index size) page reads, and the first write against a freshly reopened index is what triggers it, so
+      // running it inside the exclusive section would block every other reader and writer of this index for the
+      // whole scan - the stall the dedicated load lock exists to avoid, and the one #5391 moved the graph-build
+      // validation off this same lock for. Once materialised the flag never goes back, so this single call is
+      // what makes every vectorIndex() below a plain volatile read.
+      vectorIndex();
+
       // No transaction OR during commit replay: apply immediately
       // During commit phases, TransactionIndexContext.commit() calls this method directly
       lock.writeLock().lock();
@@ -7555,6 +7593,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /** The location index as it stands, WITHOUT materialising it - the one raw read a test needs (issue #6722). */
   VectorLocationIndex residentLocationsForTest() {
     return residentLocations;
+  }
+
+  /**
+   * Whether any deferred materialisation on this instance ran while its thread held the index-wide write lock -
+   * the stall the dedicated load lock exists to prevent (issue #6722). Must stay false on every path.
+   */
+  boolean didMaterializeUnderWriteLockForTest() {
+    return materializedUnderWriteLock;
   }
 
   /**
