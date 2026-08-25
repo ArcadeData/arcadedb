@@ -445,6 +445,11 @@ public class PostgresNetworkExecutor extends Thread {
       if (portal.columns != null && !portal.columns.isEmpty()) {
         writeRowDescription(portal.columns);
         portal.rowDescriptionSent = true;
+        // This IS the statement-level contract executeCommand() must honor for every future Bind/Execute of
+        // this statement, whatever row each one actually returns (issue #6725) - unlike portal.columns being
+        // non-null for some other reason (a catalog answer recomputed per-Bind, or bindCommand()'s fallback
+        // onto an already-executed portal), which carries no such promise.
+        portal.columnsDescribed = true;
       } else {
         // We can't determine columns at DESCRIBE time (e.g., INSERT without schema info)
         // Send NoData, but keep isExpectingResult = true so EXECUTE can handle it properly
@@ -516,19 +521,28 @@ public class PostgresNetworkExecutor extends Thread {
             portal.fullResultSet = browseAndCacheResultSet(resultSet, 0);
             profile.addEngineNanos(System.nanoTime() - engineStart);
             // Only send RowDescription if not already sent during DESCRIBE
-            // But always use columns from actual result for DataRows consistency
             if (!portal.rowDescriptionSent) {
               final long serStart = System.nanoTime();
-              // A catalog answer already carries the columns it must be announced under.
-              if (!portal.catalogQuery || portal.columns == null)
-                portal.columns = getColumns(portal.fullResultSet, resolveQueryTargetType(portal), resolveAliasToSourceProperty(portal));
-              if (portal.columns.isEmpty() && portal.fullResultSet.isEmpty()) {
-                final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(portal.query, portal.language,
-                    getParams(portal), portal.sqlStatement);
-                if (schemaColumns != null)
-                  portal.columns = schemaColumns;
+              // portal.columnsDescribed means a real Describe('S') already told the client this exact
+              // shape/OIDs - and, for a schemaless type, a client that negotiated binary transfer off that
+              // promise cannot have it silently swapped for a differently-typed one here (issue #6725):
+              // re-deriving from this execution's own rows, which can differ in type per row for an
+              // undeclared property, would desync that client's decoder. Keep the promised columns and just
+              // mark this portal as having satisfied it, matching real PostgreSQL - a portal never gets a
+              // second RowDescription once its statement was already Described.
+              if (!portal.columnsDescribed) {
+                // A catalog answer already carries the columns it must be announced under (set on
+                // portal.columns above); only compute from the actual rows when there is none to fall back on.
+                if (!portal.catalogQuery || portal.columns == null)
+                  portal.columns = getColumns(portal.fullResultSet, resolveQueryTargetType(portal), resolveAliasToSourceProperty(portal));
+                if (portal.columns.isEmpty() && portal.fullResultSet.isEmpty()) {
+                  final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(portal.query, portal.language,
+                      getParams(portal), portal.sqlStatement);
+                  if (schemaColumns != null)
+                    portal.columns = schemaColumns;
+                }
+                writeRowDescription(portal.columns, portal.resultFormats);
               }
-              writeRowDescription(portal.columns, portal.resultFormats);
               portal.rowDescriptionSent = true;
               profile.addSerializationNanos(System.nanoTime() - serStart);
             }
@@ -567,11 +581,15 @@ public class PostgresNetworkExecutor extends Thread {
                 portal.cachedResultSet.size(),
                 Thread.currentThread().threadId());
 
-          // If RowDescription wasn't sent during DESCRIBE (e.g., INSERT with RETURN),
-          // we need to send it now before the data rows
+          // If RowDescription wasn't sent during DESCRIBE (e.g., INSERT with RETURN), we need to send it now
+          // before the data rows. portal.columnsDescribed means a real Describe('S') already told the client
+          // this exact shape/OIDs (issue #6725) - keep it rather than silently swapping it for dataRowColumns,
+          // which a schemaless type's undeclared property can compute differently per row.
           if (!portal.rowDescriptionSent) {
-            portal.columns = dataRowColumns;
-            writeRowDescription(portal.columns, portal.resultFormats);
+            if (!portal.columnsDescribed) {
+              portal.columns = dataRowColumns;
+              writeRowDescription(portal.columns, portal.resultFormats);
+            }
             portal.rowDescriptionSent = true;
           }
 
