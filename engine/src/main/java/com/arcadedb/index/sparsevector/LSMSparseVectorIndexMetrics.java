@@ -73,19 +73,24 @@ public final class LSMSparseVectorIndexMetrics {
       final TypeIndex typeIndex = sparse.getTypeIndex();
       final String key = typeIndex != null ? typeIndex.getName() : sparse.getName();
 
+      // One snapshot per engine for both counts, so a compaction landing between two separate reads cannot make a
+      // single bucket's own pair inconsistent (PR #6720 review); the sum across buckets below is still only as
+      // atomic as scraping several independent engines ever is, same as every other field aggregated here.
+      final PaginatedSparseVectorEngine.SegmentTrustSnapshot trust = engine.segmentTrust();
+
       final JSONObject entry;
       if (out.has(key)) {
         entry = out.getJSONObject(key);
         entry.put("memtablePostings", entry.getLong("memtablePostings", 0L) + engine.memtablePostings());
-        entry.put("segmentCount", entry.getInt("segmentCount", 0) + engine.segmentCount());
+        entry.put("segmentCount", entry.getInt("segmentCount", 0) + trust.total());
         entry.put("totalPostings", entry.getLong("totalPostings", 0L) + engine.totalPostings());
-        entry.put("untrustedSegments", entry.getInt("untrustedSegments", 0) + engine.untrustedSegmentCount());
+        entry.put("untrustedSegments", entry.getInt("untrustedSegments", 0) + trust.untrusted());
       } else {
         entry = new JSONObject();
         entry.put("memtablePostings", engine.memtablePostings());
-        entry.put("segmentCount", engine.segmentCount());
+        entry.put("segmentCount", trust.total());
         entry.put("totalPostings", engine.totalPostings());
-        entry.put("untrustedSegments", engine.untrustedSegmentCount());
+        entry.put("untrustedSegments", trust.untrusted());
         out.put(key, entry);
       }
     }

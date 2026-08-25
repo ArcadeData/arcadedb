@@ -1364,21 +1364,39 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   }
 
   /**
-   * Count of currently active segments whose persisted precedence predates the recency-epoch fix (issue #6379) - the
-   * same condition {@link #warnOnPreRecencyEpochSegments} logs once at open/refresh time, re-derived from the live
-   * {@link #segments} snapshot on every call instead of latched by {@link #untrustedEpochWarned}. A log line can only
-   * be read once, at the moment it is emitted; this can be asked again at any time - including after a
-   * {@code REBUILD INDEX}, to confirm the remedy actually worked (issue #6566). O(active segment count), the same
+   * A consistent point-in-time pairing of the active segment count and how many of those segments are untrusted,
+   * taken from a single {@link #segments} snapshot. Reading the two counters separately (as an earlier version of
+   * this fix did) can observe them straddling a compaction that lands in between the two reads - harmless for either
+   * number alone, but a formatted message that combines them ("N of M segments...") could then say something that
+   * was never true at any instant, such as more untrusted segments than active ones (PR #6720 review).
+   *
+   * @param total     active segment count, matching {@link #segmentCount()}
+   * @param untrusted how many of those carry a persisted precedence that predates the recency-epoch fix (issue #6379)
+   */
+  public record SegmentTrustSnapshot(int total, int untrusted) {
+  }
+
+  /**
+   * {@link #segmentTrust()}'s untrusted half, re-derived from the live {@link #segments} snapshot on every call
+   * instead of latched by {@link #untrustedEpochWarned} the way {@link #warnOnPreRecencyEpochSegments} is. A log
+   * line can only be read once, at the moment it is emitted; this can be asked again at any time - including after
+   * a {@code REBUILD INDEX}, to confirm the remedy actually worked (issue #6566). O(active segment count), the same
    * cost as {@link #segmentCount()} - cheap enough for {@link com.arcadedb.index.IndexInternal#getUpgradeWarning()}'s
    * "called on every listing" contract, which is what surfaces this to {@code schema:indexes} / Studio / the HTTP
    * admin API.
    */
   public int untrustedSegmentCount() {
-    int count = 0;
-    for (final PaginatedSegmentReader r : segments.get())
+    return segmentTrust().untrusted();
+  }
+
+  /** See {@link SegmentTrustSnapshot}. */
+  public SegmentTrustSnapshot segmentTrust() {
+    final PaginatedSegmentReader[] active = segments.get();
+    int untrusted = 0;
+    for (final PaginatedSegmentReader r : active)
       if (r.epochUntrusted())
-        count++;
-    return count;
+        untrusted++;
+    return new SegmentTrustSnapshot(active.length, untrusted);
   }
 
   /**
