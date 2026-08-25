@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
@@ -105,7 +106,7 @@ public class Issue6725DescribeSampleRowTypeMismatchIT extends PostgresWireProtoc
           .as("DataRow for id=2 directly, no unsolicited second RowDescription squeezed in - the client was "
               + "already told this statement's shape by the Describe('S') above and isn't expecting another")
           .isEqualTo('D');
-      final DataInputStream rowIn = new DataInputStream(new java.io.ByteArrayInputStream(row.payload));
+      final DataInputStream rowIn = new DataInputStream(new ByteArrayInputStream(row.payload));
       assertThat(rowIn.readUnsignedShort()).as("this query projects exactly one column").isEqualTo(1);
       final int declaredLength = rowIn.readInt();
       assertThat(declaredLength)
