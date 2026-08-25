@@ -293,12 +293,19 @@ public interface GraphTraversalProvider {
    * A caller that does not visit many nodes in a row - a single-source search that reads one node's edges per
    * step, already bounded by its own outer loop - passes {@code null} and pays nothing beyond one comparison per
    * edge.
+   * <p>
+   * {@code edgeTypes} is a plain array here rather than the other overload's varargs, deliberately: a fifth
+   * argument of a bare {@code null} would otherwise be ambiguous between binding to {@code edgeCheckpoint} here
+   * and to the other overload's {@code String... edgeTypes} (both are reference types, and neither overload is
+   * more specific than the other from a {@code null} literal), breaking any existing five-argument call this
+   * SPI already has. Requiring six arguments to reach this overload at all keeps every four- and five-argument
+   * call - including a bare {@code null} - resolving to the other one, unchanged.
    *
    * @param edgeCheckpoint called with the edge index within this call (0-based), or {@code null} to skip it
    */
   default NodeEdgeWeights edgeWeightsOf(final int nodeId, final Vertex.DIRECTION direction,
       final String propertyName, final double defaultWeight, final IntConsumer edgeCheckpoint,
-      final String... edgeTypes) {
+      final String[] edgeTypes) {
     if (!servesEdgeProperty(propertyName, edgeTypes))
       return null;
 
