@@ -506,9 +506,13 @@ class PaginatedSparseVectorEngineCompactionRecencyTest extends TestHelper {
         b.finish();
       }
     });
+    // No "Run 'REBUILD INDEX ...'" clause: this class only knows the physical per-bucket sub-index
+    // name, not the logical one the command actually takes, so it leaves the remedy to
+    // LocalSchema.reportUpgradeWarning() (PR #6720 review) - not exercised here, which opens the
+    // engine directly rather than through a full database/schema load.
     assertThat(warningsWhileOpening(db, "LegacyScanStaleTest"))
         .as("a segment with parents whose epoch equals its id predates the fix and must be reported")
-        .anyMatch(w -> w.contains("#6379") && w.contains("REBUILD INDEX"));
+        .anyMatch(w -> w.contains("#6379") && !w.contains("REBUILD INDEX"));
   }
 
   /**
@@ -560,7 +564,7 @@ class PaginatedSparseVectorEngineCompactionRecencyTest extends TestHelper {
 
     assertThat(warningsWhileOpening(db, "LegacyAbsorbTest"))
         .as("the doubt must be inherited by the merge, not erased by it")
-        .anyMatch(w -> w.contains("#6379") && w.contains("REBUILD INDEX"));
+        .anyMatch(w -> w.contains("#6379"));
   }
 
   /** Open an engine over {@code indexName} with a capturing logger installed, and return what it warned. */

@@ -1960,6 +1960,17 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * and would otherwise say nothing, leaving only the leader's log to go on. That path runs on
    * every query, so {@link #untrustedEpochWarned} latches the line to once per engine instance
    * instead of once per refresh.
+   * <p>
+   * Deliberately says nothing about WHAT to run: {@link #indexName} here is the physical per-bucket
+   * sub-index name (as passed from {@code LSMSparseVectorIndex.openEngine()}), not the logical
+   * index {@code REBUILD INDEX} takes - the same distinction issue #6566's PR #6720 review fixed on
+   * {@link com.arcadedb.index.sparsevector.LSMSparseVectorIndex#getUpgradeWarning()}. This class has
+   * no access to the logical {@code TypeIndex} name to get that right, so it leaves the remedy to
+   * the surface that does: {@code getUpgradeWarning()} folds in {@link #untrustedSegmentCount()} for
+   * exactly this condition, and {@code LocalSchema.reportUpgradeWarning()} logs it - separately from
+   * this line - with the correct logical name and command (PR #6720 review, second round: an earlier
+   * version of this fix left this WARNING's own remedy clause wrong, so a reopen logged two lines for
+   * the same condition, one with a target that does not work).
    */
   private void warnOnPreRecencyEpochSegments(final List<PaginatedSegmentReader> readers) {
     int stale = 0;
@@ -1972,9 +1983,8 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       return;
     LogManager.instance().log(this, Level.WARNING,
         "Sparse-vector index '%s' holds %d segment(s) whose precedence predates the recency-epoch fix (issue #6379); a "
-            + "document deleted before those segments were merged may still be returned by queries. Run "
-            + "'REBUILD INDEX %s' once to rewrite them in the correct order.",
-        null, indexName, stale, indexName);
+            + "document deleted before those segments were merged may still be returned by queries.",
+        null, indexName, stale);
   }
 
   /**
