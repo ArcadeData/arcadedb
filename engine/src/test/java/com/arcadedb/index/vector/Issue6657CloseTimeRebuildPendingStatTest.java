@@ -172,16 +172,24 @@ class Issue6657CloseTimeRebuildPendingStatTest {
             .contains(gapDocRid);
 
         // The async rebuild kicked off by the search above eventually folds the gap into the graph proper - the
-        // same deferred rebuild the deferring close() owed, now actually paid.
+        // same deferred rebuild the deferring close() owed, now actually paid. Both stats are awaited TOGETHER,
+        // not graphRebuildCount first and closeTimeRebuildPending as a separate synchronous check right after:
+        // incrementGraphRebuildCount() runs in-memory under lock.writeLock() the moment the rebuilt graph is
+        // swapped in, but closeTimeRebuildPending is derived from the manifest, which writeGraphManifest() does
+        // not write until AFTER the graph is persisted to disk and its transaction committed - a later point in
+        // time, not an atomic one. Reading closeTimeRebuildPending synchronously right after graphRebuildCount
+        // turns green would race that gap.
         Awaitility.await("the async rebuild kicked off by the deferred-rebuild search completes")
             .atMost(Duration.ofSeconds(60))
             .pollInterval(Duration.ofMillis(200))
-            .untilAsserted(() -> assertThat(reopenedIndex.getStats().get("graphRebuildCount"))
-                .as("the search above must be what finally runs the deferred build")
-                .isEqualTo(1L));
-        assertThat(reopenedIndex.getStats().get("closeTimeRebuildPending"))
-            .as("the deferred rebuild caught up - the stat must clear")
-            .isEqualTo(0L);
+            .untilAsserted(() -> {
+              assertThat(reopenedIndex.getStats().get("graphRebuildCount"))
+                  .as("the search above must be what finally runs the deferred build")
+                  .isEqualTo(1L);
+              assertThat(reopenedIndex.getStats().get("closeTimeRebuildPending"))
+                  .as("the deferred rebuild caught up - the stat must clear")
+                  .isEqualTo(0L);
+            });
       } finally {
         db.drop();
       }
