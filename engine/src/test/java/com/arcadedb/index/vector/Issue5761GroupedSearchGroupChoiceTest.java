@@ -214,13 +214,17 @@ class Issue5761GroupedSearchGroupChoiceTest extends TestHelper {
   /**
    * When the data cannot supply {@code limit} groups, the walk has to stop rather than resume forever. Every vertex
    * here carries the same group key, so no pass will ever open a second group; the search must come back with the one
-   * group it can fill, and say so through {@code groupedSearchesShortOfLimit}.
+   * group it can fill, and say so through {@code groupedSearchesGroupsUnavailable} - NOT
+   * {@code groupedSearchesShortOfLimit}, which issue #6559 narrowed to the case where the candidate budget cut the
+   * walk short. A corpus with only one distinct group exhausts the reachable graph on its own instead: raising
+   * efSearch could never manufacture a second group that does not exist, so this is the non-actionable counter.
    */
   @Test
   void aGroupKeyWithOneValueStopsInsteadOfWalkingTheWholeGraph() {
     createSchema();
     insertVertices();
 
+    final long unavailableBefore = vectorIndex().getStats().get("groupedSearchesGroupsUnavailable");
     final long shortBefore = vectorIndex().getStats().get("groupedSearchesShortOfLimit");
 
     final List<Pair<RID, Float>> neighbors = vectorIndex().findNeighborsFromVectorGrouped(embedding(centerOf(1)), LIMIT,
@@ -228,9 +232,12 @@ class Issue5761GroupedSearchGroupChoiceTest extends TestHelper {
 
     assertThat(neighbors).as("the one group it can fill still has to come back, filled to groupSize")
         .hasSize(GROUP_SIZE);
+    assertThat(vectorIndex().getStats().get("groupedSearchesGroupsUnavailable"))
+        .as("a search that could not open limit groups because the graph ran out on its own has to be visible to the operator")
+        .isEqualTo(unavailableBefore + 1);
     assertThat(vectorIndex().getStats().get("groupedSearchesShortOfLimit"))
-        .as("a search that could not open limit groups has to be visible to the operator")
-        .isEqualTo(shortBefore + 1);
+        .as("this shortfall is not a candidate-budget problem, so it must not pin the efSearch-actionable counter")
+        .isEqualTo(shortBefore);
   }
 
   /** A whitelist has to keep holding across the pass boundary, not just on the first beam. */
