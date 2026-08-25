@@ -309,7 +309,7 @@ class LSMVectorIndexBruteForceScanTest extends TestHelper {
     // Capture the ordinal->vectorId snapshot the engine is currently using.
     final int[] ordinalA = ((int[]) readField(index, "ordinalToVectorId")).clone();
     assertThat(ordinalA.length).isGreaterThanOrEqualTo(2);
-    final VectorLocationIndex vectorIndex = readField(index, "vectorIndex");
+    final VectorLocationIndex vectorIndex = readField(index, "residentLocations");
 
     // Build the vectors view from snapshot A (exactly as findNeighborsFromVector does).
     final RandomAccessVectorValues vectorsFromA = ArcadePageVectorValues.forSearch((DatabaseInternal) database,
