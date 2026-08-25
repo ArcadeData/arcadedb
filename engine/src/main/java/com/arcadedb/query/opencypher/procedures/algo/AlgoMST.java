@@ -145,6 +145,11 @@ public class AlgoMST extends AbstractAlgoProcedure {
         ev[ec] = row[j];
         ew[ec] = rowWeights[j];
         ec++;
+        // Round 14 review: the old pass-2 fill loop this replaced checked in per edge (guard.checkPeriodically
+        // (edgeStep++)); this flattening copy is pure in-memory work with no DB touch, but it is still O(edges)
+        // over a count nothing bounds, so it keeps the same throttled checkpoint rather than being the one
+        // silent gap in an otherwise consistently-guarded pass.
+        guard.checkPeriodically(ec);
       }
     }
 

@@ -141,6 +141,9 @@ public class AlgoMinSpanningArborescence extends AbstractAlgoProcedure {
         eTo[ec] = row[j];
         eW[ec] = rowWeights[j];
         ec++;
+        // Round 14 review: same throttled checkpoint as algo.mst's equivalent flattening copy - pure in-memory
+        // work, but still O(edges) over a count nothing bounds.
+        guard.checkPeriodically(ec);
       }
     }
 
