@@ -121,10 +121,11 @@ public class AlgoMST extends AbstractAlgoProcedure {
     // magnitude above the node count - and linear was never the criterion (issue #6300).
     //
     // 24 bytes per edge: the endpoints eu/ev and the weight ew, plus the two int arrays sortedIndexesByWeight
-    // works over (the order and the merge scratch). This reservation happens after weightedAdjacency has already
-    // materialised its own neighbour/weight arrays rather than ahead of a counting pass this procedure no longer
-    // runs itself - the same tradeoff algo.steinerTree already makes for the working sets it reserves around its
-    // own weightedAdjacency call.
+    // works over (the order and the merge scratch). weightedAdjacency's own neighbour/weight arrays are reserved
+    // incrementally as it builds them, not after the fact (issue #6714 review: routing MST/MSA onto the shared
+    // helper had silently dropped their #6300 edge-count protection, since weightedAdjacency reserved nothing of
+    // its own) - what is reserved here, after that call returns, is only this procedure's own flat eu/ev/ew
+    // arrays, which are additional to and smaller than what weightedAdjacency already gated.
     final MemoryBudget memory = graph.memory();
     memory.reserve(saturatingProduct(edgeCount, EDGE_BYTES), "the edge arrays", edgeCount + " edges");
 
