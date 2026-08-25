@@ -2199,10 +2199,9 @@ public class PostgresNetworkExecutor extends Thread {
     // Use original query to preserve case of values
     String q = query.substring(setLength);
 
-    if (q.regionMatches(true, 0, "SESSION ", 0, "SESSION ".length()))
-      q = q.substring("SESSION ".length());
-    else if (q.regionMatches(true, 0, "LOCAL ", 0, "LOCAL ".length()))
-      q = q.substring("LOCAL ".length());
+    final Matcher scopeModifier = SET_SCOPE_MODIFIER.matcher(q);
+    if (scopeModifier.find())
+      q = q.substring(scopeModifier.end());
 
     final int eqPos = q.indexOf('=');
     final Matcher toMatcher = SET_TO_SEPARATOR.matcher(q);
