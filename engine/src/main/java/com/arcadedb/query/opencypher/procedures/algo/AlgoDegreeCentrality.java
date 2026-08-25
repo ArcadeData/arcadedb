@@ -38,6 +38,11 @@ import java.util.stream.Stream;
  * neighbour list, which is the same {@code vertex.countEdges()}-style efficiency the OLTP path already had.
  * </p>
  * <p>
+ * {@code direction} (default {@code BOTH}) selects which edges count towards {@code degree}/{@code score}: with
+ * {@code IN} or {@code OUT}, only that direction is counted (and the other of {@code inDegree}/{@code outDegree}
+ * is 0, since it was never read), rather than always summing both regardless of what was requested.
+ * </p>
+ * <p>
  * Example:
  * <pre>
  * CALL algo.degree()
@@ -81,7 +86,7 @@ public class AlgoDegreeCentrality extends AbstractAlgoProcedure {
     validateArgs(args);
 
     final String[] relTypes = args.length > 0 ? extractRelTypes(args[0]) : null;
-    final String dirArg = args.length > 1 ? extractString(args[1], "direction") : "BOTH";
+    final Vertex.DIRECTION dir = args.length > 1 ? parseDirection(extractString(args[1], "direction")) : Vertex.DIRECTION.BOTH;
 
     final Database db = context.getDatabase();
     final GraphData graph = loadGraph(db, null, relTypes, context);
@@ -92,12 +97,16 @@ public class AlgoDegreeCentrality extends AbstractAlgoProcedure {
 
     final double norm = n > 1 ? (double) (n - 1) : 1.0;
 
-    final int[] inDegrees = graph.degrees(Vertex.DIRECTION.IN, relTypes);
-    final int[] outDegrees = graph.degrees(Vertex.DIRECTION.OUT, relTypes);
+    // Only the requested direction(s) are computed: a caller that filters to IN or OUT is asking to skip the
+    // cost of the other one too, not only to have it excluded from the total (issue #6716). Still routed
+    // through GraphData.degrees() rather than a raw countEdges() walk, so a Graph Analytical View accelerates
+    // whichever direction(s) are actually requested (issue #6316).
+    final int[] inDegrees = dir != Vertex.DIRECTION.OUT ? graph.degrees(Vertex.DIRECTION.IN, relTypes) : null;
+    final int[] outDegrees = dir != Vertex.DIRECTION.IN ? graph.degrees(Vertex.DIRECTION.OUT, relTypes) : null;
 
     return IntStream.range(0, n).mapToObj(i -> {
-      final long in = inDegrees[i];
-      final long out = outDegrees[i];
+      final long in = inDegrees != null ? inDegrees[i] : 0;
+      final long out = outDegrees != null ? outDegrees[i] : 0;
       final long total = in + out;
       final ResultInternal r = new ResultInternal();
       r.setProperty("node", graph.getRID(i));

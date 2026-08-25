@@ -20,6 +20,8 @@ package com.arcadedb.graph;
 
 import com.arcadedb.database.RID;
 
+import java.util.function.IntConsumer;
+
 /**
  * SPI for accelerated graph traversal providers (e.g., Graph Analytical Views backed by CSR).
  * <p>
@@ -270,6 +272,40 @@ public interface GraphTraversalProvider {
    */
   default NodeEdgeWeights edgeWeightsOf(final int nodeId, final Vertex.DIRECTION direction,
       final String propertyName, final double defaultWeight, final String... edgeTypes) {
+    return edgeWeightsOf(nodeId, direction, propertyName, defaultWeight, null, edgeTypes);
+  }
+
+  /**
+   * Same as {@link #edgeWeightsOf(int, Vertex.DIRECTION, String, double, String...)}, with one addition:
+   * {@code edgeCheckpoint}, if not {@code null}, is called once per edge as the per-(type, direction) slices are
+   * copied into the returned arrays, with a counter that restarts at zero for every call to this method.
+   * <p>
+   * A caller that visits every node of the graph in turn - {@code AbstractAlgoProcedure}'s columnar adjacency
+   * build does, once per node - has no other way to stay abortable mid-node: this method already returns one
+   * fully-built {@link NodeEdgeWeights} per call, so a single node with a very large degree (a supernode) is
+   * otherwise one unabortable unit of work regardless of how often the caller checkpoints between nodes (issue
+   * #6715). Restarting the counter at zero rather than threading a running total through is deliberate, the same
+   * choice {@link com.arcadedb.query.sql.executor.WorkGuard#checkPeriodically} documents for a loop whose counter
+   * restarts: it bounds the worst-case latency to about one checkpoint stride into the largest node, whatever the
+   * node before it looked like, and it keeps this method free of any dependency on where the caller's own count
+   * comes from.
+   * <p>
+   * A caller that does not visit many nodes in a row - a single-source search that reads one node's edges per
+   * step, already bounded by its own outer loop - passes {@code null} and pays nothing beyond one comparison per
+   * edge.
+   * <p>
+   * {@code edgeTypes} is a plain array here rather than the other overload's varargs, deliberately: a fifth
+   * argument of a bare {@code null} would otherwise be ambiguous between binding to {@code edgeCheckpoint} here
+   * and to the other overload's {@code String... edgeTypes} (both are reference types, and neither overload is
+   * more specific than the other from a {@code null} literal), breaking any existing five-argument call this
+   * SPI already has. Requiring six arguments to reach this overload at all keeps every four- and five-argument
+   * call - including a bare {@code null} - resolving to the other one, unchanged.
+   *
+   * @param edgeCheckpoint called with the edge index within this call (0-based), or {@code null} to skip it
+   */
+  default NodeEdgeWeights edgeWeightsOf(final int nodeId, final Vertex.DIRECTION direction,
+      final String propertyName, final double defaultWeight, final IntConsumer edgeCheckpoint,
+      final String[] edgeTypes) {
     if (!servesEdgeProperty(propertyName, edgeTypes))
       return null;
 
@@ -291,11 +327,14 @@ public interface GraphTraversalProvider {
     final int[] neighbors = new int[degree];
     final double[] weights = new double[degree];
     int pos = 0;
+    int edgeCount = 0;
     s = 0;
     for (final String type : types)
       for (final Vertex.DIRECTION d : directions) {
         final int[] slice = slices[s++];
         for (int j = 0; j < slice.length; j++) {
+          if (edgeCheckpoint != null)
+            edgeCheckpoint.accept(edgeCount++);
           neighbors[pos] = slice[j];
           final Object value = getEdgeProperty(nodeId, j, d, type, propertyName);
           weights[pos] = value instanceof Number num ? num.doubleValue() : defaultWeight;
