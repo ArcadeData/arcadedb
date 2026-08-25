@@ -800,11 +800,16 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
      * {@link #weightedAdjacency} uses for its columnar path.
      */
     public int[] degrees(final Vertex.DIRECTION dir, final String... relTypes) {
-      final int[] degrees = new int[nodeCount];
+      // Reserved before allocating, not after (issue #6714 review round 4: this used to allocate first, the
+      // same "reserve after the fact" ordering the round-3 review found and fixed for weightedAdjacency).
       memory.reserve(saturatingProduct(nodeCount, INT_BYTES), "the degree buffer", nodeCount + " nodes");
+      final int[] degrees = new int[nodeCount];
       if (provider != null) {
         final String[] types = relTypes != null && relTypes.length > 0 ? relTypes : provider.getMaterializedEdgeTypes();
         if (types != null && types.length > 0) {
+          // perType is a second nodeCount-sized scratch buffer, previously allocated with no reservation of its
+          // own at all - reserved here, separately, right before it is actually needed.
+          memory.reserve(saturatingProduct(nodeCount, INT_BYTES), "the per-type degree scratch buffer", nodeCount + " nodes");
           final int[] perType = new int[nodeCount];
           for (final String type : types) {
             // getDegrees() overwrites perType (it Arrays.fill(..., 0)s it before writing), never accumulates
