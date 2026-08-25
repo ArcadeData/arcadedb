@@ -111,9 +111,12 @@ public class AlgoLocalClusteringCoefficient extends AbstractAlgoProcedure {
     if (n == 0)
       return Stream.empty();
 
+    // The CSR path is now abortable the same way the OLTP path is (issue #6318): the kernel's two parallel
+    // phases and its sequential prep passes are all checkpointed via this guard.
+    final WorkGuard guard = newWorkGuard(context);
     final double[] lcc = relTypes != null ?
-        GraphAlgorithms.localClusteringCoefficient(gav, relTypes) :
-        GraphAlgorithms.localClusteringCoefficient(gav);
+        GraphAlgorithms.localClusteringCoefficient(gav, guard::check, relTypes) :
+        GraphAlgorithms.localClusteringCoefficient(gav, guard::check);
     context.setVariable(CommandContext.RESULT_COUNT_HINT_VAR, (long) n);
 
     return IntStream.range(0, n).mapToObj(i -> {
@@ -141,13 +144,9 @@ public class AlgoLocalClusteringCoefficient extends AbstractAlgoProcedure {
     final long[] triangles = new long[n];
     for (int u = 0; u < n; u++) {
       // One node intersects its neighbour list against each of its neighbours', which is O(degree²) on a
-      // supernode and O(m x sqrt(m)) over the graph - nothing but the graph sizes it (issue #6302).
-      //
-      // Only the OLTP path is covered here. The CSR path hands the whole computation to
-      // GraphAlgorithms#localClusteringCoefficient, which counts triangles across a thread pool, and the
-      // WorkCheckpoint hook #6264 introduced is specified to be called between iterations on the calling
-      // thread rather than from inside a parallel chunk - so covering that kernel is a change to how it
-      // partitions its work, not a checkpoint that can be dropped in here.
+      // supernode and O(m x sqrt(m)) over the graph - nothing but the graph sizes it (issue #6302). The CSR
+      // path (executeWithCSR, above) is checkpointed too (issue #6318), via the same guard, threaded into
+      // GraphAlgorithms#localClusteringCoefficient as a WorkCheckpoint.
       guard.check();
       final int[] neighborsU = adj[u];
       for (final int v : neighborsU) {

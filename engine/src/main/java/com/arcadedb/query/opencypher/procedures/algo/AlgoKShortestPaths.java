@@ -20,9 +20,6 @@ package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
-import com.arcadedb.exception.RecordNotFoundException;
-import com.arcadedb.graph.Edge;
-import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -33,7 +30,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Map;
 import java.util.PriorityQueue;
 import java.util.stream.Stream;
 
@@ -95,18 +91,15 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);
-    final MemoryBudget memory = newMemoryBudget(db);
-    final List<Vertex> vertices = loadVertices(db, null, memory);
+    final GraphData graph = loadGraph(db, null, relTypes, context);
 
-    final int n = vertices.size();
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
 
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-
-    final Integer startIdx = ridToIdx.get(startNode.getIdentity());
-    final Integer endIdx   = ridToIdx.get(endNode.getIdentity());
-    if (startIdx == null || endIdx == null)
+    final int startIdx = graph.indexOf(startNode.getIdentity());
+    final int endIdx   = graph.indexOf(endNode.getIdentity());
+    if (startIdx < 0 || endIdx < 0)
       return Stream.empty();
 
     // Yen's algorithm is dense here: a nodeCount x nodeCount weight matrix for the whole run - 800 MB at
@@ -114,38 +107,35 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
     // dense formulation is a client error naming the node count and the budget, rather than an
     // OutOfMemoryError. The two spur masks beside it are nodeCount-sized and allocated once for the whole call
     // (see below), so they are a rounding error next to the matrix and are priced with it rather than apart.
+    final MemoryBudget memory = graph.memory();
     memory.reserve(saturatingSum(matrixBytes(n, n, DOUBLE_BYTES), matrixBytes(2, n, BOOLEAN_BYTES)),
         "the weight matrix and the spur masks",
         "a double matrix of " + n + " x " + n + " nodes and two boolean masks of " + n + " nodes");
 
-    // Build weighted adjacency matrix (OUT direction)
+    // Build weighted adjacency matrix (OUT direction). Edge collection and weight extraction go through
+    // GraphData.weightedAdjacency (issue #6316), the same shared helper algo.steinerTree and algo.mst read
+    // weights through, rather than a hand-rolled getEdges() walk. Parallel edges collapse to the cheapest one,
+    // same as before.
     final double[][] weightMatrix = new double[n][n];
     for (double[] row : weightMatrix)
       Arrays.fill(row, Double.MAX_VALUE);
+
+    final String weightProp = weightProperty != null && !weightProperty.isEmpty() ? weightProperty : null;
+    final GraphData.WeightedAdjacency weighted = graph.weightedAdjacency(guard, Vertex.DIRECTION.OUT, weightProp, relTypes);
+    final int[][] neighbors = weighted.neighbors();
+    final double[][] edgeWeights = weighted.weights();
 
     for (int i = 0; i < n; i++) {
       // One row of the matrix is O(n) and one vertex's edges are O(degree); either is more than a flag test.
       guard.check();
       weightMatrix[i][i] = 0.0;
-      final Iterable<Edge> edges = relTypes != null && relTypes.length > 0 ?
-          vertices.get(i).getEdges(Vertex.DIRECTION.OUT, relTypes) :
-          vertices.get(i).getEdges(Vertex.DIRECTION.OUT);
-      for (final Edge e : edges) {
-        try {
-          final Integer j = ridToIdx.get(e.getIn());
-          if (j == null)
-            continue;
-          double w = 1.0;
-          if (weightProperty != null && !weightProperty.isEmpty()) {
-            final Object wObj = e.get(weightProperty);
-            if (wObj instanceof Number num)
-              w = num.doubleValue();
-          }
-          if (w < weightMatrix[i][j])
-            weightMatrix[i][j] = w;
-        } catch (final RecordNotFoundException rnf) {  // 'rnf' not 'e' here: 'e' is the Edge loop variable in this scope
-          GhostEdgeReporter.reportSkipped(rnf);
-        }
+      final int[] row = neighbors[i];
+      final double[] rowWeights = edgeWeights[i];
+      for (int e = 0; e < row.length; e++) {
+        final int j = row[e];
+        final double w = rowWeights[e];
+        if (w < weightMatrix[i][j])
+          weightMatrix[i][j] = w;
       }
     }
 
@@ -272,7 +262,7 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
       final int[] path = kPaths.get(i);
       final List<RID> pathRids = new ArrayList<>(path.length);
       for (final int idx : path)
-        pathRids.add(vertices.get(idx).getIdentity());
+        pathRids.add(graph.getRID(idx));
 
       final ResultInternal r = new ResultInternal();
       r.setProperty("path", buildPath(pathRids, db));

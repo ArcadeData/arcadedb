@@ -19,10 +19,6 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.RID;
-import com.arcadedb.exception.RecordNotFoundException;
-import com.arcadedb.graph.Edge;
-import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -32,7 +28,6 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
 import java.util.stream.Stream;
 
 /**
@@ -59,6 +54,15 @@ import java.util.stream.Stream;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class AlgoMinSpanningArborescence extends AbstractAlgoProcedure {
+
+  /**
+   * Heap this procedure spends per edge for its own flat {@code eFrom}/{@code eTo}/{@code eW} copy, on top of
+   * whatever {@code weightedAdjacency} already reserved for its own {@code int[][]}/{@code double[][]} pair
+   * (issue #6714 review: this procedure allocated that copy with no reservation of its own at all, unlike
+   * {@code algo.mst}'s equivalent {@code eu}/{@code ev}/{@code ew} arrays - no sort scratch here, since Edmonds'
+   * algorithm has no Kruskal-style weight ordering to allocate for).
+   */
+  private static final long EDGE_BYTES = 2 * INT_BYTES + DOUBLE_BYTES;
 
   @Override
   public String getName() {
@@ -96,64 +100,50 @@ public class AlgoMinSpanningArborescence extends AbstractAlgoProcedure {
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);
-    final List<Vertex> vertices = loadVertices(db, null, newMemoryBudget(db));
-    final int n = vertices.size();
+    final GraphData graph = loadGraph(db, null, relTypes, context);
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
 
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-    final Integer rootIdxObj = ridToIdx.get(root.getIdentity());
-    if (rootIdxObj == null)
+    final int rootIdx = graph.indexOf(root.getIdentity());
+    if (rootIdx < 0)
       return Stream.empty();
-    final int rootIdx = rootIdxObj;
 
-    // Collect all directed edges as primitive arrays (two-pass, OUT direction = directed edges). Ghost
-    // edges are skipped identically in both passes, so the pass-2 fill never exceeds the pass-1 count and
-    // the arrays are always sized correctly. This rests on two read-query invariants: (1) an edge record is
-    // only ever deleted, never resurrected, so a pass-1 ghost is still a ghost in pass 2; (2) the two
-    // getEdges() calls per vertex iterate the same edges in the same order, so counting and filling agree.
-    // Pass 1: count
+    // Edge collection and weight extraction go through GraphData.weightedAdjacency (issue #6316), the same
+    // shared helper algo.steinerTree and algo.mst read weights through, rather than a hand-rolled two-pass
+    // getEdges() walk. OUT direction = directed edges, matching the arborescence semantics. A blank
+    // weightProperty is normalised to null first (matching algo.maxFlow's capacityProperty handling), so a
+    // blank string does not avoidably fall onto weightedAdjacency's record-backed fallback instead of the CSR
+    // path when a view is ready.
+    final String weightProp = weightProperty != null && !weightProperty.isEmpty() ? weightProperty : null;
+    final GraphData.WeightedAdjacency weighted = graph.weightedAdjacency(guard, Vertex.DIRECTION.OUT, weightProp, relTypes);
+    final int[][] neighbors = weighted.neighbors();
+    final double[][] weights = weighted.weights();
+
     int edgeCount = 0;
-    for (int i = 0; i < n; i++) {
-      final Iterable<Edge> edges = relTypes != null && relTypes.length > 0 ?
-          vertices.get(i).getEdges(Vertex.DIRECTION.OUT, relTypes) :
-          vertices.get(i).getEdges(Vertex.DIRECTION.OUT);
-      for (final Edge e : edges) {
-        try {
-          if (ridToIdx.containsKey(e.getIn()))
-            edgeCount++;
-        } catch (final RecordNotFoundException rnf) {  // 'rnf' not 'e' here: 'e' is the Edge loop variable in this scope
-          GhostEdgeReporter.reportSkipped(rnf);
-        }
-      }
-    }
+    for (int i = 0; i < n; i++)
+      edgeCount += neighbors[i].length;
 
-    // Pass 2: fill
+    // This procedure's own flat copy of the edges, priced separately from what weightedAdjacency already
+    // reserved for its int[][]/double[][] pair - the same "additional to and smaller than" accounting algo.mst
+    // uses for its equivalent eu/ev/ew arrays.
+    graph.memory().reserve(saturatingProduct(edgeCount, EDGE_BYTES), "the edge arrays", edgeCount + " edges");
+
     final int[] eFrom = new int[edgeCount];
     final int[] eTo = new int[edgeCount];
     final double[] eW = new double[edgeCount];
     int ec = 0;
     for (int i = 0; i < n; i++) {
-      final Iterable<Edge> edges = relTypes != null && relTypes.length > 0 ?
-          vertices.get(i).getEdges(Vertex.DIRECTION.OUT, relTypes) :
-          vertices.get(i).getEdges(Vertex.DIRECTION.OUT);
-      for (final Edge e : edges) {
-        try {
-          final Integer j = ridToIdx.get(e.getIn());
-          if (j == null)
-            continue;
-          eFrom[ec] = i;
-          eTo[ec] = j;
-          if (weightProperty != null) {
-            final Object w = e.get(weightProperty);
-            eW[ec] = w instanceof Number num ? num.doubleValue() : 1.0;
-          } else {
-            eW[ec] = 1.0;
-          }
-          ec++;
-        } catch (final RecordNotFoundException rnf) {  // 'rnf' not 'e' here: 'e' is the Edge loop variable in this scope
-          GhostEdgeReporter.reportSkipped(rnf);
-        }
+      final int[] row = neighbors[i];
+      final double[] rowWeights = weights[i];
+      for (int j = 0; j < row.length; j++) {
+        eFrom[ec] = i;
+        eTo[ec] = row[j];
+        eW[ec] = rowWeights[j];
+        ec++;
+        // Same throttled checkpoint as algo.mst's equivalent flattening copy - pure in-memory work, but still
+        // O(edges) over a count nothing bounds.
+        guard.checkPeriodically(ec);
       }
     }
 
@@ -170,8 +160,8 @@ public class AlgoMinSpanningArborescence extends AbstractAlgoProcedure {
     final List<Result> results = new ArrayList<>(msaEdges.length);
     for (final int ei : msaEdges) {
       final ResultInternal r = new ResultInternal();
-      r.setProperty("source", vertices.get(eFrom[ei]).getIdentity());
-      r.setProperty("target", vertices.get(eTo[ei]).getIdentity());
+      r.setProperty("source", graph.getRID(eFrom[ei]));
+      r.setProperty("target", graph.getRID(eTo[ei]));
       r.setProperty("weight", eW[ei]);
       r.setProperty("totalWeight", totalWeight);
       results.add(r);

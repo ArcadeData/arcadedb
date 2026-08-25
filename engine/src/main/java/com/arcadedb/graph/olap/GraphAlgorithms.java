@@ -59,6 +59,31 @@ public final class GraphAlgorithms {
 
   private static final int PARALLELISM           = Runtime.getRuntime().availableProcessors();
   private static final int PARALLEL_THRESHOLD     = 8192;
+  /**
+   * How many checkpointed batches {@link #parallelForRangeCheckpointed} aims for on a range small enough that
+   * dividing it by this count still keeps every batch at least {@link #PARALLEL_THRESHOLD} large (below that,
+   * fewer, larger-than-this-count batches are used instead, down to a single one). Above
+   * {@link #MAX_CHECKPOINT_BATCH_SIZE} nodes this count is no longer the driver: batch size is capped there
+   * instead, so batch count keeps growing with the range and abort latency per batch stays bounded - without
+   * the cap, batch size grew unboundedly with the range for any n above
+   * {@code CHECKPOINT_BATCHES x PARALLEL_THRESHOLD}, since batch count was pinned at exactly this many.
+   */
+  private static final int CHECKPOINT_BATCHES     = 16;
+  /** Upper bound on a single checkpointed batch's size, so abort latency stays bounded as the range grows past
+   *  it instead of scaling with the range - see {@link #CHECKPOINT_BATCHES}. */
+  private static final int MAX_CHECKPOINT_BATCH_SIZE = CHECKPOINT_BATCHES * PARALLEL_THRESHOLD;
+  /** Bitmask for how often {@link #lccBuildAndIntersect}'s sequential prep passes check in between nodes -
+   *  {@code (u & MASK) == MASK} is true every 1024th node, not every {@code MASK}th one. Matches the 1024-node
+   *  stride {@code WorkGuard.checkPeriodically} and {@code GraphData.adjacency} both use elsewhere in the
+   *  codebase. */
+  private static final int LCC_PREP_CHECKPOINT_MASK = 1023;
+  /** Entry-count threshold at which {@link #lccBuildAndIntersect}'s per-node prep passes checkpoint mid-row,
+   *  inside a single node's own edge walk rather than only between nodes - otherwise one supernode row is an
+   *  unabortable unit regardless of its own size, the same class of gap issue #6715 names for
+   *  {@code weightedAdjacencyFromColumns}. Same magnitude as
+   *  {@code AbstractAlgoProcedure.ADJACENCY_CHECKPOINT_ENTRIES}, duplicated here rather than shared because
+   *  that constant is {@code protected} on a class in a different package with no public accessor. */
+  private static final int LCC_ROW_CHECKPOINT_ENTRIES = 1_048_576;
   private static final int PARALLEL_BFS_THRESHOLD = 4096;
   private static final double ALPHA              = 8.0;  // edge ratio for push->pull switch
   private static final int PULL_ENTER_DIVISOR    = 8;    // push->pull when frontier > n/8
@@ -143,6 +168,38 @@ public final class GraphAlgorithms {
     }
   }
 
+  /**
+   * As {@link #parallelForRange}, but for a kernel with no natural per-iteration checkpoint of its own: the range
+   * is split into up to {@link #CHECKPOINT_BATCHES} batches, each run through {@link #parallelForRange} in turn,
+   * with {@code checkpoint} called on the calling thread between batches - never from inside a worker chunk, same
+   * contract as {@link WorkCheckpoint#check()} documents.
+   * <p>
+   * A batch is never smaller than {@link #PARALLEL_THRESHOLD}, so a small-but-nonzero range still runs as one
+   * batch with one checkpoint call, exactly like a plain {@link #parallelForRange} call would have. A batch is
+   * also never larger than {@link #MAX_CHECKPOINT_BATCH_SIZE}, so a range large enough to need more than
+   * {@link #CHECKPOINT_BATCHES} of them gets more, smaller batches instead of {@link #CHECKPOINT_BATCHES} ever-
+   * larger ones - otherwise abort latency would grow with the range without bound. {@code n == 0}
+   * is the one exception: the batch loop never runs at all, so {@code checkpoint} is never called - harmless
+   * today because every current caller ({@link #pageRank}, {@link #labelPropagation}, the LCC kernel) already
+   * returns before reaching a checkpointed loop on an empty graph, but a future caller without that guarantee
+   * would not get even one check-in.
+   * <p>
+   * On a large graph this is what gives {@link #localClusteringCoefficient} intra-pass abortability at all (issue
+   * #6318: its one-shot triangle count had no iteration boundary to hang a checkpoint on the way {@link #pageRank}
+   * and {@link #labelPropagation} do), and it narrows their own between-iterations latency to within a single pass.
+   */
+  static void parallelForRangeCheckpointed(final int n, final WorkCheckpoint checkpoint, final BiConsumer<Integer, Integer> work) {
+    final int batchSize = Math.min(
+        Math.max(PARALLEL_THRESHOLD, (n + CHECKPOINT_BATCHES - 1) / CHECKPOINT_BATCHES),
+        MAX_CHECKPOINT_BATCH_SIZE);
+    for (int start = 0; start < n; start += batchSize) {
+      checkpoint.check();
+      final int batchStart = start;
+      final int batchEnd = Math.min(start + batchSize, n);
+      parallelForRange(batchEnd - batchStart, (s, e) -> work.accept(batchStart + s, batchStart + e));
+    }
+  }
+
   // --- PageRank (Pull-based, Parallel) ---
 
   /**
@@ -171,14 +228,14 @@ public final class GraphAlgorithms {
    * <p>
    * This kernel has no convergence test - it always runs the full {@code iterations} count - and that count comes
    * straight from a caller-supplied knob, so without a checkpoint {@code algo.pageRank({maxIterations: 2000000000})}
-   * spins with nothing able to stop it. The hook is called once per power iteration, which bounds abort latency by
-   * one sweep of the graph and costs one virtual call per O(n + m) of work.
+   * spins with nothing able to stop it. The hook is called once per power iteration at minimum, which bounds abort
+   * latency by one sweep of the graph and costs one virtual call per O(n + m) of work.
    * <p>
-   * One sweep is deliberately coarser than the ~1024-node latency the inline OLTP loops of the {@code algo.*}
-   * procedures achieve, and it is as fine as this kernel can be: the per-node work here runs inside
-   * {@link #parallelForRange}, on worker threads that would not observe an interrupt aimed at the calling thread,
-   * and throwing out of a chunk closure would leave its siblings running. So the checkpoint stays on the calling
-   * thread, between the parallel phases.
+   * The per-node work here runs inside {@link #parallelForRange}, on worker threads that would not observe an
+   * interrupt aimed at the calling thread, and throwing out of a chunk closure would leave its siblings running.
+   * So the checkpoint stays on the calling thread, between parallel phases - via {@link #parallelForRangeCheckpointed}
+   * rather than {@link #parallelForRange} directly, which narrows abort latency to within a single large phase
+   * rather than only between iterations (issue #6318).
    *
    * @param checkpoint called between iterations; throws to abort. {@link WorkCheckpoint#NONE} to run unbounded
    */
@@ -253,13 +310,13 @@ public final class GraphAlgorithms {
       // Pre-compute contribution per node: rank[v] / outDeg[v].
       // This turns the inner loop into a single gather+accumulate with no arithmetic.
       final double[] contrib = new double[n];
-      parallelForRange(n, (s, e) -> {
+      parallelForRangeCheckpointed(n, checkpoint, (s, e) -> {
         for (int u = s; u < e; u++)
           contrib[u] = currentRank[u] * invDeg[u];
       });
 
       // PULL: each node sums contributions from neighbors — parallel, zero sync
-      parallelForRange(n, (start, end) -> {
+      parallelForRangeCheckpointed(n, checkpoint, (start, end) -> {
         for (int u = start; u < end; u++) {
           double sum = 0;
           for (int t = 0; t < typeCount; t++) {
@@ -286,7 +343,7 @@ public final class GraphAlgorithms {
         danglingSum += currentRank[danglingNodes[i]];
       if (danglingSum > 0.0) {
         final double danglingContrib = damping * danglingSum / n;
-        parallelForRange(n, (s, e) -> {
+        parallelForRangeCheckpointed(n, checkpoint, (s, e) -> {
           for (int u = s; u < e; u++)
             nextRank[u] += danglingContrib;
         });
@@ -1147,9 +1204,10 @@ public final class GraphAlgorithms {
    * <p>
    * The convergence test ({@code break} once no label moved) is not a bound on {@code maxIters}: a graph that
    * oscillates between two labellings never converges, so the caller-supplied knob is what decides when the run
-   * ends. The hook is called once per iteration, which bounds abort latency by one sweep of the graph - coarser than
-   * the inline OLTP loops of the {@code algo.*} procedures, and as fine as this kernel can be, for the reason given
-   * on {@link #pageRank(GraphAnalyticalView, double, int, DIRECTION, WorkCheckpoint, String...)}.
+   * ends. The hook is called once per iteration at minimum, which bounds abort latency by one sweep of the graph;
+   * the per-node work inside that sweep runs through {@link #parallelForRangeCheckpointed} for the same
+   * intra-phase latency {@link #pageRank(GraphAnalyticalView, double, int, DIRECTION, WorkCheckpoint, String...)}
+   * gets from it.
    *
    * @param checkpoint called between iterations; throws to abort. {@link WorkCheckpoint#NONE} to run unbounded
    */
@@ -1204,7 +1262,16 @@ public final class GraphAlgorithms {
 
       final AtomicBoolean anyChanged = new AtomicBoolean(false);
 
-      parallelForRange(n, (start, end) -> {
+      // A fresh neighborBuf per chunk invocation rather than a shared/pooled one: parallelForRangeCheckpointed's
+      // batching (issue #6318) multiplies how often this closure runs per iteration - up to CHECKPOINT_BATCHES
+      // x, versus once per parallelForRange chunk before. A ThreadLocal to reuse the buffer across batches/
+      // iterations was tried and rejected: it trades a small, bounded per-call allocation for unbounded
+      // retention on the engine's long-lived shared thread pool - a ThreadLocal set on a pool thread outlives
+      // this call, so a supernode-sized maxDeg (e.g. a 10M-degree hub, ~40 MB) stays retained on every thread
+      // that ever ran a chunk, indefinitely, until that thread happens to touch an unrelated ThreadLocal and
+      // expunges the stale entry. A retained-indefinitely large buffer is worse than a reallocated-but-GC'd
+      // small one, so this keeps the simpler shape.
+      parallelForRangeCheckpointed(n, checkpoint, (start, end) -> {
         final int[] neighborBuf = new int[maxDeg];
         boolean localChanged = false;
 
@@ -1289,13 +1356,30 @@ public final class GraphAlgorithms {
    * @return double[] of LCC values indexed by dense node ID
    */
   public static double[] localClusteringCoefficient(final GraphAnalyticalView view, final String... edgeTypes) {
+    return localClusteringCoefficient(view, WorkCheckpoint.NONE, edgeTypes);
+  }
+
+  /**
+   * {@link #localClusteringCoefficient(GraphAnalyticalView, String...)} with a cooperative abort hook.
+   * <p>
+   * Unlike {@link #pageRank} and {@link #labelPropagation}, this kernel has no iteration loop to hang a
+   * once-per-iteration checkpoint on: it is one O(m x sqrt(m)) pass with nothing but the graph sizing it (issue
+   * #6318). {@code checkpoint} is called periodically through the sequential prep passes (degree count, adjacency
+   * build, compaction) and, via {@link #parallelForRangeCheckpointed}, between the batches its two parallel
+   * phases - the multi-type sort and the triangle count - are now split into, so the CSR path gets the same
+   * abortability the OLTP path (whole node per {@code guard.check()}) already had.
+   *
+   * @param checkpoint called periodically; throws to abort. {@link WorkCheckpoint#NONE} to run unbounded
+   */
+  public static double[] localClusteringCoefficient(final GraphAnalyticalView view, final WorkCheckpoint checkpoint,
+      final String... edgeTypes) {
     final int n = view.getNodeMapping().size();
     if (n == 0)
       return new double[0];
 
     final String[] types = resolveEdgeTypes(view, edgeTypes);
 
-    return lccBuildAndIntersect(view, types, n);
+    return lccBuildAndIntersect(view, types, n, checkpoint);
   }
 
   /**
@@ -1304,7 +1388,8 @@ public final class GraphAlgorithms {
    * since CSR forward and backward arrays are already individually sorted.
    * Multi-type sort phase and triangle counting are both parallelized.
    */
-  private static double[] lccBuildAndIntersect(final GraphAnalyticalView view, final String[] types, final int n) {
+  private static double[] lccBuildAndIntersect(final GraphAnalyticalView view, final String[] types, final int n,
+      final WorkCheckpoint checkpoint) {
     final boolean singleType = types.length == 1;
     // First pass: compute degree per node
     final int[] degree = new int[n];
@@ -1312,8 +1397,11 @@ public final class GraphAlgorithms {
       final CSRAdjacencyIndex csr = view.getCSRIndex(edgeType);
       if (csr == null)
         continue;
-      for (int u = 0; u < n; u++)
+      for (int u = 0; u < n; u++) {
+        if ((u & LCC_PREP_CHECKPOINT_MASK) == LCC_PREP_CHECKPOINT_MASK)
+          checkpoint.check();
         degree[u] += csr.outDegree(u) + csr.inDegree(u);
+      }
     }
 
     // Build offsets from degrees
@@ -1335,10 +1423,17 @@ public final class GraphAlgorithms {
       final int[] bwdOffsets = csr.getBackwardOffsets();
       final int[] bwdNeighbors = csr.getBackwardNeighbors();
       for (int u = 0; u < n; u++) {
+        if ((u & LCC_PREP_CHECKPOINT_MASK) == LCC_PREP_CHECKPOINT_MASK)
+          checkpoint.check();
         int ia = fwdOffsets[u], aEnd = fwdOffsets[u + 1];
         int ib = bwdOffsets[u], bEnd = bwdOffsets[u + 1];
         int p = offsets[u];
         while (ia < aEnd && ib < bEnd) {
+          // Checkpointed on entries written for THIS node, not just between nodes: a single supernode row
+          // (millions of entries) is otherwise one unabortable unit regardless of its own size, the same class
+          // of gap issue #6715 names for weightedAdjacencyFromColumns.
+          if (((p - offsets[u]) & (LCC_ROW_CHECKPOINT_ENTRIES - 1)) == 0)
+            checkpoint.check();
           if (fwdNeighbors[ia] <= bwdNeighbors[ib])
             neighbors[p++] = fwdNeighbors[ia++];
           else
@@ -1357,17 +1452,29 @@ public final class GraphAlgorithms {
           continue;
         final int[] fwdOffsets = csr.getForwardOffsets();
         final int[] fwdNeighbors = csr.getForwardNeighbors();
-        for (int u = 0; u < n; u++)
-          for (int j = fwdOffsets[u]; j < fwdOffsets[u + 1]; j++)
+        for (int u = 0; u < n; u++) {
+          if ((u & LCC_PREP_CHECKPOINT_MASK) == LCC_PREP_CHECKPOINT_MASK)
+            checkpoint.check();
+          for (int j = fwdOffsets[u]; j < fwdOffsets[u + 1]; j++) {
+            if (((j - fwdOffsets[u]) & (LCC_ROW_CHECKPOINT_ENTRIES - 1)) == 0)
+              checkpoint.check();
             neighbors[pos[u]++] = fwdNeighbors[j];
+          }
+        }
         final int[] bwdOffsets = csr.getBackwardOffsets();
         final int[] bwdNeighbors = csr.getBackwardNeighbors();
-        for (int u = 0; u < n; u++)
-          for (int j = bwdOffsets[u]; j < bwdOffsets[u + 1]; j++)
+        for (int u = 0; u < n; u++) {
+          if ((u & LCC_PREP_CHECKPOINT_MASK) == LCC_PREP_CHECKPOINT_MASK)
+            checkpoint.check();
+          for (int j = bwdOffsets[u]; j < bwdOffsets[u + 1]; j++) {
+            if (((j - bwdOffsets[u]) & (LCC_ROW_CHECKPOINT_ENTRIES - 1)) == 0)
+              checkpoint.check();
             neighbors[pos[u]++] = bwdNeighbors[j];
+          }
+        }
       }
-      // Sort each adjacency list — parallel for large graphs
-      parallelForRange(n, (start, end) -> {
+      // Sort each adjacency list — parallel for large graphs, checkpointed between batches (issue #6318)
+      parallelForRangeCheckpointed(n, checkpoint, (start, end) -> {
         for (int u = start; u < end; u++)
           Arrays.sort(neighbors, offsets[u], offsets[u + 1]);
       });
@@ -1377,14 +1484,20 @@ public final class GraphAlgorithms {
     // duplicates from reciprocal edges (same neighbour in both the fwd and bwd CSR lists), so the
     // undirected neighbour set used for the simple-graph LCC holds each distinct neighbour once.
     // offsets[u] is captured before being overwritten, and the write cursor never overtakes the
-    // read cursor, so the mutation is safe in place with no extra allocation.
+    // read cursor, so the mutation is safe in place with no extra allocation. Sequential (the write
+    // cursor carries across nodes), so it cannot go through parallelForRangeCheckpointed and is
+    // checkpointed the same periodic way as the prep passes above.
     int write = 0;
     for (int u = 0; u < n; u++) {
+      if ((u & LCC_PREP_CHECKPOINT_MASK) == LCC_PREP_CHECKPOINT_MASK)
+        checkpoint.check();
       final int readStart = offsets[u];
       final int readEnd = offsets[u + 1];
       offsets[u] = write;
       int last = -1; // node IDs are non-negative sequential integers, so -1 never matches
       for (int j = readStart; j < readEnd; j++) {
+        if (((j - readStart) & (LCC_ROW_CHECKPOINT_ENTRIES - 1)) == 0)
+          checkpoint.check();
         final int neighbor = neighbors[j];
         if (neighbor != u && neighbor != last)
           neighbors[write++] = last = neighbor;
@@ -1397,8 +1510,9 @@ public final class GraphAlgorithms {
     // Each triangle {u, v, w} is found exactly once (u < v < w), then credited to all 3 nodes.
     // This halves the intersection work compared to counting from both directions.
     // Uses AtomicLongArray for thread-safe increments on shared triangle counts.
+    // Checkpointed between batches (issue #6318): this is the dominant O(m x sqrt(m)) phase.
     final AtomicLongArray triangles = new AtomicLongArray(n);
-    parallelForRange(n, (start, end) -> {
+    parallelForRangeCheckpointed(n, checkpoint, (start, end) -> {
       for (int u = start; u < end; u++) {
         final int uStart = offsets[u];
         final int uEnd = offsets[u + 1];

@@ -19,10 +19,6 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.RID;
-import com.arcadedb.exception.RecordNotFoundException;
-import com.arcadedb.graph.Edge;
-import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -30,7 +26,6 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.List;
-import java.util.Map;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
@@ -101,96 +96,59 @@ public class AlgoMST extends AbstractAlgoProcedure {
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);
-    final MemoryBudget memory = newMemoryBudget(db);
-    final List<Vertex> vertices = loadVertices(db, null, memory);
+    final GraphData graph = loadGraph(db, null, relTypes, context);
 
-    final int n = vertices.size();
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
 
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
+    // Edge collection and weight extraction now go through GraphData.weightedAdjacency (issue #6316), the same
+    // shared helper algo.steinerTree and algo.bellmanFord read weights through: neighbour and weight come off
+    // the same walk, so they cannot be mismatched the way #6301 found here independently of them. It also
+    // resolves via the CSR when a Graph Analytical View is ready, which the old hand-rolled getEdges() walk
+    // never did. A blank weightProperty is normalised to null first (matching algo.maxFlow's capacityProperty
+    // handling), so both mean "no property, every edge weighs 1.0" - otherwise a blank string would still take
+    // the record-backed fallback in weightedAdjacency instead of the CSR path even when a view is ready, since
+    // weightedAdjacency only special-cases a null weightProperty, not an empty one.
+    final String weightProp = weightProperty != null && !weightProperty.isEmpty() ? weightProperty : null;
+    final GraphData.WeightedAdjacency weighted = graph.weightedAdjacency(guard, Vertex.DIRECTION.OUT, weightProp, relTypes);
+    final int[][] neighbors = weighted.neighbors();
+    final double[][] weights = weighted.weights();
+
+    int edgeCount = 0;
+    for (int i = 0; i < n; i++)
+      edgeCount += neighbors[i].length;
 
     // The working set here is sized by the EDGE count, which is the one dense shape #6263 did not price: its
     // criterion was "knob-sized or quadratic in the node count", and edge-linear reads like the graph paying for
     // itself. It is not small - the edge count is the largest linear dimension a graph has, usually an order of
-    // magnitude above the node count - and linear was never the criterion. What matters is whether the caller can
-    // predict a ceiling, and here there is none: 100M edges ask for ~2.4 GB with nothing between them and the
-    // allocator (issue #6300).
+    // magnitude above the node count - and linear was never the criterion (issue #6300).
     //
     // 24 bytes per edge: the endpoints eu/ev and the weight ew, plus the two int arrays sortedIndexesByWeight
-    // works over (the order and the merge scratch).
-    //
-    // The budget is consulted as pass 1 counts rather than once it is done. Both refuse the same calls, but a
-    // check afterwards first pays in full for a traversal it will throw away - the same argument that puts
-    // algo.steinerTree's reservation ahead of its adjacency build.
-    final long maxEdges = memory.capacityFor(EDGE_BYTES);
-
-    // Collect edges — two passes to allocate primitive arrays without reallocation. Ghost edges are
-    // skipped identically in both passes (same getEdges() order), so the pass-2 fill never exceeds the
-    // pass-1 count and the arrays are always sized correctly. This is safe because an edge record is
-    // only ever deleted, never resurrected, during a read query: a ghost in pass 1 is still a ghost in
-    // pass 2.
-    // Pass 1: count
-    int edgeCount = 0;
-    int edgeStep = 0;
-    for (int i = 0; i < n; i++) {
-      final Iterable<Edge> edges = relTypes != null && relTypes.length > 0 ?
-          vertices.get(i).getEdges(Vertex.DIRECTION.OUT, relTypes) :
-          vertices.get(i).getEdges(Vertex.DIRECTION.OUT);
-      for (final Edge e : edges) {
-        // Both passes deserialise every edge record of the graph, so each is O(V + E) of real work with nothing
-        // but the graph to bound it (issue #6302). Throttled by EDGE rather than by vertex: a near-star graph
-        // puts millions of edges inside a single vertex iteration, and a per-vertex checkpoint would leave that
-        // whole node unabortable - which is exactly the case the budget cannot catch when it is disabled.
-        guard.checkPeriodically(edgeStep++);
-        try {
-          if (ridToIdx.containsKey(e.getIn())) {
-            edgeCount++;
-            if (edgeCount > maxEdges)
-              // Over budget: reserve() is what refuses, so the message names the same component, figure and
-              // setting it would have named had the count finished first.
-              memory.reserve(saturatingProduct(edgeCount, EDGE_BYTES), "the edge arrays",
-                  "more than " + maxEdges + " edges");
-          }
-        } catch (final RecordNotFoundException rnf) {  // 'rnf' not 'e' here: 'e' is the Edge loop variable in this scope
-          GhostEdgeReporter.reportSkipped(rnf);
-        }
-      }
-    }
-    // Succeeds by construction - the loop above stopped the walk the moment the count passed what the budget
-    // allows - and is made anyway so the reservation is recorded against the call rather than only tested. What
-    // it costs is one comparison; what it buys is that `reserved` describes the heap this call actually holds,
-    // which is the invariant every other component priced here relies on.
+    // works over (the order and the merge scratch). weightedAdjacency's own neighbour/weight arrays are reserved
+    // incrementally as it builds them, not after the fact - what is reserved here, after that call returns, is
+    // only this procedure's own flat eu/ev/ew arrays, which are additional to and smaller than what
+    // weightedAdjacency already gates.
+    final MemoryBudget memory = graph.memory();
     memory.reserve(saturatingProduct(edgeCount, EDGE_BYTES), "the edge arrays", edgeCount + " edges");
 
-    // Pass 2: fill primitive arrays
     final int[]    eu = new int[edgeCount];
     final int[]    ev = new int[edgeCount];
     final double[] ew = new double[edgeCount];
     int ec = 0;
-    edgeStep = 0;
     for (int i = 0; i < n; i++) {
-      final Iterable<Edge> edges = relTypes != null && relTypes.length > 0 ?
-          vertices.get(i).getEdges(Vertex.DIRECTION.OUT, relTypes) :
-          vertices.get(i).getEdges(Vertex.DIRECTION.OUT);
-      for (final Edge e : edges) {
-        guard.checkPeriodically(edgeStep++);
-        try {
-          final Integer j = ridToIdx.get(e.getIn());
-          if (j == null)
-            continue;
-          eu[ec] = i;
-          ev[ec] = j;
-          if (weightProperty != null) {
-            final Object w = e.get(weightProperty);
-            ew[ec] = w instanceof Number num ? num.doubleValue() : 1.0;
-          } else {
-            ew[ec] = 1.0;
-          }
-          ec++;
-        } catch (final RecordNotFoundException rnf) {  // 'rnf' not 'e' here: 'e' is the Edge loop variable in this scope
-          GhostEdgeReporter.reportSkipped(rnf);
-        }
+      final int[] row = neighbors[i];
+      final double[] rowWeights = weights[i];
+      for (int j = 0; j < row.length; j++) {
+        eu[ec] = i;
+        ev[ec] = row[j];
+        ew[ec] = rowWeights[j];
+        ec++;
+        // The old pass-2 fill loop this replaced checked in per edge (guard.checkPeriodically(edgeStep++)); this
+        // flattening copy is pure in-memory work with no DB touch, but it is still O(edges) over a count
+        // nothing bounds, so it keeps the same throttled checkpoint rather than being the one silent gap in an
+        // otherwise consistently-guarded pass.
+        guard.checkPeriodically(ec);
       }
     }
 
@@ -231,8 +189,8 @@ public class AlgoMST extends AbstractAlgoProcedure {
     final int finalSize = mstSize;
     return IntStream.range(0, finalSize).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();
-      r.setProperty("source", vertices.get(mstU[i]).getIdentity());
-      r.setProperty("target", vertices.get(mstV[i]).getIdentity());
+      r.setProperty("source", graph.getRID(mstU[i]));
+      r.setProperty("target", graph.getRID(mstV[i]));
       r.setProperty("weight", mstW[i]);
       r.setProperty("totalWeight", finalTotal);
       return (Result) r;

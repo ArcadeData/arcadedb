@@ -368,14 +368,21 @@ class Issue5414LastPointTest extends TestHelper {
   }
 
   @Test
-  void descendingScanOnAnEmptySeriesReturnsNothing() {
+  void descendingScanOnAnEmptySeriesReturnsNoOrNullRows() {
     database.command("sql", "CREATE TIMESERIES TYPE Empty TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE)");
 
     assertThat(query("SELECT ts FROM Empty WHERE host = 'a' ORDER BY ts DESC LIMIT 1")).isEmpty();
 
-    // Same as any other aggregate over an empty time series: no row at all.
-    assertThat(query("SELECT avg(value) AS v FROM Empty WHERE host = 'a'")).isEmpty();
-    assertThat(query("SELECT ts.last(value, ts) AS v FROM Empty WHERE host = 'a'")).isEmpty();
+    // A no-GROUP-BY aggregate over an empty input always returns exactly one row with a null value
+    // (issue #6680), same as SELECT avg(x) FROM AnyEmptyType. ts.last() is itself an aggregate
+    // function (SQLFunctionTsLast extends SQLAggregatedFunction), so it follows the same rule.
+    final List<Result> avg = query("SELECT avg(value) AS v FROM Empty WHERE host = 'a'");
+    assertThat(avg).hasSize(1);
+    assertThat(avg.getFirst().<Object>getProperty("v")).isNull();
+
+    final List<Result> last = query("SELECT ts.last(value, ts) AS v FROM Empty WHERE host = 'a'");
+    assertThat(last).hasSize(1);
+    assertThat(last.getFirst().<Object>getProperty("v")).isNull();
   }
 
   @Test
