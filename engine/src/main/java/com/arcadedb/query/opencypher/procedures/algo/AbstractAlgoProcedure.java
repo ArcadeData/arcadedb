@@ -808,6 +808,10 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
       final int[] degrees = new int[nodeCount];
       if (provider != null) {
         final String[] types = relTypes != null && relTypes.length > 0 ? relTypes : provider.getMaterializedEdgeTypes();
+        // types empty/null here means the graph genuinely has no materialised edges of any type - loadGraph's
+        // findProvider already required this provider to be isReady() and to cover every requested type before
+        // selecting it, so an empty result is "no edges exist", not "the provider couldn't answer": degrees
+        // staying all-zero is the correct answer for that graph, not a silent wrong one.
         if (types != null && types.length > 0) {
           // perType is a second nodeCount-sized scratch buffer, previously allocated with no reservation of its
           // own at all - reserved here, separately, right before it is actually needed.
@@ -823,6 +827,11 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
         }
         return degrees;
       }
+      // countEdges() returns long, narrowed here without an overflow check: this array is int[] because every
+      // CSR-backed caller of GraphData is already int-indexed (dense node ids, CSR neighbour arrays), so the
+      // OLTP fallback matches that contract rather than carrying a long a single degree() consumer would need.
+      // A vertex with more than Integer.MAX_VALUE edges in one direction would already be precluded by the
+      // engine's other structural limits well before this cast could matter.
       for (int i = 0; i < nodeCount; i++)
         degrees[i] = (int) vertices.get(i).countEdges(dir, relTypes);
       return degrees;
