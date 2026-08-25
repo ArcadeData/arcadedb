@@ -339,8 +339,11 @@ public final class GraphAlgorithms {
 
       // Handle dangling nodes: distribute their rank evenly
       double danglingSum = 0.0;
-      for (int i = 0; i < danglingNodes.length; i++)
+      for (int i = 0; i < danglingNodes.length; i++) {
+        if ((i & 1023) == 1023)
+          checkpoint.check();
         danglingSum += currentRank[danglingNodes[i]];
+      }
       if (danglingSum > 0.0) {
         final double danglingContrib = damping * danglingSum / n;
         parallelForRangeCheckpointed(n, checkpoint, (s, e) -> {
@@ -1406,14 +1409,20 @@ public final class GraphAlgorithms {
 
     // Build offsets from degrees
     final int[] offsets = new int[n + 1];
-    for (int i = 0; i < n; i++)
+    for (int i = 0; i < n; i++) {
+      if ((i & LCC_PREP_CHECKPOINT_MASK) == LCC_PREP_CHECKPOINT_MASK)
+        checkpoint.check();
       offsets[i + 1] = offsets[i] + degree[i];
+    }
 
     final int totalEdges = offsets[n];
     final int[] neighbors = new int[totalEdges];
     final int[] pos = new int[n];
-    for (int i = 0; i < n; i++)
+    for (int i = 0; i < n; i++) {
+      if ((i & LCC_PREP_CHECKPOINT_MASK) == LCC_PREP_CHECKPOINT_MASK)
+        checkpoint.check();
       pos[i] = offsets[i];
+    }
 
     if (singleType) {
       // Single edge type: merge forward + backward (both already sorted) -> O(d) per node
@@ -1551,6 +1560,8 @@ public final class GraphAlgorithms {
     // With forward counting, each triangle is found once and credited to all 3 nodes
     final double[] lcc = new double[n];
     for (int u = 0; u < n; u++) {
+      if ((u & LCC_PREP_CHECKPOINT_MASK) == LCC_PREP_CHECKPOINT_MASK)
+        checkpoint.check();
       final long deg = offsets[u + 1] - offsets[u];
       if (deg >= 2)
         lcc[u] = (2.0 * triangles.get(u)) / (double) (deg * (deg - 1));

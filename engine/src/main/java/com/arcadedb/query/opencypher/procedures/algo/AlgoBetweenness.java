@@ -25,13 +25,9 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.WorkGuard;
 
-import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.Deque;
-import java.util.LinkedList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
-import java.util.Queue;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
@@ -108,55 +104,80 @@ public class AlgoBetweenness extends AbstractAlgoProcedure {
     //
     // A forward BFS and a backward accumulation per source node, so O(V x E) sized by nothing but the graph
     // (issue #6302). The inner checkpoints keep the abort latency below one whole source's pass.
+    //
+    // Every per-source working structure below is allocated once, outside the loop, and reused across all n
+    // sources - issue #6718: the previous version allocated n fresh ArrayList<Integer> instances (predecessors)
+    // per source, n times over, an O(n^2) allocation-and-boxing cost cutting against the project's "prefer arrays
+    // of primitives" guidance. stack/queue/dist/sigma/delta/predCount are reset only over the nodes a source's
+    // BFS actually touches - the same "reset only what you touched" pattern issue #6265 used for
+    // AlgoInfluenceMaximization's activated/queue buffers - rather than a full O(n) clear per source, which would
+    // have only traded the ArrayList allocations for an equally O(n^2) fill.
+    final int[]    stack         = new int[n];
+    final int[]    queue         = new int[n];
+    final int[][]  predNeighbors = new int[n][];
+    final int[]    predCount     = new int[n];
+    final double[] sigma         = new double[n];
+    final int[]    dist          = new int[n];
+    final double[] delta         = new double[n];
+    Arrays.fill(dist, -1);
+
     for (int s = 0; s < n; s++) {
       guard.check();
 
-      final Deque<Integer> stack = new ArrayDeque<>();
-      final List<List<Integer>> predecessors = new ArrayList<>(n);
-      for (int i = 0; i < n; i++)
-        predecessors.add(new ArrayList<>());
+      int stackSize = 0;
+      int qHead = 0, qTail = 0;
 
-      final double[] sigma = new double[n];
-      final int[] dist = new int[n];
       sigma[s] = 1.0;
-      for (int i = 0; i < n; i++)
-        dist[i] = -1;
       dist[s] = 0;
-
-      final Queue<Integer> queue = new LinkedList<>();
-      queue.add(s);
+      queue[qTail++] = s;
 
       int visited = 0;
-      while (!queue.isEmpty()) {
+      while (qHead < qTail) {
         guard.checkPeriodically(visited++);
-        final int v = queue.poll();
-        stack.push(v);
+        final int v = queue[qHead++];
+        stack[stackSize++] = v;
 
         for (final int w : adj[v]) {
           // First time visiting w?
           if (dist[w] < 0) {
-            queue.add(w);
+            queue[qTail++] = w;
             dist[w] = dist[v] + 1;
           }
           // Shortest path to w via v?
           if (dist[w] == dist[v] + 1) {
             sigma[w] += sigma[v];
-            predecessors.get(w).add(v);
+            if (predNeighbors[w] == null)
+              predNeighbors[w] = new int[4];
+            else if (predCount[w] == predNeighbors[w].length)
+              predNeighbors[w] = Arrays.copyOf(predNeighbors[w], predNeighbors[w].length * 2);
+            predNeighbors[w][predCount[w]++] = v;
           }
         }
       }
 
-      // Back-propagation
-      final double[] delta = new double[n];
+      // Back-propagation, in the same reverse-BFS-order that draining a LIFO stack would give - here just a
+      // descending walk of the array the forward BFS above already filled in that order.
       int accumulated = 0;
-      while (!stack.isEmpty()) {
+      for (int idx = stackSize - 1; idx >= 0; idx--) {
         guard.checkPeriodically(accumulated++);
-        final int w = stack.pop();
-        for (final int v : predecessors.get(w)) {
+        final int w = stack[idx];
+        final int[] preds = predNeighbors[w];
+        final int predN = predCount[w];
+        for (int k = 0; k < predN; k++) {
+          final int v = preds[k];
           delta[v] += (sigma[v] / sigma[w]) * (1.0 + delta[w]);
         }
         if (w != s)
           betweenness[w] += delta[w];
+      }
+
+      // Reset only the nodes this source's BFS touched, not the full n-sized buffers.
+      for (int idx = 0; idx < stackSize; idx++) {
+        final int node = stack[idx];
+        dist[node] = -1;
+        sigma[node] = 0.0;
+        delta[node] = 0.0;
+        predCount[node] = 0;
       }
     }
 
