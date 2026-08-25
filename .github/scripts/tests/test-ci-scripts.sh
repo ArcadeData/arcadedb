@@ -28,6 +28,7 @@ ALLOWLIST="$SCRIPTS/check-license-allowlist.py"
 DBDOCSSYNC="$SCRIPTS/check-database-docs-sync.py"
 CONTROLCHARS="$SCRIPTS/check-source-control-chars.py"
 NEEDSOUTPUTS="$SCRIPTS/check-workflow-needs-outputs.py"
+STATUSCOMPLETE="$SCRIPTS/check-ci-status-completeness.py"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -1251,6 +1252,95 @@ jobs:
 YAML
 expect "ignores a reference into a reusable-workflow job" 0 "" \
     "$NEEDSOUTPUTS" "$work/needs-reusable"
+
+echo "check-ci-status-completeness.py"
+
+# #6569's shape, minimal: an aggregator job that forgot to wait for one of its siblings, so that
+# sibling can fail or be skipped without the aggregator ever noticing.
+mkdir -p "$work/status-incomplete"
+cat >"$work/status-incomplete/ci.yml" <<'YAML'
+name: incomplete
+on: [ push ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo building
+  unit-tests:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - run: echo test
+  new-lane:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - run: echo test
+  ci-status:
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [ build, unit-tests ]
+    steps:
+      - run: echo status
+YAML
+expect "rejects an aggregator whose needs omit a sibling job" 1 "['new-lane']" \
+    "$STATUSCOMPLETE" "$work/status-incomplete"
+
+# The same workflow with `new-lane` added to the aggregator's `needs`: the only change that should
+# matter, same pairing technique as the needs-outputs fixtures above.
+mkdir -p "$work/status-complete"
+awk '/^    needs: \[ build, unit-tests \]$/{print "    needs: [ build, unit-tests, new-lane ]"; next} {print}' \
+    "$work/status-incomplete/ci.yml" >"$work/status-complete/ci.yml"
+expect "accepts the same workflow once the aggregator needs every job" 0 "" \
+    "$STATUSCOMPLETE" "$work/status-complete"
+
+# A job reached only transitively still counts: `ci-status` needing `unit-tests`, which itself needs
+# `build`, covers `build` without naming it directly - same closure semantics as the sibling
+# artifact-deps script, deliberately unlike check-workflow-needs-outputs.py's needs CONTEXT (which is
+# direct-only for an unrelated reason: see that script's own transitive-outputs fixture).
+mkdir -p "$work/status-transitive"
+cat >"$work/status-transitive/ci.yml" <<'YAML'
+name: transitive
+on: [ push ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo building
+  unit-tests:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - run: echo test
+  ci-status:
+    runs-on: ubuntu-latest
+    if: always()
+    needs: unit-tests
+    steps:
+      - run: echo status
+YAML
+expect "accepts a job reached only transitively through the aggregator's needs" 0 "" \
+    "$STATUSCOMPLETE" "$work/status-transitive"
+
+# A workflow with no job named 'ci-status' or ending in '-status' opts out entirely: not every
+# workflow needs (or should be forced to have) an aggregator.
+mkdir -p "$work/status-no-aggregator"
+cat >"$work/status-no-aggregator/ci.yml" <<'YAML'
+name: no-aggregator
+on: [ push ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo building
+  unit-tests:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - run: echo test
+YAML
+expect "ignores a workflow with no status-aggregator job" 0 "" \
+    "$STATUSCOMPLETE" "$work/status-no-aggregator"
 
 echo
 if [[ $failures -gt 0 ]]; then
