@@ -59,6 +59,12 @@ public final class GraphAlgorithms {
 
   private static final int PARALLELISM           = Runtime.getRuntime().availableProcessors();
   private static final int PARALLEL_THRESHOLD     = 8192;
+  /** How many checkpointed batches {@link #parallelForRangeCheckpointed} splits a full range into, at most. */
+  private static final int CHECKPOINT_BATCHES     = 16;
+  /** How often {@link #lccBuildAndIntersect}'s sequential prep passes check in: cheap enough per node that
+   *  checking every one would cost more than the check saves, same tradeoff {@code GraphData.adjacency}'s
+   *  node-count checkpoint strikes. */
+  private static final int LCC_PREP_CHECKPOINT_STRIDE = 4095;
   private static final int PARALLEL_BFS_THRESHOLD = 4096;
   private static final double ALPHA              = 8.0;  // edge ratio for push->pull switch
   private static final int PULL_ENTER_DIVISOR    = 8;    // push->pull when frontier > n/8
@@ -142,9 +148,6 @@ public final class GraphAlgorithms {
       throw new RuntimeException(firstError);
     }
   }
-
-  /** How many checkpointed batches {@link #parallelForRangeCheckpointed} splits a full range into, at most. */
-  private static final int CHECKPOINT_BATCHES = 16;
 
   /**
    * As {@link #parallelForRange}, but for a kernel with no natural per-iteration checkpoint of its own: the range
@@ -1340,10 +1343,6 @@ public final class GraphAlgorithms {
 
     return lccBuildAndIntersect(view, types, n, checkpoint);
   }
-
-  /** How often the sequential prep passes below check in: cheap enough per node that checking every one would
-   *  cost more than the check saves, same tradeoff {@code GraphData.adjacency}'s node-count checkpoint strikes. */
-  private static final int LCC_PREP_CHECKPOINT_STRIDE = 4095;
 
   /**
    * Builds a flat merged undirected adjacency from CSR arrays, then counts triangles via

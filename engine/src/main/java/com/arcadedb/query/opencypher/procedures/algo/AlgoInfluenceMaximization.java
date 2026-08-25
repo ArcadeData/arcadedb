@@ -139,7 +139,7 @@ public class AlgoInfluenceMaximization extends AbstractAlgoProcedure {
           // #6265). Throttling to checkPeriodically(1024) would instead make abort latency
           // 1024 x O(n + m) cascades, worst on exactly the large graphs where the deadline matters most.
           guard.check();
-          totalSpread += simulateIC(adj, seeds, round, candidate, n, propagationProbability, rng, activated, queue);
+          totalSpread += simulateIC(adj, seeds, round, candidate, propagationProbability, rng, activated, queue);
         }
         final double avgSpread = totalSpread / simulations;
 
@@ -177,7 +177,7 @@ public class AlgoInfluenceMaximization extends AbstractAlgoProcedure {
    * rather than reallocating and zero-filling {@code n}-sized arrays on every call.
    */
   private int simulateIC(final int[][] adj, final int[] seeds, final int seedCount,
-      final int candidate, final int n, final double p, final Random rng,
+      final int candidate, final double p, final Random rng,
       final boolean[] activated, final int[] queue) {
     int head = 0;
     int tail = 0;
