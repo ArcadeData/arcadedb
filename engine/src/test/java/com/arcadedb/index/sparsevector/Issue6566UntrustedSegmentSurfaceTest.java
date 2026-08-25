@@ -24,6 +24,8 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.log.LogManager;
+import com.arcadedb.log.Logger;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.Type;
@@ -31,6 +33,10 @@ import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -146,15 +152,34 @@ class Issue6566UntrustedSegmentSurfaceTest extends TestHelper {
       }
     });
 
-    reopenDatabase();
+    // Capture what the schema-load warning actually says on reopen (PR #6720 review): getUpgradeWarning() must
+    // describe the problem only, and LocalSchema.reportUpgradeWarning() - the sole caller that knows the LOGICAL
+    // TypeIndex name - must be the one and only place "REBUILD INDEX" is appended, naming that logical index and
+    // not the physical per-bucket sub-index name this test's own engineName variable holds.
+    final List<String> warnings = Collections.synchronizedList(new ArrayList<>());
+    final Logger originalLogger = LogManager.instance().getLogger();
+    LogManager.instance().setLogger(new CapturingLogger(warnings, originalLogger));
+    try {
+      reopenDatabase();
+    } finally {
+      LogManager.instance().setLogger(originalLogger);
+    }
 
     final LSMSparseVectorIndex reopened = sparseSubIndex(typeName);
     assertThat(reopened.getStats().get("untrustedSegments"))
         .as("the reopened index must count the legacy segment now on disk").isEqualTo(1L);
     assertThat(reopened.getUpgradeWarning())
-        .as("the same surface every other index upgrade warning uses (schema:indexes, Studio, HTTP admin) "
-            + "must name both the issue and the remedy")
-        .contains("#6379").contains("REBUILD INDEX");
+        .as("getUpgradeWarning() itself must say what is lost, not what to type - the physical sub-index name "
+            + "must never appear in a 'REBUILD INDEX' clause it assembles")
+        .contains("#6379").doesNotContain("REBUILD INDEX");
+
+    final String logicalName = typeName + "[tokens,weights]";
+    final String remedyLine = "REBUILD INDEX `" + logicalName + "`";
+    assertThat(warnings)
+        .as("the schema-load WARNING must name the LOGICAL index for REBUILD INDEX exactly once, never the "
+            + "physical per-bucket sub-index name (%s) this fix used to embed a second time", engineName)
+        .anyMatch(w -> w.contains("#6379") && w.contains(remedyLine) && countOccurrences(w, "REBUILD INDEX") == 1
+            && !w.contains(engineName));
   }
 
   private LSMSparseVectorIndex sparseSubIndex(final String typeName) {
@@ -170,6 +195,67 @@ class Issue6566UntrustedSegmentSurfaceTest extends TestHelper {
       return c;
     } catch (final IOException e) {
       throw new RuntimeException("failed to create sparse segment component '" + name + "'", e);
+    }
+  }
+
+  private static int countOccurrences(final String haystack, final String needle) {
+    int count = 0;
+    for (int i = haystack.indexOf(needle); i >= 0; i = haystack.indexOf(needle, i + needle.length()))
+      count++;
+    return count;
+  }
+
+  /**
+   * Captures WARNING-and-above messages while forwarding everything to the real logger, matching the pattern
+   * {@code PaginatedSparseVectorEngineCompactionRecencyTest} uses for the same purpose. The fixed-arity overload
+   * must NOT delegate to the varargs one: the fixed arity is the exact match, so it would recurse until the stack
+   * dies.
+   */
+  private static final class CapturingLogger implements Logger {
+    private final List<String> warnings;
+    private final Logger       delegate;
+
+    CapturingLogger(final List<String> warnings, final Logger delegate) {
+      this.warnings = warnings;
+      this.delegate = delegate;
+    }
+
+    private void capture(final Level level, final String message, final Object... args) {
+      if (message == null || level.intValue() < Level.WARNING.intValue())
+        return;
+      String formatted = message;
+      if (args != null && args.length > 0) {
+        try {
+          formatted = message.formatted(args);
+        } catch (final Exception ignored) {
+          // Raw template is good enough for the substring matching the assertions do.
+        }
+      }
+      warnings.add(formatted);
+    }
+
+    @Override
+    public void log(final Object requester, final Level level, final String message, final Throwable exception,
+        final String context, final Object arg1, final Object arg2, final Object arg3, final Object arg4,
+        final Object arg5, final Object arg6, final Object arg7, final Object arg8, final Object arg9,
+        final Object arg10, final Object arg11, final Object arg12, final Object arg13, final Object arg14,
+        final Object arg15, final Object arg16, final Object arg17) {
+      capture(level, message, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14,
+          arg15, arg16, arg17);
+      delegate.log(requester, level, message, exception, context, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9,
+          arg10, arg11, arg12, arg13, arg14, arg15, arg16, arg17);
+    }
+
+    @Override
+    public void log(final Object requester, final Level level, final String message, final Throwable exception,
+        final String context, final Object... args) {
+      capture(level, message, args);
+      delegate.log(requester, level, message, exception, context, args);
+    }
+
+    @Override
+    public void flush() {
+      delegate.flush();
     }
   }
 }
