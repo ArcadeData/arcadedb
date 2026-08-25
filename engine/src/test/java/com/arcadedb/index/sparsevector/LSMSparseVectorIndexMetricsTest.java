@@ -101,9 +101,13 @@ class LSMSparseVectorIndexMetricsTest extends TestHelper {
         .as("entry must expose segmentCount").isTrue();
     assertThat(entry.has("totalPostings"))
         .as("entry must expose totalPostings").isTrue();
+    assertThat(entry.has("untrustedSegments"))
+        .as("entry must expose untrustedSegments (issue #6566)").isTrue();
     assertThat(entry.getLong("memtablePostings")).isGreaterThanOrEqualTo(0L);
     assertThat(entry.getInt("segmentCount")).isGreaterThanOrEqualTo(0);
     // 5 docs * 3 nnz = 15 postings, summed across however many buckets exist.
     assertThat(entry.getLong("totalPostings")).isEqualTo(15L);
+    // Nothing here was merged from a pre-#6379 segment, so the fresh index must read as trusted.
+    assertThat(entry.getInt("untrustedSegments")).isZero();
   }
 }

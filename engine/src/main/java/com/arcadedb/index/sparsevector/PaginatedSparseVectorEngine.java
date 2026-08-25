@@ -1364,6 +1364,42 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   }
 
   /**
+   * A consistent point-in-time pairing of the active segment count and how many of those segments are untrusted,
+   * taken from a single {@link #segments} snapshot. Reading the two counters separately (as an earlier version of
+   * this fix did) can observe them straddling a compaction that lands in between the two reads - harmless for either
+   * number alone, but a formatted message that combines them ("N of M segments...") could then say something that
+   * was never true at any instant, such as more untrusted segments than active ones (PR #6720 review).
+   *
+   * @param total     active segment count, matching {@link #segmentCount()}
+   * @param untrusted how many of those carry a persisted precedence that predates the recency-epoch fix (issue #6379)
+   */
+  public record SegmentTrustSnapshot(int total, int untrusted) {
+  }
+
+  /**
+   * {@link #segmentTrust()}'s untrusted half, re-derived from the live {@link #segments} snapshot on every call
+   * instead of latched by {@link #untrustedEpochWarned} the way {@link #warnOnPreRecencyEpochSegments} is. A log
+   * line can only be read once, at the moment it is emitted; this can be asked again at any time - including after
+   * a {@code REBUILD INDEX}, to confirm the remedy actually worked (issue #6566). O(active segment count), the same
+   * cost as {@link #segmentCount()} - cheap enough for {@link com.arcadedb.index.IndexInternal#getUpgradeWarning()}'s
+   * "called on every listing" contract, which is what surfaces this to {@code schema:indexes} / Studio / the HTTP
+   * admin API.
+   */
+  public int untrustedSegmentCount() {
+    return segmentTrust().untrusted();
+  }
+
+  /** See {@link SegmentTrustSnapshot}. */
+  public SegmentTrustSnapshot segmentTrust() {
+    final PaginatedSegmentReader[] active = segments.get();
+    int untrusted = 0;
+    for (final PaginatedSegmentReader r : active)
+      if (r.epochUntrusted())
+        untrusted++;
+    return new SegmentTrustSnapshot(active.length, untrusted);
+  }
+
+  /**
    * Ids of the active segments, sorted ascending.
    * <p>
    * <b>Not parallel to {@link #segmentEpochs()}.</b> This one sorts; that one preserves the array's
@@ -1924,6 +1960,17 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * and would otherwise say nothing, leaving only the leader's log to go on. That path runs on
    * every query, so {@link #untrustedEpochWarned} latches the line to once per engine instance
    * instead of once per refresh.
+   * <p>
+   * Deliberately says nothing about WHAT to run: {@link #indexName} here is the physical per-bucket
+   * sub-index name (as passed from {@code LSMSparseVectorIndex.openEngine()}), not the logical
+   * index {@code REBUILD INDEX} takes - the same distinction issue #6566's PR #6720 review fixed on
+   * {@link com.arcadedb.index.sparsevector.LSMSparseVectorIndex#getUpgradeWarning()}. This class has
+   * no access to the logical {@code TypeIndex} name to get that right, so it leaves the remedy to
+   * the surface that does: {@code getUpgradeWarning()} folds in {@link #untrustedSegmentCount()} for
+   * exactly this condition, and {@code LocalSchema.reportUpgradeWarning()} logs it - separately from
+   * this line - with the correct logical name and command (PR #6720 review, second round: an earlier
+   * version of this fix left this WARNING's own remedy clause wrong, so a reopen logged two lines for
+   * the same condition, one with a target that does not work).
    */
   private void warnOnPreRecencyEpochSegments(final List<PaginatedSegmentReader> readers) {
     int stale = 0;
@@ -1936,9 +1983,8 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       return;
     LogManager.instance().log(this, Level.WARNING,
         "Sparse-vector index '%s' holds %d segment(s) whose precedence predates the recency-epoch fix (issue #6379); a "
-            + "document deleted before those segments were merged may still be returned by queries. Run "
-            + "'REBUILD INDEX %s' once to rewrite them in the correct order.",
-        null, indexName, stale, indexName);
+            + "document deleted before those segments were merged may still be returned by queries.",
+        null, indexName, stale);
   }
 
   /**

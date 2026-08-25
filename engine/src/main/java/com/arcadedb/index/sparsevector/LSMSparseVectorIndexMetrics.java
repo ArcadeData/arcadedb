@@ -25,19 +25,23 @@ import com.arcadedb.serializer.json.JSONObject;
 
 /**
  * Builds a Studio-friendly snapshot of every {@link LSMSparseVectorIndex} live on a database:
- * memtable posting count, sealed segment count, and total postings. Operators read this on the
- * Server tab to spot a memtable that is not draining (compaction lag) or a runaway segment count
- * (size-tiered cascade jammed) without log-grepping or a JMX detour.
+ * memtable posting count, sealed segment count, total postings, and how many of those segments
+ * are still untrusted. Operators read this on the Server tab to spot a memtable that is not
+ * draining (compaction lag), a runaway segment count (size-tiered cascade jammed), or a segment
+ * whose precedence predates the recency-epoch fix (issue #6379) - without log-grepping or a JMX
+ * detour.
  * <p>
  * The shape returned is keyed by the user-facing {@link TypeIndex} name (e.g.
  * {@code Doc[tokens,weights]}) so Studio shows one row per logical index. Per-bucket physical
  * sub-indexes are summed under their parent {@code TypeIndex}, which is what an operator
  * thinks of as "the sparse-vector index". Values are pulled directly from the live engines -
- * no extra book-keeping; each counter is an O(1) read.
+ * no extra book-keeping; each counter is a cheap read bounded by the (small) active segment count.
  *
  * <pre>{
- *   "Doc[tokens,weights]":   { "memtablePostings": 12345, "segmentCount": 3, "totalPostings": 987654 },
- *   "Other[tokens,weights]": { "memtablePostings": 0,     "segmentCount": 1, "totalPostings": 543210 }
+ *   "Doc[tokens,weights]":   { "memtablePostings": 12345, "segmentCount": 3, "totalPostings": 987654,
+ *                               "untrustedSegments": 0 },
+ *   "Other[tokens,weights]": { "memtablePostings": 0,     "segmentCount": 1, "totalPostings": 543210,
+ *                               "untrustedSegments": 1 }
  * }</pre>
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -69,17 +73,24 @@ public final class LSMSparseVectorIndexMetrics {
       final TypeIndex typeIndex = sparse.getTypeIndex();
       final String key = typeIndex != null ? typeIndex.getName() : sparse.getName();
 
+      // One snapshot per engine for both counts, so a compaction landing between two separate reads cannot make a
+      // single bucket's own pair inconsistent (PR #6720 review); the sum across buckets below is still only as
+      // atomic as scraping several independent engines ever is, same as every other field aggregated here.
+      final PaginatedSparseVectorEngine.SegmentTrustSnapshot trust = engine.segmentTrust();
+
       final JSONObject entry;
       if (out.has(key)) {
         entry = out.getJSONObject(key);
         entry.put("memtablePostings", entry.getLong("memtablePostings", 0L) + engine.memtablePostings());
-        entry.put("segmentCount", entry.getInt("segmentCount", 0) + engine.segmentCount());
+        entry.put("segmentCount", entry.getInt("segmentCount", 0) + trust.total());
         entry.put("totalPostings", entry.getLong("totalPostings", 0L) + engine.totalPostings());
+        entry.put("untrustedSegments", entry.getInt("untrustedSegments", 0) + trust.untrusted());
       } else {
         entry = new JSONObject();
         entry.put("memtablePostings", engine.memtablePostings());
-        entry.put("segmentCount", engine.segmentCount());
+        entry.put("segmentCount", trust.total());
         entry.put("totalPostings", engine.totalPostings());
+        entry.put("untrustedSegments", trust.untrusted());
         out.put(key, entry);
       }
     }

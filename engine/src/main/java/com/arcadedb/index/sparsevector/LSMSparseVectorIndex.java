@@ -563,10 +563,32 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    * Delegated rather than left at the interface default: a sparse-vector posting key is a dimension identifier, so
    * the key-order mismatch of #5802 should never arise here - but that is an invariant about the keys, not a property
    * of this class, and answering {@code null} unconditionally would hide the mismatch if it ever did.
+   * <p>
+   * Also folds in {@link PaginatedSparseVectorEngine#segmentTrust()} (issue #6566): a segment merged before the
+   * recency-epoch fix of #6379 can still return a document that was deleted, and until now the only way to learn
+   * that was the once-per-instance WARNING log line at open/refresh time - unqueryable once the moment passed, and
+   * with no way to confirm a {@code REBUILD INDEX} actually cleared it. This makes the same condition answer through
+   * the surface every other index upgrade warning already uses: {@code schema:indexes}, {@code schema:index:<name>},
+   * Studio, and the HTTP admin API, all of which read {@link IndexInternal#getUpgradeWarning()} today.
+   * <p>
+   * Deliberately says nothing about WHAT to run: {@link #getName()} on this class is the physical per-bucket
+   * sub-index name, not the logical index {@code REBUILD INDEX} takes, and the contract on
+   * {@link IndexInternal#getUpgradeWarning()} is explicit that implementations say what is lost and why, not what to
+   * type - the caller ({@code LocalSchema.reportUpgradeWarning()}) resolves the logical name itself and appends the
+   * actual command, the same way {@link com.arcadedb.index.geospatial.LSMTreeGeoIndex#getUpgradeWarning()} leaves it
+   * (PR #6720 review: embedding a second, physical-named "Run 'REBUILD INDEX ...'" here would have shown an operator
+   * two different targets in the same message).
    */
   @Override
   public String getUpgradeWarning() {
-    return underlyingIndex.getUpgradeWarning();
+    final String delegated = underlyingIndex.getUpgradeWarning();
+    final PaginatedSparseVectorEngine.SegmentTrustSnapshot trust = engine.segmentTrust();
+    if (trust.untrusted() == 0)
+      return delegated;
+    final String own = "%d of %d segment(s) carry a precedence that predates the recency-epoch fix (issue #6379); a "
+        + "document deleted before those segments were merged may still be returned by queries.".formatted(
+        trust.untrusted(), trust.total());
+    return delegated == null ? own : delegated + " " + own;
   }
 
   @Override
@@ -652,7 +674,12 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     final Map<String, Long> stats = new HashMap<>();
     stats.put("memtablePostings", engine.memtablePostings());
     stats.put("totalPostings", engine.totalPostings());
-    stats.put("segmentCount", (long) engine.segmentCount());
+    // One snapshot for both, so the two numbers can never straddle a compaction landing in between (PR #6720 review).
+    final PaginatedSparseVectorEngine.SegmentTrustSnapshot trust = engine.segmentTrust();
+    stats.put("segmentCount", (long) trust.total());
+    // Issue #6566: a queryable counterpart to the once-per-instance WARNING log line, so a monitoring system (or an
+    // operator re-checking after a REBUILD INDEX) can ask "is this index still affected" rather than grep for it.
+    stats.put("untrustedSegments", (long) trust.untrusted());
     return stats;
   }
 
