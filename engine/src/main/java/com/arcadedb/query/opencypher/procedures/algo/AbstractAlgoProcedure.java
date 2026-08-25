@@ -899,7 +899,18 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     public WeightedAdjacency weightedAdjacency(final WorkGuard guard, final Vertex.DIRECTION dir,
         final String weightProperty, final String... relTypes) {
       if (weightProperty == null) {
+        // adjacency() already reserved neighbors' own footprint (issue #6317); what is new here is the parallel
+        // weights array beside it, one double per entry. Its total entry count is already known from neighbors,
+        // so unlike the columnar/record builds below - where entries accumulate as the walk goes - this can be
+        // reserved in one shot before allocating it, rather than incrementally.
         final int[][] neighbors = adjacency(dir, relTypes);
+        long totalEntries = 0;
+        for (int i = 0; i < nodeCount; i++)
+          totalEntries += neighbors[i].length;
+        memory.reserve(saturatingSum(saturatingProduct(nodeCount, MATRIX_ROW_OVERHEAD_BYTES),
+                saturatingProduct(totalEntries, DOUBLE_BYTES)), "the unit-weight array",
+            nodeCount + " nodes, " + totalEntries + " edge entries");
+
         final double[][] weights = new double[nodeCount][];
         for (int i = 0; i < nodeCount; i++) {
           guard.checkPeriodically(i);
@@ -926,6 +937,25 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     }
 
     /**
+     * Charges {@code rows} row-header pairs (one each for {@code neighbors[i]} and {@code weights[i]}) and
+     * {@code entries} {@code (neighbour id, weight)} pairs to the call's budget.
+     * <p>
+     * {@code weightedAdjacency} used to reserve nothing for its own columnar/record builds at all - #6300's
+     * edge-count budget was {@code algo.mst}/{@code algo.msa}'s only protection against an oversized graph, and
+     * routing them onto this shared helper (issue #6316) silently lost it: the full {@code int[][]}/{@code
+     * double[][]} pair was materialised before either procedure's own {@code reserve()} call ran. This is the
+     * same "reserve while counting, not after" placement {@link #reserveAdjacency} uses for the plain adjacency
+     * build, so a graph too large for the weighted working set is refused mid-walk rather than after it.
+     */
+    private void reserveWeightedAdjacency(final long rows, final long entries) {
+      if (rows == 0 && entries == 0)
+        return;
+      memory.reserve(saturatingSum(saturatingProduct(rows, 2 * MATRIX_ROW_OVERHEAD_BYTES),
+              saturatingProduct(entries, INT_BYTES + DOUBLE_BYTES)), "the weighted adjacency list",
+          rows > 0 ? rows + " nodes, " + entries + " edge entries" : entries + " edge entries");
+    }
+
+    /**
      * Columnar build: one call per node into {@link GraphTraversalProvider#edgeWeightsOf}, which is where the
      * per-type, per-direction slicing that keeps a weight with its own edge lives. Nothing about that pairing is
      * re-derived here, so the CSR path of an {@code algo.*} procedure, of {@code astar} and of
@@ -933,14 +963,22 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
      */
     private WeightedAdjacency weightedAdjacencyFromColumns(final WorkGuard guard, final Vertex.DIRECTION dir,
         final String weightProperty, final String[] types) {
+      reserveWeightedAdjacency(nodeCount, 0);
       final int[][] neighbors = new int[nodeCount][];
       final double[][] weights = new double[nodeCount][];
+      long entries = 0;
       for (int i = 0; i < nodeCount; i++) {
         guard.checkPeriodically(i);
         final NodeEdgeWeights edges = provider.edgeWeightsOf(i, dir, weightProperty, 1.0, types);
         neighbors[i] = edges.neighbors();
         weights[i] = edges.weights();
+        entries += neighbors[i].length;
+        if (entries >= ADJACENCY_CHECKPOINT_ENTRIES || (i & 1023) == 1023) {
+          reserveWeightedAdjacency(0, entries);
+          entries = 0;
+        }
       }
+      reserveWeightedAdjacency(0, entries);
       return new WeightedAdjacency(neighbors, weights);
     }
 
@@ -951,6 +989,7 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
      */
     private WeightedAdjacency weightedAdjacencyFromRecords(final WorkGuard guard, final Vertex.DIRECTION dir,
         final String weightProperty, final String[] relTypes) {
+      reserveWeightedAdjacency(nodeCount, 0);
       final int[][] neighbors = new int[nodeCount][];
       final double[][] weights = new double[nodeCount][];
       // One growable pair of scratch buffers for the whole graph rather than a list per node: the degree is
@@ -958,6 +997,7 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
       int[] scratchNeighbors = new int[16];
       double[] scratchWeights = new double[16];
       int edgeStep = 0;
+      long entries = 0;
 
       for (int i = 0; i < nodeCount; i++) {
         final Vertex vertex = getVertex(i);
@@ -997,7 +1037,13 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
         }
         neighbors[i] = Arrays.copyOf(scratchNeighbors, degree);
         weights[i] = Arrays.copyOf(scratchWeights, degree);
+        entries += degree;
+        if (entries >= ADJACENCY_CHECKPOINT_ENTRIES || (i & 1023) == 1023) {
+          reserveWeightedAdjacency(0, entries);
+          entries = 0;
+        }
       }
+      reserveWeightedAdjacency(0, entries);
       return new WeightedAdjacency(neighbors, weights);
     }
   }
