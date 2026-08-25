@@ -109,7 +109,7 @@ public class AlgoMST extends AbstractAlgoProcedure {
     // never did. A blank weightProperty is normalised to null first (matching algo.maxFlow's capacityProperty
     // handling), so both mean "no property, every edge weighs 1.0" - otherwise a blank string would still take
     // the record-backed fallback in weightedAdjacency instead of the CSR path even when a view is ready, since
-    // weightedAdjacency only special-cases a null weightProperty, not an empty one (PR #6714 review round 12).
+    // weightedAdjacency only special-cases a null weightProperty, not an empty one.
     final String weightProp = weightProperty != null && !weightProperty.isEmpty() ? weightProperty : null;
     final GraphData.WeightedAdjacency weighted = graph.weightedAdjacency(guard, Vertex.DIRECTION.OUT, weightProp, relTypes);
     final int[][] neighbors = weighted.neighbors();
@@ -126,10 +126,9 @@ public class AlgoMST extends AbstractAlgoProcedure {
     //
     // 24 bytes per edge: the endpoints eu/ev and the weight ew, plus the two int arrays sortedIndexesByWeight
     // works over (the order and the merge scratch). weightedAdjacency's own neighbour/weight arrays are reserved
-    // incrementally as it builds them, not after the fact (issue #6714 review: routing MST/MSA onto the shared
-    // helper had silently dropped their #6300 edge-count protection, since weightedAdjacency reserved nothing of
-    // its own) - what is reserved here, after that call returns, is only this procedure's own flat eu/ev/ew
-    // arrays, which are additional to and smaller than what weightedAdjacency already gated.
+    // incrementally as it builds them, not after the fact - what is reserved here, after that call returns, is
+    // only this procedure's own flat eu/ev/ew arrays, which are additional to and smaller than what
+    // weightedAdjacency already gates.
     final MemoryBudget memory = graph.memory();
     memory.reserve(saturatingProduct(edgeCount, EDGE_BYTES), "the edge arrays", edgeCount + " edges");
 
@@ -145,10 +144,10 @@ public class AlgoMST extends AbstractAlgoProcedure {
         ev[ec] = row[j];
         ew[ec] = rowWeights[j];
         ec++;
-        // Round 14 review: the old pass-2 fill loop this replaced checked in per edge (guard.checkPeriodically
-        // (edgeStep++)); this flattening copy is pure in-memory work with no DB touch, but it is still O(edges)
-        // over a count nothing bounds, so it keeps the same throttled checkpoint rather than being the one
-        // silent gap in an otherwise consistently-guarded pass.
+        // The old pass-2 fill loop this replaced checked in per edge (guard.checkPeriodically(edgeStep++)); this
+        // flattening copy is pure in-memory work with no DB touch, but it is still O(edges) over a count
+        // nothing bounds, so it keeps the same throttled checkpoint rather than being the one silent gap in an
+        // otherwise consistently-guarded pass.
         guard.checkPeriodically(ec);
       }
     }

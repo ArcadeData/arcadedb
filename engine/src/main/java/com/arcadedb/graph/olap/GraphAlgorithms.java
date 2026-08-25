@@ -64,9 +64,9 @@ public final class GraphAlgorithms {
    * dividing it by this count still keeps every batch at least {@link #PARALLEL_THRESHOLD} large (below that,
    * fewer, larger-than-this-count batches are used instead, down to a single one). Above
    * {@link #MAX_CHECKPOINT_BATCH_SIZE} nodes this count is no longer the driver: batch size is capped there
-   * instead, so batch count keeps growing with the range and abort latency per batch stays bounded (issue
-   * PR #6714 review round 11 - without the cap, batch size grew unboundedly with the range for any n above
-   * {@code CHECKPOINT_BATCHES x PARALLEL_THRESHOLD}, since batch count was pinned at exactly this many).
+   * instead, so batch count keeps growing with the range and abort latency per batch stays bounded - without
+   * the cap, batch size grew unboundedly with the range for any n above
+   * {@code CHECKPOINT_BATCHES x PARALLEL_THRESHOLD}, since batch count was pinned at exactly this many.
    */
   private static final int CHECKPOINT_BATCHES     = 16;
   /** Upper bound on a single checkpointed batch's size, so abort latency stays bounded as the range grows past
@@ -75,12 +75,12 @@ public final class GraphAlgorithms {
   /** Bitmask for how often {@link #lccBuildAndIntersect}'s sequential prep passes check in between nodes -
    *  {@code (u & MASK) == MASK} is true every 1024th node, not every {@code MASK}th one. Matches the 1024-node
    *  stride {@code WorkGuard.checkPeriodically} and {@code GraphData.adjacency} both use elsewhere in the
-   *  codebase (PR #6714 review round 11: this used to be 4x coarser, with no reason for the difference). */
+   *  codebase. */
   private static final int LCC_PREP_CHECKPOINT_MASK = 1023;
   /** Entry-count threshold at which {@link #lccBuildAndIntersect}'s per-node prep passes checkpoint mid-row,
    *  inside a single node's own edge walk rather than only between nodes - otherwise one supernode row is an
    *  unabortable unit regardless of its own size, the same class of gap issue #6715 names for
-   *  {@code weightedAdjacencyFromColumns} (PR #6714 review round 11). Same magnitude as
+   *  {@code weightedAdjacencyFromColumns}. Same magnitude as
    *  {@code AbstractAlgoProcedure.ADJACENCY_CHECKPOINT_ENTRIES}, duplicated here rather than shared because
    *  that constant is {@code protected} on a class in a different package with no public accessor. */
   private static final int LCC_ROW_CHECKPOINT_ENTRIES = 1_048_576;
@@ -1262,15 +1262,15 @@ public final class GraphAlgorithms {
 
       final AtomicBoolean anyChanged = new AtomicBoolean(false);
 
-      // A fresh neighborBuf per chunk invocation rather than a shared/pooled one: PR #6714 review round 9
-      // found parallelForRangeCheckpointed's batching (issue #6318) multiplies how often this closure runs per
-      // iteration - up to CHECKPOINT_BATCHES x, versus once per parallelForRange chunk before. A round-9 fix
-      // moved this into a ThreadLocal to reuse across batches/iterations, but round 11 found that trades a
-      // small, bounded per-call allocation for unbounded retention on the engine's long-lived shared thread
-      // pool: a ThreadLocal set on a pool thread outlives this call, so a supernode-sized maxDeg (e.g. a
-      // 10M-degree hub, ~40 MB) stays retained on every thread that ever ran a chunk, indefinitely, until that
-      // thread happens to touch an unrelated ThreadLocal and expunges the stale entry. A retained-indefinitely
-      // large buffer is worse than a reallocated-but-GC'd small one, so this reverts to the simpler shape.
+      // A fresh neighborBuf per chunk invocation rather than a shared/pooled one: parallelForRangeCheckpointed's
+      // batching (issue #6318) multiplies how often this closure runs per iteration - up to CHECKPOINT_BATCHES
+      // x, versus once per parallelForRange chunk before. A ThreadLocal to reuse the buffer across batches/
+      // iterations was tried and rejected: it trades a small, bounded per-call allocation for unbounded
+      // retention on the engine's long-lived shared thread pool - a ThreadLocal set on a pool thread outlives
+      // this call, so a supernode-sized maxDeg (e.g. a 10M-degree hub, ~40 MB) stays retained on every thread
+      // that ever ran a chunk, indefinitely, until that thread happens to touch an unrelated ThreadLocal and
+      // expunges the stale entry. A retained-indefinitely large buffer is worse than a reallocated-but-GC'd
+      // small one, so this keeps the simpler shape.
       parallelForRangeCheckpointed(n, checkpoint, (start, end) -> {
         final int[] neighborBuf = new int[maxDeg];
         boolean localChanged = false;
@@ -1431,7 +1431,7 @@ public final class GraphAlgorithms {
         while (ia < aEnd && ib < bEnd) {
           // Checkpointed on entries written for THIS node, not just between nodes: a single supernode row
           // (millions of entries) is otherwise one unabortable unit regardless of its own size, the same class
-          // of gap issue #6715 names for weightedAdjacencyFromColumns (PR #6714 review round 11).
+          // of gap issue #6715 names for weightedAdjacencyFromColumns.
           if (((p - offsets[u]) & (LCC_ROW_CHECKPOINT_ENTRIES - 1)) == 0)
             checkpoint.check();
           if (fwdNeighbors[ia] <= bwdNeighbors[ib])

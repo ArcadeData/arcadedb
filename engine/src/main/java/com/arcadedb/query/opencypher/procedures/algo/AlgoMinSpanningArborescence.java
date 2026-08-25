@@ -114,7 +114,7 @@ public class AlgoMinSpanningArborescence extends AbstractAlgoProcedure {
     // getEdges() walk. OUT direction = directed edges, matching the arborescence semantics. A blank
     // weightProperty is normalised to null first (matching algo.maxFlow's capacityProperty handling), so a
     // blank string does not avoidably fall onto weightedAdjacency's record-backed fallback instead of the CSR
-    // path when a view is ready (PR #6714 review round 12).
+    // path when a view is ready.
     final String weightProp = weightProperty != null && !weightProperty.isEmpty() ? weightProperty : null;
     final GraphData.WeightedAdjacency weighted = graph.weightedAdjacency(guard, Vertex.DIRECTION.OUT, weightProp, relTypes);
     final int[][] neighbors = weighted.neighbors();
@@ -141,8 +141,8 @@ public class AlgoMinSpanningArborescence extends AbstractAlgoProcedure {
         eTo[ec] = row[j];
         eW[ec] = rowWeights[j];
         ec++;
-        // Round 14 review: same throttled checkpoint as algo.mst's equivalent flattening copy - pure in-memory
-        // work, but still O(edges) over a count nothing bounds.
+        // Same throttled checkpoint as algo.mst's equivalent flattening copy - pure in-memory work, but still
+        // O(edges) over a count nothing bounds.
         guard.checkPeriodically(ec);
       }
     }
