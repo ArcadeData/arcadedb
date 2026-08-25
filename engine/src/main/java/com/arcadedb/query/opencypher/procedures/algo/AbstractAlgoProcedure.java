@@ -802,8 +802,8 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
      * {@link #weightedAdjacency} uses for its columnar path.
      */
     public int[] degrees(final Vertex.DIRECTION dir, final String... relTypes) {
-      // Reserved before allocating, not after (issue #6714 review round 4: this used to allocate first, the
-      // same "reserve after the fact" ordering the round-3 review found and fixed for weightedAdjacency).
+      // Reserved before allocating, not after - the same "reserve while counting, not after" ordering
+      // weightedAdjacency uses for its own buffers.
       memory.reserve(saturatingProduct(nodeCount, INT_BYTES), "the degree buffer", nodeCount + " nodes");
       final int[] degrees = new int[nodeCount];
       if (provider != null) {
