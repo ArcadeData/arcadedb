@@ -71,6 +71,11 @@ class LSMVectorIndexMetrics {
   // number that keeps climbing is the signal to give the JVM more heap, lower graphBuildCacheMaxHeapPercent, or
   // split the index; one that climbed once and stopped is a transient the next trigger already recovered from.
   private final AtomicLong rebuildsDeferredForMemory = new AtomicLong(0);
+  // Times a stale persisted graph (more live vectors than it covers, no deletions) was reused as a prefix instead
+  // of being discarded for a synchronous full rebuild on the calling search thread (issue #6655). Each one traded
+  // a blocking rebuild sized to the whole index for an immediate answer plus a background rebuild; the gap
+  // vectors stay searchable meanwhile through the delta buffer they were queued into.
+  private final AtomicLong stalePrefixGraphReuses = new AtomicLong(0);
 
   // Vector fetch source tracking
   private final AtomicLong vectorFetchFromQuantized = new AtomicLong(0);
@@ -125,6 +130,10 @@ class LSMVectorIndexMetrics {
 
   void incrementRebuildsDeferredForMemory() {
     rebuildsDeferredForMemory.incrementAndGet();
+  }
+
+  void incrementStalePrefixGraphReuses() {
+    stalePrefixGraphReuses.incrementAndGet();
   }
 
   // Vector fetch source tracking methods
@@ -234,6 +243,7 @@ class LSMVectorIndexMetrics {
     stats.put("groupedSearchesMergingDelta", groupedSearchesMergingDelta.get());
     stats.put("unverifiedGraphReuses", unverifiedGraphReuses.get());
     stats.put("rebuildsDeferredForMemory", rebuildsDeferredForMemory.get());
+    stats.put("stalePrefixGraphReuses", stalePrefixGraphReuses.get());
     stats.put("compactionCount", compactionCount.get());
 
     stats.put("vectorFetchFromQuantized", vectorFetchFromQuantized.get());
@@ -257,6 +267,7 @@ class LSMVectorIndexMetrics {
     groupedSearchesMergingDelta.set(0);
     unverifiedGraphReuses.set(0);
     rebuildsDeferredForMemory.set(0);
+    stalePrefixGraphReuses.set(0);
     compactionCount.set(0);
     vectorFetchFromQuantized.set(0);
     vectorFetchFromDocuments.set(0);
