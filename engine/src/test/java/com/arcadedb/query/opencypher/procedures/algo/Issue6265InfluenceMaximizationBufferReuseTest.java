@@ -146,9 +146,15 @@ class Issue6265InfluenceMaximizationBufferReuseTest {
     // simulateIC calls. Before this fix each call allocated a boolean[300] (~324 bytes with header/padding)
     // plus an int[300] (~1216 bytes) - about 1500 bytes/call, ~134 MB total for this one procedure call. Now
     // both buffers are allocated once for the whole call and simulateIC only flips bits it already touched, so
-    // the bound below (1% of the old per-call estimate) separates "reused" from "reallocated every call" by
-    // two orders of magnitude while leaving headroom for the rest of the procedure's one-time allocations
-    // (adjacency lists, Result objects, boxed doubles for k=1 round's single output row).
+    // the bound below separates "reused" from "reallocated every call" by close to two orders of magnitude
+    // while leaving headroom for the rest of the procedure's one-time allocations (adjacency lists, Result
+    // objects, boxed doubles for k=1 round's single output row).
+    //
+    // PR #6714 review: a 1% bound (1,345,500 bytes) passed locally across repeated runs but failed once in CI
+    // at 1,443,080 bytes - about 7% over, still ~93x below the ~134MB unfixed-behaviour baseline it exists to
+    // catch. The one-time overhead this measures is not itself bounded by anything the fix controls (JIT/JVM
+    // allocation noise on the CI runner's shared hardware, not GC - the thread-local counter is immune to
+    // that), so 5% keeps ~20x separation from the pathological case while absorbing that margin.
     final com.sun.management.ThreadMXBean threads = threadAllocationBean();
     assumeTrue(threads != null, "JVM does not expose per-thread allocation counters");
 
@@ -164,7 +170,7 @@ class Issue6265InfluenceMaximizationBufferReuseTest {
     assertThat(allocated)
         .as("a boolean[n]+int[n] pair per simulateIC call is what this bound separates from buffers reused "
             + "across the whole procedure call (allocated=" + allocated + " bytes, old per-call estimate=" + oldPerCallEstimate + " bytes)")
-        .isLessThan(oldPerCallEstimate / 100);
+        .isLessThan(oldPerCallEstimate / 20);
   }
 
   // ── Helpers ──────────────────────────────────────────────────────────────
