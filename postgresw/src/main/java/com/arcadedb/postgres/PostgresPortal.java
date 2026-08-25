@@ -40,6 +40,20 @@ public class PostgresPortal {
   public boolean                   executed             = false;
   public boolean                   rowDescriptionSent   = false;
   /**
+   * True only when a {@code Describe('S')} for this exact statement text already sent the client a real
+   * RowDescription (schema-sampled column OIDs, since no row has run yet) - as opposed to {@link #columns}
+   * being non-null for some other reason (a catalog answer recomputed fresh on every Bind, or a stale value
+   * inherited via {@code bindFrom()} from an already-executed portal picked up by {@code bindCommand()}'s
+   * unknown-source-statement fallback). Statement-level Describe is a per-connection contract a client is
+   * entitled to rely on for every later Bind+Execute of the same statement with different parameters (issue
+   * #6725): once set, {@code executeCommand()} must keep serializing under that exact promised shape instead
+   * of silently re-deriving and re-announcing a different one from whatever row this particular Execute
+   * happens to return - a schemaless type's undeclared property can hold a different Postgres type per row,
+   * and a client that already negotiated binary transfer off the first shape has no way to know the second
+   * one ever happened.
+   */
+  public boolean                   columnsDescribed     = false;
+  /**
    * Memoizes {@code PostgresNetworkExecutor.resolveQueryTargetType(sqlStatement)} (issue #6447): a portal can
    * be described and executed - possibly executed repeatedly, for a cursor-based fetch with a LIMIT - several
    * times over its lifetime, and the schema type its FROM target names does not change between them.
@@ -119,6 +133,7 @@ public class PostgresPortal {
     portal.executed = template.executed;
     portal.cachedResultSet = template.cachedResultSet;
     portal.columns = template.columns;
+    portal.columnsDescribed = template.columnsDescribed;
     portal.queryTargetType = template.queryTargetType;
     portal.queryTargetTypeResolved = template.queryTargetTypeResolved;
     portal.aliasToSourceProperty = template.aliasToSourceProperty;
