@@ -150,7 +150,7 @@ class LSMVectorIndexConcurrentRebuildVisibilityTest extends TestHelper {
    */
   private static String diagnose(final LSMVectorIndex index, final RID rid) {
     try {
-      final VectorLocationIndex locations = readField(index, "vectorIndex");
+      final VectorLocationIndex locations = readField(index, "residentLocations");
       final int[] vectorIds = locations.getVectorIdsForRid(rid);
 
       // DeltaVectorEntry is a private nested class, so its elements are inspected reflectively too.
