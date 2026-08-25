@@ -19,7 +19,15 @@ permissions:
   contents: read
 
 jobs:
-  setup:
+  # Repo/workflow hygiene only: formatting, the meta-checks below, and the CI scripts' own self-test.
+  # None of it needs the code to build or the tests to run, and until #6569 it gated both anyway
+  # through `build-and-package`'s `needs: setup` - so a single unrelated formatting nit (a missing
+  # trailing newline that trips the end-of-file-fixer pre-commit hook, c816a66c7) took the entire
+  # test suite offline for every open PR, and did so as fifteen `skipping` checks rather than one
+  # named failure. This job is deliberately NOT a dependency of `build-and-package` or any test lane
+  # any more, so a lint failure here shows up as its own red check without ever silencing the tests.
+  # The `ci-status` job at the end of this file is what still catches it project-wide.
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -34,14 +42,17 @@ jobs:
           cache: "pip"
       # Every step below needs PyYAML, so it gets its own step rather than hiding inside the first
       # one that happens to run - reordering those would otherwise break the rest confusingly.
-      # Pinned for the same reason the actions here are pinned to a SHA: this job gates every other
-      # one, so what it installs should not change under it between runs.
+      # Pinned for the same reason the actions here are pinned to a SHA: this job used to gate every
+      # other one, and even now that it does not, what it installs should not change under it
+      # between runs.
       - name: Install workflow linting dependencies
         run: python3 -m pip install --quiet pyyaml==6.0.3
       - name: Check workflow artifact dependencies
         run: ./.github/scripts/check-workflow-artifact-deps.py
       - name: Check workflow needs outputs
         run: ./.github/scripts/check-workflow-needs-outputs.py
+      - name: Check CI status aggregator completeness
+        run: ./.github/scripts/check-ci-status-completeness.py
       - name: Check test reporter guards
         run: ./.github/scripts/check-test-reporter-guards.py
       - name: Check source files for raw control bytes
@@ -52,7 +63,6 @@ jobs:
 
   build-and-package:
     runs-on: ubuntu-latest
-    needs: setup
     # Seven downstream jobs pass `needs.build-and-package.outputs.image-tag` as
     # ARCADEDB_DOCKER_IMAGE, but this block did not exist, so all seven were handed an EMPTY string.
     # It went unnoticed because every consumer is defensive in a way that hides it: e2e-go guards
@@ -208,7 +218,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # A test that derives its path from SERVER_ROOT_PATH cannot be caught by the static grep in
-      # the setup job - only the directory it leaves behind proves it wrote outside target/.
+      # the lint job - only the directory it leaves behind proves it wrote outside target/.
       - name: Check no test leaked a databases/ directory
         run: ./.github/scripts/check-test-database-paths.sh --runtime
 
@@ -1262,7 +1272,7 @@ jobs:
   # the merge loses whenever that job is the slow one. ha-integration-tests was missing here and
   # takes ~55 minutes - the longest job in the workflow - so its reports were usually absent and
   # the whole ha-raft module was published as uncovered (#5701). check-workflow-artifact-deps.py
-  # in the setup job now enforces the rule for every workflow.
+  # in the lint job now enforces the rule for every workflow.
   coverage-report:
     runs-on: ubuntu-latest
     needs: [ unit-tests, integration-tests, slow-unit-tests, vector-unit-tests, opencypher-tck-tests, ha-integration-tests ]
@@ -1369,3 +1379,60 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: ArcadeData/arcadedb
           verbose: true
+
+  # Single required check for the whole workflow (#6569). Every job below `build-and-package` skips
+  # when a job it needs fails, and GitHub reports that as `skipping` - a result that reads as
+  # benign to a reviewer scanning the check list, and that branch protection can be satisfied by
+  # without a single test having run. This job turns "some required job did not succeed, for any
+  # reason" into one explicit, named failure instead of a checklist row indistinguishable from a
+  # pass, so this is the one check to mark as required in branch protection.
+  #
+  # `needs` must list every job whose result matters, or a lane left out of it can fail or be
+  # skipped invisibly - the exact shape of this issue, for that one lane.
+  # check-ci-status-completeness.py (run in the `lint` job) enforces that this list stays complete.
+  #
+  # client-smoke-test is included so a build that never reached it (e.g. build-and-package failed)
+  # is still caught, but its own `continue-on-error: true` means a genuine smoke-test failure
+  # resolves to `success` here too - that job is deliberately non-blocking while the cross-repo
+  # arrangement is new (see its own comment), and this must not silently make it blocking again.
+  ci-status:
+    name: CI Status
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - lint
+      - build-and-package
+      - unit-tests
+      - slow-unit-tests
+      - vector-unit-tests
+      - opencypher-tck-tests
+      - integration-tests
+      - ha-integration-tests
+      - builder-tests
+      - java-e2e-tests
+      - js-e2e-tests
+      - client-smoke-test
+      - studio-e2e-tests
+      - python-e2e-tests
+      - csharp-e2e-tests
+      - go-e2e-tests
+      - coverage-report
+    steps:
+      - name: Check every required job succeeded
+        run: |
+          failed="$(echo '${{ toJSON(needs) }}' | jq -r 'to_entries[] | select(.value.result != "success") | "\(.key): \(.value.result)"')"
+          if [ -n "$failed" ]; then
+            echo "::error::One or more required jobs did not succeed:"
+            {
+              echo "## CI Status: FAILED"
+              echo
+              echo "The following required jobs did not succeed. A \`skipped\` result usually means"
+              echo "an earlier required job failed and this lane never ran at all - see issue #6569."
+              echo
+              echo '```'
+              echo "$failed"
+              echo '```'
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "All required jobs succeeded."
