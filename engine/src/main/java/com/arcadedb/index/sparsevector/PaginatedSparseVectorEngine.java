@@ -1364,6 +1364,24 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   }
 
   /**
+   * Count of currently active segments whose persisted precedence predates the recency-epoch fix (issue #6379) - the
+   * same condition {@link #warnOnPreRecencyEpochSegments} logs once at open/refresh time, re-derived from the live
+   * {@link #segments} snapshot on every call instead of latched by {@link #untrustedEpochWarned}. A log line can only
+   * be read once, at the moment it is emitted; this can be asked again at any time - including after a
+   * {@code REBUILD INDEX}, to confirm the remedy actually worked (issue #6566). O(active segment count), the same
+   * cost as {@link #segmentCount()} - cheap enough for {@link com.arcadedb.index.IndexInternal#getUpgradeWarning()}'s
+   * "called on every listing" contract, which is what surfaces this to {@code schema:indexes} / Studio / the HTTP
+   * admin API.
+   */
+  public int untrustedSegmentCount() {
+    int count = 0;
+    for (final PaginatedSegmentReader r : segments.get())
+      if (r.epochUntrusted())
+        count++;
+    return count;
+  }
+
+  /**
    * Ids of the active segments, sorted ascending.
    * <p>
    * <b>Not parallel to {@link #segmentEpochs()}.</b> This one sorts; that one preserves the array's
