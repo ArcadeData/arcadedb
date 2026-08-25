@@ -895,18 +895,62 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
      * per-type, per-direction slicing that keeps a weight with its own edge lives. Nothing about that pairing is
      * re-derived here, so the CSR path of an {@code algo.*} procedure, of {@code astar} and of
      * {@code bellmanFord} cannot drift apart from one another.
+     * <p>
+     * {@code guard::checkPeriodically} is threaded into {@code edgeWeightsOf} itself rather than only checked
+     * between two calls to it: one call already returns a fully-built row for one node, so a single supernode
+     * would otherwise be one unabortable unit of work regardless of how tightly the per-node loop below is
+     * checkpointed (issue #6715). The memory side of the same gap - a supernode's row is fully allocated before
+     * {@link #reserveWeightedAdjacency} ever runs - cannot be closed the same way without handing this SPI a
+     * dependency on {@link MemoryBudget}, so what is priced here is the cumulative cost across nodes, the same
+     * bound {@link #reserveAdjacency} already gives the unweighted adjacency build; a single node whose row alone
+     * exceeds the budget is still refused, just after that one row is built rather than during it.
+     * <p>
+     * The entries-seen checkpoint interval is capped by {@link MemoryBudget#capacityFor}, recomputed after every
+     * reservation, against what is actually left of the configured budget - not only by
+     * {@code ADJACENCY_CHECKPOINT_ENTRIES / 3} (a third of {@link #adjacency}'s own constant, since a weighted
+     * entry costs {@code INT_BYTES + DOUBLE_BYTES} rather than {@code INT_BYTES} alone: reusing the unweighted
+     * constant outright would let a tight budget be overshot by three times as many bytes before a checkpoint
+     * ever fires). Capping only once before the loop would go stale as the budget fills up: capacity keeps
+     * shrinking with every reservation, so a threshold computed against the very first, most generous reading
+     * of it could let a later batch through that the remaining budget no longer has room for (issue #6715
+     * review).
      */
     private WeightedAdjacency weightedAdjacencyFromColumns(final WorkGuard guard, final Vertex.DIRECTION dir,
         final String weightProperty, final String[] types) {
+      // Reserved before the row-header arrays are allocated, matching adjacency()'s own ordering: the budget
+      // is refused before a single byte of them is on the heap, not after (issue #6715 review).
+      reserveWeightedAdjacency(nodeCount, 0);
       final int[][] neighbors = new int[nodeCount][];
       final double[][] weights = new double[nodeCount][];
+      final long maxEntryCheckpoint = ADJACENCY_CHECKPOINT_ENTRIES / 3;
+      long entries = 0;
       for (int i = 0; i < nodeCount; i++) {
         guard.checkPeriodically(i);
-        final NodeEdgeWeights edges = provider.edgeWeightsOf(i, dir, weightProperty, 1.0, types);
+        final NodeEdgeWeights edges = provider.edgeWeightsOf(i, dir, weightProperty, 1.0, guard::checkPeriodically, types);
         neighbors[i] = edges.neighbors();
         weights[i] = edges.weights();
+        entries += edges.neighbors().length;
+        final long entryCheckpoint = Math.min(maxEntryCheckpoint, memory.capacityFor(INT_BYTES + DOUBLE_BYTES));
+        if (entries >= entryCheckpoint || (i & 1023) == 1023) {
+          reserveWeightedAdjacency(0, entries);
+          entries = 0;
+        }
       }
+      reserveWeightedAdjacency(0, entries);
       return new WeightedAdjacency(neighbors, weights);
+    }
+
+    /**
+     * Charges {@code rows} neighbour/weight row-header pairs and {@code entries} (neighbour id + weight) pairs to
+     * the call's budget - the weighted counterpart of {@link #reserveAdjacency}, doubled because a
+     * {@link WeightedAdjacency} holds a neighbour array AND a weight array per node rather than one.
+     */
+    private void reserveWeightedAdjacency(final long rows, final long entries) {
+      if (rows == 0 && entries == 0)
+        return;
+      memory.reserve(saturatingSum(saturatingProduct(rows, MATRIX_ROW_OVERHEAD_BYTES * 2),
+              saturatingProduct(entries, INT_BYTES + DOUBLE_BYTES)), "the weighted adjacency",
+          rows > 0 ? rows + " nodes, " + entries + " edge entries" : entries + " edge entries");
     }
 
     /**

@@ -104,6 +104,50 @@ class AlgoDegreeCentralityTest {
     }
   }
 
+  /**
+   * Issue #6716: {@code direction} was parsed but never used, so {@code degree}/{@code score} were always the
+   * full IN+OUT total whatever direction was requested. E has a different in-degree and out-degree (2 out, 3
+   * in), which BOTH/IN/OUT must each answer differently once the parameter actually takes effect.
+   */
+  @Test
+  void degreeDirectionParameterIsHonoured() {
+    database.transaction(() -> {
+      final MutableVertex e = database.newVertex("Node").set("name", "E").save();
+      final MutableVertex f = database.newVertex("Node").set("name", "F").save();
+      e.newEdge("LINK", f, true, (Object[]) null).save();
+      e.newEdge("LINK", f, true, (Object[]) null).save();
+      f.newEdge("LINK", e, true, (Object[]) null).save();
+      f.newEdge("LINK", e, true, (Object[]) null).save();
+      f.newEdge("LINK", e, true, (Object[]) null).save();
+    });
+
+    assertDegreeOfE("CALL algo.degree(null, 'OUT') YIELD node, inDegree, outDegree, degree "
+        + "RETURN node.name AS name, inDegree, outDegree, degree", 0L, 2L, 2L);
+    assertDegreeOfE("CALL algo.degree(null, 'IN') YIELD node, inDegree, outDegree, degree "
+        + "RETURN node.name AS name, inDegree, outDegree, degree", 3L, 0L, 3L);
+    assertDegreeOfE("CALL algo.degree(null, 'BOTH') YIELD node, inDegree, outDegree, degree "
+        + "RETURN node.name AS name, inDegree, outDegree, degree", 3L, 2L, 5L);
+    assertDegreeOfE("CALL algo.degree() YIELD node, inDegree, outDegree, degree "
+        + "RETURN node.name AS name, inDegree, outDegree, degree", 3L, 2L, 5L);
+  }
+
+  private void assertDegreeOfE(final String query, final long expectedIn, final long expectedOut, final long expectedDegree) {
+    boolean found = false;
+    try (final ResultSet rs = database.query("opencypher", query)) {
+      while (rs.hasNext()) {
+        final Result r = rs.next();
+        if ("E".equals(r.getProperty("name"))) {
+          found = true;
+          assertThat(((Number) r.getProperty("inDegree")).longValue()).as(query + " inDegree").isEqualTo(expectedIn);
+          assertThat(((Number) r.getProperty("outDegree")).longValue()).as(query + " outDegree").isEqualTo(expectedOut);
+          assertThat(((Number) r.getProperty("degree")).longValue()).as(query + " degree").isEqualTo(expectedDegree);
+          break;
+        }
+      }
+    }
+    assertThat(found).as("node E must be present in the result").isTrue();
+  }
+
   @Test
   void degreeReturnsFourResults() {
     final ResultSet rs = database.query("opencypher",
