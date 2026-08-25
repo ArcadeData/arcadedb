@@ -73,7 +73,7 @@ class Issue6719CheckpointGapsTest extends TestHelper {
       final AtomicInteger calls = new AtomicInteger();
       final WorkCheckpoint abortOn5thCall = () -> {
         if (calls.incrementAndGet() == 5)
-          throw new RuntimeException("checkpoint reached — dangling-sum loop is checkpointed");
+          throw new RuntimeException("checkpoint reached - dangling-sum loop is checkpointed");
       };
 
       assertThatThrownBy(() -> GraphAlgorithms.pageRank(gav, 0.85, 1, DIRECTION.OUT, abortOn5thCall, "LINK"))

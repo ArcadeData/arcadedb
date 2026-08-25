@@ -517,6 +517,28 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   }
 
   /**
+   * Narrows a {@code long} entry count to {@code int}, refusing rather than wrapping when it does not fit.
+   * <p>
+   * {@code GraphData.weightedAdjacency()}'s {@code totalEntries} is summed in {@code long} precisely so a graph
+   * whose edge count exceeds {@link Integer#MAX_VALUE} is caught here, at the one point a caller narrows it to
+   * size its own flat {@code int[]}/{@code double[]} edge arrays (issue #6721 review) - rather than silently
+   * wrapping to a small or negative value that then either passes a downstream {@code memory.reserve()} check it
+   * should have failed, or surfaces many calls later as a confusing {@code NegativeArraySizeException}, the same
+   * shape issue #6289's siblings ({@link AlgoNode2Vec}, {@link AlgoRandomWalk}, {@link AlgoSteinerTree}) already
+   * guard the same way for their own knob-derived counts.
+   *
+   * @param procedureName the calling procedure's {@link #getName()}, for the exception message
+   * @param nodeCount     the graph's node count, for the exception message
+   * @param totalEntries  the entry count to narrow
+   */
+  protected static int checkedEdgeCount(final String procedureName, final int nodeCount, final long totalEntries) {
+    if (totalEntries > Integer.MAX_VALUE)
+      throw new IllegalArgumentException(procedureName + "(): " + nodeCount + " nodes make " + totalEntries
+          + " edge entries, more than the " + Integer.MAX_VALUE + " a Java array can hold");
+    return (int) totalEntries;
+  }
+
+  /**
    * Creates a {@link WorkGuard} sharing this command's {@link GlobalConfiguration#COMMAND_TIMEOUT} deadline.
    * <p>
    * The knobs that drive the CPU-bound loops of the algorithm procedures ({@code iterations}, {@code restarts},

@@ -34,6 +34,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #6721: {@code GraphData.weightedAdjacency()}'s unit-weight branch summed {@code neighbors[i].length} across
@@ -158,5 +159,31 @@ class Issue6721WeightedAdjacencyTotalEntriesTest {
     for (final int[] row : weighted.neighbors())
       sum += row.length;
     return sum;
+  }
+
+  /**
+   * Code-review follow-up on this same PR: {@code AlgoMST}/{@code AlgoMinSpanningArborescence} narrowed
+   * {@code totalEntries()} to {@code int} with a plain cast and no bounds check - harmless in practice (the
+   * pre-existing code had the identical ceiling, and the working-memory budget refuses long before a real graph
+   * could reach anywhere near {@link Integer#MAX_VALUE} edges), but a silent wraparound is still the wrong failure
+   * mode for a total that does not fit. Both procedures now narrow through the shared
+   * {@link AbstractAlgoProcedure#checkedEdgeCount}, tested directly here since driving a real graph to
+   * 2+ billion edges is not practical in a unit test.
+   */
+  @Test
+  void checkedEdgeCountNarrowsAFittingTotal() {
+    assertThat(AbstractAlgoProcedure.checkedEdgeCount("algo.mst", 4, 5L)).isEqualTo(5);
+    assertThat(AbstractAlgoProcedure.checkedEdgeCount("algo.mst", 4, 0L)).isEqualTo(0);
+    assertThat(AbstractAlgoProcedure.checkedEdgeCount("algo.mst", 4, (long) Integer.MAX_VALUE)).isEqualTo(Integer.MAX_VALUE);
+  }
+
+  @Test
+  void checkedEdgeCountRefusesATotalThatDoesNotFitAnInt() {
+    final long tooBig = (long) Integer.MAX_VALUE + 1;
+    assertThatThrownBy(() -> AbstractAlgoProcedure.checkedEdgeCount("algo.mst", 4, tooBig))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("algo.mst")
+        .hasMessageContaining(String.valueOf(tooBig))
+        .hasMessageContaining(String.valueOf(Integer.MAX_VALUE));
   }
 }
