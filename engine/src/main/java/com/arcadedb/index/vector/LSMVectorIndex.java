@@ -1337,6 +1337,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * A persisted graph {@link #ensureGraphAvailable()} decided is eligible for reuse as a prefix (issue #6655),
+   * carrying exactly what {@link #reuseStalePrefixGraph} needs to act on that decision after the write lock
+   * detecting it has been released.
+   *
+   * @param loadedGraph              the graph loaded from disk, already verified against the manifest
+   * @param liveOrdinalToVectorId    every live vector's id, in ordinal order - not only the ones the graph covers
+   * @param graphSize                how many of {@code liveOrdinalToVectorId}'s leading entries the graph covers
+   * @param vectorProp               the vector property name, for reading the gap vectors back
+   */
+  private record ReuseCandidate(ImmutableGraphIndex loadedGraph, int[] liveOrdinalToVectorId, int graphSize,
+                                 String vectorProp) {
+  }
+
+  /**
    * Ensure graph is available for searching. Lazy-loads from disk if needed.
    * This is the entry point for all search operations.
    */
@@ -1353,6 +1367,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // validation loop off of. Builders wait on this mutex; searches and inserts never touch it, so serializing
     // here does not reintroduce the stall. graphBuildLock is reentrant, so the fallback call to
     // buildGraphFromScratch() at the end of this method - which acquires the same lock - is safe from here.
+    //
+    // Populated below when a stale persisted graph qualifies for reuse as a prefix (issue #6655) instead of
+    // falling through to a synchronous buildGraphFromScratch(); consumed after graphBuildLock is released.
+    // reuseStalePrefixGraph() does real per-vector I/O for the gap past graphSize, and that must not run while
+    // lock.writeLock() is held - it would stall every other reader and writer of this index for as long as the
+    // read takes, exactly the stall buildGraphFromScratchWithRetry()'s own javadoc moved the (much larger)
+    // full-rebuild validation off this same lock for (issue #5391; PR #6712 review).
+    ReuseCandidate prefixReuseCandidate = null;
+
     graphBuildLock.lock();
     try {
       // Double-check after acquiring the lock
@@ -1496,10 +1519,40 @@ public class LSMVectorIndex implements Index, IndexInternal {
             staleReason = null;
 
           if (staleReason != null) {
-            LogManager.instance().log(this, Level.INFO,
-                "Persisted graph is not usable for index %s: %s - rebuilding from scratch (issues #3722, #6106)",
-                indexName, staleReason);
-            // Don't use the stale graph — fall through to buildGraphFromScratch() below
+            // ISSUE #6655: a graph stale ONLY because more vectors were added since it was built - no deletions
+            // (guaranteed by the !hasDeletedVectors guard above) and, when a manifest is present, its fingerprint
+            // proves the graph's own ordinals [0, graphSize) still resolve to exactly the records they were built
+            // from - is not wrong, only behind. That is the identical staleness rebuildGraphBeforeSearch()'s async
+            // policy already tolerates mid-session (a graph missing the newest vectors, not one describing the
+            // wrong ones), so it is reused immediately instead of paying a synchronous full rebuild on the calling
+            // search thread for however large the WHOLE index has become - the reopen-time counterpart of #6067's
+            // close-time deferral, reached through the general stale-persisted-graph path rather than only the
+            // deferred-close one. A missing manifest cannot support this: the weak node-count comparison above
+            // proves nothing about WHICH records a same-sized graph describes, and a prefix of it proves even
+            // less. Below the async-rebuild threshold a synchronous rebuild is already cheap, so it is left alone.
+            // vectorIndex.size(), not graphIndex.size() as rebuildGraphBeforeSearch()'s analogous check uses:
+            // graphIndex is not yet set on this path (that is the whole point - the persisted graph has not been
+            // published to it yet), so the only live-vector count available here is the index's, which is also
+            // the more conservative of the two whenever they would differ (rebuiltOrdinalToVectorId.length can
+            // be smaller after validation filtering, never larger) - "is this worth deferring" errs towards yes.
+            final int[] prefix = persistedManifest != null && graphSize == persistedManifest.vectorCount()
+                && graphSize < rebuiltOrdinalToVectorId.length && graphSize > 0
+                && vectorIndex.size() >= ASYNC_REBUILD_MIN_GRAPH_SIZE
+                && persistedManifest.fingerprint() == LSMVectorIndexGraphManifest.fingerprintOf(
+                Arrays.copyOf(rebuiltOrdinalToVectorId, graphSize), vectorIndex::getRid) ?
+                rebuiltOrdinalToVectorId : null;
+
+            if (prefix != null) {
+              // Deliberately not done here: reuseStalePrefixGraph() does real I/O for the gap and must run
+              // unlocked (see the field javadoc above). Only the decision - not the read - belongs under this
+              // lock, same as every other branch in this method.
+              prefixReuseCandidate = new ReuseCandidate(loadedGraph, prefix, graphSize, vectorProp);
+            } else
+              LogManager.instance().log(this, Level.INFO,
+                  "Persisted graph is not usable for index %s: %s - rebuilding from scratch (issues #3722, #6106)",
+                  indexName, staleReason);
+            // Don't use the stale graph as IMMUTABLE — fall through to buildGraphFromScratch() below unless the
+            // prefix reuse above already queued a deferred reuse
           } else {
             // Graph is up to date — publish it under a brief write lock (issue #6713), then finish PQ
             // (if needed) unlocked, mirroring buildGraphFromScratchExclusively's own publish step.
@@ -1544,12 +1597,127 @@ public class LSMVectorIndex implements Index, IndexInternal {
         }
       }
 
-      // No persisted graph, load failed, or it was stale - build from scratch. buildGraphFromScratch()
-      // acquires graphBuildLock itself; since it is reentrant this is safe to call while already holding it.
-      buildGraphFromScratch();
+      // No persisted graph, load failed, or it was stale with no usable prefix - build from scratch.
+      // buildGraphFromScratch() acquires graphBuildLock itself; since it is reentrant this is safe to call
+      // while already holding it. Skipped when the stale graph was instead reused as a prefix above (issue
+      // #6655): that already put the index to work as MUTABLE, and a synchronous rebuild here would throw
+      // that work away and pay for it again.
+      if (prefixReuseCandidate == null)
+        buildGraphFromScratch();
     } finally {
       graphBuildLock.unlock();
     }
+
+    if (prefixReuseCandidate != null) {
+      // Unlocked with respect to lock.writeLock(): reuseStalePrefixGraph() does its own graphBuildLock-serialized
+      // I/O and a brief re-lock only to publish (see its javadoc).
+      reuseStalePrefixGraph(prefixReuseCandidate);
+    }
+  }
+
+  /**
+   * Reuse a persisted graph that {@link #ensureGraphAvailable()} found stale only because more vectors were added
+   * since it was built - no deletions, and its manifest-verified ordinals {@code [0, graphSize)} still resolve to
+   * exactly the records they were built from - instead of discarding it for a synchronous full rebuild (issue
+   * #6655).
+   * <p>
+   * Called UNLOCKED with respect to {@link #lock}: the gap past {@code graphSize} is read from disk (a page read,
+   * or a document lookup for the non-quantized case) via {@link ArcadePageVectorValues}, real per-vector I/O that
+   * must not run while {@code lock.writeLock()} is held - that would stall every other reader and writer of this
+   * index for as long as the read takes, exactly the stall {@link #buildGraphFromScratchWithRetry} moved the
+   * (much larger) full-rebuild validation off this same lock for (issue #5391). {@link #graphBuildLock} is what
+   * makes running unlocked safe here: it serializes this method against a concurrent {@code buildGraphFromScratch}
+   * and against a second concurrent caller that reached the same reuse decision (both publish
+   * {@link #graphIndex}/{@link #ordinalToVectorId}/{@link #graphState}, so they cannot be allowed to interleave),
+   * the identical role it already plays for {@code buildGraphFromScratchWithRetry}. Only the brief publish step at
+   * the end takes {@code lock.writeLock()}, to make the state change visible/consistent to concurrent readers -
+   * not to protect the read.
+   * <p>
+   * The vectors past {@code graphSize} are not yet in the graph, and are not in {@link #deltaVectors} either:
+   * that buffer is in-memory only (issue #3722) and this is a session that never wrote them, it is only now
+   * discovering them on reopen. Queuing them here - the same re-queue {@link #buildGraphFromScratch()} performs
+   * for a node its own build left unreachable - is what keeps every live vector searchable immediately through
+   * the ordinary delta scan, rather than trading this fix's latency win for a window where they silently do not
+   * come back.
+   *
+   * @param candidate the eligibility decision {@link #ensureGraphAvailable()} made under its write lock
+   */
+  private void reuseStalePrefixGraph(final ReuseCandidate candidate) {
+    final ImmutableGraphIndex loadedGraph = candidate.loadedGraph();
+    final int[] rebuiltOrdinalToVectorId = candidate.liveOrdinalToVectorId();
+    final int graphSize = candidate.graphSize();
+    final String vectorProp = candidate.vectorProp();
+
+    graphBuildLock.lock();
+    try {
+      // Double-check: graphState is volatile and this is the same fast-path re-check ensureGraphAvailable()
+      // itself does after acquiring a lock. Another thread may have already published - a concurrent
+      // buildGraphFromScratch(), or a second reuseStalePrefixGraph() call that queued behind this same mutex and
+      // ran first - while this call waited for graphBuildLock.
+      if (graphState != GraphState.LOADING)
+        return;
+
+      // Trimmed to the gap before it is handed anywhere else: snapshotOf() and computeGraphBuildCacheCapacity()
+      // both size their work off whatever array they are given, and only ordinals [graphSize, length) are ever
+      // read below. Handing them the full live-vector array (as an earlier version of this fix did) made the
+      // snapshot and the build reader's cache scale with the WHOLE index - exactly the O(index size) cost this
+      // fix exists to avoid - rather than with how much is actually missing from the graph (PR #6712 review).
+      final int[] gapOrdinalToVectorId = Arrays.copyOfRange(rebuiltOrdinalToVectorId, graphSize,
+          rebuiltOrdinalToVectorId.length);
+
+      final RandomAccessVectorValues vectors = ArcadePageVectorValues.forGraphBuild(getDatabase(),
+          metadata.dimensions, vectorProp,
+          snapshotOf(vectorIndex, gapOrdinalToVectorId), gapOrdinalToVectorId, this,
+          computeGraphBuildCacheCapacity(gapOrdinalToVectorId.length, false));
+
+      // Collected into a local list first, exactly the way buildGraphFromScratchExclusively collects its own
+      // unreachable-node re-queue before its publish step: appended into the shared deltaVectors only once this
+      // method holds lock.writeLock() below, never while unlocked.
+      final List<DeltaVectorEntry> gapEntries = new ArrayList<>(gapOrdinalToVectorId.length);
+      for (int ordinal = 0; ordinal < gapOrdinalToVectorId.length; ordinal++) {
+        final int vectorId = gapOrdinalToVectorId[ordinal];
+        final RID rid = vectorIndex.getRid(vectorId);
+        if (rid == null)
+          continue; // gone since the array above was built; the next mutation or rebuild picks it up
+        final VectorFloat<?> vector = vectors.getVector(ordinal);
+        if (vector == null || (vectors instanceof final ArcadePageVectorValues pageValues
+            && pageValues.isDeletedSentinel(vector)))
+          continue;
+        gapEntries.add(new DeltaVectorEntry(vectorId, rid, vector));
+      }
+
+      // Publish. graphState stays LOADING for the whole unlocked read above - insert() does not wait on it - so
+      // a concurrent write could have landed on this index in the meantime and already appended its own entries
+      // to deltaVectors and its own count to mutationsSinceSerialize. addAll()/addAndGet() rather than a replace
+      // or a plain set() is what keeps those, instead of silently dropping them.
+      lock.writeLock().lock();
+      try {
+        this.graphIndex = loadedGraph;
+        this.ordinalToVectorId = Arrays.copyOf(rebuiltOrdinalToVectorId, graphSize);
+        this.deltaVectors.addAll(gapEntries);
+        this.graphState = GraphState.MUTABLE;
+        this.mutationsSinceSerialize.addAndGet(gapEntries.size());
+      } finally {
+        lock.writeLock().unlock();
+      }
+
+      metrics.incrementStalePrefixGraphReuses();
+      LogManager.instance().log(this, Level.INFO,
+          "Reusing persisted graph for index %s as a stale prefix: %d of %d live vectors are already in the "
+              + "graph, %d queued into the delta buffer pending an async rebuild (issue #6655)",
+          indexName, graphSize, rebuiltOrdinalToVectorId.length, gapEntries.size());
+    } finally {
+      graphBuildLock.unlock();
+    }
+
+    // Outside graphBuildLock, the same scope buildGraphFromScratchWithRetry leaves for what runs after it
+    // publishes: only the build/reuse itself needs to be serialized, not its follow-up work. Kicks the same
+    // async rebuild rebuildGraphBeforeSearch() would eventually trigger anyway, so the gap just queued above is
+    // closed promptly instead of waiting on the ordinary mutation threshold, and arms the inactivity timer as a
+    // fallback for when the async attempt is skipped (already in progress, or still cooling down from a prior
+    // OOM deferral - see isCoolingDownFromRebuildDeferral()).
+    startAsyncGraphRebuild();
+    scheduleInactivityRebuild();
   }
 
   /**
