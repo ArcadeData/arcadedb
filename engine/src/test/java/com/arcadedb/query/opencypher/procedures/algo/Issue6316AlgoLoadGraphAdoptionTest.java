@@ -356,4 +356,70 @@ class Issue6316AlgoLoadGraphAdoptionTest {
         .sorted(Comparator.naturalOrder())
         .collect(Collectors.toList());
   }
+
+  // ── parallel edges & self-loops ──────────────────────────────────────────
+
+  /**
+   * PR #6714 review round 13's second finding: every equivalence test above builds a graph with no parallel
+   * edges or self-loops, so an OLTP/CSR mismatch specific to either shape - {@code GraphData.degrees} summing
+   * a provider's per-type buffer versus {@code Vertex.countEdges}, or {@code weightedAdjacency}'s neighbour/
+   * weight pairing - could pass every test above and still disagree once one occurred. These two tests do not
+   * hand-derive the OLTP side's expected numbers the way the tests above do (self-loop counting conventions in
+   * particular are not this test's concern, and the algorithms' own correctness is pinned elsewhere - e.g.
+   * issue #6301 for weight pairing); they only assert OLTP and CSR agree with each other, which is exactly what
+   * a shared-plumbing regression specific to either shape would break.
+   */
+  @Test
+  void degreeCentralityMatchesBetweenOLTPAndCSRWithAParallelEdgeAndASelfLoop() {
+    database.transaction(() -> {
+      final Vertex a = node("A"), b = node("B"), c = node("C");
+      a.newEdge("E", b, true, new Object[] { "w", 1.0 }).save();
+      a.newEdge("E", b, true, new Object[] { "w", 1.0 }).save(); // parallel edge, same pair as above
+      a.newEdge("E", a, true, new Object[] { "w", 1.0 }).save(); // self-loop
+      b.newEdge("E", c, true, new Object[] { "w", 1.0 }).save();
+    });
+
+    final Map<RID, long[]> oltp = degreeMap(newContext());
+    assertThat(oltp).hasSize(3);
+
+    final GraphAnalyticalView view = buildView("degree-parallel-selfloop-view");
+    try {
+      final BasicCommandContext csrContext = newContext();
+      final Map<RID, long[]> csr = degreeMap(csrContext);
+      assertCSRAccelerated(csrContext);
+      assertThat(csr.keySet()).isEqualTo(oltp.keySet());
+      for (final RID rid : oltp.keySet())
+        assertThat(csr.get(rid)).as("in/out/total for " + rid).isEqualTo(oltp.get(rid));
+    } finally {
+      view.drop();
+    }
+  }
+
+  @Test
+  void mstMatchesBetweenOLTPAndCSRWithAParallelEdgeAndASelfLoop() {
+    // A-B twice at different weights (the cheaper one must win) plus a self-loop on A, which Kruskal's
+    // union-find already excludes on both paths (a self-loop's two endpoints share a root from the start, so
+    // it is never added, the same way #6300's own dedicated tests never needed to special-case one).
+    database.transaction(() -> {
+      final Vertex a = node("A"), b = node("B"), c = node("C");
+      a.newEdge("E", b, true, new Object[] { "w", 5.0 }).save();
+      a.newEdge("E", b, true, new Object[] { "w", 1.0 }).save(); // cheaper parallel edge, must be the one kept
+      a.newEdge("E", a, true, new Object[] { "w", 0.5 }).save(); // self-loop, must not appear in the MST
+      b.newEdge("E", c, true, new Object[] { "w", 2.0 }).save();
+    });
+
+    final Set<String> oltp = mstEdgeSet(newContext());
+    assertThat(oltp).as("the self-loop must not appear and the cheaper parallel edge must win")
+        .containsExactlyInAnyOrder("A-B:1.0", "B-C:2.0");
+
+    final GraphAnalyticalView view = buildView("mst-parallel-selfloop-view");
+    try {
+      final BasicCommandContext csrContext = newContext();
+      final Set<String> csr = mstEdgeSet(csrContext);
+      assertCSRAccelerated(csrContext);
+      assertThat(csr).isEqualTo(oltp);
+    } finally {
+      view.drop();
+    }
+  }
 }

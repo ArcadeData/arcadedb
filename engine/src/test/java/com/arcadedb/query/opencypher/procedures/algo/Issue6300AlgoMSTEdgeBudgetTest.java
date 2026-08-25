@@ -22,7 +22,11 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.olap.GraphAnalyticalView;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
@@ -74,7 +78,11 @@ class Issue6300AlgoMSTEdgeBudgetTest {
       factory.open().drop();
     database = factory.create();
     database.getSchema().createVertexType("Node");
-    database.getSchema().createEdgeType("LINK");
+    // Declared so a Graph Analytical View can materialise "w" as an edge property column (Issue6301's setup
+    // note: without a schema-known property the view falls back to edge records, which would leave the
+    // columnar reservation path - weightedAdjacencyFromColumns - untested by
+    // theWeightedAdjacencyRowHeadersAreRefusedOnTheCSRColumnarPathToo).
+    database.getSchema().createEdgeType("LINK").createProperty("w", Type.DOUBLE);
 
     // A path of EDGE_COUNT + 1 nodes: connected, so the MST spans every node and no edge is redundant.
     database.transaction(() -> {
@@ -110,6 +118,50 @@ class Issue6300AlgoMSTEdgeBudgetTest {
         .hasStackTraceContaining("algo.mst(): the weighted adjacency list would need")
         .hasStackTraceContaining("0 edge entries")
         .hasStackTraceContaining(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getKey());
+  }
+
+  /**
+   * PR #6714 review round 13: the tests around this one only exercise {@code weightedAdjacencyFromRecords}
+   * (the OLTP fallback) since no Graph Analytical View is built - {@code weightedAdjacencyFromColumns}, the
+   * path actually used once a view is ready and the one repeatedly patched for reservation-ordering bugs across
+   * this PR's earlier review rounds, was never exercised by a budget-refusal test. {@code CSR_ACCELERATED_VAR}
+   * confirms the columnar path was actually taken, not silently the OLTP one the test above already covers.
+   * <p>
+   * The budget cannot reuse {@link #theWeightedAdjacencyRowHeadersAreRefusedWhenTheyDoNotFitTheBudget}'s 1156:
+   * a CSR-backed {@code GraphData} is built straight from the view's node count with no {@code loadVertices}
+   * walk, so it never pays that test's 1056-byte OLTP_VERTEX_BYTES graph-loading charge. Only the row headers
+   * (2 x 32 bytes/node) are common to both paths - 11 nodes is 704 bytes - so the budget here is sized to that
+   * alone.
+   */
+  @Test
+  void theWeightedAdjacencyRowHeadersAreRefusedOnTheCSRColumnarPathToo() {
+    final GraphAnalyticalView view = GraphAnalyticalView.builder(database)
+        .withName("mst-budget-csr-view")
+        .withVertexTypes("Node")
+        .withEdgeTypes("LINK")
+        .withEdgeProperties("w")
+        .build();
+    try {
+      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 500L);
+
+      final BasicCommandContext context = new BasicCommandContext();
+      context.setDatabase(database);
+      database.begin();
+      try {
+        assertThatThrownBy(() -> new AlgoMST().execute(new Object[] { "w" }, null, context))
+            .as("weightedAdjacencyFromColumns must be priced the same way weightedAdjacencyFromRecords is")
+            .hasStackTraceContaining("algo.mst(): the weighted adjacency list would need")
+            .hasStackTraceContaining("0 edge entries")
+            .hasStackTraceContaining(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getKey());
+        assertThat(context.getVariable(CommandContext.CSR_ACCELERATED_VAR))
+            .as("the view must actually back the call, or this test pins nothing beyond the OLTP path already covered above")
+            .isEqualTo(true);
+      } finally {
+        database.rollback();
+      }
+    } finally {
+      view.drop();
+    }
   }
 
   @Test
