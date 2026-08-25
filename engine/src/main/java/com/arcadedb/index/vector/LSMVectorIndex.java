@@ -1344,11 +1344,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (graphState != GraphState.LOADING)
       return; // Graph already available or being built
 
-    lock.writeLock().lock();
+    // Serialize against buildGraphFromScratch() and other concurrent callers of this method, the same way
+    // buildGraphFromScratchWithRetry() serializes builders against each other (issue #6713). The persisted-graph
+    // validation below is O(live vector count) - for quantization types without inline storage it is one document
+    // lookup plus one property read per live vector - and used to run entirely under lock.writeLock(), stalling
+    // every reader and writer of the index for the whole scan on a session's first search that finds a persisted
+    // graph after a reopen, exactly the stall issue #5391 already moved buildGraphFromScratchExclusively's own
+    // validation loop off of. Builders wait on this mutex; searches and inserts never touch it, so serializing
+    // here does not reintroduce the stall. graphBuildLock is reentrant, so the fallback call to
+    // buildGraphFromScratch() at the end of this method - which acquires the same lock - is safe from here.
+    graphBuildLock.lock();
     try {
-      // Double-check after acquiring lock
+      // Double-check after acquiring the lock
       if (graphState != GraphState.LOADING)
-        return; // Another thread already started building
+        return; // Another thread already resolved this while we waited for graphBuildLock
 
       // Try to load persisted graph from disk
       // IMPORTANT: If PRODUCT quantization is enabled but PQ file doesn't exist, we need to rebuild
@@ -1492,10 +1501,22 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 indexName, staleReason);
             // Don't use the stale graph — fall through to buildGraphFromScratch() below
           } else {
-            // Graph is up to date — use it
-            this.graphIndex = loadedGraph;
-            this.graphState = GraphState.IMMUTABLE;
-            this.ordinalToVectorId = rebuiltOrdinalToVectorId;
+            // Graph is up to date — publish it under a brief write lock (issue #6713), then finish PQ
+            // (if needed) unlocked, mirroring buildGraphFromScratchExclusively's own publish step.
+            lock.writeLock().lock();
+            try {
+              this.graphIndex = loadedGraph;
+              this.ordinalToVectorId = rebuiltOrdinalToVectorId;
+              if (graphState == GraphState.LOADING)
+                this.graphState = GraphState.IMMUTABLE;
+              // else: a concurrent put()/putBatch()/remove() already advanced graphState to MUTABLE while
+              // this validation ran unlocked. The freshly loaded graph is still a correct base for
+              // mergeWithDeltaScan() to merge against - it was built from a vectorIndex snapshot taken during
+              // that validation, and whatever changed since then is already in deltaVectors - but overwriting
+              // MUTABLE back to IMMUTABLE here would hide those pending deltas from search.
+            } finally {
+              lock.writeLock().unlock();
+            }
 
             // Build PQ if PRODUCT quantization is enabled but PQ file doesn't exist
             // This handles the case where graph was built before PRODUCT quantization was added
@@ -1523,12 +1544,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
         }
       }
 
+      // No persisted graph, load failed, or it was stale - build from scratch. buildGraphFromScratch()
+      // acquires graphBuildLock itself; since it is reentrant this is safe to call while already holding it.
+      buildGraphFromScratch();
     } finally {
-      lock.writeLock().unlock();
+      graphBuildLock.unlock();
     }
-
-    // No persisted graph or load failed - build from scratch
-    buildGraphFromScratch();
   }
 
   /**
