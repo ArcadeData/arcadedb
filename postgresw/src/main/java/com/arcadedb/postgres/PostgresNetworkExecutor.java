@@ -356,6 +356,8 @@ public class PostgresNetworkExecutor extends Thread {
 
     if (closeType == 'P')
       getPortal(prepStatementOrPortal, true);
+    else if (closeType == 'S')
+      preparedStatements.remove(prepStatementOrPortal);
 
     if (DEBUG)
       LogManager.instance().log(this, Level.INFO, "PSQL: close '%s' type=%s (thread=%s)", prepStatementOrPortal, (char) closeType,
@@ -1823,40 +1825,10 @@ public class PostgresNetworkExecutor extends Thread {
       // resultCursor, suspended, rowDescriptionSent...). Without this, a later Bind on one portal name could
       // silently reset or overwrite another already-bound (possibly suspended) portal from the same statement,
       // since both names used to point at the very same object.
+      // If the prepared statement is missing/closed, use a consume-only throwaway portal to drain parameters
+      // off the wire and avoid channel framing corruption, without resurrecting any previously bound portal.
       final PostgresPortal preparedStatement = preparedStatements.get(sourcePreparedStatement);
-      final PostgresPortal template = preparedStatement != null ? preparedStatement
-          // Backwards-compatible fallback: portalName may itself already name a bound portal.
-          : portals.get(portalName);
-      if (template == null) {
-        writeMessage("bind complete", null, '2', 4);
-        return;
-      }
-      PostgresPortal portal = PostgresPortal.bindFrom(template);
-
-      // Only the preparedStatements-map template above is provably never executed for a real query (parseCommand
-      // writes it once and nothing ever mutates it afterwards) - the fallback template just above (portals.get
-      // (portalName), reached when sourcePreparedStatement does not name a real prepared statement) is a normal,
-      // mutable portal that may already have run. bindFrom() copies executed/cachedResultSet from whichever
-      // template it was given but leaves fullResultSet at null, so without this reset a portal cloned from an
-      // already-executed fallback template would skip both executeCommand()'s "not yet executed" branch
-      // (portal.executed is already true) and its fullResultSet-pagination branch (fullResultSet is null), and
-      // would serve the OLD run's stale cachedResultSet instead of running this Bind's own execution. Same reset
-      // #6660 originally applied (105cdbb0b8), reinstated here for this one remaining path that can reach it -
-      // the preparedStatements-only redesign above made the reset a no-op for its own template source, since
-      // that source's `executed` is never true for a real query, but did not make it a no-op for this fallback.
-      // Gated on sqlStatement != null (a real, engine-parsed query) OR catalogQuery (a catalog query whose
-      // filters are bound parameters, deferred by parseCommand to be answered - and genuinely re-executed - in
-      // executeCommand once the values arrive) - both are actually re-run per Execute and can go stale exactly
-      // like #6660. This deliberately excludes BEGIN/COMMIT/ROLLBACK and a RESOLVED (parameter-less) catalog
-      // answer, which precompute their fixed response once during Parse via setEmptyResultSet()/direct
-      // assignment and must not be reset before Execute ever sees them.
-      if (portal.executed && (portal.sqlStatement != null || portal.catalogQuery)) {
-        portal.executed = false;
-        portal.fullResultSet = null;
-        portal.cachedResultSet = null;
-        portal.resultCursor = 0;
-        portal.suspended = false;
-      }
+      final PostgresPortal portal = preparedStatement != null ? PostgresPortal.bindFrom(preparedStatement) : new PostgresPortal("", "sql");
 
       if (DEBUG)
         LogManager.instance()
@@ -1977,10 +1949,16 @@ public class PostgresNetworkExecutor extends Thread {
       // statement's own template object (issue #6660 / CodeRabbit review on #6658).
       // This is necessary because EXECUTE looks up portals by portal name, not prepared statement name.
       // PostgreSQL protocol: PARSE creates "prepared statement", BIND creates "portal" from it.
-      portals.put(portalName, portal);
-      if (DEBUG)
-        LogManager.instance().log(this, Level.INFO, "PSQL: bind stored portal under name '%s' (thread=%s)",
-            portalName, Thread.currentThread().threadId());
+      // If the source prepared statement was closed or non-existent, invalidate/remove any previously bound
+      // portal under this name so Execute returns NoData.
+      if (preparedStatement != null) {
+        portals.put(portalName, portal);
+        if (DEBUG)
+          LogManager.instance().log(this, Level.INFO, "PSQL: bind stored portal under name '%s' (thread=%s)",
+              portalName, Thread.currentThread().threadId());
+      } else {
+        portals.remove(portalName);
+      }
 
       writeMessage("bind complete", null, '2', 4);
 
