@@ -3914,3 +3914,44 @@ option through `awaitReady()` (and, at `open()` time, `GAV_RESTORE_AWAIT_TIMEOUT
 deferred restore explicitly and are unaffected by this change.
 
 [#6641](https://github.com/ArcadeData/arcadedb/issues/6641)
+
+## Closing a database no longer blocks on a full vector graph rebuild for large indexes (#6067)
+
+`LSMVectorIndex.close()` persists the graph before shutting down, so that a fast restart finds a ready-to-search
+graph rather than rebuilding on first open. For an index with any pending write (`graphState == MUTABLE`, or a
+first-ever build that never persisted), that persist has always meant a full `buildGraphFromScratch()` - there is
+no incremental update, so any rebuild reindexes every vector in the index, not just the ones written since the
+last build. That cost was paid synchronously on the closing thread regardless of index size: a single write to a
+200,000-vector index measured `close()` blocking for roughly 43 seconds, the same cost as writing a thousand
+vectors, because the rebuild's cost tracks total index size rather than what was actually written.
+
+`close()` now defers that rebuild instead of running it, for any index at or above the same size threshold the
+search path already uses to decide between a synchronous and an asynchronous rebuild (1,000 vectors,
+`arcadedb.vectorIndex.mutationsBeforeRebuild`'s sibling knob is unaffected). The vectors themselves are unaffected
+by any of this - they go through ordinary page/WAL persistence independent of the graph file, so nothing is lost
+by skipping the rebuild - only the graph's on-disk topology is left stale or absent. The next time that index is
+actually searched, after any reopen, the existing stale-persisted-graph detection (the same manifest/node-count
+check that already handles a persisted graph left behind by an unrelated shutdown) notices and rebuilds it lazily
+before answering the query.
+
+**Upgrading:** a session that writes to a large vector index and closes without ever searching it again no longer
+pays the rebuild cost at all - not at close, and not later, since nothing forces it until a search actually needs
+the graph. A session that does go on to search that index pays the same total rebuild cost as before, just moved
+from `close()` to that first query instead - so a query immediately after reopening a large, recently-written
+index may be noticeably slower than the queries that follow it, where `close()` used to absorb that latency
+instead. Below the 1,000-vector threshold, `close()` keeps rebuilding synchronously as before, unaffected.
+
+[#6067](https://github.com/ArcadeData/arcadedb/issues/6067)
+
+## `LSMVectorIndex.getStats()` reports whether the last close deferred a graph rebuild (#6657)
+
+The deferral above (#6067) is only visible in the log, at `FINE` level, unless an operator goes looking for it.
+`getStats()` now also carries a `closeTimeRebuildPending` entry: `1` when the most recent `close()` chose to skip a
+rebuild it would otherwise have run, `0` otherwise. It answers a narrower question than the existing `graphState`/
+`mutationsSinceRebuild` entries, which cannot by themselves distinguish "pending mutations because a session is
+mid-flight" from "pending mutations because close() chose not to pay for them" - and, unlike a plain in-memory
+counter would, it still reads `1` on a freshly reopened index, before that index has been searched again, which is
+the moment the question is actually useful: right before a query pays the deferred cost, not after. It clears back
+to `0` the moment that rebuild - deferred or not - actually completes.
+
+[#6657](https://github.com/ArcadeData/arcadedb/issues/6657)

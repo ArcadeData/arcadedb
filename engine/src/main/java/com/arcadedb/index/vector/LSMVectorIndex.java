@@ -236,6 +236,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // Serializes graph builds for this index (issue #5391). Held only by builders, never by readers or writers.
   private final ReentrantLock graphBuildLock = new ReentrantLock();
 
+  // Set only inside flush()'s two SKIP branches (issue #6657) - never by the branch that actually attempts a
+  // synchronous build, successfully or not - so releaseBackgroundResources()'s recheck of the same flag (see
+  // there) can tell "flush() chose not to pay for a rebuild" apart from "flush() tried and either failed or got
+  // re-mutated mid-build", which also leaves graphState at MUTABLE but is a different story the recheck must not
+  // relabel as a deferral. Reset at the top of every flush(), so a stale true from an earlier close on this same
+  // instance can never leak into a later, unrelated one. Plain instance field, not persisted: unlike the manifest
+  // flag it gates, its only job is to bridge flush() and releaseBackgroundResources() within ONE close() call on
+  // ONE instance, which is exactly the lifetime a field has.
+  private volatile boolean flushDeferredRebuild = false;
+
   // Index-scoped cache of materialized vectors, shared by every search on this index (issue #5412).
   // Beam search resolves one vector per distance evaluation; before this cache lived at index scope, each
   // query built its own 1024-entry map and discarded it on completion, so every query paid a full record
@@ -3335,6 +3345,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /**
    * Minimum graph size to use async rebuild. Below this, synchronous rebuild is fast enough.
    * Above this threshold, a full rebuild can take seconds to minutes, so async is preferred.
+   * <p>
+   * Also the threshold {@link #flush()} uses to decide whether a close-time rebuild is cheap enough to run
+   * synchronously or should be deferred to the next SEARCH on this index instead (issue #6067) - opening the
+   * database alone never triggers it, only {@link #ensureGraphAvailable()}/{@link #rebuildGraphBeforeSearch()}
+   * do, and that deferred rebuild is itself still synchronous on whichever search first reaches it, not async.
    */
   private static final int ASYNC_REBUILD_MIN_GRAPH_SIZE = 1000;
   private static final int[] EMPTY_ORDINALS             = new int[0];
@@ -6581,20 +6596,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
   public void flush() {
     if (status.compareAndSet(INDEX_STATUS.AVAILABLE, INDEX_STATUS.UNAVAILABLE)) {
 
-      // Build and persist graph if it hasn't been built yet
-      // This ensures the graph is available on next database open (fast restart)
-      // Build graph if it's in LOADING (never built) or MUTABLE (has pending changes) state
-      //
-      // LOADING means "not loaded into memory", which is not the same as "not
-      // persisted on disk": the graph loads lazily on the first search, so a
-      // session that never searched leaves it LOADING even when a complete
-      // graph is already on disk, and rebuilding then only reproduces a file
-      // that already exists. initializeGraphIndex() already draws exactly this
-      // distinction with the same predicate.
+      // Build and persist graph if it hasn't been built yet. This ensures the graph is available on next
+      // database open (fast restart). See needsGraphBuild() for exactly which states count as "needs one".
       final LSMVectorIndexGraphFile gf = graphFile;
-      final boolean graphAlreadyOnDisk = gf != null && gf.hasPersistedGraph();
-      final boolean needsBuild = vectorIndex.size() > 0 && (graphState == GraphState.MUTABLE
-          || (graphState == GraphState.LOADING && !graphAlreadyOnDisk));
+      final boolean needsBuild = needsGraphBuild(gf);
+
+      // Reset before deciding: see the field javadoc for why releaseBackgroundResources() needs this to
+      // distinguish "this flush() skipped" from "this flush() attempted (and possibly failed)".
+      flushDeferredRebuild = false;
 
       if (needsBuild && !valid) {
         // Background resources are already gone, so there is no build pool to run this on - and asking for one
@@ -6609,6 +6618,27 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 + "stay on disk and are re-indexed on the next open. This means flush() was called after "
                 + "releaseBackgroundResources() - both close paths are supposed to do the reverse",
             indexName, mutationsSinceSerialize.get());
+        flushDeferredRebuild = true;
+        markCloseTimeRebuildDeferred(gf);
+      } else if (needsBuild && vectorIndex.size() >= ASYNC_REBUILD_MIN_GRAPH_SIZE) {
+        // A synchronous full rebuild here would block close() for as long as the whole rebuild takes - measured
+        // (issue #6067) at 43s for a single write to a 200k-vector index, scaling with total index size rather
+        // than with what was actually written, because there is no incremental persist: any rebuild is a full
+        // rebuild. The vectors themselves are already durably persisted (ordinary page/WAL writes, unrelated to
+        // the graph); only the graph TOPOLOGY is stale or absent. Leave graphState as-is - MUTABLE, or LOADING
+        // with no persisted graph - and defer the rebuild to whenever this index is next actually searched,
+        // reusing the exact lazy-load/staleness-detection path (ensureGraphAvailable()) that already handles a
+        // stale persisted graph on every ordinary reopen. A session that closes and reopens without searching
+        // this index never pays the cost at all; one that does pays it at the query instead of at close() - that
+        // follow-up rebuild is itself still synchronous on the search that triggers it (ensureGraphAvailable()'s
+        // stale-graph fallback is not gated by this same threshold), so this trades an unconditional cost on
+        // EVERY close() for a conditional one paid by at most one search, not for a non-blocking one.
+        LogManager.instance().log(this, Level.FINE,
+            "Deferring graph build on close for index %s: %d vectors is at or above the async rebuild threshold "
+                + "(%d), so the rebuild is deferred to the next search on this index instead of blocking close()",
+            indexName, vectorIndex.size(), ASYNC_REBUILD_MIN_GRAPH_SIZE);
+        flushDeferredRebuild = true;
+        markCloseTimeRebuildDeferred(gf);
       } else if (needsBuild) {
         try {
           LogManager.instance()
@@ -6633,6 +6663,70 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 graphState);
       }
     }
+  }
+
+  /**
+   * {@code true} when the graph is behind the live vector set and a build has not been persisted for it yet.
+   * Shared between {@link #flush()} and {@link #releaseBackgroundResources()} (issue #6657's post-cancellation
+   * recheck) so the two cannot silently drift onto different predicates.
+   * <p>
+   * LOADING means "not loaded into memory", which is not the same as "not persisted on disk": the graph loads
+   * lazily on the first search, so a session that never searched leaves it LOADING even when a complete graph is
+   * already on disk, and rebuilding then only reproduces a file that already exists.
+   * {@code initializeGraphIndex()} already draws exactly this distinction with the same predicate.
+   */
+  private boolean needsGraphBuild(final LSMVectorIndexGraphFile gf) {
+    final boolean graphAlreadyOnDisk = gf != null && gf.hasPersistedGraph();
+    return vectorIndex.size() > 0 && (graphState == GraphState.MUTABLE
+        || (graphState == GraphState.LOADING && !graphAlreadyOnDisk));
+  }
+
+  /**
+   * Records, in the graph's manifest sidecar, that this close chose to skip a rebuild it would otherwise have run
+   * (issue #6657) - so {@link #getStats()} can answer "did the last close defer a rebuild" directly instead of an
+   * operator having to go looking for the {@code FINE} log line above. Deliberately a manifest write rather than an
+   * in-memory field: a fresh {@link LSMVectorIndex} instance is constructed on every database open (see the two
+   * {@code open()}/{@code create()} factory methods), so a plain field set here would be gone by the time anyone
+   * could read it - the whole point is to answer the question the moment BEFORE the next search would otherwise
+   * silently pay for it.
+   * <p>
+   * A no-op when {@code gf} is {@code null}: a never-yet-built index that was also never discovered on a previous
+   * load has no manifest path to write to. That index has no on-disk graph either, so the deferral is still fully
+   * recoverable - {@link #ensureGraphAvailable()} builds it from scratch on the next search - only the stats
+   * signal for the gap between reopen and that search is unavailable, which is the narrower of the two arms this
+   * covers.
+   * <p>
+   * Guarded by {@link #graphBuildLock} - {@code tryLock()}, not {@code lock()} - because every other writer of
+   * this manifest (the normal post-build persist, both {@code markUnusable} failure paths) already holds it via
+   * {@code buildGraphFromScratchWithRetry()}, and {@code LSMVectorIndexGraphManifest}'s own class javadoc requires
+   * callers not to write one manifest concurrently: {@code markCloseDeferred()}'s read-then-write is not atomic,
+   * so racing it against an in-flight build's completion write could clobber a just-persisted fresh
+   * manifest with stale pre-build values. An async rebuild can still be running when {@code close()} calls
+   * {@code flush()} - {@code releaseBackgroundResources()} is what cancels it, and {@code close()} runs that
+   * AFTER {@code flush()} (see the "flush FIRST, release SECOND" note below) - so the race is real, not
+   * theoretical. A plain {@code lock()} would fix that only by blocking this close on whatever that other build
+   * still has left to do, which is exactly the synchronous-close cost issue #6067/#6653 exists to avoid, so a
+   * held lock is skipped here rather than waited for. That skip is not the full story on its own, though: a build
+   * holding the lock might go on to complete (its own write then correctly clears this flag) or might instead be
+   * CANCELLED by {@link #releaseBackgroundResources()} right after this method returns - and a cancelled build's
+   * {@code CancellationException} path does not touch the manifest at all. {@link #releaseBackgroundResources()}
+   * calls this method again, unconditionally, after it has cancelled and joined any in-flight build, by which
+   * point {@code graphState} reliably says which of the two happened - that second call is the actual backstop
+   * for a skip here, not "the build's completion write" alone.
+   */
+  private void markCloseTimeRebuildDeferred(final LSMVectorIndexGraphFile gf) {
+    if (gf == null)
+      return;
+    if (graphBuildLock.tryLock()) {
+      try {
+        gf.getManifest().markCloseDeferred();
+      } finally {
+        graphBuildLock.unlock();
+      }
+    } else
+      LogManager.instance().log(this, Level.FINE,
+          "Not recording the close-time rebuild deferral for index %s: a graph build already holds the build "
+              + "lock and its own completion will supersede this note anyway", indexName);
   }
 
   /**
@@ -6737,6 +6831,46 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final GraphSearcherPool searchers = searcherPool;
     if (searchers != null)
       searchers.clear();
+
+    // Issue #6657, closing a false-negative gap in the deferral flag above: flush() runs BEFORE this method, so
+    // an async rebuild that flush() found already holding graphBuildLock - and therefore skipped marking, trusting
+    // "its own completion write" to account for it - may have been CANCELLED by the shutdown just above rather
+    // than actually completing. A cancelled build's CancellationException path (see the catch block around it)
+    // does not touch the manifest at all, successful or not, so the flag would otherwise sit wherever the last
+    // real build left it - typically false - even though a rebuild is now genuinely owed. By this point that
+    // build has been cancelled and joined (or logged above as a rare straggler that outlived the join), so
+    // graphState reliably distinguishes "it finished" (no longer MUTABLE, needsGraphBuild() now false - that
+    // build's own write already cleared the flag, nothing to do) from "it did not" (still MUTABLE, mark it now).
+    //
+    // Gated on flushDeferredRebuild, not on needsGraphBuild() alone (review round 4): flush()'s OTHER branch -
+    // the one that actually ATTEMPTS a synchronous build rather than skipping - can also leave graphState at
+    // MUTABLE, either because the attempt failed (buildGraphFromScratchExclusively() then correctly writes
+    // closeDeferredRebuild=false via markUnusable()) or because new mutations arrived mid-build. Neither of those
+    // is "flush() chose to defer", and rechecking unconditionally would overwrite that correct false with a
+    // misleading true - mislabeling "close attempted a rebuild and it failed" as "close skipped the rebuild for
+    // performance". flushDeferredRebuild is set only inside flush()'s two skip branches and reset at the top of
+    // every flush(), so it answers exactly the question this recheck needs: did THIS close's flush() skip, not
+    // just "is a rebuild still owed for some reason". As a side effect this also keeps the recheck from ever
+    // firing on a path that never called flush() at all - LocalDatabase.closeInternal(true) (whole-database
+    // drop) and LocalDatabase.kill() (crash simulation) both call releaseBackgroundResources() without one.
+    //
+    // Idempotent with flush()'s own attempt above: on the ordinary path where that one already succeeded,
+    // markCloseDeferred()'s own already-true short-circuit turns this into a single extra read, not a rewrite -
+    // and only on the close of a large, recently-mutated index, not on every close.
+    //
+    // Known residual gap, same shape one layer further out: markCloseTimeRebuildDeferred()'s own tryLock() can
+    // still lose to a STRAGGLER build thread - one that outlived shutdownNow()'s 5s budget and the pool's
+    // awaitTermination() above (see the WARNING logged a few lines up) - if that straggler happens to be the one
+    // holding graphBuildLock at the exact moment this recheck runs. Narrow (needs both an unresponsive build AND
+    // it specifically being the lock holder right now) and not chased further: unlike the cancellation case this
+    // recheck exists for, there is no later "the build is definitely done by now" moment available to retry from
+    // inside this method. Same acceptance as the gf == null case in markCloseTimeRebuildDeferred()'s javadoc -
+    // documented rather than solved.
+    if (flushDeferredRebuild) {
+      final LSMVectorIndexGraphFile gfAfterRelease = graphFile;
+      if (needsGraphBuild(gfAfterRelease))
+        markCloseTimeRebuildDeferred(gfAfterRelease);
+    }
   }
 
   @Override
@@ -6841,6 +6975,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
     stats.put("mutationsSinceRebuild", (long) mutationsSinceSerialize.get());
     stats.put("asyncRebuildInProgress", asyncRebuildInProgress ? 1L : 0L);
     stats.put("rebuildSnapshotGeneration", rebuildSnapshotGeneration);
+
+    // Whether the LAST close() skipped a rebuild it would otherwise have run (issue #6657), as opposed to
+    // graphState/mutationsSinceRebuild above, which cannot tell that apart from ordinary mid-session mutations.
+    // A small manifest read rather than a cached field: unlike the other stats above, this one specifically has
+    // to survive being read on a freshly reopened index, before that index's own first search - see
+    // markCloseTimeRebuildDeferred() for why a field would not.
+    final LSMVectorIndexGraphFile statsGraphFile = graphFile;
+    final LSMVectorIndexGraphManifest.Content manifestContent =
+        statsGraphFile != null ? statsGraphFile.getManifest().read() : null;
+    stats.put("closeTimeRebuildPending", manifestContent != null && manifestContent.closeDeferredRebuild() ? 1L : 0L);
 
     // Calculate mutations threshold (use configured value or default)
     final int defaultMutationsThreshold = getDatabase().getConfiguration()
