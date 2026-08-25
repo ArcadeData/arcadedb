@@ -55,6 +55,15 @@ import java.util.stream.Stream;
  */
 public class AlgoMinSpanningArborescence extends AbstractAlgoProcedure {
 
+  /**
+   * Heap this procedure spends per edge for its own flat {@code eFrom}/{@code eTo}/{@code eW} copy, on top of
+   * whatever {@code weightedAdjacency} already reserved for its own {@code int[][]}/{@code double[][]} pair
+   * (issue #6714 review: this procedure allocated that copy with no reservation of its own at all, unlike
+   * {@code algo.mst}'s equivalent {@code eu}/{@code ev}/{@code ew} arrays - no sort scratch here, since Edmonds'
+   * algorithm has no Kruskal-style weight ordering to allocate for).
+   */
+  private static final long EDGE_BYTES = 2 * INT_BYTES + DOUBLE_BYTES;
+
   @Override
   public String getName() {
     return "algo.msa";
@@ -110,6 +119,11 @@ public class AlgoMinSpanningArborescence extends AbstractAlgoProcedure {
     int edgeCount = 0;
     for (int i = 0; i < n; i++)
       edgeCount += neighbors[i].length;
+
+    // This procedure's own flat copy of the edges, priced separately from what weightedAdjacency already
+    // reserved for its int[][]/double[][] pair - the same "additional to and smaller than" accounting algo.mst
+    // uses for its equivalent eu/ev/ew arrays.
+    graph.memory().reserve(saturatingProduct(edgeCount, EDGE_BYTES), "the edge arrays", edgeCount + " edges");
 
     final int[] eFrom = new int[edgeCount];
     final int[] eTo = new int[edgeCount];
