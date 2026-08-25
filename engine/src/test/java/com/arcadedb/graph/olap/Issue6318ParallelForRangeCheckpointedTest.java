@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicIntegerArray;
+import java.util.function.BiConsumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -51,6 +52,20 @@ class Issue6318ParallelForRangeCheckpointedTest {
       for (int i = 0; i < n; i++)
         assertThat(hits.get(i)).as("index " + i + " for n=" + n).isEqualTo(1);
     }
+  }
+
+  @Test
+  void aZeroLengthRangeNeverChecksIn() {
+    // PR #6714 review round 11: documented in the javadoc as the one exception to "checks in at least once",
+    // but not previously pinned by a test - the batch loop's condition (start < n) is false immediately for
+    // n == 0, so the loop body (and therefore checkpoint.check()) never runs at all.
+    final AtomicInteger checkpointCalls = new AtomicInteger();
+    GraphAlgorithms.parallelForRangeCheckpointed(0, checkpointCalls::incrementAndGet, (s, e) -> {
+    });
+    assertThat(checkpointCalls.get())
+        .as("n == 0 has no batch to run, so the checkpoint is never consulted - harmless only because every "
+            + "current caller already returns before reaching a checkpointed loop on an empty graph")
+        .isZero();
   }
 
   @Test
@@ -122,7 +137,7 @@ class Issue6318ParallelForRangeCheckpointedTest {
 
     // A stand-in for pageRank's pull phase: each node sums a small fixed number of neighbours' contributions,
     // the same order of magnitude of work per node as the real kernel does.
-    final java.util.function.BiConsumer<Integer, Integer> pageRankShapedWork = (start, end) -> {
+    final BiConsumer<Integer, Integer> pageRankShapedWork = (start, end) -> {
       for (int u = start; u < end; u++) {
         double sum = 0.0;
         for (int k = 0; k < neighborsPerNode; k++)
