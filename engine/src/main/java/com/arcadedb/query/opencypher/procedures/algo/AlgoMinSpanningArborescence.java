@@ -121,8 +121,10 @@ public class AlgoMinSpanningArborescence extends AbstractAlgoProcedure {
     final double[][] weights = weighted.weights();
 
     // weightedAdjacency() already summed this once while building/pricing the rows (issue #6721) - reused here
-    // rather than walking neighbors[] a second time for the same total.
-    final int edgeCount = (int) weighted.totalEntries();
+    // rather than walking neighbors[] a second time for the same total. Narrowed through checkedEdgeCount rather
+    // than a plain cast, so a total that does not fit an int is refused here instead of silently wrapping into
+    // memory.reserve() below with a wrong, non-negative-looking value that defeats the guard instead of tripping it.
+    final int edgeCount = checkedEdgeCount(getName(), n, weighted.totalEntries());
 
     // This procedure's own flat copy of the edges, priced separately from what weightedAdjacency already
     // reserved for its int[][]/double[][] pair - the same "additional to and smaller than" accounting algo.mst
