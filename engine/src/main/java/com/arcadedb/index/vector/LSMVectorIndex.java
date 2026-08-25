@@ -4601,8 +4601,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * than the search it feeds, on the one path whose contract is microseconds, and would scale with a buffer that
    * runs to hundreds of thousands of entries under sustained ingestion. The cheap exact scan is therefore kept as a
    * <em>pruner</em> - it already ran here before this fix, at the same cost - and only the at-most-{@code k}
-   * survivors are re-scored on the PQ scale. Cost is bounded by {@code k} regardless of buffer size, and is exactly
-   * zero when the buffer is empty, which is the steady state this path is built for.
+   * survivors are re-scored on the PQ scale.
+   * <p>
+   * <b>What that costs.</b> The <em>quantization</em> - the expensive part - is bounded by {@code k} and does not
+   * grow with the buffer. Resolving those survivors back to their buffer entries adds one more walk of the buffer,
+   * so the stage as a whole is O(buffer + k) on top of the O(buffer) scan stage 1 already performed; it is
+   * emphatically not a buffer search per row, which would be O(k * buffer) and would reintroduce exactly the
+   * scaling this design exists to avoid. The whole method returns before allocating anything when the buffer is
+   * empty, which is the steady state this path is built for.
    * <p>
    * <b>The residue.</b> Selecting the head exactly and then ranking it approximately can admit a row that the PQ
    * scale would have placed just outside {@code k}, or drop one it would have placed just inside. That window is
@@ -4623,6 +4629,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
       return;
     }
 
+    // Nothing in the buffer means nothing to rescore, and this has to be checked before anything is allocated: on
+    // the pre-filter branch `results` arrives empty and every structure below would be built only to be thrown
+    // away. mergeWithDeltaScan makes the same early return on the same condition, so skipping it changes nothing.
+    //
+    // One snapshot, used for both the guard and the resolve pass below. mergeWithDeltaScan takes its own, so a
+    // rebuild landing between the two can leave it merging rows this one no longer holds; that is the case the
+    // unresolved-row branch below already covers, and it degrades to an exact score rather than a wrong one.
+    final List<DeltaVectorEntry> currentDelta = deltaVectors; // volatile snapshot
+    if (currentDelta.isEmpty())
+      return;
+
     // The graph rows, captured BEFORE the merge: mergeWithDeltaScan rebuilds `results` from its own heap, so a
     // position - or a prefix length - taken now means nothing afterwards. Identity by RID is what survives it.
     final RidHashSet graphRIDs = new RidHashSet(results.size());
@@ -4636,35 +4653,53 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     // Stage 2 - re-score, on the PQ scale, only the rows stage 1 admitted from the buffer. The graph rows already
     // carry PQ scores and must be left exactly as they are.
-    final List<DeltaVectorEntry> currentDelta = deltaVectors; // volatile snapshot
-    // Parallel primitive/reference arrays rather than a list of holder objects: this runs on the microsecond path,
-    // and both are at most `results.size()` long.
-    final int[] positions = new int[results.size()];
-    final DeltaVectorEntry[] entries = new DeltaVectorEntry[results.size()];
-    int rescored = 0;
-
+    //
+    // Resolved by walking the buffer ONCE against a map of the rows that still need an entry, rather than searching
+    // the buffer per row. The buffer has no index by RID, so a per-row search is a full scan of it, and doing that
+    // for each of up-to-k rows would cost O(k * buffer) - which under the sustained ingestion this method's javadoc
+    // describes is precisely the scaling the "prune first, quantize only the survivors" design exists to avoid.
+    // One pass keeps the whole stage O(buffer + k), on top of the O(buffer) scan stage 1 already paid.
+    //
+    // Keyed on RID across the two forms deliberately: `results` holds bound RIDs and the buffer holds raw ones, and
+    // RID's equals/hashCode are decided on bucket and offset alone, which binding does not change.
+    final Map<RID, Integer> unresolved = new HashMap<>();
     for (int i = 0; i < results.size(); i++) {
       final RID rid = results.get(i).getFirst();
-      if (graphRIDs.contains(rid))
+      if (!graphRIDs.contains(rid))
+        unresolved.put(rid, i);
+    }
+    if (unresolved.isEmpty())
+      return;
+
+    // Parallel primitive/reference arrays rather than a list of holder objects: this runs on the microsecond path,
+    // and both are at most `unresolved.size()` long.
+    final int[] positions = new int[unresolved.size()];
+    final DeltaVectorEntry[] entries = new DeltaVectorEntry[unresolved.size()];
+    int rescored = 0;
+
+    for (final DeltaVectorEntry entry : currentDelta) {
+      final Integer position = unresolved.remove(entry.rid);
+      if (position == null)
         continue;
-      final DeltaVectorEntry entry = findDeltaEntry(currentDelta, rid);
-      if (entry == null)
-        // The buffer moved under us (a rebuild drained it between the two stages). The row's exact score is the
-        // best information left, and it is still a live row, so it stays rather than being dropped.
-        continue;
-      positions[rescored] = i;
+      positions[rescored] = position;
       entries[rescored] = entry;
       rescored++;
+      if (unresolved.isEmpty())
+        break;
     }
 
+    // Anything still unresolved is a row the buffer no longer holds - a rebuild drained it between the two stages.
+    // Its exact score is the best information left and it is still a live row, so it keeps that score rather than
+    // being dropped; only its scale is off, which is strictly better than losing the row.
     if (rescored == 0)
       return;
 
     // A scratch PQ store holding exactly these rows, so the decoder below is the same class, over the same
     // codebooks, assembling the same partial sums as the one that scored the graph beam - which is what makes the
     // two sides genuinely one scale rather than merely two similar ones. Sized to `rescored`, with every row in a
-    // single chunk, so the allocation is `rescored * compressedVectorSize()` bytes and nothing like the
-    // 1024-vectors-per-chunk a growable store would round up to.
+    // single chunk, so the allocation is `rescored * compressedVectorSize()` bytes: the MutablePQVectors used on
+    // the build path (see buildAndPersistPQ) is the higher-level way to do this, but it rounds its backing store up
+    // to 1024 vectors per chunk, which for the handful of rows here is the larger cost by far.
     final ByteSequence<?>[] chunk = { vts.createByteSequence(rescored * pq.compressedVectorSize()) };
     final PQVectors scratch = new ImmutablePQVectors(pq, chunk, rescored, rescored);
     for (int j = 0; j < rescored; j++)
@@ -4681,21 +4716,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // Re-sort: rescoring moved rows on the axis the list is ordered by, so the ascending-distance contract this
     // method inherits from mergeWithDeltaScan has to be re-established before the caller sees it.
     results.sort((a, b) -> Float.compare(a.getSecond(), b.getSecond()));
-  }
-
-  /**
-   * The delta entry for {@code rid}, or {@code null} if the buffer no longer holds one. Linear, which is what the
-   * buffer supports - it is an append-ordered list with no index by RID - and called at most once per row of a
-   * {@code k}-sized result, never once per buffer entry.
-   * <p>
-   * {@code rid} arrives here in its {@link #bindRid} form while the buffer stores the raw one; comparing them
-   * directly is correct because {@link RID#equals} is decided on bucket and offset, which binding does not change.
-   */
-  private static DeltaVectorEntry findDeltaEntry(final List<DeltaVectorEntry> delta, final RID rid) {
-    for (final DeltaVectorEntry entry : delta)
-      if (rid.equals(entry.rid))
-        return entry;
-    return null;
   }
 
   /**
