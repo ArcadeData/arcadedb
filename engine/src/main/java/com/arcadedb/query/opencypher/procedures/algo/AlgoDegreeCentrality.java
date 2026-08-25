@@ -25,13 +25,17 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.List;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 /**
  * Procedure: algo.degree(relTypes?, direction?)
  * <p>
  * Computes degree centrality for every vertex: the normalized fraction of nodes connected to it.
- * Uses {@code vertex.countEdges()} for maximum efficiency — no edge objects are materialised.
+ * Routes through {@link #loadGraph} like the rest of the {@code algo.*} package (issue #6316), so a Graph
+ * Analytical View covering the graph is used when one is ready. CSR-backed, {@link GraphData#degrees} reads
+ * the count straight off the view's offset arrays in O(1) per node rather than materialising and counting a
+ * neighbour list, which is the same {@code vertex.countEdges()}-style efficiency the OLTP path already had.
  * </p>
  * <p>
  * Example:
@@ -80,24 +84,23 @@ public class AlgoDegreeCentrality extends AbstractAlgoProcedure {
     final String dirArg = args.length > 1 ? extractString(args[1], "direction") : "BOTH";
 
     final Database db = context.getDatabase();
-    final List<Vertex> vertices = loadVertices(db, null, newMemoryBudget(db));
+    final GraphData graph = loadGraph(db, null, relTypes, context);
 
-    final int n = vertices.size();
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
 
     final double norm = n > 1 ? (double) (n - 1) : 1.0;
 
-    return vertices.stream().map(v -> {
-      final long in = relTypes != null && relTypes.length > 0 ?
-          v.countEdges(Vertex.DIRECTION.IN, relTypes) :
-          v.countEdges(Vertex.DIRECTION.IN);
-      final long out = relTypes != null && relTypes.length > 0 ?
-          v.countEdges(Vertex.DIRECTION.OUT, relTypes) :
-          v.countEdges(Vertex.DIRECTION.OUT);
+    final int[] inDegrees = graph.degrees(Vertex.DIRECTION.IN, relTypes);
+    final int[] outDegrees = graph.degrees(Vertex.DIRECTION.OUT, relTypes);
+
+    return IntStream.range(0, n).mapToObj(i -> {
+      final long in = inDegrees[i];
+      final long out = outDegrees[i];
       final long total = in + out;
       final ResultInternal r = new ResultInternal();
-      r.setProperty("node", v.getIdentity());
+      r.setProperty("node", graph.getRID(i));
       r.setProperty("inDegree", in);
       r.setProperty("outDegree", out);
       r.setProperty("degree", total);

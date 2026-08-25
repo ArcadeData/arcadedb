@@ -155,8 +155,11 @@ class SQLFunctionSumAverageMultiArgTest {
         assertThat(((Number) rs.next().getProperty("s")).doubleValue()).isEqualTo(1.5);
       }
 
-      // EMPTY GROUP RETURNS NO ROW (NO DIVISION BY ZERO)
+      // EMPTY GROUP RETURNS ONE ROW WITH A NULL AVERAGE (NO DIVISION BY ZERO), consistent with any other
+      // no-GROUP-BY aggregate over an empty input (issue #6680) rather than zero rows.
       try (final ResultSet rs = db.query("sql", "SELECT avg(a) AS s FROM Nums WHERE a > 1000")) {
+        assertThat(rs.hasNext()).isTrue();
+        assertThat(rs.next().<Object>getProperty("s")).isNull();
         assertThat(rs.hasNext()).isFalse();
       }
     });

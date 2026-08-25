@@ -112,6 +112,12 @@ public class AlgoInfluenceMaximization extends AbstractAlgoProcedure {
     final Random rng = new Random(42L);
     final WorkGuard guard = newWorkGuard(context);
 
+    // Hoisted out of simulateIC() and reused across every Monte Carlo call (k x n x simulations of them).
+    // simulateIC() resets only the entries it touched, turning what used to be an O(n) allocate-and-zero
+    // per call into an O(activated) reset (issue #6265).
+    final boolean[] activated = new boolean[n];
+    final int[]     queue     = new int[n];
+
     final List<Result> results = new ArrayList<>(seedCount);
     double prevSpread = 0.0;
 
@@ -127,12 +133,13 @@ public class AlgoInfluenceMaximization extends AbstractAlgoProcedure {
         double totalSpread = 0.0;
         for (int sim = 0; sim < simulations; sim++) {
           // Deliberately the unthrottled check(), not checkPeriodically(), unlike node2vec's and maxKCut's
-          // inner loops. Throttling pays off only where one iteration can be cheaper than the check itself,
-          // and simulateIC allocates and zero-fills two arrays of size n before the cascade starts, so it is
-          // never O(1) on any graph shape. Throttling to 1024 would instead make abort latency
+          // inner loops. guard.check() costs one flag test when no timeout is configured, so paying it once
+          // per simulation is cheap even now that simulateIC's buffers are hoisted to the caller and a
+          // simulation on a sparse graph with a low propagationProbability can be close to O(1) (issue
+          // #6265). Throttling to checkPeriodically(1024) would instead make abort latency
           // 1024 x O(n + m) cascades, worst on exactly the large graphs where the deadline matters most.
           guard.check();
-          totalSpread += simulateIC(adj, seeds, round, candidate, n, propagationProbability, rng);
+          totalSpread += simulateIC(adj, seeds, round, candidate, n, propagationProbability, rng, activated, queue);
         }
         final double avgSpread = totalSpread / simulations;
 
@@ -163,12 +170,15 @@ public class AlgoInfluenceMaximization extends AbstractAlgoProcedure {
   /**
    * Simulates one IC cascade from the current seed set plus a candidate node.
    * Returns the number of activated nodes.
+   * <p>
+   * {@code activated} and {@code queue} are owned by the caller and reused across every simulation
+   * (issue #6265): both are guaranteed all-{@code false}/scratch on entry and are restored to that state
+   * before returning, by resetting only the entries this call touched (recorded in {@code queue[0..tail)})
+   * rather than reallocating and zero-filling {@code n}-sized arrays on every call.
    */
   private int simulateIC(final int[][] adj, final int[] seeds, final int seedCount,
-      final int candidate, final int n, final double p, final Random rng) {
-    final boolean[] activated = new boolean[n];
-    // BFS queue (int[] with head/tail pointers — zero boxing)
-    final int[] queue = new int[n];
+      final int candidate, final int n, final double p, final Random rng,
+      final boolean[] activated, final int[] queue) {
     int head = 0;
     int tail = 0;
 
@@ -197,6 +207,10 @@ public class AlgoInfluenceMaximization extends AbstractAlgoProcedure {
         }
       }
     }
+
+    // Reset only the touched entries so the shared buffers are clean for the next call (issue #6265).
+    for (int i = 0; i < tail; i++)
+      activated[queue[i]] = false;
 
     return count;
   }

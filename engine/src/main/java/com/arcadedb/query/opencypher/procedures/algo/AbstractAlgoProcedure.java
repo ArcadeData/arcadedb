@@ -790,6 +790,37 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
       return provider != null ? provider.getNeighborView(dir, relTypes) : null;
     }
 
+    /**
+     * Per-node degree in the given direction, for callers that need only the count - not the neighbour ids
+     * {@link #adjacency} would materialise to get it.
+     * <p>
+     * CSR-backed, this reads the count straight off {@link GraphTraversalProvider#getDegrees}, which for a
+     * {@code GraphAnalyticalView} is an O(1)-per-node offset subtraction rather than an O(degree) walk - no
+     * neighbour-id array is ever allocated. {@code getDegrees} takes one edge type at a time (issue #6316:
+     * it has exactly one caller, {@code DegreeProductOp}, and always with a single type), so an "all/several
+     * types" request is resolved to the provider's materialised types and summed per type, the same resolution
+     * {@link #weightedAdjacency} uses for its columnar path.
+     */
+    public int[] degrees(final Vertex.DIRECTION dir, final String... relTypes) {
+      final int[] degrees = new int[nodeCount];
+      memory.reserve(saturatingProduct(nodeCount, INT_BYTES), "the degree buffer", nodeCount + " nodes");
+      if (provider != null) {
+        final String[] types = relTypes != null && relTypes.length > 0 ? relTypes : provider.getMaterializedEdgeTypes();
+        if (types != null && types.length > 0) {
+          final int[] perType = new int[nodeCount];
+          for (final String type : types) {
+            provider.getDegrees(perType, dir, type);
+            for (int i = 0; i < nodeCount; i++)
+              degrees[i] += perType[i];
+          }
+        }
+        return degrees;
+      }
+      for (int i = 0; i < nodeCount; i++)
+        degrees[i] = (int) vertices.get(i).countEdges(dir, relTypes);
+      return degrees;
+    }
+
     public Vertex getVertex(final int i) {
       if (provider != null) {
         final RID rid = provider.getRID(i);
