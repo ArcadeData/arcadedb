@@ -517,6 +517,28 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   }
 
   /**
+   * Narrows a {@code long} entry count to {@code int}, refusing rather than wrapping when it does not fit.
+   * <p>
+   * {@code GraphData.weightedAdjacency()}'s {@code totalEntries} is summed in {@code long} precisely so a graph
+   * whose edge count exceeds {@link Integer#MAX_VALUE} is caught here, at the one point a caller narrows it to
+   * size its own flat {@code int[]}/{@code double[]} edge arrays (issue #6721 review) - rather than silently
+   * wrapping to a small or negative value that then either passes a downstream {@code memory.reserve()} check it
+   * should have failed, or surfaces many calls later as a confusing {@code NegativeArraySizeException}, the same
+   * shape issue #6289's siblings ({@link AlgoNode2Vec}, {@link AlgoRandomWalk}, {@link AlgoSteinerTree}) already
+   * guard the same way for their own knob-derived counts.
+   *
+   * @param procedureName the calling procedure's {@link #getName()}, for the exception message
+   * @param nodeCount     the graph's node count, for the exception message
+   * @param totalEntries  the entry count to narrow
+   */
+  protected static int checkedEdgeCount(final String procedureName, final int nodeCount, final long totalEntries) {
+    if (totalEntries > Integer.MAX_VALUE)
+      throw new IllegalArgumentException(procedureName + "(): " + nodeCount + " nodes make " + totalEntries
+          + " edge entries, more than the " + Integer.MAX_VALUE + " a Java array can hold");
+    return (int) totalEntries;
+  }
+
+  /**
    * Creates a {@link WorkGuard} sharing this command's {@link GlobalConfiguration#COMMAND_TIMEOUT} deadline.
    * <p>
    * The knobs that drive the CPU-bound loops of the algorithm procedures ({@code iterations}, {@code restarts},
@@ -884,10 +906,14 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
      * the pairing wrong. That is the whole point of returning the two together rather than offering weights
      * "aligned with" an adjacency the caller obtained separately - issue #6301 is what the second shape costs.
      *
-     * @param neighbors dense neighbour ids per node
-     * @param weights   weight of the edge to the neighbour at the same index
+     * @param neighbors    dense neighbour ids per node
+     * @param weights      weight of the edge to the neighbour at the same index
+     * @param totalEntries the edge count summed across every node's row - computed once here, while the rows are
+     *                     already being walked to build or price them, so a caller that needs it (issue #6721:
+     *                     {@code algo.mst}/{@code algo.msa} size their own flat edge arrays from it) reads it
+     *                     instead of re-summing {@code neighbors[i].length} over the whole graph a second time
      */
-    public record WeightedAdjacency(int[][] neighbors, double[][] weights) {
+    public record WeightedAdjacency(int[][] neighbors, double[][] weights, long totalEntries) {
     }
 
     /**
@@ -929,7 +955,7 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
           weights[i] = new double[neighbors[i].length];
           Arrays.fill(weights[i], 1.0);
         }
-        return new WeightedAdjacency(neighbors, weights);
+        return new WeightedAdjacency(neighbors, weights, totalEntries);
       }
 
       // getEdgeProperty() addresses an edge by (type, direction, position), so "all types" has to be resolved
@@ -1001,12 +1027,14 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
       final double[][] weights = new double[nodeCount][];
       final long maxEntryCheckpoint = ADJACENCY_CHECKPOINT_ENTRIES / 3;
       long entries = 0;
+      long totalEntries = 0;
       for (int i = 0; i < nodeCount; i++) {
         guard.checkPeriodically(i);
         final NodeEdgeWeights edges = provider.edgeWeightsOf(i, dir, weightProperty, 1.0, guard::checkPeriodically, types);
         neighbors[i] = edges.neighbors();
         weights[i] = edges.weights();
         entries += edges.neighbors().length;
+        totalEntries += edges.neighbors().length;
         final long entryCheckpoint = Math.min(maxEntryCheckpoint, memory.capacityFor(INT_BYTES + DOUBLE_BYTES));
         if (entries >= entryCheckpoint || (i & 1023) == 1023) {
           reserveWeightedAdjacency(0, entries);
@@ -1014,7 +1042,7 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
         }
       }
       reserveWeightedAdjacency(0, entries);
-      return new WeightedAdjacency(neighbors, weights);
+      return new WeightedAdjacency(neighbors, weights, totalEntries);
     }
 
     /**
@@ -1033,6 +1061,7 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
       double[] scratchWeights = new double[16];
       int edgeStep = 0;
       long entries = 0;
+      long totalEntries = 0;
 
       for (int i = 0; i < nodeCount; i++) {
         final Vertex vertex = getVertex(i);
@@ -1073,13 +1102,14 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
         neighbors[i] = Arrays.copyOf(scratchNeighbors, degree);
         weights[i] = Arrays.copyOf(scratchWeights, degree);
         entries += degree;
+        totalEntries += degree;
         if (entries >= ADJACENCY_CHECKPOINT_ENTRIES || (i & 1023) == 1023) {
           reserveWeightedAdjacency(0, entries);
           entries = 0;
         }
       }
       reserveWeightedAdjacency(0, entries);
-      return new WeightedAdjacency(neighbors, weights);
+      return new WeightedAdjacency(neighbors, weights, totalEntries);
     }
   }
 

@@ -115,9 +115,11 @@ public class AlgoMST extends AbstractAlgoProcedure {
     final int[][] neighbors = weighted.neighbors();
     final double[][] weights = weighted.weights();
 
-    int edgeCount = 0;
-    for (int i = 0; i < n; i++)
-      edgeCount += neighbors[i].length;
+    // weightedAdjacency() already summed this once while building/pricing the rows (issue #6721) - reused here
+    // rather than walking neighbors[] a second time for the same total. Narrowed through checkedEdgeCount rather
+    // than a plain cast, so a total that does not fit an int is refused here instead of silently wrapping into
+    // memory.reserve() below with a wrong, non-negative-looking value that defeats the guard instead of tripping it.
+    final int edgeCount = checkedEdgeCount(getName(), n, weighted.totalEntries());
 
     // The working set here is sized by the EDGE count, which is the one dense shape #6263 did not price: its
     // criterion was "knob-sized or quadratic in the node count", and edge-linear reads like the graph paying for
