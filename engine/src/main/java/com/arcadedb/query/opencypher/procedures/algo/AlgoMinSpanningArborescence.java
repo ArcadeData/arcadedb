@@ -111,8 +111,12 @@ public class AlgoMinSpanningArborescence extends AbstractAlgoProcedure {
 
     // Edge collection and weight extraction go through GraphData.weightedAdjacency (issue #6316), the same
     // shared helper algo.steinerTree and algo.mst read weights through, rather than a hand-rolled two-pass
-    // getEdges() walk. OUT direction = directed edges, matching the arborescence semantics.
-    final GraphData.WeightedAdjacency weighted = graph.weightedAdjacency(guard, Vertex.DIRECTION.OUT, weightProperty, relTypes);
+    // getEdges() walk. OUT direction = directed edges, matching the arborescence semantics. A blank
+    // weightProperty is normalised to null first (matching algo.maxFlow's capacityProperty handling), so a
+    // blank string does not avoidably fall onto weightedAdjacency's record-backed fallback instead of the CSR
+    // path when a view is ready (PR #6714 review round 12).
+    final String weightProp = weightProperty != null && !weightProperty.isEmpty() ? weightProperty : null;
+    final GraphData.WeightedAdjacency weighted = graph.weightedAdjacency(guard, Vertex.DIRECTION.OUT, weightProp, relTypes);
     final int[][] neighbors = weighted.neighbors();
     final double[][] weights = weighted.weights();
 
