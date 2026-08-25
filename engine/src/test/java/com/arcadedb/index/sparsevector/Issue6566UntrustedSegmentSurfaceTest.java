@@ -180,6 +180,15 @@ class Issue6566UntrustedSegmentSurfaceTest extends TestHelper {
             + "physical per-bucket sub-index name (%s) this fix used to embed a second time", engineName)
         .anyMatch(w -> w.contains("#6379") && w.contains(remedyLine) && countOccurrences(w, "REBUILD INDEX") == 1
             && !w.contains(engineName));
+
+    // Exhaustive, not anyMatch: a second, wrongly-targeted WARNING could coexist with the correct one above and
+    // an anyMatch-only assertion would not notice (PR #6720 review, round 2 - PaginatedSparseVectorEngine's own
+    // warnOnPreRecencyEpochSegments() log line had exactly this bug, undetected by this test's first version).
+    // Every captured line is checked, not just the one this test is looking for.
+    assertThat(warnings)
+        .as("no captured WARNING may pair 'REBUILD INDEX' with the physical per-bucket sub-index name (%s)",
+            engineName)
+        .noneMatch(w -> w.contains("REBUILD INDEX") && w.contains(engineName));
   }
 
   private LSMSparseVectorIndex sparseSubIndex(final String typeName) {
