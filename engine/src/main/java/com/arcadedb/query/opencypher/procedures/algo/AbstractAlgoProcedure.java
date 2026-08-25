@@ -917,9 +917,11 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
      */
     private WeightedAdjacency weightedAdjacencyFromColumns(final WorkGuard guard, final Vertex.DIRECTION dir,
         final String weightProperty, final String[] types) {
+      // Reserved before the row-header arrays are allocated, matching adjacency()'s own ordering: the budget
+      // is refused before a single byte of them is on the heap, not after (issue #6715 review).
+      reserveWeightedAdjacency(nodeCount, 0);
       final int[][] neighbors = new int[nodeCount][];
       final double[][] weights = new double[nodeCount][];
-      reserveWeightedAdjacency(nodeCount, 0);
       final long maxEntryCheckpoint = ADJACENCY_CHECKPOINT_ENTRIES / 3;
       long entries = 0;
       for (int i = 0; i < nodeCount; i++) {

@@ -132,15 +132,17 @@ class AlgoDegreeCentralityTest {
   }
 
   private void assertDegreeOfE(final String query, final long expectedIn, final long expectedOut, final long expectedDegree) {
-    final ResultSet rs = database.query("opencypher", query);
     boolean found = false;
-    while (rs.hasNext()) {
-      final Result r = rs.next();
-      if ("E".equals(r.getProperty("name"))) {
-        found = true;
-        assertThat(((Number) r.getProperty("inDegree")).longValue()).as(query + " inDegree").isEqualTo(expectedIn);
-        assertThat(((Number) r.getProperty("outDegree")).longValue()).as(query + " outDegree").isEqualTo(expectedOut);
-        assertThat(((Number) r.getProperty("degree")).longValue()).as(query + " degree").isEqualTo(expectedDegree);
+    try (final ResultSet rs = database.query("opencypher", query)) {
+      while (rs.hasNext()) {
+        final Result r = rs.next();
+        if ("E".equals(r.getProperty("name"))) {
+          found = true;
+          assertThat(((Number) r.getProperty("inDegree")).longValue()).as(query + " inDegree").isEqualTo(expectedIn);
+          assertThat(((Number) r.getProperty("outDegree")).longValue()).as(query + " outDegree").isEqualTo(expectedOut);
+          assertThat(((Number) r.getProperty("degree")).longValue()).as(query + " degree").isEqualTo(expectedDegree);
+          break;
+        }
       }
     }
     assertThat(found).as("node E must be present in the result").isTrue();

@@ -125,9 +125,10 @@ class Issue6715EdgeWeightsOfCheckpointTest {
    * The memory side of the same gap, named in the issue's own follow-up comment: before this fix, the columnar
    * weighted-adjacency build never reserved anything at all against {@code CYPHER_ALGO_MAX_WORKING_MEMORY}, so
    * many medium-sized rows could together exceed the budget with nothing to refuse the call. 3000 nodes of 2000
-   * edges each is 6,000,000 entries; a budget that admits the row headers and the first ~525 nodes' worth of
-   * entries (the point {@code ADJACENCY_CHECKPOINT_ENTRIES} is first crossed) but not the whole graph must refuse
-   * partway through, well short of the full 6,000,000.
+   * edges each is 6,000,000 entries; a tight 2,000,000-byte budget - which admits the row headers and only a
+   * small fraction of the entries, since the checkpoint interval is capped by {@code MemoryBudget.capacityFor}
+   * against what is actually left of it, not just the coarser {@code ADJACENCY_CHECKPOINT_ENTRIES / 3} - must
+   * refuse within the first few dozen nodes, well short of building all 3000 rows.
    */
   @Test
   void manyMediumRowsTogetherExceedTheBudgetAndAreRefused() {
