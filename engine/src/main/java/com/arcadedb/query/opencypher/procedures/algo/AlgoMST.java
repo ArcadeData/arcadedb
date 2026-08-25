@@ -106,8 +106,12 @@ public class AlgoMST extends AbstractAlgoProcedure {
     // shared helper algo.steinerTree and algo.bellmanFord read weights through: neighbour and weight come off
     // the same walk, so they cannot be mismatched the way #6301 found here independently of them. It also
     // resolves via the CSR when a Graph Analytical View is ready, which the old hand-rolled getEdges() walk
-    // never did.
-    final GraphData.WeightedAdjacency weighted = graph.weightedAdjacency(guard, Vertex.DIRECTION.OUT, weightProperty, relTypes);
+    // never did. A blank weightProperty is normalised to null first (matching algo.maxFlow's capacityProperty
+    // handling), so both mean "no property, every edge weighs 1.0" - otherwise a blank string would still take
+    // the record-backed fallback in weightedAdjacency instead of the CSR path even when a view is ready, since
+    // weightedAdjacency only special-cases a null weightProperty, not an empty one (PR #6714 review round 12).
+    final String weightProp = weightProperty != null && !weightProperty.isEmpty() ? weightProperty : null;
+    final GraphData.WeightedAdjacency weighted = graph.weightedAdjacency(guard, Vertex.DIRECTION.OUT, weightProp, relTypes);
     final int[][] neighbors = weighted.neighbors();
     final double[][] weights = weighted.weights();
 
