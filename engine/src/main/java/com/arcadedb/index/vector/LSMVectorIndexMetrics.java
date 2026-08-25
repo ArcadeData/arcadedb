@@ -51,7 +51,22 @@ class LSMVectorIndexMetrics {
   // distinct groups, so the caller got a correct but short answer. Finding the limit-th nearest group costs however
   // many candidates the data puts between it and the query, which no fixed budget can guarantee (issue #5761), so
   // this is the signal to raise efSearch on the index or the query.
+  //
+  // Issue #6559: this counter is deliberately narrow - it fires ONLY when the walk stopped because the candidate
+  // budget ran out while the graph still had more to give. It must NOT fire when the reachable graph (or, on the
+  // pre-filter plan, the allow-list) was exhausted on its own: a corpus that genuinely holds fewer than `limit`
+  // distinct groupBy values, or an allow-list that cannot reach `limit` groups, trips that on every query forever and
+  // "raise efSearch" cannot manufacture a group that does not exist. See groupedSearchesGroupsUnavailable for that
+  // case.
   private final AtomicLong groupedSearchesShortOfLimit = new AtomicLong(0);
+  // Grouped searches that came back with fewer than `limit` distinct groups because the reachable graph (or the
+  // allow-list, on the pre-filter plan) ran out on its own - not because a fixed candidate budget cut the walk short.
+  // Raising efSearch cannot help here: there is nothing further to find. A steady, non-zero rate is expected and
+  // requires no action when the groupBy cardinality is genuinely below `limit`. It is also the signal issue #6559
+  // item 4 asked for: a grouped query that comes up short for a reason other than "the cap is doing its job" - e.g. a
+  // degraded graph after a corrupted rebuild (issue #3722) - shows up here rather than nowhere at all, since a
+  // grouped search deliberately skips the brute-force fallback the plain k-NN path uses to self-heal from that case.
+  private final AtomicLong groupedSearchesGroupsUnavailable = new AtomicLong(0);
   // Grouped searches that merged at least one row out of the delta buffer into their answer (issue #6501). Before
   // that issue the grouped path skipped the buffer outright, so a groupBy query silently answered from the corpus as
   // of the last graph rebuild while the same query without groupBy returned the newer rows; the merge is what closed
@@ -118,6 +133,10 @@ class LSMVectorIndexMetrics {
 
   void incrementGroupedSearchesShortOfLimit() {
     groupedSearchesShortOfLimit.incrementAndGet();
+  }
+
+  void incrementGroupedSearchesGroupsUnavailable() {
+    groupedSearchesGroupsUnavailable.incrementAndGet();
   }
 
   void incrementGroupedSearchesMergingDelta() {
@@ -190,6 +209,10 @@ class LSMVectorIndexMetrics {
     return groupedSearchesShortOfLimit.get();
   }
 
+  long getGroupedSearchesGroupsUnavailable() {
+    return groupedSearchesGroupsUnavailable.get();
+  }
+
   long getGroupedSearchesMergingDelta() {
     return groupedSearchesMergingDelta.get();
   }
@@ -240,6 +263,7 @@ class LSMVectorIndexMetrics {
     stats.put("bruteForceScans", bruteForceScans.get());
     stats.put("preFilterSearches", preFilterSearches.get());
     stats.put("groupedSearchesShortOfLimit", groupedSearchesShortOfLimit.get());
+    stats.put("groupedSearchesGroupsUnavailable", groupedSearchesGroupsUnavailable.get());
     stats.put("groupedSearchesMergingDelta", groupedSearchesMergingDelta.get());
     stats.put("unverifiedGraphReuses", unverifiedGraphReuses.get());
     stats.put("rebuildsDeferredForMemory", rebuildsDeferredForMemory.get());
@@ -264,6 +288,7 @@ class LSMVectorIndexMetrics {
     bruteForceScans.set(0);
     preFilterSearches.set(0);
     groupedSearchesShortOfLimit.set(0);
+    groupedSearchesGroupsUnavailable.set(0);
     groupedSearchesMergingDelta.set(0);
     unverifiedGraphReuses.set(0);
     rebuildsDeferredForMemory.set(0);

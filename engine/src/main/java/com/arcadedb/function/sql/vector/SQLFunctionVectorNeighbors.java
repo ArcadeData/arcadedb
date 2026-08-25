@@ -205,7 +205,10 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
    * out of candidate budget (#5761), and the {@link GroupAdmissionState} below re-applies the same cap once
    * across every index so the caller never sees a {@code (limit + 1)}-th group. Still best-effort: an index
    * whose nearest group is denser than its candidate budget returns fewer groups and counts the query in
-   * {@code groupedSearchesShortOfLimit}, which is the signal to raise the index's {@code efSearch}.
+   * {@code groupedSearchesShortOfLimit}, which is the signal to raise the index's {@code efSearch}. A short answer
+   * for the other reason - the corpus or the allow-list simply has fewer than {@code limit} distinct groups to give,
+   * which no beam width can change - counts in {@code groupedSearchesGroupsUnavailable} instead (issue #6559), so
+   * the {@code efSearch} signal stays actionable rather than firing on every query over low-cardinality data.
    * <p>
    * Adding {@code groupBy} to a query changes how its rows are capped and nothing else about what the index can see:
    * both branches below are answered from the graph <em>and</em> the delta buffer of vectors written since it was

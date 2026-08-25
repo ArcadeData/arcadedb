@@ -75,12 +75,14 @@ import io.github.jbellis.jvector.graph.disk.OnDiskGraphIndex;
 import io.github.jbellis.jvector.graph.similarity.BuildScoreProvider;
 import io.github.jbellis.jvector.graph.similarity.DefaultSearchScoreProvider;
 import io.github.jbellis.jvector.graph.similarity.ScoreFunction;
+import io.github.jbellis.jvector.quantization.ImmutablePQVectors;
 import io.github.jbellis.jvector.quantization.MutablePQVectors;
 import io.github.jbellis.jvector.quantization.PQVectors;
 import io.github.jbellis.jvector.quantization.ProductQuantization;
 import io.github.jbellis.jvector.util.Bits;
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 import io.github.jbellis.jvector.vector.VectorizationProvider;
+import io.github.jbellis.jvector.vector.types.ByteSequence;
 import io.github.jbellis.jvector.vector.types.VectorFloat;
 import io.github.jbellis.jvector.vector.types.VectorTypeSupport;
 
@@ -4572,6 +4574,131 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * The {@link #findNeighborsFromVectorApproximate} counterpart of {@link #mergeWithDeltaScan}: same merge, but the
+   * rows it contributes are scored on the <em>same PQ scale</em> as the graph rows they are ranked against (issue
+   * #6559 item 2).
+   * <p>
+   * <b>The defect.</b> The PQ path scores every graph candidate from the in-memory PQ codes - approximately, by
+   * design, that being the whole point of a search that never touches a page. {@code mergeWithDeltaScan} scores the
+   * delta buffer <em>exactly</em>. Merging the two and sorting them against each other ranked two different
+   * measurements in one list: a delta row and a graph row at the same true distance did not get the same number, and
+   * which of them won was decided by the graph row's quantization error rather than by the data - systematically,
+   * since PQ error has structure, not as random noise that averages out. A caller thresholding on distance
+   * ({@code maxDistance}, or its own cut-off) was applying one bar to two scales.
+   * <p>
+   * <b>The fix, and why it is shaped this way.</b> Both sides must carry the same error, and only the delta side can
+   * be moved: making the graph side exact means reading the real vectors, which is precisely the disk I/O this path
+   * exists to avoid. So a delta row is quantized with the index's own codebooks and then scored through the
+   * <em>same</em> {@link PQVectors#precomputedScoreFunctionFor} decoder the graph rows were scored by, over a
+   * scratch store holding just those rows. Going through that decoder rather than reconstructing the vector and
+   * comparing it directly is deliberate: the two are the same quantity in exact arithmetic, but the decoder
+   * assembles it from a partial-sums table in a different order and - for {@code COSINE}, against the global
+   * centroid - so a hand-rolled equivalent lands a few parts in ten thousand away and puts the two sides back on
+   * measurably different scales, which is the whole defect.
+   * <p>
+   * <b>Why the exact scan still runs first.</b> Encoding costs a comparison against all {@code clusterCount}
+   * centroids of every subspace - order 256x one exact comparison - so quantizing the whole buffer would cost more
+   * than the search it feeds, on the one path whose contract is microseconds, and would scale with a buffer that
+   * runs to hundreds of thousands of entries under sustained ingestion. The cheap exact scan is therefore kept as a
+   * <em>pruner</em> - it already ran here before this fix, at the same cost - and only the at-most-{@code k}
+   * survivors are re-scored on the PQ scale. Cost is bounded by {@code k} regardless of buffer size, and is exactly
+   * zero when the buffer is empty, which is the steady state this path is built for.
+   * <p>
+   * <b>The residue.</b> Selecting the head exactly and then ranking it approximately can admit a row that the PQ
+   * scale would have placed just outside {@code k}, or drop one it would have placed just inside. That window is
+   * bounded by the PQ error already present in every graph candidate on this path, and it moves rows between
+   * adjacent ranks rather than between right and wrong - which is the trade an approximate search is, by contract.
+   * The alternative - quantizing every candidate to remove it - costs the buffer scan described above.
+   */
+  private void mergeWithDeltaScanApproximate(final VectorFloat<?> queryVectorFloat, final int k,
+      final Set<RID> allowedRIDs, final List<Pair<RID, Float>> results) {
+    // Pin the quantizer for the whole merge: a concurrent rebuild may swap the volatile field, and every row below
+    // has to be scored through the same codebooks the caller's graph beam is using.
+    final ProductQuantization pq = productQuantization;
+    if (pq == null) {
+      // No quantizer to score through - the caller checked isPQSearchAvailable(), but a rebuild can discard it
+      // between that check and here. Exact scoring is the honest fallback: it is what the graph side degrades to
+      // as well once PQ is gone, so the two stay on one scale either way.
+      mergeWithDeltaScan(queryVectorFloat, k, allowedRIDs, results);
+      return;
+    }
+
+    // The graph rows, captured BEFORE the merge: mergeWithDeltaScan rebuilds `results` from its own heap, so a
+    // position - or a prefix length - taken now means nothing afterwards. Identity by RID is what survives it.
+    final RidHashSet graphRIDs = new RidHashSet(results.size());
+    for (final Pair<RID, Float> row : results)
+      graphRIDs.add(row.getFirst());
+
+    // Stage 1 - the cheap exact prune, unchanged. Whatever it contributes is a superset of the rows that can matter.
+    mergeWithDeltaScan(queryVectorFloat, k, allowedRIDs, results);
+    if (results.isEmpty())
+      return;
+
+    // Stage 2 - re-score, on the PQ scale, only the rows stage 1 admitted from the buffer. The graph rows already
+    // carry PQ scores and must be left exactly as they are.
+    final List<DeltaVectorEntry> currentDelta = deltaVectors; // volatile snapshot
+    // Parallel primitive/reference arrays rather than a list of holder objects: this runs on the microsecond path,
+    // and both are at most `results.size()` long.
+    final int[] positions = new int[results.size()];
+    final DeltaVectorEntry[] entries = new DeltaVectorEntry[results.size()];
+    int rescored = 0;
+
+    for (int i = 0; i < results.size(); i++) {
+      final RID rid = results.get(i).getFirst();
+      if (graphRIDs.contains(rid))
+        continue;
+      final DeltaVectorEntry entry = findDeltaEntry(currentDelta, rid);
+      if (entry == null)
+        // The buffer moved under us (a rebuild drained it between the two stages). The row's exact score is the
+        // best information left, and it is still a live row, so it stays rather than being dropped.
+        continue;
+      positions[rescored] = i;
+      entries[rescored] = entry;
+      rescored++;
+    }
+
+    if (rescored == 0)
+      return;
+
+    // A scratch PQ store holding exactly these rows, so the decoder below is the same class, over the same
+    // codebooks, assembling the same partial sums as the one that scored the graph beam - which is what makes the
+    // two sides genuinely one scale rather than merely two similar ones. Sized to `rescored`, with every row in a
+    // single chunk, so the allocation is `rescored * compressedVectorSize()` bytes and nothing like the
+    // 1024-vectors-per-chunk a growable store would round up to.
+    final ByteSequence<?>[] chunk = { vts.createByteSequence(rescored * pq.compressedVectorSize()) };
+    final PQVectors scratch = new ImmutablePQVectors(pq, chunk, rescored, rescored);
+    for (int j = 0; j < rescored; j++)
+      pq.encodeTo(entries[j].vector, scratch.get(j));
+
+    final ScoreFunction.ApproximateScoreFunction pqScore =
+        scratch.precomputedScoreFunctionFor(queryVectorFloat, metadata.similarityFunction);
+    for (int j = 0; j < rescored; j++) {
+      final int position = positions[j];
+      results.set(position, new Pair<>(results.get(position).getFirst(),
+          scoreToDistance(metadata.similarityFunction, pqScore.similarityTo(j))));
+    }
+
+    // Re-sort: rescoring moved rows on the axis the list is ordered by, so the ascending-distance contract this
+    // method inherits from mergeWithDeltaScan has to be re-established before the caller sees it.
+    results.sort((a, b) -> Float.compare(a.getSecond(), b.getSecond()));
+  }
+
+  /**
+   * The delta entry for {@code rid}, or {@code null} if the buffer no longer holds one. Linear, which is what the
+   * buffer supports - it is an append-ordered list with no index by RID - and called at most once per row of a
+   * {@code k}-sized result, never once per buffer entry.
+   * <p>
+   * {@code rid} arrives here in its {@link #bindRid} form while the buffer stores the raw one; comparing them
+   * directly is correct because {@link RID#equals} is decided on bucket and offset, which binding does not change.
+   */
+  private static DeltaVectorEntry findDeltaEntry(final List<DeltaVectorEntry> delta, final RID rid) {
+    for (final DeltaVectorEntry entry : delta)
+      if (rid.equals(entry.rid))
+        return entry;
+    return null;
+  }
+
+  /**
    * Brute-force scan of all indexed vectors to supplement graph search results.
    * Called as a fallback when graph search returns too few results (issue #3722),
    * e.g., after a rebuild with corrupted pages produced a poorly connected graph.
@@ -5080,6 +5207,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * cap returns fewer than {@code limit} groups and increments {@code groupedSearchesShortOfLimit} in
    * {@link #getStats()}. Raise {@code efSearch} when that counter moves.
    * <p>
+   * <b>A short answer is not always that case</b> (issue #6559). Coming back with fewer than {@code limit} groups
+   * also happens when the walk simply ran out of graph to visit: the corpus holds fewer than {@code limit} distinct
+   * group keys, the allow-list cannot reach that many, or the graph is degraded. No beam width conjures a group that
+   * is not there, so those queries increment {@code groupedSearchesGroupsUnavailable} instead - which keeps
+   * {@code groupedSearchesShortOfLimit} a counter an operator can act on, rather than one pinned high on every
+   * query forever by ordinary low-cardinality {@code groupBy} data.
+   * <p>
    * <b>The delta buffer is merged into the stream, not appended to the answer</b> (issue #6501). Every
    * vector written since the graph was last built lives in the delta buffer and is invisible to the
    * walk above, so a grouped query that ignored it answered from the corpus as of the last rebuild -
@@ -5211,6 +5345,22 @@ public class LSMVectorIndex implements Index, IndexInternal {
         final GraphSearcher searcher = pool.borrow(pooledGraph, poolEpoch);
         final int graphSize = graphIndex.size();
         int passes = 1;
+        // Issue #6559 item 1: whether a short answer is actionable depends on whether the candidate budget cut the
+        // walk short while the graph still had more to give - the case raising efSearch actually fixes - or the
+        // walk simply ran out of graph to visit, whether because the corpus genuinely holds fewer than `limit`
+        // distinct groupBy values (the common, expected case) or because the graph is degraded (issue #3722's case,
+        // for which the plain k-NN path self-heals via bruteForceScan but the grouped path deliberately does not -
+        // see this method's javadoc for why). Either way "raise efSearch" is the wrong advice there.
+        //
+        // Two independent signals feed that, both needed:
+        //  - a pass that came back short of the beam (returned < effectiveEfSearch) means the walk hit dead ends -
+        //    true even with plenty of candidateBudget left, e.g. a graph with unreachable islands (issue #3722);
+        //  - examined >= graphSize after the loop, because candidateBudget is capped at graphSize (Math.min below):
+        //    whenever the corpus is small enough that graphSize is the binding constraint, hitting the budget and
+        //    exhausting the graph are the same event, and the last pass can still return a full beam if graphSize
+        //    happens to be an exact multiple of the beam width - so a short final pass is not reliable on its own.
+        boolean walkRanDry = false;
+        int examined = 0;
         try {
           final ScoreFunction.ExactScoreFunction exactScoreFunction = liveOnlyScoreFunction(queryVectorFloat, vectors);
           final DefaultSearchScoreProvider ssp = new DefaultSearchScoreProvider(exactScoreFunction, exactScoreFunction);
@@ -5237,7 +5387,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // them - topK never reaches the layer-0 traversal (searchLayer0 passes only rerankK to searchOneLayer) and
           // reranking is driven by rerankK too, so every one of these was already scored and reranked.
           SearchResult searchResult = searcher.search(ssp, effectiveEfSearch, effectiveEfSearch, 0.0f, 0.0f, bitsFilter);
-          int examined = 0;
           while (true) {
             final int returned = searchResult.getNodes().length;
             examined += returned;
@@ -5248,8 +5397,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
             // A pass that could not fill its beam ran the candidate queue dry: the reachable graph is
             // exhausted and no further pass can add anything. This is also what makes the loop terminate -
             // every pass that does not break here grew `examined` by a full beam.
-            if (returned < effectiveEfSearch)
+            if (returned < effectiveEfSearch) {
+              walkRanDry = true;
               break;
+            }
             if (examined >= candidateBudget)
               break;
 
@@ -5261,6 +5412,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
         } finally {
           pool.release(searcher, pooledGraph, poolEpoch);
         }
+        // examined can never exceed graphSize - every pass contributes only nodes resume() had not already visited -
+        // so reaching it here means every reachable node was walked, whichever break fired.
+        final boolean graphExhausted = walkRanDry || examined >= graphSize;
 
         // The walk is over - the groups filled, the reachable graph ran out, or the candidate budget did. Whatever
         // is left in the cursor is further from the query than every graph candidate examined, so it is exactly what
@@ -5272,11 +5426,23 @@ public class LSMVectorIndex implements Index, IndexInternal {
         final List<Pair<RID, Float>> results = state.finish();
 
         if (state.distinctGroups() < limit) {
-          metrics.incrementGroupedSearchesShortOfLimit();
-          LogManager.instance()
-              .log(this, Level.FINE,
-                  "Vector grouped search on index %s filled only %d of %d groups after %d pass(es) - raise efSearch for wider group coverage",
-                  indexName, state.distinctGroups(), limit, passes);
+          if (graphExhausted) {
+            // Issue #6559 item 1/4: the walk ran the reachable graph dry rather than hitting the candidate budget -
+            // raising efSearch cannot add candidates that do not exist. Counted separately so it does not pin the
+            // actionable counter high on ordinary low-cardinality groupBy data, and so a degraded graph (issue
+            // #3722) that quietly starves a grouped query leaves a trace instead of none at all.
+            metrics.incrementGroupedSearchesGroupsUnavailable();
+            LogManager.instance()
+                .log(this, Level.FINE,
+                    "Vector grouped search on index %s filled only %d of %d groups after %d pass(es) - the reachable graph ran out of candidates rather than the candidate budget, so raising efSearch will not help; either the corpus/allow-list has fewer than %d distinct groups, or REBUILD INDEX if that is unexpected",
+                    indexName, state.distinctGroups(), limit, passes, limit);
+          } else {
+            metrics.incrementGroupedSearchesShortOfLimit();
+            LogManager.instance()
+                .log(this, Level.FINE,
+                    "Vector grouped search on index %s filled only %d of %d groups after %d pass(es) - raise efSearch for wider group coverage",
+                    indexName, state.distinctGroups(), limit, passes);
+          }
         }
 
         LogManager.instance()
@@ -5388,7 +5554,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
       metrics.incrementGroupedSearchesMergingDelta();
 
     if (state.distinctGroups() < limit) {
-      metrics.incrementGroupedSearchesShortOfLimit();
+      // Issue #6559 item 1: this plan has no efSearch/candidate-budget concept at all - every allow-listed candidate
+      // is scored up front - so a shortfall here is never the "raise efSearch" case groupedSearchesShortOfLimit
+      // means on the graph-walk plan. It counts under groupedSearchesGroupsUnavailable instead, alongside that
+      // plan's own non-actionable exhaustion case.
+      metrics.incrementGroupedSearchesGroupsUnavailable();
       // Deliberately not claiming this is "expected": that is only true when the scored set itself is under limit.
       // An allow-list wide enough to clear limit can still land here if its candidates cluster into fewer than
       // limit distinct groups, or enough of them fail group-key resolution - the summary log line below breaks the
@@ -5693,7 +5863,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
       lock.readLock().lock();
       try {
         if (graphIndex == null || vectorIndex().size() == 0) {
-          // No graph yet — still return delta-only results if available
+          // No graph yet - still return delta-only results if available.
+          //
+          // Scored exactly, and deliberately not through mergeWithDeltaScanApproximate (issue #6559 item 2): there
+          // is no graph here, so every row in this answer comes from the buffer and is already on one scale. The
+          // reason to quantize a delta row is to make it comparable to a PQ-scored graph row, and there are none to
+          // be comparable to - degrading these scores would lose accuracy to buy a consistency that already holds.
           if (!deltaVectors.isEmpty()) {
             final VectorFloat<?> qvf = vts.createFloatVector(queryVector);
             final List<Pair<RID, Float>> results = new ArrayList<>(k);
@@ -5732,7 +5907,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
             GlobalConfiguration.VECTOR_INDEX_PREFILTER_APPROXIMATE_MAX_SELECTIVITY)) {
           metrics.incrementPreFilterSearches();
           final List<Pair<RID, Float>> results = new ArrayList<>(k);
-          mergeWithDeltaScan(queryVectorFloat, k, allowedRIDs, results);
+          // PQ-scaled, not exact (issue #6559 item 2): preFilterApproximate scores its ordinals from the PQ codes,
+          // so delta rows merged here are ranked against - and returned alongside - approximate scores.
+          mergeWithDeltaScanApproximate(queryVectorFloat, k, allowedRIDs, results);
           preFilterApproximate(scoreFunction, k, allowedRIDs, results, ordinalMap);
           return results;
         }
@@ -5777,12 +5954,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
           }
         }
 
-        // Merge with delta vectors inserted since last graph rebuild
-        mergeWithDeltaScan(queryVectorFloat, k, allowedRIDs, results);
+        // Merge with delta vectors inserted since last graph rebuild, scored on the same PQ scale as the graph rows
+        // above rather than exactly (issue #6559 item 2) - see mergeWithDeltaScanApproximate for why ranking the two
+        // against each other on different scales let quantization error, not the data, decide which row won.
+        mergeWithDeltaScanApproximate(queryVectorFloat, k, allowedRIDs, results);
 
-        // Log performance metrics
+        // Log performance metrics. FINE, not INFO (issue #6559 item 3): this path's entire reason to exist is
+        // microsecond latency, so an unconditional per-query INFO line - on the query rate this path is built for -
+        // costs more to format and write than the search itself reports, and floods the log. Every comparable
+        // per-query summary on the neighbouring search paths is already FINE.
         final long elapsedNanos = System.nanoTime() - startTime;
-        LogManager.instance().log(this, Level.INFO,
+        LogManager.instance().log(this, Level.FINE,
             "Zero-disk-I/O PQ search returned %d results in %.2f µs (skipped: %d out of bounds, %d deleted/null)",
             results.size(), elapsedNanos / 1000.0, skippedOutOfBounds, skippedDeletedOrNull);
 

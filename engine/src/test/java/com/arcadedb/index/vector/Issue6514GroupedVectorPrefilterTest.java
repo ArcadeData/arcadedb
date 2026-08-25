@@ -176,11 +176,19 @@ class Issue6514GroupedVectorPrefilterTest extends TestHelper {
     for (int i = 0; i < PER_CLUSTER; i++)
       allowed.add(ridOf("doc" + i));
 
+    // Issue #6559 item 1: the pre-filter plan has no efSearch/candidate-budget concept at all - every allow-listed
+    // candidate is scored up front - so this shortfall is never the "raise efSearch" case
+    // groupedSearchesShortOfLimit means on the graph-walk plan. It must count under groupedSearchesGroupsUnavailable
+    // instead.
+    final long unavailableBefore = index.getStats().getOrDefault("groupedSearchesGroupsUnavailable", 0L);
     final long shortfallBefore = index.getStats().getOrDefault("groupedSearchesShortOfLimit", 0L);
     final List<Pair<RID, Float>> results = grouped(query, 5, 3, allowed);
 
+    assertThat(index.getStats().get("groupedSearchesGroupsUnavailable"))
+        .as("an allow-list confined to one cluster cannot open 5 groups").isEqualTo(unavailableBefore + 1);
     assertThat(index.getStats().get("groupedSearchesShortOfLimit"))
-        .as("an allow-list confined to one cluster cannot open 5 groups").isEqualTo(shortfallBefore + 1);
+        .as("the pre-filter plan cannot hit a candidate-budget shortfall, so this counter must stay untouched")
+        .isEqualTo(shortfallBefore);
     for (final Pair<RID, Float> r : results)
       assertThat(r.getFirst().asDocument().getInteger("cluster")).isEqualTo(0);
     assertThat(results.size()).as("groupSize still caps the one group that could be opened").isLessThanOrEqualTo(3);
