@@ -155,11 +155,16 @@ public final class GraphAlgorithms {
    * with {@code checkpoint} called on the calling thread between batches - never from inside a worker chunk, same
    * contract as {@link WorkCheckpoint#check()} documents.
    * <p>
-   * A batch is never smaller than {@link #PARALLEL_THRESHOLD}, so a graph too small to parallelise still runs as
-   * one batch with one checkpoint call, exactly like a plain {@link #parallelForRange} call would have. On a large
-   * graph this is what gives {@link #localClusteringCoefficient} intra-pass abortability at all (issue #6318: its
-   * one-shot triangle count had no iteration boundary to hang a checkpoint on the way {@link #pageRank} and
-   * {@link #labelPropagation} do), and it narrows their own between-iterations latency to within a single pass.
+   * A batch is never smaller than {@link #PARALLEL_THRESHOLD}, so a small-but-nonzero range still runs as one
+   * batch with one checkpoint call, exactly like a plain {@link #parallelForRange} call would have. {@code n == 0}
+   * is the one exception: the batch loop never runs at all, so {@code checkpoint} is never called - harmless
+   * today because every current caller ({@link #pageRank}, {@link #labelPropagation}, the LCC kernel) already
+   * returns before reaching a checkpointed loop on an empty graph, but a future caller without that guarantee
+   * would not get even one check-in.
+   * <p>
+   * On a large graph this is what gives {@link #localClusteringCoefficient} intra-pass abortability at all (issue
+   * #6318: its one-shot triangle count had no iteration boundary to hang a checkpoint on the way {@link #pageRank}
+   * and {@link #labelPropagation} do), and it narrows their own between-iterations latency to within a single pass.
    */
   static void parallelForRangeCheckpointed(final int n, final WorkCheckpoint checkpoint, final BiConsumer<Integer, Integer> work) {
     final int batchSize = Math.max(PARALLEL_THRESHOLD, (n + CHECKPOINT_BATCHES - 1) / CHECKPOINT_BATCHES);

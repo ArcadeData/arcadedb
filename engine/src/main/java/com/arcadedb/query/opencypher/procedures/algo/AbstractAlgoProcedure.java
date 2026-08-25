@@ -965,6 +965,14 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
      * per-type, per-direction slicing that keeps a weight with its own edge lives. Nothing about that pairing is
      * re-derived here, so the CSR path of an {@code algo.*} procedure, of {@code astar} and of
      * {@code bellmanFord} cannot drift apart from one another.
+     * <p>
+     * {@code guard.checkPeriodically(i)} is throttled per <em>node</em>, not per edge: {@code edgeWeightsOf}'s
+     * only implementation (the default method; no provider overrides it) is O(degree) with no checkpoint inside
+     * its own loop, so one call for a supernode is a single unabortable unit of work regardless of how large its
+     * fan-out is - unlike {@link #weightedAdjacencyFromRecords}, which still throttles per edge. This is a
+     * pre-existing property of this shared helper (issue #6316 review, PR #6714): a proper fix needs a checkpoint
+     * hook inside {@code edgeWeightsOf} itself, which is an SPI change tracked separately as issue #6715 rather
+     * than folded into this PR.
      */
     private WeightedAdjacency weightedAdjacencyFromColumns(final WorkGuard guard, final Vertex.DIRECTION dir,
         final String weightProperty, final String[] types) {
