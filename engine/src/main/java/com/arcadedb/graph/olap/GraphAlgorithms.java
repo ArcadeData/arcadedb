@@ -72,11 +72,13 @@ public final class GraphAlgorithms {
   /** Upper bound on a single checkpointed batch's size, so abort latency stays bounded as the range grows past
    *  it instead of scaling with the range - see {@link #CHECKPOINT_BATCHES}. */
   private static final int MAX_CHECKPOINT_BATCH_SIZE = CHECKPOINT_BATCHES * PARALLEL_THRESHOLD;
-  /** Bitmask for how often {@link #lccBuildAndIntersect}'s sequential prep passes check in between nodes -
-   *  {@code (u & MASK) == MASK} is true every 1024th node, not every {@code MASK}th one. Matches the 1024-node
-   *  stride {@code WorkGuard.checkPeriodically} and {@code GraphData.adjacency} both use elsewhere in the
-   *  codebase. */
-  private static final int LCC_PREP_CHECKPOINT_MASK = 1023;
+  /** Bitmask for how often a sequential pass with no other natural checkpoint of its own - {@link #pageRank}'s
+   *  dangling-sum loop and {@link #lccBuildAndIntersect}'s sequential prep/materialization passes - checks in
+   *  between elements: {@code (i & MASK) == MASK} is true every 1024th element, not every {@code MASK}th one.
+   *  Matches the 1024-node stride {@code WorkGuard.checkPeriodically} and {@code GraphData.adjacency} both use
+   *  elsewhere in the codebase. Shared across every such loop in this class rather than given a narrower,
+   *  per-caller name, so the checkpoint cadence has exactly one source of truth to tune. */
+  private static final int PERIODIC_CHECKPOINT_MASK = 1023;
   /** Entry-count threshold at which {@link #lccBuildAndIntersect}'s per-node prep passes checkpoint mid-row,
    *  inside a single node's own edge walk rather than only between nodes - otherwise one supernode row is an
    *  unabortable unit regardless of its own size, the same class of gap issue #6715 names for
@@ -340,7 +342,7 @@ public final class GraphAlgorithms {
       // Handle dangling nodes: distribute their rank evenly
       double danglingSum = 0.0;
       for (int i = 0; i < danglingNodes.length; i++) {
-        if ((i & 1023) == 1023)
+        if ((i & PERIODIC_CHECKPOINT_MASK) == PERIODIC_CHECKPOINT_MASK)
           checkpoint.check();
         danglingSum += currentRank[danglingNodes[i]];
       }
@@ -1401,7 +1403,7 @@ public final class GraphAlgorithms {
       if (csr == null)
         continue;
       for (int u = 0; u < n; u++) {
-        if ((u & LCC_PREP_CHECKPOINT_MASK) == LCC_PREP_CHECKPOINT_MASK)
+        if ((u & PERIODIC_CHECKPOINT_MASK) == PERIODIC_CHECKPOINT_MASK)
           checkpoint.check();
         degree[u] += csr.outDegree(u) + csr.inDegree(u);
       }
@@ -1410,7 +1412,7 @@ public final class GraphAlgorithms {
     // Build offsets from degrees
     final int[] offsets = new int[n + 1];
     for (int i = 0; i < n; i++) {
-      if ((i & LCC_PREP_CHECKPOINT_MASK) == LCC_PREP_CHECKPOINT_MASK)
+      if ((i & PERIODIC_CHECKPOINT_MASK) == PERIODIC_CHECKPOINT_MASK)
         checkpoint.check();
       offsets[i + 1] = offsets[i] + degree[i];
     }
@@ -1419,7 +1421,7 @@ public final class GraphAlgorithms {
     final int[] neighbors = new int[totalEdges];
     final int[] pos = new int[n];
     for (int i = 0; i < n; i++) {
-      if ((i & LCC_PREP_CHECKPOINT_MASK) == LCC_PREP_CHECKPOINT_MASK)
+      if ((i & PERIODIC_CHECKPOINT_MASK) == PERIODIC_CHECKPOINT_MASK)
         checkpoint.check();
       pos[i] = offsets[i];
     }
@@ -1432,7 +1434,7 @@ public final class GraphAlgorithms {
       final int[] bwdOffsets = csr.getBackwardOffsets();
       final int[] bwdNeighbors = csr.getBackwardNeighbors();
       for (int u = 0; u < n; u++) {
-        if ((u & LCC_PREP_CHECKPOINT_MASK) == LCC_PREP_CHECKPOINT_MASK)
+        if ((u & PERIODIC_CHECKPOINT_MASK) == PERIODIC_CHECKPOINT_MASK)
           checkpoint.check();
         int ia = fwdOffsets[u], aEnd = fwdOffsets[u + 1];
         int ib = bwdOffsets[u], bEnd = bwdOffsets[u + 1];
@@ -1462,7 +1464,7 @@ public final class GraphAlgorithms {
         final int[] fwdOffsets = csr.getForwardOffsets();
         final int[] fwdNeighbors = csr.getForwardNeighbors();
         for (int u = 0; u < n; u++) {
-          if ((u & LCC_PREP_CHECKPOINT_MASK) == LCC_PREP_CHECKPOINT_MASK)
+          if ((u & PERIODIC_CHECKPOINT_MASK) == PERIODIC_CHECKPOINT_MASK)
             checkpoint.check();
           for (int j = fwdOffsets[u]; j < fwdOffsets[u + 1]; j++) {
             if (((j - fwdOffsets[u]) & (LCC_ROW_CHECKPOINT_ENTRIES - 1)) == 0)
@@ -1473,7 +1475,7 @@ public final class GraphAlgorithms {
         final int[] bwdOffsets = csr.getBackwardOffsets();
         final int[] bwdNeighbors = csr.getBackwardNeighbors();
         for (int u = 0; u < n; u++) {
-          if ((u & LCC_PREP_CHECKPOINT_MASK) == LCC_PREP_CHECKPOINT_MASK)
+          if ((u & PERIODIC_CHECKPOINT_MASK) == PERIODIC_CHECKPOINT_MASK)
             checkpoint.check();
           for (int j = bwdOffsets[u]; j < bwdOffsets[u + 1]; j++) {
             if (((j - bwdOffsets[u]) & (LCC_ROW_CHECKPOINT_ENTRIES - 1)) == 0)
@@ -1498,7 +1500,7 @@ public final class GraphAlgorithms {
     // checkpointed the same periodic way as the prep passes above.
     int write = 0;
     for (int u = 0; u < n; u++) {
-      if ((u & LCC_PREP_CHECKPOINT_MASK) == LCC_PREP_CHECKPOINT_MASK)
+      if ((u & PERIODIC_CHECKPOINT_MASK) == PERIODIC_CHECKPOINT_MASK)
         checkpoint.check();
       final int readStart = offsets[u];
       final int readEnd = offsets[u + 1];
@@ -1560,7 +1562,7 @@ public final class GraphAlgorithms {
     // With forward counting, each triangle is found once and credited to all 3 nodes
     final double[] lcc = new double[n];
     for (int u = 0; u < n; u++) {
-      if ((u & LCC_PREP_CHECKPOINT_MASK) == LCC_PREP_CHECKPOINT_MASK)
+      if ((u & PERIODIC_CHECKPOINT_MASK) == PERIODIC_CHECKPOINT_MASK)
         checkpoint.check();
       final long deg = offsets[u + 1] - offsets[u];
       if (deg >= 2)
