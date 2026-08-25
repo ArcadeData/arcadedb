@@ -317,17 +317,25 @@ class Issue6264AlgoIterationKnobGuardTest {
    * {@code algo.pageRank} hands a CSR-backed graph straight to {@link GraphAlgorithms#pageRank}, which lives below
    * the query layer and knew nothing about deadlines. That kernel has no convergence test at all, so it always ran
    * the full {@code maxIterations}: the knob alone decided when it stopped, and nothing could interrupt it.
+   * <p>
+   * Since issue #6318 threaded {@code parallelForRangeCheckpointed} through pageRank's parallel phases (contrib,
+   * pull, and dangling-node redistribution when the graph has dangling nodes), the checkpoint is called more than
+   * once per iteration: the original once-per-iteration call at the top of the loop, plus one more per parallel
+   * phase actually run - more still on a graph large enough for a phase to split into several batches. This
+   * fixture is a directed cycle with no dangling nodes, so the dangling phase never runs and every iteration
+   * checks in exactly 3 times: the loop-top call, then contrib, then pull.
    */
   @Test
-  void thePageRankKernelCallsTheCheckpointOncePerIteration() {
+  void thePageRankKernelCallsTheCheckpointAtLeastOncePerParallelPhaseEachIteration() {
     final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
         .withVertexTypes("Node").withEdgeTypes("LINK").build();
 
     final AtomicInteger calls = new AtomicInteger();
     GraphAlgorithms.pageRank(gav, 0.85, 7, Vertex.DIRECTION.OUT, calls::incrementAndGet, "LINK");
 
-    assertThat(calls.get()).as("one checkpoint per power iteration bounds abort latency by one graph sweep")
-        .isEqualTo(7);
+    assertThat(calls.get())
+        .as("loop-top call + contrib phase + pull phase (no dangling nodes on this cycle), x 7 iterations")
+        .isEqualTo(3 * 7);
   }
 
   @Test

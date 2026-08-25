@@ -45,9 +45,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * naming what asked for it. "Linear" was never the criterion; the criterion is whether the caller can predict a
  * ceiling, and here there is none.
  * <p>
- * The reservation is made as the counting pass runs rather than once it has finished. Both refuse the same calls,
- * but a check afterwards first pays in full for a traversal it will then throw away - the same argument that puts
- * {@code algo.steinerTree}'s reservation ahead of its adjacency build. The refusal itself still goes through
+ * Originally the reservation was made as a dedicated counting pass ran, rather than once it had finished, so a
+ * refusal could stop before materialising a traversal it would then throw away. Since issue #6316 moved edge
+ * collection onto {@code GraphData.weightedAdjacency} - the shared helper every other weighted {@code algo.*}
+ * procedure already reads edges through - that dedicated pass is gone: the reservation is made once
+ * {@code weightedAdjacency} has materialised the graph's actual edge count, the same tradeoff
+ * {@code algo.steinerTree} already made for its own working sets. The refusal itself still goes through
  * {@code MemoryBudget.reserve}, so the message names the same component and the same setting either way.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -102,14 +105,18 @@ class Issue6300AlgoMSTEdgeBudgetTest {
   }
 
   @Test
-  void theRefusalNamesTheEdgeCountItStoppedAt() {
-    // The message quotes the count reached, not the graph's total: the walk stops when the budget runs out, so
-    // there is no total to quote yet. That is the observable difference between reserving during the counting
-    // pass and reserving after it - and it is the whole point of the placement.
+  void theRefusalNamesTheActualEdgeCount() {
+    // Since issue #6316 routed edge collection through GraphData.weightedAdjacency (the same shared helper
+    // algo.steinerTree and algo.bellmanFord read weights through), the walk that used to stop counting the
+    // moment the running total crossed the budget no longer has that granularity to stop at: weightedAdjacency
+    // materialises every edge of the graph in one pass with no counting checkpoint of its own, the same
+    // tradeoff every other weightedAdjacency caller already makes. The refusal message now quotes the graph's
+    // actual edge count rather than the count the old walk happened to have reached when it gave up.
     database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1156L);
 
     assertThatThrownBy(() -> drain("CALL algo.mst('w') YIELD source RETURN source"))
-        .hasStackTraceContaining("more than 4 edges");
+        .hasStackTraceContaining("more than the 1156 bytes allowed")
+        .hasStackTraceContaining(EDGE_COUNT + " edges");
   }
 
   @Test

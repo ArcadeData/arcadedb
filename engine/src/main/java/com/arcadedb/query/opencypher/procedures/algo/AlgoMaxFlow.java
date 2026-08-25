@@ -19,10 +19,6 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.RID;
-import com.arcadedb.exception.RecordNotFoundException;
-import com.arcadedb.graph.Edge;
-import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -31,7 +27,6 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
 import java.util.stream.Stream;
 
 /**
@@ -92,51 +87,44 @@ public class AlgoMaxFlow extends AbstractAlgoProcedure {
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);
-    final MemoryBudget memory = newMemoryBudget(db);
-    final List<Vertex> vertices = loadVertices(db, null, memory);
+    final GraphData graph = loadGraph(db, null, relTypes, context);
 
-    final int n = vertices.size();
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
 
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-
-    final Integer srcIdx = ridToIdx.get(sourceNode.getIdentity());
-    final Integer snkIdx = ridToIdx.get(sinkNode.getIdentity());
-    if (srcIdx == null || snkIdx == null)
+    final int srcIdx = graph.indexOf(sourceNode.getIdentity());
+    final int snkIdx = graph.indexOf(sinkNode.getIdentity());
+    if (srcIdx < 0 || snkIdx < 0)
       return Stream.empty();
 
     // Edmonds-Karp keeps a dense capacity matrix and a dense residual matrix, both nodeCount x nodeCount and
     // both alive to the end: 1.6 GB at 10 000 nodes, with no knob involved. Reserved before the first is
     // allocated so that a graph too large for the dense formulation is a client error naming the node count and
     // the budget, rather than an OutOfMemoryError.
+    final MemoryBudget memory = graph.memory();
     memory.reserve(saturatingProduct(2L, matrixBytes(n, n, DOUBLE_BYTES)),
         "the capacity and residual matrices", "2 matrices of " + n + " x " + n + " nodes");
 
-    // Build capacity matrix as n×n array
-    final double[][] capacity = new double[n][n];
+    // Build capacity matrix as n×n array. Capacity extraction goes through GraphData.weightedAdjacency (issue
+    // #6316), the same shared helper the other weighted algo.* procedures read edge weights through, rather
+    // than a hand-rolled getEdges() walk. A blank capacityProperty is normalised to null first so both mean
+    // "no property, every edge has capacity 1.0" exactly as before.
+    final String capacityProp = capacityProperty != null && !capacityProperty.isEmpty() ? capacityProperty : null;
+    final GraphData.WeightedAdjacency weighted = graph.weightedAdjacency(guard, Vertex.DIRECTION.OUT, capacityProp, relTypes);
+    final int[][] neighbors = weighted.neighbors();
+    final double[][] weights = weighted.weights();
 
+    final double[][] capacity = new double[n][n];
     for (int i = 0; i < n; i++) {
-      final Iterable<Edge> edges = relTypes != null && relTypes.length > 0 ?
-          vertices.get(i).getEdges(Vertex.DIRECTION.OUT, relTypes) :
-          vertices.get(i).getEdges(Vertex.DIRECTION.OUT);
-      for (final Edge e : edges) {
-        try {
-          final Integer j = ridToIdx.get(e.getIn());
-          if (j == null)
-            continue;
-          double cap = 1.0;
-          if (capacityProperty != null && !capacityProperty.isEmpty()) {
-            final Object w = e.get(capacityProperty);
-            if (w instanceof Number num)
-              cap = num.doubleValue();
-          }
-          capacity[i][j] += cap;
-          // For undirected: also add reverse capacity
-          capacity[j][i] += cap;
-        } catch (final RecordNotFoundException rnf) {  // 'rnf' not 'e' here: 'e' is the Edge loop variable in this scope
-          GhostEdgeReporter.reportSkipped(rnf);
-        }
+      final int[] row = neighbors[i];
+      final double[] rowWeights = weights[i];
+      for (int k = 0; k < row.length; k++) {
+        final int j = row[k];
+        final double cap = rowWeights[k];
+        capacity[i][j] += cap;
+        // For undirected: also add reverse capacity
+        capacity[j][i] += cap;
       }
     }
 

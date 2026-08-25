@@ -19,9 +19,6 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.exception.RecordNotFoundException;
-import com.arcadedb.graph.Edge;
-import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -31,7 +28,6 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
-import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
@@ -100,14 +96,11 @@ public class AlgoBetweenness extends AbstractAlgoProcedure {
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);
-    final List<Vertex> vertices = loadVertices(db, null, newMemoryBudget(db));
-    if (vertices.isEmpty())
+    final GraphData graph = loadGraph(db, null, null, context);
+    final int n = graph.nodeCount;
+    if (n == 0)
       return Stream.empty();
-
-    final int n = vertices.size();
-    final Map<Vertex, Integer> vertexIndex = new HashMap<>(n);
-    for (int i = 0; i < n; i++)
-      vertexIndex.put(vertices.get(i), i);
+    final int[][] adj = graph.adjacency(Vertex.DIRECTION.OUT);
 
     final double[] betweenness = new double[n];
 
@@ -117,7 +110,6 @@ public class AlgoBetweenness extends AbstractAlgoProcedure {
     // (issue #6302). The inner checkpoints keep the abort latency below one whole source's pass.
     for (int s = 0; s < n; s++) {
       guard.check();
-      final Vertex source = vertices.get(s);
 
       final Deque<Integer> stack = new ArrayDeque<>();
       final List<List<Integer>> predecessors = new ArrayList<>(n);
@@ -140,26 +132,16 @@ public class AlgoBetweenness extends AbstractAlgoProcedure {
         final int v = queue.poll();
         stack.push(v);
 
-        final Vertex vVertex = vertices.get(v);
-        for (final Edge edge : vVertex.getEdges(Vertex.DIRECTION.OUT)) {
-          try {
-            final Vertex neighbor = edge.getInVertex();
-            final Integer w = vertexIndex.get(neighbor);
-            if (w == null)
-              continue;
-
-            // First time visiting w?
-            if (dist[w] < 0) {
-              queue.add(w);
-              dist[w] = dist[v] + 1;
-            }
-            // Shortest path to w via v?
-            if (dist[w] == dist[v] + 1) {
-              sigma[w] += sigma[v];
-              predecessors.get(w).add(v);
-            }
-          } catch (final RecordNotFoundException e) {
-            GhostEdgeReporter.reportSkipped(e);
+        for (final int w : adj[v]) {
+          // First time visiting w?
+          if (dist[w] < 0) {
+            queue.add(w);
+            dist[w] = dist[v] + 1;
+          }
+          // Shortest path to w via v?
+          if (dist[w] == dist[v] + 1) {
+            sigma[w] += sigma[v];
+            predecessors.get(w).add(v);
           }
         }
       }
@@ -187,7 +169,7 @@ public class AlgoBetweenness extends AbstractAlgoProcedure {
 
     return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal result = new ResultInternal();
-      result.setProperty("node", vertices.get(i).getIdentity());
+      result.setProperty("node", graph.getRID(i));
       result.setProperty("score", betweenness[i]);
       return (Result) result;
     });
