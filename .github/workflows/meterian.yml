@@ -52,7 +52,10 @@ jobs:
         continue-on-error: true
         uses: MeterianHQ/meterian-github-action@6849965b713613691cd357967671da061d968f83 # v1.0.17
         with:
-          cli_args: "--report-sarif=report.sarif --exclude-folders=**/bindings/python"
+          cli_args: >-
+            --exclude-folders=**/bindings/python,**/e2e-go
+            --report-console=nocolor
+            --report-sarif=report.sarif
           oss: true
       - name: Drop stability findings from the report
         # Meterian puts security, stability and licensing findings in one SARIF, and the stability
