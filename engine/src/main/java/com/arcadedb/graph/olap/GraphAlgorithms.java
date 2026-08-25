@@ -61,10 +61,11 @@ public final class GraphAlgorithms {
   private static final int PARALLEL_THRESHOLD     = 8192;
   /** How many checkpointed batches {@link #parallelForRangeCheckpointed} splits a full range into, at most. */
   private static final int CHECKPOINT_BATCHES     = 16;
-  /** How often {@link #lccBuildAndIntersect}'s sequential prep passes check in: cheap enough per node that
-   *  checking every one would cost more than the check saves, same tradeoff {@code GraphData.adjacency}'s
-   *  node-count checkpoint strikes. */
-  private static final int LCC_PREP_CHECKPOINT_STRIDE = 4095;
+  /** Bitmask for how often {@link #lccBuildAndIntersect}'s sequential prep passes check in - {@code (u & MASK) ==
+   *  MASK} is true every 4096th node, not every {@code MASK}th one. Cheap enough per node that checking every one
+   *  would cost more than the check saves, same tradeoff {@code GraphData.adjacency}'s node-count checkpoint
+   *  strikes. */
+  private static final int LCC_PREP_CHECKPOINT_MASK = 4095;
   private static final int PARALLEL_BFS_THRESHOLD = 4096;
   private static final double ALPHA              = 8.0;  // edge ratio for push->pull switch
   private static final int PULL_ENTER_DIVISOR    = 8;    // push->pull when frontier > n/8
@@ -1365,7 +1366,7 @@ public final class GraphAlgorithms {
       if (csr == null)
         continue;
       for (int u = 0; u < n; u++) {
-        if ((u & LCC_PREP_CHECKPOINT_STRIDE) == LCC_PREP_CHECKPOINT_STRIDE)
+        if ((u & LCC_PREP_CHECKPOINT_MASK) == LCC_PREP_CHECKPOINT_MASK)
           checkpoint.check();
         degree[u] += csr.outDegree(u) + csr.inDegree(u);
       }
@@ -1390,7 +1391,7 @@ public final class GraphAlgorithms {
       final int[] bwdOffsets = csr.getBackwardOffsets();
       final int[] bwdNeighbors = csr.getBackwardNeighbors();
       for (int u = 0; u < n; u++) {
-        if ((u & LCC_PREP_CHECKPOINT_STRIDE) == LCC_PREP_CHECKPOINT_STRIDE)
+        if ((u & LCC_PREP_CHECKPOINT_MASK) == LCC_PREP_CHECKPOINT_MASK)
           checkpoint.check();
         int ia = fwdOffsets[u], aEnd = fwdOffsets[u + 1];
         int ib = bwdOffsets[u], bEnd = bwdOffsets[u + 1];
@@ -1415,7 +1416,7 @@ public final class GraphAlgorithms {
         final int[] fwdOffsets = csr.getForwardOffsets();
         final int[] fwdNeighbors = csr.getForwardNeighbors();
         for (int u = 0; u < n; u++) {
-          if ((u & LCC_PREP_CHECKPOINT_STRIDE) == LCC_PREP_CHECKPOINT_STRIDE)
+          if ((u & LCC_PREP_CHECKPOINT_MASK) == LCC_PREP_CHECKPOINT_MASK)
             checkpoint.check();
           for (int j = fwdOffsets[u]; j < fwdOffsets[u + 1]; j++)
             neighbors[pos[u]++] = fwdNeighbors[j];
@@ -1423,7 +1424,7 @@ public final class GraphAlgorithms {
         final int[] bwdOffsets = csr.getBackwardOffsets();
         final int[] bwdNeighbors = csr.getBackwardNeighbors();
         for (int u = 0; u < n; u++) {
-          if ((u & LCC_PREP_CHECKPOINT_STRIDE) == LCC_PREP_CHECKPOINT_STRIDE)
+          if ((u & LCC_PREP_CHECKPOINT_MASK) == LCC_PREP_CHECKPOINT_MASK)
             checkpoint.check();
           for (int j = bwdOffsets[u]; j < bwdOffsets[u + 1]; j++)
             neighbors[pos[u]++] = bwdNeighbors[j];
@@ -1445,7 +1446,7 @@ public final class GraphAlgorithms {
     // checkpointed the same periodic way as the prep passes above.
     int write = 0;
     for (int u = 0; u < n; u++) {
-      if ((u & LCC_PREP_CHECKPOINT_STRIDE) == LCC_PREP_CHECKPOINT_STRIDE)
+      if ((u & LCC_PREP_CHECKPOINT_MASK) == LCC_PREP_CHECKPOINT_MASK)
         checkpoint.check();
       final int readStart = offsets[u];
       final int readEnd = offsets[u + 1];
