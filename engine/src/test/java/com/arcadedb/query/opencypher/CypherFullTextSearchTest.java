@@ -56,6 +56,9 @@ class CypherFullTextSearchTest extends TestHelper {
       database.newVertex("Article").set("title", "Doc1").set("content", "java programming language").save();
       database.newVertex("Article").set("title", "Doc2").set("content", "java database systems").save();
       database.newVertex("Article").set("title", "Doc3").set("content", "python scripting").save();
+      // Same token count as Doc1/Doc2 (so BM25 length normalization is equal) but "java" repeated 3x instead of
+      // once, so it must score strictly higher - used to verify the procedure's own ranking below.
+      database.newVertex("Article").set("title", "Doc4").set("content", "java java java repository").save();
     });
   }
 
@@ -63,12 +66,15 @@ class CypherFullTextSearchTest extends TestHelper {
    * Reproduces the feature request itself: Neo4j's {@code db.index.fulltext.queryNodes(indexName, query) YIELD node,
    * score} has no ArcadeDB equivalent, so full-text results cannot be ranked and fed into further graph pattern
    * matching within one Cypher statement.
+   * <p>
+   * Deliberately has no {@code ORDER BY} in the query: sorting there would mask the procedure returning results in
+   * the wrong order, since Cypher would silently re-sort them. This asserts the order {@code execute()} itself
+   * produces.
    */
   @Test
   void queryNodesNeo4jCompatibleProcedureRanksResultsByScore() {
     try (ResultSet result = database.query("opencypher",
-        "CALL db.index.fulltext.queryNodes('Article[content]', 'java') YIELD node, score "
-            + "RETURN node.title AS title, score ORDER BY score DESC")) {
+        "CALL db.index.fulltext.queryNodes('Article[content]', 'java') YIELD node, score RETURN node.title AS title, score")) {
 
       final List<String> titles = new ArrayList<>();
       final List<Double> scores = new ArrayList<>();
@@ -78,7 +84,9 @@ class CypherFullTextSearchTest extends TestHelper {
         scores.add(((Number) row.getProperty("score")).doubleValue());
       }
 
-      assertThat(titles).containsExactlyInAnyOrder("Doc1", "Doc2");
+      assertThat(titles).containsExactlyInAnyOrder("Doc1", "Doc2", "Doc4");
+      assertThat(titles.getFirst()).isEqualTo("Doc4");
+      assertThat(scores.getFirst()).isGreaterThan(scores.get(1));
       for (int i = 1; i < scores.size(); i++)
         assertThat(scores.get(i)).isLessThanOrEqualTo(scores.get(i - 1));
     }
@@ -127,14 +135,18 @@ class CypherFullTextSearchTest extends TestHelper {
    * Neo4j-compatible relationship counterpart, {@code db.index.fulltext.queryRelationships}: a full-text index can be
    * declared on an edge type in ArcadeDB just as on a vertex type, so the same YIELD-node/score shape applies to
    * relationships.
+   * <p>
+   * Two matching edges with the same note length but different "java" term frequency (1x vs 3x), so BM25 ranks them
+   * distinctly; no {@code ORDER BY} in the query, so this asserts the procedure's own output order rather than
+   * Cypher re-sorting a single/unordered result.
    */
   @Test
   void queryRelationshipsRanksResultsByScore() {
     database.transaction(() -> {
       database.command("sql", "CREATE EDGE Cites FROM (SELECT FROM Article WHERE title = 'Doc1') "
-          + "TO (SELECT FROM Article WHERE title = 'Doc2') SET note = 'cites java database work'");
+          + "TO (SELECT FROM Article WHERE title = 'Doc2') SET note = 'cites java work today'");
       database.command("sql", "CREATE EDGE Cites FROM (SELECT FROM Article WHERE title = 'Doc2') "
-          + "TO (SELECT FROM Article WHERE title = 'Doc3') SET note = 'unrelated scripting note'");
+          + "TO (SELECT FROM Article WHERE title = 'Doc3') SET note = 'java java java focus'");
     });
 
     try (ResultSet result = database.query("opencypher",
@@ -142,9 +154,17 @@ class CypherFullTextSearchTest extends TestHelper {
             + "RETURN relationship.note AS note, score")) {
 
       assertThat(result.hasNext()).isTrue();
-      final Result row = result.next();
-      assertThat((String) row.getProperty("note")).isEqualTo("cites java database work");
-      assertThat(((Number) row.getProperty("score")).doubleValue()).isGreaterThan(0.0);
+      final Result first = result.next();
+      assertThat((String) first.getProperty("note")).isEqualTo("java java java focus");
+      final double firstScore = ((Number) first.getProperty("score")).doubleValue();
+      assertThat(firstScore).isGreaterThan(0.0);
+
+      assertThat(result.hasNext()).isTrue();
+      final Result second = result.next();
+      assertThat((String) second.getProperty("note")).isEqualTo("cites java work today");
+      final double secondScore = ((Number) second.getProperty("score")).doubleValue();
+
+      assertThat(firstScore).isGreaterThan(secondScore);
       assertThat(result.hasNext()).isFalse();
     }
   }
