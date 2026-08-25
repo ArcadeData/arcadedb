@@ -807,6 +807,8 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
         if (types != null && types.length > 0) {
           final int[] perType = new int[nodeCount];
           for (final String type : types) {
+            // getDegrees() overwrites perType (it Arrays.fill(..., 0)s it before writing), never accumulates
+            // into it, so summing its result per type here is correct rather than double-counting.
             provider.getDegrees(perType, dir, type);
             for (int i = 0; i < nodeCount; i++)
               degrees[i] += perType[i];
