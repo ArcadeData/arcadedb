@@ -389,7 +389,7 @@ class Issue5748AllowListBruteForceScanTest extends TestHelper {
    */
   private <T extends VectorLocationIndex> T installLocationIndex(final LSMVectorIndex index, final T locations)
       throws Exception {
-    final Field field = LSMVectorIndex.class.getDeclaredField("vectorIndex");
+    final Field field = LSMVectorIndex.class.getDeclaredField("residentLocations");
     field.setAccessible(true);
     field.set(index, locations);
     return locations;

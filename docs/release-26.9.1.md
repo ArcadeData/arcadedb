@@ -3,6 +3,44 @@
 This is a living document: fixes, improvements, new features, and breaking changes are collected here as
 they land during the 26.9.1 development cycle, so the release notes are ready at tag time.
 
+## Vector index: opening a database no longer parses every index page to rebuild the location map (#6722)
+
+Opening a database walked every page of every `LSM_VECTOR` index and rebuilt the in-memory location map, whether
+or not the session went on to search it. The cost is one page parse plus one map insert per indexed vector, so it
+scales with the corpus rather than with what the session does, it is paid again on every open, and the page cache
+cannot amortise it because the work is parsing and map population rather than I/O: measured at ~1.4 s for 10M
+vectors, of which a cold open recovered only 8% - against 53% for documents and 89% for a graph with a Graph
+Analytical View, both of which open in single-digit milliseconds at the same size. A process that opened the
+database to write one document, or to read an unrelated type, paid all of it.
+
+The graph is deferred to the first search, two lines below the call site that did this - `ensureGraphAvailable()`
+loads or rebuilds it then, not at open. The location map now gets the same treatment: `loadVectorsAfterSchemaLoad()`
+records that there are pages worth reading and returns, and the first caller that actually needs a location pays
+for materialising them, once, under a dedicated lock. So a session that never touches a vector index never parses
+one, and open becomes constant-time in the number of indexed vectors.
+
+The deferral is structural rather than a convention: the field is reachable only through an accessor that
+materialises first, and the few sites that read it raw - the loader filling it, `drop()`, and the close-time
+predicates - say why. Two of those predicates matter to behaviour and are worth naming. `flush()` decides whether
+to build a graph on close, and asking that question used to mean reading the location count; it now answers from
+page counters instead, so the close of a session that never touched the index does not hand back at close exactly
+the cost the deferral removes from open, while the branches past that decision - which are choosing between
+building the whole graph now and recording a deferral - do materialise, because both need the real live count and
+because getting it wrong would send a large index down the synchronous-build arm that #6067 exists to avoid. And
+vector ids are handed out from a sequence the load derives from the pages, so every allocation now goes through a
+gate that materialises first: without it, an insert into a reopened index would restart the sequence at 0 and
+silently supersede the entries it collided with.
+
+The PQ codebooks, loaded at the same call site, are deferred with the locations - the ordinals a PQ search resolves
+are the ones the location map hands out, so the two are only ever useful as a pair. `findNeighborsFromVectorApproximate()`
+checks PQ availability before it reaches the lazy-load, so it now asks through `isPQSearchAvailable()`, which
+materialises, rather than reading the two fields directly and silently downgrading the first approximate search
+after a reopen to an exact one.
+
+Nothing about what any caller observes changes - only when the work happens. `countEntries()`, `getStats()`, a
+search, an insert and a replicated page update all still see the whole corpus; the first of them to ask is the one
+that pays.
+
 ## Postgres wire: `SHORT`/`BYTE`, `DATE`, `DATETIME` and `DECIMAL` no longer change type depending on whether a row was sampled (#6447)
 
 A RowDescription column is typed either from a sample value, when the result set has a row, or from the declared
