@@ -36,6 +36,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.utility.IntIntHashMap;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -921,13 +922,16 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         if (csr != null)
           total += countDirectional(snap, csr, nodeId, direction, edgeType);
         else {
-          // No base CSR but overlay may have edges for this type
+          // No base CSR but overlay may have edges for this type. The overlay's added-edge index is
+          // append-only, so an edge added and then deleted within the same window is still counted
+          // there; subtract the per-node deleted counts back out (same cancellation as
+          // countDirectional's overlay branch). See issue #6775.
           final DeltaOverlay ov = snap.overlay;
           if (ov != null) {
             if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH)
-              total += ov.getAddedOutNeighbors(nodeId, edgeType).length;
+              total += ov.getAddedOutNeighbors(nodeId, edgeType).length - ov.countDeletedOutEdges(nodeId, edgeType);
             if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH)
-              total += ov.getAddedInNeighbors(nodeId, edgeType).length;
+              total += ov.getAddedInNeighbors(nodeId, edgeType).length - ov.countDeletedInEdges(nodeId, edgeType);
           }
         }
       }
@@ -2220,14 +2224,44 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // before compaction is still reported connected here.
     if (ov != null) {
       if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
-        for (final int neighbor : ov.getAddedOutNeighbors(nodeA, edgeType))
-          if (neighbor == nodeB)
+        // The deleted budget is spent against base CSR occurrences first (see isConnectedForType's
+        // base branch and copyBaseExcludingDeleted); the pair stays connected through its added
+        // edges only if more added occurrences of nodeB survive than the leftover budget.
+        final int deleted = ov.countDeletedEdges(edgeType, nodeA, nodeB);
+        final int baseOccurrences = nodeAInBase && csr != null
+            ? equalRangeCount(csr.getForwardNeighbors(), csr.getForwardOffsets()[nodeA], csr.getForwardOffsets()[nodeA + 1], nodeB)
+            : 0;
+        if (deleted > baseOccurrences) {
+          int addedSurvivors = 0;
+          for (final int neighbor : ov.getAddedOutNeighbors(nodeA, edgeType))
+            if (neighbor == nodeB)
+              addedSurvivors++;
+          if (addedSurvivors > deleted - baseOccurrences)
             return true;
+        } else {
+          // No leftover budget: any added edge of the pair survives.
+          for (final int neighbor : ov.getAddedOutNeighbors(nodeA, edgeType))
+            if (neighbor == nodeB)
+              return true;
+        }
       }
       if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH) {
-        for (final int neighbor : ov.getAddedInNeighbors(nodeA, edgeType))
-          if (neighbor == nodeB)
+        final int deleted = ov.countDeletedEdges(edgeType, nodeB, nodeA);
+        final int baseOccurrences = nodeAInBase && csr != null
+            ? equalRangeCount(csr.getBackwardNeighbors(), csr.getBackwardOffsets()[nodeA], csr.getBackwardOffsets()[nodeA + 1], nodeB)
+            : 0;
+        if (deleted > baseOccurrences) {
+          int addedSurvivors = 0;
+          for (final int neighbor : ov.getAddedInNeighbors(nodeA, edgeType))
+            if (neighbor == nodeB)
+              addedSurvivors++;
+          if (addedSurvivors > deleted - baseOccurrences)
             return true;
+        } else {
+          for (final int neighbor : ov.getAddedInNeighbors(nodeA, edgeType))
+            if (neighbor == nodeB)
+              return true;
+        }
       }
     }
     return false;
@@ -2425,10 +2459,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     int[] ovOut = EMPTY_INT;
     int[] ovIn = EMPTY_INT;
     if (ov != null) {
+      // Spend the overlay's per-pair deleted budget against the added neighbours, mirroring how
+      // copyBaseExcludingDeleted spends it against the base CSR run. This closes the #6775 gap: an
+      // edge added and then deleted within the same not-yet-compacted overlay window no longer
+      // surfaces as a phantom live neighbour.
       if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH)
-        ovOut = ov.getAddedOutNeighbors(nodeId, edgeType);
+        ovOut = excludeDeletedAddedNeighbors(ov.getAddedOutNeighbors(nodeId, edgeType), ov, edgeType, nodeId, true, csr, nodeInBase);
       if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH)
-        ovIn = ov.getAddedInNeighbors(nodeId, edgeType);
+        ovIn = excludeDeletedAddedNeighbors(ov.getAddedInNeighbors(nodeId, edgeType), ov, edgeType, nodeId, false, csr, nodeInBase);
     }
 
     final int totalLen = baseOut.length + baseIn.length + ovOut.length + ovIn.length;
@@ -2499,6 +2537,74 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     for (int i = 0; i < len; i++)
       if (!deletedMask[i])
         result[pos++] = neighbors[start + i];
+    return result;
+  }
+
+  /**
+   * Excludes overlay-added neighbours that the overlay records as deleted, spending the same per-pair
+   * deleted budget {@link #copyBaseExcludingDeleted} spends against the base CSR run. The budget is
+   * applied in two stages: the base CSR's occurrence count for the pair absorbs as much of the budget
+   * as it can (matching {@code copyBaseExcludingDeleted}, which already dropped those slots), and any
+   * budget left over is spent here against the added neighbours. An edge added and then deleted within
+   * the same not-yet-compacted overlay window therefore no longer surfaces as a phantom live neighbour,
+   * while parallel added edges survive deletion of only some of their siblings (issue #6775).
+   * <p>
+   * The added array is unsorted (it is built in addition order from {@code addedEdgesPerType}), so a
+   * per-value remaining-budget map is used instead of the slice-run technique of the base helper. The
+   * mask is allocated lazily, so the common no-deletion case stays allocation-free.
+   */
+  private static int[] excludeDeletedAddedNeighbors(final int[] added, final DeltaOverlay ov,
+      final String edgeType, final int nodeId, final boolean outgoing,
+      final CSRAdjacencyIndex csr, final boolean nodeInBase) {
+    final int len = added.length;
+    if (len == 0 || (outgoing ? ov.countDeletedOutEdges(nodeId, edgeType) : ov.countDeletedInEdges(nodeId, edgeType)) == 0)
+      return added;
+
+    boolean[] deletedMask = null;
+    int kept = 0;
+    // Remaining deleted budget per neighbour value. Lazily allocated; -1 (default) means "not yet
+    // computed", 0 means the budget is exhausted and further occurrences of the value survive.
+    IntIntHashMap remainingBudget = null;
+    for (int i = 0; i < len; i++) {
+      final int n = added[i];
+      int budget = remainingBudget != null ? remainingBudget.get(n, -1) : -1;
+      if (budget == -1) {
+        // First occurrence of this value: leftover budget after the base CSR run absorbs what it can
+        // (mirroring copyBaseExcludingDeleted's spending on the same pair).
+        budget = outgoing ? ov.countDeletedEdges(edgeType, nodeId, n) : ov.countDeletedEdges(edgeType, n, nodeId);
+        int baseOccurrences = 0;
+        if (nodeInBase && csr != null) {
+          if (outgoing)
+            baseOccurrences = equalRangeCount(csr.getForwardNeighbors(), csr.outOffset(nodeId), csr.outOffsetEnd(nodeId), n);
+          else
+            baseOccurrences = equalRangeCount(csr.getBackwardNeighbors(), csr.inOffset(nodeId), csr.inOffsetEnd(nodeId), n);
+        }
+        budget = Math.max(0, budget - baseOccurrences);
+        if (remainingBudget == null)
+          remainingBudget = new IntIntHashMap();
+        remainingBudget.put(n, budget);
+      }
+      if (budget > 0) {
+        remainingBudget.put(n, budget - 1);
+        if (deletedMask == null) {
+          deletedMask = new boolean[len];
+          kept = i; // every neighbour seen so far was kept
+        }
+        deletedMask[i] = true;
+      } else if (deletedMask != null) {
+        kept++;
+      }
+    }
+    if (deletedMask == null)
+      return added;
+    if (kept == 0)
+      return EMPTY_INT;
+
+    final int[] result = new int[kept];
+    int pos = 0;
+    for (int i = 0; i < len; i++)
+      if (!deletedMask[i])
+        result[pos++] = added[i];
     return result;
   }
 
