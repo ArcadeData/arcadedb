@@ -1498,17 +1498,17 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         responseObserver.onCompleted();
       } catch (Exception e) {
         final Throwable cause = e instanceof ExecutionException && e.getCause() != null ? e.getCause() : e;
-        if (!txResponded) {
-          if (cause instanceof StatusRuntimeException sre) {
-            // Preserve an explicit gRPC status (e.g. RESOURCE_EXHAUSTED from the result cap, or the
-            // authz/authn status from getDatabase) instead of masking it as INTERNAL.
-            LogManager.instance().log(this, Level.FINE, "Query rejected: %s", sre, sre.getMessage());
+        if (cause instanceof StatusRuntimeException sre) {
+          // Preserve an explicit gRPC status (e.g. RESOURCE_EXHAUSTED from the result cap, or the
+          // authz/authn status from getDatabase) instead of masking it as INTERNAL.
+          LogManager.instance().log(this, Level.FINE, "Query rejected: %s", sre, sre.getMessage());
+          if (!txResponded)
             responseObserver.onError(sre);
-          } else {
-            LogManager.instance().log(this, Level.SEVERE, "Error executing query: %s", cause, cause.getMessage());
+        } else {
+          LogManager.instance().log(this, Level.SEVERE, "Error executing query: %s", cause, cause.getMessage());
+          if (!txResponded)
             responseObserver.onError(Status.INTERNAL
                 .withDescription("Query execution failed: " + cause.getMessage()).asException());
-          }
         }
       }
       return;
