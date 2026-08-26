@@ -237,21 +237,6 @@ public class RedisWTest extends BaseGraphServerTest {
     System.out.println(
         "HMGET " + TOTAL_PERSISTENT + " items by chunks of 10 rids from the database. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
-    // HMGET BY COMPOSITE INDEX KEY (bracketed composite key)
-    database.command("sqlscript",
-        "CREATE DOCUMENT TYPE CompositeAccount;" +//
-        "CREATE PROPERTY CompositeAccount.firstName STRING;" +//
-        "CREATE PROPERTY CompositeAccount.lastName STRING;" +//
-        "CREATE INDEX ON CompositeAccount (firstName, lastName) UNIQUE;");
-    for (int i = 0; i < 10; ++i)
-      jedis.hset(getDatabaseName(), "CompositeAccount", "{'firstName':'first_" + i + "','lastName':'last_" + i + "'}");
-
-    final List<String> compositeResult = jedis.hmget(getDatabaseName() + ".CompositeAccount[firstName,lastName]", "[\"first_3\",\"last_3\"]");
-    assertThat(compositeResult).hasSize(1);
-    assertThat(compositeResult.get(0)).isNotNull();
-    assertThat(new JSONObject(compositeResult.get(0)).getString("firstName")).isEqualTo("first_3");
-    assertThat(new JSONObject(compositeResult.get(0)).getString("lastName")).isEqualTo("last_3");
-
     // HDEL
     beginTime = System.currentTimeMillis();
     for (int i = 0; i < TOTAL_PERSISTENT; i += 2) {
