@@ -37,7 +37,10 @@ import java.util.regex.Pattern;
  * <p>
  * There are two answers to that here, and both are needed. The names carry milliseconds, matching what
  * {@code BackupSettings} has always used for the default name of a CLI or SQL backup, so the three server-side
- * conventions agree instead of being coarser than the one they imitate. And an in-progress database is admitted only
+ * conventions agree instead of being coarser than the one they imitate - the convention is written down twice, since
+ * the server cannot depend on the integration module, and
+ * {@code BackupCoordinatorTest#theDefaultNameOfACliOrSqlBackupFollowsTheSameConvention} fails if the two drift. And
+ * an in-progress database is admitted only
  * once, which is what stops the second backup from being started at all: two full backups of one database running
  * together read and compress the same data twice for one usable archive, so the redundant one is refused rather than
  * queued - the caller is told, and a periodic schedule simply covers it on the next tick.

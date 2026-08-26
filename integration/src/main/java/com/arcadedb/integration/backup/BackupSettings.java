@@ -86,7 +86,9 @@ public class BackupSettings {
     }
 
     if (file == null)
-      // ASSIGN DEFAULT FILENAME
+      // ASSIGN DEFAULT FILENAME. THE SERVER REPEATS THIS CONVENTION IN BackupCoordinator - IT CANNOT DEPEND ON THIS
+      // MODULE - AND ITS RETENTION READS BACK BOTH, SO CHANGE ONE AND CHANGE THE OTHER;
+      // theDefaultNameOfACliOrSqlBackupFollowsTheSameConvention FAILS THE MOMENT THEY DRIFT
       if ("full".equals(format)) {
         final DateFormat dateFormat = new SimpleDateFormat("yyyyMMdd-HHmmssSSS");
         file = "%s-backup-%s.zip".formatted(databaseName, dateFormat.format(System.currentTimeMillis()));
