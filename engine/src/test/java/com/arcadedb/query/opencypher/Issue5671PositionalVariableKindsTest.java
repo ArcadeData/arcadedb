@@ -149,4 +149,26 @@ class Issue5671PositionalVariableKindsTest {
       assertThatCode(ignored::hasNext).doesNotThrowAnyException();
     }
   }
+
+  /**
+   * Found in code review: {@code UNWIND}'s own list expression (and, by the same reasoning, a procedure
+   * {@code CALL}'s own arguments) is evaluated <i>before</i> the clause's binding takes effect, the same as a
+   * {@code WITH}'s projection items - so it must be checked against the scope from before this clause, not the
+   * one {@code forClauseEntry} advanced to. {@code m} is a node here; {@code UNWIND [...] AS m} reuses the name,
+   * but {@code type(m)} inside the list is still the node from the {@code MATCH}, not yet rebound.
+   */
+  @Test
+  void unwindListExpressionIsCheckedAgainstTheScopeBeforeItsOwnVariableIsRebound() {
+    assertThatThrownBy(() -> database.query("opencypher", "MATCH (m:P) UNWIND [type(m)] AS m RETURN m"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("type() requires a relationship argument, got node");
+  }
+
+  /** Sanity check the other direction: an UNWIND that does not reuse an outer name is unaffected. */
+  @Test
+  void unwindListExpressionReferencingAnUnrelatedNodeIsUnaffected() {
+    assertThatThrownBy(() -> database.query("opencypher", "MATCH (m:P) UNWIND [type(m)] AS u RETURN u"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("type() requires a relationship argument, got node");
+  }
 }
