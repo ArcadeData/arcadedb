@@ -70,7 +70,7 @@ class RaftCommandReadConsistencyIT extends BaseRaftHATest {
     try {
       RaftReplicatedDatabase.applyReadConsistencyContext(
           Database.READ_CONSISTENCY.READ_YOUR_WRITES, bookmark);
-      final long count = withResyncRetry(followerIndex, db -> {
+      final long count = withResyncRetry(followerIndex, (final Database db) -> {
         final var rs = db.command("sql", "SELECT count(*) as cnt FROM CmdCtx");
         assertThat(rs.hasNext()).isTrue();
         return ((Number) rs.next().getProperty("cnt")).longValue();
@@ -84,7 +84,7 @@ class RaftCommandReadConsistencyIT extends BaseRaftHATest {
     try {
       RaftReplicatedDatabase.applyReadConsistencyContext(
           Database.READ_CONSISTENCY.LINEARIZABLE, -1);
-      final long count = withResyncRetry(followerIndex, db -> {
+      final long count = withResyncRetry(followerIndex, (final Database db) -> {
         final var rs = db.command("sql", "SELECT count(*) as cnt FROM CmdCtx");
         assertThat(rs.hasNext()).isTrue();
         return ((Number) rs.next().getProperty("cnt")).longValue();
