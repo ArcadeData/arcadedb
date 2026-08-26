@@ -156,12 +156,17 @@ public class PostTimeSeriesWriteHandler extends AbstractServerHttpHandler {
       // order stay identical to a straight pass over the samples.
       final Set<String> unknownTypes = new LinkedHashSet<>();
       final Set<String> nonTimeSeriesTypes = new LinkedHashSet<>();
+      // Distinct from nonTimeSeriesTypes (issue #6356 follow-up, claude-review on PR #6779): a type in here IS a
+      // TimeSeries type, its storage just failed to load - lumping it in with "wrong type" sent an operator
+      // chasing the wrong cause.
+      final Set<String> unavailableTypes = new LinkedHashSet<>();
       final Map<String, MeasurementBatch> byMeasurement = new LinkedHashMap<>();
 
       for (final Sample sample : samples) {
         final String measurement = sample.getMeasurement();
 
-        if (unknownTypes.contains(measurement) || nonTimeSeriesTypes.contains(measurement))
+        if (unknownTypes.contains(measurement) || nonTimeSeriesTypes.contains(measurement)
+            || unavailableTypes.contains(measurement))
           continue;
 
         final MeasurementBatch batch = byMeasurement.get(measurement);
@@ -176,8 +181,12 @@ public class PostTimeSeriesWriteHandler extends AbstractServerHttpHandler {
         }
 
         final DocumentType docType = database.getSchema().getType(measurement);
-        if (!(docType instanceof LocalTimeSeriesType tsType) || tsType.getEngine() == null) {
+        if (!(docType instanceof LocalTimeSeriesType tsType)) {
           nonTimeSeriesTypes.add(measurement);
+          continue;
+        }
+        if (!tsType.isEngineAvailable()) {
+          unavailableTypes.add(measurement);
           continue;
         }
 
@@ -195,7 +204,11 @@ public class PostTimeSeriesWriteHandler extends AbstractServerHttpHandler {
       database.begin();
       try {
         for (final MeasurementBatch batch : byMeasurement.values()) {
-          final TimeSeriesEngine engine = batch.type().getEngine();
+          // requireEngine() for symmetry with the other call sites this PR touched (issue #6356 follow-up,
+          // claude-review on PR #6779): every batch here was already filtered by isEngineAvailable() above, so
+          // this can never actually throw, but getEngine() alone would silently reintroduce the "no engine"
+          // possibility at the type level if that filtering were ever changed.
+          final TimeSeriesEngine engine = batch.type().requireEngine();
           final List<ColumnDefinition> columns = batch.type().getTsColumns();
           final List<Sample> group = batch.samples();
           final int count = group.size();
@@ -241,6 +254,11 @@ public class PostTimeSeriesWriteHandler extends AbstractServerHttpHandler {
         LogManager.instance().log(this, Level.WARNING,
             "Skipped line protocol samples for non-timeseries type(s): %s", null, nonTimeSeriesTypes);
 
+      if (!unavailableTypes.isEmpty())
+        LogManager.instance().log(this, Level.WARNING,
+            "Skipped line protocol samples for TimeSeries type(s) with no storage engine available: %s", null,
+            unavailableTypes);
+
       // Any dropped sample is a partial write: matching InfluxDB, return 400 naming the dropped
       // measurements (with written/dropped counts) even when some samples were inserted, so the client
       // is not told 204 "all good" while data was silently discarded (issue #5036). The samples that did
@@ -259,6 +277,12 @@ public class PostTimeSeriesWriteHandler extends AbstractServerHttpHandler {
           msg.append("non-timeseries type(s): ").append(String.join(", ", nonTimeSeriesTypes))
               .append(" (only TIMESERIES types can receive line protocol data).");
         }
+        if (!unavailableTypes.isEmpty()) {
+          if (!unknownTypes.isEmpty() || !nonTimeSeriesTypes.isEmpty())
+            msg.append(" ");
+          msg.append("TimeSeries type(s) with no storage engine available: ").append(String.join(", ", unavailableTypes))
+              .append(" (see the server log for why each failed to load).");
+        }
 
         final JSONObject error = new JSONObject();
         error.put("error", msg.toString());
@@ -271,6 +295,8 @@ public class PostTimeSeriesWriteHandler extends AbstractServerHttpHandler {
           error.put("unknownTypes", new JSONArray(unknownTypes));
         if (!nonTimeSeriesTypes.isEmpty())
           error.put("nonTimeSeriesTypes", new JSONArray(nonTimeSeriesTypes));
+        if (!unavailableTypes.isEmpty())
+          error.put("unavailableTypes", new JSONArray(unavailableTypes));
         return new ExecutionResponse(400, error.toString());
       }
 

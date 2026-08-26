@@ -25,6 +25,7 @@ import com.arcadedb.engine.timeseries.TimeSeriesBucket;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
 import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -56,6 +57,13 @@ public class LocalTimeSeriesType extends LocalDocumentType {
   private final List<ColumnDefinition>  tsColumns         = new ArrayList<>();
   private       List<DownsamplingTier> downsamplingTiers = new ArrayList<>();
   private volatile TimeSeriesEngine    engine;
+  /**
+   * Set when schema load registered this type despite {@link #initEngine()} failing (issue #6356), so the type
+   * stays visible in the schema and to {@code CHECK DATABASE} instead of silently disappearing. {@code null} means
+   * the engine is available; a non-null reason means every read/write must fail loudly instead of acting on an
+   * absent engine.
+   */
+  private volatile String engineUnavailableReason;
 
   public LocalTimeSeriesType(final LocalSchema schema, final String name) {
     super(schema, name);
@@ -70,10 +78,53 @@ public class LocalTimeSeriesType extends LocalDocumentType {
       return;
     engine = new TimeSeriesEngine((DatabaseInternal) schema.getDatabase(), name, tsColumns, shardCount > 0 ? shardCount : 1,
         compactionBucketIntervalMs, mutableFormatVersion);
+    // A retry that succeeds after a prior markEngineUnavailable() must not leave the stale reason behind: nothing
+    // else clears it, and getEngineUnavailableReason() otherwise keeps reporting why the engine failed even after
+    // isEngineAvailable() has correctly flipped to true.
+    engineUnavailableReason = null;
   }
 
   public TimeSeriesEngine getEngine() {
     return engine;
+  }
+
+  /**
+   * Marks this type as registered but without a usable storage engine (issue #6356): {@link #initEngine()} failed
+   * during schema load, most commonly because one derived file (a {@code .ts.sealed} sealed store) could not be
+   * opened. Package-private: only {@code LocalSchema.readConfiguration()} calls this, on the same path that would
+   * otherwise have thrown and left the type out of the schema entirely, and always from the single-threaded
+   * schema-load path - never concurrently with {@link #initEngine()}. {@code synchronized} to match
+   * {@link #initEngine()}, so a future caller cannot reintroduce a stale-reason race between the two.
+   */
+  synchronized void markEngineUnavailable(final String reason) {
+    this.engineUnavailableReason = reason != null ? reason : "unknown error";
+  }
+
+  public boolean isEngineAvailable() {
+    return engine != null;
+  }
+
+  /**
+   * Why {@link #getEngine()} returns {@code null}, or {@code null} if the engine is available. Surfaced by
+   * {@code CHECK DATABASE} and by {@link #requireEngine()}'s message.
+   */
+  public String getEngineUnavailableReason() {
+    return engineUnavailableReason;
+  }
+
+  /**
+   * Non-null accessor for read/write call sites that cannot do anything useful with a missing engine: throws
+   * naming the type and, when known, why the engine never started, instead of letting a {@code null} reach a
+   * {@code NullPointerException} with no context (issue #6356).
+   */
+  public TimeSeriesEngine requireEngine() {
+    final TimeSeriesEngine current = engine;
+    if (current == null)
+      throw new DatabaseOperationException(
+          "TimeSeries type '" + name + "' has no storage engine available" + (engineUnavailableReason != null ?
+              ": " + engineUnavailableReason :
+              " (it may still be initializing)"));
+    return current;
   }
 
   public void close() {

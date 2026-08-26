@@ -32,6 +32,7 @@ import java.util.Collection;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #6340 (item 4): {@code CHECK DATABASE} had no TimeSeries coverage at all - {@code DatabaseChecker}
@@ -429,14 +430,113 @@ class Issue6340TimeSeriesCheckDatabaseTest extends TestHelper {
         && w.contains("declares 500 entries"));
   }
 
-  // NOT TESTED HERE, and the reason is a finding in its own right: corrupting the sealed store's OWN header magic
-  // produces no CHECK DATABASE warning, because TimeSeriesSealedStore's constructor throws on a bad magic,
-  // initEngine() then fails during schema load, and the TimeSeries type DISAPPEARS FROM THE SCHEMA entirely - the
-  // database reopens cleanly with the type simply gone (probed: totalTimeSeriesTypes=0, existsType("Cpu")=false).
-  // A check cannot report a type that is no longer there. That silent disappearance lives in the schema load path
-  // rather than in this pass, and what should happen instead - refuse the open, quarantine the type, or surface it
-  // read-only - is a design question of its own. Left as a follow-up rather than pinned here, because a test
-  // asserting the current behaviour would enshrine it.
+  /**
+   * Issue #6356: corrupting the sealed store's OWN header magic used to make the TimeSeries type disappear from
+   * the schema entirely - {@code TimeSeriesSealedStore}'s constructor throws on a bad magic, {@code initEngine()}
+   * fails during schema load, and the type was silently dropped instead of registered, so the database reopened
+   * cleanly with the type simply gone (probed: {@code totalTimeSeriesTypes=0}, {@code existsType("Cpu")=false}) and
+   * a check had nothing left to report on.
+   * <p>
+   * {@code LocalSchema#readConfiguration} now registers the type anyway with its engine left unavailable, which is
+   * what lets {@code DatabaseChecker#checkTimeSeries}'s existing "the storage engine is not initialised" branch -
+   * unreachable until this fix, since nothing walkable ever carried a broken type - fire for the first time.
+   */
+  @Test
+  void aTimeSeriesTypeWhoseSealedStoreFailsToLoadStaysInTheSchemaAndIsReported() throws Exception {
+    final TimeSeriesEngine engine = createType("Cpu");
+    appendRows(engine, ROWS);
+    engine.compactAll();
+    final File sealed = new File(getDatabasePath(), "Cpu_shard_0.ts.sealed");
+    assertThat(sealed).exists();
+
+    database.close();
+    try {
+      // Byte 0 of the header is part of the MAGIC_VALUE int, so this can never pass the magic check on reopen.
+      flipByteAt(sealed, 0);
+    } finally {
+      database = factory.open();
+    }
+
+    // THE CORE OF #6356: the type must still be there, not have vanished.
+    assertThat(database.getSchema().existsType("Cpu")).as("the type must not disappear from the schema").isTrue();
+    final LocalTimeSeriesType reopened = (LocalTimeSeriesType) database.getSchema().getType("Cpu");
+    assertThat(reopened.isEngineAvailable()).isFalse();
+    assertThat(reopened.getEngineUnavailableReason()).contains("Cpu_shard_0.ts.sealed");
+
+    // Every write against it fails loudly instead of quietly building a fresh empty type.
+    assertThatThrownBy(reopened::requireEngine).hasMessageContaining("Cpu");
+  }
+
+  /**
+   * The other half of #6356: {@code CHECK DATABASE} must be able to see and report the broken type, which is only
+   * possible once it stays registered.
+   */
+  @Test
+  void checkDatabaseReportsATimeSeriesTypeWhoseEngineFailedToInitialize() throws Exception {
+    final TimeSeriesEngine engine = createType("Cpu");
+    appendRows(engine, ROWS);
+    engine.compactAll();
+    final File sealed = new File(getDatabasePath(), "Cpu_shard_0.ts.sealed");
+
+    database.close();
+    try {
+      flipByteAt(sealed, 0);
+    } finally {
+      database = factory.open();
+    }
+
+    final Result row = runCheck();
+
+    assertThat(row.<Long>getProperty("totalTimeSeriesTypes")).as("the broken type is still counted").isEqualTo(1L);
+    assertThat(corruptedTypesOf(row)).containsExactly("Cpu");
+    assertThat(warningsOf(row)).anyMatch(
+        w -> w.contains("timeseries 'Cpu'") && w.contains("storage engine is not initialised")
+            // The reason names the file, so an operator does not have to go hunting through the server log for it.
+            && w.contains("Cpu_shard_0.ts.sealed"));
+  }
+
+  /** A write against the broken type fails with a message naming the type, not with an NPE. */
+  @Test
+  void writingToATimeSeriesTypeWhoseEngineFailedToInitializeFailsWithAClearError() throws Exception {
+    final TimeSeriesEngine engine = createType("Cpu");
+    appendRows(engine, ROWS);
+    engine.compactAll();
+    final File sealed = new File(getDatabasePath(), "Cpu_shard_0.ts.sealed");
+
+    database.close();
+    try {
+      flipByteAt(sealed, 0);
+    } finally {
+      database = factory.open();
+    }
+
+    assertThatThrownBy(() -> database.command("sql",
+        "INSERT INTO Cpu SET ts = 1700000000000, hostname = 'h', usage = 1.0"))
+        .hasMessageContaining("Cpu");
+  }
+
+  /**
+   * The read side of the same guard: {@code SelectExecutionPlanner.handleTypeAsTarget} must call
+   * {@code requireEngine()} and fail loudly, rather than falling through to a generic document scan that would
+   * read zero rows from a type with no record bucket of its own and report the query as having succeeded.
+   */
+  @Test
+  void selectingFromATimeSeriesTypeWhoseEngineFailedToInitializeFailsWithAClearError() throws Exception {
+    final TimeSeriesEngine engine = createType("Cpu");
+    appendRows(engine, ROWS);
+    engine.compactAll();
+    final File sealed = new File(getDatabasePath(), "Cpu_shard_0.ts.sealed");
+
+    database.close();
+    try {
+      flipByteAt(sealed, 0);
+    } finally {
+      database = factory.open();
+    }
+
+    assertThatThrownBy(() -> database.command("sql", "SELECT FROM Cpu").close())
+        .hasMessageContaining("Cpu");
+  }
 
   /**
    * Bytes past the last readable block: the tail of a write that did not complete. The directory scan stops at

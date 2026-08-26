@@ -76,8 +76,11 @@ public class SaveElementStep extends AbstractExecutionStep {
 
           // Check if this is a TimeSeries type — route to TimeSeriesEngine
           final var docType = context.getDatabase().getSchema().getType(doc.getTypeName());
-          if (docType instanceof LocalTimeSeriesType tsType && tsType.getEngine() != null) {
-            saveToTimeSeries(tsType, doc, context);
+          if (docType instanceof LocalTimeSeriesType tsType) {
+            // requireEngine() fails loudly - naming the type and, when known, why - instead of silently falling
+            // through to the generic document save below, which a TimeSeries type with no record bucket of its
+            // own cannot serve correctly either (issue #6356).
+            saveToTimeSeries(tsType, tsType.requireEngine(), doc, context);
             scheduleContinuousAggregateRefresh(context, tsType);
             return result;
           }
@@ -106,8 +109,8 @@ public class SaveElementStep extends AbstractExecutionStep {
     };
   }
 
-  private void saveToTimeSeries(final LocalTimeSeriesType tsType, final Document doc, final CommandContext context) {
-    final TimeSeriesEngine engine = tsType.getEngine();
+  private void saveToTimeSeries(final LocalTimeSeriesType tsType, final TimeSeriesEngine engine, final Document doc,
+      final CommandContext context) {
     final List<ColumnDefinition> columns = tsType.getTsColumns();
     final ZoneId zoneId = context.getDatabase().getSchema().getZoneId();
 

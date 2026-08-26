@@ -739,7 +739,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // Counting samples never loads a record through a bucket, so apply the equivalent per-type read check here.
         checkPermissionsOnType(typeName, SecurityDatabaseUser.ACCESS.READ_RECORD);
         try {
-          return tsType.getEngine().countSamples();
+          return tsType.requireEngine().countSamples();
         } catch (final IOException e) {
           throw new DatabaseOperationException("Error counting TimeSeries samples for type '" + typeName + "'", e);
         }

@@ -205,6 +205,28 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * Regression for issue #6356's follow-up (claude-review on PR #6779): a TimeSeries type whose engine failed to
+   * load must be told apart from "not a TimeSeries type" here too, on the query endpoint.
+   */
+  @Test
+  void queryEngineUnavailableTypeIsReportedDistinctlyFromNonTimeSeriesType() throws Exception {
+    testEachServer(serverIndex -> {
+      command(serverIndex,
+          "CREATE TIMESERIES TYPE broken TIMESTAMP ts TAGS (host STRING) FIELDS (usage DOUBLE)");
+      command(serverIndex, "INSERT INTO broken SET ts = 1700000000000, host = 'h', usage = 1.0");
+
+      corruptSealedStoreAndReopen(serverIndex, "broken");
+
+      final JSONObject request = new JSONObject();
+      request.put("type", "broken");
+
+      final JSONObject error = postTsQueryError(serverIndex, request);
+      assertThat(error.getString("error")).as("must be distinguishable from \"is not a TimeSeries type\"")
+          .contains("no storage engine available");
+    });
+  }
+
   @Test
   void latestValue() throws Exception {
     testEachServer(serverIndex -> {
@@ -253,6 +275,25 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
     testEachServer(serverIndex -> {
       final int statusCode = getTsLatestRaw(serverIndex, null, null);
       assertThat(statusCode).isEqualTo(400);
+    });
+  }
+
+  /**
+   * Regression for issue #6356's follow-up (claude-review on PR #6779): a TimeSeries type whose engine failed to
+   * load must be told apart from "not a TimeSeries type" here too, on the latest-value endpoint.
+   */
+  @Test
+  void latestEngineUnavailableTypeIsReportedDistinctlyFromNonTimeSeriesType() throws Exception {
+    testEachServer(serverIndex -> {
+      command(serverIndex,
+          "CREATE TIMESERIES TYPE broken TIMESTAMP ts TAGS (host STRING) FIELDS (usage DOUBLE)");
+      command(serverIndex, "INSERT INTO broken SET ts = 1700000000000, host = 'h', usage = 1.0");
+
+      corruptSealedStoreAndReopen(serverIndex, "broken");
+
+      final JSONObject error = getTsLatestError(serverIndex, "broken");
+      assertThat(error.getString("error")).as("must be distinguishable from \"is not a TimeSeries type\"")
+          .contains("no storage engine available");
     });
   }
 
@@ -334,6 +375,27 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
     return connection.getResponseCode();
   }
 
+  private JSONObject postTsQueryError(final int serverIndex, final JSONObject request) throws Exception {
+    final HttpURLConnection connection = (HttpURLConnection) new URI(
+        "http://127.0.0.1:248" + serverIndex + "/api/v1/ts/graph/query")
+        .toURL()
+        .openConnection();
+
+    connection.setRequestMethod("POST");
+    connection.setRequestProperty("Authorization",
+        "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+    connection.setRequestProperty("Content-Type", "application/json");
+    connection.setDoOutput(true);
+
+    try (final OutputStream os = connection.getOutputStream()) {
+      os.write(request.toString().getBytes(StandardCharsets.UTF_8));
+      os.flush();
+    }
+
+    assertThat(connection.getResponseCode()).isEqualTo(400);
+    return new JSONObject(readError(connection));
+  }
+
   private JSONObject getTsLatest(final int serverIndex, final String type, final String tag) throws Exception {
     final StringBuilder url = new StringBuilder("http://127.0.0.1:248" + serverIndex + "/api/v1/ts/graph/latest?type=" + type);
     if (tag != null)
@@ -370,5 +432,19 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
         "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
 
     return connection.getResponseCode();
+  }
+
+  private JSONObject getTsLatestError(final int serverIndex, final String type) throws Exception {
+    final HttpURLConnection connection = (HttpURLConnection) new URI(
+        "http://127.0.0.1:248" + serverIndex + "/api/v1/ts/graph/latest?type=" + type)
+        .toURL()
+        .openConnection();
+
+    connection.setRequestMethod("GET");
+    connection.setRequestProperty("Authorization",
+        "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+
+    assertThat(connection.getResponseCode()).isEqualTo(400);
+    return new JSONObject(readError(connection));
   }
 }

@@ -726,8 +726,11 @@ public class DatabaseChecker {
       if (engine == null) {
         // The type is in the schema but its engine never initialised, so its files were never opened. Reported
         // rather than skipped: a type nothing can read is exactly the kind of thing this check is asked about.
+        // The reason (when known, issue #6356) names the file that failed to load, so an operator does not have
+        // to go hunting through the server log for it.
+        final String reason = type.getEngineUnavailableReason();
         addWarning("timeseries '" + type.getName() + "': the storage engine is not initialised, so none of its "
-            + "files could be read");
+            + "files could be read" + (reason != null ? ": " + reason : ""));
         corrupted.add(type.getName());
         continue;
       }

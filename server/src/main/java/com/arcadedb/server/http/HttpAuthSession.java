@@ -20,6 +20,8 @@ package com.arcadedb.server.http;
 
 import com.arcadedb.server.security.ServerSecurityUser;
 
+import java.util.function.LongSupplier;
+
 /**
  * Represents an authenticated HTTP session. Unlike {@link HttpSession} which manages a transaction,
  * this session represents a logged-in user and can be used for token-based authentication.
@@ -32,6 +34,7 @@ import com.arcadedb.server.security.ServerSecurityUser;
 public class HttpAuthSession {
   public final  String             token;
   public final  ServerSecurityUser user;
+  private final LongSupplier       clock;
   private final long               createdAt;
   private volatile long            lastUpdate;
   private final String             sourceIp;
@@ -45,9 +48,19 @@ public class HttpAuthSession {
 
   public HttpAuthSession(final ServerSecurityUser user, final String token, final String sourceIp,
       final String userAgent, final String country, final String city) {
+    this(user, token, sourceIp, userAgent, country, city, System::currentTimeMillis);
+  }
+
+  /**
+   * Package-private constructor that allows tests to inject a deterministic clock instead of the
+   * wall clock, so idle/absolute timeout behavior can be asserted without sleeping.
+   */
+  HttpAuthSession(final ServerSecurityUser user, final String token, final String sourceIp,
+      final String userAgent, final String country, final String city, final LongSupplier clock) {
     this.user = user;
     this.token = token;
-    this.createdAt = System.currentTimeMillis();
+    this.clock = clock;
+    this.createdAt = clock.getAsLong();
     this.lastUpdate = this.createdAt;
     this.sourceIp = sourceIp;
     this.userAgent = userAgent;
@@ -56,15 +69,15 @@ public class HttpAuthSession {
   }
 
   public long elapsedFromLastUpdate() {
-    return System.currentTimeMillis() - lastUpdate;
+    return clock.getAsLong() - lastUpdate;
   }
 
   public long elapsedFromCreation() {
-    return System.currentTimeMillis() - createdAt;
+    return clock.getAsLong() - createdAt;
   }
 
   public void touch() {
-    this.lastUpdate = System.currentTimeMillis();
+    this.lastUpdate = clock.getAsLong();
   }
 
   public ServerSecurityUser getUser() {

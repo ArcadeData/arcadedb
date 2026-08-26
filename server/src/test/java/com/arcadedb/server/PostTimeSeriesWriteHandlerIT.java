@@ -114,6 +114,38 @@ class PostTimeSeriesWriteHandlerIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * Regression for issue #6356's follow-up (claude-review on PR #6779): a TimeSeries type IS the right kind of
+   * type, it just failed to load its storage - conflating that with "wrong type" sent an operator debugging via
+   * this endpoint chasing the wrong cause. Reuses the {@code flipByteAt} + close/reopen reproduction already
+   * established at the engine level in {@code Issue6340TimeSeriesCheckDatabaseTest}, driven through the actual
+   * HTTP write path this time.
+   */
+  @Test
+  void engineUnavailableTypeIsReportedDistinctlyFromNonTimeSeriesType() throws Exception {
+    testEachServer(serverIndex -> {
+      command(serverIndex,
+          "CREATE TIMESERIES TYPE broken TIMESTAMP ts TAGS (host STRING) FIELDS (usage DOUBLE)");
+      command(serverIndex, "INSERT INTO broken SET ts = 1700000000000, host = 'h', usage = 1.0");
+
+      corruptSealedStoreAndReopen(serverIndex, "broken");
+
+      final HttpURLConnection connection = openWriteConnection(serverIndex, "ms");
+      try (final OutputStream os = connection.getOutputStream()) {
+        os.write("broken,host=h2 usage=2.0 2000\n".getBytes(StandardCharsets.UTF_8));
+        os.flush();
+      }
+      assertThat(connection.getResponseCode()).isEqualTo(400);
+
+      final JSONObject error = new JSONObject(readError(connection));
+      assertThat(error.getString("error")).as("must be distinguishable from \"is not a TimeSeries type\"")
+          .contains("no storage engine available");
+      assertThat(error.getJSONArray("unavailableTypes").getString(0)).isEqualTo("broken");
+      assertThat(error.has("nonTimeSeriesTypes")).as("a broken type must not also be reported as the wrong type")
+          .isFalse();
+    });
+  }
+
   @Test
   void partialWriteReportsDroppedMeasurements() throws Exception {
     // Regression for issue #5036: an ingest mixing a valid TIMESERIES measurement with an unknown one
