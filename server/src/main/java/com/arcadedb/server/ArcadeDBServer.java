@@ -36,6 +36,7 @@ import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ai.AiConfiguration;
+import com.arcadedb.server.backup.BackupCoordinator;
 import com.arcadedb.server.event.FileServerEventLog;
 import com.arcadedb.server.event.ServerEventLog;
 import com.arcadedb.server.http.HttpServer;
@@ -132,6 +133,11 @@ public class ArcadeDBServer {
   private volatile    HttpServer                            httpServer;
   private             AiConfiguration                       aiConfiguration;
   private             ServerQueryProfiler                   queryProfiler;
+  // Admission for backups of a database, shared by every entry point that can start one on this server: the
+  // auto-backup schedule, its immediate trigger, and the HTTP "trigger backup" command (issue #6753). Created with
+  // the server rather than with the auto-backup plugin, because the HTTP command backs a database up whether or not
+  // that plugin is enabled.
+  private final       BackupCoordinator                     backupCoordinator                    = new BackupCoordinator();
   private final       ConcurrentMap<String, ServerDatabase> databases                            = new ConcurrentHashMap<>();
   // Monitor serialising every check-then-act on the database registry (load, create, register, reopen). The HA
   // snapshot installer also holds it across close->file-swap->reopen so no concurrent open observes the transient
@@ -993,6 +999,14 @@ public class ArcadeDBServer {
 
   public ServerQueryProfiler getQueryProfiler() {
     return queryProfiler;
+  }
+
+  /**
+   * Admits one backup at a time per database, across every backup entry point this server has, and names the archives
+   * they write (issue #6753).
+   */
+  public BackupCoordinator getBackupCoordinator() {
+    return backupCoordinator;
   }
 
   public void registerTestEventListener(final ReplicationCallback callback) {

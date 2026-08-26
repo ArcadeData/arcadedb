@@ -44,6 +44,8 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.Files;
 import java.security.SecureRandom;
 import java.security.spec.KeySpec;
 import java.util.ArrayList;
@@ -75,11 +77,8 @@ public class FullBackupFormat extends AbstractBackupFormat {
 
     final File backupFile = new File(fileName);
 
-    if (backupFile.exists() && !settings.overwriteFile)
-      throw new BackupException("The backup file '%s' already exist and '-o' setting is false".formatted(settings.file));
-
     if (backupFile.getParentFile() != null && !backupFile.getParentFile().exists()) {
-      if (!backupFile.getParentFile().mkdirs())
+      if (!backupFile.getParentFile().mkdirs() && !backupFile.getParentFile().isDirectory())
         throw new BackupException("The backup file '%s' cannot be created".formatted(backupFile));
     }
 
@@ -89,6 +88,10 @@ public class FullBackupFormat extends AbstractBackupFormat {
     final int compressionLevel = resolveSetting(settings.compressionLevel, GlobalConfiguration.BACKUP_COMPRESSION_LEVEL);
     final int compressionThreads = resolveThreads();
     final int maxMBPerSecond = resolveSetting(settings.maxMBPerSecond, GlobalConfiguration.BACKUP_MAX_MB_PER_SECOND);
+
+    // LAST THING BEFORE THE WRITE, SO THAT A BACKUP REJECTED BY ONE OF THE CHECKS ABOVE LEAVES NO EMPTY ARCHIVE FOR
+    // RETENTION TO COUNT AND FOR AN OPERATOR TO MISTAKE FOR A BACKUP
+    claimBackupFile(backupFile);
 
     logger.logLine(0, "Executing full backup of database to '%s' (compression level %d, %s%s)...", backupFile,
         compressionLevel, compressionThreads > 0 ? compressionThreads + " threads" : "single threaded",
@@ -134,10 +137,16 @@ public class FullBackupFormat extends AbstractBackupFormat {
         // SAFETY NETS ONLY TEACH THE NEXT READER THAT THE THROW ABOVE MIGHT NOT HAPPEN
         break;
       } catch (final PageSnapshotException e) {
-        // A PARTIAL ARCHIVE MUST NOT SURVIVE: LEAVING ONE BEHIND INVITES A RESTORE FROM IT
-        backupFile.delete();
-        if (!snapshotAttempt)
+        if (!snapshotAttempt) {
+          // A PARTIAL ARCHIVE MUST NOT SURVIVE: LEAVING ONE BEHIND INVITES A RESTORE FROM IT
+          backupFile.delete();
           throw e;
+        }
+        // ON THE WAY TO A RETRY THE PARTIAL ARCHIVE IS KEPT, NOT DELETED: DELETING IT WOULD HAND THE PATH BACK TO
+        // ANYBODY ELSE RACING FOR IT (SEE claimBackupFile), AND THE RETRY OPENS THE SAME FILE WITH TRUNCATE, SO THE
+        // PARTIAL CONTENT IS GONE THE MOMENT THE SECOND ATTEMPT STARTS WRITING. A RETRY THAT FAILS IN TURN LANDS IN
+        // ONE OF THE TWO BRANCHES THAT DO DELETE, SO A PARTIAL ARCHIVE STILL NEVER SURVIVES THE CALL
+        //
         // THE WINDOW COULD NOT HOLD THE POINT IN TIME (THE SHADOW BREACHED ITS CAP, OR A PRE-IMAGE COULD NOT BE READ).
         // A STREAMED ARCHIVE CANNOT BE REPAIRED IN PLACE, SO THE WHOLE BACKUP RESTARTS ON THE PATH THAT ALWAYS
         // COMPLETES - AT THE COST OF THROTTLING WRITERS, WHICH IS STILL BETTER THAN NOT HAVING A BACKUP
@@ -287,6 +296,30 @@ public class FullBackupFormat extends AbstractBackupFormat {
           archive.abort();
       }
     });
+  }
+
+  /**
+   * Takes ownership of the target path before a single byte is written, by creating the file itself rather than by
+   * asking whether it exists. The check-then-create it replaces was a TOCTOU: two backups of the same database landing
+   * on the same name - the scheduler's periodic tick and an operator's "backup now", two nodes writing to a shared
+   * directory - both saw a free path, both opened their own stream on it, and interleaved their output into one
+   * unreadable archive that each of them reported as a success (issue #6753). Whoever loses the create now fails
+   * before it can touch the winner's file, including its delete-on-failure cleanup.
+   * <p>
+   * With {@code -o} the caller has asked for the existing file to be replaced, so there is nothing to claim and the
+   * write below truncates whatever is there.
+   */
+  private void claimBackupFile(final File backupFile) {
+    if (settings.overwriteFile)
+      return;
+
+    try {
+      Files.createFile(backupFile.toPath());
+    } catch (final FileAlreadyExistsException e) {
+      throw new BackupException("The backup file '%s' already exist and '-o' setting is false".formatted(settings.file));
+    } catch (final IOException e) {
+      throw new BackupException("The backup file '%s' cannot be created".formatted(backupFile), e);
+    }
   }
 
   private interface StreamCallback {
