@@ -293,6 +293,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   }
 
   /**
+   * Returns whether the idle-transaction reaper thread has actually been shut down (as opposed to merely
+   * configured). Unlike {@link #isIdleReaperActive()} - which only reflects the constructor-time decision
+   * and stays {@code true} forever once a reaper was created - this reflects live state, so it is the
+   * right check for "did {@link #close()} actually stop the background thread" (issue #6756).
+   */
+  boolean isIdleReaperShutdown() {
+    return txReaper == null || txReaper.isShutdown();
+  }
+
+  /**
    * Returns the number of open transactions currently attributed to the given principal. Exposed for testing the
    * per-principal concurrency cap.
    */
@@ -780,17 +790,23 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
                 }
               }
 
-              if (emitted < maxRows) {
-                final long serRowStart = System.nanoTime();
-                // Convert Result to GrpcRecord, preserving aliases and all properties
-                GrpcRecord grpcRecord = convertResultToGrpcRecord(result, db,
-                    new ProjectionConfig(true, ProjectionEncoding.PROJECTION_AS_JSON, 0));
-                out.addRecords(grpcRecord);
-                serializationAccum += System.nanoTime() - serRowStart;
+              final long serRowStart = System.nanoTime();
+              // Convert Result to GrpcRecord, preserving aliases and all properties
+              GrpcRecord grpcRecord = convertResultToGrpcRecord(result, db,
+                  new ProjectionConfig(true, ProjectionEncoding.PROJECTION_AS_JSON, 0));
+              out.addRecords(grpcRecord);
+              serializationAccum += System.nanoTime() - serRowStart;
 
-                emitted++;
-              }
+              emitted++;
 
+              // Issue #6756 (3): mirror executeQuery's hard ceiling (RESOURCE_EXHAUSTED) instead of
+              // silently dropping rows past maxRows with no indication to the caller that the result was
+              // incomplete.
+              if (emitted >= maxRows && rs.hasNext())
+                throw Status.RESOURCE_EXHAUSTED
+                    .withDescription("ExecuteCommand result exceeds the maximum of " + maxRows
+                        + " rows; set a larger max_rows, add a LIMIT, or use return_rows=false")
+                    .asRuntimeException();
             }
           } else {
 
@@ -951,19 +967,27 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       return;
     }
 
+    // Issue #6756 (2): guards each catch below against calling onError once onNext has already handed a
+    // response to the observer - a concurrent client-side cancel landing between onNext and onCompleted can
+    // make onCompleted() throw, and without this guard the catch would call onError on an already-closed
+    // call (the same double-terminate exposure fixed for executeCommand in #6192).
+    boolean responded = false;
+
     if (txCtx != null) {
       // External transaction — execute on its dedicated thread to maintain thread-local state
       try {
         final Future<CreateRecordResponse> future =
             submitToActiveTransaction(txCtx, () -> createRecordInternal(req, txCtx.db));
         resp.onNext(future.get());
+        responded = true;
         resp.onCompleted();
       } catch (Exception e) {
         final Throwable cause = e instanceof ExecutionException && e.getCause() != null ? e.getCause() : e;
         LogManager.instance().log(this, Level.SEVERE, "ERROR in createRecord (external tx)", cause);
         // Preserve the engine exception type (e.g. DuplicatedKeyException -> ALREADY_EXISTS with index/keys)
         // so the client can reconstruct it instead of receiving an opaque INTERNAL.
-        resp.onError(GrpcErrorMapper.toStatusRuntimeException(cause, "CreateRecord", ha()));
+        if (!responded)
+          resp.onError(GrpcErrorMapper.toStatusRuntimeException(cause, "CreateRecord", ha()));
       }
       return;
     }
@@ -972,10 +996,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     try {
       final Database db = getDatabase(req.getDatabase(), req.getCredentials());
       resp.onNext(createRecordInternal(req, db));
+      responded = true;
       resp.onCompleted();
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "ERROR in createRecord", e);
-      resp.onError(GrpcErrorMapper.toStatusRuntimeException(e, "CreateRecord", ha()));
+      if (!responded)
+        resp.onError(GrpcErrorMapper.toStatusRuntimeException(e, "CreateRecord", ha()));
     }
   }
 
@@ -1083,22 +1109,29 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       return;
     }
 
+    // Issue #6756 (2): guards each catch below against calling onError once onNext has already handed a
+    // response to the observer - see the identical guard on executeCommand (#6192) / createRecord.
+    boolean responded = false;
+
     if (txCtx != null) {
       try {
         final Future<LookupByRidResponse> future =
             submitToActiveTransaction(txCtx, () -> lookupByRidInternal(req, txCtx.db));
         resp.onNext(future.get());
+        responded = true;
         resp.onCompleted();
       } catch (Exception e) {
         final Throwable cause = e instanceof ExecutionException && e.getCause() != null ? e.getCause() : e;
-        if (cause instanceof RecordNotFoundException)
-          resp.onError(Status.NOT_FOUND.withDescription("LookupByRid: " + cause.getMessage()).asException());
-        else if (cause instanceof StatusRuntimeException sre)
-          // Preserve an explicit gRPC status (e.g. FAILED_PRECONDITION from requireTransactionStillActive)
-          // instead of masking it as INTERNAL, mirroring executeQuery/executeCommand/bulkInsert.
-          resp.onError(sre);
-        else
-          resp.onError(Status.INTERNAL.withDescription("LookupByRid: " + cause.getMessage()).asException());
+        if (!responded) {
+          if (cause instanceof RecordNotFoundException)
+            resp.onError(Status.NOT_FOUND.withDescription("LookupByRid: " + cause.getMessage()).asException());
+          else if (cause instanceof StatusRuntimeException sre)
+            // Preserve an explicit gRPC status (e.g. FAILED_PRECONDITION from requireTransactionStillActive)
+            // instead of masking it as INTERNAL, mirroring executeQuery/executeCommand/bulkInsert.
+            resp.onError(sre);
+          else
+            resp.onError(Status.INTERNAL.withDescription("LookupByRid: " + cause.getMessage()).asException());
+        }
       }
       return;
     }
@@ -1106,11 +1139,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     try {
       final Database db = getDatabase(req.getDatabase(), req.getCredentials());
       resp.onNext(lookupByRidInternal(req, db));
+      responded = true;
       resp.onCompleted();
     } catch (RecordNotFoundException e) {
-      resp.onError(Status.NOT_FOUND.withDescription("LookupByRid: " + e.getMessage()).asException());
+      if (!responded)
+        resp.onError(Status.NOT_FOUND.withDescription("LookupByRid: " + e.getMessage()).asException());
     } catch (Exception e) {
-      resp.onError(Status.INTERNAL.withDescription("LookupByRid: " + e.getMessage()).asException());
+      if (!responded)
+        resp.onError(Status.INTERNAL.withDescription("LookupByRid: " + e.getMessage()).asException());
     }
   }
 
@@ -1143,24 +1179,31 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       return;
     }
 
+    // Issue #6756 (2): guards each catch below against calling onError once onNext has already handed a
+    // response to the observer - see the identical guard on executeCommand (#6192) / createRecord.
+    boolean responded = false;
+
     if (txCtx != null) {
       // External transaction — execute on its dedicated thread to maintain thread-local state
       try {
         final Future<UpdateRecordResponse> future =
             submitToActiveTransaction(txCtx, () -> updateRecordInternal(req, txCtx.db));
         resp.onNext(future.get());
+        responded = true;
         resp.onCompleted();
       } catch (Exception e) {
         final Throwable cause = e instanceof ExecutionException && e.getCause() != null ? e.getCause() : e;
         LogManager.instance().log(this, Level.SEVERE, "ERROR in updateRecord (external tx)", cause);
-        if (cause instanceof RecordNotFoundException)
-          resp.onError(Status.NOT_FOUND.withDescription("Record not found: " + req.getRid()).asException());
-        else if (cause instanceof StatusRuntimeException sre)
-          // Preserve an explicit gRPC status (e.g. FAILED_PRECONDITION from requireTransactionStillActive)
-          // instead of masking it as INTERNAL, mirroring executeQuery/executeCommand/bulkInsert.
-          resp.onError(sre);
-        else
-          resp.onError(Status.INTERNAL.withDescription("UpdateRecord: " + cause.getMessage()).asException());
+        if (!responded) {
+          if (cause instanceof RecordNotFoundException)
+            resp.onError(Status.NOT_FOUND.withDescription("Record not found: " + req.getRid()).asException());
+          else if (cause instanceof StatusRuntimeException sre)
+            // Preserve an explicit gRPC status (e.g. FAILED_PRECONDITION from requireTransactionStillActive)
+            // instead of masking it as INTERNAL, mirroring executeQuery/executeCommand/bulkInsert.
+            resp.onError(sre);
+          else
+            resp.onError(Status.INTERNAL.withDescription("UpdateRecord: " + cause.getMessage()).asException());
+        }
       }
       return;
     }
@@ -1169,12 +1212,15 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     try {
       final Database db = getDatabase(req.getDatabase(), req.getCredentials());
       resp.onNext(updateRecordInternal(req, db));
+      responded = true;
       resp.onCompleted();
     } catch (RecordNotFoundException e) {
-      resp.onError(Status.NOT_FOUND.withDescription("Record not found: " + req.getRid()).asException());
+      if (!responded)
+        resp.onError(Status.NOT_FOUND.withDescription("Record not found: " + req.getRid()).asException());
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "ERROR in updateRecord", e);
-      resp.onError(Status.INTERNAL.withDescription("UpdateRecord: " + e.getMessage()).asException());
+      if (!responded)
+        resp.onError(Status.INTERNAL.withDescription("UpdateRecord: " + e.getMessage()).asException());
     }
   }
 
@@ -1324,24 +1370,31 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       return;
     }
 
+    // Issue #6756 (2): guards each catch below against calling onError once onNext has already handed a
+    // response to the observer - see the identical guard on executeCommand (#6192) / createRecord.
+    boolean responded = false;
+
     if (txCtx != null) {
       // External transaction — execute on its dedicated thread to maintain thread-local state
       try {
         final Future<DeleteRecordResponse> future =
             submitToActiveTransaction(txCtx, () -> deleteRecordInternal(req, txCtx.db));
         resp.onNext(future.get());
+        responded = true;
         resp.onCompleted();
       } catch (Exception e) {
         final Throwable cause = e instanceof ExecutionException && e.getCause() != null ? e.getCause() : e;
         LogManager.instance().log(this, Level.SEVERE, "ERROR in deleteRecord (external tx)", cause);
-        if (cause instanceof RecordNotFoundException)
-          resp.onError(Status.NOT_FOUND.withDescription("Record not found: " + req.getRid()).asException());
-        else if (cause instanceof StatusRuntimeException sre)
-          // Preserve an explicit gRPC status (e.g. FAILED_PRECONDITION from requireTransactionStillActive)
-          // instead of masking it as INTERNAL, mirroring executeQuery/executeCommand/bulkInsert.
-          resp.onError(sre);
-        else
-          resp.onError(Status.INTERNAL.withDescription("DeleteRecord: " + cause.getMessage()).asException());
+        if (!responded) {
+          if (cause instanceof RecordNotFoundException)
+            resp.onError(Status.NOT_FOUND.withDescription("Record not found: " + req.getRid()).asException());
+          else if (cause instanceof StatusRuntimeException sre)
+            // Preserve an explicit gRPC status (e.g. FAILED_PRECONDITION from requireTransactionStillActive)
+            // instead of masking it as INTERNAL, mirroring executeQuery/executeCommand/bulkInsert.
+            resp.onError(sre);
+          else
+            resp.onError(Status.INTERNAL.withDescription("DeleteRecord: " + cause.getMessage()).asException());
+        }
       }
       return;
     }
@@ -1350,14 +1403,17 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     try {
       final Database db = getDatabase(req.getDatabase(), req.getCredentials());
       resp.onNext(deleteRecordInternal(req, db));
+      responded = true;
       resp.onCompleted();
     } catch (RecordNotFoundException e) {
-      resp.onError(Status.NOT_FOUND.withDescription("Record not found: " + req.getRid()).asException());
+      if (!responded)
+        resp.onError(Status.NOT_FOUND.withDescription("Record not found: " + req.getRid()).asException());
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "ERROR in deleteRecord", e);
-      resp.onError(
-          Status.INTERNAL.withDescription("DeleteRecord: " + (e.getMessage() == null ? e.toString() : e.getMessage()))
-              .asException());
+      if (!responded)
+        resp.onError(
+            Status.INTERNAL.withDescription("DeleteRecord: " + (e.getMessage() == null ? e.toString() : e.getMessage()))
+                .asException());
     }
   }
 
@@ -1430,44 +1486,56 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         return;
       }
 
+      // Issue #6756 (2): guards the catch below against calling onError once onNext has already handed a
+      // response to the observer - see the identical guard on executeCommand (#6192) / createRecord.
+      boolean txResponded = false;
       try {
         final Future<ExecuteQueryResponse> future =
             submitToActiveTransaction(txCtx, () -> executeQueryInternal(request, txCtx.db));
         final ExecuteQueryResponse response = future.get();
         responseObserver.onNext(response);
+        txResponded = true;
         responseObserver.onCompleted();
       } catch (Exception e) {
         final Throwable cause = e instanceof ExecutionException && e.getCause() != null ? e.getCause() : e;
-        if (cause instanceof StatusRuntimeException sre) {
-          // Preserve an explicit gRPC status (e.g. RESOURCE_EXHAUSTED from the result cap, or the
-          // authz/authn status from getDatabase) instead of masking it as INTERNAL.
-          LogManager.instance().log(this, Level.FINE, "Query rejected: %s", sre, sre.getMessage());
-          responseObserver.onError(sre);
-        } else {
-          LogManager.instance().log(this, Level.SEVERE, "Error executing query: %s", cause, cause.getMessage());
-          responseObserver.onError(Status.INTERNAL
-              .withDescription("Query execution failed: " + cause.getMessage()).asException());
+        if (!txResponded) {
+          if (cause instanceof StatusRuntimeException sre) {
+            // Preserve an explicit gRPC status (e.g. RESOURCE_EXHAUSTED from the result cap, or the
+            // authz/authn status from getDatabase) instead of masking it as INTERNAL.
+            LogManager.instance().log(this, Level.FINE, "Query rejected: %s", sre, sre.getMessage());
+            responseObserver.onError(sre);
+          } else {
+            LogManager.instance().log(this, Level.SEVERE, "Error executing query: %s", cause, cause.getMessage());
+            responseObserver.onError(Status.INTERNAL
+                .withDescription("Query execution failed: " + cause.getMessage()).asException());
+          }
         }
       }
       return;
     }
 
     // No external transaction: run on the gRPC worker thread.
+    // Issue #6756 (2): guards each catch below against calling onError once onNext has already handed a
+    // response to the observer - see the identical guard on executeCommand (#6192) / createRecord.
+    boolean responded = false;
     Database database = null;
     try {
       database = getDatabase(request.getDatabase(), request.getCredentials());
       final ExecuteQueryResponse response = executeQueryInternal(request, database);
       responseObserver.onNext(response);
+      responded = true;
       responseObserver.onCompleted();
     } catch (final StatusRuntimeException e) {
       // Preserve the status code chosen by getDatabase (e.g. INVALID_ARGUMENT for a rejected
       // database name, PERMISSION_DENIED/UNAUTHENTICATED for authz/authn failures) instead of
       // masking it as INTERNAL.
       LogManager.instance().log(this, Level.FINE, "Query rejected: %s", e, e.getMessage());
-      responseObserver.onError(e);
+      if (!responded)
+        responseObserver.onError(e);
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error executing query: %s", e, e.getMessage());
-      responseObserver.onError(Status.INTERNAL.withDescription("Query execution failed: " + e.getMessage()).asException());
+      if (!responded)
+        responseObserver.onError(Status.INTERNAL.withDescription("Query execution failed: " + e.getMessage()).asException());
     }
   }
 
@@ -1633,6 +1701,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // Track whether we hold a reserved concurrency slot so the failure path releases it exactly once.
     boolean reserved = false;
     String owner = null;
+    // Issue #6756 (2): guards the catch below against calling onError once onNext has already handed a
+    // response to the observer - see the identical guard on executeCommand (#6192) / createRecord.
+    boolean responded = false;
 
     try {
       final Database database = getDatabase(reqDb, request.getCredentials());
@@ -1730,6 +1801,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           .setTimestamp(System.currentTimeMillis()).build();
 
       responseObserver.onNext(response);
+      responded = true;
       responseObserver.onCompleted();
     } catch (Throwable t) {
       // Shutdown the executor if it was created but not registered (prevents thread leak)
@@ -1748,7 +1820,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       LogManager.instance().log(this, Level.SEVERE, "Error beginning transaction: %s", cause, cause.getMessage());
       // Pass through an already-mapped status (e.g. UNAUTHENTICATED/PERMISSION_DENIED from getDatabase)
       // instead of masking it as INTERNAL, and preserve the exception type for everything else.
-      responseObserver.onError(GrpcErrorMapper.toStatusRuntimeException(cause, "Failed to begin transaction", ha()));
+      if (!responded)
+        responseObserver.onError(GrpcErrorMapper.toStatusRuntimeException(cause, "Failed to begin transaction", ha()));
     }
   }
 
@@ -1798,6 +1871,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       return;
     }
 
+    // Issue #6756 (2): guards the catch below against calling onError once onNext has already handed a
+    // response to the observer - see the identical guard on executeCommand (#6192) / createRecord.
+    boolean responded = false;
+
     try {
       LogManager.instance().log(this, Level.FINE, """
           commitTransaction(): committing txId=%s on db=%s (on dedicated \
@@ -1811,6 +1888,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       LogManager.instance().log(this, Level.FINE, "commitTransaction(): commit OK txId=%s", txId);
       rsp.onNext(CommitTransactionResponse.newBuilder().setSuccess(true).setCommitted(true).build());
+      responded = true;
       rsp.onCompleted();
     } catch (Throwable t) {
       Throwable cause = t instanceof ExecutionException && t.getCause() != null ? t.getCause() : t;
@@ -1820,7 +1898,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // ConcurrentModificationException/NeedRetryException stays ABORTED while a permanent commit-time
       // DuplicatedKeyException becomes ALREADY_EXISTS (not retried forever), carrying the exception class
       // name so the client rebuilds the exact type.
-      rsp.onError(GrpcErrorMapper.toStatusRuntimeException(cause, "Commit failed", ha()));
+      // Issue #6756 (2): guard against a concurrent client cancel making onCompleted() throw above and
+      // this catch calling onError on an already-closed call - see the identical guard on executeCommand
+      // (#6192) / createRecord.
+      if (!responded)
+        rsp.onError(GrpcErrorMapper.toStatusRuntimeException(cause, "Commit failed", ha()));
     } finally {
       // The transaction was claimed above (removed from activeTransactions), so release its concurrency slot and
       // shut the executor down exactly once here.
@@ -1873,6 +1955,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       return;
     }
 
+    // Issue #6756 (2): guards the catch below against calling onError once onNext has already handed a
+    // response to the observer - see the identical guard on executeCommand (#6192) / createRecord.
+    boolean responded = false;
+
     try {
       LogManager.instance().log(this, Level.FINE, """
           rollbackTransaction(): rolling back txId=%s on db=%s (on dedicated\
@@ -1886,12 +1972,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       LogManager.instance().log(this, Level.FINE, "rollbackTransaction(): rollback OK txId=%s", txId);
       rsp.onNext(RollbackTransactionResponse.newBuilder().setSuccess(true).setRolledBack(true).build());
+      responded = true;
       rsp.onCompleted();
     } catch (Throwable t) {
       Throwable cause = t instanceof ExecutionException && t.getCause() != null ? t.getCause() : t;
       LogManager.instance().log(this, Level.FINE, "rollbackTransaction(): rollback FAILED txId=%s err=%s", txId,
           cause.toString(), cause);
-      rsp.onError(Status.ABORTED.withDescription("Rollback failed: " + cause.getMessage()).asException());
+      if (!responded)
+        rsp.onError(Status.ABORTED.withDescription("Rollback failed: " + cause.getMessage()).asException());
     } finally {
       // The transaction was claimed above (removed from activeTransactions), so release its concurrency slot and
       // shut the executor down exactly once here.
@@ -2448,6 +2536,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   public void bulkInsert(BulkInsertRequest req, StreamObserver<InsertSummary> resp) {
     final long started = System.currentTimeMillis();
 
+    // Issue #6756 (2): guards every catch below against calling onError once onNext has already handed a
+    // response to the observer - see the identical guard on executeCommand (#6192) / createRecord.
+    boolean responded = false;
+
     ProtocolContext.set("grpc");
     try {
       final boolean hasTx = req.hasTransaction();
@@ -2481,29 +2573,34 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             }
           }).get();
           resp.onNext(summary);
+          responded = true;
           resp.onCompleted();
         } catch (final Exception e) {
           // Catches both a Future.get() ExecutionException (wrapping a StatusRuntimeException thrown inside
           // the task) and a bare StatusRuntimeException thrown synchronously by submitToActiveTransaction
           // when the executor was already shut down (RejectedExecutionException case, issue #6709).
           final Throwable cause = e instanceof ExecutionException && e.getCause() != null ? e.getCause() : e;
-          if (cause instanceof StatusRuntimeException sre)
-            // Preserve an explicit gRPC status (e.g. FAILED_PRECONDITION from requireTransactionStillActive)
-            // instead of masking it as INTERNAL, mirroring executeQuery/executeCommand.
-            resp.onError(sre);
-          else
-            resp.onError(Status.INTERNAL.withDescription("bulkInsert: " + cause.getMessage()).asException());
+          if (!responded) {
+            if (cause instanceof StatusRuntimeException sre)
+              // Preserve an explicit gRPC status (e.g. FAILED_PRECONDITION from requireTransactionStillActive)
+              // instead of masking it as INTERNAL, mirroring executeQuery/executeCommand.
+              resp.onError(sre);
+            else
+              resp.onError(Status.INTERNAL.withDescription("bulkInsert: " + cause.getMessage()).asException());
+          }
         }
       } else {
         try (InsertContext ctx = new InsertContext(opts)) {
           Counts totals = insertRows(ctx, req.getRowsList().iterator());
           ctx.flushCommit(true);
           resp.onNext(ctx.summary(totals, started));
+          responded = true;
           resp.onCompleted();
         }
       }
     } catch (Exception e) {
-      resp.onError(Status.INTERNAL.withDescription("bulkInsert: " + e.getMessage()).asException());
+      if (!responded)
+        resp.onError(Status.INTERNAL.withDescription("bulkInsert: " + e.getMessage()).asException());
     } finally {
       ProtocolContext.clear();
     }
@@ -2621,6 +2718,15 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             // Issue #4644: a later chunk may be dispatched on a different pool thread than the one
             // that began the transaction; re-bind the transaction to this thread before inserting.
             ctx.bindToCurrentThread();
+
+            // Issue #6755: resolveAuthorizedTransaction() (via lookupActiveTransaction()) touches the
+            // external transaction only on the first chunk. A stream whose active duration between
+            // chunks exceeds txMaxIdleMs was reaped mid-stream even though the client was still
+            // sending. Touch it on every subsequent chunk too, matching every other transaction-scoped
+            // RPC (each of which calls resolveAuthorizedTransaction/touch() per call).
+            final TransactionContext extTxCtx = extTxCtxRef.get();
+            if (extTxCtx != null)
+              extTxCtx.touch();
 
             // -------- Subsequent chunks: optionally validate option consistency --------
             if (c.hasOptions()) {
@@ -3809,6 +3915,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     if (o instanceof Boolean v)
       return dbgEnc("toGrpcValue", o, b.setBoolValue(v).build(), null);
     if (o instanceof Integer v)
+      return dbgEnc("toGrpcValue", o, b.setInt32Value(v).build(), null);
+    if (o instanceof Short v)
+      return dbgEnc("toGrpcValue", o, b.setInt32Value(v).build(), null);
+    if (o instanceof Byte v)
       return dbgEnc("toGrpcValue", o, b.setInt32Value(v).build(), null);
     if (o instanceof Long v)
       return dbgEnc("toGrpcValue", o, b.setInt64Value(v).build(), null);
