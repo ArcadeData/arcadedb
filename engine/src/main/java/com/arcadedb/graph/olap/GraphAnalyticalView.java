@@ -100,8 +100,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private static final int MAX_CONCURRENT_BUILDS = Math.max(2, Runtime.getRuntime().availableProcessors());
 
   /**
-   * Returned by {@link #countEdgesBetween} when the overlay makes the multiplicity unknowable, which
-   * the {@link com.arcadedb.graph.GraphTraversalProvider} contract spells as any negative value.
+   * The "multiplicity unknowable" answer, which the {@link com.arcadedb.graph.GraphTraversalProvider}
+   * contract spells as any negative value. Still returned by {@link #getMeanEdgesPerConnectedPair}; since
+   * issue #6775 an active delta overlay is no longer a reason for {@link #countEdgesBetween} to give it,
+   * because a pair the overlay has deletions for is now counted exactly (see {@link #countBetweenForType}).
    */
   private static final long MULTIPLICITY_UNKNOWN = -1L;
 
@@ -921,7 +923,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         if (csr != null)
           total += countDirectional(snap, csr, nodeId, direction, edgeType);
         else {
-          // No base CSR but overlay may have edges for this type
+          // No base CSR but overlay may have edges for this type. Nothing to subtract here: the overlay's
+          // deleted counts are an exclusion budget spent against a base CSR run, and there is no base run
+          // for this type. An edge added and then deleted within the same window is withdrawn from the
+          // added index by DeltaOverlay.merge() rather than masked (issue #6775), so what is left is
+          // already the live set.
           final DeltaOverlay ov = snap.overlay;
           if (ov != null) {
             if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH)
@@ -1032,8 +1038,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   /**
-   * Counts the edges joining nodeA to nodeB, optionally filtered by edge type, or a negative value
-   * when the delta overlay makes the count unknowable (see {@link #countBetweenForType}).
+   * Counts the edges joining nodeA to nodeB, optionally filtered by edge type. A negative value means
+   * the count is unknowable; since issue #6775 a delta overlay is no longer a reason for that - a pair
+   * the overlay has deletions for is counted exactly, in agreement with {@link #getVertices} and
+   * {@link #isConnectedTo} rather than against them (see {@link #countBetweenForType}) - but the
+   * "negative means unknown" branch below stays, because it is the contract
+   * {@link com.arcadedb.graph.GraphTraversalProvider} publishes and a future edge type may need it.
    * <p>
    * This is the multiplicity {@link #isConnectedTo} collapses to a boolean, and a pattern
    * relationship matches once per edge, so a Cypher hop between two pinned vertices needs it rather
@@ -2215,9 +2225,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       }
     }
 
-    // Check overlay added edges. Same known gap as getNeighborsFromCSR (issue #6775): not filtered
-    // against deletedEdgesPerType, so an edge added and deleted within the same overlay window
-    // before compaction is still reported connected here.
+    // Check overlay added edges. No filtering against deletedEdgesPerType is needed - or correct - here:
+    // that map is the exclusion budget for the BASE CSR run above and holds only deletions of edges the
+    // overlay never added itself, because an edge added and then deleted within the same window is
+    // withdrawn from the added index at merge time instead (issue #6775). Anything still listed here is
+    // live.
     if (ov != null) {
       if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
         for (final int neighbor : ov.getAddedOutNeighbors(nodeA, edgeType))
@@ -2234,26 +2246,26 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   /**
-   * Counts the edges of one type joining nodeA to nodeB, or {@link #MULTIPLICITY_UNKNOWN} when the
-   * overlay cannot say how many of them survive.
+   * Counts the edges of one type joining nodeA to nodeB.
    * <p>
    * A self-loop is held by both adjacency lists of its vertex, so a BOTH walk would see it twice; the
    * backward side is skipped when the two nodes are the same, which is what the OLTP expansion
    * achieves by de-duplicating on edge identity.
    * <p>
-   * <b>Why a deleted pair is still answered "unknown" rather than the exact survivor count.</b>
-   * {@link DeltaOverlay} now tracks an exact per-pair deleted count (issue #6769), which is exactly
-   * what {@link #isConnectedTo} and {@link #getNeighborIds} compare against the base CSR's occurrence
-   * count for the pair to keep the surviving parallel edges discoverable. This method could mirror that
-   * arithmetic and return an exact number for the base-CSR side, but the overlay's ADDED neighbours are
-   * not filtered against deletedEdgesPerType at all yet (issue #6775), so a masked pair's added-edge
-   * contribution here has no safe way to exclude a since-deleted add. A pattern hop turns the count
-   * directly into rows, and getting that arithmetic wrong silently produces the wrong row count rather
-   * than an exception - so it keeps the conservative "unknown" answer here until #6775 closes that gap,
-   * and leaves
-   * {@code com.arcadedb.query.opencypher.executor.operators.GAVExpandInto}'s existing OLTP fallback
-   * to do the exact counting, which it already had to have for the "vertex not in the GAV mapping"
-   * case anyway.
+   * <b>Why a pair with overlay deletions is now counted exactly rather than answered "unknown".</b> The
+   * count is the same arithmetic {@link #isConnectedTo} and {@link #getNeighborIds} already run, only
+   * kept as a number instead of collapsed to a boolean: the base CSR's occurrence count for the pair
+   * minus the overlay's exact per-pair deleted count (issue #6769), plus the overlay's added occurrences.
+   * It became safe once {@link DeltaOverlay#merge} stopped recording a pair deletion for an edge the same
+   * overlay window had added (issue #6775) - the deleted count is now exclusively a budget against the
+   * BASE run, so there is no double-spend between the two terms and no since-deleted add left to exclude
+   * from the second. Answering "unknown" here while {@link #getVertices} happily lists the pair as a live
+   * neighbour was the very inconsistency #6775 is about, so the two agree instead.
+   * <p>
+   * The subtraction is clamped at zero rather than trusted to stay non-negative: a budget wider than the
+   * base run is exactly what the two documented overlay gaps (#4588's pair-level re-application dedup and
+   * #6777's RID reuse) can produce, and a negative contribution would corrupt the sum for the OTHER edge
+   * types {@link #countEdgesBetween} adds it to.
    */
   private long countBetweenForType(final Snapshot snap, final int nodeA, final int nodeB,
       final Vertex.DIRECTION direction, final String edgeType) {
@@ -2265,20 +2277,19 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     final boolean walkBackward = (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH)
         && !(direction == Vertex.DIRECTION.BOTH && selfLoop);
 
-    if (ov != null
-        && ((walkForward && ov.isEdgeDeleted(edgeType, nodeA, nodeB))
-        || (walkBackward && ov.isEdgeDeleted(edgeType, nodeB, nodeA))))
-      return MULTIPLICITY_UNKNOWN;
-
     long count = 0;
 
     if (csr != null && nodeAInBase) {
-      if (walkForward)
-        count += equalRangeCount(csr.getForwardNeighbors(), csr.getForwardOffsets()[nodeA],
+      if (walkForward) {
+        final int occurrences = equalRangeCount(csr.getForwardNeighbors(), csr.getForwardOffsets()[nodeA],
             csr.getForwardOffsets()[nodeA + 1], nodeB);
-      if (walkBackward)
-        count += equalRangeCount(csr.getBackwardNeighbors(), csr.getBackwardOffsets()[nodeA],
+        count += Math.max(0, occurrences - (ov != null ? ov.countDeletedEdges(edgeType, nodeA, nodeB) : 0));
+      }
+      if (walkBackward) {
+        final int occurrences = equalRangeCount(csr.getBackwardNeighbors(), csr.getBackwardOffsets()[nodeA],
             csr.getBackwardOffsets()[nodeA + 1], nodeB);
+        count += Math.max(0, occurrences - (ov != null ? ov.countDeletedEdges(edgeType, nodeB, nodeA) : 0));
+      }
     }
 
     if (ov != null) {
@@ -2417,11 +2428,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       }
     }
 
-    // KNOWN GAP (issue #6775): unlike baseOut/baseIn above, the overlay-added neighbours below are
-    // not filtered against deletedEdgesPerType. An edge added and then deleted within the same
-    // not-yet-compacted overlay window still surfaces here. countEdgesBetween is unaffected - it
-    // answers "unknown" for any pair with a recorded deletion before it looks at added neighbours -
-    // but getNeighborIds/getVertices/isConnectedTo's overlay-added branch is not.
+    // Unlike baseOut/baseIn above, the overlay-added neighbours below need no exclusion pass: the deleted
+    // counts are the budget for the base CSR run and hold only deletions of edges the overlay never added,
+    // an edge added and then deleted within the same not-yet-compacted window having been withdrawn from
+    // the added index at merge time instead (issue #6775).
     int[] ovOut = EMPTY_INT;
     int[] ovIn = EMPTY_INT;
     if (ov != null) {

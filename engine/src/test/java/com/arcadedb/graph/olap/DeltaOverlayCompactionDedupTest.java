@@ -158,8 +158,13 @@ class DeltaOverlayCompactionDedupTest {
   }
 
   /**
-   * Delete then re-add of the same edge within a single buffered delta must keep the add for the same
-   * reason: the deletion would otherwise erase the base edge.
+   * Delete of an edge then add of a replacement edge on the same pair, within a single buffered delta:
+   * the add must be kept for the same reason, the deletion would otherwise erase the base edge.
+   * <p>
+   * The two edges carry DIFFERENT identities, because that is the only shape the engine can produce - a
+   * record cannot be re-created under the RID of one deleted in the same transaction. Same-RID in both
+   * lists means something else entirely, and means it unambiguously: an edge created and deleted inside
+   * one transaction, which {@code merge()} cancels rather than masks (issue #6775).
    */
   @Test
   void deleteThenReAddWithinSingleDeltaReinstatesEdge() {
@@ -168,7 +173,7 @@ class DeltaOverlayCompactionDedupTest {
 
     final TxDelta delta = new TxDelta();
     delta.deletedEdges.add(new TxDelta.EdgeDelta(EDGE_TYPE, rid(0), rid(1), rid(10)));
-    delta.addedEdges.add(new TxDelta.EdgeDelta(EDGE_TYPE, rid(0), rid(1), rid(10)));
+    delta.addedEdges.add(new TxDelta.EdgeDelta(EDGE_TYPE, rid(0), rid(1), rid(11)));
 
     final DeltaOverlay merged = empty.merge(delta, mapping, csrWithEdge(2, 0, 1));
     assertThat(merged.getAddedOutNeighbors(0, EDGE_TYPE)).containsExactly(1);
@@ -191,7 +196,7 @@ class DeltaOverlayCompactionDedupTest {
 
     final TxDelta delta = new TxDelta();
     delta.deletedEdges.add(new TxDelta.EdgeDelta(EDGE_TYPE, rid(0), rid(1), rid(10)));
-    delta.addedEdges.add(new TxDelta.EdgeDelta(EDGE_TYPE, rid(0), rid(1), rid(10)));
+    delta.addedEdges.add(new TxDelta.EdgeDelta(EDGE_TYPE, rid(0), rid(1), rid(11)));
 
     final DeltaOverlay merged = empty.merge(delta, mapping, csr);
 
