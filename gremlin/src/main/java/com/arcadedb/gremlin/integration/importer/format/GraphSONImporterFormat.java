@@ -290,8 +290,13 @@ public class GraphSONImporterFormat extends CSVImporterFormat {
   private Object extractTypedValue(final Object value) {
     if (value instanceof JSONObject json) {
       if (json.has("@type") && json.has("@value")) {
-        final String type = json.getString("@type");
-        final Object innerValue = json.get("@value");
+        final String type = json.getString("@type", null);
+        final Object innerValue = json.get("@value", null);
+
+        // A JSON null on either side carries nothing to convert, and the conversions below would call toString() on
+        // it and abort the whole import. Drop the value instead; the caller already treats null as "no value".
+        if (type == null || innerValue == null)
+          return null;
 
         return switch (type) {
           case "g:Int32" -> innerValue instanceof Number ? ((Number) innerValue).intValue() : Integer.parseInt(innerValue.toString());
