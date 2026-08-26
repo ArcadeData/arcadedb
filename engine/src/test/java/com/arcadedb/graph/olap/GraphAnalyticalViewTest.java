@@ -3941,10 +3941,11 @@ class GraphAnalyticalViewTest extends TestHelper {
 
   /**
    * Regression for #6775: an edge added and then deleted within the same not-yet-compacted overlay
-   * window (SYNCHRONOUS mode) must not surface as a live neighbour. The overlay's added-edge index is
-   * append-only — an edge is never removed from {@code addedEdgesPerType} — so
-   * {@link #getNeighborIds}/{@link #getVertices} and {@link #isConnectedTo} must exclude added
-   * neighbours whose pair the overlay also records as deleted. The base-CSR case is covered by
+   * window (SYNCHRONOUS mode) must not surface as a live neighbour. The overlay's added-edge index used
+   * to be append-only - an edge was never removed from {@code addedEdgesPerType} - so the phantom kept
+   * being reported by {@code getNeighborIds}/{@code getVertices}/{@code isConnectedTo}, while
+   * {@code countEdgesBetween} answered the same pair as deleted. The add is now withdrawn at merge time
+   * instead, so every read path agrees. The base-CSR case is covered by
    * {@link #getVerticesExcludesEdgesDeletedInOverlay}; this covers the overlay-added path.
    */
   @Test
@@ -3990,6 +3991,126 @@ class GraphAnalyticalViewTest extends TestHelper {
     // Counts must agree with the neighbour lists.
     assertThat(gav.countEdges(aliceId, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(0);
     assertThat(gav.countEdges(bobId, Vertex.DIRECTION.IN, "FOLLOWS")).isEqualTo(0);
+    // ...including the multiplicity, which no longer has to answer "unknown" (a negative value) for a
+    // pair the overlay has touched: withdrawing the add leaves no deletion on record at all.
+    assertThat(gav.countEdgesBetween(aliceId, bobId, Vertex.DIRECTION.OUT, "FOLLOWS")).isZero();
+    assertThat(gav.countEdgesBetween(bobId, aliceId, Vertex.DIRECTION.IN, "FOLLOWS")).isZero();
+
+    gav.drop();
+  }
+
+  /**
+   * The shape issue #6775 was reported with: the edge is created AND deleted inside ONE transaction, so
+   * both facts reach the overlay in a single {@code TxDelta}. It is the same bug, but it exercises the
+   * within-one-delta ordering (adds are merged before deletes) rather than the across-windows one above.
+   */
+  @Test
+  void edgeCreatedAndDeletedInTheSameTransactionIsNotALiveNeighbour() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("add-del-same-tx")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+
+    final int aliceId = gav.getNodeId(alice.getIdentity());
+
+    // Carol is created in the same transaction too, so she is an OVERFLOW node: the edge's target is not
+    // in the base mapping and there is no base CSR run for the pair to fall back on.
+    database.begin();
+    final MutableVertex carol = database.newVertex("Person").set("name", "Carol").save();
+    alice.newEdge("FOLLOWS", carol).delete();
+    database.commit();
+
+    final int carolId = gav.getNodeId(carol.getIdentity());
+    assertThat(carolId).isNotNegative();
+
+    assertThat(gav.getNeighborIds(aliceId, Vertex.DIRECTION.OUT, "FOLLOWS")).isEmpty();
+    assertThat(gav.getVertices(carolId, Vertex.DIRECTION.IN, "FOLLOWS")).isEmpty();
+    assertThat(gav.isConnectedTo(aliceId, carolId, Vertex.DIRECTION.OUT, "FOLLOWS")).isFalse();
+    assertThat(gav.isConnectedTo(aliceId, carolId, Vertex.DIRECTION.BOTH, "FOLLOWS")).isFalse();
+    assertThat(gav.countEdges(aliceId, Vertex.DIRECTION.OUT, "FOLLOWS")).isZero();
+    assertThat(gav.countEdges(carolId, Vertex.DIRECTION.BOTH, "FOLLOWS")).isZero();
+    assertThat(gav.countEdgesBetween(aliceId, carolId, Vertex.DIRECTION.OUT, "FOLLOWS")).isZero();
+
+    gav.drop();
+  }
+
+  /**
+   * #6775 meets #6769 on the overlay-added side: two PARALLEL edges added in the same overlay window,
+   * only one of them deleted. The survivor must stay a live neighbour and the multiplicity must be 1 -
+   * withdrawing the deleted add must not take its sibling with it, and must not mask the pair.
+   * <p>
+   * Also pins the interaction with a base edge on the same pair: the base occurrence is untouched by a
+   * deletion that belongs to an overlay-added edge, which is precisely the budget the old pair-keyed
+   * masking would have spent in the wrong place.
+   */
+  @Test
+  void deletingOneOfSeveralOverlayAddedParallelEdgesLeavesTheOthersLive() {
+    database.getSchema().createVertexType("Party");
+    database.getSchema().createEdgeType("PAID");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Party").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Party").set("name", "B").save();
+    a.newEdge("PAID", b, "seq", 0); // one edge in the BASE CSR
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("parallel-added-partial-delete")
+        .withVertexTypes("Party")
+        .withEdgeTypes("PAID")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+
+    final int idA = gav.getNodeId(a.getIdentity());
+    final int idB = gav.getNodeId(b.getIdentity());
+    assertThat(gav.countEdgesBetween(idA, idB, Vertex.DIRECTION.OUT, "PAID")).isEqualTo(1);
+
+    // Two more parallel edges, added within the overlay window.
+    database.begin();
+    a.newEdge("PAID", b, "seq", 1);
+    a.newEdge("PAID", b, "seq", 2);
+    database.commit();
+
+    assertThat(gav.getNeighborIds(idA, Vertex.DIRECTION.OUT, "PAID")).containsExactly(idB, idB, idB);
+    assertThat(gav.countEdgesBetween(idA, idB, Vertex.DIRECTION.OUT, "PAID")).isEqualTo(3);
+
+    // Delete exactly one of the two overlay-added edges, still within the same window.
+    database.begin();
+    for (final var edge : a.getIdentity().asVertex().getEdges(Vertex.DIRECTION.OUT, "PAID"))
+      if (Integer.valueOf(1).equals(edge.get("seq"))) {
+        edge.delete();
+        break;
+      }
+    database.commit();
+
+    // The base edge and the surviving added edge are both still live, and every read path agrees.
+    assertThat(gav.getNeighborIds(idA, Vertex.DIRECTION.OUT, "PAID")).containsExactly(idB, idB);
+    assertThat(gav.getVertices(idB, Vertex.DIRECTION.IN, "PAID")).containsExactly(idA, idA);
+    assertThat(gav.isConnectedTo(idA, idB, Vertex.DIRECTION.OUT, "PAID")).isTrue();
+    assertThat(gav.countEdges(idA, Vertex.DIRECTION.OUT, "PAID")).isEqualTo(2);
+    assertThat(gav.countEdgesBetween(idA, idB, Vertex.DIRECTION.OUT, "PAID")).isEqualTo(2);
+
+    // Deleting the BASE edge as well leaves only the surviving added edge.
+    database.begin();
+    for (final var edge : a.getIdentity().asVertex().getEdges(Vertex.DIRECTION.OUT, "PAID"))
+      if (Integer.valueOf(0).equals(edge.get("seq"))) {
+        edge.delete();
+        break;
+      }
+    database.commit();
+
+    assertThat(gav.getNeighborIds(idA, Vertex.DIRECTION.OUT, "PAID")).containsExactly(idB);
+    assertThat(gav.countEdges(idA, Vertex.DIRECTION.OUT, "PAID")).isEqualTo(1);
+    assertThat(gav.countEdgesBetween(idA, idB, Vertex.DIRECTION.OUT, "PAID")).isEqualTo(1);
 
     gav.drop();
   }
@@ -5617,13 +5738,17 @@ class GraphAnalyticalViewTest extends TestHelper {
    * The overlay tracks a per-pair COUNT of deleted edges, not merely a deleted/not-deleted flag, so deleting
    * one of several parallel edges leaves the others discoverable: {@code isConnectedTo} and
    * {@code getNeighborIds} still report the surviving edges, only the deleted one is excluded (issue #6769 -
-   * before that fix, any deletion touching a pair masked every parallel edge between it). A count cannot
-   * absorb that the way a boolean or a neighbour list can, because the caller turns it into rows and an
-   * exact base-CSR-plus-overlay count would have to special-case every deletion combination; it says
-   * "unknown" instead and leaves the caller to walk the edge list (issue #5663).
+   * before that fix, any deletion touching a pair masked every parallel edge between it).
+   * <p>
+   * {@code countEdgesBetween} used to answer "unknown" (a negative value) for such a pair, because the
+   * overlay's ADDED neighbours were not deletion-aware and it had no safe way to exclude a since-deleted
+   * add from the second term. Since issue #6775 an add withdrawn in the same overlay window leaves no
+   * deletion on record at all, so the deleted count is purely a budget against the base run and the exact
+   * survivor count is just the arithmetic {@code isConnectedTo} already runs. It answers exactly now, in
+   * agreement with the neighbour list on the same view rather than against it.
    */
   @Test
-  void countEdgesBetweenAnswersUnknownWhenTheOverlayMasksAPair() {
+  void countEdgesBetweenCountsTheSurvivorsWhenTheOverlayDeletesOneOfSeveralParallelEdges() {
     database.getSchema().createVertexType("Party");
     database.getSchema().createEdgeType("PAID");
 
@@ -5658,9 +5783,9 @@ class GraphAnalyticalViewTest extends TestHelper {
       }
     database.commit();
 
-    // countEdgesBetween cannot state the exact survivor count, so it says so...
-    assertThat(gav.countEdgesBetween(idA, idB, Vertex.DIRECTION.OUT, "PAID")).isNegative();
-    // ...but the pair is still connected via its two surviving parallel edges, and both are still
+    // The two survivors are counted exactly, and the count agrees with the neighbour list below
+    assertThat(gav.countEdgesBetween(idA, idB, Vertex.DIRECTION.OUT, "PAID")).isEqualTo(2);
+    // the pair is still connected via its two surviving parallel edges, and both are still
     // discoverable - only the deleted one is excluded, not the whole pair
     assertThat(gav.isConnectedTo(idA, idB, Vertex.DIRECTION.OUT, "PAID")).isTrue();
     // A's PAID out-neighbours: 2 surviving A->B edges plus the untouched A->C edge
