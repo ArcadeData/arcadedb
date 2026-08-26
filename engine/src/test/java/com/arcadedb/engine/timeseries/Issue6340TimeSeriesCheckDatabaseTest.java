@@ -490,7 +490,9 @@ class Issue6340TimeSeriesCheckDatabaseTest extends TestHelper {
     assertThat(row.<Long>getProperty("totalTimeSeriesTypes")).as("the broken type is still counted").isEqualTo(1L);
     assertThat(corruptedTypesOf(row)).containsExactly("Cpu");
     assertThat(warningsOf(row)).anyMatch(
-        w -> w.contains("timeseries 'Cpu'") && w.contains("storage engine is not initialised"));
+        w -> w.contains("timeseries 'Cpu'") && w.contains("storage engine is not initialised")
+            // The reason names the file, so an operator does not have to go hunting through the server log for it.
+            && w.contains("Cpu_shard_0.ts.sealed"));
   }
 
   /** A write against the broken type fails with a message naming the type, not with an NPE. */
