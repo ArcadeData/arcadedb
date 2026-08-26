@@ -143,8 +143,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     final JSONObject queryJson = new JSONObject(query);
 
     final String collection = queryJson.getString("collection");
-    final int numberToSkip = queryJson.has("numberToSkip") ? queryJson.getInt("numberToSkip") : 0;
-    final int numberToReturn = queryJson.has("numberToSkip") ? queryJson.getInt("numberToReturn") : 0;
+    final int numberToSkip = queryJson.getInt("numberToSkip", 0);
+    final int numberToReturn = queryJson.getInt("numberToReturn", 0);
     final JSONObject q = queryJson.getJSONObject("query");
 
     final Document transformedQuery = json2Document(q);
@@ -423,12 +423,24 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   private Document find(final Document document) throws MongoServerException {
     final Document filter = (Document) document.get("filter");
+    final Document sort = (Document) document.get("sort");
     // A missing/0 limit means "no limit" (a -1 sentinel here would be interpreted as a legacy single-batch limit of 1)
     final int limit = this.getOptionalNumber(document, "limit", 0);
     final int skip = this.getOptionalNumber(document, "skip", 0);
     final String collectionName = (String) document.get("find");
 
-    final MongoQuery mongoQuery = new MongoQuery(null, null, collectionName, skip, limit, filter, null);
+    // MongoDBCollectionWrapper#handleQuery(QueryParameters) only ever reads an order-by out of the legacy
+    // "$orderBy" wire modifier embedded in the query document itself; the modern find command's own "sort" field
+    // is otherwise never consulted. Thread it through using that same convention.
+    final Document queryPayload;
+    if (sort != null && !sort.isEmpty()) {
+      queryPayload = new Document();
+      queryPayload.put("$query", filter != null ? filter : new Document());
+      queryPayload.put("$orderBy", sort);
+    } else
+      queryPayload = filter;
+
+    final MongoQuery mongoQuery = new MongoQuery(null, null, collectionName, skip, limit, queryPayload, null);
 
     final QueryResult result = handleQuery(mongoQuery);
 
@@ -628,7 +640,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     }
 
     final ObjectId id = new ObjectId();
-    record.set("_id", toHexString(id));
+    record.set("_id", id.getHexData());
     record.save();
     return id;
   }
@@ -751,16 +763,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         converted.add(toMapValue(item));
       return converted;
     } else if (value instanceof ObjectId id)
-      return toHexString(id);
+      return id.getHexData();
     return value;
-  }
-
-  private static String toHexString(final ObjectId id) {
-    final byte[] bytes = id.toByteArray();
-    final StringBuilder s = new StringBuilder(bytes.length * 2);
-    for (final byte b : bytes)
-      s.append("%02x".formatted(b));
-    return s.toString();
   }
 
   private Document responseOk() {

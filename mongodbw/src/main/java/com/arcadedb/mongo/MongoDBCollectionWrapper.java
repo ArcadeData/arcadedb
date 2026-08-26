@@ -230,18 +230,9 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
 
       for (final Map.Entry<String, Object> p : d.entrySet()) {
         final Object value = p.getValue();
-        if (value instanceof ObjectId id) {
-          final byte[] var2 = id.toByteArray();
-          final int var3 = var2.length;
-
-          final StringBuilder s = new StringBuilder();
-          for (int var4 = 0; var4 < var3; ++var4) {
-            final byte b = var2[var4];
-            s.append("%02x".formatted(b));
-          }
-
-          record.set(p.getKey(), s.toString());
-        } else
+        if (value instanceof ObjectId id)
+          record.set(p.getKey(), id.getHexData());
+        else
           record.set(p.getKey(), value);
       }
 
@@ -325,18 +316,24 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   private Iterable<Document> queryDocuments(final Document query, final Document orderBy, final int numberToSkip, final int numberToReturn) {
     final List<Document> result = new ArrayList<>();
 
-    if (query == null || query.isEmpty()) {
+    final boolean hasFilter = query != null && !query.isEmpty();
+    final boolean hasOrderBy = orderBy != null && !orderBy.isEmpty();
+
+    if (!hasFilter && !hasOrderBy) {
       // SCAN
       MongoDBToSqlTranslator.fillResultSet(numberToSkip, numberToReturn, result, database.iterateType(collectionName, false));
     } else {
-      // EXECUTE A SQL QUERY
+      // EXECUTE A SQL QUERY. A sort-only find() (no filter) still has to reach here rather than the scan above,
+      // otherwise the order-by would be silently dropped.
       final Map<String, Object> params = new HashMap<>();
-      final StringBuilder sql = new StringBuilder("select from ").append(Identifier.quote(collectionName)).append(" where ");
+      final StringBuilder sql = new StringBuilder("select from ").append(Identifier.quote(collectionName));
 
-      MongoDBToSqlTranslator.buildExpression(sql, params, query);
+      if (hasFilter) {
+        sql.append(" where ");
+        MongoDBToSqlTranslator.buildExpression(sql, params, query);
+      }
 
-      // an empty $orderBy would otherwise leave a dangling "order by" with nothing to sort on, which does not parse
-      if (orderBy != null && !orderBy.isEmpty()) {
+      if (hasOrderBy) {
         sql.append(" order by ");
         int i = 0;
         for (final String p : orderBy.keySet()) {

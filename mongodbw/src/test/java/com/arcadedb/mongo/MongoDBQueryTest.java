@@ -75,4 +75,36 @@ class MongoDBQueryTest {
       assertThat((Integer) doc.getProperty("id")).isEqualTo(i);
     }
   }
+
+  /**
+   * Regression test for issue #6748 (2): {@code numberToReturn} used to be read only when {@code numberToSkip} was
+   * also present in the request JSON, so a {@code numberToReturn}-only request silently ignored the limit and
+   * returned every matching document instead.
+   */
+  @Test
+  void numberToReturnIsHonoredWithoutNumberToSkip() {
+    int count = 0;
+    for (final ResultSet resultset = database.query("mongo",
+        "{ collection: 'MongoDBCollection', numberToReturn: 3, query: { name: { $eq: 'Jay' } } }"); resultset.hasNext(); ) {
+      resultset.next();
+      count++;
+    }
+    assertThat(count).isEqualTo(3);
+  }
+
+  /**
+   * Regression test for issue #6748 (2): a {@code numberToSkip}-only request used to read {@code numberToReturn}
+   * under the wrong JSON key, so {@code getInt} threw {@code JSONException} on the missing key and failed the
+   * whole query instead of treating the limit as unset.
+   */
+  @Test
+  void numberToSkipAloneDoesNotThrow() {
+    int count = 0;
+    for (final ResultSet resultset = database.query("mongo",
+        "{ collection: 'MongoDBCollection', numberToSkip: 2, query: { name: { $eq: 'Jay' } } }"); resultset.hasNext(); ) {
+      resultset.next();
+      count++;
+    }
+    assertThat(count).isEqualTo(8);
+  }
 }
