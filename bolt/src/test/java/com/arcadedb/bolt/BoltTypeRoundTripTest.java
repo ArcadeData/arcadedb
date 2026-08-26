@@ -29,7 +29,6 @@ import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -84,7 +83,7 @@ class BoltTypeRoundTripTest {
 
   @Test
   @DisplayName("[TYPE-011] CypherDuration serializes as a native Bolt Duration structure")
-  void type011_durationNative() throws IOException {
+  void type011_durationNative() throws Exception {
     // duration('P1DT2H30M') -> months=0, days=1, seconds=9000, nanos=0
     final CypherDuration d = new CypherDuration(0, 1, 9000, 0);
     final Object out = BoltStructureMapper.toPackStreamValue(d);
@@ -102,7 +101,7 @@ class BoltTypeRoundTripTest {
 
   @Test
   @DisplayName("[TYPE-012] cartesian Point serializes as a native Bolt Point2D structure")
-  void type012_cartesianPointNative() throws IOException {
+  void type012_cartesianPointNative() throws Exception {
     final Map<String, Object> point = new LinkedHashMap<>();
     point.put("x", 12.34);
     point.put("y", 56.78);
@@ -125,7 +124,7 @@ class BoltTypeRoundTripTest {
 
   @Test
   @DisplayName("[TYPE-012] WGS-84 3D Point serializes as a native Bolt Point3D structure")
-  void type012_wgs84Point3DNative() throws IOException {
+  void type012_wgs84Point3DNative() throws Exception {
     final Map<String, Object> point = new LinkedHashMap<>();
     point.put("longitude", 12.34);
     point.put("latitude", 56.78);

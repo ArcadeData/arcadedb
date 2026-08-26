@@ -73,7 +73,7 @@ class CypherPlanCacheInvalidationTest {
   private static final String Q = "MATCH (a:Foo)-[:REL]->(b:Foo) RETURN b.x AS v";
 
   @Test
-  void planCacheIsFlushedOnSchemaChange() throws InterruptedException {
+  void planCacheIsFlushedOnSchemaChange() throws Exception {
     database.transaction(() -> {
       database.command("cypher", "CREATE (a:Foo {x:1})-[:REL]->(b:Foo {x:2}), (c:Foo {x:1})-[:REL]->(d:Foo {x:2})");
     });
@@ -126,7 +126,7 @@ class CypherPlanCacheInvalidationTest {
    * planningStart)} must refuse it.
    */
   @Test
-  void planBuiltBeforeAConcurrentInvalidationIsNeverCached() throws InterruptedException {
+  void planBuiltBeforeAConcurrentInvalidationIsNeverCached() throws Exception {
     database.transaction(() -> {
       database.command("cypher", "CREATE (a:Foo {x:1})-[:REL]->(b:Foo {x:2}), (c:Foo {x:1})-[:REL]->(d:Foo {x:2})");
     });

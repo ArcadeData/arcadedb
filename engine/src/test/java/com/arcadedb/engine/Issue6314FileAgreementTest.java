@@ -25,7 +25,6 @@ import com.arcadedb.exception.SchemaException;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
-import java.io.IOException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -52,7 +51,7 @@ class Issue6314FileAgreementTest extends TestHelper {
    * setting ends up in when that setting changed between two runs.
    */
   @Test
-  void aComponentThatDisagreesWithItsFileAboutThePageSizeFailsAtConstruction() throws IOException {
+  void aComponentThatDisagreesWithItsFileAboutThePageSizeFailsAtConstruction() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
     final int filePageSize = GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getValueAsInteger();
     final String name = "issue6314_stride";
@@ -81,7 +80,7 @@ class Issue6314FileAgreementTest extends TestHelper {
    * a guard that rejected it would be a guard nobody could open a database through.
    */
   @Test
-  void aComponentThatAgreesWithItsFileIsBuiltNormally() throws IOException {
+  void aComponentThatAgreesWithItsFileIsBuiltNormally() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
     final int filePageSize = GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getValueAsInteger();
     final String name = "issue6314_agreed";
@@ -109,7 +108,7 @@ class Issue6314FileAgreementTest extends TestHelper {
    * the point of the guard is that the guarantee now belongs to the API rather than to whoever remembers.
    */
   @Test
-  void theByIdGetOrCreateFileRefusesToHandBackAFileWithAnotherName() throws IOException {
+  void theByIdGetOrCreateFileRefusesToHandBackAFileWithAnotherName() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
     final FileManager fileManager = db.getFileManager();
     final int fileId = fileManager.newFileId();

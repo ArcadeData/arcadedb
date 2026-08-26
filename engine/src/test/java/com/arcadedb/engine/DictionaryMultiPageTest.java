@@ -29,7 +29,6 @@ import com.arcadedb.schema.DocumentType;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
@@ -472,7 +471,7 @@ class DictionaryMultiPageTest extends TestHelper {
    * file is meant to hold page 0, so wait until it does.
    */
   @Test
-  void aDictionaryPageThatIsClaimedButMissingFailsLoudly() throws IOException {
+  void aDictionaryPageThatIsClaimedButMissingFailsLoudly() throws Exception {
     final Database other = TestHelper.createDatabase(getDatabasePath() + "_claimedButMissing");
     try {
       final Dictionary dictionary = other.getSchema().getDictionary();

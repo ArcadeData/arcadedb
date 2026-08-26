@@ -55,7 +55,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue5117PatternOrderTest {
+class Issue5117PatternOrderTest {
   private Database database;
 
   private static final int L3_COUNT    = 30;

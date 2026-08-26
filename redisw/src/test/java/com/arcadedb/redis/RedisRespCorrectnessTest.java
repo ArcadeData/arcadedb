@@ -72,7 +72,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
   }
 
   @Test
-  void bulkStringRawWireBytesDecodeAsUtf8NotPerByteWidening() throws IOException {
+  void bulkStringRawWireBytesDecodeAsUtf8NotPerByteWidening() throws Exception {
     // Same regression as above, but talking raw RESP so the assertion is against the exact bytes the
     // server sends back rather than however the client library happens to decode them.
     final byte[] payloadValue = "café".getBytes(StandardCharsets.UTF_8); // 5 bytes: c,a,f,e-acute(2 bytes)
@@ -100,7 +100,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
   }
 
   @Test
-  void nullBulkStringArgumentDoesNotDesyncParser() throws IOException {
+  void nullBulkStringArgumentDoesNotDesyncParser() throws Exception {
     // A RESP2 null bulk string ($-1) as a command argument, immediately followed - on the very same
     // connection - by a normal AUTH/PING pair. Before the fix, the unconditional skipLF() after $-1
     // swallowed the leading byte of the next command, corrupting everything parsed afterward.
@@ -124,7 +124,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
   }
 
   @Test
-  void nonMinusOneNegativeBulkLengthIsAlsoTreatedAsNull() throws IOException {
+  void nonMinusOneNegativeBulkLengthIsAlsoTreatedAsNull() throws Exception {
     // RESP2 only defines -1 as the null bulk string, but parseNext() deliberately treats every negative
     // size the same way (see the comment on that branch) rather than adding a separate protocol-error case
     // for e.g. $-5. Locks in that this is a real, tested decision and not just an artifact of `size < 0`
@@ -146,7 +146,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
   }
 
   @Test
-  void nullBulkStringAsCommandArgumentIsRejectedCleanly() throws IOException {
+  void nullBulkStringAsCommandArgumentIsRejectedCleanly() throws Exception {
     // $-1 is reachable as any array element now (issue #5911's fix), not just the command name - including
     // as a SET argument, which used to reach ConcurrentHashMap.put() with a null value and NPE deep inside
     // setVariable() instead of getting one clear reply. Must get a clean protocol error instead, and the
@@ -171,7 +171,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
 
   @Test
   @Tag("slow")
-  void failedReauthenticationRearmsThePreAuthTimeout() throws IOException {
+  void failedReauthenticationRearmsThePreAuthTimeout() throws Exception {
     // A connection that already authenticated once has its idle timeout lifted to infinite. If it then
     // fails a *subsequent* AUTH on the same connection, it goes back to logically unauthenticated and must
     // not be left with an infinite read timeout - otherwise it could be held open forever despite never
@@ -204,7 +204,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
 
   @Test
   @Tag("slow")
-  void idleUnauthenticatedConnectionIsClosedInsteadOfHeldOpenIndefinitely() throws IOException {
+  void idleUnauthenticatedConnectionIsClosedInsteadOfHeldOpenIndefinitely() throws Exception {
     GlobalConfiguration.NETWORK_SOCKET_TIMEOUT.setValue(500);
     try {
       try (final Socket socket = new Socket("localhost", DEF_PORT)) {
@@ -254,7 +254,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
   }
 
   @Test
-  void incrOverflowReturnsErrorInsteadOfWrapping() throws IOException {
+  void incrOverflowReturnsErrorInsteadOfWrapping() throws Exception {
     // (issue #6466): INCR on Long.MAX_VALUE wrapped silently to Long.MIN_VALUE. Real Redis answers
     // with an error; the wire reply must be "-ERR ... overflow" and the stored value must be untouched.
     try (final Socket socket = new Socket("localhost", DEF_PORT)) {
@@ -278,7 +278,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
   }
 
   @Test
-  void setNxDoesNotOverwriteExistingKey() throws IOException {
+  void setNxDoesNotOverwriteExistingKey() throws Exception {
     // (issue #6466): SET k v NX on an existing key returned +OK and overwrote it, so a distributed-lock
     // client believed it acquired a lock it did not. Real Redis replies with the RESP2 null bulk string.
     try (final Socket socket = new Socket("localhost", DEF_PORT)) {
@@ -299,7 +299,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
   }
 
   @Test
-  void setXxDoesNotCreateMissingKey() throws IOException {
+  void setXxDoesNotCreateMissingKey() throws Exception {
     // (issue #6466): XX must only set an existing key; on a missing key real Redis replies nil.
     try (final Socket socket = new Socket("localhost", DEF_PORT)) {
       socket.setSoTimeout(10_000);
@@ -317,7 +317,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
   }
 
   @Test
-  void setGetReturnsPreviousValue() throws IOException {
+  void setGetReturnsPreviousValue() throws Exception {
     // (issue #6466): SET k v GET must return the previous value (bulk string) instead of +OK.
     try (final Socket socket = new Socket("localhost", DEF_PORT)) {
       socket.setSoTimeout(10_000);
@@ -338,7 +338,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
   }
 
   @Test
-  void setNxGetReturnsExistingValueOnVetoedWrite() throws IOException {
+  void setNxGetReturnsExistingValueOnVetoedWrite() throws Exception {
     // Real Redis: combining GET with NX/XX still returns the pre-existing value when the NX/XX condition
     // vetoes the write (it does not fall back to nil just because nothing was written).
     try (final Socket socket = new Socket("localhost", DEF_PORT)) {
@@ -360,7 +360,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
   }
 
   @Test
-  void setWithUnsupportedExpiryOptionIsRejectedInsteadOfSilentlyIgnored() throws IOException {
+  void setWithUnsupportedExpiryOptionIsRejectedInsteadOfSilentlyIgnored() throws Exception {
     // (issue #6466): EX/PX were silently dropped, so a client setting EX 10 believed the key would
     // expire. ArcadeDB transient keys have no TTL store, so the honest reply is a clear error.
     try (final Socket socket = new Socket("localhost", DEF_PORT)) {
@@ -377,7 +377,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
   }
 
   @Test
-  void incrByFloatRepliesWithBulkString() throws IOException {
+  void incrByFloatRepliesWithBulkString() throws Exception {
     // (issue #6466 minor): INCRBYFLOAT replied with a RESP simple string ("+3.3\r\n") instead of a bulk
     // string ("$3\r\n3.3\r\n"). Jedis parses both forms into the same double, so routing this through the
     // client (as the original version of this test did) would pass whether or not the wire format was

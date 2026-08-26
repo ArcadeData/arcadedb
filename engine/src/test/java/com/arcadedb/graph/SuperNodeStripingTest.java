@@ -617,7 +617,7 @@ class SuperNodeStripingTest extends TestHelper {
 
   @Tag("slow")
   @Test
-  void concurrentAppendsOnPromotedVertex() throws InterruptedException {
+  void concurrentAppendsOnPromotedVertex() throws Exception {
     GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(64);
     GlobalConfiguration.TX_RETRY_DELAY.setValue(1);
     createSchema();

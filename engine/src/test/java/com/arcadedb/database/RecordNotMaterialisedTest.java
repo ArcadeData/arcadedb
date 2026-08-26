@@ -53,7 +53,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class RecordNotMaterialisedTest extends TestHelper {
+class RecordNotMaterialisedTest extends TestHelper {
   private static final String DOC_TYPE    = "Doc";
   private static final String VERTEX_TYPE = "Vert";
   private static final String EDGE_TYPE   = "Rel";

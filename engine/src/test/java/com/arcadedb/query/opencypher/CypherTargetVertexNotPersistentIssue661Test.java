@@ -104,7 +104,7 @@ class CypherTargetVertexNotPersistentIssue661Test {
    * then re-runs the CREATE with the now-stale dst binding.
    */
   @Test
-  void concurrentTransfersDoNotThrowTargetNotPersistent() throws InterruptedException {
+  void concurrentTransfersDoNotThrowTargetNotPersistent() throws Exception {
     final int threads = 8;
     final int iterations = 80;
     final int hubCount = 2; // few shared src hubs => heavy edge-list contention on src OUT head

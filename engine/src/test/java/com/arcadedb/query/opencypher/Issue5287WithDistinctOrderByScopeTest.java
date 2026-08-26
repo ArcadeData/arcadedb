@@ -45,11 +45,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue5287WithDistinctOrderByScopeTest {
+class Issue5287WithDistinctOrderByScopeTest {
   private Database database;
 
   @BeforeEach
-  public void setUp() {
+  void setUp() {
     final DatabaseFactory factory = new DatabaseFactory("./target/databases/issue5287");
     if (factory.exists())
       factory.open().drop();
@@ -63,7 +63,7 @@ public class Issue5287WithDistinctOrderByScopeTest {
   }
 
   @AfterEach
-  public void tearDown() {
+  void tearDown() {
     if (database != null && database.isOpen())
       database.drop();
   }
@@ -84,7 +84,7 @@ public class Issue5287WithDistinctOrderByScopeTest {
    * so ordering by it has no deterministic result and must be rejected.
    */
   @Test
-  public void withDistinctOrderByNonProjectedRejected() {
+  void withDistinctOrderByNonProjectedRejected() {
     assertThatThrownBy(
         () -> database.query("cypher", "MATCH (n:P) WITH DISTINCT n.active AS active ORDER BY n.name RETURN active").close())
         .isInstanceOf(CommandSemanticException.class)
@@ -95,7 +95,7 @@ public class Issue5287WithDistinctOrderByScopeTest {
    * WITH DISTINCT must now agree with the RETURN DISTINCT form, which already rejected this.
    */
   @Test
-  public void withDistinctAndReturnDistinctAgree() {
+  void withDistinctAndReturnDistinctAgree() {
     assertThatThrownBy(() -> database.query("cypher", "MATCH (n:P) WITH DISTINCT n.name AS name ORDER BY n.age RETURN name").close())
         .isInstanceOf(CommandSemanticException.class)
         .hasMessageContaining("not defined");
@@ -108,7 +108,7 @@ public class Issue5287WithDistinctOrderByScopeTest {
    * Ordering by a projected expression stays well defined and must keep working (issue #5283).
    */
   @Test
-  public void withDistinctOrderByProjectedExpressionStillWorks() {
+  void withDistinctOrderByProjectedExpressionStillWorks() {
     assertThat(column("MATCH (n:P) WITH DISTINCT n.age AS age ORDER BY n.age RETURN age", "age")) //
         .containsExactly(10, 20, 30);
   }
@@ -117,7 +117,7 @@ public class Issue5287WithDistinctOrderByScopeTest {
    * Ordering by the alias stays well defined and must keep working.
    */
   @Test
-  public void withDistinctOrderByAliasStillWorks() {
+  void withDistinctOrderByAliasStillWorks() {
     assertThat(column("MATCH (n:P) WITH DISTINCT n.age AS age ORDER BY age DESC RETURN age", "age")) //
         .containsExactly(30, 20, 10);
   }
@@ -129,7 +129,7 @@ public class Issue5287WithDistinctOrderByScopeTest {
    * carry it forward - hence the constant projection.)
    */
   @Test
-  public void withDistinctOrderByUnaliasedProjectionNotRejected() {
+  void withDistinctOrderByUnaliasedProjectionNotRejected() {
     // one row per distinct age; Cypher integer literals are 64-bit, hence Long
     assertThat(column("MATCH (n:P) WITH DISTINCT n.age ORDER BY n.age RETURN 1 AS one", "one")) //
         .containsExactly(1L, 1L, 1L);
@@ -140,7 +140,7 @@ public class Issue5287WithDistinctOrderByScopeTest {
    * remains legal there: the narrowing must not leak onto plain projections.
    */
   @Test
-  public void nonDistinctWithKeepsFullScope() {
+  void nonDistinctWithKeepsFullScope() {
     assertThat(column("MATCH (n:P) WITH n.active AS active ORDER BY n.name RETURN active", "active")) //
         .containsExactly(true, false, true);
   }

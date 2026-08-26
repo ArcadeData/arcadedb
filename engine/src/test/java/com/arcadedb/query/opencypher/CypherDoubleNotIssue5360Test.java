@@ -41,7 +41,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class CypherDoubleNotIssue5360Test {
+class CypherDoubleNotIssue5360Test {
   private Database database;
 
   @BeforeEach

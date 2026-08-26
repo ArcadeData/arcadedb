@@ -32,7 +32,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.ZoneId;
@@ -41,9 +40,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.assertj.core.api.Assertions.*;
 
 class JsonLImporterIT {
 
@@ -90,7 +87,7 @@ class JsonLImporterIT {
   }
 
   @Test
-  void importDatabaseWithErrorAbortMode() throws IOException {
+  void importDatabaseWithErrorAbortMode() throws Exception {
     // A JSONL file with a malformed vertex (non-existent type) should fail in default "abort" mode (issue #6468)
     Path jsonlFile = Files.createTempFile("arcadedb-bad-import-", ".jsonl");
     try {
@@ -104,14 +101,14 @@ class JsonLImporterIT {
       var importer = new Importer(
           ("-url " + jsonlFile.toAbsolutePath() + " -database " + DATABASE_PATH + " -forceDatabaseCreate true").split(" "));
 
-      assertThrows(ImportException.class, importer::load);
+      assertThatExceptionOfType(ImportException.class).isThrownBy(importer::load);
     } finally {
       Files.deleteIfExists(jsonlFile);
     }
   }
 
   @Test
-  void importDatabaseWithErrorSkipMode() throws IOException {
+  void importDatabaseWithErrorSkipMode() throws Exception {
     // With -onRowError skip, a malformed vertex should be skipped and counted (issue #6468)
     Path jsonlFile = Files.createTempFile("arcadedb-badskip-import-", ".jsonl");
     try {
@@ -135,7 +132,7 @@ class JsonLImporterIT {
   }
 
   @Test
-  void importDatabaseSkipModeMalformedRidLeavesNoGhostRecord() throws IOException {
+  void importDatabaseSkipModeMalformedRidLeavesNoGhostRecord() throws Exception {
     // A vertex whose properties/type are otherwise valid but whose "r" (old RID) field is malformed used to fail
     // AFTER save(), leaving an orphaned record in the database that was never added to the RID map and never
     // counted - exactly the "ghost record" mechanism behind issue #6468's cascading edge loss. In skip mode this
@@ -167,7 +164,7 @@ class JsonLImporterIT {
   }
 
   @Test
-  void importDatabaseSkipModeFailedVertexDropsReferencingEdgeAsCountedError() throws IOException {
+  void importDatabaseSkipModeFailedVertexDropsReferencingEdgeAsCountedError() throws Exception {
     // Reproduces the cascade from issue #6468: a vertex that fails to import leaves its old RID out of the RID
     // map, so an edge referencing it hits the "vertex not found" path. In skip mode both failures must now be
     // counted as errors and leave no partial edge behind, rather than being silently swallowed as before the fix.
@@ -205,7 +202,7 @@ class JsonLImporterIT {
   }
 
   @Test
-  void importDatabaseRemapsLinkTypedPropertyValues() throws IOException {
+  void importDatabaseRemapsLinkTypedPropertyValues() throws Exception {
     // Issue #6460: a LINK-typed property (and a LIST-of-LINK one) must be remapped through the same old-RID -> new-RID
     // index edges already use, not passed through with the source database's RID. The source "r" fields below are
     // deliberately NOT #6:0, #6:1, ... : a fresh import always allocates sequential positions starting at #6:0 in an
@@ -271,7 +268,7 @@ class JsonLImporterIT {
   }
 
   @Test
-  void importDatabaseRemapsMapOfLinkPropertyValues() throws IOException {
+  void importDatabaseRemapsMapOfLinkPropertyValues() throws Exception {
     // Issue #6460 follow-up (review on PR #6654): MAP-of-LINK is implemented by the same remapLinkProperties()/
     // reconcileUnresolvedLinks() code path as LIST-of-LINK, but was not exercised by any test. Same fixture shape
     // as importDatabaseRemapsLinkTypedPropertyValues: a backward reference resolved on first pass and a forward
@@ -322,7 +319,7 @@ class JsonLImporterIT {
   }
 
   @Test
-  void importDatabaseLeavesNeverResolvedLinkUnchanged() throws IOException {
+  void importDatabaseLeavesNeverResolvedLinkUnchanged() throws Exception {
     // Issue #6460 follow-up (review on PR #6654): a LINK value that references a record never present in the
     // source stream at all (excluded via -includeTypes/-excludeTypes, or a genuinely dangling link) must be left
     // as-is - matching pre-fix behavior for that case - and must NOT be counted as an import error.
@@ -356,7 +353,7 @@ class JsonLImporterIT {
   }
 
   @Test
-  void importDatabaseRemapsLinkPropertyOnEdge() throws IOException {
+  void importDatabaseRemapsLinkPropertyOnEdge() throws Exception {
     // Issue #6460 follow-up (review on PR #6654): loadVertex/loadDocument were both covered, but loadEdge wires
     // pendingLinkReconciliation through a different call site with the same shape - a LINK-typed property on a
     // (non-lightweight) edge must be remapped too, including the forward-reference case fixed up only by the
@@ -409,7 +406,7 @@ class JsonLImporterIT {
    * on the first record.
    */
   @Test
-  void importDatabaseSkipModeRejectsInsideActiveTransaction() throws IOException {
+  void importDatabaseSkipModeRejectsInsideActiveTransaction() throws Exception {
     Path jsonlFile = Files.createTempFile("arcadedb-6561-skip-active-tx-", ".jsonl");
     try {
       Files.writeString(jsonlFile, singleVertexJsonl());
@@ -451,7 +448,7 @@ class JsonLImporterIT {
    * in {@code Issue5968ImporterSkipOnRowErrorTest}).
    */
   @Test
-  void importDatabaseAbortModeInsideActiveTransactionLeavesTransactionOpenOnSuccess() throws IOException {
+  void importDatabaseAbortModeInsideActiveTransactionLeavesTransactionOpenOnSuccess() throws Exception {
     Path jsonlFile = Files.createTempFile("arcadedb-6561-abort-success-active-tx-", ".jsonl");
     try {
       Files.writeString(jsonlFile, singleVertexJsonl());
@@ -489,7 +486,7 @@ class JsonLImporterIT {
    * the caller left it, active, for them alone to decide what happens to it next.
    */
   @Test
-  void importDatabaseAbortModeInsideActiveTransactionDoesNotCommitOrRollbackOnFailure() throws IOException {
+  void importDatabaseAbortModeInsideActiveTransactionDoesNotCommitOrRollbackOnFailure() throws Exception {
     Path jsonlFile = Files.createTempFile("arcadedb-6561-abort-failure-active-tx-", ".jsonl");
     try {
       Files.writeString(jsonlFile, ""
@@ -532,7 +529,7 @@ class JsonLImporterIT {
    * one the caller never asked for.
    */
   @Test
-  void importDatabaseAbortModeInsideActiveTransactionDoesNotCommitPeriodicallyOnLargeImport() throws IOException {
+  void importDatabaseAbortModeInsideActiveTransactionDoesNotCommitPeriodicallyOnLargeImport() throws Exception {
     Path jsonlFile = Files.createTempFile("arcadedb-6561-abort-periodic-active-tx-", ".jsonl");
     try {
       final int vertexCount = 1500; // exceeds the 1000-record periodic commit threshold
@@ -578,7 +575,7 @@ class JsonLImporterIT {
    * periodic commit at the same >1000-entry scale.
    */
   @Test
-  void importDatabaseAbortModeInsideActiveTransactionDoesNotCommitPeriodicallyDuringLinkReconciliation() throws IOException {
+  void importDatabaseAbortModeInsideActiveTransactionDoesNotCommitPeriodicallyDuringLinkReconciliation() throws Exception {
     Path jsonlFile = Files.createTempFile("arcadedb-6561-abort-periodic-reconcile-active-tx-", ".jsonl");
     try {
       final int vertexCount = 1500; // exceeds the 1000-record periodic commit threshold

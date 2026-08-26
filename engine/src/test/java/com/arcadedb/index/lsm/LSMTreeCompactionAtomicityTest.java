@@ -23,6 +23,8 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.TestHelper;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -47,6 +49,7 @@ class LSMTreeCompactionAtomicityTest extends TestHelper {
 
   private static final String TYPE_NAME = "Doc";
 
+  @BeforeEach
   @Override
   public void beforeTest() {
     // Disable AUTO compaction (see LSMTreeCompactionCorrectnessTest: the database snapshots this into its own

@@ -60,7 +60,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue6725DescribeSampleRowTypeMismatchIT extends PostgresWireProtocolTestBase {
+class Issue6725DescribeSampleRowTypeMismatchIT extends PostgresWireProtocolTestBase {
 
   @Test
   void aSchemalessColumnsDescribedShapeSurvivesALaterExecuteOfADifferentlyTypedRow() throws Exception {

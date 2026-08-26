@@ -57,7 +57,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue5116PatternOrderTest {
+class Issue5116PatternOrderTest {
   private Database database;
 
   private static final int L1L5_COUNT = 5;   // nodes carrying both L1 and L5

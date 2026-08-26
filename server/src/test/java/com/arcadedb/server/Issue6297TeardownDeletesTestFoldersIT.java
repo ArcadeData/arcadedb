@@ -35,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue6297TeardownDeletesTestFoldersIT extends BaseGraphServerTest {
+class Issue6297TeardownDeletesTestFoldersIT extends BaseGraphServerTest {
   private static String databasePath;
 
   @Override

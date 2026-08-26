@@ -46,7 +46,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class Issue6678PolymorphicBucketCacheVisibilityTest extends TestHelper {
 
   @Test
-  void cachedPolymorphicFieldsMustBeVolatileForCrossThreadPlanningReads() throws NoSuchFieldException {
+  void cachedPolymorphicFieldsMustBeVolatileForCrossThreadPlanningReads() throws Exception {
     final Field buckets = LocalDocumentType.class.getDeclaredField("cachedPolymorphicBuckets");
     final Field bucketIds = LocalDocumentType.class.getDeclaredField("cachedPolymorphicBucketIds");
 

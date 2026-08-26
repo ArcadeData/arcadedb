@@ -128,7 +128,7 @@ class SuperNodeConcurrentAppendBenchmark extends TestHelper {
   }
 
   @Test
-  void concurrentAppendToSuperNode() throws InterruptedException {
+  void concurrentAppendToSuperNode() throws Exception {
     // Keep retry back-off tiny so the measurement reflects wasted work (conflicts), not sleep time.
     final int savedRetryDelay = GlobalConfiguration.TX_RETRY_DELAY.getValueAsInteger();
     GlobalConfiguration.TX_RETRY_DELAY.setValue(1);

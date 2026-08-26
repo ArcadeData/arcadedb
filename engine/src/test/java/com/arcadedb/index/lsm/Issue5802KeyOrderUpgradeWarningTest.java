@@ -31,6 +31,8 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -56,6 +58,7 @@ class Issue5802KeyOrderUpgradeWarningTest extends TestHelper {
 
   private static final String TYPE_NAME = "Paper";
 
+  @BeforeEach
   @Override
   public void beforeTest() {
     GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE.setValue(0);

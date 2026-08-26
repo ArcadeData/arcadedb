@@ -54,7 +54,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       instead of rolling them back.</li>
  * </ul>
  */
-public class Issue5041InsertStreamTxLifecycleIT extends BaseGraphServerTest {
+class Issue5041InsertStreamTxLifecycleIT extends BaseGraphServerTest {
 
   // The insert-stream handlers are driven in-process by constructing ArcadeDbGrpcService directly, so
   // no gRPC port needs to be bound: the GrpcServerPlugin is intentionally NOT enabled here (binding a

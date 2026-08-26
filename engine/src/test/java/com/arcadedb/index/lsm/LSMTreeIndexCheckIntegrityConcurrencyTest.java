@@ -22,6 +22,8 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -57,6 +59,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class LSMTreeIndexCheckIntegrityConcurrencyTest extends TestHelper {
   private static final String TYPE_NAME = "Doc";
 
+  @BeforeEach
   @Override
   public void beforeTest() {
     // compaction is driven manually

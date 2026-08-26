@@ -32,7 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue5297PolymorphicCountTest extends TestHelper {
+class Issue5297PolymorphicCountTest extends TestHelper {
 
   private long countViaSQL(final String typeName) {
     try (final ResultSet rs = database.query("sql", "SELECT count(*) as c FROM " + typeName)) {
@@ -41,7 +41,7 @@ public class Issue5297PolymorphicCountTest extends TestHelper {
   }
 
   @Test
-  public void bucketAddedToSubTypeAfterInheritanceIsCountedOnSuperType() {
+  void bucketAddedToSubTypeAfterInheritanceIsCountedOnSuperType() {
     database.getSchema().createVertexType("V");
     database.getSchema().createVertexType("Tenant").addSuperType("V");
 
@@ -73,7 +73,7 @@ public class Issue5297PolymorphicCountTest extends TestHelper {
    * so both counts must agree.
    */
   @Test
-  public void inMemorySchemaCountMatchesTheReloadedSchemaCount() {
+  void inMemorySchemaCountMatchesTheReloadedSchemaCount() {
     database.getSchema().createVertexType("V");
     database.getSchema().createVertexType("Tenant").addSuperType("V");
     database.getSchema().createVertexType("Agent").addSuperType("V");
@@ -97,7 +97,7 @@ public class Issue5297PolymorphicCountTest extends TestHelper {
   }
 
   @Test
-  public void bucketRemovedFromSubTypeAfterInheritanceIsDroppedFromSuperType() {
+  void bucketRemovedFromSubTypeAfterInheritanceIsDroppedFromSuperType() {
     database.getSchema().createVertexType("V");
     final DocumentType tenant = database.getSchema().buildVertexType().withName("Tenant").withTotalBuckets(2).create();
     tenant.addSuperType("V");
@@ -111,7 +111,7 @@ public class Issue5297PolymorphicCountTest extends TestHelper {
   }
 
   @Test
-  public void grantingMoreBucketsOnExistingTypeKeepsSuperTypeInSync() {
+  void grantingMoreBucketsOnExistingTypeKeepsSuperTypeInSync() {
     database.getSchema().createVertexType("V");
     // FIRST CALL: CREATES THE TYPE WITH 1 BUCKET AND LINKS IT TO V
     database.getSchema().buildVertexType().withName("Tenant").withTotalBuckets(1).withSuperType("V").withIgnoreIfExists(true)
@@ -130,7 +130,7 @@ public class Issue5297PolymorphicCountTest extends TestHelper {
   }
 
   @Test
-  public void multiLevelHierarchyDoesNotDoubleCountIntermediateBuckets() {
+  void multiLevelHierarchyDoesNotDoubleCountIntermediateBuckets() {
     database.getSchema().createVertexType("V");
     database.getSchema().createVertexType("Account").addSuperType("V");
     database.getSchema().createVertexType("Customer").addSuperType("Account");

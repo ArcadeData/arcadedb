@@ -106,7 +106,7 @@ class Issue5416DescendingTailTest extends TestHelper {
   }
 
   @Test
-  void unsealedTailAnswersTheNewestPointWithoutMaterialisingIt() throws IOException {
+  void unsealedTailAnswersTheNewestPointWithoutMaterialisingIt() throws Exception {
     // A single shard so the tag is guaranteed to be present in it: with several shards, a shard
     // holding no matching row has nothing to build a cut-off from and has to look at every page.
     final TimeSeriesEngine engine = createUnsealed(20_000, 1);
@@ -140,7 +140,7 @@ class Issue5416DescendingTailTest extends TestHelper {
    * visited stops it from reading everything it owns.
    */
   @Test
-  void aShardWithoutTheTagIsPrunedByTheRunningBound() throws IOException {
+  void aShardWithoutTheTagIsPrunedByTheRunningBound() throws Exception {
     final TimeSeriesEngine engine = createUnsealed(20_000, 4);
 
     final AggregationMetrics metrics = new AggregationMetrics();
@@ -156,7 +156,7 @@ class Issue5416DescendingTailTest extends TestHelper {
   }
 
   @Test
-  void unsealedTailTopNMatchesAFullScan() throws IOException {
+  void unsealedTailTopNMatchesAFullScan() throws Exception {
     final TimeSeriesEngine engine = createUnsealed(5_000, 2);
 
     for (final int limit : new int[] { 1, 2, 7, 100, 5_000, 10_000 })
@@ -167,7 +167,7 @@ class Issue5416DescendingTailTest extends TestHelper {
   }
 
   @Test
-  void unsealedTailWithoutTagFilterMatchesAFullScan() throws IOException {
+  void unsealedTailWithoutTagFilterMatchesAFullScan() throws Exception {
     final TimeSeriesEngine engine = createUnsealed(2_000, 2);
 
     final List<Object[]> rows = engine.queryDescending(Long.MIN_VALUE, Long.MAX_VALUE, null, null, 10, null);
@@ -179,7 +179,7 @@ class Issue5416DescendingTailTest extends TestHelper {
   }
 
   @Test
-  void unsealedTailHonoursTimeBounds() throws IOException {
+  void unsealedTailHonoursTimeBounds() throws Exception {
     final TimeSeriesEngine engine = createUnsealed(3_000, 2);
 
     final long fromTs = BASE_TS + 1_000 * STEP_MS;
@@ -195,7 +195,7 @@ class Issue5416DescendingTailTest extends TestHelper {
    * descending walk must skip a page it cannot use rather than stop at it.
    */
   @Test
-  void outOfOrderArrivalsAreStillReturnedNewestFirst() throws IOException {
+  void outOfOrderArrivalsAreStillReturnedNewestFirst() throws Exception {
     final TimeSeriesEngine engine = createUnsealed(4_000, 1);
 
     // A batch older than everything already stored, landing on the newest pages.
@@ -215,7 +215,7 @@ class Issue5416DescendingTailTest extends TestHelper {
   }
 
   @Test
-  void sealedAndUnsealedLayersAreMergedNewestFirst() throws IOException {
+  void sealedAndUnsealedLayersAreMergedNewestFirst() throws Exception {
     final TimeSeriesEngine engine = createUnsealed(5_000, 2);
     engine.compactAll();
     append(engine, 5_000, 5_400);
@@ -240,7 +240,7 @@ class Issue5416DescendingTailTest extends TestHelper {
    * go through the decoded value, otherwise the leading bytes would be read as a length prefix.
    */
   @Test
-  void aFilterOnANonStringColumnStillMatches() throws IOException {
+  void aFilterOnANonStringColumnStillMatches() throws Exception {
     final TimeSeriesEngine engine = createUnsealed(500, 1);
 
     // Column 1 is the DOUBLE value, not the tag.
@@ -254,7 +254,7 @@ class Issue5416DescendingTailTest extends TestHelper {
   }
 
   @Test
-  void columnSubsetKeepsTheTagFilterSemantics() throws IOException {
+  void columnSubsetKeepsTheTagFilterSemantics() throws Exception {
     final TimeSeriesEngine engine = createUnsealed(500, 1);
     final TimeSeriesShard shard = engine.getShard(0);
 
@@ -276,7 +276,7 @@ class Issue5416DescendingTailTest extends TestHelper {
   }
 
   @Test
-  void emptyBucketReturnsNothing() throws IOException {
+  void emptyBucketReturnsNothing() throws Exception {
     database.command("sql", "CREATE TIMESERIES TYPE Point TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE)");
     final TimeSeriesEngine engine = ((LocalTimeSeriesType) database.getSchema().getType("Point")).getEngine();
 
@@ -289,7 +289,7 @@ class Issue5416DescendingTailTest extends TestHelper {
    * INTEGER / LONG / STRING value types.
    */
   @Test
-  void sealedRowsKeepTheirValueTypes() throws IOException {
+  void sealedRowsKeepTheirValueTypes() throws Exception {
     database.command("sql", "CREATE TIMESERIES TYPE Mixed TIMESTAMP ts TAGS (host STRING) "
         + "FIELDS (d DOUBLE, i INTEGER, l LONG)");
     final TimeSeriesEngine engine = ((LocalTimeSeriesType) database.getSchema().getType("Mixed")).getEngine();
@@ -326,7 +326,7 @@ class Issue5416DescendingTailTest extends TestHelper {
   }
 
   @Test
-  void sealedTopOneBoxesOnlyTheRowsItReturns() throws IOException {
+  void sealedTopOneBoxesOnlyTheRowsItReturns() throws Exception {
     final TimeSeriesEngine engine = createUnsealed(20_000, 2);
     engine.compactAll();
 
@@ -340,7 +340,7 @@ class Issue5416DescendingTailTest extends TestHelper {
   }
 
   @Test
-  void explainShowsThePushedDownTagFilter() throws IOException {
+  void explainShowsThePushedDownTagFilter() throws Exception {
     createUnsealed(100, 1);
 
     final String plan = explain("SELECT ts, value FROM Point WHERE host = 'host_1' ORDER BY ts DESC LIMIT 1");
@@ -350,7 +350,7 @@ class Issue5416DescendingTailTest extends TestHelper {
   }
 
   @Test
-  void explainShowsTheTagFilterOnTheAscendingFetchToo() throws IOException {
+  void explainShowsTheTagFilterOnTheAscendingFetchToo() throws Exception {
     createUnsealed(100, 1);
 
     final String plan = explain("SELECT ts, value FROM Point WHERE host = 'host_1'");
@@ -360,7 +360,7 @@ class Issue5416DescendingTailTest extends TestHelper {
   }
 
   @Test
-  void explainShowsNoTagsWhenThereIsNoTagPredicate() throws IOException {
+  void explainShowsNoTagsWhenThereIsNoTagPredicate() throws Exception {
     createUnsealed(100, 1);
 
     assertThat(explain("SELECT ts, value FROM Point ORDER BY ts DESC LIMIT 1")).doesNotContain("TAGS");
@@ -385,7 +385,7 @@ class Issue5416DescendingTailTest extends TestHelper {
   }
 
   @Test
-  void sqlLastPointOnAnUnsealedTailReturnsTheNewestRow() throws IOException {
+  void sqlLastPointOnAnUnsealedTailReturnsTheNewestRow() throws Exception {
     final TimeSeriesEngine engine = createUnsealed(10_000, 2);
 
     final long expectedTs = (long) expectedNewest(engine, Long.MIN_VALUE, Long.MAX_VALUE, "host_1", 1).get(0)[0];

@@ -33,7 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * script lines. Releasing the plan must still release every line that ran before it, and must do so
  * iteratively so a large batch does not blow the stack.
  */
-public class ScriptExecutionPlanCloseTest {
+class ScriptExecutionPlanCloseTest {
   private static final int LINES = 20_000;
 
   /** Minimal per-statement plan that records its own release and can stand in for a BREAK. */
@@ -122,7 +122,7 @@ public class ScriptExecutionPlanCloseTest {
    * explicit 1 MB stack keeps the verdict independent of the JVM's default {@code -Xss}.
    */
   @Test
-  void closingALargeScriptThatReturnedEarlyDoesNotOverflowTheStack() throws InterruptedException {
+  void closingALargeScriptThatReturnedEarlyDoesNotOverflowTheStack() throws Exception {
     final CommandContext context = new BasicCommandContext();
     final List<String> closed = new ArrayList<>();
 

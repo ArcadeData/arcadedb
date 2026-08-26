@@ -36,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class CypherCaseGroupingKeyIssue5206Test {
+class CypherCaseGroupingKeyIssue5206Test {
   private Database database;
 
   @BeforeEach

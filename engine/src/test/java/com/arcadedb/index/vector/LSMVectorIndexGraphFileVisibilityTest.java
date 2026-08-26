@@ -71,7 +71,7 @@ class LSMVectorIndexGraphFileVisibilityTest {
   }
 
   @Test
-  void graphFileFieldMustBeVolatileForCrossThreadReadersLikeGetFileIds() throws NoSuchFieldException {
+  void graphFileFieldMustBeVolatileForCrossThreadReadersLikeGetFileIds() throws Exception {
     final Field field = LSMVectorIndex.class.getDeclaredField("graphFile");
     assertThat(Modifier.isVolatile(field.getModifiers()))
         .as("graphFile is written under graphBuildLock/no lock at all and read by getFileIds() and others under "

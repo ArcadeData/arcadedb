@@ -50,7 +50,7 @@ class ScriptTriggerHostClassLookupTest extends TestHelper {
   private static final String SECRET = "TOP-SECRET-CREDENTIAL-42";
 
   @Test
-  void triggerCannotReadHostFilesThroughZipFile() throws IOException {
+  void triggerCannotReadHostFilesThroughZipFile() throws Exception {
     final Path archive = createArchiveWithSecret();
     try {
       database.command("sql", "CREATE DOCUMENT TYPE ZipTarget");

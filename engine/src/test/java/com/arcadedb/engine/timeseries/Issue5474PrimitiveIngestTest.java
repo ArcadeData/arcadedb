@@ -46,7 +46,7 @@ class Issue5474PrimitiveIngestTest extends TestHelper {
   private static final long BASE_TS = 1_700_000_000_000L;
 
   @Test
-  void primitiveBatchStoresExactlyWhatTheBoxedPathStores() throws IOException {
+  void primitiveBatchStoresExactlyWhatTheBoxedPathStores() throws Exception {
     database.command("sql", "CREATE TIMESERIES TYPE Boxed TIMESTAMP ts TAGS (host STRING) "
         + "FIELDS (d DOUBLE, f FLOAT, l LONG, i INTEGER, s SHORT, b BOOLEAN) SHARDS 1");
     database.command("sql", "CREATE TIMESERIES TYPE Primitive TIMESTAMP ts TAGS (host STRING) "
@@ -103,7 +103,7 @@ class Issue5474PrimitiveIngestTest extends TestHelper {
   }
 
   @Test
-  void primitiveBatchSurvivesCompaction() throws IOException {
+  void primitiveBatchSurvivesCompaction() throws Exception {
     database.command("sql",
         "CREATE TIMESERIES TYPE Sealed TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE) SHARDS 1");
 
@@ -136,7 +136,7 @@ class Issue5474PrimitiveIngestTest extends TestHelper {
    * the mismatch visible.
    */
   @Test
-  void byteColumnRoundTrips() throws IOException {
+  void byteColumnRoundTrips() throws Exception {
     database.command("sql",
         "CREATE TIMESERIES TYPE WithByte TIMESTAMP ts FIELDS (flags BYTE, value DOUBLE) SHARDS 1");
 
@@ -165,7 +165,7 @@ class Issue5474PrimitiveIngestTest extends TestHelper {
    * fill's values into the skipped columns.
    */
   @Test
-  void untouchedColumnsMatchNullAndAReusedBatchDoesNotLeak() throws IOException {
+  void untouchedColumnsMatchNullAndAReusedBatchDoesNotLeak() throws Exception {
     database.command("sql",
         "CREATE TIMESERIES TYPE Sparse TIMESTAMP ts TAGS (host STRING) FIELDS (a DOUBLE, b LONG) SHARDS 1");
 
@@ -209,7 +209,7 @@ class Issue5474PrimitiveIngestTest extends TestHelper {
    * A batch filled past its declared capacity must grow without losing or reordering samples.
    */
   @Test
-  void batchGrowsBeyondItsInitialCapacity() throws IOException {
+  void batchGrowsBeyondItsInitialCapacity() throws Exception {
     database.command("sql",
         "CREATE TIMESERIES TYPE Grown TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE) SHARDS 1");
 
@@ -239,7 +239,7 @@ class Issue5474PrimitiveIngestTest extends TestHelper {
    * the same sample position, so a mixed-API workload keeps a stable distribution.
    */
   @Test
-  void multiShardSplitRoutesTheSameSamplesToTheSameShards() throws IOException {
+  void multiShardSplitRoutesTheSameSamplesToTheSameShards() throws Exception {
     database.command("sql", "CREATE TIMESERIES TYPE ShardBoxed TIMESTAMP ts FIELDS (value DOUBLE) SHARDS 4");
     database.command("sql", "CREATE TIMESERIES TYPE ShardPrim TIMESTAMP ts FIELDS (value DOUBLE) SHARDS 4");
 
@@ -278,7 +278,7 @@ class Issue5474PrimitiveIngestTest extends TestHelper {
    * contention-free writes.
    */
   @Test
-  void asyncAppendAcceptsAPrimitiveBatch() throws IOException {
+  void asyncAppendAcceptsAPrimitiveBatch() throws Exception {
     database.command("sql",
         "CREATE TIMESERIES TYPE Async TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE) SHARDS 2");
 
@@ -313,7 +313,7 @@ class Issue5474PrimitiveIngestTest extends TestHelper {
    * for, not just the engine internals.
    */
   @Test
-  void primitiveIngestAllocatesFarLessThanTheBoxedPath() throws IOException {
+  void primitiveIngestAllocatesFarLessThanTheBoxedPath() throws Exception {
     database.command("sql", "CREATE TIMESERIES TYPE AllocBoxed TIMESTAMP ts FIELDS (a DOUBLE, b DOUBLE, c DOUBLE) SHARDS 1");
     database.command("sql", "CREATE TIMESERIES TYPE AllocPrim TIMESTAMP ts FIELDS (a DOUBLE, b DOUBLE, c DOUBLE) SHARDS 1");
 

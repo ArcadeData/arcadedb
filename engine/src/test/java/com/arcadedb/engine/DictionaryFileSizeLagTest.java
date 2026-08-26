@@ -75,7 +75,7 @@ class DictionaryFileSizeLagTest extends TestHelper {
    * rewritten - the dictionary then answers with a name that is in no page of the database.
    */
   @Test
-  void aRolledBackRenameIsUndoneWhileTheFileIsBehindTheCommittedPages() throws IOException {
+  void aRolledBackRenameIsUndoneWhileTheFileIsBehindTheCommittedPages() throws Exception {
     final Database other = TestHelper.createDatabase(getDatabasePath() + "_renameRolledBack");
     try {
       final DatabaseInternal db = (DatabaseInternal) other;
@@ -105,7 +105,7 @@ class DictionaryFileSizeLagTest extends TestHelper {
    * check skipped, so in the same window a dictionary claiming pages that do not exist loaded silently instead of failing.
    */
   @Test
-  void aClaimedButMissingPageStillFailsLoudlyWhileTheFileIsBehindTheCommittedPages() throws IOException {
+  void aClaimedButMissingPageStillFailsLoudlyWhileTheFileIsBehindTheCommittedPages() throws Exception {
     final Database other = TestHelper.createDatabase(getDatabasePath() + "_claimedWhileFileEmpty");
     try {
       final DatabaseInternal db = (DatabaseInternal) other;

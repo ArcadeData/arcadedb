@@ -24,6 +24,8 @@ import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -62,6 +64,7 @@ class Issue5214MultiSeriesRangeTest extends TestHelper {
     return "K" + KEY_PAD + String.format("%08d", i);
   }
 
+  @BeforeEach
   @Override
   public void beforeTest() {
     // Disable AUTO compaction so the explicit compaction below is the only one and is not raced by a background one.

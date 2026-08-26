@@ -43,7 +43,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @see <a href="https://github.com/ArcadeData/arcadedb/issues/5026">GitHub Issue #5026</a>
  */
-public class Issue5026TransactionSessionLifecycleIT extends BaseGraphServerTest {
+class Issue5026TransactionSessionLifecycleIT extends BaseGraphServerTest {
   private static final String DATABASE_NAME = "graph";
 
   private String baseUrl(final int serverIndex) {

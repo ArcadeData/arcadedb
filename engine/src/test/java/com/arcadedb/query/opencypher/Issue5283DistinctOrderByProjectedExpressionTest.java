@@ -54,11 +54,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue5283DistinctOrderByProjectedExpressionTest {
+class Issue5283DistinctOrderByProjectedExpressionTest {
   private Database database;
 
   @BeforeEach
-  public void setUp() {
+  void setUp() {
     final DatabaseFactory factory = new DatabaseFactory("./target/databases/issue5283");
     if (factory.exists())
       factory.open().drop();
@@ -72,7 +72,7 @@ public class Issue5283DistinctOrderByProjectedExpressionTest {
   }
 
   @AfterEach
-  public void tearDown() {
+  void tearDown() {
     if (database != null && database.isOpen())
       database.drop();
   }
@@ -92,7 +92,7 @@ public class Issue5283DistinctOrderByProjectedExpressionTest {
    * The exact query from the issue report. Must return the two distinct values ascending.
    */
   @Test
-  public void orderByAliasedProjectedExpression() {
+  void orderByAliasedProjectedExpression() {
     assertThat(column("MATCH (n:BugA) RETURN DISTINCT n.active AS active ORDER BY n.active", "active")) //
         .containsExactly(false, true);
   }
@@ -101,7 +101,7 @@ public class Issue5283DistinctOrderByProjectedExpressionTest {
    * Control from the issue report: ordering by the alias already worked and must keep working.
    */
   @Test
-  public void orderByAliasStillWorks() {
+  void orderByAliasStillWorks() {
     assertThat(column("MATCH (n:BugA) RETURN DISTINCT n.active AS active ORDER BY active", "active")) //
         .containsExactly(false, true);
   }
@@ -110,7 +110,7 @@ public class Issue5283DistinctOrderByProjectedExpressionTest {
    * The rewrite must honour the sort direction of the ORDER BY item, not the projection order.
    */
   @Test
-  public void orderByAliasedProjectedExpressionDescending() {
+  void orderByAliasedProjectedExpressionDescending() {
     assertThat(column("MATCH (n:BugA) RETURN DISTINCT n.active AS active ORDER BY n.active DESC", "active")) //
         .containsExactly(true, false);
   }
@@ -119,7 +119,7 @@ public class Issue5283DistinctOrderByProjectedExpressionTest {
    * Un-aliased projections resolve through the same path: the output column is the expression text.
    */
   @Test
-  public void orderByProjectedExpressionWithoutAlias() {
+  void orderByProjectedExpressionWithoutAlias() {
     assertThat(column("MATCH (n:BugA) RETURN DISTINCT n.age ORDER BY n.age", "n.age")) //
         .containsExactly(10, 20, 30);
   }
@@ -129,7 +129,7 @@ public class Issue5283DistinctOrderByProjectedExpressionTest {
    * projection text and the ORDER BY text cannot cause a spurious UndefinedVariable.
    */
   @Test
-  public void orderByProjectedCompositeExpression() {
+  void orderByProjectedCompositeExpression() {
     // Cypher integer arithmetic widens to 64-bit, hence Long rather than Integer
     assertThat(column("MATCH (n:BugA) RETURN DISTINCT n.age + 1 AS bumped ORDER BY n.age+1", "bumped")) //
         .containsExactly(11L, 21L, 31L);
@@ -139,7 +139,7 @@ public class Issue5283DistinctOrderByProjectedExpressionTest {
    * Same rule applies to WITH DISTINCT, whose ORDER BY is subject to the same narrowed scope.
    */
   @Test
-  public void withDistinctOrderByProjectedExpression() {
+  void withDistinctOrderByProjectedExpression() {
     assertThat(column("MATCH (n:BugA) WITH DISTINCT n.age AS age ORDER BY n.age RETURN age", "age")) //
         .containsExactly(10, 20, 30);
   }
@@ -150,7 +150,7 @@ public class Issue5283DistinctOrderByProjectedExpressionTest {
    * an error - relaxing the scope check must not become "let any pre-DISTINCT variable through".
    */
   @Test
-  public void orderByNonProjectedExpressionStillRejected() {
+  void orderByNonProjectedExpressionStillRejected() {
     assertThatThrownBy(() -> database.query("cypher", "MATCH (n:BugA) RETURN DISTINCT n.active AS active ORDER BY n.name").close())
         .isInstanceOf(CommandSemanticException.class)
         .hasMessageContaining("not defined");
@@ -161,7 +161,7 @@ public class Issue5283DistinctOrderByProjectedExpressionTest {
    * the same variable stays rejected.
    */
   @Test
-  public void orderByDifferentPropertyOfProjectedVariableStillRejected() {
+  void orderByDifferentPropertyOfProjectedVariableStillRejected() {
     assertThatThrownBy(() -> database.query("cypher", "MATCH (n:BugA) RETURN DISTINCT n.age AS age ORDER BY n.active").close())
         .isInstanceOf(CommandSemanticException.class)
         .hasMessageContaining("not defined");

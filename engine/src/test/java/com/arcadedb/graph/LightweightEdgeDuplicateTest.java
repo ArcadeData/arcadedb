@@ -37,7 +37,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class LightweightEdgeDuplicateTest extends TestHelper {
+class LightweightEdgeDuplicateTest extends TestHelper {
 
   @Override
   protected boolean isCheckingDatabaseIntegrity() {

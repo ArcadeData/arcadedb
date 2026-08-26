@@ -43,7 +43,7 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class CypherInEqualitySemanticsIssue5293Test {
+class CypherInEqualitySemanticsIssue5293Test {
   private Database database;
 
   @BeforeEach

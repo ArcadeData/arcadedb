@@ -29,7 +29,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Cypher Verification test for Cost-Based Query Optimizer.
  * Ensures that optimizations are correctly applied by checking EXPLAIN output.
  */
-public class OpenCypherOptimizerVerificationTest extends TestHelper {
+class OpenCypherOptimizerVerificationTest extends TestHelper {
   @Override
   protected void beginTest() {
     // Create schema with properties

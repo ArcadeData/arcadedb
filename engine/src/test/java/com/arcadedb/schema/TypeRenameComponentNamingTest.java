@@ -26,7 +26,6 @@ import com.arcadedb.index.TypeIndex;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -237,7 +236,7 @@ class TypeRenameComponentNamingTest extends TestHelper {
    * {@code Files.move} cannot replace a directory, so it raises the {@code IOException} the rename path wraps.
    */
   @Test
-  void aFailedIndexRenameRollsBackTheIndexesAlreadyRenamed() throws IOException {
+  void aFailedIndexRenameRollsBackTheIndexesAlreadyRenamed() throws Exception {
     database.transaction(() -> {
       final DocumentType type = database.getSchema().createDocumentType("Multi", 1);
       type.createProperty("p1", Type.STRING);
