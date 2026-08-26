@@ -92,7 +92,6 @@ public class UnionStatement implements CypherStatement {
     return queries.get(0);
   }
 
-  // Delegate CypherStatement methods to the first query
   // UNION inherits read-only status from all subqueries
 
   @Override
@@ -103,16 +102,36 @@ public class UnionStatement implements CypherStatement {
     return true;
   }
 
+  /**
+   * A UNION has no {@code MATCH} of its own - each branch has its own, and they can differ (issue #5671):
+   * {@code MATCH (a:P) RETURN a.x AS c UNION MATCH q = (m:P)-->() RETURN q.name AS c} has two entirely different
+   * match shapes, and answering with branch 1's would silently drop branch 2's. Every caller that needs to know
+   * what a branch matches must go through {@link #getQueries()} and decide what a union means for its purpose -
+   * exactly what {@link com.arcadedb.query.opencypher.parser.CypherExpressionWalker} already does by walking each
+   * branch as a nested statement in its own right.
+   *
+   * @throws UnsupportedOperationException always
+   */
   @Override
   public List<MatchClause> getMatchClauses() {
-    return queries.get(0).getMatchClauses();
+    throw new UnsupportedOperationException(
+        "UnionStatement has no single MATCH clause list: branches can differ. Use getQueries() and inspect each branch.");
   }
 
+  /**
+   * @throws UnsupportedOperationException always, for the reason documented on {@link #getMatchClauses()}
+   */
   @Override
   public WhereClause getWhereClause() {
-    return queries.get(0).getWhereClause();
+    throw new UnsupportedOperationException(
+        "UnionStatement has no single WHERE clause: branches can differ. Use getQueries() and inspect each branch.");
   }
 
+  /**
+   * Unlike the other clause accessors, this one is safe to answer from the first branch: {@code validateUnion}
+   * enforces {@code DifferentColumnsInUnion}, so every branch is required to project the same return column
+   * names, which makes branch 1's column names the union's column names.
+   */
   @Override
   public ReturnClause getReturnClause() {
     return queries.get(0).getReturnClause();
@@ -143,6 +162,22 @@ public class UnionStatement implements CypherStatement {
   }
 
   @Override
+  public boolean hasSet() {
+    for (final CypherStatement query : queries)
+      if (query.hasSet())
+        return true;
+    return false;
+  }
+
+  @Override
+  public boolean hasRemove() {
+    for (final CypherStatement query : queries)
+      if (query.hasRemove())
+        return true;
+    return false;
+  }
+
+  @Override
   public OrderByClause getOrderByClause() {
     // For UNION, ORDER BY applies to the final result
     // Currently we don't support ORDER BY after UNION in the grammar
@@ -159,38 +194,67 @@ public class UnionStatement implements CypherStatement {
     return null;
   }
 
+  /**
+   * @throws UnsupportedOperationException always, for the reason documented on {@link #getMatchClauses()}
+   */
   @Override
   public CreateClause getCreateClause() {
-    return queries.get(0).getCreateClause();
+    throw new UnsupportedOperationException(
+        "UnionStatement has no single CREATE clause: branches can differ. Use getQueries() and inspect each branch.");
   }
 
+  /**
+   * @throws UnsupportedOperationException always, for the reason documented on {@link #getMatchClauses()}
+   */
   @Override
   public SetClause getSetClause() {
-    return queries.get(0).getSetClause();
+    throw new UnsupportedOperationException(
+        "UnionStatement has no single SET clause: branches can differ. Use getQueries() and inspect each branch, "
+            + "or hasSet() for the aggregated presence check.");
   }
 
+  /**
+   * @throws UnsupportedOperationException always, for the reason documented on {@link #getMatchClauses()}
+   */
   @Override
   public DeleteClause getDeleteClause() {
-    return queries.get(0).getDeleteClause();
+    throw new UnsupportedOperationException(
+        "UnionStatement has no single DELETE clause: branches can differ. Use getQueries() and inspect each branch.");
   }
 
+  /**
+   * @throws UnsupportedOperationException always, for the reason documented on {@link #getMatchClauses()}
+   */
   @Override
   public MergeClause getMergeClause() {
-    return queries.get(0).getMergeClause();
+    throw new UnsupportedOperationException(
+        "UnionStatement has no single MERGE clause: branches can differ. Use getQueries() and inspect each branch.");
   }
 
+  /**
+   * @throws UnsupportedOperationException always, for the reason documented on {@link #getMatchClauses()}
+   */
   @Override
   public List<UnwindClause> getUnwindClauses() {
-    return queries.get(0).getUnwindClauses();
+    throw new UnsupportedOperationException(
+        "UnionStatement has no single UNWIND clause list: branches can differ. Use getQueries() and inspect each branch.");
   }
 
+  /**
+   * @throws UnsupportedOperationException always, for the reason documented on {@link #getMatchClauses()}
+   */
   @Override
   public List<WithClause> getWithClauses() {
-    return queries.get(0).getWithClauses();
+    throw new UnsupportedOperationException(
+        "UnionStatement has no single WITH clause list: branches can differ. Use getQueries() and inspect each branch.");
   }
 
+  /**
+   * @throws UnsupportedOperationException always, for the reason documented on {@link #getMatchClauses()}
+   */
   @Override
   public List<ClauseEntry> getClausesInOrder() {
-    return queries.get(0).getClausesInOrder();
+    throw new UnsupportedOperationException(
+        "UnionStatement has no single ordered clause list: branches can differ. Use getQueries() and inspect each branch.");
   }
 }

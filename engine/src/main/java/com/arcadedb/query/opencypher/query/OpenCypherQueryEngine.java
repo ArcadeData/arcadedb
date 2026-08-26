@@ -134,9 +134,9 @@ public class OpenCypherQueryEngine implements QueryEngine {
           }
           if (statement.hasDelete())
             ops.add(OperationType.DELETE);
-          if (statement.getSetClause() != null && !statement.getSetClause().isEmpty())
+          if (statement.hasSet())
             ops.add(OperationType.UPDATE);
-          if (!statement.getRemoveClauses().isEmpty())
+          if (statement.hasRemove())
             ops.add(OperationType.UPDATE);
           return ops.isEmpty() ? Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE) : Set.copyOf(ops);
         }

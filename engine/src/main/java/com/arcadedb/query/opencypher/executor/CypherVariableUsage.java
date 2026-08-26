@@ -35,6 +35,7 @@ import com.arcadedb.query.opencypher.ast.RemoveClause;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.ast.SetClause;
 import com.arcadedb.query.opencypher.ast.SubqueryClause;
+import com.arcadedb.query.opencypher.ast.UnionStatement;
 import com.arcadedb.query.opencypher.ast.UnwindClause;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.ast.WithClause;
@@ -316,8 +317,24 @@ public final class CypherVariableUsage {
     if (scope != null && scope.contains(variable))
       return true;
     // Otherwise inspect the inner statement's clauses (e.g. CALL { WITH r ... DELETE r }).
-    final CypherStatement inner = subqueryClause.getInnerStatement();
-    if (inner == null || inner.getClausesInOrder() == null)
+    return innerStatementReferencesVariable(subqueryClause.getInnerStatement(), variable);
+  }
+
+  /**
+   * A UNION has no clauses of its own (issue #5671): each branch is its own statement, so it is checked as
+   * one. A reference in <b>any</b> branch keeps the edge binding alive, matching the conservative,
+   * false-positive-only-costs-the-fast-path policy documented on the CREATE/MERGE case above.
+   */
+  private static boolean innerStatementReferencesVariable(final CypherStatement inner, final String variable) {
+    if (inner == null)
+      return false;
+    if (inner instanceof UnionStatement union) {
+      for (final CypherStatement branch : union.getQueries())
+        if (innerStatementReferencesVariable(branch, variable))
+          return true;
+      return false;
+    }
+    if (inner.getClausesInOrder() == null)
       return false;
     for (final ClauseEntry entry : inner.getClausesInOrder()) {
       switch (entry.getType()) {
