@@ -159,7 +159,9 @@ public abstract class DedicatedThreadPool {
    *                               growth means the pool is undersized for the workload
    * @param reclaimedTasks         cumulative tasks a thread about to wait for them took back out of the queue and ran
    *                               itself, see {@link #runQueuedTaskOnCaller(Runnable)}. Not a fault: it is the pool
-   *                               being busy rather than full, and the waiter being the one thread with nothing to do
+   *                               being busy rather than full, and the waiter being the one thread with nothing to do.
+   *                               Like a caller-runs fallback, and for the same reason, a reclaimed task is counted
+   *                               here and NOT by {@code completedTasks} - no pool thread ran it
    */
   public record PoolStats(int poolSize, int activeThreads, int queueDepth, int queueCapacityRemaining,
                           long completedTasks, long callerRunFallbacks, long reclaimedTasks) {
@@ -273,19 +275,29 @@ public abstract class DedicatedThreadPool {
    * with the caller's thread-locals ({@code DatabaseContext}, transaction bindings, security principal) - which is
    * not a new exposure for any pool with a caller-runs policy, because a rejected task already runs there.
    * <p>
+   * <b>And it runs through {@link #runRejectedTask(Runnable)}, not through a bare {@code task.run()}</b>, so a
+   * reclaim and a caller-runs fallback are the same execution for every pool rather than only for the pools that
+   * do no bookkeeping. {@code AsyncCommandPool} overrides that hook to mark the borrowed thread as one of its own
+   * for the duration, and everything that asks "is this thread itself a dispatched command?" - the async barrier
+   * in {@code DatabaseAsyncExecutorImpl.waitCompletion} above all - has to get the same answer on a reclaimed
+   * task as on a rejected one, or the reclaim reintroduces the self-deadlock that override exists to prevent.
+   * The hook is also what makes a reclaim from a SHUT-DOWN pool end the caller's wait (#4961) instead of leaving
+   * it holding a task the queue no longer has and no worker will run.
+   * <p>
    * Cheap when there is nothing to reclaim: the queue-empty check is one {@code AtomicInteger} read, and only a
    * non-empty queue pays for {@code remove}'s scan.
    *
    * @param task the task to reclaim, i.e. the {@link RunnableFuture} {@code submit()} returned
    *
-   * @return true when the task was reclaimed and has now RUN TO COMPLETION on the calling thread
+   * @return true when the task was taken out of the queue and disposed of here - run to completion, or, on a
+   * shut-down pool whose policy says so, cancelled. Either way the caller's wait for it will not park.
    */
   public final boolean runQueuedTaskOnCaller(final Runnable task) {
     if (task == null || executor.getQueue().isEmpty() || !executor.remove(task))
       return false;
 
     reclaimedTaskCount.incrementAndGet();
-    task.run();
+    runRejectedTask(task);
     return true;
   }
 
@@ -312,9 +324,12 @@ public abstract class DedicatedThreadPool {
   }
 
   /**
-   * Runs a task the queue refused. Overridable for a pool that has to mark the borrowed thread for the duration -
-   * the submitter IS one of this pool's tasks while it runs one, and everything that asks has to get that answer
-   * there too.
+   * Runs a task the queue refused, or one {@link #runQueuedTaskOnCaller(Runnable)} took back out of it. Overridable
+   * for a pool that has to mark the borrowed thread for the duration - the submitter IS one of this pool's tasks
+   * while it runs one, and everything that asks has to get that answer there too.
+   * <p>
+   * Both paths come through here on purpose: a reclaim borrows the caller's thread exactly as a rejection does, so a
+   * subclass that has to know about one has to know about the other.
    */
   protected void runRejectedTask(final Runnable task) {
     if (saturationPolicy == SaturationPolicy.CALLER_RUNS_EVEN_WHEN_SHUT_DOWN || !executor.isShutdown())

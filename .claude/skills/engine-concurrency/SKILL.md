@@ -89,7 +89,12 @@ assertion - which is how #6568 arrived, as a wedged `ParallelScanSafetyTest`.
 
 - `DedicatedThreadPool.runQueuedTaskOnCaller(task)` takes a task the queue accepted but no worker has started back out
   and runs it on the calling thread. `ThreadPoolExecutor.remove` succeeding is the proof no worker has it, so it runs
-  exactly once. It counts into `PoolStats.reclaimedTasks()`.
+  exactly once. It counts into `PoolStats.reclaimedTasks()` (and, like a caller-runs fallback, NOT into
+  `completedTasks` - no pool thread ran it).
+- It runs the task through `runRejectedTask`, the same hook a caller-runs rejection uses, so a reclaim and a fallback
+  are the same execution for every pool. That is what a subclass override has to be able to rely on: `AsyncCommandPool`
+  marks the borrowed thread as one of its own there, and the async barrier reads that mark to avoid waiting for the
+  command it is itself running. A new override on that hook must therefore be correct for BOTH paths.
 - `GraphAlgorithms.awaitFutures(futures, count[, pool])` is the ready-made reclaiming wait, and is what
   `parallelForRange`, `GAVFusedChainOperator` and `PartitionedTriangleOp` use. Prefer it over a bare `Future.get()`
   loop for anything submitted to a `DedicatedThreadPool`.
