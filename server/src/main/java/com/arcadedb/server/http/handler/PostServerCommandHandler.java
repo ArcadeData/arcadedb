@@ -34,6 +34,7 @@ import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.monitor.ServerQueryProfiler;
 import com.arcadedb.server.backup.AutoBackupConfig;
 import com.arcadedb.server.backup.AutoBackupSchedulerPlugin;
+import com.arcadedb.server.backup.BackupCoordinator;
 import com.arcadedb.server.backup.BackupRetentionManager;
 import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.HAServerPlugin;
@@ -64,14 +65,11 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private static final HttpClient HTTP_CLIENT           = HttpClient.newHttpClient();
@@ -1038,9 +1036,6 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
         final Path dbBackupDir = Paths.get(backupDirectory, databaseName);
         if (Files.exists(dbBackupDir) && Files.isDirectory(dbBackupDir)) {
-          final Pattern pattern = Pattern.compile(".*-backup-(\\d{8})-(\\d{6})\\.zip$");
-          final DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
-
           try (var stream = Files.list(dbBackupDir)) {
             stream.filter(p -> p.toString().endsWith(".zip") && p.getFileName().toString().contains("-backup-"))
                 .sorted(Comparator.reverseOrder())
@@ -1055,17 +1050,9 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
                     backup.put("lastModified", 0);
                   }
 
-                  // Parse timestamp from filename
-                  final Matcher matcher = pattern.matcher(p.getFileName().toString());
-                  if (matcher.matches()) {
-                    try {
-                      final String timestampStr = matcher.group(1) + "-" + matcher.group(2);
-                      final LocalDateTime timestamp = LocalDateTime.parse(timestampStr, formatter);
-                      backup.put("timestamp", timestamp.toString());
-                    } catch (final Exception e) {
-                      backup.put("timestamp", JSONObject.NULL);
-                    }
-                  }
+                  // Parse timestamp from filename, through the same convention that wrote it (issue #6753)
+                  final LocalDateTime timestamp = BackupCoordinator.parseArchiveTimestamp(p.getFileName().toString());
+                  backup.put("timestamp", timestamp != null ? timestamp.toString() : JSONObject.NULL);
 
                   backups.put(backup);
                 });
@@ -1097,6 +1084,25 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     Metrics.counter("http.trigger-backup").increment();
 
     final ArcadeDBServer server = httpServer.getServer();
+
+    // This command runs the backup inline, so it is one of the entry points that can have a database being backed up
+    // at the same time as the auto-backup schedule does - down to resolving to the same archive name and writing into
+    // the same file. Refusing outright is the honest answer to "back up a database that is already being backed up":
+    // a second full backup of the same data produces nothing the first one will not, and the caller gets told rather
+    // than silently handed the other run's archive (issue #6753).
+    final BackupCoordinator coordinator = server.getBackupCoordinator();
+    if (!coordinator.begin(databaseName))
+      return new ExecutionResponse(409, new JSONObject().put("error",
+          "A backup of database '" + databaseName + "' is already in progress").toString());
+
+    try {
+      return executeImmediateBackup(server, databaseName);
+    } finally {
+      coordinator.end(databaseName);
+    }
+  }
+
+  private ExecutionResponse executeImmediateBackup(final ArcadeDBServer server, final String databaseName) {
     final AutoBackupSchedulerPlugin plugin = getBackupPlugin(server);
 
     // Try to get backup directory from config (plugin or file)
@@ -1136,9 +1142,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
         final Database database = server.getDatabase(databaseName);
         final Class<?> clazz = Class.forName("com.arcadedb.integration.backup.Backup");
 
-        final String timestamp = LocalDateTime.now()
-            .format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
-        final String backupFileName = databaseName + "-backup-" + timestamp + ".zip";
+        final String backupFileName = server.getBackupCoordinator().newArchiveName(databaseName);
 
         final Path dbBackupPath = Paths.get(backupDirectory, databaseName);
         // Use Files.createDirectories to avoid TOCTOU race condition
@@ -1165,7 +1169,10 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       }
     }
 
-    // Fallback: use SQL command (uses GlobalConfiguration.SERVER_BACKUP_DIRECTORY)
+    // Fallback: use SQL command (uses GlobalConfiguration.SERVER_BACKUP_DIRECTORY). This one does not name the
+    // archive through the coordinator: with no target the SQL statement lets BackupSettings apply its own default,
+    // which is the same convention down to the milliseconds - the coordinator is where that convention was copied
+    // from in the first place.
     try {
       final Database database = server.getDatabase(databaseName);
       try (final var result = database.command("sql", "backup database")) {
