@@ -69,11 +69,11 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
   private boolean       exhausted;
 
   // The page that holds {@code currentBlock}, kept between blocks. The builder packs a dim's blocks
-  // back to back, so well over a hundred default-sized blocks share one 64 KiB page and a sequential walk used to
-  // re-resolve the same page once per block. Each resolution allocated a {@link com.arcadedb.engine.PageId}
-  // and an {@link com.arcadedb.engine.ImmutablePage}, hashed into the page-cache map, and bumped the
-  // cache's global hit counter - an atomic that every parallel-range worker of issue #5518 contends
-  // on. Holding the page collapses all of that to once per page (issue #5467).
+  // back to back, so well over a hundred default-sized blocks share one 64 KiB page and a sequential
+  // walk used to re-resolve the same page once per block. Each resolution allocated a {@code PageId}
+  // and an {@code ImmutablePage}, hashed into the page-cache map, and bumped the cache's global hit
+  // counter - an atomic that every parallel-range worker of issue #5518 contends on. Holding the page
+  // collapses all of that to once per page (issue #5467).
   // <p>
   // Only ABSOLUTE reads are made through {@code pageBuf}: a REPEATABLE_READ transaction hands the
   // same {@code ImmutablePage} - and therefore the same {@link ByteBuffer} - to every cursor that
@@ -522,12 +522,14 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
     final int base = BasePage.PAGE_HEADER_SIZE + meta.blockOffset(currentBlock) + SegmentFormat.BLOCK_HEADER_SIZE;
     final int n = meta.blockPostingCount(currentBlock);
     // The header's posting count is read off the segment file, so it is untrusted input (issue
-    // #6566): the decode arrays are sized to the segment's declared block size, and a count past that
-    // would run off their end. Reject it here so a corrupt header reads as a corrupt segment rather
-    // than as an ArrayIndexOutOfBoundsException from the middle of the decode loop.
-    if (n > blockBuckets.length)
-      throw new IOException(corruptBlockMessage() + " (posting count " + n + " exceeds the segment's block size "
-          + blockBuckets.length + ")");
+    // #6566). Above the segment's declared block size it runs off the end of the decode arrays; at
+    // zero it makes the block report the header's first RID as a posting that is not there.
+    // {@link SparseSegmentBuilder#flushBlock} never writes an empty block, so both are corruption,
+    // and both should read as a corrupt segment rather than as an ArrayIndexOutOfBoundsException
+    // from the middle of the decode loop or as a phantom posting in the result set.
+    if (n <= 0 || n > blockBuckets.length)
+      throw new IOException(corruptBlockMessage() + " (posting count " + n + " is not in 1.." + blockBuckets.length
+          + ", the segment's declared block size)");
     blockSize = n;
     blockBuckets[0] = meta.blockFirstBucketId(currentBlock);
     blockPositions[0] = meta.blockFirstPosition(currentBlock);
@@ -560,10 +562,23 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
           secondField |= ((long) (b & 0x7F)) << shift;
           shift += 7;
         } while ((b & 0x80) != 0);
+        // Strictly ascending RIDs are a write-side invariant that the read side never checked:
+        // SparseSegmentBuilder.appendInternal rejects a non-increasing RID and flushBlock fails loud
+        // on a negative delta, precisely because "a negative delta would silently encode as a huge
+        // unsigned VarInt and decode to a different RID on read". Checking the same thing here is
+        // what turns that into a named error instead of a traversal quietly merging out of order,
+        // and it is what catches a wrapped delta - including the one a tenth VarLong byte produces
+        // when Java discards the payload bits it shifts past bit 63.
         if (bucketDelta == 0L) {
-          prevPosition += secondField;
+          final long nextPosition = prevPosition + secondField;
+          if (nextPosition <= prevPosition)
+            throw new IOException(corruptBlockMessage() + notAscending(prevBucket, prevPosition));
+          prevPosition = nextPosition;
         } else {
-          prevBucket += (int) bucketDelta;
+          final int nextBucket = prevBucket + (int) bucketDelta;
+          if (bucketDelta > Integer.MAX_VALUE || nextBucket <= prevBucket)
+            throw new IOException(corruptBlockMessage() + notAscending(prevBucket, prevPosition));
+          prevBucket = nextBucket;
           prevPosition = secondField;
         }
         blockBuckets[i] = prevBucket;
@@ -577,6 +592,9 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
         p += 4;
         blockPositions[i] = buf.getLong(p);
         p += 8;
+        if (SparseSegmentBuilder.compareRid(blockBuckets[i], blockPositions[i], blockBuckets[i - 1],
+            blockPositions[i - 1]) <= 0)
+          throw new IOException(corruptBlockMessage() + notAscending(blockBuckets[i - 1], blockPositions[i - 1]));
       }
     }
 
@@ -590,6 +608,10 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
     decodedPayloadBytes += (long) (p - base) + (long) n * weightStride;
     blockDecoded = true;
     weightResolved = false;
+  }
+
+  private String notAscending(final int previousBucketId, final long previousPosition) {
+    return " (postings are not in strictly ascending RID order after #" + previousBucketId + ":" + previousPosition + ")";
   }
 
   private String corruptBlockMessage() {

@@ -42,7 +42,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>
  * <b>Corrupt block headers.</b> Decoding used to copy a bounded slice of the page into a scratch
  * buffer, so a header describing more postings than the block really holds ran out of that slice and
- * surfaced as a {@link java.nio.BufferUnderflowException} from the decode loop. Reading the page in
+ * surfaced as a {@code BufferUnderflowException} from the decode loop. Reading the page in
  * place has no slice to run out of, so the decode carries its own bounds checks and reports a corrupt
  * segment by name. The header is untrusted input in the same sense as issue #6566's segment surface:
  * it is whatever is on disk.
@@ -98,7 +98,91 @@ class Issue5467UntrustedBlockAndMemoContractTest extends TestHelper {
             ;
         }).isInstanceOf(IOException.class)
             .hasMessageContaining("segment is corrupt")
-            .hasMessageContaining("exceeds the segment's block size");
+            .hasMessageContaining("is not in 1..");
+      }
+    });
+  }
+
+  /**
+   * A header claiming zero postings is corruption too - {@link SparseSegmentBuilder} never writes an
+   * empty block - and it is the more dangerous of the two, because nothing runs off the end of
+   * anything: the block would simply report the header's first RID as a posting that is not there.
+   */
+  @Test
+  void aZeroPostingCountReadsAsACorruptSegmentRatherThanAPhantomPosting() throws Exception {
+    final AtomicReference<SparseSegmentComponent> component = new AtomicReference<>();
+    inTx(() -> component.set(buildSegment("seg-5467-corrupt-zero", 640)));
+
+    final int[] blockLocator = new int[2];
+    inTx(() -> {
+      final PaginatedSegmentReader reader = new PaginatedSegmentReader(component.get());
+      try (final PaginatedSegmentDimCursor c = reader.openCursor(0)) {
+        blockLocator[0] = c.metadata().blockPageNum(1);
+        blockLocator[1] = c.metadata().blockOffset(1);
+      }
+    });
+
+    inTx(() -> {
+      final MutablePage page = component.get().modifyPage(blockLocator[0]);
+      page.writeShort(blockLocator[1] + 2 * SegmentFormat.RID_SIZE_BYTES, (short) 0);
+    });
+
+    inTx(() -> {
+      final PaginatedSegmentReader reader = new PaginatedSegmentReader(component.get());
+      try (final PaginatedSegmentDimCursor c = reader.openCursor(0)) {
+        assertThatThrownBy(() -> {
+          c.start();
+          while (c.advance())
+            ;
+        }).isInstanceOf(IOException.class)
+            .hasMessageContaining("segment is corrupt")
+            .hasMessageContaining("posting count 0");
+      }
+    });
+  }
+
+  /**
+   * RIDs within a block are strictly ascending by construction: {@code appendInternal} rejects a
+   * non-increasing RID and {@code flushBlock} fails loud on a negative delta, on the stated grounds
+   * that "a negative delta would silently encode as a huge unsigned VarInt and decode to a different
+   * RID on read". The read side has to say the same thing, or a corrupt payload decodes to a
+   * descending or wrapped RID sequence and the merge quietly runs out of order.
+   * <p>
+   * A zero delta pair is the smallest expression of that: it encodes "the same RID again", which no
+   * writer can produce.
+   */
+  @Test
+  void aNonAscendingPostingSequenceReadsAsACorruptSegment() throws Exception {
+    final AtomicReference<SparseSegmentComponent> component = new AtomicReference<>();
+    inTx(() -> component.set(buildSegment("seg-5467-corrupt-order", 640)));
+
+    final int[] blockLocator = new int[2];
+    inTx(() -> {
+      final PaginatedSegmentReader reader = new PaginatedSegmentReader(component.get());
+      try (final PaginatedSegmentDimCursor c = reader.openCursor(0)) {
+        blockLocator[0] = c.metadata().blockPageNum(1);
+        blockLocator[1] = c.metadata().blockOffset(1);
+      }
+    });
+
+    inTx(() -> {
+      final MutablePage page = component.get().modifyPage(blockLocator[0]);
+      final int payloadStart = blockLocator[1] + SegmentFormat.BLOCK_HEADER_SIZE;
+      // (bucketDelta 0, positionDelta 0): a repeat of the previous RID.
+      page.writeByte(payloadStart, (byte) 0x00);
+      page.writeByte(payloadStart + 1, (byte) 0x00);
+    });
+
+    inTx(() -> {
+      final PaginatedSegmentReader reader = new PaginatedSegmentReader(component.get());
+      try (final PaginatedSegmentDimCursor c = reader.openCursor(0)) {
+        assertThatThrownBy(() -> {
+          c.start();
+          while (c.advance())
+            ;
+        }).isInstanceOf(IOException.class)
+            .hasMessageContaining("segment is corrupt")
+            .hasMessageContaining("not in strictly ascending RID order");
       }
     });
   }
