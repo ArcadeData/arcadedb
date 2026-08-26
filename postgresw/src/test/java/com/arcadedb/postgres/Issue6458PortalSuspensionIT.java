@@ -264,22 +264,23 @@ public class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
   }
 
   /**
-   * Regression test for a review finding on PR #6658 (2026-08-24 cycle): {@code bindCommand()}'s
+   * Regression test for a review finding on PR #6658 (2026-08-24 cycle): {@code bindCommand()} used to have a
    * "backwards-compatible fallback" - reached when a Bind's own {@code sourcePreparedStatement} name is not a
-   * real, Parsed prepared statement, so the lookup falls back to treating {@code portalName} itself as the
-   * template ({@code portals.get(portalName)}) - can pick up an already-executed, real portal as that template.
-   * {@link PostgresPortal#bindFrom} copies {@code executed}/{@code cachedResultSet} from whatever template it
-   * is given (safe for the {@code preparedStatements}-map template, which parseCommand writes once and never
-   * mutates afterwards, so its {@code executed} is never true for a real query) but this fallback template is a
-   * normal, mutable portal that may already have run a real query - without a reset, the clone would inherit a
-   * stale {@code executed=true} and stale {@code cachedResultSet} while {@code fullResultSet} stays at its
-   * fresh {@code null} default, so {@code executeCommand()} would skip both its "not yet executed" branch and
-   * its {@code fullResultSet}-pagination branch and serve the OLD run's stale result instead of re-executing
-   * this Bind. Confirmed failing without the reset (second run replays the stale first-run row count instead
-   * of picking up rows inserted in between).
+   * real, Parsed prepared statement - that fell back to treating {@code portalName} itself as the template
+   * ({@code portals.get(portalName)}), which could pick up an already-executed, real portal as that template
+   * and serve its stale result instead of re-executing.
+   * <p>
+   * That fallback no longer exists at all as of #6698/#6707 (d38315e267): an unresolvable
+   * {@code sourcePreparedStatement} now binds a throwaway, do-nothing portal (draining Bind's wire bytes
+   * without executing anything) and, per {@code bindCommand()}'s own comment, "without resurrecting any
+   * previously bound portal" - the old portal under {@code portalName}, if any, is explicitly removed rather
+   * than reused as a fallback template. This is a strictly stronger fix than the reset this test originally
+   * pinned: there is no stale state to serve because nothing is ever resurrected. Confirmed failing (with
+   * {@code 'T'} instead of {@code 'n'}) against the pre-#6707 code, where the fallback still exists and this
+   * Bind would resurrect and re-run the old portal instead of finding it gone.
    */
   @Test
-  void bindFallbackOnAnUnknownSourceStatementReRunsInsteadOfServingTheStaleExecutedPortal() throws Exception {
+  void bindOnAnUnknownSourceStatementClearsAnyExistingPortalInsteadOfServingItsStaleResult() throws Exception {
     try (final Socket socket = new Socket()) {
       socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
@@ -308,45 +309,39 @@ public class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
       assertThat(readOneMessage(in).type).as("CommandComplete - fully drained").isEqualTo('C');
       assertThat(readOneMessage(in).type).as("ReadyForQuery closes this Sync").isEqualTo('Z');
 
-      // Data changes between the two Binds, so a stale vs. fresh cachedResultSet is observable.
+      // Data changes between the two Binds, so a resurrected-and-stale vs. correctly-cleared portal is observable.
       runSimpleQueryToCompletion(out, in, "INSERT INTO FallbackBind6458 SET id = 5");
       runSimpleQueryToCompletion(out, in, "INSERT INTO FallbackBind6458 SET id = 6");
       runSimpleQueryToCompletion(out, in, "INSERT INTO FallbackBind6458 SET id = 7");
 
       // Second Bind on the SAME portal name, naming a source prepared statement that was never Parsed -
-      // bindCommand()'s preparedStatements.get(...) lookup misses, so it falls back to portals.get(portalName),
-      // which is the already-executed PF1 portal from above.
+      // bindCommand()'s preparedStatements.get(...) lookup misses, so it binds a throwaway portal and removes
+      // the already-executed PF1 portal from above instead of resurrecting it.
       sendBind(out, "PF1", "never-parsed-statement-name");
       assertThat(readOneMessage(in).type).as("BindComplete").isEqualTo('2');
       sendExecute(out, "PF1", 0);
       sendSync(out);
       assertThat(readOneMessage(in).type)
-          .as("RowDescription again - this must be a fresh execution, not the stale first run replayed")
-          .isEqualTo('T');
-      assertThat(readNextBatchOfIds(in, 8))
-          .as("re-executes against the now-8-row table instead of replaying the first run's stale 5-row result")
-          .containsExactly(0, 1, 2, 3, 4, 5, 6, 7);
-      assertThat(readOneMessage(in).type).as("CommandComplete - fully drained").isEqualTo('C');
+          .as("PF1 was removed by the Bind above, not resurrected with its stale first-run result")
+          .isEqualTo('n');
       assertThat(readOneMessage(in).type).as("ReadyForQuery closes this Sync").isEqualTo('Z');
     }
   }
 
   /**
-   * Regression test for a review finding on PR #6658 (2026-08-24, cycle 5): the reset added in {@link
-   * #bindFallbackOnAnUnknownSourceStatementReRunsInsteadOfServingTheStaleExecutedPortal}'s fix was gated on
-   * {@code portal.sqlStatement != null}, which correctly excludes BEGIN/COMMIT/ROLLBACK and a RESOLVED
-   * (parameter-less) catalog answer - both precomputed once during Parse - but also, unintentionally, a
-   * DEFERRED catalog query ({@code portal.catalogQuery = true}, set by {@code parseCommand()} when the query
-   * names an emulated catalog relation - {@code pg_class} here - but its filter is a bound parameter whose
-   * value only arrives with Bind). That case's {@code sqlStatement} is null too, but unlike BEGIN/COMMIT/
-   * ROLLBACK it genuinely re-runs the query per Execute in {@code executeCommand()}'s {@code
-   * if (portal.catalogQuery)} branch, so it can go stale through {@code bindCommand()}'s fallback exactly like
-   * the plain-SQL case, just missed by the original gate. Confirmed failing without {@code || portal
-   * .catalogQuery} in the gate (second run replays the stale one-row answer instead of the two rows a type
-   * created in between should have added).
+   * Regression test for a review finding on PR #6658 (2026-08-24, cycle 5): the same fallback as {@link
+   * #bindOnAnUnknownSourceStatementClearsAnyExistingPortalInsteadOfServingItsStaleResult}, but for a DEFERRED
+   * catalog query ({@code portal.catalogQuery = true}, set by {@code parseCommand()} when the query names an
+   * emulated catalog relation - {@code pg_class} here - but its filter is a bound parameter whose value only
+   * arrives with Bind) rather than plain SQL.
+   * <p>
+   * Like the plain-SQL case, the fallback this originally guarded no longer exists as of #6698/#6707
+   * (d38315e267): an unresolvable {@code sourcePreparedStatement} removes the old portal outright instead of
+   * resurrecting it as a template, so there is nothing left that could serve a stale catalog answer. Confirmed
+   * failing (with {@code 'T'} instead of {@code 'n'}) against the pre-#6707 code.
    */
   @Test
-  void bindFallbackOnAnUnknownSourceStatementReRunsADeferredCatalogQueryTooNotJustPlainSql() throws Exception {
+  void bindOnAnUnknownSourceStatementClearsAnExistingDeferredCatalogPortalToo() throws Exception {
     try (final Socket socket = new Socket()) {
       socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
@@ -379,23 +374,20 @@ public class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
       assertThat(readOneMessage(in).type).as("CommandComplete - fully drained").isEqualTo('C');
       assertThat(readOneMessage(in).type).as("ReadyForQuery closes this Sync").isEqualTo('Z');
 
-      // A second matching type appears between the two Binds, so a stale vs. fresh catalog answer is observable.
+      // A second matching type appears between the two Binds, so a resurrected-and-stale vs. correctly-cleared
+      // catalog portal is observable.
       runSimpleQueryToCompletion(out, in, "CREATE DOCUMENT TYPE CatalogFB6458Second IF NOT EXISTS");
 
       // Second Bind on the SAME portal name, naming a source prepared statement that was never Parsed -
-      // bindCommand()'s preparedStatements.get(...) lookup misses, so it falls back to portals.get(portalName),
-      // which is the already-executed PCQ1 catalog-query portal from above.
+      // bindCommand()'s preparedStatements.get(...) lookup misses, so it binds a throwaway portal and removes
+      // the already-executed PCQ1 catalog-query portal from above instead of resurrecting it.
       sendBindWithOneTextParam(out, "PCQ1", "never-parsed-statement-name", "CatalogFB6458%");
       assertThat(readOneMessage(in).type).as("BindComplete").isEqualTo('2');
       sendExecute(out, "PCQ1", 0);
       sendSync(out);
       assertThat(readOneMessage(in).type)
-          .as("RowDescription again - this must be a fresh execution, not the stale first run replayed")
-          .isEqualTo('T');
-      assertThat(readNextBatchOfStrings(in, 2))
-          .as("re-runs the catalog query and picks up the type created in between, instead of replaying the stale one-row answer")
-          .containsExactlyInAnyOrder("CatalogFB6458First", "CatalogFB6458Second");
-      assertThat(readOneMessage(in).type).as("CommandComplete - fully drained").isEqualTo('C');
+          .as("PCQ1 was removed by the Bind above, not resurrected with its stale one-row catalog answer")
+          .isEqualTo('n');
       assertThat(readOneMessage(in).type).as("ReadyForQuery closes this Sync").isEqualTo('Z');
     }
   }
