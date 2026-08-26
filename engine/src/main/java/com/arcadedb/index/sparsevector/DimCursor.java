@@ -345,7 +345,7 @@ public final class DimCursor implements AutoCloseable {
     // MaxScore traversal is a seek, and on a settled index each was walking the source array and
     // running the min-selection pass over a merge that has nothing to merge (issue #5467).
     if (single != null) {
-      if (sourceLive[0] && !single.seekTo(targetBucketId, targetPosition))
+      if (!single.seekTo(targetBucketId, targetPosition))
         sourceLive[0] = false;
       materializeSingle();
       return !exhausted;
