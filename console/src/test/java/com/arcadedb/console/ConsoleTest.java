@@ -419,11 +419,14 @@ class ConsoleTest {
     console.setOutput(output -> buffer.append(output));
 
     assertThatThrownBy(
-        () -> console.parse("select 11 as value; insert into doc content {\"a\": 1 ; select 22 as value"))
+        () -> console.parse("select 11 as value; insert into doc content {\"a\": 1 ; select 99999 as value"))
         .isInstanceOf(ConsoleException.class)
         .hasMessageContaining("Unbalanced '{'");
 
-    assertThat(buffer.toString()).contains("11").contains("ERROR");
+    // "select 99999" IS PART OF THE CORRUPTED TAIL, GLUED TO THE MALFORMED CONTENT CLAUSE BY THE UNCLOSED '{': IT MUST NEVER
+    // REACH THE QUERY ENGINE, NOT EVEN AS A DIGIT SUBSTRING OF A LARGER MATCHED NUMBER
+    final String output = buffer.toString();
+    assertThat(output).contains("11").contains("ERROR").doesNotContain("99999");
   }
 
   @Test
