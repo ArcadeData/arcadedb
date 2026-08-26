@@ -203,8 +203,20 @@ public final class DimCursor implements AutoCloseable {
    * entry point twice ran the memo's two range comparisons twice for one bound. The probe is per
    * aligned term per candidate, which made those comparisons a double-digit share of query CPU on a
    * learned-sparse workload (issue #5467).
+   * <p>
+   * The contract - "the memo already covers this probe" - is not something the compiler can enforce,
+   * and a caller that slipped another {@link #blockMaxAt} or {@link #seekTo} on the same cursor in
+   * between would silently read a bound for the wrong block. The probe is therefore passed in and
+   * checked by an {@code assert}: free when assertions are off, and Surefire runs the test suite with
+   * them on, so the invariant fails loudly the first time somebody breaks it rather than quietly
+   * returning an over-tight bound.
    */
-  RID lastProbedBlockEnd() {
+  RID lastProbedBlockEnd(final int bucketId, final long position) {
+    assert exhausted || (boundsValid
+        && SparseSegmentBuilder.compareRid(bucketId, position, boundsFromBucketId, boundsFromPosition) >= 0
+        && SparseSegmentBuilder.compareRid(bucketId, position, boundsEndBucketId, boundsEndPosition) <= 0) :
+        "lastProbedBlockEnd(" + bucketId + ":" + position + ") on dim " + dimId
+            + ": the block-bounds memo does not cover this probe, so blockMaxAt was not the immediately preceding call";
     return exhausted ? null : boundsEndRid;
   }
 

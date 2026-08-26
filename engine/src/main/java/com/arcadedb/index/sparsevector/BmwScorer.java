@@ -362,7 +362,9 @@ public final class BmwScorer {
    *
    * @return the number of terms in the run, always at least 1
    */
-  private static int collectAlignedRun(final int[] keyBucketIds, final long[] keyPositions, final int[] heap,
+  // Package-private rather than private so BmwScorerHeapRepairTest can pin these invariants against a
+  // hand-built heap, which fails with a small counterexample instead of only as a top-K mismatch.
+  static int collectAlignedRun(final int[] keyBucketIds, final long[] keyPositions, final int[] heap,
       final int heapSize, final int candidateBucketId, final long candidatePosition, final int[] aligned,
       final int[] alignedSlots) {
     aligned[0] = heap[0];
@@ -407,7 +409,7 @@ public final class BmwScorer {
    * comparison per heap child on every candidate to answer a question almost none of them asked
    * (issue #5467).
    */
-  private static void nextEssentialKey(final int[] keyBucketIds, final long[] keyPositions, final int[] heap,
+  static void nextEssentialKey(final int[] keyBucketIds, final long[] keyPositions, final int[] heap,
       final int heapSize, final int[] alignedSlots, final int alignedCount, final int candidateBucketId,
       final long candidatePosition, final long[] frontier) {
     int bestBucketId = -1;
@@ -418,7 +420,11 @@ public final class BmwScorer {
         final int term = heap[child];
         final int bucketId = keyBucketIds[term];
         final long position = keyPositions[term];
-        // A child still sitting on the candidate IS a run slot; the run has not moved yet.
+        // Skip children that are themselves in the run. A run slot's child can be another run slot,
+        // and the run's key IS the candidate, so without this the walk would return the candidate as
+        // the next key after itself and the block-max skip would target where it already is. Testing
+        // the key rather than the slot is what keeps it O(1): no cursor has moved yet, so a child
+        // still sitting on the candidate is exactly a run member (BmwScorerHeapRepairTest pins it).
         if (position == candidatePosition && bucketId == candidateBucketId)
           continue;
         if (bestBucketId < 0 || SparseSegmentBuilder.compareRid(bucketId, position, bestBucketId, bestPosition) < 0) {
@@ -536,7 +542,9 @@ public final class BmwScorer {
       bound += t.queryWeight * t.cursor.blockMaxAt(candidateBucketId, candidatePosition);
       if (bound > threshold)
         return false;
-      final RID be = t.cursor.lastProbedBlockEnd();
+      // Must stay immediately after this term's blockMaxAt for the same probe: that call is what
+      // refreshed the memo the block end is read from.
+      final RID be = t.cursor.lastProbedBlockEnd(candidateBucketId, candidatePosition);
       if (be != null && (minBlockEnd == null || SparseSegmentBuilder.compareRid(be, minBlockEnd) < 0))
         minBlockEnd = be;
     }
@@ -595,7 +603,7 @@ public final class BmwScorer {
    * query, which is why the traversal's single hottest operation is worth the asymmetry
    * (issue #5467).
    */
-  private static void siftDownFromFloyd(final int[] keyBucketIds, final long[] keyPositions, final int[] heap,
+  static void siftDownFromFloyd(final int[] keyBucketIds, final long[] keyPositions, final int[] heap,
       final int size, final int from) {
     int left = (from << 1) + 1;
     if (left >= size)
