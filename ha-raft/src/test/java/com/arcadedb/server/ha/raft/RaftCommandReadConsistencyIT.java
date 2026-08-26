@@ -73,6 +73,9 @@ class RaftCommandReadConsistencyIT extends BaseRaftHATest {
       final long count = withResyncRetry(followerIndex, (final Database db) -> {
         final var rs = db.command("sql", "SELECT count(*) as cnt FROM CmdCtx");
         assertThat(rs.hasNext()).isTrue();
+        // Number, not long: the lambda's inferred return type doesn't narrow the property's declared Object
+        // type the way a directly-typed local assignment would, so an unguarded unbox risks a ClassCastException
+        // if the aggregate ever comes back as Integer instead of Long.
         return ((Number) rs.next().getProperty("cnt")).longValue();
       });
       assertThat(count).as("READ_YOUR_WRITES command() read must see all 25 committed rows").isEqualTo(25);
@@ -87,6 +90,9 @@ class RaftCommandReadConsistencyIT extends BaseRaftHATest {
       final long count = withResyncRetry(followerIndex, (final Database db) -> {
         final var rs = db.command("sql", "SELECT count(*) as cnt FROM CmdCtx");
         assertThat(rs.hasNext()).isTrue();
+        // Number, not long: the lambda's inferred return type doesn't narrow the property's declared Object
+        // type the way a directly-typed local assignment would, so an unguarded unbox risks a ClassCastException
+        // if the aggregate ever comes back as Integer instead of Long.
         return ((Number) rs.next().getProperty("cnt")).longValue();
       });
       assertThat(count).as("LINEARIZABLE command() read must see all 25 committed rows").isEqualTo(25);
