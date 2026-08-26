@@ -36,8 +36,15 @@ import org.junit.jupiter.api.TestInfo;
 
 import java.io.File;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -101,38 +108,7 @@ class Issue6772WriteBeforeSearchPrefixReuseTest {
 
   @Test
   void aSessionThatInsertsBeforeItSearchesStillReusesThePersistedGraphAsAPrefix() throws Exception {
-    // Session 1: build and persist a graph over exactly NUM_VECTORS, then close cleanly - the persisted graph and
-    // its manifest end up describing precisely the first NUM_VECTORS records.
-    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
-      final Database db = factory.create();
-      try {
-        populate(db, 0, NUM_VECTORS);
-        final LSMVectorIndex index = vectorIndex(db);
-        index.buildVectorGraphNow();
-        assertThat(index.getStats().get("graphState")).as("precondition: graph must be built and IMMUTABLE first")
-            .isEqualTo(1L); // GraphState.IMMUTABLE
-        db.close();
-      } finally {
-        if (db.isOpen())
-          db.close();
-      }
-    }
-
-    // Session 2: write GAP_VECTORS more records (committed, so WAL-durable), then crash instead of closing
-    // cleanly, so the persisted graph and manifest stay exactly as session 1 left them - describing only the
-    // first NUM_VECTORS records - while the live vector count grows. Same setup as
-    // Issue6655StaleGraphPrefixReuseTest, which is deliberate: this test differs from that one in session 3 only.
-    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
-      final Database db = factory.open();
-      try {
-        populate(db, NUM_VECTORS, NUM_VECTORS + GAP_VECTORS);
-        ((DatabaseInternal) db).kill();
-        db.close();
-      } finally {
-        if (db.isOpen())
-          db.close();
-      }
-    }
+    buildStalePersistedGraphFixture();
 
     // Session 3: reopen, INSERT ONE VECTOR, and only then search. That single insert is the difference between
     // this test and Issue6655StaleGraphPrefixReuseTest, and on the pre-fix code it is enough to lose the reuse
@@ -237,6 +213,113 @@ class Issue6772WriteBeforeSearchPrefixReuseTest {
             .contains(inSessionDocRid);
       } finally {
         db.drop();
+      }
+    }
+  }
+
+  /**
+   * The same reopen, with several searchers hitting the index at once instead of one.
+   * <p>
+   * The reuse decision is made under {@code graphBuildLock} but the graph is published later, in
+   * {@code reuseStalePrefixGraph()}, after that mutex has been released and re-acquired. The latch is therefore
+   * cleared at PUBLISH time, not at decision time: clearing it at decision time would leave a window in which
+   * {@code graphState} is already MUTABLE (this session wrote before it searched), the latch is false, and
+   * {@code graphIndex} is still null - and a second search thread landing in it would skip
+   * {@code ensureGraphAvailable()} entirely, read the null graph as "small" and run the whole synchronous rebuild
+   * this fix exists to remove, on a race rather than on a promotion (PR #6784 review).
+   * <p>
+   * What is pinned here is what survives that window either way: every concurrent searcher gets a correct answer,
+   * exactly one reuse is published no matter how many threads reached the decision, and each pending vector is
+   * still buffered exactly once - the dedup in {@code reuseStalePrefixGraph()} has to hold when two callers race
+   * for the publish lock, not only when one runs alone.
+   */
+  @Test
+  void concurrentSearchersOnAWroteFirstReopenStillPublishExactlyOneReuse() throws Exception {
+    buildStalePersistedGraphFixture();
+
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+      final Database db = factory.open();
+      try {
+        final LSMVectorIndex index = vectorIndex(db);
+        populate(db, IN_SESSION_DOC_ID, IN_SESSION_DOC_ID + 1);
+        final RID inSessionDocRid = ridOf(db, IN_SESSION_DOC_ID);
+
+        final int searchers = 8;
+        final CyclicBarrier startTogether = new CyclicBarrier(searchers);
+        final List<Callable<List<Pair<RID, Float>>>> tasks = new ArrayList<>(searchers);
+        for (int i = 0; i < searchers; i++)
+          tasks.add(() -> {
+            startTogether.await(30, TimeUnit.SECONDS);
+            return index.findNeighborsFromVector(embedding(IN_SESSION_DOC_ID), 5, 64);
+          });
+
+        final ExecutorService pool = Executors.newFixedThreadPool(searchers);
+        try {
+          for (final Future<List<Pair<RID, Float>>> future : pool.invokeAll(tasks))
+            assertThat(future.get(60, TimeUnit.SECONDS).stream().map(Pair::getFirst))
+                .as("every concurrent searcher must find the vector this session wrote before searching, whether "
+                    + "it published the reuse, waited for it, or was served from the delta buffer alone")
+                .contains(inSessionDocRid);
+        } finally {
+          pool.shutdownNow();
+        }
+
+        assertThat(index.getStats().get("stalePrefixGraphReuses"))
+            .as("exactly one reuse must be published however many threads reached the decision - the losers must "
+                + "discard their work on the graphIndex double-check, not publish a second time")
+            .isEqualTo(1L);
+        assertThat(index.getStats().get("deltaVectorsCount"))
+            .as("and the gap must still be buffered exactly once under contention: %d from the crashed session "
+                + "plus the 1 this session wrote", GAP_VECTORS)
+            .isEqualTo((long) (GAP_VECTORS + 1));
+        assertThat(index.getStats().get("mutationsSinceRebuild"))
+            .as("counted exactly once each, for the same reason")
+            .isEqualTo((long) (GAP_VECTORS + 1));
+
+        // Teardown hygiene, not an assertion about the fix: the reuse kicks off an async rebuild, and dropping the
+        // database out from under it leaves it persisting a graph into files that are going away.
+        Awaitility.await("the async rebuild kicked off by the stale-prefix reuse settles before the drop")
+            .atMost(Duration.ofSeconds(60))
+            .pollInterval(Duration.ofMillis(200))
+            .untilAsserted(() -> assertThat(index.getStats().get("asyncRebuildInProgress")).isZero());
+      } finally {
+        db.drop();
+      }
+    }
+  }
+
+  /**
+   * Sessions 1 and 2, shared by both tests: build and persist a graph over exactly {@code NUM_VECTORS} and close
+   * cleanly, then write {@code GAP_VECTORS} more committed records and CRASH instead of closing, so the persisted
+   * graph and its manifest stay exactly as session 1 left them - describing only the first {@code NUM_VECTORS}
+   * records - while the live vector count grows. Same fixture as {@code Issue6655StaleGraphPrefixReuseTest}, which
+   * is deliberate: these tests differ from that one only in what the reopening session does.
+   */
+  private void buildStalePersistedGraphFixture() {
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+      final Database db = factory.create();
+      try {
+        populate(db, 0, NUM_VECTORS);
+        final LSMVectorIndex index = vectorIndex(db);
+        index.buildVectorGraphNow();
+        assertThat(index.getStats().get("graphState")).as("precondition: graph must be built and IMMUTABLE first")
+            .isEqualTo(1L); // GraphState.IMMUTABLE
+        db.close();
+      } finally {
+        if (db.isOpen())
+          db.close();
+      }
+    }
+
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+      final Database db = factory.open();
+      try {
+        populate(db, NUM_VECTORS, NUM_VECTORS + GAP_VECTORS);
+        ((DatabaseInternal) db).kill();
+        db.close();
+      } finally {
+        if (db.isOpen())
+          db.close();
       }
     }
   }
