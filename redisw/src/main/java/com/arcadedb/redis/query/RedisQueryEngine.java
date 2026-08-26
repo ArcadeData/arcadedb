@@ -37,11 +37,11 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.redis.RedisException;
+import com.arcadedb.redis.RedisIndexKeys;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.schema.Type;
-import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.NumberUtils;
 
@@ -603,7 +603,7 @@ public class RedisQueryEngine implements QueryEngine {
 
         for (int i = 2; i < parts.size(); i++) {
           final String key = parts.get(i);
-          final Object[] keys = parseIndexKey(key);
+          final Object[] keys = RedisIndexKeys.parse(key);
           final IndexCursor cursor = index.get(keys);
           if (cursor.hasNext()) {
             cursor.next().getRecord().delete();
@@ -618,22 +618,9 @@ public class RedisQueryEngine implements QueryEngine {
 
   private Record getRecordByIndex(final String indexName, final String key) {
     final Index index = database.getSchema().getIndexByName(indexName);
-    final Object[] keys = parseIndexKey(key);
+    final Object[] keys = RedisIndexKeys.parse(key);
     final IndexCursor cursor = index.get(keys);
     return cursor.hasNext() ? cursor.next().asDocument() : null;
   }
 
-  private Object[] parseIndexKey(final String key) {
-    if (key.startsWith("[")) {
-      return new JSONArray(key).toList().toArray();
-    } else if (key.startsWith("\"")) {
-      return new String[]{key.substring(1, key.length() - 1)};
-    } else {
-      // Try to parse as number first, then fallback to string
-      if (NumberUtils.isIntegerNumber(key)) {
-        return new Object[]{Long.parseLong(key)};
-      }
-      return new String[]{key};
-    }
-  }
 }

@@ -55,8 +55,16 @@ class DeltaOverlay {
   private final Map<String, Map<Integer, int[]>> outNeighborIndex;
   private final Map<String, Map<Integer, int[]>> inNeighborIndex;
 
-  // Deleted edges per type: edgeType -> set of packed (src << 32 | tgt)
-  private final Map<String, Set<Long>>      deletedEdgesPerType;
+  // Deleted edges per type: edgeType -> packed (src << 32 | tgt) -> number of distinct edges deleted for
+  // that pair. A count rather than a presence flag: two parallel edges between the same pair, only one of
+  // them deleted, must leave the other one discoverable (see #copyBaseExcludingDeleted and issue #6769).
+  private final Map<String, Map<Long, Integer>> deletedEdgesPerType;
+
+  // The deleted edges' own identities, per type. Exists purely to tell a genuinely new deletion apart from
+  // the same edge being reported deleted twice (replayed across merges, or emitted twice within one
+  // TxDelta) when deriving deletedEdgesPerType above - the pair alone cannot make that distinction once a
+  // pair carries more than one parallel edge.
+  private final Map<String, Set<RID>>       deletedEdgeRIDsPerType;
 
   // Per-node deleted edge counts for O(1) lookup: edgeType -> nodeId -> count
   private final Map<String, IntIntHashMap> deletedOutEdgeCounts;
@@ -79,6 +87,7 @@ class DeltaOverlay {
     this.deletedOverflowNodes = new BitSet();
     this.addedEdgesPerType = Collections.emptyMap();
     this.deletedEdgesPerType = Collections.emptyMap();
+    this.deletedEdgeRIDsPerType = Collections.emptyMap();
     this.deletedOutEdgeCounts = Collections.emptyMap();
     this.deletedInEdgeCounts = Collections.emptyMap();
     this.propertyOverrides = Collections.emptyMap();
@@ -97,7 +106,8 @@ class DeltaOverlay {
       final Map<String, Object>[] overflowProperties,
       final BitSet deletedBaseNodes, final BitSet deletedOverflowNodes,
       final Map<String, List<long[]>> addedEdgesPerType,
-      final Map<String, Set<Long>> deletedEdgesPerType,
+      final Map<String, Map<Long, Integer>> deletedEdgesPerType,
+      final Map<String, Set<RID>> deletedEdgeRIDsPerType,
       final Map<String, IntIntHashMap> deletedOutEdgeCounts,
       final Map<String, IntIntHashMap> deletedInEdgeCounts,
       final Map<Integer, Map<String, Object>> propertyOverrides,
@@ -112,6 +122,7 @@ class DeltaOverlay {
     this.deletedOverflowNodes = deletedOverflowNodes;
     this.addedEdgesPerType = addedEdgesPerType;
     this.deletedEdgesPerType = deletedEdgesPerType;
+    this.deletedEdgeRIDsPerType = deletedEdgeRIDsPerType;
     this.deletedOutEdgeCounts = deletedOutEdgeCounts;
     this.deletedInEdgeCounts = deletedInEdgeCounts;
     this.propertyOverrides = propertyOverrides;
@@ -152,9 +163,12 @@ class DeltaOverlay {
     final Map<String, List<long[]>> newAddedEdges = new HashMap<>();
     for (final var entry : addedEdgesPerType.entrySet())
       newAddedEdges.put(entry.getKey(), new ArrayList<>(entry.getValue()));
-    final Map<String, Set<Long>> newDeletedEdges = new HashMap<>();
+    final Map<String, Map<Long, Integer>> newDeletedEdges = new HashMap<>();
     for (final var entry : deletedEdgesPerType.entrySet())
-      newDeletedEdges.put(entry.getKey(), new HashSet<>(entry.getValue()));
+      newDeletedEdges.put(entry.getKey(), new HashMap<>(entry.getValue()));
+    final Map<String, Set<RID>> newDeletedEdgeRIDs = new HashMap<>();
+    for (final var entry : deletedEdgeRIDsPerType.entrySet())
+      newDeletedEdgeRIDs.put(entry.getKey(), new HashSet<>(entry.getValue()));
     final Map<Integer, Map<String, Object>> newPropOverrides = new HashMap<>(propertyOverrides.size());
     for (final var propEntry : propertyOverrides.entrySet())
       newPropOverrides.put(propEntry.getKey(), new HashMap<>(propEntry.getValue()));
@@ -215,8 +229,8 @@ class DeltaOverlay {
         final CSRAdjacencyIndex csr = baseCsrPerType.get(ed.edgeType);
         if (csr != null && csr.hasForwardEdge(srcId, tgtId)) {
           final long packed = packEdge(srcId, tgtId);
-          final Set<Long> prevDel = newDeletedEdges.get(ed.edgeType);
-          final boolean masked = (prevDel != null && prevDel.contains(packed))
+          final Map<Long, Integer> prevDel = newDeletedEdges.get(ed.edgeType);
+          final boolean masked = (prevDel != null && prevDel.containsKey(packed))
               || (sameDeltaDeleted != null && sameDeltaDeleted.contains(packed));
           if (!masked)
             continue; // already represented by the fresh base CSR
@@ -233,17 +247,25 @@ class DeltaOverlay {
       final int tgtId = resolveNodeId(ed.target, baseMapping, newOverflowIds);
       if (srcId < 0 || tgtId < 0)
         continue;
-      // Only decrement when the deletion is new: newDeletedEdges is a Set, so a duplicate
-      // deletion (replayed across merges or emitted twice within one TxDelta) is absorbed by
-      // add() returning false. Decrementing unconditionally would drift the counter negative
-      // and corrupt the compaction trigger (Math.abs(deltaEdgeCount) > threshold). See issue #4587.
-      // Only decrement when the deletion is new: newDeletedEdges is a Set, so a duplicate
-      // deletion (replayed across merges or emitted twice within one TxDelta) is absorbed by
-      // add() returning false. Decrementing unconditionally would drift the counter negative
-      // and corrupt the compaction trigger (Math.abs(deltaEdgeCount) > threshold). See issue #4587.
-      if (newDeletedEdges.computeIfAbsent(ed.edgeType, k -> new HashSet<>())
-          .add(packEdge(srcId, tgtId)))
+      // Only count when the deletion is new: newDeletedEdgeRIDs is keyed by the edge's own identity, so a
+      // duplicate deletion (replayed across merges or emitted twice within one TxDelta) is absorbed by
+      // add() returning false. Counting it again would drift newDeltaEdgeCount negative and corrupt the
+      // compaction trigger (Math.abs(deltaEdgeCount) > threshold, issue #4587) - and, since the per-pair
+      // count below feeds copyBaseExcludingDeleted's exclusion budget, it would also mask a second, still
+      // live, parallel edge that was never actually deleted (issue #6769).
+      // KNOWN GAP (issue #6777): this assumes an edge's RID is never reused while it sits in this set,
+      // but LocalBucket deliberately reuses a slot freed by a delete for a later insert ("hole reuse",
+      // #5279). A different, unrelated edge landing on the same freed slot and later being deleted too
+      // would collide here and have ITS deletion silently dropped. The window this can happen in is
+      // bounded by the same compaction trigger #4587 protects: a full rebuild clears this set entirely
+      // (see the no-delta constructor), so the exposure is at most GraphAnalyticalView.compactionThreshold
+      // (default GraphAnalyticalView.DEFAULT_COMPACTION_THRESHOLD = 10,000) net edge deltas of churn on
+      // one covered edge type - not unbounded, but wide enough to be reachable on a busy graph.
+      if (newDeletedEdgeRIDs.computeIfAbsent(ed.edgeType, k -> new HashSet<>()).add(ed.rid)) {
+        newDeletedEdges.computeIfAbsent(ed.edgeType, k -> new HashMap<>())
+            .merge(packEdge(srcId, tgtId), 1, Integer::sum);
         newDeltaEdgeCount--;
+      }
     }
 
     // Process property updates
@@ -265,7 +287,7 @@ class DeltaOverlay {
         Collections.unmodifiableMap(newOverflowIds),
         overflowRIDsList.toArray(new RID[0]),
         overflowPropsList.toArray(new Map[0]),
-        newDeleted, newDeletedOverflow, newAddedEdges, newDeletedEdges,
+        newDeleted, newDeletedOverflow, newAddedEdges, newDeletedEdges, newDeletedEdgeRIDs,
         newDelOutCounts, newDelInCounts, newPropOverrides,
         newOutIndex, newInIndex,
         newOverflowCount, newDeltaEdgeCount);
@@ -312,8 +334,18 @@ class DeltaOverlay {
   }
 
   boolean isEdgeDeleted(final String edgeType, final int srcId, final int tgtId) {
-    final Set<Long> deleted = deletedEdgesPerType.get(edgeType);
-    return deleted != null && deleted.contains(packEdge(srcId, tgtId));
+    return countDeletedEdges(edgeType, srcId, tgtId) > 0;
+  }
+
+  /**
+   * Returns how many distinct edges of {@code edgeType} between {@code srcId} and {@code tgtId} the
+   * overlay has recorded as deleted - the exclusion budget {@link GraphAnalyticalView#copyBaseExcludingDeleted}
+   * spends against the base CSR's parallel-edge run for that pair, so that deleting one of several
+   * parallel edges leaves the others discoverable instead of masking the whole pair (issue #6769).
+   */
+  int countDeletedEdges(final String edgeType, final int srcId, final int tgtId) {
+    final Map<Long, Integer> deleted = deletedEdgesPerType.get(edgeType);
+    return deleted == null ? 0 : deleted.getOrDefault(packEdge(srcId, tgtId), 0);
   }
 
   /**
@@ -448,15 +480,16 @@ class DeltaOverlay {
    * @param outgoing true for outgoing counts (keyed by source), false for incoming (keyed by target)
    */
   private static Map<String, IntIntHashMap> buildDeletedEdgeCounts(
-      final Map<String, Set<Long>> deletedEdges, final boolean outgoing) {
+      final Map<String, Map<Long, Integer>> deletedEdges, final boolean outgoing) {
     if (deletedEdges.isEmpty())
       return Collections.emptyMap();
     final Map<String, IntIntHashMap> result = new HashMap<>();
     for (final var entry : deletedEdges.entrySet()) {
       final IntIntHashMap counts = new IntIntHashMap();
-      for (final long packed : entry.getValue()) {
+      for (final var pairEntry : entry.getValue().entrySet()) {
+        final long packed = pairEntry.getKey();
         final int nodeId = outgoing ? (int) (packed >>> 32) : (int) packed;
-        counts.increment(nodeId);
+        counts.add(nodeId, pairEntry.getValue());
       }
       result.put(entry.getKey(), counts);
     }

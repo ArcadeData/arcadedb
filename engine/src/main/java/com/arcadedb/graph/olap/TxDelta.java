@@ -71,11 +71,17 @@ class TxDelta {
     final String edgeType;
     final RID    source;
     final RID    target;
+    // The deleted/added edge's own identity. For deletedEdges this is what lets DeltaOverlay.merge()
+    // tell "the same edge reported twice" (replayed across merges, or emitted twice within one TxDelta -
+    // must not double-count) apart from "two distinct parallel edges between the same pair" (must each
+    // count, see issue #6769).
+    final RID    rid;
 
-    EdgeDelta(final String edgeType, final RID source, final RID target) {
+    EdgeDelta(final String edgeType, final RID source, final RID target, final RID rid) {
       this.edgeType = edgeType;
       this.source = source;
       this.target = target;
+      this.rid = rid;
     }
   }
 }

@@ -32,7 +32,6 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.schema.Type;
-import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.network.PreAuthConnectionGate;
@@ -501,15 +500,7 @@ public class RedisNetworkExecutor extends Thread {
         for (int i = 2; i < list.size(); i++) {
           final String key = (String) list.get(i);
 
-          final Object[] keys;
-          if (key.startsWith("[")) {
-            keys = new JSONArray(key).toList().toArray();
-          } else if (key.startsWith("\"")) {
-            keys = new String[]{key.substring(1, key.length() - 1)};
-          } else
-            keys = new String[]{key};
-
-          final IndexCursor cursor = index.get(keys);
+          final IndexCursor cursor = index.get(RedisIndexKeys.parse(key));
           if (cursor.hasNext()) {
             cursor.next().getRecord().delete();
             deleted[0]++;
@@ -1244,15 +1235,7 @@ public class RedisNetworkExecutor extends Thread {
 
       final Index index = database.getSchema().getIndexByName(keyType);
 
-      final Object[] keys;
-      if (key.startsWith("[")) {
-        keys = new JSONArray(key).toList().toArray();
-      } else if (key.startsWith("\"")) {
-        keys = new String[]{key.substring(1, key.length() - 1)};
-      } else
-        keys = new String[]{key};
-
-      final IndexCursor cursor = index.get(keys);
+      final IndexCursor cursor = index.get(RedisIndexKeys.parse(key));
       record = cursor.hasNext() ? cursor.next().asDocument() : null;
     }
     return record;
@@ -1295,16 +1278,7 @@ public class RedisNetworkExecutor extends Thread {
       final Index index = database.getSchema().getIndexByName(keyType);
 
       for (final Object key : keys) {
-        final String k = key.toString();
-        final Object[] compositeKey;
-        if (k.startsWith("[")) {
-          compositeKey = new JSONArray(k).toList().toArray();
-        } else if (k.startsWith("\"")) {
-          compositeKey = new String[]{k.substring(1, k.length() - 1)};
-        } else
-          compositeKey = new String[]{k};
-
-        final IndexCursor cursor = index.get(compositeKey);
+        final IndexCursor cursor = index.get(RedisIndexKeys.parse(key.toString()));
         records.add(cursor.hasNext() ? cursor.next().asDocument() : null);
       }
     }

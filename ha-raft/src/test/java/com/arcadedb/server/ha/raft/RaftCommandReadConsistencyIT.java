@@ -61,15 +61,23 @@ class RaftCommandReadConsistencyIT extends BaseRaftHATest {
 
     final long bookmark = leaderRaft.getLastAppliedIndex();
 
-    final Database followerDb = getServerDatabase(followerIndex, getDatabaseName());
+    // Each read below is resolved through withResyncRetry rather than a Database handle captured once (see its
+    // javadoc): an HA snapshot-reinstall resync (issue #5977 pattern) can close and reinstall the follower's
+    // database in the gap between resolving a handle and this read reaching it, which surfaced as a flaky
+    // DatabaseIsClosedException rather than a defect in the read-consistency behaviour under test (issue #6770).
 
     // READ_YOUR_WRITES via command(): the barrier must wait until the follower applied the bookmark.
     try {
       RaftReplicatedDatabase.applyReadConsistencyContext(
           Database.READ_CONSISTENCY.READ_YOUR_WRITES, bookmark);
-      final var rs = followerDb.command("sql", "SELECT count(*) as cnt FROM CmdCtx");
-      assertThat(rs.hasNext()).isTrue();
-      final long count = rs.next().getProperty("cnt");
+      final long count = withResyncRetry(followerIndex, (final Database db) -> {
+        final var rs = db.command("sql", "SELECT count(*) as cnt FROM CmdCtx");
+        assertThat(rs.hasNext()).isTrue();
+        // Number, not long: the lambda's inferred return type doesn't narrow the property's declared Object
+        // type the way a directly-typed local assignment would, so an unguarded unbox risks a ClassCastException
+        // if the aggregate ever comes back as Integer instead of Long.
+        return ((Number) rs.next().getProperty("cnt")).longValue();
+      });
       assertThat(count).as("READ_YOUR_WRITES command() read must see all 25 committed rows").isEqualTo(25);
     } finally {
       RaftReplicatedDatabase.removeReadConsistencyContext();
@@ -79,9 +87,14 @@ class RaftCommandReadConsistencyIT extends BaseRaftHATest {
     try {
       RaftReplicatedDatabase.applyReadConsistencyContext(
           Database.READ_CONSISTENCY.LINEARIZABLE, -1);
-      final var rs = followerDb.command("sql", "SELECT count(*) as cnt FROM CmdCtx");
-      assertThat(rs.hasNext()).isTrue();
-      final long count = rs.next().getProperty("cnt");
+      final long count = withResyncRetry(followerIndex, (final Database db) -> {
+        final var rs = db.command("sql", "SELECT count(*) as cnt FROM CmdCtx");
+        assertThat(rs.hasNext()).isTrue();
+        // Number, not long: the lambda's inferred return type doesn't narrow the property's declared Object
+        // type the way a directly-typed local assignment would, so an unguarded unbox risks a ClassCastException
+        // if the aggregate ever comes back as Integer instead of Long.
+        return ((Number) rs.next().getProperty("cnt")).longValue();
+      });
       assertThat(count).as("LINEARIZABLE command() read must see all 25 committed rows").isEqualTo(25);
     } finally {
       RaftReplicatedDatabase.removeReadConsistencyContext();

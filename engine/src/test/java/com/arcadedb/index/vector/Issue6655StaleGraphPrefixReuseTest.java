@@ -67,7 +67,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Roberto Franchini (r.franchini@arcadedata.com)
  */
-@Tag("slow")
+// Spends most of its time waiting on the async rebuild LSMVectorIndex.REBUILD_SEMAPHORE serializes
+// JVM-wide (see CLAUDE.md's @Tag("vector") note) - the vector lane is where that convoy costs nobody
+// else anything; the slow lane still has other REBUILD_SEMAPHORE waiters this one would convoy against.
+@Tag("vector")
 class Issue6655StaleGraphPrefixReuseTest {
   private static final String DB_ROOT         = "target/test-databases/Issue6655StaleGraphPrefixReuseTest";
   private static final int    DIMENSIONS      = 128;
