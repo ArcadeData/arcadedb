@@ -124,12 +124,27 @@ public abstract class PaginatedComponent extends Component {
           "Component '" + name + "' was built with version " + version + " but its file '" + file.getFilePath()
               + "' has version " + file.getVersion());
 
+    // `fileSize == 0` is not a special case: 0 / pageSize is already 0, so the division below covers it too.
     final long fileSize = file.getSize();
-    if (fileSize == 0)
-      // NEW FILE, CREATE HEADER PAGE
-      pageCount.set(0);
-    else
-      pageCount.set((int) (fileSize / pageSize));
+    pageCount.set((int) (fileSize / pageSize));
+
+    // A file killed part way through writing a page leaves a tail shorter than one whole page, which the division
+    // above silently floors away: nothing counts it, nothing repairs it. Unlike the file-id (#6283) and page-size
+    // (#6314) guards above, this is NOT a tripwire, because the two thrown cases are programming errors that
+    // cannot exist in a file written by a correct build, while a torn tail is exactly what a power cut produces -
+    // refusing to open on it would turn an ordinary crash into a database that a previous build opened happily
+    // into one this one won't. It is also not silent content loss for a bucket or index: the next page appended
+    // to this file lands at `pageCount * pageSize` (see PaginatedComponentFile.write()), overwriting the stray
+    // bytes wholesale rather than reading them, so the only cost is the wasted bytes on disk until that happens.
+    final long tailBytes = fileSize % pageSize;
+    if (tailBytes != 0)
+      LogManager.instance().log(this, Level.WARNING,
+          "Component '%s' file '%s' has a length (%d bytes) that is not a multiple of its page size (%d bytes): "
+              + "%d trailing bytes past the last complete page (page count %d) are not a complete page and were ignored. This is consistent with "
+              + "the process being killed while writing that page; it will be overwritten the next time a page is "
+              + "appended to this file",
+          null, name, file.getFilePath(), fileSize, pageSize, tailBytes, pageCount.get());
+
     reservedPageCounter.set(pageCount.get());
   }
 
