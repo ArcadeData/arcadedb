@@ -227,38 +227,44 @@ class Issue5467UntrustedBlockAndMemoContractTest extends TestHelper {
   }
 
   /**
-   * {@link DimCursor#lastProbedBlockEnd} may only be called for the probe the preceding
-   * {@link DimCursor#blockMaxAt} refreshed the memo with. Calling it for any other probe must fail,
-   * and it must fail <i>here</i>, in the test suite, rather than in production where assertions are
-   * off and the caller would silently get a bound for the wrong block.
+   * {@link DimCursor#blockBoundsAt} must hand back exactly what the two single-edge readers would for
+   * the same probe. Fusing them is what lets the block-max skip consult the memo once instead of
+   * twice, so it is worth pinning that the fusion is faithful and not merely fast - and that the pair
+   * it returns belongs to one probe, which is the property an earlier version of this fix left to a
+   * temporal contract nothing could enforce outside the test suite.
    */
   @Test
-  void theBlockBoundsMemoContractIsEnforcedWhileTheSuiteRunsWithAssertions() throws Exception {
-    boolean assertionsEnabled = false;
-    assert assertionsEnabled = true;
-    assertThat(assertionsEnabled)
-        .as("lastProbedBlockEnd's contract is enforced by a Java assert, so the suite must run with -ea "
-            + "(Surefire enables assertions by default); without it this guard is not present at all")
-        .isTrue();
-
+  void theFusedBlockBoundsMatchBothSingleEdgeReadersForTheSameProbe() throws Exception {
     final AtomicReference<SparseSegmentComponent> component = new AtomicReference<>();
-    inTx(() -> component.set(buildSegment("seg-5467-memo-contract", 640)));
+    inTx(() -> component.set(buildSegment("seg-5467-fused-bounds", 640)));
 
     inTx(() -> {
       final PaginatedSegmentReader reader = new PaginatedSegmentReader(component.get());
-      try (final DimCursor c = new DimCursor(0, List.of(reader.openCursor(0)))) {
-        c.start();
-        final int probeBucketId = c.currentBucketId();
-        final long probePosition = c.currentPosition();
+      try (final DimCursor probe = new DimCursor(0, List.of(reader.openCursor(0)));
+          final DimCursor viaMax = new DimCursor(0, List.of(reader.openCursor(0)));
+          final DimCursor viaEnd = new DimCursor(0, List.of(reader.openCursor(0)))) {
+        probe.start();
+        viaMax.start();
+        viaEnd.start();
 
-        // The sanctioned pairing: refresh the memo, then read the block end it goes with.
-        assertThat(c.blockMaxAt(probeBucketId, probePosition)).isGreaterThan(0.0f);
-        assertThat(c.lastProbedBlockEnd(probeBucketId, probePosition)).isNotNull();
+        final RID[] endOut = new RID[1];
+        int checked = 0;
+        // Walk far enough to cross several block boundaries, which is where a memo that answered for
+        // the wrong probe would start disagreeing.
+        while (!probe.isExhausted() && checked < 400) {
+          final int bucketId = probe.currentBucketId();
+          final long position = probe.currentPosition();
 
-        // Any other probe is a misuse, and the assert has to say so.
-        assertThatThrownBy(() -> c.lastProbedBlockEnd(probeBucketId, probePosition - 1_000_000L))
-            .isInstanceOf(AssertionError.class)
-            .hasMessageContaining("the block-bounds memo does not cover this probe");
+          final float fusedMax = probe.blockBoundsAt(bucketId, position, endOut);
+          assertThat(fusedMax).isEqualTo(viaMax.blockMaxAt(bucketId, position));
+          assertThat(endOut[0]).isEqualTo(viaEnd.blockEndAt(bucketId, position));
+          assertThat(endOut[0]).as("a sealed segment always bounds a finite block end").isNotNull();
+          checked++;
+
+          if (!probe.advance())
+            break;
+        }
+        assertThat(checked).as("the walk must actually cross block boundaries").isGreaterThan(3 * PARAMS.blockSize());
       }
     });
   }

@@ -462,9 +462,16 @@ public final class PaginatedSegmentReader implements AutoCloseable {
    * Page-cache fetch of one page of this segment, for a cursor that decodes block payloads in place
    * on it rather than copying them out (issue #5467).
    * <p>
-   * Callers must only make ABSOLUTE reads through the returned page's buffer: under
-   * {@code REPEATABLE_READ} the transaction caches the page image and hands the same object to every
-   * caller in the transaction, so the buffer's position is shared state.
+   * Two conditions come with holding the returned page rather than copying out of it, and both are
+   * properties of THIS class's subject - a sealed segment - not of {@code readPage} in general:
+   * <ul>
+   *   <li>callers must only make ABSOLUTE reads through the page's buffer, because under
+   *       {@code REPEATABLE_READ} the transaction caches the page image and hands the same object to
+   *       every caller in the transaction, so the buffer's position is shared state;</li>
+   *   <li>the bytes may be read after the call returns only because a sealed segment is never written
+   *       again. A reader over a component that is still being appended to could not keep the page,
+   *       and would have to copy.</li>
+   * </ul>
    */
   BasePage readPage(final int pageNum) {
     return component.readPage(pageNum);

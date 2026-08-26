@@ -245,6 +245,7 @@ public final class BmwScorer {
     final int[] aligned = new int[n];  // scratch: the term indices sitting on the current candidate
     final int[] alignedSlots = new int[n];  // scratch: the heap slots those term indices occupy
     final long[] frontier = new long[2];    // scratch: (bucketId, position) of the next essential key
+    final RID[] blockEndOut = new RID[1];   // scratch: the block end paired with each block-max probe
     // Cursor positions, mirrored into flat arrays indexed by term. The heap reads a position far
     // more often than a cursor moves - about a dozen comparisons per posting consumed - and reading
     // it off the cursor costs two dependent loads through scattered objects. Mirroring turns each
@@ -299,7 +300,7 @@ public final class BmwScorer {
           candidatePosition, aligned, alignedSlots);
 
       if (!tryBlockMaxSkip(terms, keyBucketIds, keyPositions, aligned, alignedSlots, alignedCount, prefix[split],
-          candidateBucketId, candidatePosition, threshold, heap, heapSize, frontier))
+          candidateBucketId, candidatePosition, threshold, heap, heapSize, frontier, blockEndOut))
         scoreCandidate(terms, keyBucketIds, keyPositions, aligned, alignedCount, split, prefix, candidateBucketId,
             candidatePosition, threshold, collector);
 
@@ -531,7 +532,7 @@ public final class BmwScorer {
   private static boolean tryBlockMaxSkip(final DimEntry[] terms, final int[] keyBucketIds, final long[] keyPositions,
       final int[] aligned, final int[] alignedSlots, final int alignedCount, final float nonEssentialCeiling,
       final int candidateBucketId, final long candidatePosition, final float threshold, final int[] heap, final int heapSize,
-      final long[] frontier) throws IOException {
+      final long[] frontier, final RID[] blockEndOut) throws IOException {
     float bound = nonEssentialCeiling;
     if (bound > threshold)
       return false;  // no headroom at all (threshold still NEGATIVE_INFINITY, or an all-essential query).
@@ -539,12 +540,12 @@ public final class BmwScorer {
     RID minBlockEnd = null;
     for (int j = 0; j < alignedCount; j++) {
       final DimEntry t = terms[aligned[j]];
-      bound += t.queryWeight * t.cursor.blockMaxAt(candidateBucketId, candidatePosition);
+      // One call for both edges of this term's bound: the memo is consulted once, and the block end
+      // cannot belong to a different probe than the max it is paired with.
+      bound += t.queryWeight * t.cursor.blockBoundsAt(candidateBucketId, candidatePosition, blockEndOut);
       if (bound > threshold)
         return false;
-      // Must stay immediately after this term's blockMaxAt for the same probe: that call is what
-      // refreshed the memo the block end is read from.
-      final RID be = t.cursor.lastProbedBlockEnd(candidateBucketId, candidatePosition);
+      final RID be = blockEndOut[0];
       if (be != null && (minBlockEnd == null || SparseSegmentBuilder.compareRid(be, minBlockEnd) < 0))
         minBlockEnd = be;
     }

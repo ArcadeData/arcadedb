@@ -195,29 +195,36 @@ public final class DimCursor implements AutoCloseable {
   }
 
   /**
-   * The block end that pairs with the block max returned by the immediately preceding
-   * {@link #blockMaxAt(int, long)} on this cursor - the same value {@link #blockEndAt(int, long)}
-   * would return for that same probe, without re-checking whether the memo covers it.
+   * Both edges of the Block-Max bound for one probe: the merged block max as the return value, and
+   * the merged block end in {@code endOut[0]}.
    * <p>
-   * The block-max skip always asks for both edges of the same probe, so going through the public
-   * entry point twice ran the memo's two range comparisons twice for one bound. The probe is per
-   * aligned term per candidate, which made those comparisons a double-digit share of query CPU on a
-   * learned-sparse workload (issue #5467).
+   * The block-max skip needs both for the same probe, and asking for them through
+   * {@link #blockMaxAt(int, long)} and {@link #blockEndAt(int, long)} ran the memo's two range
+   * comparisons twice for one bound - per aligned term per candidate, which made them a double-digit
+   * share of query CPU on a learned-sparse workload (issue #5467).
    * <p>
-   * The contract - "the memo already covers this probe" - is not something the compiler can enforce,
-   * and a caller that slipped another {@link #blockMaxAt} or {@link #seekTo} on the same cursor in
-   * between would silently read a bound for the wrong block. The probe is therefore passed in and
-   * checked by an {@code assert}: free when assertions are off, and Surefire runs the test suite with
-   * them on, so the invariant fails loudly the first time somebody breaks it rather than quietly
-   * returning an over-tight bound.
+   * Handing both back from one call is what keeps that cheap <b>without</b> creating a temporal
+   * contract to get wrong. An earlier version of this fix exposed the block end as a separate reader
+   * that assumed the caller had just refreshed the memo with the same probe; that is invisible to the
+   * compiler, and a caller inserting another {@link #blockMaxAt} or {@link #seekTo} between the two
+   * would have got a bound for the wrong block - which shows up not as a crash but as an
+   * over-aggressive skip quietly dropping a document from the top-K. Here the pairing is structural:
+   * there is no window in which the two can disagree.
+   *
+   * @param endOut single-slot scratch array, owned by the caller, that receives the block end (or
+   *               {@code null} when no live source bounds a finite one). Reporting a float and an
+   *               object from one call without allocating per candidate is what it is for.
+   *
+   * @return the merged block max, or {@code 0} when the cursor is exhausted
    */
-  RID lastProbedBlockEnd(final int bucketId, final long position) {
-    assert exhausted || (boundsValid
-        && SparseSegmentBuilder.compareRid(bucketId, position, boundsFromBucketId, boundsFromPosition) >= 0
-        && SparseSegmentBuilder.compareRid(bucketId, position, boundsEndBucketId, boundsEndPosition) <= 0) :
-        "lastProbedBlockEnd(" + bucketId + ":" + position + ") on dim " + dimId
-            + ": the block-bounds memo does not cover this probe, so blockMaxAt was not the immediately preceding call";
-    return exhausted ? null : boundsEndRid;
+  float blockBoundsAt(final int bucketId, final long position, final RID[] endOut) {
+    if (exhausted) {
+      endOut[0] = null;
+      return 0.0f;
+    }
+    ensureBlockBounds(bucketId, position);
+    endOut[0] = boundsEndRid;
+    return boundsBlockMax;
   }
 
   /**
