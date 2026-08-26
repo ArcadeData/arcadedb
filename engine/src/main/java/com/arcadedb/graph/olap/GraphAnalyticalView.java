@@ -2193,25 +2193,25 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     final DeltaOverlay ov = snap.overlay;
     final boolean nodeAInBase = nodeA < snap.nodeMapping.size();
 
-    // Check base CSR
+    // Check base CSR. A pair with parallel edges stays connected as long as at least one of them
+    // survives, so the base occurrence count is compared against the overlay's exact deleted count
+    // for the pair rather than treating any deletion as removing the whole pair (issue #6769).
     if (csr != null && nodeAInBase) {
       if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
-        if (ov != null && ov.isEdgeDeleted(edgeType, nodeA, nodeB)) { /* deleted */ }
-        else {
-          final int[] neighbors = csr.getForwardNeighbors();
-          final int[] offsets = csr.getForwardOffsets();
-          if (Arrays.binarySearch(neighbors, offsets[nodeA], offsets[nodeA + 1], nodeB) >= 0)
-            return true;
-        }
+        final int[] neighbors = csr.getForwardNeighbors();
+        final int[] offsets = csr.getForwardOffsets();
+        final int occurrences = equalRangeCount(neighbors, offsets[nodeA], offsets[nodeA + 1], nodeB);
+        final int deleted = ov != null ? ov.countDeletedEdges(edgeType, nodeA, nodeB) : 0;
+        if (occurrences > deleted)
+          return true;
       }
       if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH) {
-        if (ov != null && ov.isEdgeDeleted(edgeType, nodeB, nodeA)) { /* deleted */ }
-        else {
-          final int[] neighbors = csr.getBackwardNeighbors();
-          final int[] offsets = csr.getBackwardOffsets();
-          if (Arrays.binarySearch(neighbors, offsets[nodeA], offsets[nodeA + 1], nodeB) >= 0)
-            return true;
-        }
+        final int[] neighbors = csr.getBackwardNeighbors();
+        final int[] offsets = csr.getBackwardOffsets();
+        final int occurrences = equalRangeCount(neighbors, offsets[nodeA], offsets[nodeA + 1], nodeB);
+        final int deleted = ov != null ? ov.countDeletedEdges(edgeType, nodeB, nodeA) : 0;
+        if (occurrences > deleted)
+          return true;
       }
     }
 
@@ -2239,16 +2239,16 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * backward side is skipped when the two nodes are the same, which is what the OLTP expansion
    * achieves by de-duplicating on edge identity.
    * <p>
-   * <b>Why a deleted pair is answered "unknown" rather than zero.</b> {@link DeltaOverlay} keys its
-   * pending deletions on the {@code (source, target)} pair, not on the edge, because the CSR holds
-   * adjacency ids and has no edge identity to key on. Deleting one of three parallel edges therefore
-   * marks the whole pair, and every read that consults the mask drops all three - which is what
-   * {@link #isConnectedTo} and {@link #getNeighborIds} do, and it is why they report a pair as gone
-   * while two of its edges remain. A boolean can absorb that; a count cannot, because the caller
-   * turns it directly into rows. So a masked pair is reported unknown and the caller walks the edge
-   * list, which is exact. Resolving it here instead would take per-edge identity in the CSR, and a
-   * per-pair counter cannot substitute: the overlay absorbs a deletion replayed across merges by
-   * set semantics (issue #4587), which a counter would double-count.
+   * <b>Why a deleted pair is still answered "unknown" rather than the exact survivor count.</b>
+   * {@link DeltaOverlay} now tracks an exact per-pair deleted count (issue #6769), which is exactly
+   * what {@link #isConnectedTo} and {@link #getNeighborIds} compare against the base CSR's occurrence
+   * count for the pair to keep the surviving parallel edges discoverable. This method could do the
+   * same arithmetic and return an exact number, but a pattern hop turns the count directly into rows,
+   * and getting that arithmetic wrong silently produces the wrong row count rather than an exception -
+   * so it keeps the conservative "unknown" answer here and leaves
+   * {@code com.arcadedb.query.opencypher.executor.operators.GAVExpandInto}'s existing OLTP fallback
+   * to do the exact counting, which it already had to have for the "vertex not in the GAV mapping"
+   * case anyway.
    */
   private long countBetweenForType(final Snapshot snap, final int nodeA, final int nodeB,
       final Vertex.DIRECTION direction, final String edgeType) {
@@ -2441,20 +2441,34 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * for an incoming slice it represents {@code n -> nodeId}. When no relevant deletions exist the original slice is
    * returned verbatim to keep the no-deletion case allocation-cheap.
    * <p>
+   * The slice is sorted, so parallel edges to the same neighbour form a contiguous run; {@link DeltaOverlay
+   * #countDeletedEdges} gives the number of THOSE parallel edges the overlay recorded as deleted, and only that
+   * many slots of the run are excluded - not the whole run - so deleting one of several parallel edges between a
+   * pair leaves the others discoverable instead of masking the whole pair (issue #6769).
+   * <p>
    * The caller only reaches this helper on the slow path, which is taken precisely when an overlay is present, so
    * {@code ov} is always non-null here (the {@code ov == null} fast paths in {@link #getNeighborsFromCSR} return earlier).
    */
   private static int[] copyBaseExcludingDeleted(final int[] neighbors, final int start, final int end,
       final DeltaOverlay ov, final String edgeType, final int nodeId, final boolean outgoing) {
-    // Single pass over the slice. ov.isEdgeDeleted() autoboxes a packed long for a Set lookup, so we call it
-    // exactly once per neighbour and cache the result in a boolean[]. The cache is allocated lazily, only when
-    // the first deleted edge is found, so the common no-deletion case stays allocation-free.
+    // Single pass over the slice. One countDeletedEdges() lookup per distinct neighbour value (cached for the
+    // run), not per slot. The mask is allocated lazily, only once the first deleted edge is found, so the
+    // common no-deletion case stays allocation-free.
     final int len = end - start;
     boolean[] deletedMask = null;
     int kept = 0;
+    int runValue = 0;
+    int runIndex = 0;
+    int runDeletedBudget = 0;
     for (int i = 0; i < len; i++) {
       final int n = neighbors[start + i];
-      final boolean deleted = outgoing ? ov.isEdgeDeleted(edgeType, nodeId, n) : ov.isEdgeDeleted(edgeType, n, nodeId);
+      if (i == 0 || n != runValue) {
+        runValue = n;
+        runIndex = 0;
+        runDeletedBudget = outgoing ? ov.countDeletedEdges(edgeType, nodeId, n) : ov.countDeletedEdges(edgeType, n, nodeId);
+      }
+      final boolean deleted = runIndex < runDeletedBudget;
+      runIndex++;
       if (deleted) {
         if (deletedMask == null) {
           deletedMask = new boolean[len];

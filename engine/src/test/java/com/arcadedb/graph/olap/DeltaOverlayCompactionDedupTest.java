@@ -83,7 +83,7 @@ class DeltaOverlayCompactionDedupTest {
     final DeltaOverlay empty = new DeltaOverlay(mapping.size());
 
     final TxDelta replay = new TxDelta();
-    replay.addedEdges.add(new TxDelta.EdgeDelta(EDGE_TYPE, rid(0), rid(1)));
+    replay.addedEdges.add(new TxDelta.EdgeDelta(EDGE_TYPE, rid(0), rid(1), rid(10)));
 
     // Without CSR awareness (legacy path) the edge would be appended to the overlay → duplicate.
     final DeltaOverlay legacy = empty.merge(replay, mapping);
@@ -107,7 +107,7 @@ class DeltaOverlayCompactionDedupTest {
     final DeltaOverlay empty = new DeltaOverlay(mapping.size());
 
     final TxDelta delta = new TxDelta();
-    delta.addedEdges.add(new TxDelta.EdgeDelta(EDGE_TYPE, rid(0), rid(1)));
+    delta.addedEdges.add(new TxDelta.EdgeDelta(EDGE_TYPE, rid(0), rid(1), rid(10)));
 
     final DeltaOverlay merged = empty.merge(delta, mapping, emptyCsr(2));
     assertThat(merged.getAddedOutNeighbors(0, EDGE_TYPE)).containsExactly(1);
@@ -125,12 +125,12 @@ class DeltaOverlayCompactionDedupTest {
     final DeltaOverlay empty = new DeltaOverlay(mapping.size());
 
     final TxDelta del = new TxDelta();
-    del.deletedEdges.add(new TxDelta.EdgeDelta(EDGE_TYPE, rid(0), rid(1)));
+    del.deletedEdges.add(new TxDelta.EdgeDelta(EDGE_TYPE, rid(0), rid(1), rid(10)));
     final DeltaOverlay afterDelete = empty.merge(del, mapping, csr);
     assertThat(afterDelete.isEdgeDeleted(EDGE_TYPE, 0, 1)).isTrue();
 
     final TxDelta readd = new TxDelta();
-    readd.addedEdges.add(new TxDelta.EdgeDelta(EDGE_TYPE, rid(0), rid(1)));
+    readd.addedEdges.add(new TxDelta.EdgeDelta(EDGE_TYPE, rid(0), rid(1), rid(10)));
     final DeltaOverlay afterReadd = afterDelete.merge(readd, mapping, csr);
 
     // The explicit add is kept so the base deletion is offset → edge present once on read.
@@ -147,8 +147,8 @@ class DeltaOverlayCompactionDedupTest {
     final DeltaOverlay empty = new DeltaOverlay(mapping.size());
 
     final TxDelta delta = new TxDelta();
-    delta.deletedEdges.add(new TxDelta.EdgeDelta(EDGE_TYPE, rid(0), rid(1)));
-    delta.addedEdges.add(new TxDelta.EdgeDelta(EDGE_TYPE, rid(0), rid(1)));
+    delta.deletedEdges.add(new TxDelta.EdgeDelta(EDGE_TYPE, rid(0), rid(1), rid(10)));
+    delta.addedEdges.add(new TxDelta.EdgeDelta(EDGE_TYPE, rid(0), rid(1), rid(10)));
 
     final DeltaOverlay merged = empty.merge(delta, mapping, csrWithEdge(2, 0, 1));
     assertThat(merged.getAddedOutNeighbors(0, EDGE_TYPE)).containsExactly(1);
