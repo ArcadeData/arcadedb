@@ -299,11 +299,23 @@ public final class CypherExpressionWalker {
     case FOREACH -> {
       final ForeachClause foreachClause = entry.getTypedClause();
       walk(foreachClause.getListExpression(), before);
-      // The inner clauses are FOREACH's own body, which lives and dies inside the loop (see buildVarTypes): they
-      // are walked flat, all against the scope FOREACH itself declared, rather than advancing between them.
-      if (foreachClause.getInnerClauses() != null)
-        for (final ClauseEntry inner : foreachClause.getInnerClauses())
-          walkClause(inner, after, after);
+      // The inner clauses are FOREACH's own body: what they bind lives and dies inside the loop (see
+      // applyClauseToVarTypes's FOREACH case, which declares only the loop variable itself, never an inner
+      // clause's own pattern) - nothing here escapes to the scope after this entry. But one inner clause can
+      // still see what an earlier inner clause in the SAME body just declared - an inner CREATE followed by an
+      // inner SET reading what it created - so this advances a visitor local to the body exactly the way the
+      // outer clause loop does, rather than checking every inner clause against the one scope FOREACH itself
+      // declared (issue #5671 review).
+      Visitor innerVisitor = after;
+      if (foreachClause.getInnerClauses() != null) {
+        for (final ClauseEntry inner : foreachClause.getInnerClauses()) {
+          final Visitor advancedInner = innerVisitor.forClauseEntry(inner);
+          if (advancedInner == null)
+            break;
+          walkClause(inner, innerVisitor, advancedInner);
+          innerVisitor = advancedInner;
+        }
+      }
     }
     case CALL -> {
       // The call's own arguments are evaluated before any YIELD rebinds a name, hence before; a YIELD's own
