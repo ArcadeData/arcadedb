@@ -235,8 +235,20 @@ class ConsoleTest {
           insert into Loaded content {"a": 1
           """);
 
+      final StringBuilder buffer = new StringBuilder();
+      console.setOutput(output -> buffer.append(output));
+
       assertThatThrownBy(() -> console.parse("load " + script.getAbsolutePath())).isInstanceOf(ConsoleException.class)
           .hasMessageContaining("line 4");
+
+      // THE ERROR MUST BE REPORTED ONCE, NOT ONCE BY reportUnbalancedBrace() AND AGAIN BY THE GENERIC CATCH WRAPPING THE
+      // "load" COMMAND DISPATCH (ISSUE #6439)
+      final String output = buffer.toString();
+      final String marker = "Unbalanced '{'";
+      int occurrences = 0;
+      for (int idx = output.indexOf(marker); idx != -1; idx = output.indexOf(marker, idx + marker.length()))
+        ++occurrences;
+      assertThat(occurrences).isEqualTo(1);
     } finally {
       script.delete();
     }
