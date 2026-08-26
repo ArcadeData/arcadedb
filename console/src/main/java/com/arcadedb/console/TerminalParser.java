@@ -35,15 +35,18 @@ import java.util.Locale;
  * <p>
  * A semicolon inside a JSON object literal is not a separator either, so the open braces are counted while scanning. The count
  * never goes below zero: an unbalanced closing brace is a typo in one command and must not change how the following ones are
- * split (issue #6392).
+ * split (issue #6392). The opposite typo, a `{` that is never closed, cannot be clamped the same way: the parser genuinely
+ * cannot know it is unbalanced until the input ends, so it instead records the offset of that brace for the caller to report
+ * once parsing is done (issue #6439).
  */
 public class TerminalParser extends DefaultParser {
   private static final String SQL_LINE_COMMENT   = "--";
   private static final String OTHER_LINE_COMMENT = "//";
 
-  private String  lineComment           = SQL_LINE_COMMENT;
-  private boolean lineCommentNeedsBlank = true;
-  private boolean blockCommentOpen      = false;
+  private String  lineComment            = SQL_LINE_COMMENT;
+  private boolean lineCommentNeedsBlank  = true;
+  private boolean blockCommentOpen       = false;
+  private int     unbalancedBraceOffset  = -1;
 
   /**
    * Returns true if the text of the last parse ends inside a block comment, so the following lines are still part of it. Valid
@@ -51,6 +54,16 @@ public class TerminalParser extends DefaultParser {
    */
   public boolean isBlockCommentOpen() {
     return blockCommentOpen;
+  }
+
+  /**
+   * Returns the offset, in the text of the last parse, of the outermost `{` that is still unclosed - or -1 if every brace was
+   * matched. Everything from that offset to the end of the text was folded into a single word instead of being split on `;`,
+   * since the delimiter branch in {@link #parse(String, int, ParseContext)} requires a brace depth of zero (issue #6439). Valid
+   * only right after a call to {@link #parse(String, int, ParseContext)}.
+   */
+  public int getUnbalancedBraceOffset() {
+    return unbalancedBraceOffset;
   }
 
   /**
@@ -97,6 +110,7 @@ public class TerminalParser extends DefaultParser {
     int rawWordLength = -1;
     int rawWordStart = 0;
     int braceDepth = 0;
+    int openBraceOffset = -1;
     boolean insideLineComment = false;
     boolean insideBlockComment = false;
 
@@ -151,6 +165,8 @@ public class TerminalParser extends DefaultParser {
         rawWordStart = i + 1;
       } else if (!this.isEscapeChar(line, i)) {
         if (c == '{') {
+          if (braceDepth == 0)
+            openBraceOffset = i;
           braceDepth++;
           current.append(c);
         } else if (c == '}') {
@@ -159,6 +175,8 @@ public class TerminalParser extends DefaultParser {
           // FROM SEPARATING THE COMMANDS FOR THE REST OF THE TEXT (ISSUE #6392)
           if (braceDepth > 0)
             braceDepth--;
+          if (braceDepth == 0)
+            openBraceOffset = -1;
           current.append(c);
 
           // Check if we just closed all braces and there's more content after newlines
@@ -197,6 +215,7 @@ public class TerminalParser extends DefaultParser {
     }
 
     blockCommentOpen = insideBlockComment;
+    unbalancedBraceOffset = braceDepth > 0 ? openBraceOffset : -1;
 
     if (current.length() > 0 || cursor == line.length()) {
       words.add(current.toString());

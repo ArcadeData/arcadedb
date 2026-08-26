@@ -254,6 +254,67 @@ class ConsoleTest {
     console.parse("connect " + DB_NAME + ";set language = sql; select 1");
   }
 
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/6439: `set language = 'sql'` used to store the value with its quotes,
+   * and `'sql'.startsWith("sql")` is false, so TerminalParser.setLanguage() picked the non-SQL `//` comment marker. That left
+   * `--` unrecognised, so the semicolon inside the comment below would have split the command in two instead of being dropped.
+   */
+  @Test
+  void setLanguageWithQuotedSqlValueKeepsTheSqlCommentMarker() throws Exception {
+    assertThat(console.parse("connect " + DB_NAME)).isTrue();
+    assertThat(console.parse("set language = 'sql'")).isTrue();
+
+    final StringBuilder buffer = new StringBuilder();
+    console.setOutput(output -> buffer.append(output));
+
+    assertThat(console.parse("select 11 as value -- a comment with a semicolon ; here")).isTrue();
+    assertThat(buffer.toString()).contains("11").doesNotContain("ERROR");
+  }
+
+  @Test
+  void setLanguageWithDoubleQuotedValueStripsTheQuotes() throws Exception {
+    assertThat(console.parse("connect " + DB_NAME)).isTrue();
+    assertThat(console.parse("set language = \"sql\"")).isTrue();
+
+    final StringBuilder buffer = new StringBuilder();
+    console.setOutput(output -> buffer.append(output));
+
+    assertThat(console.parse("select 11 as value -- a comment with a semicolon ; here")).isTrue();
+    assertThat(buffer.toString()).contains("11").doesNotContain("ERROR");
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/6439: a SET value that starts with a quote character but never closes
+   * it is always a typo, so it must be rejected instead of being stored half-quoted.
+   */
+  @Test
+  void setWithUnbalancedQuoteIsRejected() throws Exception {
+    assertThat(console.parse("connect " + DB_NAME)).isTrue();
+    assertThatThrownBy(() -> console.parse("set language = 'sql")).isInstanceOf(ConsoleException.class)
+        .hasMessageContaining("unbalanced quote");
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/6439: an unclosed '{' in a CONTENT clause used to swallow every
+   * following command into one malformed statement, which then failed downstream with a confusing syntax error pointing at
+   * text typed several statements earlier. The commands before the corrupted one must still run, and the corrupted tail must
+   * be reported clearly instead of being forwarded to the query engine.
+   */
+  @Test
+  void unbalancedOpeningBraceRunsEarlierCommandsThenReportsTheCorruptedTail() throws Exception {
+    assertThat(console.parse("connect " + DB_NAME)).isTrue();
+
+    final StringBuilder buffer = new StringBuilder();
+    console.setOutput(output -> buffer.append(output));
+
+    assertThatThrownBy(
+        () -> console.parse("select 11 as value; insert into doc content {\"a\": 1 ; select 22 as value"))
+        .isInstanceOf(ConsoleException.class)
+        .hasMessageContaining("Unbalanced '{'");
+
+    assertThat(buffer.toString()).contains("11").contains("ERROR");
+  }
+
   @Test
   void createClass() throws Exception {
     assertThat(console.parse("connect " + DB_NAME)).isTrue();
