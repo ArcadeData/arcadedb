@@ -67,6 +67,26 @@ class DeltaOverlayCompactionDedupTest {
     return Map.of(EDGE_TYPE, csr);
   }
 
+  /**
+   * Builds a base CSR over {@code nodeCount} nodes containing {@code count} parallel forward edges
+   * {@code src -> tgt}.
+   */
+  private Map<String, CSRAdjacencyIndex> csrWithParallelEdges(final int nodeCount, final int src, final int tgt,
+      final int count) {
+    final int[] fwdOffsets = new int[nodeCount + 1];
+    final int[] bwdOffsets = new int[nodeCount + 1];
+    for (int i = 0; i <= nodeCount; i++) {
+      fwdOffsets[i] = i > src ? count : 0;
+      bwdOffsets[i] = i > tgt ? count : 0;
+    }
+    final int[] fwdNeighbors = new int[count];
+    final int[] bwdNeighbors = new int[count];
+    java.util.Arrays.fill(fwdNeighbors, tgt);
+    java.util.Arrays.fill(bwdNeighbors, src);
+    final CSRAdjacencyIndex csr = new CSRAdjacencyIndex(fwdOffsets, fwdNeighbors, bwdOffsets, bwdNeighbors, nodeCount, count);
+    return Map.of(EDGE_TYPE, csr);
+  }
+
   private Map<String, CSRAdjacencyIndex> emptyCsr(final int nodeCount) {
     final CSRAdjacencyIndex csr = new CSRAdjacencyIndex(new int[nodeCount + 1], new int[0], new int[nodeCount + 1], new int[0],
         nodeCount, 0);
@@ -153,5 +173,34 @@ class DeltaOverlayCompactionDedupTest {
     final DeltaOverlay merged = empty.merge(delta, mapping, csrWithEdge(2, 0, 1));
     assertThat(merged.getAddedOutNeighbors(0, EDGE_TYPE)).containsExactly(1);
     assertThat(merged.isEdgeDeleted(EDGE_TYPE, 0, 1)).isTrue();
+  }
+
+  /**
+   * Issue #6769 review follow-up: delete-then-re-add-within-one-buffered-delta (the scenario above)
+   * combined with a pair that has SEVERAL parallel edges in the freshly built base CSR. The masking
+   * ("this pair was deleted, so the re-add is not a duplicate, reinstate it") must not be confused
+   * with the exact-count deletion tracking #6769 added ("only ONE of the parallel edges was actually
+   * deleted") - reinstating the add must not make the pair look like all of them were deleted, and
+   * the deletion count must stay exact rather than collapsing to a presence flag again.
+   */
+  @Test
+  void deleteThenReAddOneOfSeveralParallelEdgesDuringCompactionReplayStaysExact() {
+    final NodeIdMapping mapping = baseMappingWith(2);
+    final Map<String, CSRAdjacencyIndex> csr = csrWithParallelEdges(2, 0, 1, 3);
+    final DeltaOverlay empty = new DeltaOverlay(mapping.size());
+
+    final TxDelta delta = new TxDelta();
+    delta.deletedEdges.add(new TxDelta.EdgeDelta(EDGE_TYPE, rid(0), rid(1), rid(10)));
+    delta.addedEdges.add(new TxDelta.EdgeDelta(EDGE_TYPE, rid(0), rid(1), rid(10)));
+
+    final DeltaOverlay merged = empty.merge(delta, mapping, csr);
+
+    // The re-add is reinstated (masked by this same delta's own deletion of the pair) ...
+    assertThat(merged.getAddedOutNeighbors(0, EDGE_TYPE)).containsExactly(1);
+    // ... but exactly ONE deletion is on record for the pair, not three - the masking check only
+    // needed to know "was this pair touched at all", it must not inflate the exact count #6769 added.
+    assertThat(merged.isEdgeDeleted(EDGE_TYPE, 0, 1)).isTrue();
+    assertThat(merged.countDeletedEdges(EDGE_TYPE, 0, 1)).isEqualTo(1);
+    assertThat(merged.getDeltaEdgeCount()).isZero();
   }
 }
