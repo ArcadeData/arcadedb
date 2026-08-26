@@ -325,18 +325,24 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   private Iterable<Document> queryDocuments(final Document query, final Document orderBy, final int numberToSkip, final int numberToReturn) {
     final List<Document> result = new ArrayList<>();
 
-    if (query == null || query.isEmpty()) {
+    final boolean hasFilter = query != null && !query.isEmpty();
+    final boolean hasOrderBy = orderBy != null && !orderBy.isEmpty();
+
+    if (!hasFilter && !hasOrderBy) {
       // SCAN
       MongoDBToSqlTranslator.fillResultSet(numberToSkip, numberToReturn, result, database.iterateType(collectionName, false));
     } else {
-      // EXECUTE A SQL QUERY
+      // EXECUTE A SQL QUERY. A sort-only find() (no filter) still has to reach here rather than the scan above,
+      // otherwise the order-by would be silently dropped.
       final Map<String, Object> params = new HashMap<>();
-      final StringBuilder sql = new StringBuilder("select from ").append(Identifier.quote(collectionName)).append(" where ");
+      final StringBuilder sql = new StringBuilder("select from ").append(Identifier.quote(collectionName));
 
-      MongoDBToSqlTranslator.buildExpression(sql, params, query);
+      if (hasFilter) {
+        sql.append(" where ");
+        MongoDBToSqlTranslator.buildExpression(sql, params, query);
+      }
 
-      // an empty $orderBy would otherwise leave a dangling "order by" with nothing to sort on, which does not parse
-      if (orderBy != null && !orderBy.isEmpty()) {
+      if (hasOrderBy) {
         sql.append(" order by ");
         int i = 0;
         for (final String p : orderBy.keySet()) {

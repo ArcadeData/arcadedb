@@ -19,6 +19,7 @@
 package com.arcadedb.mongo;
 
 import de.bwaldvogel.mongo.bson.Document;
+import de.bwaldvogel.mongo.bson.ObjectId;
 import org.junit.jupiter.api.Test;
 
 import java.util.Date;
@@ -218,5 +219,79 @@ class MongoDBToSqlTranslatorParamsTest {
 
     assertThat(sql.toString()).isEqualTo("(`tags`.size() = :p0)");
     assertThat(params.get("p0")).isEqualTo(3);
+  }
+
+  /**
+   * Regression test for issue #6748 (1): {@code $exists: false} used to emit {@code IS DEFINED} regardless of the
+   * boolean operand, so it matched the exact opposite set of documents.
+   */
+  @Test
+  void existsFalseEmitsIsNotDefined() {
+    final StringBuilder sql = new StringBuilder();
+    final Map<String, Object> params = new HashMap<>();
+
+    MongoDBToSqlTranslator.buildExpression(sql, params, new Document("middleName", new Document("$exists", false)));
+
+    assertThat(sql.toString()).isEqualTo("(`middleName` IS NOT DEFINED )");
+  }
+
+  @Test
+  void existsTrueEmitsIsDefined() {
+    final StringBuilder sql = new StringBuilder();
+    final Map<String, Object> params = new HashMap<>();
+
+    MongoDBToSqlTranslator.buildExpression(sql, params, new Document("middleName", new Document("$exists", true)));
+
+    assertThat(sql.toString()).isEqualTo("(`middleName` IS DEFINED )");
+  }
+
+  /**
+   * Regression test for issue #6748 (3): {@code $not} used to recurse into its operand without re-emitting the
+   * field it applies to, producing an operator with no left-hand operand (e.g. {@code field NOT > :p0}), which the
+   * SQL parser rejects outright.
+   */
+  @Test
+  void notWrapsTheFieldAndOperatorInAValidParenthesizedClause() {
+    final StringBuilder sql = new StringBuilder();
+    final Map<String, Object> params = new HashMap<>();
+
+    MongoDBToSqlTranslator.buildExpression(sql, params, new Document("age", new Document("$not", new Document("$gt", 18))));
+
+    assertThat(sql.toString()).isEqualTo("(NOT (`age` > :p0))");
+    assertThat(params.get("p0")).isEqualTo(18);
+  }
+
+  /**
+   * A top-level {@code $not} wrapping a whole {@code {field: {...}}} fragment (as built by the driver's
+   * {@code Filters.not(...)}) is a different shape from the field-scoped case above and must keep working: its
+   * operand already has its own field, so recursing into it directly (without any extra field prepended) is
+   * correct as-is.
+   */
+  @Test
+  void topLevelNotWrapsAWholeFieldExpression() {
+    final StringBuilder sql = new StringBuilder();
+    final Map<String, Object> params = new HashMap<>();
+
+    MongoDBToSqlTranslator.buildExpression(sql, params, new Document("$not", new Document("name", new Document("$eq", "Jay2"))));
+
+    assertThat(sql.toString()).isEqualTo(" NOT (`name` = :p0)");
+    assertThat(params.get("p0")).isEqualTo("Jay2");
+  }
+
+  /**
+   * Regression test for issue #6745: an {@link ObjectId} bound as-is compares as its {@code toString()}
+   * ({@code "ObjectId[<hex>]"}), which never equals the bare lowercase hex string ArcadeDB stores. Binding must
+   * convert it to the same hex form used on the write path.
+   */
+  @Test
+  void anObjectIdValueIsBoundAsItsBareHexString() {
+    final StringBuilder sql = new StringBuilder();
+    final Map<String, Object> params = new HashMap<>();
+
+    final ObjectId id = new ObjectId("507f1f77bcf86cd799439011");
+    MongoDBToSqlTranslator.buildExpression(sql, params, new Document("_id", id));
+
+    assertThat(sql.toString()).isEqualTo("`_id` = :p0");
+    assertThat(params.get("p0")).isEqualTo("507f1f77bcf86cd799439011");
   }
 }
