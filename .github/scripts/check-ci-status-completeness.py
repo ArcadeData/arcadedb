@@ -72,6 +72,15 @@ def needs_closure(jobs, name, seen=None):
 
 
 def is_aggregator(job_id):
+    """A job id counts as an aggregator by naming convention alone, not by inspecting what it does.
+
+    That is deliberate - there is nothing else in a job's YAML that reliably marks "this is the
+    required check for the workflow" - but it does mean any job whose id happens to end in
+    `-status` (e.g. a hypothetical `slack-notify-status` that only posts a message) is treated as
+    one and held to the same "needs everything" bar. Low risk while this repository is the only
+    caller and controls its own job ids; if that ever becomes a real collision, tighten this to an
+    explicit allowlist rather than a suffix match.
+    """
     return job_id == "ci-status" or job_id.endswith("-status")
 
 

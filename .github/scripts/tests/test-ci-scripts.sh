@@ -1342,6 +1342,45 @@ YAML
 expect "ignores a workflow with no status-aggregator job" 0 "" \
     "$STATUSCOMPLETE" "$work/status-no-aggregator"
 
+# `is_aggregator()` matches by naming convention, not just the literal 'ci-status' id: anything
+# ending in '-status' is held to the same bar.
+mkdir -p "$work/status-suffix-match"
+cat >"$work/status-suffix-match/ci.yml" <<'YAML'
+name: suffix-match
+on: [ push ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo building
+  unit-tests:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - run: echo test
+  gate-status:
+    runs-on: ubuntu-latest
+    if: always()
+    needs: build
+    steps:
+      - run: echo status
+YAML
+expect "rejects an aggregator matched only by its '-status' suffix" 1 "gate-status" \
+    "$STATUSCOMPLETE" "$work/status-suffix-match"
+
+# A workflow this script cannot even parse is reported, not silently skipped - the same posture as
+# the sibling needs-outputs script's own YAML-error fixture.
+mkdir -p "$work/status-unparseable"
+cat >"$work/status-unparseable/ci.yml" <<'YAML'
+name: broken
+on: [push
+jobs:
+  ci-status:
+    runs-on: ubuntu-latest
+YAML
+expect "reports a workflow it cannot parse as YAML" 1 "not parseable as YAML" \
+    "$STATUSCOMPLETE" "$work/status-unparseable"
+
 echo
 if [[ $failures -gt 0 ]]; then
     echo "$failures of $checks checks failed"
