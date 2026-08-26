@@ -150,7 +150,8 @@ class DedicatedThreadPoolTest {
         pinWorker.await();
         return null;
       });
-      assertThat(workerPinned.await(30, TimeUnit.SECONDS)).isTrue();
+      assertThat(awaited(workerPinned)).as("the pool's single worker must be pinned before anything can be queued")
+          .isTrue();
 
       final AtomicReference<Thread> ranOn = new AtomicReference<>();
       final Future<?> queued = pool.getExecutorService().submit(() -> ranOn.set(Thread.currentThread()));
@@ -185,7 +186,7 @@ class DedicatedThreadPoolTest {
         releaseRunning.await();
         return null;
       });
-      assertThat(running.await(30, TimeUnit.SECONDS)).isTrue();
+      assertThat(awaited(running)).as("the task must be running on the worker, not still queued").isTrue();
 
       assertThat(pool.runQueuedTaskOnCaller((Runnable) started))
           .as("a task a worker is already running must never be run a second time on the caller").isFalse();
@@ -201,6 +202,20 @@ class DedicatedThreadPoolTest {
       releaseRunning.countDown();
       pool.close();
     }
+  }
+
+  /**
+   * Waits for a readiness latch against a STALL-DISCOUNTED budget (#6260): a stop-the-world pause late in a
+   * full-suite run must not be charged to a wait that is only there to order two threads, or the test goes red
+   * for the JVM's mood rather than for the code. Polled, because that is what makes the discount possible.
+   */
+  private static boolean awaited(final CountDownLatch latch) throws InterruptedException {
+    final StallAwareStopwatch watch = StallAwareStopwatch.start();
+    do {
+      if (latch.await(250, TimeUnit.MILLISECONDS))
+        return true;
+    } while (watch.effectiveMs() < 30_000L);
+    return false;
   }
 
   /** The shared sizing: an explicit positive value wins, anything else is cores with a floor of two. */

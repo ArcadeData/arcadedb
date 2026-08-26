@@ -21,16 +21,18 @@ package com.arcadedb.graph.olap;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.utility.DedicatedThreadPool;
+import com.arcadedb.utility.StallAwareStopwatch;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -55,12 +57,22 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class Issue6568NestedFanOutDeadlockTest {
 
-  /** Both tests are all-or-nothing: they finish at once or not at all. Sized as a hang detector. */
-  private static final int HANG_DETECTOR_SECONDS = 60;
-  /** How long the fan-out is given to complete before the test calls it wedged and fails with a diagnosis. */
-  private static final int WEDGE_VERDICT_SECONDS = 20;
-  /** How long a task is given to reach a worker thread on a loaded CI runner. */
-  private static final int WORKER_PIN_SECONDS    = 30;
+  /**
+   * Both tests are all-or-nothing: they finish at once or not at all. Plain wall clock, because {@code @Timeout}
+   * cannot be stall-discounted - so it is sized as a hang detector and never as a bound on anything.
+   */
+  private static final int  HANG_DETECTOR_SECONDS = 300;
+  /**
+   * The tripwire between a fan-out that completes and one that is wedged for ever, spent in STALL-DISCOUNTED time
+   * (#6260): late in a full-suite run a stop-the-world pause of tens of seconds is routine, and charging one to
+   * this budget would report a healthy fan-out as a deadlock. Generous is free here - the wedge it separates from
+   * is unbounded, so widening it can only ever cost patience.
+   */
+  private static final long WEDGE_VERDICT_MS      = 20_000L;
+  /** Stall-discounted budget for a task to reach a worker thread on a loaded CI runner. */
+  private static final long WORKER_PIN_MS         = 30_000L;
+  /** How long each individual poll waits before the budget above is re-checked against the stall counter. */
+  private static final long POLL_MS               = 250L;
 
   /**
    * A private pool, not the JVM-wide query one: this test deliberately occupies every worker with a thread that is
@@ -87,9 +99,11 @@ class Issue6568NestedFanOutDeadlockTest {
     final FanOutPool pool = new FanOutPool(threads);
     try {
       final ExecutorService executor = pool.getExecutorService();
-      // Every outer task waits here until all of them are running, so the inner tasks are submitted only once
-      // there is provably no free worker left to run them.
-      final CyclicBarrier allOutersRunning = new CyclicBarrier(threads);
+      // A latch used as a barrier rather than a CyclicBarrier: every outer task waits here until all of them are
+      // running, so the inner tasks are submitted only once there is provably no free worker left to run them -
+      // and unlike CyclicBarrier.await, a latch wait can be RETRIED, which is what lets the budget below be
+      // stall-discounted instead of one stop-the-world pause breaking the barrier for every party.
+      final CountDownLatch allOutersRunning = new CountDownLatch(threads);
       final AtomicInteger innerTasksRun = new AtomicInteger();
       final AtomicReference<Throwable> outerFailure = new AtomicReference<>();
 
@@ -97,7 +111,9 @@ class Issue6568NestedFanOutDeadlockTest {
       for (int i = 0; i < threads; i++)
         outer[i] = executor.submit(() -> {
           try {
-            allOutersRunning.await(WORKER_PIN_SECONDS, TimeUnit.SECONDS);
+            allOutersRunning.countDown();
+            if (!awaited(allOutersRunning, WORKER_PIN_MS))
+              throw new IllegalStateException("the outer chunks never all reached a worker");
             final Future<?>[] inner = { executor.submit(innerTasksRun::incrementAndGet) };
             GraphAlgorithms.awaitFutures(inner, 1, pool);
           } catch (final Exception e) {
@@ -108,7 +124,7 @@ class Issue6568NestedFanOutDeadlockTest {
         });
 
       for (int i = 0; i < threads; i++)
-        assertThat(awaited(outer[i]))
+        assertThat(awaited(outer[i], WEDGE_VERDICT_MS))
             .as("outer chunk %d must not park on an inner task no worker is left to run (#6568)", i).isTrue();
 
       assertThat(outerFailure.get()).isNull();
@@ -153,7 +169,7 @@ class Issue6568NestedFanOutDeadlockTest {
           return null;
         });
 
-      assertThat(allWorkersPinned.await(WORKER_PIN_SECONDS, TimeUnit.SECONDS))
+      assertThat(awaited(allWorkersPinned, WORKER_PIN_MS))
           .as("every query-pool worker must be pinned for the scenario to be the one #6568 is about").isTrue();
 
       final long reclaimedBefore = queryPool.getExecutorStats().reclaimedTasks();
@@ -176,17 +192,41 @@ class Issue6568NestedFanOutDeadlockTest {
     // the workers have not necessarily noticed yet, and a shared pool left busy is exactly what makes a later
     // untimed wait look like an unrelated infrastructure timeout.
     final Future<?> canary = executor.submit(() -> null);
-    canary.get(WORKER_PIN_SECONDS, TimeUnit.SECONDS);
+    assertThat(awaited(canary, WORKER_PIN_MS)).as("the query pool must be usable again before the next test class")
+        .isTrue();
   }
 
-  /** True when the future completed within the wedge verdict, false when the fan-out is stuck. */
-  private static boolean awaited(final Future<?> future) throws Exception {
-    try {
-      future.get(WEDGE_VERDICT_SECONDS, TimeUnit.SECONDS);
-      return true;
-    } catch (final java.util.concurrent.TimeoutException e) {
-      future.cancel(true);
-      return false;
-    }
+  /**
+   * True when the future completed within a STALL-DISCOUNTED budget, false when it is wedged - in which case it is
+   * cancelled so nothing outlives the test.
+   * <p>
+   * Polled rather than waited once, because that is what lets the budget be stall-discounted: each poll is short,
+   * and only the time the JVM was actually running counts against it (#6260). A single {@code get(20s)} would be
+   * raw wall clock, and one stop-the-world pause would report a healthy fan-out as a deadlock.
+   */
+  private static boolean awaited(final Future<?> future, final long budgetMs)
+      throws InterruptedException, ExecutionException {
+    final StallAwareStopwatch watch = StallAwareStopwatch.start();
+    do {
+      try {
+        future.get(POLL_MS, TimeUnit.MILLISECONDS);
+        return true;
+      } catch (final TimeoutException stillRunning) {
+        // Not a verdict: only the loop condition, which discounts JVM-wide stalls, decides that.
+      }
+    } while (watch.effectiveMs() < budgetMs);
+
+    future.cancel(true);
+    return false;
+  }
+
+  /** {@link #awaited(Future, long)} for a latch: same stall-discounted budget, same reason. */
+  private static boolean awaited(final CountDownLatch latch, final long budgetMs) throws InterruptedException {
+    final StallAwareStopwatch watch = StallAwareStopwatch.start();
+    do {
+      if (latch.await(POLL_MS, TimeUnit.MILLISECONDS))
+        return true;
+    } while (watch.effectiveMs() < budgetMs);
+    return false;
   }
 }
