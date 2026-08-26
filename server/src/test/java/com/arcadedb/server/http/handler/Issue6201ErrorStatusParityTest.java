@@ -24,6 +24,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
+import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -93,6 +94,11 @@ class Issue6201ErrorStatusParityTest {
       // pattern) is a transient condition, not a permanent failure - it used to fall through to a hard 500,
       // which a remote client's own retry-on-503 loop never saw (issue #6770).
       new MappedFailure("DatabaseIsClosedException", 503, () -> new DatabaseIsClosedException("mydb")),
+      // A permanent DROP/CLOSE DATABASE race (not the transient resync above) that lost the retry-then-reresolve
+      // round trip: allowLoad=false found no open handle for the name. An accurate 404, not the generic 500 the
+      // un-typed DatabaseOperationException used to fall through to (issue #6778, #6770 follow-up).
+      new MappedFailure("DatabaseNotAvailableException", 404,
+          () -> new DatabaseNotAvailableException("Database 'mydb' is not available")),
       // The mappings each earlier issue had to add to two or three chains by hand.
       new MappedFailure("DuplicatedKeyException", 409, () -> new DuplicatedKeyException("Idx", "[1]", new RID(1, 1))),
       new MappedFailure("TransactionCommittedRemotelyException", 409,
@@ -171,6 +177,25 @@ class Issue6201ErrorStatusParityTest {
     assertThat(response.statusCode).isEqualTo(503);
     final JSONObject json = new JSONObject(response.body);
     assertThat(json.getString("exception")).isEqualTo(DatabaseIsClosedException.class.getName());
+  }
+
+  /**
+   * The concrete defect reported in #6778 (a #6770 follow-up): a database dropped/closed permanently by a
+   * concurrent admin action races an in-flight request the same way the transient resync above does, but
+   * {@code ArcadeDBServer.getDatabase(..., allowLoad=false)} - what the client's automatic 503 retry re-resolves
+   * through once it re-hits the database - throws a narrower {@link DatabaseNotAvailableException} rather than
+   * the generic {@link com.arcadedb.exception.DatabaseOperationException}. Before this fix that fell through to
+   * the generic 500 "Internal error", leaving the client with no accurate signal that the database is simply
+   * gone; it now answers the same 404 a client already expects for "the thing you asked for isn't there".
+   */
+  @Test
+  void aPermanentlyUnavailableDatabaseIsReported404NotAGeneric500() {
+    final HandledResponse response = handle(new DatabaseNotAvailableException("Database 'mydb' is not available"));
+
+    assertThat(response.statusCode).isEqualTo(404);
+    final JSONObject json = new JSONObject(response.body);
+    assertThat(json.getString("error")).isEqualTo("Database not found");
+    assertThat(json.getString("exception")).isEqualTo(DatabaseNotAvailableException.class.getName());
   }
 
   /**

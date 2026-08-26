@@ -28,7 +28,7 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ConfigurationException;
-import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.log.DefaultLogger;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinary;
@@ -1008,7 +1008,7 @@ public class ArcadeDBServer {
 
       if (db == null || !db.isOpen()) {
         if (!allowLoad)
-          throw new DatabaseOperationException("Database '" + databaseName + "' is not available");
+          throw new DatabaseNotAvailableException("Database '" + databaseName + "' is not available");
 
         checkDatabaseNameIsValid(databaseName);
 
