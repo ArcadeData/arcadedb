@@ -212,6 +212,9 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
       }
       // #4951: awaitFutures throws on interrupt (cancelling the outstanding chunks) instead of returning,
       // so a killed/timed-out query can never merge partial per-thread results as a complete answer.
+      // #6568: it also RECLAIMS, which is what lets this fan-out submit EVERY chunk - unlike parallelForRange
+      // and PartitionedTriangleOp, which keep chunk 0 on the caller for latency. A chunk still queued when the
+      // wait begins is run here rather than waited for, so the caller can never park behind busy workers.
       GraphAlgorithms.awaitFutures(futures, launched);
       threadCount = launched;
     }
@@ -292,6 +295,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
       }
       // #4951: awaitFutures throws on interrupt (cancelling the outstanding chunks) instead of returning,
       // so a killed/timed-out query can never merge partial per-thread maps as a complete answer.
+      // #6568: and it reclaims a still-queued chunk instead of parking on it - see the note on the DFS path.
       GraphAlgorithms.awaitFutures(futures, launched);
     }
 

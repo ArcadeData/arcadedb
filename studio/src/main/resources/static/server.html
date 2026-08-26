@@ -261,7 +261,7 @@
         <div class="card mb-3">
           <div class="card-header">
             Executor Pools
-            <span class="text-muted small ms-2">live thread / queue / saturation gauges per engine pool; the last three columns apply to sparse-vector scoring, which decides per query whether to parallelise. Queries Split counts the decision, so read it with Caller-Run Fallbacks: a range submitted to a full queue still runs inline on the caller</span>
+            <span class="text-muted small ms-2">live thread / queue / saturation gauges per engine pool. Reclaimed counts queued tasks a waiting caller ran itself because no worker was free - the pool being busy, not full, and the mechanism that keeps a nested fan-out from deadlocking. The last three columns apply to sparse-vector scoring, which decides per query whether to parallelise. Queries Split counts the decision, so read it with Caller-Run Fallbacks: a range submitted to a full queue still runs inline on the caller</span>
           </div>
           <div class="card-body p-0">
             <div class="table-responsive">
@@ -274,6 +274,7 @@
                     <th class="text-end">Queue Free</th>
                     <th class="text-end">Tasks Completed</th>
                     <th class="text-end">Caller-Run Fallbacks</th>
+                    <th class="text-end">Reclaimed</th>
                     <th class="text-end">Reserved</th>
                     <th class="text-end">Queries In Flight</th>
                     <th class="text-end">Queries Split</th>
