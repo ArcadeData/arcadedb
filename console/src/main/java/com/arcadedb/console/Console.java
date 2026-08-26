@@ -398,13 +398,16 @@ public class Console {
     if (first != '\'' && first != '"')
       return value;
 
-    if (value.length() >= 2 && value.charAt(value.length() - 1) == first)
-      return value.substring(1, value.length() - 1);
-
-    if (value.indexOf(first, 1) < 0)
+    // THE FIRST OCCURRENCE AFTER THE OPENING QUOTE IS THE CLOSING ONE: CHECKING ONLY THE LAST CHARACTER WOULD WRONGLY ACCEPT
+    // `'sql' extra'`, WHERE THE REAL CLOSING QUOTE HAS CONTENT AFTER IT AND THE LAST CHARACTER IS A DIFFERENT, UNRELATED QUOTE
+    final int closingQuote = value.indexOf(first, 1);
+    if (closingQuote < 0)
       throw new ConsoleException("Invalid value for SET: missing closing quote in " + value);
 
-    throw new ConsoleException("Invalid value for SET: unexpected content after the closing quote in " + value);
+    if (closingQuote != value.length() - 1)
+      throw new ConsoleException("Invalid value for SET: unexpected content after the closing quote in " + value);
+
+    return value.substring(1, closingQuote);
   }
 
   private void executeTransactionStatus() {
