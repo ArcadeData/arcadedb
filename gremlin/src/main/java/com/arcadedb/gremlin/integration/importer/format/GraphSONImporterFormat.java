@@ -237,14 +237,34 @@ public class GraphSONImporterFormat extends CSVImporterFormat {
     final Object propObj = properties.get(propName);
 
     if (propObj instanceof JSONArray propArray) {
-      // GraphSON format: properties are arrays of {id, value} objects
-      if (propArray.length() > 0) {
-        final Object firstObj = propArray.get(0);
-        if (firstObj instanceof JSONObject first && first.has("value")) {
-          return extractTypedValue(first.get("value"));
-        }
+      // GraphSON format: vertex properties are arrays of {id, value} objects. A list/set cardinality property
+      // carries more than one entry and every one of them belongs to the vertex: keeping only element [0] silently
+      // discarded the rest (issue #6751).
+      final int length = propArray.length();
+      if (length == 0)
+        return null;
+
+      final List<Object> values = new ArrayList<>(length);
+      for (int i = 0; i < length; i++) {
+        final Object entry = propArray.get(i);
+
+        final Object value;
+        if (entry instanceof JSONObject entryJson) {
+          if (!entryJson.has("value"))
+            continue;
+          value = extractTypedValue(entryJson.get("value"));
+        } else
+          value = extractTypedValue(entry);
+
+        if (value != null)
+          values.add(value);
       }
-      return null;
+
+      if (values.isEmpty())
+        return null;
+
+      // A single entry is a single-cardinality property: keep it scalar so the property type is not widened to a list.
+      return values.size() == 1 ? values.getFirst() : values;
     } else if (propObj instanceof JSONObject propJson) {
       // Check for typed value format
       if (propJson.has("@type") && propJson.has("@value")) {
