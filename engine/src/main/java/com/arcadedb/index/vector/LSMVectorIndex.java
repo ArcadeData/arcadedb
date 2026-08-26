@@ -62,6 +62,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.LockManager;
 import com.arcadedb.utility.Pair;
 import com.arcadedb.utility.RidHashSet;
@@ -202,6 +203,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   private volatile GraphState                    graphState;
+  // ISSUE #6772: whether this instance has still to decide what to do with whatever graph is on disk - load it,
+  // reuse it as a prefix, or discard it for a rebuild. NOT derivable from graphState, and that is the whole point:
+  // LOADING means "no graph in memory yet", but put()/putBatch()/remove() promote LOADING straight to MUTABLE on
+  // the first write, and after that promotion "a loaded graph now has pending deltas" and "no graph has been
+  // loaded yet and there are pending deltas" are the same state. ensureGraphAvailable() used to gate on LOADING
+  // alone, so a session that wrote before it searched skipped the load entirely, left graphIndex null, and had
+  // rebuildGraphBeforeSearch() read that null as "small graph" and rebuild the WHOLE index synchronously on the
+  // search thread - the ordinary ingest-then-query shape paying exactly the cost issues #6067 and #6655 removed
+  // for the sessions that happen not to write first. needsGraphBuild()'s javadoc already draws this distinction
+  // for the close path ("LOADING means not loaded into memory, which is not the same as not persisted on disk");
+  // this field is that distinction made explicit for the search path, so the promotion can no longer erase it.
+  // Starts true - a freshly constructed index has resolved nothing - and is cleared exactly once, by whichever of
+  // ensureGraphAvailable() or buildGraphFromScratchWithRetry() first settles the question under graphBuildLock.
+  private volatile boolean                       persistedGraphUnresolved = true;
   private volatile ImmutableGraphIndex           graphIndex;        // Current graph (OnHeap or OnDisk)
   private volatile int[]                         ordinalToVectorId; // Maps graph ordinals to vector IDs
   // Lightweight pointer index. Volatile and swapped as a whole (never cleared and refilled in place) so the
@@ -1493,11 +1508,35 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * {@code true} while {@link #ensureGraphAvailable()} still has work to do: either no graph has been materialised
+   * in memory for this instance yet ({@link GraphState#LOADING}), or one has not been but a write already promoted
+   * the state past LOADING ({@link #persistedGraphUnresolved} - issue #6772).
+   * <p>
+   * The second disjunct is the one that makes an ingest-then-query session reach the same persisted-graph load and
+   * prefix reuse (issue #6655) a query-only session gets. Without it the promotion {@code put()}/{@code putBatch()}
+   * /{@code remove()} perform on the first write closes the door on the load for the rest of the session, and the
+   * first search pays a full synchronous rebuild through {@link #rebuildGraphBeforeSearch()}'s null-graph arm
+   * instead.
+   * <p>
+   * That disjunct is additionally conditioned on {@link #graphIndex} being null, which is the structural half of
+   * the answer: whatever the latch says, an index that already has a graph in memory has nothing left for
+   * {@link #ensureGraphAvailable()} to do, and this is what keeps a publish path that forgets to clear the latch
+   * (the chunked initial build reaches one through {@link #buildGraphFromScratchWithRetry}, but nothing forces a
+   * future one to) from making every search reload and re-validate a graph that is already resident.
+   */
+  private boolean graphNotYetMaterialised() {
+    return graphState == GraphState.LOADING || (persistedGraphUnresolved && graphIndex == null);
+  }
+
+  /**
    * Ensure graph is available for searching. Lazy-loads from disk if needed.
    * This is the entry point for all search operations.
+   * <p>
+   * Reached on the first search of a session whether or not that session has already written to the index
+   * (issue #6772): see {@link #graphNotYetMaterialised()}.
    */
   private void ensureGraphAvailable() {
-    if (graphState != GraphState.LOADING)
+    if (!graphNotYetMaterialised())
       return; // Graph already available or being built
 
     // Materialise the locations before graphBuildLock rather than through the vectorIndex() calls below, which
@@ -1526,7 +1565,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     graphBuildLock.lock();
     try {
       // Double-check after acquiring the lock
-      if (graphState != GraphState.LOADING)
+      if (!graphNotYetMaterialised())
         return; // Another thread already resolved this while we waited for graphBuildLock
 
       // Try to load persisted graph from disk
@@ -1756,6 +1795,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (prefixReuseCandidate == null)
         buildGraphFromScratch();
     } finally {
+      // Cleared here rather than in each branch above, and in a finally rather than on the success paths only,
+      // because the latch means "still to be decided", not "decided successfully" (issue #6772). Every exit from
+      // this section - graph loaded, prefix queued for reuse, rebuilt from scratch, or a load that threw and fell
+      // through to the rebuild - has settled the question of what happens to the on-disk graph, and leaving the
+      // latch set on any of them would make the NEXT search redo the O(live vector count) validation scan above.
+      // A build that fails outright still leaves graphState at LOADING, and graphNotYetMaterialised() keeps
+      // answering true on that alone, so the retry this method has always offered is unaffected.
+      persistedGraphUnresolved = false;
       graphBuildLock.unlock();
     }
 
@@ -1784,12 +1831,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * the end takes {@code lock.writeLock()}, to make the state change visible/consistent to concurrent readers -
    * not to protect the read.
    * <p>
-   * The vectors past {@code graphSize} are not yet in the graph, and are not in {@link #deltaVectors} either:
-   * that buffer is in-memory only (issue #3722) and this is a session that never wrote them, it is only now
-   * discovering them on reopen. Queuing them here - the same re-queue {@link #buildGraphFromScratch()} performs
-   * for a node its own build left unreachable - is what keeps every live vector searchable immediately through
-   * the ordinary delta scan, rather than trading this fix's latency win for a window where they silently do not
-   * come back.
+   * The vectors past {@code graphSize} are not yet in the graph, and for a session that is only now discovering
+   * them on reopen they are not in {@link #deltaVectors} either: that buffer is in-memory only (issue #3722).
+   * Queuing them here - the same re-queue {@link #buildGraphFromScratch()} performs for a node its own build left
+   * unreachable - is what keeps every live vector searchable immediately through the ordinary delta scan, rather
+   * than trading this fix's latency win for a window where they silently do not come back.
+   * <p>
+   * A session that WROTE before it searched (issue #6772) reaches this method with some of that gap already in
+   * {@link #deltaVectors} - its own writes, which went into the location index as well - so the gap is filtered
+   * against the buffer twice: once before the read, to avoid fetching back from disk what is already in memory,
+   * and once under the publish lock, to catch anything a concurrent writer queued while the read ran unlocked.
    *
    * @param candidate the eligibility decision {@link #ensureGraphAvailable()} made under its write lock
    */
@@ -1801,20 +1852,52 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     graphBuildLock.lock();
     try {
-      // Double-check: graphState is volatile and this is the same fast-path re-check ensureGraphAvailable()
-      // itself does after acquiring a lock. Another thread may have already published - a concurrent
-      // buildGraphFromScratch(), or a second reuseStalePrefixGraph() call that queued behind this same mutex and
-      // ran first - while this call waited for graphBuildLock.
-      if (graphState != GraphState.LOADING)
+      // Double-check that nobody published a graph while this call waited for graphBuildLock - a concurrent
+      // buildGraphFromScratch(), or a second reuseStalePrefixGraph() that queued behind this same mutex and ran
+      // first. Asked of graphIndex rather than of graphState (issue #6772): graphState is no longer LOADING on
+      // the ingest-then-query path this method now also serves - the session's own writes promoted it to MUTABLE
+      // before the first search - so the old graphState test would have refused every reuse it exists to perform.
+      // graphIndex is the thing a publisher actually sets, which makes it the exact question. The IMMUTABLE arm
+      // catches the one publisher that leaves it null: a from-scratch build that found no valid vectors at all,
+      // after which reusing a graph built over vectors that are evidently gone would be wrong rather than stale.
+      if (graphIndex != null || graphState == GraphState.IMMUTABLE)
         return;
+
+      // Vector ids the caller's own session already queued into the delta buffer (issue #6772). The ordinary
+      // ingest-then-query shape reaches this method with its own writes sitting in deltaVectors AND, because
+      // those writes went into the location index too, sitting inside the gap past graphSize - so queuing the
+      // gap wholesale would duplicate every one of them in the delta scan and double-count them in
+      // mutationsSinceSerialize. Excluded BEFORE the read rather than filtered after it, because skipping the
+      // read is most of the point: a session that inserted a million vectors before its first query would
+      // otherwise pay a page lookup per vector to fetch back what is already in memory beside it.
+      final IntHashSet alreadyQueued;
+      lock.readLock().lock();
+      try {
+        // Sized in TABLE SLOTS, not elements: IntHashSet resizes at a 0.75 load factor, so handing it the
+        // element count alone would guarantee one rehash of the whole table on the way in.
+        alreadyQueued = new IntHashSet(deltaVectors.size() * 4 / 3 + 1);
+        for (final DeltaVectorEntry entry : deltaVectors)
+          alreadyQueued.add(entry.vectorId);
+      } finally {
+        lock.readLock().unlock();
+      }
 
       // Trimmed to the gap before it is handed anywhere else: snapshotOf() and computeGraphBuildCacheCapacity()
       // both size their work off whatever array they are given, and only ordinals [graphSize, length) are ever
       // read below. Handing them the full live-vector array (as an earlier version of this fix did) made the
       // snapshot and the build reader's cache scale with the WHOLE index - exactly the O(index size) cost this
       // fix exists to avoid - rather than with how much is actually missing from the graph (PR #6712 review).
-      final int[] gapOrdinalToVectorId = Arrays.copyOfRange(rebuiltOrdinalToVectorId, graphSize,
-          rebuiltOrdinalToVectorId.length);
+      // Ascending order is preserved by the filter, which is what snapshotOf() and the ordinal mapping below
+      // both assume.
+      int gapCount = 0;
+      final int[] gapCandidates = new int[rebuiltOrdinalToVectorId.length - graphSize];
+      for (int i = graphSize; i < rebuiltOrdinalToVectorId.length; i++) {
+        final int vectorId = rebuiltOrdinalToVectorId[i];
+        if (!alreadyQueued.contains(vectorId))
+          gapCandidates[gapCount++] = vectorId;
+      }
+      final int[] gapOrdinalToVectorId = gapCount == gapCandidates.length ? gapCandidates :
+          Arrays.copyOf(gapCandidates, gapCount);
 
       final RandomAccessVectorValues vectors = ArcadePageVectorValues.forGraphBuild(getDatabase(),
           metadata.dimensions, vectorProp,
@@ -1837,17 +1920,31 @@ public class LSMVectorIndex implements Index, IndexInternal {
         gapEntries.add(new DeltaVectorEntry(vectorId, rid, vector));
       }
 
-      // Publish. graphState stays LOADING for the whole unlocked read above - insert() does not wait on it - so
-      // a concurrent write could have landed on this index in the meantime and already appended its own entries
-      // to deltaVectors and its own count to mutationsSinceSerialize. addAll()/addAndGet() rather than a replace
-      // or a plain set() is what keeps those, instead of silently dropping them.
+      // Publish. The graph is not published for the whole unlocked read above - insert() does not wait on it -
+      // so a concurrent write could have landed on this index in the meantime and already appended its own
+      // entries to deltaVectors and its own count to mutationsSinceSerialize. Appending to the buffer rather
+      // than replacing it, and addAndGet() rather than a plain set(), is what keeps those instead of silently
+      // dropping them.
+      int queuedIntoDelta = 0;
       lock.writeLock().lock();
       try {
         this.graphIndex = loadedGraph;
         this.ordinalToVectorId = Arrays.copyOf(rebuiltOrdinalToVectorId, graphSize);
-        this.deltaVectors.addAll(gapEntries);
+        // Re-checked here against the buffer as it stands NOW, not only against the pre-read snapshot taken
+        // above: a concurrent put() could have queued one of these ids while the gap was being read unlocked,
+        // and queuing it a second time is the same duplicate the pre-filter exists to avoid (issue #6772).
+        if (!gapEntries.isEmpty()) {
+          final IntHashSet queued = new IntHashSet((deltaVectors.size() + gapEntries.size()) * 4 / 3 + 1);
+          for (final DeltaVectorEntry entry : deltaVectors)
+            queued.add(entry.vectorId);
+          for (final DeltaVectorEntry entry : gapEntries)
+            if (queued.add(entry.vectorId)) {
+              this.deltaVectors.add(entry);
+              queuedIntoDelta++;
+            }
+        }
         this.graphState = GraphState.MUTABLE;
-        this.mutationsSinceSerialize.addAndGet(gapEntries.size());
+        this.mutationsSinceSerialize.addAndGet(queuedIntoDelta);
       } finally {
         lock.writeLock().unlock();
       }
@@ -1855,8 +1952,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
       metrics.incrementStalePrefixGraphReuses();
       LogManager.instance().log(this, Level.INFO,
           "Reusing persisted graph for index %s as a stale prefix: %d of %d live vectors are already in the "
-              + "graph, %d queued into the delta buffer pending an async rebuild (issue #6655)",
-          indexName, graphSize, rebuiltOrdinalToVectorId.length, gapEntries.size());
+              + "graph, %d queued into the delta buffer pending an async rebuild (issues #6655, #6772)",
+          indexName, graphSize, rebuiltOrdinalToVectorId.length, queuedIntoDelta);
     } finally {
       graphBuildLock.unlock();
     }
@@ -2119,6 +2216,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // and inserts never touch it, so it does not reintroduce the stall.
     graphBuildLock.lock();
     try {
+      // Whatever is on disk is about to be superseded by this build, so there is nothing left for
+      // ensureGraphAvailable() to resolve (issue #6772). Set before the build rather than after it so a search
+      // that arrives mid-build and finds graphState already promoted to MUTABLE does not queue behind this mutex
+      // to re-validate a graph file this build is replacing; a build that fails leaves graphState at LOADING,
+      // which graphNotYetMaterialised() still answers true on, so the retry path is unaffected.
+      persistedGraphUnresolved = false;
       buildGraphFromScratchExclusively(graphCallback, compactDataFile, releaseResidentGraphFirst);
     } finally {
       graphBuildLock.unlock();
@@ -3507,7 +3610,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /**
    * Check if the graph needs rebuilding before a search, and trigger the appropriate rebuild strategy.
    * <ul>
-   *   <li>If graph was never built (graphIndex == null): synchronous build (no existing graph to search).</li>
+   *   <li>If graph was never built (graphIndex == null): synchronous build (no existing graph to search).
+   *       {@link #ensureGraphAvailable()} runs immediately before this on every search path, so by the time this
+   *       test is made a null graph really does mean "nothing was persisted either" - it no longer also means
+   *       "a graph is on disk but this session wrote before it searched, so it was never loaded" (issue #6772).</li>
    *   <li>If threshold reached and graph is small (&lt; 1000 vectors): synchronous rebuild (fast enough).</li>
    *   <li>If threshold reached and graph is large (&ge; 1000 vectors): async rebuild + search the current graph
    *       (valid but excludes the newest vectors not yet incorporated into the graph topology).</li>
