@@ -55,7 +55,7 @@ class BackupCoordinatorTest {
   }
 
   @Test
-  void adifferentDatabaseIsNeverHeldUp() {
+  void aDifferentDatabaseIsNeverHeldUp() {
     final BackupCoordinator coordinator = new BackupCoordinator();
 
     assertThat(coordinator.begin("db1")).isTrue();

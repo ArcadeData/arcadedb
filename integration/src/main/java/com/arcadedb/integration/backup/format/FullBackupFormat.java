@@ -77,9 +77,14 @@ public class FullBackupFormat extends AbstractBackupFormat {
 
     final File backupFile = new File(fileName);
 
-    if (backupFile.getParentFile() != null && !backupFile.getParentFile().exists()) {
-      if (!backupFile.getParentFile().mkdirs() && !backupFile.getParentFile().isDirectory())
-        throw new BackupException("The backup file '%s' cannot be created".formatted(backupFile));
+    if (backupFile.getParentFile() != null) {
+      // createDirectories, not mkdirs: it is idempotent and does not report "already there" as a failure, so a
+      // concurrent backup creating the same directory first is not mistaken for one that could not be created
+      try {
+        Files.createDirectories(backupFile.getParentFile().toPath());
+      } catch (final IOException e) {
+        throw new BackupException("The backup file '%s' cannot be created".formatted(backupFile), e);
+      }
     }
 
     if (database.isTransactionActive() && database.getTransaction().hasChanges())
