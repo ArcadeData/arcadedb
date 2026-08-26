@@ -140,7 +140,7 @@ public abstract class PaginatedComponent extends Component {
     if (tailBytes != 0)
       LogManager.instance().log(this, Level.WARNING,
           "Component '%s' file '%s' has a length (%d bytes) that is not a multiple of its page size (%d bytes): "
-              + "%d trailing bytes past page %d are not a complete page and were ignored. This is consistent with "
+              + "%d trailing bytes past the last complete page (page count %d) are not a complete page and were ignored. This is consistent with "
               + "the process being killed while writing that page; it will be overwritten the next time a page is "
               + "appended to this file",
           null, name, file.getFilePath(), fileSize, pageSize, tailBytes, pageCount.get());

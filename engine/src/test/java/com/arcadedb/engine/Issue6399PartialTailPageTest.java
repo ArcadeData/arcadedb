@@ -121,22 +121,26 @@ class Issue6399PartialTailPageTest extends TestHelper {
     final CapturingHandler handler = new CapturingHandler();
     handler.setLevel(Level.ALL);
     final Logger logger = Logger.getLogger(loggerOwner.getName());
+    final Level previousLevel = logger.getLevel();
     logger.addHandler(handler);
     logger.setLevel(Level.ALL);
-    return new LogCapture(logger, handler);
+    return new LogCapture(logger, handler, previousLevel);
   }
 
   private static void detach(final LogCapture capture) {
     capture.logger.removeHandler(capture.handler);
+    capture.logger.setLevel(capture.previousLevel);
   }
 
   /**
    * Bundles the {@link Logger} together with its {@link CapturingHandler} so the caller keeps a strong reference to
    * the logger for the whole capture window: {@code java.util.logging.LogManager} holds registered loggers via
    * {@code WeakReference}, so a logger obtained and discarded inside a helper method could be collected - taking its
-   * handler with it - before the code under test ever logs anything.
+   * handler with it - before the code under test ever logs anything. {@code previousLevel} lets {@link #detach} put
+   * the logger's threshold back the way it found it, rather than leaving it pinned at {@code ALL} for the rest of
+   * the JVM.
    */
-  private record LogCapture(Logger logger, CapturingHandler handler) {
+  private record LogCapture(Logger logger, CapturingHandler handler, Level previousLevel) {
   }
 
   private static final class CapturingHandler extends Handler {
