@@ -387,8 +387,15 @@ public class Console {
   /**
    * Strips one matching pair of surrounding quotes (' or ") from a {@code SET} value, so {@code set language = 'sql'} stores
    * {@code sql} rather than the literal quotes. A value that does not start with a quote character is returned unchanged. A
-   * value that opens with a quote character but never closes it is always a typo, and so is one with content trailing after
-   * the closing quote - both are rejected rather than stored half-quoted (issue #6439).
+   * value that opens with a quote character but never closes it, or ends in something other than that character, is always a
+   * typo, so it is rejected rather than stored half-quoted (issue #6439).
+   * <p>
+   * A value whose first and last characters are the SAME quote character is always accepted as that pair, even if the quote
+   * character also occurs in between - for example {@code 'it\'s a test'}. That inner quote reaches this method already
+   * stripped of its escaping backslash by {@link TerminalParser#parse}, indistinguishable here from a real closing quote
+   * followed by unrelated trailing text that happens to also end in a quote character. Between silently accepting that rare,
+   * contrived input and rejecting the far more plausible escaped-quote value, this favors the value the parser's own escape
+   * handling was built to support.
    */
   private static String stripMatchingQuotes(final String value) {
     if (value.isEmpty())
@@ -398,16 +405,13 @@ public class Console {
     if (first != '\'' && first != '"')
       return value;
 
-    // THE FIRST OCCURRENCE AFTER THE OPENING QUOTE IS THE CLOSING ONE: CHECKING ONLY THE LAST CHARACTER WOULD WRONGLY ACCEPT
-    // `'sql' extra'`, WHERE THE REAL CLOSING QUOTE HAS CONTENT AFTER IT AND THE LAST CHARACTER IS A DIFFERENT, UNRELATED QUOTE
-    final int closingQuote = value.indexOf(first, 1);
-    if (closingQuote < 0)
+    if (value.length() >= 2 && value.charAt(value.length() - 1) == first)
+      return value.substring(1, value.length() - 1);
+
+    if (value.indexOf(first, 1) < 0)
       throw new ConsoleException("Invalid value for SET: missing closing quote in " + value);
 
-    if (closingQuote != value.length() - 1)
-      throw new ConsoleException("Invalid value for SET: unexpected content after the closing quote in " + value);
-
-    return value.substring(1, closingQuote);
+    throw new ConsoleException("Invalid value for SET: unexpected content after the closing quote in " + value);
   }
 
   private void executeTransactionStatus() {

@@ -375,15 +375,20 @@ class ConsoleTest {
   }
 
   /**
-   * Issue https://github.com/ArcadeData/arcadedb/issues/6439: checking only the LAST character against the opening quote would
-   * wrongly accept this value, since it also ends with a quote character - but that trailing quote is unrelated to the real
-   * closing quote right after `sql`, and the content between them must still be rejected.
+   * Issue https://github.com/ArcadeData/arcadedb/issues/6439: TerminalParser strips the escaping backslash from an escaped
+   * inner quote before executeSet ever sees the value, so a value like this reaches stripMatchingQuotes as
+   * {@code 'it's a test'} - indistinguishable from a real closing quote followed by trailing garbage that happens to also end
+   * in a quote. It must still be accepted as the escaped value the user intended, not rejected.
    */
   @Test
-  void setWithContentAfterClosingQuoteEndingInAnotherQuoteIsRejected() throws Exception {
+  void setLanguageWithEscapedQuoteInsideValueIsPreserved() throws Exception {
     assertThat(console.parse("connect " + DB_NAME)).isTrue();
-    assertThatThrownBy(() -> console.parse("set language = 'sql' extra'")).isInstanceOf(ConsoleException.class)
-        .hasMessageContaining("unexpected content after the closing quote");
+
+    final StringBuilder buffer = new StringBuilder();
+    console.setOutput(output -> buffer.append(output));
+
+    assertThat(console.parse("set language = 'it\\'s a test'")).isTrue();
+    assertThat(buffer.toString()).contains("it's a test").doesNotContain("ERROR");
   }
 
   /**
