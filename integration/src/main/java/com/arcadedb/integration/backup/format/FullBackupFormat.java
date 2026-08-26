@@ -321,7 +321,9 @@ public class FullBackupFormat extends AbstractBackupFormat {
     try {
       Files.createFile(backupFile.toPath());
     } catch (final FileAlreadyExistsException e) {
-      throw new BackupException("The backup file '%s' already exist and '-o' setting is false".formatted(settings.file));
+      // THE RESOLVED PATH, NOT settings.file: THE POINT OF THIS MESSAGE IS TO TELL AN OPERATOR WHICH ARCHIVE IS IN
+      // THE WAY, AND THE NAME THE CALLER TYPED IS RELATIVE TO A DIRECTORY THEY DID NOT NECESSARILY CHOOSE
+      throw new BackupException("The backup file '%s' already exist and '-o' setting is false".formatted(backupFile));
     } catch (final IOException e) {
       throw new BackupException("The backup file '%s' cannot be created".formatted(backupFile), e);
     }

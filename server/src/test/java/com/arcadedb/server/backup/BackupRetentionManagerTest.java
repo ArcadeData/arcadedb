@@ -39,7 +39,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class BackupRetentionManagerTest {
-  private static final DateTimeFormatter BACKUP_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
+  private static final DateTimeFormatter BACKUP_FORMAT        = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
+  /** What every release before #6753 wrote is the one above; this is what the server writes now. */
+  private static final DateTimeFormatter BACKUP_FORMAT_MILLIS = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmssSSS");
   private static final String            DATABASE_NAME = "testdb";
 
   @TempDir
@@ -264,6 +266,43 @@ class BackupRetentionManagerTest {
   /**
    * Creates backup files with timestamps starting from the given date.
    */
+  /**
+   * The directory an upgraded server inherits: archives named by every release before #6753, at second precision,
+   * next to the millisecond-precision ones it writes from now on. Retention decides what is still under management
+   * by parsing these names, so a parser that read only one of the two conventions would quietly stop rotating the
+   * other half - and nobody finds out until the disk is full.
+   */
+  @Test
+  void retentionRotatesAcrossBothNamingConventions() throws Exception {
+    final LocalDateTime oldest = LocalDateTime.now().minusDays(10);
+    final List<File> files = new ArrayList<>();
+    for (int i = 0; i < 10; i++) {
+      final LocalDateTime timestamp = oldest.plusHours(i);
+      // ALTERNATING, SO NEITHER CONVENTION IS ENTIRELY IN THE KEPT HALF OR ENTIRELY IN THE DELETED ONE
+      files.add(i % 2 == 0 ?
+          createBackupFile(timestamp) :
+          writeBackupFile(DATABASE_NAME + "-backup-" + timestamp.format(BACKUP_FORMAT_MILLIS) + ".zip"));
+    }
+
+    final DatabaseBackupConfig config = new DatabaseBackupConfig(DATABASE_NAME);
+    final DatabaseBackupConfig.RetentionConfig retention = new DatabaseBackupConfig.RetentionConfig();
+    retention.setMaxFiles(5);
+    config.setRetention(retention);
+    retentionManager.registerDatabase(DATABASE_NAME, config);
+
+    assertThat(retentionManager.getBackupCount(DATABASE_NAME)).isEqualTo(10);
+
+    // A NAME RETENTION CANNOT PARSE IS NOT MERELY UNSORTED, IT IS INVISIBLE: WERE THE FIVE MILLISECOND ONES
+    // UNREADABLE, THE FIVE THAT REMAIN WOULD ALREADY BE WITHIN maxFiles AND THIS WOULD DELETE NOTHING
+    assertThat(retentionManager.applyRetention(DATABASE_NAME)).isEqualTo(5);
+
+    // AND THE SURVIVORS ARE THE FIVE MOST RECENT BY TIMESTAMP, ACROSS BOTH CONVENTIONS
+    for (int i = 0; i < 5; i++)
+      assertThat(files.get(i)).doesNotExist();
+    for (int i = 5; i < 10; i++)
+      assertThat(files.get(i)).exists();
+  }
+
   private List<File> createBackupFiles(final int count, final LocalDateTime startDate) throws IOException {
     final List<File> files = new ArrayList<>();
     for (int i = 0; i < count; i++) {
@@ -277,7 +316,10 @@ class BackupRetentionManagerTest {
    * Creates a single backup file with the given timestamp.
    */
   private File createBackupFile(final LocalDateTime timestamp) throws IOException {
-    final String filename = DATABASE_NAME + "-backup-" + timestamp.format(BACKUP_FORMAT) + ".zip";
+    return writeBackupFile(DATABASE_NAME + "-backup-" + timestamp.format(BACKUP_FORMAT) + ".zip");
+  }
+
+  private File writeBackupFile(final String filename) throws IOException {
     final File file = new File(dbBackupDir, filename);
     Files.write(file.toPath(), "test backup content".getBytes());
     return file;
