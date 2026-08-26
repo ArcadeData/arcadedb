@@ -459,40 +459,15 @@ public final class PaginatedSegmentReader implements AutoCloseable {
   }
 
   /**
-   * Fetch the block payload that immediately follows a block header at
-   * {@code (pageNum, offsetInPage)} into a caller-owned scratch buffer. Returns the same
-   * {@code reusableView} (which must wrap {@code dest}) positioned at the first compressed RID
-   * byte and limited to the bytes-read window, so the caller can decode without allocating.
+   * Page-cache fetch of one page of this segment, for a cursor that decodes block payloads in place
+   * on it rather than copying them out (issue #5467).
    * <p>
-   * The block's byte length is not stored in the format, so the caller supplies
-   * {@code maxPayloadLength}: an upper bound derived from the block's posting count (see
-   * {@link SegmentFormat#maxBlockPayloadSize}) and, when the next block of the same dim sits on the
-   * same page, from the gap to it. This method reads the smaller of that bound and the bytes left on
-   * the page; the cursor stops decoding once it has the header's posting count either way. Before
-   * issue #5388 the bound did not exist and the reader copied everything from the payload to the end
-   * of the page - a ~32 KiB copy for a ~1 KiB block at the 64 KiB page default, which the reporter's
-   * CPU profile saw as ~10% of query time sitting in {@code jbyte_disjoint_arraycopy}.
-   *
-   * @param maxPayloadLength upper bound on the block's payload bytes; clamped to what is left on the
-   *                         page
-   * @param dest             scratch byte array sized at {@code &gt;= component.pageContentSize()};
-   *                         the reader fills it in place starting at offset 0
-   * @param reusableView     a {@link ByteBuffer} that wraps {@code dest}; the reader rewinds it,
-   *                         applies the limit, and returns it
+   * Callers must only make ABSOLUTE reads through the returned page's buffer: under
+   * {@code REPEATABLE_READ} the transaction caches the page image and hands the same object to every
+   * caller in the transaction, so the buffer's position is shared state.
    */
-  ByteBuffer readBlockPayloadInto(final int pageNum, final int offsetInPage, final int maxPayloadLength,
-      final byte[] dest, final ByteBuffer reusableView) throws IOException {
-    final BasePage page = component.readPage(pageNum);
-    final int payloadOffset = offsetInPage + SegmentFormat.BLOCK_HEADER_SIZE;
-    final int len = Math.min(maxPayloadLength, page.getMaxContentSize() - payloadOffset);
-    reusableView.clear();
-    if (len <= 0) {
-      reusableView.limit(0);
-      return reusableView;
-    }
-    page.readByteArray(payloadOffset, dest, 0, len);
-    reusableView.limit(len);
-    return reusableView;
+  BasePage readPage(final int pageNum) {
+    return component.readPage(pageNum);
   }
 
 }
