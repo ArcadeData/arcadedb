@@ -178,6 +178,12 @@ public class Issue6709GrpcTransactionFinalizeRaceIT extends BaseGraphServerTest 
         Thread.sleep(5);
       }
       service.finalizeTransactionForTesting(txId);
+      // finalizeTransactionForTesting only removes the map entry and shuts down the executor (correct for a
+      // registerTransactionForTesting synthetic context, which never reserved a slot). This transaction is a
+      // real one from beginTransaction, which did reserve a global/per-principal slot - release it here the
+      // same way commitTransaction/rollbackTransaction/reapIdleTransactions do, or every race test in this
+      // class leaks one reservation (CodeRabbit cycle-3 review).
+      service.releaseTransactionSlot(txCtx.owner);
       release.countDown();
 
       return rpcResult.get(5, TimeUnit.SECONDS);

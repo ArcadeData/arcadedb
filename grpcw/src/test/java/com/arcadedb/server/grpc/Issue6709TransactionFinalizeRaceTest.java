@@ -23,6 +23,8 @@ import io.grpc.StatusRuntimeException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.RejectedExecutionException;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -34,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * transaction's dedicated executor, but a concurrent commitTransaction/rollbackTransaction/idle-reap can
  * finalize the same transaction (removing it from the active-transaction map and shutting down its executor)
  * in the window between the resolve and the dispatched task actually running - or even before the task is
- * submitted at all, in which case {@code submit()} itself throws {@link java.util.concurrent.RejectedExecutionException}.
+ * submitted at all, in which case {@code submit()} itself throws {@link RejectedExecutionException}.
  * These tests simulate both windows deterministically via
  * {@link ArcadeDbGrpcService#registerTransactionForTesting} / {@link ArcadeDbGrpcService#finalizeTransactionForTesting}
  * instead of racing real threads, per the issue's own suggested approach. No server or database is needed:

@@ -647,7 +647,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         LogManager.instance().log(this, Level.FINE,
             "executeCommand(): using external transaction %s, executing on dedicated thread", incomingTxId);
 
-        Future<ExecuteCommandResponse> future =
+        final Future<ExecuteCommandResponse> future =
             submitToActiveTransaction(txCtx, () -> executeCommandInternal(req, t0, txCtx.db, true));
 
         response = future.get();
