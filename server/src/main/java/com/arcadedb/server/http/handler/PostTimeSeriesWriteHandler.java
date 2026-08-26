@@ -204,7 +204,11 @@ public class PostTimeSeriesWriteHandler extends AbstractServerHttpHandler {
       database.begin();
       try {
         for (final MeasurementBatch batch : byMeasurement.values()) {
-          final TimeSeriesEngine engine = batch.type().getEngine();
+          // requireEngine() for symmetry with the other call sites this PR touched (issue #6356 follow-up,
+          // claude-review on PR #6779): every batch here was already filtered by isEngineAvailable() above, so
+          // this can never actually throw, but getEngine() alone would silently reintroduce the "no engine"
+          // possibility at the type level if that filtering were ever changed.
+          final TimeSeriesEngine engine = batch.type().requireEngine();
           final List<ColumnDefinition> columns = batch.type().getTsColumns();
           final List<Sample> group = batch.samples();
           final int count = group.size();
