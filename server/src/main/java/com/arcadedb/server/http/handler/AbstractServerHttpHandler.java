@@ -677,11 +677,22 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // Scope: this maps EVERY DatabaseIsClosedException to 503, not only the resync race above. A concurrent
     // DROP/CLOSE DATABASE admin action throws the same exception type on a still in-flight request, and that
     // close is permanent rather than transient - a retry costs one wasted round trip before falling through to
-    // the same generic 500 this mapping did not change for that path. Distinguishing the two cases needs a
-    // resync-vs-permanent-close signal that does not exist yet - see issue #6778.
+    // the arm below (issue #6778, #6770 follow-up). Scoping THIS 503 itself to the resync case needs a
+    // resync-vs-permanent-close signal that does not exist yet, so that half of #6778 is not attempted here.
     final DatabaseIsClosedException databaseClosed = firstOf(e, cause, DatabaseIsClosedException.class);
     if (databaseClosed != null) {
       sendRetryableResponse(exchange, databaseClosed);
+      return;
+    }
+
+    // 404: the wasted retry the comment above describes re-resolves the database with allowLoad=false
+    // (DatabaseAbstractHandler.execute), which raises this narrower type - not the generic
+    // DatabaseOperationException - once the registry entry is gone. Answered as an accurate "not there"
+    // instead of falling through to the generic 500 below (issue #6778).
+    final DatabaseNotAvailableException notAvailable = firstOf(e, cause, DatabaseNotAvailableException.class);
+    if (notAvailable != null) {
+      logUserError(notAvailable);
+      sendErrorResponse(exchange, 404, "Database not found", notAvailable, null);
       return;
     }
 
