@@ -157,6 +157,38 @@ class Issue6752AutoBackupScheduleLifecycleIT extends BaseGraphServerTest {
   }
 
   /**
+   * A reload that turns backups off for a database has to release the schedule the previous configuration installed,
+   * not merely decline to install a new one - otherwise the database keeps being backed up after its configuration
+   * says it should not be.
+   */
+  @Test
+  void aReloadThatDisablesBackupsReleasesTheSchedule() throws IOException {
+    final ArcadeDBServer server = getServer(0);
+    final AutoBackupSchedulerPlugin plugin = backupPlugin(server);
+    final BackupScheduler scheduler = plugin.getScheduler();
+
+    assertThat(scheduler.getScheduledDatabases()).contains(getDatabaseName());
+
+    final File override = new File(server.getDatabase(getDatabaseName()).getDatabasePath(),
+        AutoBackupConfig.CONFIG_FILE_NAME);
+    try (final FileWriter writer = new FileWriter(override)) {
+      writer.write("{\"enabled\": false}");
+    }
+
+    try {
+      plugin.reloadConfiguration();
+      assertThat(scheduler.getScheduledDatabases()).doesNotContain(getDatabaseName());
+      assertThat(plugin.getRetentionManager().getRegisteredDatabases()).doesNotContain(getDatabaseName());
+    } finally {
+      override.delete();
+      plugin.reloadConfiguration();
+    }
+
+    // AND TURNING IT BACK ON RESTORES IT.
+    assertThat(scheduler.getScheduledDatabases()).contains(getDatabaseName());
+  }
+
+  /**
    * The belt-and-braces half, and the more insidious one: the database is still on disk, so a tick that resolves it
    * with load-on-demand quietly reopens what the operator closed and pins the page cache again. The task must skip
    * instead. This drives the task directly, so it holds even for a schedule that somehow survived the callback.

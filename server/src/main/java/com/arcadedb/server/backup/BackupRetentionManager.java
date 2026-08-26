@@ -81,6 +81,13 @@ public class BackupRetentionManager {
   }
 
   /**
+   * Returns the names of the databases whose retention configuration is currently registered.
+   */
+  public Set<String> getRegisteredDatabases() {
+    return Set.copyOf(databaseConfigs.keySet());
+  }
+
+  /**
    * Applies the retention policy for a specific database.
    *
    * @param databaseName The database name
