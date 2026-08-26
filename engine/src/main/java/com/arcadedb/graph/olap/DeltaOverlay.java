@@ -253,6 +253,10 @@ class DeltaOverlay {
       // compaction trigger (Math.abs(deltaEdgeCount) > threshold, issue #4587) - and, since the per-pair
       // count below feeds copyBaseExcludingDeleted's exclusion budget, it would also mask a second, still
       // live, parallel edge that was never actually deleted (issue #6769).
+      // KNOWN GAP (issue #6777): this assumes an edge's RID is never reused while it sits in this set,
+      // but LocalBucket deliberately reuses a slot freed by a delete for a later insert ("hole reuse",
+      // #5279). A different, unrelated edge landing on the same freed slot and later being deleted too
+      // would collide here and have ITS deletion silently dropped.
       if (newDeletedEdgeRIDs.computeIfAbsent(ed.edgeType, k -> new HashSet<>()).add(ed.rid)) {
         newDeletedEdges.computeIfAbsent(ed.edgeType, k -> new HashMap<>())
             .merge(packEdge(srcId, tgtId), 1, Integer::sum);
