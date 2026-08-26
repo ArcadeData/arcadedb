@@ -238,8 +238,21 @@ class DeltaOverlay {
           final Map<Long, Integer> prevDel = newDeletedEdges.get(ed.edgeType);
           final boolean masked = (prevDel != null && prevDel.containsKey(packed))
               || (sameDeltaDeleted != null && sameDeltaDeleted.contains(packed));
-          if (!masked)
+          if (!masked) {
+            // The fresh base CSR already represents this edge, so it is not tracked by identity here
+            // (issue #4588) - which means a LATER deletion of this exact RID cannot be withdrawn by
+            // identity either. Drop any stale reservation of this RID from the identity-dedup Set: RIDs
+            // are reused for a later, unrelated insert once their original record is deleted ("hole
+            // reuse", #5279), so an earlier deletion recorded under this same RID belongs to whatever
+            // edge previously occupied the slot, not to this one. Leaving it in place would make this
+            // edge's own eventual deletion look like a replay of that unrelated one and get silently
+            // absorbed by Set.add() returning false (issue #6777). The earlier deletion's own exclusion
+            // budget (deletedEdgesPerType, keyed by pair, not RID) is untouched by this.
+            final Set<RID> ridsForType = newDeletedEdgeRIDs.get(ed.edgeType);
+            if (ridsForType != null)
+              ridsForType.remove(ed.rid);
             continue; // already represented by the fresh base CSR
+          }
         }
       }
       // Keyed by the edge's own identity, so a replayed add of an edge the overlay already holds is
@@ -260,8 +273,8 @@ class DeltaOverlay {
       // deleted counts below are a budget spent against the BASE CSR's run for the pair: recording one here
       // would mask a base edge nobody deleted, while leaving the phantom add in place - which is exactly how
       // the append-only added index used to surface an added-then-deleted edge as a live neighbour. Done by
-      // identity, before the dedup guard below, so a RID recycled onto a new edge (the #6777 hole-reuse gap)
-      // still cancels its own add rather than having the whole deletion dropped.
+      // identity, before the dedup guard below, so a RID recycled onto a new edge (see #6777) still cancels
+      // its own add rather than having the whole deletion dropped.
       final Map<RID, long[]> addedForType = newAddedEdges.get(ed.edgeType);
       if (addedForType != null && addedForType.remove(ed.rid) != null) {
         newDeltaEdgeCount--; // undo the +1 the withdrawn add contributed
@@ -278,14 +291,13 @@ class DeltaOverlay {
       // compaction trigger (Math.abs(deltaEdgeCount) > threshold, issue #4587) - and, since the per-pair
       // count below feeds copyBaseExcludingDeleted's exclusion budget, it would also mask a second, still
       // live, parallel edge that was never actually deleted (issue #6769).
-      // KNOWN GAP (issue #6777): this assumes an edge's RID is never reused while it sits in this set,
-      // but LocalBucket deliberately reuses a slot freed by a delete for a later insert ("hole reuse",
-      // #5279). A different, unrelated edge landing on the same freed slot and later being deleted too
-      // would collide here and have ITS deletion silently dropped. The window this can happen in is
-      // bounded by the same compaction trigger #4587 protects: a full rebuild clears this set entirely
-      // (see the no-delta constructor), so the exposure is at most GraphAnalyticalView.compactionThreshold
-      // (default GraphAnalyticalView.DEFAULT_COMPACTION_THRESHOLD = 10,000) net edge deltas of churn on
-      // one covered edge type - not unbounded, but wide enough to be reachable on a busy graph.
+      // This relies on a reused RID ("hole reuse", #5279) always being visible to THIS overlay window by
+      // identity before its own deletion is processed - which holds for every edge added through the
+      // normal (non-compaction) merge path, since an add always lands in newAddedEdges above and is caught
+      // by the withdraw branch first. The one path where an add is deliberately NOT tracked by identity is
+      // the post-compaction re-application skip a few lines up (issue #4588): there, a reused RID's stale
+      // entry in this set is explicitly cleared at the point the add is skipped, so it cannot be mistaken
+      // for a replay of the unrelated edge that originally freed the slot (issue #6777).
       if (newDeletedEdgeRIDs.computeIfAbsent(ed.edgeType, k -> new HashSet<>()).add(ed.rid)) {
         newDeletedEdges.computeIfAbsent(ed.edgeType, k -> new HashMap<>())
             .merge(packEdge(srcId, tgtId), 1, Integer::sum);

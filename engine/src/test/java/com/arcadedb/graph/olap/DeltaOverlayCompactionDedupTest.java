@@ -208,4 +208,51 @@ class DeltaOverlayCompactionDedupTest {
     assertThat(merged.countDeletedEdges(EDGE_TYPE, 0, 1)).isEqualTo(1);
     assertThat(merged.getDeltaEdgeCount()).isZero();
   }
+
+  /**
+   * Issue #6777: RIDs are not permanently unique identities - {@code LocalBucket} reuses a slot freed by
+   * a delete for a later insert ("hole reuse", #5279). Reproduces the exact buffered-delta sequence a
+   * compaction replay can produce, in commit order:
+   * <ol>
+   *   <li>E1 (pair 0-&gt;1) is deleted, RID {@code r}. {@code r} is recorded in the identity-dedup Set.</li>
+   *   <li>E2 (pair 0-&gt;2), a genuinely different edge, is created reusing the now-freed RID {@code r}.
+   *       The freshly built base CSR already contains E2's pair (the read-committed scan crossed its
+   *       bucket after E2 committed), so per #4588 the add is skipped rather than tracked by identity -
+   *       E2's RID never enters {@code addedEdgesPerType}.</li>
+   *   <li>E2 is deleted, same RID {@code r}. Since {@code r} is not in {@code addedEdgesPerType} (step 2
+   *       skipped it), the withdraw-the-add branch (#6775) does not apply, and the deletion falls through
+   *       to the identity-dedup Set - which already holds {@code r} from E1's unrelated deletion in step 1.
+   *       Before the fix, {@code Set.add()} returns false and E2's deletion is silently dropped.</li>
+   * </ol>
+   */
+  @Test
+  void deletionOfDifferentEdgeReusingAReplayedRidIsNotDropped() {
+    final NodeIdMapping mapping = baseMappingWith(3);
+    // The fresh base CSR reflects E2's pair (0->2) as already live, but NOT E1's pair (0->1) - E1 was
+    // already gone by the time the compaction scan ran.
+    final Map<String, CSRAdjacencyIndex> csr = csrWithEdge(3, 0, 2);
+    final RID reusedRid = rid(10);
+
+    final TxDelta deleteE1 = new TxDelta();
+    deleteE1.deletedEdges.add(new TxDelta.EdgeDelta(EDGE_TYPE, rid(0), rid(1), reusedRid));
+    final DeltaOverlay afterE1Delete = new DeltaOverlay(mapping.size()).merge(deleteE1, mapping, csr);
+    assertThat(afterE1Delete.countDeletedEdges(EDGE_TYPE, 0, 1)).isEqualTo(1);
+
+    final TxDelta addE2 = new TxDelta();
+    addE2.addedEdges.add(new TxDelta.EdgeDelta(EDGE_TYPE, rid(0), rid(2), reusedRid));
+    final DeltaOverlay afterE2Add = afterE1Delete.merge(addE2, mapping, csr);
+    // Skipped: already represented by the fresh base CSR, so not tracked by identity.
+    assertThat(afterE2Add.getAddedOutNeighbors(0, EDGE_TYPE)).isEmpty();
+
+    final TxDelta deleteE2 = new TxDelta();
+    deleteE2.deletedEdges.add(new TxDelta.EdgeDelta(EDGE_TYPE, rid(0), rid(2), reusedRid));
+    final DeltaOverlay afterE2Delete = afterE2Add.merge(deleteE2, mapping, csr);
+
+    // E2's own deletion must be recorded, not absorbed by E1's unrelated deletion under the same reused RID.
+    assertThat(afterE2Delete.isEdgeDeleted(EDGE_TYPE, 0, 2)).isTrue();
+    assertThat(afterE2Delete.countDeletedEdges(EDGE_TYPE, 0, 2)).isEqualTo(1);
+    // E1's own exclusion budget must be untouched.
+    assertThat(afterE2Delete.countDeletedEdges(EDGE_TYPE, 0, 1)).isEqualTo(1);
+    assertThat(afterE2Delete.getDeltaEdgeCount()).isEqualTo(-2);
+  }
 }
