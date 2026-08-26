@@ -18,19 +18,18 @@
  */
 package com.arcadedb.index.sparsevector;
 
-import com.arcadedb.database.Binary;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.BasePage;
 import com.arcadedb.index.sparsevector.SegmentFormat.RidCompression;
-import com.arcadedb.index.sparsevector.SegmentFormat.WeightQuantization;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
 
 /**
  * Forward cursor over the postings of a single dim within a page-backed sealed segment. Implements
- * a {@code block_header} / {@code posting} state machine and reads block payloads via
- * {@link PaginatedSegmentReader#readBlockPayloadInto} (page-cache-backed). The skip path uses the
- * per-segment skip list to avoid decompressing blocks that cannot beat the current threshold.
+ * a {@code block_header} / {@code posting} state machine and decodes block payloads straight out of
+ * the page-cache page they live on. The skip path uses the per-segment skip list to avoid
+ * decompressing blocks that cannot beat the current threshold.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -50,20 +49,50 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
   private int     currentBucketId = -1;
   private long    currentPosition = -1L;
   private RID     currentRidObj;
+  // Weight and tombstone of the posting the cursor sits on, decoded from the page on first read and
+  // held until the cursor moves. The traversal walks far more postings than it scores - a block-max
+  // skip reads none of them, and a non-essential probe that is abandoned early reads none either -
+  // so decoding the whole block's weights up front was work the query mostly threw away
+  // (issue #5467).
   private float   currentWeight;
   private boolean currentTombstone;
+  private boolean weightResolved;
 
-  // Decoded postings of the current block, held as parallel primitive arrays. An earlier version
+  // Decoded positions of the current block, held as parallel primitive arrays. An earlier version
   // materialised a RID per posting at decode time; on a learned-sparse query that is millions of
   // short-lived objects per query, and it dominated the traversal cost (issue #5388). Only the
   // posting the cursor is actually positioned on ever becomes a RID.
   private final int[]   blockBuckets;
   private final long[]  blockPositions;
-  private final float[] blockWeights;
-  private final boolean[] blockTombstones;
   private int           blockSize;
   private boolean       blockDecoded;
   private boolean       exhausted;
+
+  // The page that holds {@code currentBlock}, kept between blocks. The builder packs a dim's blocks
+  // back to back, so well over a hundred default-sized blocks share one 64 KiB page and a sequential walk used to
+  // re-resolve the same page once per block. Each resolution allocated a {@link com.arcadedb.engine.PageId}
+  // and an {@link com.arcadedb.engine.ImmutablePage}, hashed into the page-cache map, and bumped the
+  // cache's global hit counter - an atomic that every parallel-range worker of issue #5518 contends
+  // on. Holding the page collapses all of that to once per page (issue #5467).
+  // <p>
+  // Only ABSOLUTE reads are made through {@code pageBuf}: a REPEATABLE_READ transaction hands the
+  // same {@code ImmutablePage} - and therefore the same {@link ByteBuffer} - to every cursor that
+  // asks for the page, so touching its position would be a cross-cursor data race. Sealed segments
+  // are never written again, so the bytes behind it cannot change under us, and a page evicted from
+  // the cache stays valid here because eviction only drops the map entry.
+  private ByteBuffer    pageBuf;
+  private int           pageNum = -1;
+  private int           pageLimit;
+  private long          pageFetchCount;
+
+  // Where the current block's weight section starts in {@code pageBuf}, and the block's
+  // dequantization band. Weights are fixed-stride, so posting {@code i}'s weight is one indexed read
+  // at {@code weightsOffset + i * weightStride}; the offset itself is wherever the variable-length
+  // RID section ended.
+  private int           weightsOffset;
+  private float         blockWeightMin;
+  private float         blockWeightMax;
+  private final int     weightStride;
 
   // Lazy-decode state for Block-Max WAND skips (issue #5388). When {@code pendingDecode} is true
   // the cursor is parked at the FIRST posting of {@code currentBlock} ({@code currentInBlock == 0},
@@ -87,21 +116,19 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
   // Per-cursor (per-query) state, so it is contention-free even under concurrent queries.
   private long          decodedBlockCount;
 
-  // Per-cursor count of payload bytes copied out of the page cache by those decodes. Tracked
-  // separately from {@link #decodedBlockCount} because the two are not proportional: the reader used
-  // to hand back every byte from the block payload to the end of the page regardless of how long the
-  // block actually was, so a ~500-byte block cost a ~32 KB copy on a 64 KB page. Asserting on this
-  // counter is what keeps that from coming back (issue #5388).
+  // Per-cursor count of payload bytes those decodes read. Tracked separately from
+  // {@link #decodedBlockCount} because the two are not proportional: the reader used to hand back
+  // every byte from the block payload to the end of the page regardless of how long the block
+  // actually was, so a ~500-byte block cost a ~32 KB copy on a 64 KB page. Asserting on this counter
+  // is what keeps that from coming back (issue #5388). Since issue #5467 the decode works in place
+  // on the page and copies nothing at all, so this is the exact payload length of every block
+  // touched.
   private long          decodedPayloadBytes;
 
-  // Required scratch capacity (one full page of payload). The byte[] / ByteBuffer pair is
-  // borrowed from {@link com.arcadedb.database.DatabaseContext.DatabaseContextTL#getTemporaryBuffer1()}
-  // inside {@link #decodeBlockIfNeeded} - the same per-thread Binary that BinarySerializer and
-  // friends already share. Decoded values land in this cursor's
-  // {@code blockBuckets} / {@code blockPositions} / {@code blockWeights} / {@code blockTombstones} arrays before the call returns, so the
-  // buffer can be clobbered by any subsequent caller on the same thread without affecting us
-  // (issue #4086).
-  private final int scratchSize;
+  // Per-cursor count of postings whose weight was actually decoded. Compared against
+  // {@link #decodedBlockCount} times the block size, this is how much of the weight work the query
+  // used to do up front it now never does at all.
+  private long          resolvedWeightCount;
 
   PaginatedSegmentDimCursor(final PaginatedSegmentReader reader, final PaginatedDimMetadata meta) {
     this.reader = reader;
@@ -109,9 +136,11 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
     this.params = reader.parameters();
     this.blockBuckets = new int[params.blockSize()];
     this.blockPositions = new long[params.blockSize()];
-    this.blockWeights = new float[params.blockSize()];
-    this.blockTombstones = new boolean[params.blockSize()];
-    this.scratchSize = reader.component().pageContentSize();
+    this.weightStride = switch (params.weightQuantization()) {
+      case INT8 -> 1;
+      case FP16 -> 2;
+      case FP32 -> 4;
+    };
   }
 
   public int dimId() {
@@ -151,17 +180,6 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
     currentRidObj = null;
   }
 
-  /** Set the position from an existing {@link RID}, reusing it as the cached object. */
-  private void setPosition(final RID rid) {
-    if (rid == null) {
-      clearPosition();
-      return;
-    }
-    currentBucketId = rid.getBucketId();
-    currentPosition = rid.getPosition();
-    currentRidObj = rid;
-  }
-
   private void clearPosition() {
     currentBucketId = -1;
     currentPosition = -1L;
@@ -171,12 +189,14 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
   @Override
   public float currentWeight() {
     resolvePendingDecode();
+    resolveWeight();
     return currentWeight;
   }
 
   @Override
   public boolean isTombstone() {
     resolvePendingDecode();
+    resolveWeight();
     return currentTombstone;
   }
 
@@ -265,9 +285,22 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
     return decodedBlockCount;
   }
 
-  /** Test/observability hook: total payload bytes copied out of the page cache by those decodes. */
+  /** Test/observability hook: total payload bytes read out of the page cache by those decodes. */
   public long decodedPayloadBytes() {
     return decodedPayloadBytes;
+  }
+
+  /**
+   * Test/observability hook: how many times this cursor asked the page cache for a page. One per
+   * distinct page it walked onto, not one per block decoded - see the {@code pageBuf} field.
+   */
+  public long pageFetchCount() {
+    return pageFetchCount;
+  }
+
+  /** Test/observability hook: postings whose weight this cursor actually decoded. */
+  public long resolvedWeightCount() {
+    return resolvedWeightCount;
   }
 
   @Override
@@ -414,6 +447,11 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
     exhausted = true;
     clearPosition();
     pendingDecode = false;
+    // Release the page: a closed cursor must not keep a 64 KiB page image reachable after the query
+    // that opened it has finished with it.
+    pageBuf = null;
+    pageNum = -1;
+    blockDecoded = false;
   }
 
   // --- internals ------------------------------------------------------------
@@ -444,34 +482,68 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
     }
   }
 
+  /**
+   * Decode the current block's RID section in place on the page it lives on, and record where its
+   * weight section starts.
+   * <p>
+   * Nothing is copied. Before issue #5467 the payload was copied into a per-thread scratch buffer
+   * first, which is why {@link SegmentFormat#maxBlockPayloadSize} and the "gap to the next block"
+   * estimate had to exist at all - the format does not store a block's byte length, so a copy needed
+   * an upper bound on how much to take. Decoding against the page needs no bound: the RID loop
+   * consumes exactly the bytes the block's posting count describes and ends on the first weight
+   * byte, which is the block's exact RID-section length rather than an estimate of it.
+   * <p>
+   * Reads are bounds-checked against the page's content limit so a corrupt posting count surfaces as
+   * an {@link IOException} naming the segment rather than as a buffer exception from the decode
+   * loop.
+   */
   private void decodeBlockIfNeeded() throws IOException {
     if (blockDecoded)
       return;
-    final int pageNum = meta.blockPageNum(currentBlock);
-    final int offsetInPage = meta.blockOffset(currentBlock);
-    final int blockPostingCount = meta.blockPostingCount(currentBlock);
-    // {@code getTemporaryBuffer1} returns a cleared per-thread {@link Binary}; {@code size(int)}
-    // grows the underlying byte[] to {@code scratchSize} on first sparse-vector decode and is a
-    // no-op on subsequent calls. The default Binary uses big-endian byte order, matching the
-    // segment format.
-    final Binary scratch = reader.component().getDatabase().getContext().getTemporaryBuffer1();
-    scratch.size(scratchSize);
-    final ByteBuffer buf = reader.readBlockPayloadInto(pageNum, offsetInPage, payloadLengthBound(currentBlock, blockPostingCount),
-        scratch.getContent(), scratch.getByteBuffer());
-    decodedBlockCount++;
-    decodedPayloadBytes += buf.limit();
-
-    final int n = blockPostingCount;
+    final int blockPage = meta.blockPageNum(currentBlock);
+    if (blockPage != pageNum || pageBuf == null) {
+      final BasePage page = reader.readPage(blockPage);
+      pageBuf = page.getContent();
+      pageLimit = BasePage.PAGE_HEADER_SIZE + page.getMaxContentSize();
+      pageNum = blockPage;
+      pageFetchCount++;
+    }
+    final ByteBuffer buf = pageBuf;
+    final int limit = pageLimit;
+    final int base = BasePage.PAGE_HEADER_SIZE + meta.blockOffset(currentBlock) + SegmentFormat.BLOCK_HEADER_SIZE;
+    final int n = meta.blockPostingCount(currentBlock);
     blockSize = n;
     blockBuckets[0] = meta.blockFirstBucketId(currentBlock);
     blockPositions[0] = meta.blockFirstPosition(currentBlock);
 
+    int p = base;
     if (params.ridCompression() == RidCompression.VARINT_DELTA) {
+      // The VarLong reader is inlined rather than called through {@link VarInt}: it has to advance a
+      // local offset instead of a ByteBuffer position (absolute reads only - see {@code pageBuf}),
+      // and a method cannot return both the value and the bytes it consumed without either a second
+      // pass or an allocation. This is the traversal's innermost loop.
       int prevBucket = blockBuckets[0];
       long prevPosition = blockPositions[0];
       for (int i = 1; i < n; i++) {
-        final long bucketDelta = VarInt.readUnsignedVarLong(buf);
-        final long secondField = VarInt.readUnsignedVarLong(buf);
+        long bucketDelta = 0L;
+        int shift = 0;
+        byte b;
+        do {
+          if (p >= limit || shift >= 64)
+            throw new IOException(corruptBlockMessage());
+          b = buf.get(p++);
+          bucketDelta |= ((long) (b & 0x7F)) << shift;
+          shift += 7;
+        } while ((b & 0x80) != 0);
+        long secondField = 0L;
+        shift = 0;
+        do {
+          if (p >= limit || shift >= 64)
+            throw new IOException(corruptBlockMessage());
+          b = buf.get(p++);
+          secondField |= ((long) (b & 0x7F)) << shift;
+          shift += 7;
+        } while ((b & 0x80) != 0);
         if (bucketDelta == 0L) {
           prevPosition += secondField;
         } else {
@@ -482,85 +554,81 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
         blockPositions[i] = prevPosition;
       }
     } else {
+      if (p + (n - 1) * (4 + 8) > limit)
+        throw new IOException(corruptBlockMessage());
       for (int i = 1; i < n; i++) {
-        blockBuckets[i] = buf.getInt();
-        blockPositions[i] = buf.getLong();
+        blockBuckets[i] = buf.getInt(p);
+        p += 4;
+        blockPositions[i] = buf.getLong(p);
+        p += 8;
       }
     }
 
-    final WeightQuantization wq = params.weightQuantization();
-    final float weightMin = meta.blockWeightMin(currentBlock);
-    final float weightMax = meta.blockWeightMax(currentBlock);
-    for (int i = 0; i < n; i++) {
-      switch (wq) {
-        case INT8 -> {
-          final byte b = buf.get();
-          if (b == SegmentFormat.INT8_TOMBSTONE_SENTINEL) {
-            blockTombstones[i] = true;
-            blockWeights[i] = Float.NaN;
-          } else {
-            blockTombstones[i] = false;
-            blockWeights[i] = WeightCodec.dequantizeInt8(b, weightMin, weightMax);
-          }
-        }
-        case FP16 -> {
-          final short s = buf.getShort();
-          if (s == SegmentFormat.FP16_TOMBSTONE_SENTINEL) {
-            blockTombstones[i] = true;
-            blockWeights[i] = Float.NaN;
-          } else {
-            blockTombstones[i] = false;
-            blockWeights[i] = WeightCodec.fromFp16(s);
-          }
-        }
-        case FP32 -> {
-          final int bits = buf.getInt();
-          if (WeightCodec.isFp32Tombstone(bits)) {
-            blockTombstones[i] = true;
-            blockWeights[i] = Float.NaN;
-          } else {
-            blockTombstones[i] = false;
-            blockWeights[i] = Float.intBitsToFloat(bits);
-          }
-        }
-      }
-    }
+    if (p + n * weightStride > limit)
+      throw new IOException(corruptBlockMessage());
+    weightsOffset = p;
+    blockWeightMin = meta.blockWeightMin(currentBlock);
+    blockWeightMax = meta.blockWeightMax(currentBlock);
 
+    decodedBlockCount++;
+    decodedPayloadBytes += (long) (p - base) + (long) n * weightStride;
     blockDecoded = true;
+    weightResolved = false;
+  }
+
+  private String corruptBlockMessage() {
+    return "sparse-vector block " + currentBlock + " of dim " + meta.dimId() + " in segment '"
+        + reader.component().getName() + "' runs past the end of page " + pageNum + "; segment is corrupt";
   }
 
   /**
-   * Upper bound on the payload bytes of {@code block}, used to keep the page-to-scratch copy down to
-   * the block instead of the rest of the page (issue #5388).
+   * Decode the weight and tombstone flag of the posting the cursor sits on, once per posting.
    * <p>
-   * Two independent bounds, whichever is tighter:
-   * <ul>
-   *   <li>the format's worst case for {@code postingCount} postings at this segment's quantization,
-   *       which always holds;</li>
-   *   <li>the gap to the next block of this dim when that block sits on the same page. The builder
-   *       writes a dim's blocks back to back (header immediately followed by payload, then the next
-   *       block), so on the common path this gap <i>is</i> the exact payload length. It is only
-   *       taken when positive, so a build path that ever lays blocks out non-contiguously falls back
-   *       to the worst case rather than truncating a payload.</li>
-   * </ul>
-   * The last block of a dim on a page has no next-block gap and rides on the worst case alone; the
-   * reader clamps whatever comes back to the bytes actually left on the page.
+   * The weight section is fixed-stride whatever the quantization, so this is a single indexed read
+   * plus the dequantization. Doing it here rather than in {@link #decodeBlockIfNeeded} is what makes
+   * the block-max skip and the early-abandoned non-essential probe free of weight work: neither ever
+   * asks for a weight, and before issue #5467 both paid for a full block of them.
    */
-  private int payloadLengthBound(final int block, final int postingCount) {
-    int bound = SegmentFormat.maxBlockPayloadSize(postingCount, params.weightQuantization());
-    if (block + 1 < meta.blockCount() && meta.blockPageNum(block + 1) == meta.blockPageNum(block)) {
-      final int gap = meta.blockOffset(block + 1) - meta.blockOffset(block) - SegmentFormat.BLOCK_HEADER_SIZE;
-      if (gap > 0 && gap < bound)
-        bound = gap;
+  private void resolveWeight() {
+    if (weightResolved)
+      return;
+    weightResolved = true;
+    resolvedWeightCount++;
+    final int at = weightsOffset + currentInBlock * weightStride;
+    if (weightStride == 1) {
+      final byte b = pageBuf.get(at);
+      if (b == SegmentFormat.INT8_TOMBSTONE_SENTINEL) {
+        currentTombstone = true;
+        currentWeight = Float.NaN;
+      } else {
+        currentTombstone = false;
+        currentWeight = WeightCodec.dequantizeInt8(b, blockWeightMin, blockWeightMax);
+      }
+    } else if (weightStride == 2) {
+      final short s = pageBuf.getShort(at);
+      if (s == SegmentFormat.FP16_TOMBSTONE_SENTINEL) {
+        currentTombstone = true;
+        currentWeight = Float.NaN;
+      } else {
+        currentTombstone = false;
+        currentWeight = WeightCodec.fromFp16(s);
+      }
+    } else {
+      final int bits = pageBuf.getInt(at);
+      if (WeightCodec.isFp32Tombstone(bits)) {
+        currentTombstone = true;
+        currentWeight = Float.NaN;
+      } else {
+        currentTombstone = false;
+        currentWeight = Float.intBitsToFloat(bits);
+      }
     }
-    return bound;
   }
 
   private void materializePosting(final int idxInBlock) {
     pendingDecode = false;
     currentInBlock = idxInBlock;
     setPosition(blockBuckets[idxInBlock], blockPositions[idxInBlock]);
-    currentWeight = blockWeights[idxInBlock];
-    currentTombstone = blockTombstones[idxInBlock];
+    weightResolved = false;
   }
 }

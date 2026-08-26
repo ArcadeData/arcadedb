@@ -195,6 +195,20 @@ public final class DimCursor implements AutoCloseable {
   }
 
   /**
+   * The block end that pairs with the block max returned by the immediately preceding
+   * {@link #blockMaxAt(int, long)} on this cursor - the same value {@link #blockEndAt(int, long)}
+   * would return for that same probe, without re-checking whether the memo covers it.
+   * <p>
+   * The block-max skip always asks for both edges of the same probe, so going through the public
+   * entry point twice ran the memo's two range comparisons twice for one bound. The probe is per
+   * aligned term per candidate, which made those comparisons a double-digit share of query CPU on a
+   * learned-sparse workload (issue #5467).
+   */
+  RID lastProbedBlockEnd() {
+    return exhausted ? null : boundsEndRid;
+  }
+
+  /**
    * Refresh {@code boundsBlockMax} / {@code boundsEndRid} unless the memo already covers
    * {@code (bucketId, position)}, i.e. unless the probe falls inside {@code [boundsFrom, boundsEnd]}.
    * <p>
@@ -314,6 +328,16 @@ public final class DimCursor implements AutoCloseable {
     if (currentBucketId >= 0
         && SparseSegmentBuilder.compareRid(currentBucketId, currentPosition, targetBucketId, targetPosition) >= 0)
       return true;
+
+    // Single source: same short-circuit as {@link #advance()}. Every non-essential probe of a
+    // MaxScore traversal is a seek, and on a settled index each was walking the source array and
+    // running the min-selection pass over a merge that has nothing to merge (issue #5467).
+    if (single != null) {
+      if (sourceLive[0] && !single.seekTo(targetBucketId, targetPosition))
+        sourceLive[0] = false;
+      materializeSingle();
+      return !exhausted;
+    }
 
     for (int i = 0; i < sources.length; i++) {
       if (!sourceLive[i])
