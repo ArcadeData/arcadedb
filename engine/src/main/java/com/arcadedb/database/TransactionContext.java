@@ -1569,8 +1569,9 @@ public class TransactionContext implements Transaction {
       // its later ones. The comment a few lines down already establishes that a file's WAL pages arrive in no
       // particular order; with a live re-query, two genuinely-new pages of the same file processed HIGH NUMBER
       // FIRST would see the counter this loop itself just bumped and misclassify the lower one as "modified".
-      // A snapshot taken before this file's own pages are touched is immune to that.
-      final Map<Integer, Integer> componentPageCountAtStart = new HashMap<>();
+      // A snapshot taken before this file's own pages are touched is immune to that. IntIntHashMap (zero-boxing),
+      // for the same reason modifiedFiles above uses IntHashSet: this map is built fresh on every call here.
+      final IntIntHashMap componentPageCountAtStart = new IntIntHashMap();
 
       for (final WALFile.WALPage p : buffer.pages) {
         final PaginatedComponentFile file = (PaginatedComponentFile) database.getFileManager().getFile(p.fileId);
@@ -1583,7 +1584,11 @@ public class TransactionContext implements Transaction {
         if (component == null)
           isNew = true;
         else {
-          final int pageCountAtStart = componentPageCountAtStart.computeIfAbsent(p.fileId, fid -> component.getTotalPages());
+          int pageCountAtStart = componentPageCountAtStart.get(p.fileId, -1);
+          if (pageCountAtStart < 0) {
+            pageCountAtStart = component.getTotalPages();
+            componentPageCountAtStart.put(p.fileId, pageCountAtStart);
+          }
           isNew = p.pageNumber >= pageCountAtStart;
         }
 
