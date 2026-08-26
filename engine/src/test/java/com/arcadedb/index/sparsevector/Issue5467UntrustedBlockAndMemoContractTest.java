@@ -37,22 +37,30 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * The two guards issue #5467 introduced alongside the in-place block decode, pinned as tests rather
- * than as prose.
+ * What the in-place block decode of issue #5467 has to prove for itself, pinned as tests rather than
+ * as prose.
  * <p>
- * <b>Corrupt block headers.</b> Decoding used to copy a bounded slice of the page into a scratch
+ * <b>Untrusted block payloads.</b> Decoding used to copy a bounded slice of the page into a scratch
  * buffer, so a header describing more postings than the block really holds ran out of that slice and
- * surfaced as a {@code BufferUnderflowException} from the decode loop. Reading the page in
- * place has no slice to run out of, so the decode carries its own bounds checks and reports a corrupt
- * segment by name. The header is untrusted input in the same sense as issue #6566's segment surface:
- * it is whatever is on disk.
+ * surfaced as a {@code BufferUnderflowException} from the decode loop - protection that came for free
+ * with the copy. Reading the page in place has no slice to run out of, so the decode carries its own
+ * checks and reports a corrupt segment by name. A block header is untrusted input in the same sense
+ * as issue #6566's segment surface: it is whatever is on disk. The cases below are the ones each
+ * successive check was added for, and each fails if its check is removed:
+ * <ul>
+ *   <li>a posting count past the segment's block size, or of zero;</li>
+ *   <li>a VarLong carrying payload bits past the width of a {@code long};</li>
+ *   <li>a decoded RID component too large for a bucket id or a position;</li>
+ *   <li>a posting sequence that is not strictly ascending;</li>
+ *   <li>a payload that is well-formed and well-ordered throughout and still ends somewhere other
+ *       than where the block header says it does.</li>
+ * </ul>
  * <p>
- * <b>The block-bounds memo contract.</b> {@link DimCursor#lastProbedBlockEnd} reads the memo without
- * re-validating that it covers the probe, which is only safe because the block-max skip calls it
- * immediately after {@link DimCursor#blockMaxAt} for the same probe. That is enforced by a Java
- * {@code assert}, so the guard exists only while assertions are enabled - which this test also pins,
- * because a Surefire configuration that turned them off would remove the check silently rather than
- * visibly.
+ * <b>The fused block bounds.</b> The block-max skip needs both edges of one probe, and
+ * {@link DimCursor#blockBoundsAt} returns them together so the memo is consulted once instead of
+ * twice. This pins that the fused reader agrees with the two single-edge readers it replaced, across
+ * a walk long enough to cross block boundaries repeatedly - which is where a memo answering for the
+ * wrong probe would start to disagree.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

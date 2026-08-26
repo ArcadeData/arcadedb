@@ -417,20 +417,26 @@ public final class BmwScorer {
     long bestPosition = -1L;
     for (int q = 0; q < alignedCount; q++) {
       final int left = (alignedSlots[q] << 1) + 1;
-      for (int child = left, last = Math.min(left + 1, heapSize - 1); child <= last; child++) {
-        final int term = heap[child];
-        final int bucketId = keyBucketIds[term];
-        final long position = keyPositions[term];
-        // Skip children that are themselves in the run. A run slot's child can be another run slot,
-        // and the run's key IS the candidate, so without this the walk would return the candidate as
-        // the next key after itself and the block-max skip would target where it already is. Testing
-        // the key rather than the slot is what keeps it O(1): no cursor has moved yet, so a child
-        // still sitting on the candidate is exactly a run member (BmwScorerHeapRepairTest pins it).
-        if (position == candidatePosition && bucketId == candidateBucketId)
-          continue;
-        if (bestBucketId < 0 || SparseSegmentBuilder.compareRid(bucketId, position, bestBucketId, bestPosition) < 0) {
-          bestBucketId = bucketId;
-          bestPosition = position;
+      if (left >= heapSize)
+        continue;  // a leaf slot, and a heap array is left-packed, so there is no right child either.
+      int term = heap[left];
+      // Skip children that are themselves in the run. A run slot's child can be another run slot, and
+      // the run's key IS the candidate, so without this the walk would return the candidate as the
+      // next key after itself and the block-max skip would target where it already is. Testing the
+      // key rather than the slot is what keeps it O(1): no cursor has moved yet, so a child still
+      // sitting on the candidate is exactly a run member (BmwScorerHeapRepairTest pins it).
+      if ((keyPositions[term] != candidatePosition || keyBucketIds[term] != candidateBucketId) && (bestBucketId < 0
+          || SparseSegmentBuilder.compareRid(keyBucketIds[term], keyPositions[term], bestBucketId, bestPosition) < 0)) {
+        bestBucketId = keyBucketIds[term];
+        bestPosition = keyPositions[term];
+      }
+      final int right = left + 1;
+      if (right < heapSize) {
+        term = heap[right];
+        if ((keyPositions[term] != candidatePosition || keyBucketIds[term] != candidateBucketId) && (bestBucketId < 0
+            || SparseSegmentBuilder.compareRid(keyBucketIds[term], keyPositions[term], bestBucketId, bestPosition) < 0)) {
+          bestBucketId = keyBucketIds[term];
+          bestPosition = keyPositions[term];
         }
       }
     }
