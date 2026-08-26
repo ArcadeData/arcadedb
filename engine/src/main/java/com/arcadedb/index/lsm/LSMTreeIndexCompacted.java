@@ -517,7 +517,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
             fromPurpose);
         if (!resultInRootPage.outside)
           iterator = searchInCurrentPage(ascendingOrder, fromKeys, rootPageNumber, rootPageCount, rootPage, lastPageNumber,
-              resultInRootPage);
+              resultInRootPage, fromPurpose);
         else if (ascendingOrder == (resultInRootPage.keyIndex == 0))
           // fromKeys is OUTSIDE this series' key range and the series sits on the scanned side of fromKeys, so the whole
           // series belongs to the result: emit a full-series cursor. keyIndex==0 means fromKeys is below the series
@@ -540,15 +540,39 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     return iterators;
   }
 
+  /**
+   * Turns the root-page probe of one compacted series into the series cursor that starts the scan at the right data
+   * page and position.
+   *
+   * @param rootPurpose the {@code purpose} {@link #newIterators} used for the ROOT-page {@code lookupInPage} above.
+   *                    It decides how {@code resultInRootPage.keyIndex} has to be read when the probe did not land on
+   *                    an exact match: purposes 1 and 2 return the INSERTION POINT (the first root entry ABOVE the
+   *                    search key), while purpose 3 returns the entry AT OR BELOW it. See the not-found branch below.
+   */
   private LSMTreeIndexUnderlyingCompactedSeriesCursor searchInCurrentPage(boolean ascendingOrder, Object[] convertedFromKeys,
       int rootPageNumber,
-      int rootPageCount, BasePage rootPage, int lastPageNumber, LookupResult resultInRootPage) throws IOException {
+      int rootPageCount, BasePage rootPage, int lastPageNumber, LookupResult resultInRootPage, final int rootPurpose)
+      throws IOException {
     LSMTreeIndexUnderlyingCompactedSeriesCursor iterator = null;
     if (!resultInRootPage.outside) {
       // IT'S IN THE PAGE RANGE
       int pageInSeries = resultInRootPage.keyIndex;
 
-      if (resultInRootPage.found) {
+      if (rootPurpose == 3) {
+        // DESCENDING PARTIAL (composite-index prefix) KEY. A root page holds the MINIMUM key of each of its
+        // rootPageCount data pages, followed by one trailing sentinel entry carrying the series' MAXIMUM key - so
+        // root entry i addresses data page i, and only the sentinel (index rootPageCount) has no page of its own.
+        // Unlike purposes 1 and 2, purpose=3's binary search returns the entry AT OR BELOW the search key (see
+        // LSMTreeIndexAbstract#lookupInPage: purpose 3 returns `high`, the others `low`), and the page whose minimum
+        // key is at or below the search key IS the page that can hold it. Stepping back a page here - which is what
+        // the shared not-found branch below does, correctly, for an insertion point - started the descending scan on
+        // a data page entirely BELOW the matching group, so the group was never visited and the series contributed
+        // NOTHING: an `ORDER BY <trailing property> DESC` over a composite-index prefix silently returned zero rows
+        // once the index had been compacted, while the same query ASC returned them all (#6592). The only adjustment
+        // needed is mapping the sentinel back onto the last real data page.
+        if (pageInSeries >= rootPageCount)
+          pageInSeries = rootPageCount - 1;
+      } else if (resultInRootPage.found) {
         if (ascendingOrder && !unique) {
           // Start at the first matching leaf plus its possible shared predecessor. Legacy files can contain a key that began
           // on its predecessor and then overflowed; the bounded writer can also place a complete leading RID chunk there
@@ -562,7 +586,8 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
           // LAST ITEM + FOUND = IT'S THE LAST ELEMENT OF THE LAST PAGE
           --pageInSeries;
       } else
-        // NOT FOUND: GET THE PREVIOUS PAGE
+        // NOT FOUND: lookupInPage() RETURNED THE INSERTION POINT (THE FIRST ROOT ENTRY ABOVE THE SEARCH KEY), SO THE
+        // PAGE THAT CAN HOLD THE KEY IS THE PREVIOUS ONE
         --pageInSeries;
 
       // Clamp to valid range: pageInSeries can become -1 when the search key is before all entries
