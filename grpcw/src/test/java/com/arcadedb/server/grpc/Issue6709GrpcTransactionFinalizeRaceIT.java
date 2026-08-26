@@ -162,6 +162,10 @@ public class Issue6709GrpcTransactionFinalizeRaceIT extends BaseGraphServerTest 
     assertThat(blockerRunning.await(5, TimeUnit.SECONDS)).as("blocker must start").isTrue();
 
     final ExecutorService clientExecutor = Executors.newSingleThreadExecutor();
+    // Tracks whether the slot below was already released on the success path, so the finally block releases
+    // it exactly once regardless of which path exits (cycle-4 review: the queue-wait or finalize call itself
+    // could throw before the old inline release ran, leaking the reservation on that exit path too).
+    boolean slotReleased = false;
     try {
       final Future<StatusRuntimeException> rpcResult = clientExecutor.submit(() -> rpcCall.apply(txId));
 
@@ -184,10 +188,15 @@ public class Issue6709GrpcTransactionFinalizeRaceIT extends BaseGraphServerTest 
       // same way commitTransaction/rollbackTransaction/reapIdleTransactions do, or every race test in this
       // class leaks one reservation (CodeRabbit cycle-3 review).
       service.releaseTransactionSlot(txCtx.owner);
+      slotReleased = true;
       release.countDown();
 
       return rpcResult.get(5, TimeUnit.SECONDS);
     } finally {
+      // Idempotent: a no-op if the try block already finalized it (activeTransactions.remove returns null).
+      service.finalizeTransactionForTesting(txId);
+      if (!slotReleased)
+        service.releaseTransactionSlot(txCtx.owner);
       release.countDown();
       clientExecutor.shutdownNow();
     }
@@ -291,8 +300,7 @@ public class Issue6709GrpcTransactionFinalizeRaceIT extends BaseGraphServerTest 
     assertThat(err).as("bulkInsert must reject the finalize-race, not hang or succeed").isNotNull();
     assertThat(err.getStatus().getCode())
         .as("bulkInsert must surface FAILED_PRECONDITION, not an opaque INTERNAL, when the transaction is "
-            + "finalized while its dispatched task is queued - the catch block here changed non-trivially in "
-            + "this PR")
+            + "finalized while its dispatched task is queued")
         .isEqualTo(Status.Code.FAILED_PRECONDITION);
   }
 }
