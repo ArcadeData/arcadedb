@@ -78,6 +78,10 @@ public class LocalTimeSeriesType extends LocalDocumentType {
       return;
     engine = new TimeSeriesEngine((DatabaseInternal) schema.getDatabase(), name, tsColumns, shardCount > 0 ? shardCount : 1,
         compactionBucketIntervalMs, mutableFormatVersion);
+    // A retry that succeeds after a prior markEngineUnavailable() must not leave the stale reason behind: nothing
+    // else clears it, and getEngineUnavailableReason() otherwise keeps reporting why the engine failed even after
+    // isEngineAvailable() has correctly flipped to true.
+    engineUnavailableReason = null;
   }
 
   public TimeSeriesEngine getEngine() {
