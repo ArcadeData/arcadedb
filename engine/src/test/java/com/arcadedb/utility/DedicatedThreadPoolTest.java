@@ -43,6 +43,14 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class DedicatedThreadPoolTest {
 
+  /**
+   * Plain wall clock, because {@code @Timeout} cannot be stall-discounted - so it is sized as a hang detector and
+   * never as a bound on anything. The tests that wait for something get their actual verdict from
+   * {@link #awaited(CountDownLatch)}, whose budget IS stall-discounted (#6260); this only stops a genuine wedge
+   * from hanging the build. Same sizing as {@code Issue6568NestedFanOutDeadlockTest}, for the same reason.
+   */
+  private static final int HANG_DETECTOR_SECONDS = 300;
+
   private static final class TestPool extends DedicatedThreadPool {
     private TestPool(final int queueCapacity, final SaturationPolicy policy) {
       super("ArcadeDB-DedicatedThreadPoolTest-", 1, queueCapacity, policy, DedicatedThreadPool::plainWorker,
@@ -139,7 +147,7 @@ class DedicatedThreadPoolTest {
    * worker took it, so it runs exactly once.
    */
   @Test
-  @Timeout(60)
+  @Timeout(HANG_DETECTOR_SECONDS)
   void aQueuedTaskIsReclaimedAndRunByTheThreadWaitingForIt() throws Exception {
     final TestPool pool = new TestPool(16, DedicatedThreadPool.SaturationPolicy.CALLER_RUNS);
     final CountDownLatch pinWorker = new CountDownLatch(1);
@@ -176,7 +184,7 @@ class DedicatedThreadPoolTest {
    * one that has already finished, and one that was never submitted to this pool at all.
    */
   @Test
-  @Timeout(60)
+  @Timeout(HANG_DETECTOR_SECONDS)
   void aTaskAWorkerAlreadyHasIsNeverReclaimed() throws Exception {
     final TestPool pool = new TestPool(16, DedicatedThreadPool.SaturationPolicy.CALLER_RUNS);
     final CountDownLatch releaseRunning = new CountDownLatch(1);
@@ -212,7 +220,7 @@ class DedicatedThreadPoolTest {
    * worker would have given it", and this is the half of that claim liveness alone does not pin.
    */
   @Test
-  @Timeout(60)
+  @Timeout(HANG_DETECTOR_SECONDS)
   void aReclaimedTaskThatThrowsFailsItsFutureInsteadOfTheReclaimingThread() throws Exception {
     final TestPool pool = new TestPool(16, DedicatedThreadPool.SaturationPolicy.CALLER_RUNS);
     final CountDownLatch pinWorker = new CountDownLatch(1);
@@ -246,7 +254,7 @@ class DedicatedThreadPoolTest {
    * command it is running - a reclaim that bypassed the hook would silently reintroduce that self-deadlock.
    */
   @Test
-  @Timeout(60)
+  @Timeout(HANG_DETECTOR_SECONDS)
   void aReclaimRunsThroughTheSameHookAsACallerRunsFallback() throws Exception {
     final AtomicReference<Thread> markedOn = new AtomicReference<>();
     final CountDownLatch pinWorker = new CountDownLatch(1);
