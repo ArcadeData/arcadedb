@@ -171,4 +171,19 @@ class Issue5671PositionalVariableKindsTest {
         .isInstanceOf(CommandParsingException.class)
         .hasMessageContaining("type() requires a relationship argument, got node");
   }
+
+  /**
+   * Found in a second code-review round: {@code FOREACH}'s inner clauses were walked flat, all against the
+   * single scope {@code FOREACH} itself declared, so a later inner clause could not see what an earlier inner
+   * clause in the SAME body had just bound - unlike every other clause list, where {@link #forClauseEntry}
+   * advances the scope from one clause to the next. An inner {@code CREATE} followed by an inner {@code SET}
+   * reading what it just created is the concrete case: {@code n} is a node the moment the {@code CREATE} runs,
+   * and {@code type()} must still reject it inside the very next inner clause.
+   */
+  @Test
+  void foreachInnerClauseSeesWhatAnEarlierInnerClauseInTheSameBodyJustDeclared() {
+    assertThatThrownBy(() -> database.query("opencypher", "FOREACH (i IN [1] | CREATE (n:P) SET n.kind = type(n))"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("type() requires a relationship argument, got node");
+  }
 }
