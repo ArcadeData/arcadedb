@@ -306,7 +306,10 @@ public class Console {
 
       return true;
     } catch (final IOException | RuntimeException e) {
-      outputError(e);
+      // A NESTED COMMAND (E.G. AN UNBALANCED '{' REPORTED WHILE EXECUTING A LOADED SCRIPT) MAY HAVE ALREADY SENT ITS OWN
+      // MESSAGE TO THE OUTPUT: DON'T REPORT THE SAME ERROR TWICE (ISSUE #6439)
+      if (!(e instanceof final ConsoleException ce && ce.isAlreadyReported()))
+        outputError(e);
       throw e;
     }
   }
@@ -928,7 +931,7 @@ public class Console {
 
     final ConsoleException ex = new ConsoleException(
         "Unbalanced '{' at line " + (lineNumberBase + lineNo) + ", column " + col + ": no matching '}' was found, so everything "
-            + "from there to the end of the input was treated as a single command instead of being split on ';'");
+            + "from there to the end of the input was treated as a single command instead of being split on ';'", true);
     outputError(ex);
     throw ex;
   }
