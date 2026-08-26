@@ -69,6 +69,25 @@ would otherwise falsely absorb a later, unrelated deletion under the same reused
   lanes): all green.
 - `mvn -o -pl engine -am compile`: clean.
 
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/6787
+
+## Review cycles
+
+- Cycle 1: head `2eb1899871a5edebf2df71e7efeba014fcc3b283`. `claude` reviewed: no
+  blocking issues, clean approval. `coderabbitai` flagged one actionable item: em dashes
+  in `docs/6777-deltaoverlay-rid-reuse-dedup.md` (repo convention forbids them). Applied
+  directly (commit `afc3c417a4`).
+- Cycle 2: head `afc3c417a452110e93a97e06fa985832636beec5`. `claude` reviewed: no
+  blocking issues, clean approval (traced the fix's correctness against the buffered-delta
+  replay invariants, confirmed the regression test's expected values by hand). No
+  actionable items from any reviewer on this head. Working tree clean, no deferred items.
+
+## Deferred items
+
+None.
+
 ## Status
 
-Done. Ready for PR.
+`clean-approval`. Ready for developer merge.
