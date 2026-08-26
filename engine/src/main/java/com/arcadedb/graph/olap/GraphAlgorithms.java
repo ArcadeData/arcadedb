@@ -29,6 +29,7 @@ import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.util.Arrays;
 import java.util.PriorityQueue;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
@@ -180,16 +181,17 @@ public final class GraphAlgorithms {
         if (firstError == null)
           firstError = e.getCause();
       } catch (final InterruptedException e) {
-        for (int j = i; j < count; j++)
-          if (futures[j] != null)
-            futures[j].cancel(true);
         Thread.currentThread().interrupt();
-        final CommandExecutionException interrupted = new CommandExecutionException(
-            "Parallel graph computation interrupted, partial results discarded");
-        if (firstError != null)
-          // A chunk had already failed before the interrupt: keep its cause for diagnostics.
-          interrupted.addSuppressed(firstError);
-        throw interrupted;
+        throw abort(futures, count, i, firstError, "interrupted");
+      } catch (final CancellationException e) {
+        // A chunk whose future was cancelled rather than run, which on this path means the pool was SHUT DOWN
+        // (#4961: a caller-runs rejection and, since #6568, a reclaim both cancel instead of running there, so
+        // that nobody is left waiting for a task no worker will ever take). Server shutdown with a query still
+        // in flight is exactly when it fires. Handled like the interrupt: without this the CancellationException
+        // - a RuntimeException neither clause below caught - unwound this frame while the remaining chunks kept
+        // running and writing into the caller's per-chunk arrays behind its back, which is the leak #4951 closed
+        // for the interrupt and left open here.
+        throw abort(futures, count, i, firstError, "cancelled, the executor was shut down");
       }
     }
     if (firstError != null) {
@@ -199,6 +201,30 @@ public final class GraphAlgorithms {
         throw er;
       throw new RuntimeException(firstError);
     }
+  }
+
+  /**
+   * Cancels every chunk this wait has not yet collected and builds the exception that replaces the partial result.
+   * <p>
+   * The guarantee both callers need (#4951): a fan-out that ends early must not leave background chunks running,
+   * because they keep writing into the per-chunk arrays the caller is about to abandon, and it must never let a
+   * truncated result be read as a complete one.
+   *
+   * @param from       the index the wait stopped at; everything from here on is still outstanding
+   * @param firstError a chunk failure seen before the abort, kept as a suppressed cause rather than lost
+   * @param why        what ended the wait, for the message
+   */
+  private static CommandExecutionException abort(final Future<?>[] futures, final int count, final int from,
+      final Throwable firstError, final String why) {
+    for (int j = from; j < count; j++)
+      if (futures[j] != null)
+        futures[j].cancel(true);
+
+    final CommandExecutionException aborted = new CommandExecutionException(
+        "Parallel graph computation " + why + ", partial results discarded");
+    if (firstError != null)
+      aborted.addSuppressed(firstError);
+    return aborted;
   }
 
   /**

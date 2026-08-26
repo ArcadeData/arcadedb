@@ -19,6 +19,7 @@
 package com.arcadedb.graph.olap;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.utility.DedicatedThreadPool;
 import com.arcadedb.utility.StallAwareStopwatch;
@@ -37,6 +38,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for #6568: a thread that waits for a task it submitted to a dedicated pool must RECLAIM that task
@@ -202,6 +204,53 @@ class Issue6568NestedFanOutDeadlockTest {
     final Future<?> canary = executor.submit(() -> null);
     assertThat(awaited(canary, WORKER_PIN_MS)).as("the query pool must be running work on its own threads again")
         .isTrue();
+  }
+
+  /**
+   * A pool shut down with a fan-out still in flight - server shutdown while a query is running - must END the wait
+   * and take the outstanding chunks down with it, never let a CancellationException unwind the caller while the
+   * rest of the batch keeps writing into arrays it has abandoned.
+   * <p>
+   * The reclaim is what makes this reachable rather than theoretical: on a shut-down CALLER_RUNS pool
+   * {@code runRejectedTask} cancels the task instead of running it (#4961, so that nobody waits for a task no
+   * worker will take), and {@code Future.get()} then throws CancellationException - a RuntimeException that used
+   * to escape {@code awaitFutures} through neither of its catch clauses. Same leak #4951 closed for the interrupt.
+   */
+  @Test
+  @Timeout(value = HANG_DETECTOR_SECONDS, unit = TimeUnit.SECONDS, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+  void aFanOutOnAShutDownPoolFailsAndCancelsTheChunksItLeavesBehind() throws Exception {
+    final FanOutPool pool = new FanOutPool(1);
+    final CountDownLatch pinWorker = new CountDownLatch(1);
+    final CountDownLatch workerPinned = new CountDownLatch(1);
+    try {
+      final ExecutorService executor = pool.getExecutorService();
+      executor.submit(() -> {
+        workerPinned.countDown();
+        pinWorker.await();
+        return null;
+      });
+      assertThat(awaited(workerPinned, WORKER_PIN_MS)).isTrue();
+
+      final AtomicInteger ran = new AtomicInteger();
+      final Future<?>[] chunks = { executor.submit(ran::incrementAndGet), executor.submit(ran::incrementAndGet) };
+
+      // shutdown() and not close(): shutdownNow() DRAINS the queue, which would leave nothing to reclaim and so
+      // test a different thing entirely. A graceful shutdown keeps the queued chunks exactly where they are.
+      executor.shutdown();
+
+      assertThatThrownBy(() -> GraphAlgorithms.awaitFutures(chunks, 2, pool))
+          .as("a shut-down pool must fail the fan-out, not leak a CancellationException past it")
+          .isInstanceOf(CommandExecutionException.class)
+          .hasMessageContaining("cancelled").hasMessageContaining("partial results discarded");
+
+      assertThat(chunks[1].isCancelled())
+          .as("the chunk the wait never reached must be cancelled, not left to run behind the caller's back")
+          .isTrue();
+      assertThat(ran.get()).as("a shut-down pool must not run a reclaimed chunk on the caller either").isZero();
+    } finally {
+      pinWorker.countDown();
+      pool.close();
+    }
   }
 
   /**

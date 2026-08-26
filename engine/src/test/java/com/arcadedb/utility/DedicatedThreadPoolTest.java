@@ -140,7 +140,6 @@ class DedicatedThreadPoolTest {
         .isTrue();
   }
 
-
   /**
    * The #6568 primitive: a task the queue has accepted but no worker has started is handed back to the thread that
    * is about to wait for it, and runs there. What makes it safe is that {@code remove} succeeding is proof no
