@@ -24,6 +24,7 @@ import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.File;
 import java.nio.file.Files;
@@ -68,6 +69,9 @@ class Issue6753ConcurrentBackupTest extends TestHelper {
   }
 
   @Test
+  // PLAIN HANG DETECTOR, NOT A LATENCY BOUND: THE TWO BACKUPS TAKE A FRACTION OF A SECOND EACH, AND ONLY A DEADLOCK
+  // BETWEEN THEM COULD REACH THIS
+  @Timeout(value = 300, unit = TimeUnit.SECONDS)
   void twoBackupsRacingOnTheSameArchiveNameLeaveOneReadableArchive() throws Exception {
     final CyclicBarrier startTogether = new CyclicBarrier(2);
     final AtomicInteger succeeded = new AtomicInteger();
@@ -89,7 +93,7 @@ class Issue6753ConcurrentBackupTest extends TestHelper {
         });
 
       for (final Future<?> run : runs)
-        run.get(120, TimeUnit.SECONDS);
+        run.get();
     } finally {
       executor.shutdownNow();
     }

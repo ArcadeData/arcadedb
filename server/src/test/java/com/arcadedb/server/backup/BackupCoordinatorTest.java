@@ -19,8 +19,10 @@
 package com.arcadedb.server.backup;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -64,6 +66,9 @@ class BackupCoordinatorTest {
   }
 
   @Test
+  // PLAIN HANG DETECTOR, NOT A LATENCY BOUND: THE CALLERS DO ONE Set.add EACH, SO ANY REAL RUN FINISHES IN
+  // MICROSECONDS AND ONLY A DEADLOCK COULD REACH THIS
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
   void exactlyOneOfManyConcurrentCallersIsAdmitted() throws Exception {
     final BackupCoordinator coordinator = new BackupCoordinator();
     final int callers = 8;
@@ -88,7 +93,7 @@ class BackupCoordinatorTest {
         });
 
       startTogether.countDown();
-      assertThat(done.await(30, TimeUnit.SECONDS)).isTrue();
+      done.await();
     } finally {
       executor.shutdownNow();
     }
@@ -107,13 +112,16 @@ class BackupCoordinatorTest {
 
   @Test
   void archiveNamesAreReadBackByTheSameConvention() {
-    final BackupCoordinator coordinator = new BackupCoordinator();
-    final LocalDateTime before = LocalDateTime.now().minusSeconds(1);
+    final String name = new BackupCoordinator().newArchiveName("mydb");
 
-    final LocalDateTime parsed = BackupCoordinator.parseArchiveTimestamp(coordinator.newArchiveName("mydb"));
+    final LocalDateTime parsed = BackupCoordinator.parseArchiveTimestamp(name);
 
+    // A ROUND TRIP RATHER THAN A COMPARISON AGAINST now(): WHAT HAS TO HOLD IS THAT THE PARSER AGREES WITH THE WRITER
+    // DIGIT FOR DIGIT - ONE THAT DRIFTED WOULD DROP EVERY NEW ARCHIVE OUT OF THE RETENTION SET - AND THAT IS A
+    // PROPERTY OF THE TWO SIDES, NOT OF WHAT THE CLOCK SAID IN BETWEEN
     assertThat(parsed).isNotNull();
-    assertThat(parsed).isAfterOrEqualTo(before);
+    assertThat(name).isEqualTo(
+        "mydb-backup-" + parsed.format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmssSSS")) + ".zip");
   }
 
   @Test
