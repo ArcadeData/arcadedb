@@ -73,6 +73,19 @@ public final class CypherVariableUsage {
    * @return true if the variable is referenced elsewhere in the query
    */
   public static boolean isEdgeVariableReferenced(final CypherStatement statement, final String variable) {
+    // A UNION has no clauses of its own (issue #5671): each branch is checked as one, and a reference in ANY
+    // branch keeps the edge binding alive - the same conservative policy documented on the CREATE/MERGE case
+    // below. Not currently reachable with a union statement (every call site plans a UNION branch-by-branch
+    // before reaching here), but this mirrors innerStatementReferencesVariable's guard below for the same
+    // defense-in-depth reason: nothing past this point can answer for a union, and answering wrongly (dropping
+    // an edge binding) is worse than the redundant check costs.
+    if (statement instanceof UnionStatement union) {
+      for (final CypherStatement branch : union.getQueries())
+        if (isEdgeVariableReferenced(branch, variable))
+          return true;
+      return false;
+    }
+
     // 0. RETURN * projects every variable in scope by name, so nothing is unreferenced under it.
     //    Reading only the explicit return items said otherwise and dropped the edge binding, which
     //    made the relationship column disappear from the result.

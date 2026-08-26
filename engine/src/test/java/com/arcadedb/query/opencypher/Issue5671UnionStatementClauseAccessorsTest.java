@@ -167,6 +167,23 @@ class Issue5671UnionStatementClauseAccessorsTest {
     assertThat(CypherVariableUsage.isEdgeVariableReferenced(statement, "r")).isFalse();
   }
 
+  /**
+   * Defense-in-depth found in code review: no current call path reaches {@code isEdgeVariableReferenced} with a
+   * top-level {@link UnionStatement} (every caller plans a UNION branch-by-branch first), but the method has no
+   * internal guard of its own, unlike its {@code innerStatementReferencesVariable} sibling in the same file. Pins
+   * the hardening directly, independent of whether that call-graph guarantee holds.
+   */
+  @Test
+  void isEdgeVariableReferencedHandlesATopLevelUnionDirectly() {
+    final UnionStatement referencedInSecondBranch = (UnionStatement) PARSER.parse(
+        "MATCH (a)-[r:KNOWS]->(b) RETURN a AS n UNION MATCH (a)-[r:KNOWS]->(b) RETURN r.since AS n");
+    assertThat(CypherVariableUsage.isEdgeVariableReferenced(referencedInSecondBranch, "r")).isTrue();
+
+    final UnionStatement referencedInNeitherBranch = (UnionStatement) PARSER.parse(
+        "MATCH (a)-[r:KNOWS]->(b) RETURN a AS n UNION MATCH (a)-[r:KNOWS]->(b) RETURN a AS n");
+    assertThat(CypherVariableUsage.isEdgeVariableReferenced(referencedInNeitherBranch, "r")).isFalse();
+  }
+
   // ============================================================
   // Regression: OpenCypherQueryEngine.analyze(...).getOperationTypes() no longer throws for a
   // UNION whose write clause is only in one branch, and classifies it correctly
