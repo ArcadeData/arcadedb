@@ -1903,6 +1903,12 @@ public class SelectExecutionPlanner {
         ? derivePartitionPrunedClusters(docType, filterClusters, info, context)
         : filterClusters;
 
+    if (docType instanceof LocalTimeSeriesType tsType && !tsType.isEngineAvailable())
+      // Registered but without a usable engine (issue #6356): fail loudly rather than silently falling through to
+      // the generic document scan below, which would read zero rows from a type that has no record bucket of its
+      // own and report the query as having succeeded. requireEngine() throws with the reason.
+      tsType.requireEngine();
+
     if (docType instanceof LocalTimeSeriesType tsType && tsType.getEngine() != null) {
       // Extract time range from WHERE clause (if available)
       long fromTs = Long.MIN_VALUE;

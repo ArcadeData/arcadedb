@@ -339,16 +339,20 @@ class Issue6125SnapshotBarrierAndCapTest extends TestHelper {
     flushThread.nextPagesToFlush.set(new PageManagerFlushThread.PagesToFlush(new ArrayList<>(List.of(page))));
     try {
       final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
+      // THE REASON IS THE PROPERTY UNDER TEST, NOT THE ELAPSED TIME: openSnapshot HAS TWO OPPOSITE-MEANING TIMEOUTS
+      // BEHIND THE SAME EXCEPTION TYPE (#6394), AND UNDER A FULL-SUITE RUN trySuspendUntil CAN GENUINELY LOSE ITS
+      // OWN RACE FIRST (ANOTHER SUSPENDER STILL RESUMING) - A DURATION-BASED ASSERTION CANNOT TELL THAT APART FROM
+      // THE waitForCurrentFlushToCompleteUntil TIMEOUT THIS TEST FABRICATES, AND FLAKES WHEN IT GUESSES WRONG
       assertThatThrownBy(() -> pageManager.openSnapshot(db))
           .as("the barrier must abandon the window rather than wait out a flush that never lands")
-          .isInstanceOf(PageSnapshotException.class);
+          .isInstanceOf(PageSnapshotException.class)
+          .extracting(e -> ((PageSnapshotException) e).getReason())
+          .as("the fabricated never-completing flush must be diagnosed as the flush timeout, not the unrelated "
+              + "suspend-timeout race")
+          .isEqualTo(PageSnapshotException.Reason.FLUSH_TIMEOUT);
 
-      // BOTH ENDS MATTER. The upper bound is the property under test - far below the forever the unbounded wait
-      // would have taken, and discounted for JVM stalls (#6260) rather than widened. The lower one keeps the test
-      // honest: it proves the barrier really did block on the fabricated batch and time out, rather than failing
-      // instantly for some unrelated reason that would make the ceiling assertion pass vacuously. It reads raw
-      // wall clock on purpose - a stall only makes "at least this long" more true
-      assertThat(stopwatch.elapsedMs()).as("the barrier must block on the in-flight batch").isGreaterThanOrEqualTo(1_000L);
+      // THE UPPER BOUND IS STILL A REAL PROPERTY: FAR BELOW THE FOREVER THE UNBOUNDED WAIT WOULD HAVE TAKEN, AND
+      // DISCOUNTED FOR JVM STALLS (#6260) RATHER THAN WIDENED
       stopwatch.assertGaveUpWithin(60_000L, "the barrier's own budget from waiting out a flush that never lands");
 
       // AND IT MUST HAVE LET GO: A FAILED BARRIER THAT KEPT THE GLOBAL LOCK WOULD BE WORSE THAN THE HANG IT REPLACES

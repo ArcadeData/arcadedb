@@ -2455,17 +2455,19 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
     final int magic = headerBuf.getInt();
     if (magic != MAGIC_VALUE)
-      throw new IOException("Invalid sealed store magic: " + Integer.toHexString(magic));
+      throw new IOException(
+          "Invalid sealed store magic in '" + basePath + ".ts.sealed': " + Integer.toHexString(magic));
 
     final int version = headerBuf.get() & 0xFF;
     if (version != CURRENT_VERSION)
       throw new IOException(
-          "Unsupported sealed store format version " + version + " (expected: " + CURRENT_VERSION + ")");
+          "Unsupported sealed store format version " + version + " (expected: " + CURRENT_VERSION + ") in '"
+              + basePath + ".ts.sealed'");
 
     final int colCount = headerBuf.getShort() & 0xFFFF;
     if (colCount != columns.size())
-      throw new IOException("Column count mismatch in sealed store header: file has " + colCount
-          + " columns, schema has " + columns.size());
+      throw new IOException("Column count mismatch in sealed store header of '" + basePath + ".ts.sealed': file has "
+          + colCount + " columns, schema has " + columns.size());
     final int blockCount = headerBuf.getInt();
     globalMinTs = headerBuf.getLong();
     globalMaxTs = headerBuf.getLong();

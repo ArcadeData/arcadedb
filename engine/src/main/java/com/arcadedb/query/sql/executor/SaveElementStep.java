@@ -76,7 +76,12 @@ public class SaveElementStep extends AbstractExecutionStep {
 
           // Check if this is a TimeSeries type — route to TimeSeriesEngine
           final var docType = context.getDatabase().getSchema().getType(doc.getTypeName());
-          if (docType instanceof LocalTimeSeriesType tsType && tsType.getEngine() != null) {
+          if (docType instanceof LocalTimeSeriesType tsType) {
+            // Registered but without a usable engine (issue #6356): fail loudly here rather than silently
+            // falling through to the generic document save below, which a TimeSeries type - with no record
+            // bucket of its own - cannot serve correctly either. requireEngine() throws with the reason.
+            if (!tsType.isEngineAvailable())
+              tsType.requireEngine();
             saveToTimeSeries(tsType, doc, context);
             scheduleContinuousAggregateRefresh(context, tsType);
             return result;

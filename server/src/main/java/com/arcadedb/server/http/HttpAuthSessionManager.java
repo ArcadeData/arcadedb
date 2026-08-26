@@ -23,6 +23,7 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.RWLockContext;
 
 import java.util.*;
+import java.util.function.LongSupplier;
 import java.util.logging.Level;
 
 /**
@@ -39,6 +40,7 @@ public class HttpAuthSessionManager extends RWLockContext {
   private final Map<String, HttpAuthSession> sessions = new HashMap<>();
   private final       long                         sessionTimeoutInMs;
   private final       long                         absoluteTimeoutInMs;
+  private final       LongSupplier                 clock;
   private final       Timer                        timer;
 
   public HttpAuthSessionManager(final long sessionTimeoutInMs) {
@@ -46,8 +48,17 @@ public class HttpAuthSessionManager extends RWLockContext {
   }
 
   public HttpAuthSessionManager(final long sessionTimeoutInMs, final long absoluteTimeoutInMs) {
+    this(sessionTimeoutInMs, absoluteTimeoutInMs, System::currentTimeMillis);
+  }
+
+  /**
+   * Package-private constructor that allows tests to inject a deterministic clock instead of the
+   * wall clock, so idle/absolute timeout behavior can be asserted without sleeping (see #6398).
+   */
+  HttpAuthSessionManager(final long sessionTimeoutInMs, final long absoluteTimeoutInMs, final LongSupplier clock) {
     this.sessionTimeoutInMs = sessionTimeoutInMs;
     this.absoluteTimeoutInMs = absoluteTimeoutInMs;
+    this.clock = clock;
 
     timer = new Timer("HttpAuthSessionManager-Cleanup", true);
     timer.schedule(new TimerTask() {
@@ -141,7 +152,7 @@ public class HttpAuthSessionManager extends RWLockContext {
       final String userAgent, final String country, final String city) {
     return executeInWriteLock(() -> {
       final String token = "AU-" + UUID.randomUUID();
-      final HttpAuthSession session = new HttpAuthSession(user, token, sourceIp, userAgent, country, city);
+      final HttpAuthSession session = new HttpAuthSession(user, token, sourceIp, userAgent, country, city, clock);
       sessions.put(token, session);
       LogManager.instance().log(this, Level.FINE, "Created authentication session %s for user %s from %s", token,
           user.getName(), sourceIp);

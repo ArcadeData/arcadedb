@@ -276,6 +276,38 @@ class ExceptionTest {
   }
 
   @Test
+  void pageSnapshotExceptionDefaultsToOtherReason() {
+    // The legacy two-arg constructors (still used by call sites that do not need to distinguish outcomes,
+    // e.g. PageSnapshot.checkValid) must not force every caller to pick a reason (#6394).
+    final PageSnapshotException withMessage = new PageSnapshotException("failed");
+    assertThat(withMessage.getReason()).isEqualTo(PageSnapshotException.Reason.OTHER);
+
+    final RuntimeException cause = new RuntimeException("io error");
+    final PageSnapshotException withCause = new PageSnapshotException("failed", cause);
+    assertThat(withCause.getReason()).isEqualTo(PageSnapshotException.Reason.OTHER);
+    assertThat(withCause.getCause()).isSameAs(cause);
+  }
+
+  @Test
+  void pageSnapshotExceptionCarriesItsReason() {
+    // PageManager.openSnapshotInternal's two barrier timeouts share this exception type but mean opposite
+    // things operationally (transient vs. fatal) - the reason is how a caller tells them apart instead of
+    // parsing getMessage() (#6394).
+    assertThat(new PageSnapshotException("suspend timed out", PageSnapshotException.Reason.SUSPEND_TIMEOUT).getReason())
+        .isEqualTo(PageSnapshotException.Reason.SUSPEND_TIMEOUT);
+    assertThat(new PageSnapshotException("flush timed out", PageSnapshotException.Reason.FLUSH_TIMEOUT).getReason())
+        .isEqualTo(PageSnapshotException.Reason.FLUSH_TIMEOUT);
+
+    final RuntimeException cause = new RuntimeException("not running");
+    final PageSnapshotException withReasonAndCause =
+        new PageSnapshotException("not running", PageSnapshotException.Reason.NOT_RUNNING, cause);
+    assertThat(withReasonAndCause.getReason()).isEqualTo(PageSnapshotException.Reason.NOT_RUNNING);
+    assertThat(withReasonAndCause.getCause()).isSameAs(cause);
+
+    assertThat(new PageSnapshotException("failed")).isInstanceOf(ArcadeDBException.class);
+  }
+
+  @Test
   void exceptionChaining() {
     final Exception level1 = new RuntimeException("Level 1");
     final Exception level2 = new ArcadeDBException("Level 2", level1);
