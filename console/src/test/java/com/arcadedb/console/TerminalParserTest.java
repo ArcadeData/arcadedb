@@ -165,4 +165,34 @@ class TerminalParserTest {
   void unbalancedClosingBraceInsideAStringIsNotCounted() {
     assertThat(split("SELECT '}}}' ; SELECT 1")).containsExactly("SELECT '}}}' ", " SELECT 1");
   }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/6439: an unclosed '{' drives the brace depth to 1 and, since the
+   * delimiter branch requires depth zero, no semicolon after it can separate anything for the rest of the text.
+   */
+  @Test
+  void unbalancedOpeningBraceSwallowsFollowingCommands() {
+    final String line = "INSERT INTO doc CONTENT {\"a\": 1 ; SELECT 1; SELECT 2";
+    assertThat(split(line)).containsExactly(line);
+    assertThat(parser.getUnbalancedBraceOffset()).isEqualTo(line.indexOf('{'));
+  }
+
+  @Test
+  void balancedBracesReportNoUnbalancedOffset() {
+    split("INSERT INTO doc CONTENT {\"a\": 1}; SELECT 1; SELECT 2");
+    assertThat(parser.getUnbalancedBraceOffset()).isEqualTo(-1);
+  }
+
+  @Test
+  void nestedUnbalancedBraceReportsTheOutermostOffset() {
+    final String line = "INSERT INTO doc CONTENT {\"a\": {\"b\": 1} ; SELECT 1";
+    split(line);
+    assertThat(parser.getUnbalancedBraceOffset()).isEqualTo(line.indexOf('{'));
+  }
+
+  @Test
+  void unbalancedBraceInsideAStringIsNotCounted() {
+    split("SELECT '{' ; SELECT 1");
+    assertThat(parser.getUnbalancedBraceOffset()).isEqualTo(-1);
+  }
 }

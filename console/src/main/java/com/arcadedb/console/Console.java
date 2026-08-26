@@ -306,7 +306,10 @@ public class Console {
 
       return true;
     } catch (final IOException | RuntimeException e) {
-      outputError(e);
+      // A NESTED COMMAND (E.G. AN UNBALANCED '{' REPORTED WHILE EXECUTING A LOADED SCRIPT) MAY HAVE ALREADY SENT ITS OWN
+      // MESSAGE TO THE OUTPUT: DON'T REPORT THE SAME ERROR TWICE (ISSUE #6439)
+      if (!(e instanceof final ConsoleException ce && ce.isAlreadyReported()))
+        outputError(e);
       throw e;
     }
   }
@@ -321,7 +324,10 @@ public class Console {
       throw new ConsoleException("Invalid syntax for SET: missing name, use SET <name> = <value>");
 
     final String key = pair[0].trim();
-    final String value = pair[1].trim();
+    // A QUOTED VALUE HAS ITS QUOTES STRIPPED, LIKE A SHELL WOULD: OTHERWISE `SET LANGUAGE = 'SQL'` STORES THE LITERAL
+    // QUOTES, AND `LANGUAGE.STARTSWITH("SQL")` IN TerminalParser.setLanguage() SILENTLY PICKS THE WRONG COMMENT
+    // MARKER (ISSUE #6439)
+    final String value = stripMatchingQuotes(pair[1].trim());
 
     // THE SETTING NAMES ARE ASCII, SO THE CASE MUST FOLD IN ENGLISH: WITH A TURKISH DEFAULT LOCALE `LIMIT` WOULD NOT MATCH
     switch (key.toLowerCase(Locale.ENGLISH)) {
@@ -376,6 +382,36 @@ public class Console {
     }
 
     flushOutput();
+  }
+
+  /**
+   * Strips one matching pair of surrounding quotes (' or ") from a {@code SET} value, so {@code set language = 'sql'} stores
+   * {@code sql} rather than the literal quotes. A value that does not start with a quote character is returned unchanged. A
+   * value that opens with a quote character but never closes it, or ends in something other than that character, is always a
+   * typo, so it is rejected rather than stored half-quoted (issue #6439).
+   * <p>
+   * A value whose first and last characters are the SAME quote character is always accepted as that pair, even if the quote
+   * character also occurs in between - for example {@code 'it\'s a test'}. That inner quote reaches this method already
+   * stripped of its escaping backslash by {@link TerminalParser#parse}, indistinguishable here from a real closing quote
+   * followed by unrelated trailing text that happens to also end in a quote character. Between silently accepting that rare,
+   * contrived input and rejecting the far more plausible escaped-quote value, this favors the value the parser's own escape
+   * handling was built to support.
+   */
+  private static String stripMatchingQuotes(final String value) {
+    if (value.isEmpty())
+      return value;
+
+    final char first = value.charAt(0);
+    if (first != '\'' && first != '"')
+      return value;
+
+    if (value.length() >= 2 && value.charAt(value.length() - 1) == first)
+      return value.substring(1, value.length() - 1);
+
+    if (value.indexOf(first, 1) < 0)
+      throw new ConsoleException("Invalid value for SET: missing closing quote in " + value);
+
+    throw new ConsoleException("Invalid value for SET: unexpected content after the closing quote in " + value);
   }
 
   private void executeTransactionStatus() {
@@ -753,24 +789,34 @@ public class Console {
     long lastLapTime = System.currentTimeMillis();
     long lastLapExecutedLines = 0L;
 
-    // COLLECTS THE LINES OF A BLOCK COMMENT THAT SPANS MULTIPLE LINES, TO EXECUTE THEM ONLY ONCE THE COMMENT IS CLOSED
+    // COLLECTS THE LINES OF A BLOCK COMMENT OR A JSON OBJECT THAT SPANS MULTIPLE LINES, TO EXECUTE THEM ONLY ONCE THEY ARE
+    // CLOSED. WITHOUT THIS, A MULTI-LINE `CONTENT { ... }` CLAUSE WOULD HIT reportUnbalancedBrace() ON ITS FIRST LINE, WHOSE
+    // '}' IS SIMPLY ON A LINE NOT READ YET (ISSUE #6439)
     final StringBuilder pending = new StringBuilder();
+    // THE FILE LINE (1-BASED) OF pending'S FIRST LINE, SO AN UNBALANCED BRACE IS REPORTED AT ITS REAL POSITION IN THE FILE
+    // RATHER THAN RELATIVE TO A BUFFER THAT RESTARTS AFTER EVERY EXECUTED STATEMENT (ISSUE #6439)
+    int fileLineNumber = 0;
+    int pendingStartLine = 1;
 
     try (final BufferedReader bufferedReader = new BufferedReader(new FileReader(file, DatabaseFactory.getDefaultCharset()))) {
       while (bufferedReader.ready()) {
         final String line = FileUtils.decodeFromFile(bufferedReader.readLine());
+        ++fileLineNumber;
+
+        if (pending.isEmpty())
+          pendingStartLine = fileLineNumber;
 
         pending.append(line).append('\n');
 
         final ParsedLine parsedLine = parser.parse(pending.toString(), 0);
-        if (parser.isBlockCommentOpen()) {
-          // THE COMMENT CONTINUES ON THE NEXT LINE
+        if (parser.isBlockCommentOpen() || parser.getUnbalancedBraceOffset() >= 0) {
+          // THE COMMENT OR THE JSON OBJECT CONTINUES ON THE NEXT LINE
           byteReadFromFile += line.length() + 1;
           continue;
         }
 
         pending.setLength(0);
-        execute(parsedLine, true);
+        execute(parsedLine, true, pendingStartLine - 1);
 
         ++executedLines;
         byteReadFromFile += line.length() + 1;
@@ -793,8 +839,9 @@ public class Console {
     }
 
     if (!pending.isEmpty())
-      // THE FILE ENDS WITH AN UNTERMINATED BLOCK COMMENT: EXECUTE WHAT COMES BEFORE IT
-      execute(parser.parse(pending.toString(), 0), true);
+      // THE FILE ENDS WITH AN UNTERMINATED BLOCK COMMENT OR JSON OBJECT: EXECUTE WHAT COMES BEFORE IT. IF IT IS A GENUINELY
+      // UNCLOSED '{' RATHER THAN A COMMENT, THE CALL BELOW REPORTS IT THROUGH reportUnbalancedBrace() AS USUAL
+      execute(parser.parse(pending.toString(), 0), true, pendingStartLine - 1);
 
     elapsed = System.currentTimeMillis() - startedOn;
 
@@ -814,10 +861,30 @@ public class Console {
    * Executes the commands extracted from the text by the parser.
    */
   private boolean execute(final ParsedLine parsedLine, final boolean printCommand) throws IOException {
+    return execute(parsedLine, printCommand, 0);
+  }
+
+  /**
+   * @param lineNumberBase number of lines that precede {@code parsedLine.line()} in the original source, so an unbalanced brace
+   *                       is reported at its real position. Zero for interactive/batch input, where the parsed text is exactly
+   *                       what was typed; {@code executeLoad} passes the count of file lines already consumed before the
+   *                       current buffered statement started, since that buffer restarts after every executed statement and is
+   *                       otherwise unaware of its position in the file (issue #6439).
+   */
+  private boolean execute(final ParsedLine parsedLine, final boolean printCommand, final int lineNumberBase) throws IOException {
     if (parsedLine == null)
       return true;
 
-    for (final String w : parsedLine.words()) {
+    // AN UNCLOSED '{' MAKES THE PARSER FOLD EVERYTHING FROM THAT POINT TO THE END OF THE TEXT INTO THE LAST WORD INSTEAD
+    // OF SPLITTING IT ON ';' - REPORT IT HERE, POINTING AT THE BRACE THAT OPENED IT, RATHER THAN LETTING THE GLUED-TOGETHER
+    // TEXT FAIL DOWNSTREAM WITH A SYNTAX ERROR THAT POINTS AT CODE THE USER TYPED SEVERAL STATEMENTS AGO (ISSUE #6439).
+    // THIS RUNS ONLY WHEN A LINE IS ACTUALLY SUBMITTED FOR EXECUTION, NEVER ON THE KEYSTROKE-BY-KEYSTROKE PARSE CALLS
+    // JLINE MAKES FOR HIGHLIGHTING/COMPLETION WHILE THE USER IS STILL TYPING.
+    final int unbalancedBraceOffset = parser.getUnbalancedBraceOffset();
+
+    final List<String> words = parsedLine.words();
+    for (int i = 0; i < words.size(); ++i) {
+      final String w = words.get(i);
       final String trimmedWord = w.trim();
       if (trimmedWord.isEmpty())
         // AN EMPTY LINE (OR A LEFTOVER LINE TERMINATOR BETWEEN TWO COMMANDS) SPLITS INTO A BLANK "WORD": SKIP IT SO
@@ -829,9 +896,15 @@ public class Console {
         // WOULD OTHERWISE PUSH THE RESULT DOWN BY AN EXTRA BLANK LINE (issue #6372)
         output(3, getPrompt() + trimmedWord);
 
+      // THE UNCLOSED BRACE, IF ANY, IS ALWAYS SOMEWHERE INSIDE THE LAST WORD: EVERY SEMICOLON FROM THE BRACE ONWARD FAILED
+      // TO SEPARATE ANYTHING, SO THE REST OF THE INPUT WAS NEVER SPLIT
+      final boolean isUnbalancedBraceTail = i == words.size() - 1 && unbalancedBraceOffset >= 0;
+
       if (batchMode) {
         try {
-          if (!execute(w))
+          if (isUnbalancedBraceTail)
+            reportUnbalancedBrace(parsedLine.line(), unbalancedBraceOffset, lineNumberBase);
+          else if (!execute(w))
             return false;
         } catch (final Exception e) {
           errored = true;
@@ -839,12 +912,35 @@ public class Console {
             throw e;
         }
       } else {
-          if (!execute(w))
-            return false;
-
+        if (isUnbalancedBraceTail)
+          reportUnbalancedBrace(parsedLine.line(), unbalancedBraceOffset, lineNumberBase);
+        else if (!execute(w))
+          return false;
       }
     }
     return true;
+  }
+
+  /**
+   * Reports an unclosed '{' found while splitting the input, naming the line and column where it was opened, and rethrows so
+   * the caller aborts exactly as it would for any other command error (issue #6439).
+   */
+  private void reportUnbalancedBrace(final String text, final int offset, final int lineNumberBase) {
+    int lineNo = 1;
+    int col = 1;
+    for (int i = 0; i < offset && i < text.length(); ++i) {
+      if (text.charAt(i) == '\n') {
+        ++lineNo;
+        col = 1;
+      } else
+        ++col;
+    }
+
+    final ConsoleException ex = new ConsoleException(
+        "Unbalanced '{' at line " + (lineNumberBase + lineNo) + ", column " + col + ": no matching '}' was found, so everything "
+            + "from there to the end of the input was treated as a single command instead of being split on ';'", true);
+    outputError(ex);
+    throw ex;
   }
 
   private void outputLine(final int level, final String text, final Object... args) {
