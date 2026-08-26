@@ -250,9 +250,14 @@ public class GraphSONImporterFormat extends CSVImporterFormat {
 
         final Object value;
         if (entry instanceof JSONObject entryJson) {
-          if (!entryJson.has("value"))
+          final Object wrapped = entryJson.get("value", null);
+          if (wrapped != null)
+            value = extractTypedValue(wrapped);
+          else if (entryJson.has("@type") && entryJson.has("@value"))
+            // A PRODUCER THAT LISTS THE TYPED VALUES DIRECTLY, WITHOUT THE {id, value} WRAPPER
+            value = extractTypedValue(entryJson);
+          else
             continue;
-          value = extractTypedValue(entryJson.get("value"));
         } else
           value = extractTypedValue(entry);
 

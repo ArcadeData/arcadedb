@@ -59,8 +59,11 @@ public interface ServerPlugin {
    * cache, a listener) uses this to pick up a database that did not exist when the plugin started.
    * <p>
    * Called on the thread that performed the registration, which may still hold the server's database lock, so the
-   * implementation has to be short and non-blocking. Any exception thrown here is logged and swallowed: a
-   * misbehaving plugin must not fail the operation that created the database.
+   * implementation has to be short and non-blocking. The callback is dispatched after the registry mutation rather
+   * than under its lock, so two concurrent mutations of the same name can deliver their callbacks in either order:
+   * reconcile against the registry as it is now (see {@link ArcadeDBServer#existsDatabase}) instead of assuming the
+   * event order. Any exception thrown here is logged and swallowed: a misbehaving plugin must not fail the operation
+   * that created the database.
    *
    * @param databaseName name of the database that has just been registered
    */
@@ -75,8 +78,9 @@ public interface ServerPlugin {
    * that the operator explicitly closed (issue #6752).
    * <p>
    * Called on the thread that performed the removal, which may still hold the server's database lock, so the
-   * implementation has to be short and non-blocking. Any exception thrown here is logged and swallowed: a
-   * misbehaving plugin must not fail the drop/close.
+   * implementation has to be short and non-blocking. The same out-of-order delivery caveat as
+   * {@link #onDatabaseRegistered(String)} applies. Any exception thrown here is logged and swallowed: a misbehaving
+   * plugin must not fail the drop/close.
    *
    * @param databaseName name of the database that has just been unregistered
    */

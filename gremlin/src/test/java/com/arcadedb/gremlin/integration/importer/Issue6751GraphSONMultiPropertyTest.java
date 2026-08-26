@@ -71,6 +71,9 @@ class Issue6751GraphSONMultiPropertyTest {
       // A SINGLE-ENTRY PROPERTY STAYS SCALAR: THE FIX MUST NOT WIDEN EVERY PROPERTY INTO A LIST.
       assertThat(n1.get("name")).isEqualTo("Marko");
       assertThat(n2.get("name")).isEqualTo("Vadas");
+
+      // ENTRIES A PRODUCER LISTED AS BARE TYPED VALUES, WITHOUT THE {id, value} WRAPPER, ARE IMPORTED TOO.
+      assertThat((Iterable<Object>) n2.get("port")).containsExactly(8080, 9090);
     } finally {
       database.drop();
     }
