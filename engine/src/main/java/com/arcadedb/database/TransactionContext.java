@@ -1555,21 +1555,37 @@ public class TransactionContext implements Transaction {
       final int dictionaryFileId = database.getSchema().getDictionary().getFileId();
       boolean dictionaryModified = false;
 
+      // #5976's fix at getPage() (above, ~line 613) applies here too: file.getTotalPages() is the PHYSICAL,
+      // on-disk page count, which lags a page that is committed but not yet reached by the async flush thread.
+      // The component's OWN count (PaginatedComponent.getTotalPages(), bumped synchronously at commit) is the
+      // authoritative "does this page exist" answer. Misclassifying a committed page as "new" here files it
+      // into newPages instead of modifiedPages, and rollback() only replays the dictionary repair for pages in
+      // modifiedPages - so a dictionary page misfiled this way would skip that repair on a rolled-back apply
+      // (issue #6399).
+      //
+      // Snapshotted ONCE per file here, rather than calling component.getTotalPages() fresh on every page below:
+      // that method prefers THIS transaction's own newPageCounters entry once one exists, and the loop below is
+      // what populates it - so re-querying it mid-loop would let one file's own earlier iterations contaminate
+      // its later ones. The comment a few lines down already establishes that a file's WAL pages arrive in no
+      // particular order; with a live re-query, two genuinely-new pages of the same file processed HIGH NUMBER
+      // FIRST would see the counter this loop itself just bumped and misclassify the lower one as "modified".
+      // A snapshot taken before this file's own pages are touched is immune to that.
+      final Map<Integer, Integer> componentPageCountAtStart = new HashMap<>();
+
       for (final WALFile.WALPage p : buffer.pages) {
         final PaginatedComponentFile file = (PaginatedComponentFile) database.getFileManager().getFile(p.fileId);
         final int pageSize = file.getPageSize();
 
         final PageId pageId = new PageId(database, p.fileId, p.pageNumber);
 
-        // #5976's fix at getPage() (above, ~line 613) applies here too: file.getTotalPages() is the PHYSICAL,
-        // on-disk page count, which lags a page that is committed but not yet reached by the async flush thread.
-        // The component's OWN count (PaginatedComponent.getTotalPages(), bumped synchronously at commit) is the
-        // authoritative "does this page exist" answer. Misclassifying a committed page as "new" here files it
-        // into newPages instead of modifiedPages, and rollback() only replays the dictionary repair for pages in
-        // modifiedPages - so a dictionary page misfiled this way would skip that repair on a rolled-back apply
-        // (issue #6399).
         final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileByIdIfExists(p.fileId);
-        final boolean isNew = component == null || p.pageNumber >= component.getTotalPages();
+        final boolean isNew;
+        if (component == null)
+          isNew = true;
+        else {
+          final int pageCountAtStart = componentPageCountAtStart.computeIfAbsent(p.fileId, fid -> component.getTotalPages());
+          isNew = p.pageNumber >= pageCountAtStart;
+        }
 
         final MutablePage page = getPageToModify(pageId, pageSize, isNew);
 
