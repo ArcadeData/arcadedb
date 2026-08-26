@@ -161,9 +161,12 @@ class Issue6568NestedFanOutDeadlockTest {
 
     final CountDownLatch allWorkersPinned = new CountDownLatch(workers);
     final CountDownLatch releasePins = new CountDownLatch(1);
+    // Kept rather than fire-and-forget: they are what the cleanup below waits on. A canary alone proves only that
+    // ONE worker came back, so a pin still unwinding could be handed to the next test class in this shared JVM.
+    final Future<?>[] pins = new Future<?>[workers];
     try {
       for (int i = 0; i < workers; i++)
-        executor.submit(() -> {
+        pins[i] = executor.submit(() -> {
           allWorkersPinned.countDown();
           releasePins.await();
           return null;
@@ -185,14 +188,19 @@ class Issue6568NestedFanOutDeadlockTest {
           .isSameAs(Thread.currentThread());
       assertThat(queryPool.getExecutorStats().reclaimedTasks()).isGreaterThanOrEqualTo(reclaimedBefore + 1);
     } finally {
+      // Do not hand the next test class a pool whose workers are still unwinding: releasing the latch is not the
+      // same as the workers having noticed it, and a shared pool left busy is exactly what makes a later untimed
+      // wait look like an unrelated infrastructure timeout. Every pin is awaited, not just probed with a canary,
+      // and inside the finally so it happens on the failing path too.
       releasePins.countDown();
+      for (final Future<?> pin : pins)
+        if (pin != null && !awaited(pin, WORKER_PIN_MS))
+          throw new AssertionError("a pinned query-pool worker did not come back after the latch was released, so "
+              + "this test would poison the shared pool for the rest of the fork");
     }
 
-    // Do not hand the next test class a pool whose workers are still unwinding: the pins are released above, but
-    // the workers have not necessarily noticed yet, and a shared pool left busy is exactly what makes a later
-    // untimed wait look like an unrelated infrastructure timeout.
     final Future<?> canary = executor.submit(() -> null);
-    assertThat(awaited(canary, WORKER_PIN_MS)).as("the query pool must be usable again before the next test class")
+    assertThat(awaited(canary, WORKER_PIN_MS)).as("the query pool must be running work on its own threads again")
         .isTrue();
   }
 
