@@ -671,6 +671,20 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return;
     }
 
+    // 503: an HA snapshot-reinstall resync (issue #5977 pattern) closed and reinstalled the database out from
+    // under a handle a request had already resolved (or resolved while one was in flight). The condition is
+    // transient by construction - a handle resolved a moment later sees the reinstalled database - so it must be
+    // reported the same retryable way a Raft conflict already is, instead of the opaque 500 it fell through to
+    // before, which RemoteHttpComponent's NeedRetryException-driven auto-retry never saw (issue #6770).
+    final DatabaseIsClosedException databaseClosed = firstOf(e, cause, DatabaseIsClosedException.class);
+    if (databaseClosed != null) {
+      LogManager.instance()
+              .log(this, Level.FINE, "Error on command execution (%s): %s", getClass().getSimpleName(),
+                      databaseClosed.getMessage());
+      sendErrorResponse(exchange, 503, "Cannot execute command", databaseClosed, null);
+      return;
+    }
+
     final RecordNotFoundException notFound = firstOf(e, cause, RecordNotFoundException.class);
     if (notFound != null) {
       logUserError(notFound);
