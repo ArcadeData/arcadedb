@@ -218,6 +218,31 @@ class ConsoleTest {
   }
 
   /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/6439: {@code executeLoad} re-buffers one statement at a time, resetting
+   * after every executed command, so an unclosed '{' must be reported at its real position in the FILE - here line 4 - not at
+   * "line 1" relative to the buffer that happened to be accumulating when the error was found.
+   */
+  @Test
+  void unbalancedBraceInLoadedScriptReportsTheActualFileLine() throws Exception {
+    assertThat(console.parse("connect " + DB_NAME)).isTrue();
+
+    final File script = new File("./target/issue-6439-load-line.sql");
+    try {
+      Files.writeString(script.toPath(), """
+          create document type Loaded;
+          insert into Loaded set id = 1;
+          insert into Loaded set id = 2;
+          insert into Loaded content {"a": 1
+          """);
+
+      assertThatThrownBy(() -> console.parse("load " + script.getAbsolutePath())).isInstanceOf(ConsoleException.class)
+          .hasMessageContaining("line 4");
+    } finally {
+      script.delete();
+    }
+  }
+
+  /**
    * Issue https://github.com/ArcadeData/arcadedb/issues/6372: an empty line in a script loaded with LOAD must not echo an
    * empty prompt of its own - only the real commands are echoed.
    */
@@ -320,10 +345,21 @@ class ConsoleTest {
    * it is always a typo, so it must be rejected instead of being stored half-quoted.
    */
   @Test
-  void setWithUnbalancedQuoteIsRejected() throws Exception {
+  void setWithMissingClosingQuoteIsRejected() throws Exception {
     assertThat(console.parse("connect " + DB_NAME)).isTrue();
     assertThatThrownBy(() -> console.parse("set language = 'sql")).isInstanceOf(ConsoleException.class)
-        .hasMessageContaining("unbalanced quote");
+        .hasMessageContaining("missing closing quote");
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/6439: content trailing after a properly closed quote is a different
+   * typo than a missing quote, and deserves a message that says so rather than "unbalanced".
+   */
+  @Test
+  void setWithContentAfterClosingQuoteIsRejected() throws Exception {
+    assertThat(console.parse("connect " + DB_NAME)).isTrue();
+    assertThatThrownBy(() -> console.parse("set language = 'sql' extra")).isInstanceOf(ConsoleException.class)
+        .hasMessageContaining("unexpected content after the closing quote");
   }
 
   /**
