@@ -80,6 +80,15 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
   // asks for the page, so touching its position would be a cross-cursor data race. Sealed segments
   // are never written again, so the bytes behind it cannot change under us, and a page evicted from
   // the cache stays valid here because eviction only drops the map entry.
+  // <p>
+  // <b>The footprint this costs, deliberately.</b> The reference keeps one page image reachable per
+  // open cursor until the cursor walks onto another page or is closed, so a wide learned-sparse query
+  // (up to ~120 terms) can hold ~120 distinct 64 KiB pages, and the parallel-range fan-out of issue
+  // #5518 multiplies that by the worker count. The pages are ones the query is actively reading and
+  // are already resident in the shared page cache; what the reference adds is only that an eviction
+  // racing the query cannot drop them from under it. It is bounded by open cursors rather than by
+  // blocks decoded, {@link #close()} releases it, and a REPEATABLE_READ transaction already pins
+  // every page it reads for its whole lifetime, which is strictly more.
   private ByteBuffer    pageBuf;
   private int           pageNum = -1;
   private int           pageLimit;
@@ -512,6 +521,13 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
     final int limit = pageLimit;
     final int base = BasePage.PAGE_HEADER_SIZE + meta.blockOffset(currentBlock) + SegmentFormat.BLOCK_HEADER_SIZE;
     final int n = meta.blockPostingCount(currentBlock);
+    // The header's posting count is read off the segment file, so it is untrusted input (issue
+    // #6566): the decode arrays are sized to the segment's declared block size, and a count past that
+    // would run off their end. Reject it here so a corrupt header reads as a corrupt segment rather
+    // than as an ArrayIndexOutOfBoundsException from the middle of the decode loop.
+    if (n > blockBuckets.length)
+      throw new IOException(corruptBlockMessage() + " (posting count " + n + " exceeds the segment's block size "
+          + blockBuckets.length + ")");
     blockSize = n;
     blockBuckets[0] = meta.blockFirstBucketId(currentBlock);
     blockPositions[0] = meta.blockFirstPosition(currentBlock);
