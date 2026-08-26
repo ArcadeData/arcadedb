@@ -254,10 +254,16 @@ public final class CypherExpressionWalker {
 
   /**
    * Visits every expression of one clause. {@code before} is the visitor from before this clause declared
-   * anything of its own, {@code after} is the one {@link Visitor#forClauseEntry} returned for it - the same for
-   * every clause type except {@code WITH}, whose own projection items are evaluated against {@code before} while
-   * everything else about it (its {@code WHERE}, {@code ORDER BY}, {@code SKIP}, {@code LIMIT}) is evaluated
-   * against {@code after} - see {@code walkWith}.
+   * anything of its own, {@code after} is the one {@link Visitor#forClauseEntry} returned for it.
+   * <p>
+   * Every expression that is evaluated <i>before</i> this clause's own binding takes effect - a {@code WITH}'s
+   * projection items, an {@code UNWIND}'s list expression, a {@code FOREACH}'s list expression, a procedure
+   * {@code CALL}'s own arguments - is walked against {@code before}: the name a clause is about to (re)bind may
+   * reuse an outer name, and the expression that produces the new binding's value is written and evaluated
+   * against what that name meant beforehand, not against the post-binding scope where {@code forget()} has
+   * already dropped it (issue #5671, part 2 review). Everything else - a clause's own {@code WHERE}, and
+   * {@code WITH}'s {@code ORDER BY}/{@code SKIP}/{@code LIMIT} - is walked against {@code after}, since those see
+   * what the clause itself produced.
    */
   private static void walkClause(final ClauseEntry entry, final Visitor before, final Visitor after) {
     switch (entry.getType()) {
@@ -270,7 +276,7 @@ public final class CypherExpressionWalker {
           walk(pattern, after);
     }
     case WITH -> walkWith(entry.getTypedClause(), before, after);
-    case UNWIND -> walk(((UnwindClause) entry.getTypedClause()).getListExpression(), after);
+    case UNWIND -> walk(((UnwindClause) entry.getTypedClause()).getListExpression(), before);
     case CREATE -> {
       final CreateClause createClause = entry.getTypedClause();
       if (createClause.getPathPatterns() != null)
@@ -292,7 +298,7 @@ public final class CypherExpressionWalker {
     }
     case FOREACH -> {
       final ForeachClause foreachClause = entry.getTypedClause();
-      walk(foreachClause.getListExpression(), after);
+      walk(foreachClause.getListExpression(), before);
       // The inner clauses are FOREACH's own body, which lives and dies inside the loop (see buildVarTypes): they
       // are walked flat, all against the scope FOREACH itself declared, rather than advancing between them.
       if (foreachClause.getInnerClauses() != null)
@@ -300,10 +306,12 @@ public final class CypherExpressionWalker {
           walkClause(inner, after, after);
     }
     case CALL -> {
+      // The call's own arguments are evaluated before any YIELD rebinds a name, hence before; a YIELD's own
+      // WHERE sees what it bound, hence after - the same split as WITH's items vs. its WHERE.
       final CallClause callClause = entry.getTypedClause();
       if (callClause.getArguments() != null)
         for (final Expression argument : callClause.getArguments())
-          walk(argument, after);
+          walk(argument, before);
       if (callClause.getYieldWhere() != null)
         walk(callClause.getYieldWhere().getConditionExpression(), after);
     }
