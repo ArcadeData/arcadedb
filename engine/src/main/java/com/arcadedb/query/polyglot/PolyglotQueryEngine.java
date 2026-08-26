@@ -38,6 +38,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 
 public class PolyglotQueryEngine implements QueryEngine {
@@ -146,11 +147,15 @@ public class PolyglotQueryEngine implements QueryEngine {
   @Override
   public ResultSet command(final String query, final ContextConfiguration configuration, final Map<String, Object> parameters) {
     checkScriptingPermissions();
+    // Which context THIS invocation is evaluating in, or null while it is still queued behind another one. Read by
+    // the timeout path so it never cancels a context its own task never entered (PR #6783 review).
+    final AtomicReference<GraalPolyglotEngine> running = new AtomicReference<>();
     try {
       return executeUserCode(() -> {
 
         synchronized (engineLock) {
           final GraalPolyglotEngine engine = polyglotEngine;
+          running.set(engine);
           // Parameters are scoped to THIS evaluation: the context is shared by every caller on the database, so a
           // parameter left bound would be readable by the next command, from any caller (issue #6759).
           final Map<String, Value> displaced =
@@ -183,10 +188,11 @@ public class PolyglotQueryEngine implements QueryEngine {
           } finally {
             if (displaced != null)
               engine.restoreAttributes(displaced);
+            running.compareAndSet(engine, null);
           }
         }
 
-      }, timeout);
+      }, running, timeout);
 
     } catch (final CommandExecutionException e) {
       throw e;
@@ -231,13 +237,20 @@ public class PolyglotQueryEngine implements QueryEngine {
   public AnalyzedQuery analyze(final String query) {
     // analyze() evaluates the script to determine its characteristics, so it is gated identically to command().
     checkScriptingPermissions();
+    final AtomicReference<GraalPolyglotEngine> running = new AtomicReference<>();
     try {
       executeUserCode(() -> {
         synchronized (engineLock) {
-          polyglotEngine.eval(query);
+          final GraalPolyglotEngine engine = polyglotEngine;
+          running.set(engine);
+          try {
+            engine.eval(query);
+          } finally {
+            running.compareAndSet(engine, null);
+          }
         }
         return null;
-      }, timeout);
+      }, running, timeout);
     } catch (final CommandExecutionException e) {
       throw e;
     } catch (final ExecutionException e) {
@@ -269,7 +282,8 @@ public class PolyglotQueryEngine implements QueryEngine {
     polyglotEngine.close();
   }
 
-  private ResultSet executeUserCode(final Callable task, final long executionTimeoutMs) throws Exception {
+  private ResultSet executeUserCode(final Callable task, final AtomicReference<GraalPolyglotEngine> running,
+      final long executionTimeoutMs) throws Exception {
     // IF NOT INITIALIZED, EXECUTE AS SOON AS THE SERVICE STARTS
     final Future future = userCodeExecutor.submit(task);
     if (future == null)
@@ -287,7 +301,7 @@ public class PolyglotQueryEngine implements QueryEngine {
       // task had in fact just completed - in which case there is nothing left in the context to cancel, and
       // interrupting would only risk hitting whichever command acquired the lock next.
       if (future.cancel(true))
-        cancelRunningScript();
+        cancelRunningScript(running.get());
       throw e;
     }
   }
@@ -300,8 +314,11 @@ public class PolyglotQueryEngine implements QueryEngine {
    * {@link #engineLock} - the monitor every command on this database serialises on - until it unwinds. A script that
    * outlives its timeout would otherwise block the engine for every caller (issue #6759).
    */
-  private void cancelRunningScript() {
-    final GraalPolyglotEngine engine = polyglotEngine;
+  private void cancelRunningScript(final GraalPolyglotEngine engine) {
+    // null means this invocation was still QUEUED behind another one when it timed out: its own script never
+    // entered the context, so there is nothing of ours to cancel - and interrupting anyway would abort whichever
+    // OTHER caller's script is currently holding the lock (PR #6783 review). Reading the recorded instance rather
+    // than the field also means a context unregisterFunctions() replaced in the meantime is left alone.
     if (engine == null)
       return;
     try {

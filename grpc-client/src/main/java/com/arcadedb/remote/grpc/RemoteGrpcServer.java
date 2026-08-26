@@ -82,6 +82,14 @@ public class RemoteGrpcServer implements AutoCloseable {
   // happens-before edge and may observe a stale (or half-published) value (issue #6762).
   private volatile ManagedChannel channel;
   private volatile EventLoopGroup eventLoopGroup;
+  /**
+   * Set the moment {@link #close()} begins and cleared by the next explicit {@link #start()}. Without it,
+   * {@code channel()} could still hand out the channel that {@code close()} had already begun shutting down, and
+   * worse: once {@code close()} nulled the field, {@code channel()} would silently BUILD A NEW CHANNEL for a
+   * server the caller has explicitly closed. An explicit restart is still allowed - that is what clears it - a
+   * lazy resurrection from a stale reference is not (PR #6783 review).
+   */
+  private volatile boolean       closing;
 
   private ArcadeDbAdminServiceGrpc.ArcadeDbAdminServiceBlockingV2Stub adminServiceBlockingV2Stub;
 
@@ -115,6 +123,7 @@ public class RemoteGrpcServer implements AutoCloseable {
   }
 
   public synchronized void start() {
+    closing = false;
 
     if (channel != null)
       return;
@@ -157,6 +166,8 @@ public class RemoteGrpcServer implements AutoCloseable {
    * error (issue #6762).
    */
   public Channel channel() {
+    if (closing)
+      throw new IllegalStateException("The gRPC channel to '" + host + "' is closed");
     ManagedChannel current = channel;
     if (current == null) {
       start();
@@ -200,6 +211,9 @@ public class RemoteGrpcServer implements AutoCloseable {
   public synchronized void close() {
     if (channel == null)
       return;
+    // Set BEFORE the shutdown begins, so channel() refuses from this point rather than handing out a channel that
+    // is already terminating (PR #6783 review).
+    closing = true;
     try {
       channel.shutdown();
       if (!channel.awaitTermination(5, TimeUnit.SECONDS)) {

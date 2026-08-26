@@ -84,9 +84,16 @@ public class EventWatcherSubscription {
     return false;
   }
 
-  /** Releases a reservation made by {@link #reservePending(int, long)} once Undertow reports the frame done. */
+  /**
+   * Releases a reservation made by {@link #reservePending(int, long)} once Undertow reports the frame done.
+   * <p>
+   * Floored at zero: a client that unsubscribes and re-subscribes while a frame is still in flight has its
+   * completion callback land on the REPLACEMENT subscription, which never reserved anything. Letting that drive
+   * the counter negative would give the replacement a negative baseline and silently let it hold several times
+   * the configured budget before {@link #reservePending(int, long)} noticed.
+   */
   public void releasePending(final int bytes) {
-    pendingBytes.addAndGet(-bytes);
+    pendingBytes.updateAndGet(pending -> Math.max(0L, pending - bytes));
   }
 
   // @VisibleForTesting

@@ -197,6 +197,46 @@ class Issue6760PartialSnapshotInstallTest {
     }
   }
 
+  /**
+   * The per-database floor must be published BEFORE any waiter is woken (PR #6783 review).
+   * <p>
+   * {@code notifyApplied()} holds {@code applyNotifier} only long enough to {@code notifyAll()}, so a waiter can
+   * reacquire it and re-check {@code getTrustedAppliedIndex(db)} at once. Notifying before the re-arm leaves a
+   * window where the global floor is already cleared and the per-database one is not yet published, so the waiter
+   * sees the raw Ratis index - which already equals snapshotIndex - and the stale read #6760 exists to prevent
+   * happens anyway, just in a narrower window.
+   * <p>
+   * Driven by observing the state at the instant of the notify rather than by racing threads, so it is
+   * deterministic: a regression flips the captured floor to -1 every time.
+   */
+  @Test
+  void theDatabaseFloorIsPublishedBeforeAnyWaiterIsWoken(@TempDir final Path tempDir) throws Exception {
+    final ArcadeStateMachine sm = newStateMachine(tempDir, Set.of(STALE_DB, HEALTHY_DB));
+    replaceReconciler(sm, new StubReconciler(Set.of(STALE_DB)));
+
+    final AtomicLong floorSeenByAWokenWaiter = new AtomicLong(Long.MIN_VALUE);
+    final RaftHAServer raft = followerRaft();
+    // Stands in for the woken waiter: notifyApplied() is the moment it can re-check, so whatever the floor reads
+    // here is exactly what that waiter would have based its decision on.
+    org.mockito.Mockito.doAnswer(inv -> {
+      floorSeenByAWokenWaiter.set(sm.getDatabaseAppliedFloor(STALE_DB));
+      return null;
+    }).when(raft).notifyApplied();
+    sm.setRaftHAServer(raft);
+
+    try {
+      sm.writePersistedAppliedIndex(PERSISTED_APPLIED, STALE_DB);
+
+      sm.notifyInstallSnapshotFromLeader(leaderRoleInfo(), TermIndex.valueOf(9L, FIRST_LOG_INDEX)).get();
+
+      assertThat(floorSeenByAWokenWaiter.get())
+          .as("a waiter woken by this install must already see the floor that keeps it off the stale copy")
+          .isEqualTo(PERSISTED_APPLIED);
+    } finally {
+      sm.close();
+    }
+  }
+
   // -----------------------------------------------------------------------------------------------
   // The read gate
   // -----------------------------------------------------------------------------------------------
