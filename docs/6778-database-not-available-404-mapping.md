@@ -52,3 +52,37 @@ happens - it now just ends in an accurate 404 instead of a generic 500.
 - `Issue6201ErrorStatusParityTest` (new row + new test) - confirmed red before the handler arm was
   added (fell through to the generic 500 "Internal error" arm), green after.
 - Full `server` module `http.handler` package test run for regressions.
+- Full `engine` + `network` + `integration` + `server` reactor unit-test run, excluding
+  `benchmark`/`slow`/`vector` lanes (831 tests) - no regressions.
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/6782
+
+## Review cycles
+
+- **Cycle 1** (head `cc94c43a92`): `claude` bot review landed clean-ish with one nit; `coderabbitai`
+  flagged one actionable item. Both addressed in a follow-up commit (head `d90a7380f6`):
+  - `coderabbitai` (actionable): the parity test constructed `DatabaseNotAvailableException` directly
+    rather than exercising `ArcadeDBServer.getDatabase(..., false, false)` itself. Added
+    `Issue6778DatabaseNotAvailableExceptionTest`, which starts a real `ArcadeDBServer` and asserts the
+    lookup throws the new type end-to-end.
+  - `claude` (nit): `PostPrometheusWriteHandler`'s ordering comment still described the pre-fix
+    `DatabaseOperationException`/500 fallthrough this PR closes. Updated to name the current
+    `DatabaseNotAvailableException`/404 behavior.
+  - No disputed or deferred items this cycle.
+- **Cycle 2** (head `d90a7380f6`): no `claude` bot review landed after two consecutive 15-minute polls
+  (30 minutes total). Confirmed this is CI-runner congestion, not a bot or PR-specific problem: no
+  "Claude Code Review" workflow run was ever created for this head SHA, and a concurrent PR's own run
+  (`headSha d88c4dbc0f`) was independently observed stuck in `queued` for 45+ minutes across both poll
+  windows. Per the skill's "a cycle-1 timeout is not proof the bot is off" guidance, the first timeout
+  was treated as inconclusive and re-polled once; the second timeout with the same congestion evidence
+  ended the loop.
+
+## Final state
+
+`timeout` - the review loop stopped after cycle 2's bot response never arrived (CI congestion, see
+above). The PR is open at head `d90a7380f6843464792a736d8fa2d825f6fe0c8a` with cycle 1's review fully
+addressed and zero known disputed/deferred items. No `review-deferred-*.md` notes file was produced.
+Recommend the developer either wait for CI to drain and re-poll, or merge directly given cycle 1's
+clean review history.
