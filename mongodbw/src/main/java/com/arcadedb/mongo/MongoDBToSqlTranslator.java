@@ -194,9 +194,21 @@ public class MongoDBToSqlTranslator {
    * $nin} on {@code _id} would never match even though the scalar (equality) case does.
    */
   protected static void buildCollection(final StringBuilder buffer, final Map<String, Object> params, final Collection coll) {
-    final List<Object> normalized = new ArrayList<>(coll.size());
+    // avoid the copy on the common case where nothing needs normalizing
+    boolean hasObjectId = false;
     for (final Object element : coll)
-      normalized.add(element instanceof ObjectId objectId ? objectId.getHexData() : element);
+      if (element instanceof ObjectId) {
+        hasObjectId = true;
+        break;
+      }
+
+    Collection<?> normalized = coll;
+    if (hasObjectId) {
+      final List<Object> converted = new ArrayList<>(coll.size());
+      for (final Object element : coll)
+        converted.add(element instanceof ObjectId objectId ? objectId.getHexData() : element);
+      normalized = converted;
+    }
 
     buffer.append('(');
     buildValue(buffer, params, normalized);
