@@ -62,12 +62,21 @@ class SQLMethodPrecisionTest {
 
   @Test
   void instant() throws Exception {
-    testPrecision("microsecond", () -> new NanoClock().instant());
-    testPrecision("microseconds", () -> new NanoClock().instant());
-    testPrecision("millisecond", () -> new NanoClock().instant());
-    testPrecision("milliseconds", () -> new NanoClock().instant());
-    testPrecision("nanosecond", () -> new NanoClock().instant());
-    testPrecision("nanoseconds", () -> new NanoClock().instant());
+    // ONE clock, reused for every sample below: NanoClock.instant() returns beginInstant PLUS the nanoseconds
+    // elapsed (via System.nanoTime(), which is high-resolution and monotonic) since the clock was built. A fresh
+    // `new NanoClock()` per sample - as this test used to do - resets that baseline every time, so each call
+    // returns beginInstant plus an elapsed delta of essentially zero: the nanosecond precision it exists to add
+    // never has any time to accumulate, and every sample collapses to whatever resolution the underlying
+    // Clock.systemUTC() itself happens to have. That defeated the retry loop below: ten retries of a call shaped
+    // like that are ten copies of the same coarse reading, not ten independent samples (issue #6399). Reusing one
+    // instance lets real elapsed nanoseconds build up between calls, which is what actually varies the precision.
+    final NanoClock clock = new NanoClock();
+    testPrecision("microsecond", clock::instant);
+    testPrecision("microseconds", clock::instant);
+    testPrecision("millisecond", clock::instant);
+    testPrecision("milliseconds", clock::instant);
+    testPrecision("nanosecond", clock::instant);
+    testPrecision("nanoseconds", clock::instant);
   }
 
   @Test
