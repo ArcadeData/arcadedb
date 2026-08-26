@@ -572,21 +572,29 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
         } while ((b & 0x80) != 0);
         if (shift == 70 && (b & 0x7F) > 1)
           throw new IOException(corruptBlockMessage() + OVERWIDE_VARLONG);
+        // A VarLong is unsigned, so a decoded value at or above 2^63 arrives here as a NEGATIVE long.
+        // Neither RID component can legitimately be that large - a bucket id is an int and a position
+        // is a non-negative long - and the ordering checks below cannot see it: a negative bucket
+        // delta narrows to a small positive int (0x8000_0000_0000_0001 casts to 1, which looks like a
+        // perfectly ordinary step forward), and a negative absolute position rides in on a bucket
+        // that did increase. So the range is checked before anything narrows or accumulates.
+        if (bucketDelta < 0L || secondField < 0L)
+          throw new IOException(corruptBlockMessage() + OUT_OF_RANGE_RID);
         // Strictly ascending RIDs are a write-side invariant that the read side never checked:
         // SparseSegmentBuilder.appendInternal rejects a non-increasing RID and flushBlock fails loud
         // on a negative delta, precisely because "a negative delta would silently encode as a huge
         // unsigned VarInt and decode to a different RID on read". Checking the same thing here is
-        // what turns that into a named error instead of a traversal quietly merging out of order,
-        // and it is what catches a wrapped delta - including the one a tenth VarLong byte produces
-        // when Java discards the payload bits it shifts past bit 63.
+        // what turns that into a named error instead of a traversal quietly merging out of order.
         if (bucketDelta == 0L) {
           final long nextPosition = prevPosition + secondField;
           if (nextPosition <= prevPosition)
             throw new IOException(corruptBlockMessage() + notAscending(prevBucket, prevPosition));
           prevPosition = nextPosition;
         } else {
+          if (bucketDelta > Integer.MAX_VALUE)
+            throw new IOException(corruptBlockMessage() + OUT_OF_RANGE_RID);
           final int nextBucket = prevBucket + (int) bucketDelta;
-          if (bucketDelta > Integer.MAX_VALUE || nextBucket <= prevBucket)
+          if (nextBucket <= prevBucket)
             throw new IOException(corruptBlockMessage() + notAscending(prevBucket, prevPosition));
           prevBucket = nextBucket;
           prevPosition = secondField;
@@ -608,6 +616,17 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
       }
     }
 
+    // The header names the block's last RID, and the builder writes it from the same posting the
+    // payload ends on. Checking that they agree costs one comparison per block - not per posting -
+    // and cross-validates the payload against the header rather than only checking each against
+    // itself: a truncated, scrambled or mis-counted payload almost never lands on the right last RID,
+    // however well-ordered the sequence it decoded to happened to be.
+    if (SparseSegmentBuilder.compareRid(blockBuckets[n - 1], blockPositions[n - 1], meta.blockLastBucketId(currentBlock),
+        meta.blockLastPosition(currentBlock)) != 0)
+      throw new IOException(corruptBlockMessage() + " (the payload ends on #" + blockBuckets[n - 1] + ":"
+          + blockPositions[n - 1] + ", but the block header says #" + meta.blockLastBucketId(currentBlock) + ":"
+          + meta.blockLastPosition(currentBlock) + ")");
+
     if (p + n * weightStride > limit)
       throw new IOException(corruptBlockMessage());
     weightsOffset = p;
@@ -619,6 +638,9 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
     blockDecoded = true;
     weightResolved = false;
   }
+
+  private static final String OUT_OF_RANGE_RID =
+      " (a decoded RID component is outside the range a bucket id or a position can hold)";
 
   private static final String OVERWIDE_VARLONG =
       " (a VarLong carries payload bits past the width of a long, which no encoder can produce)";
