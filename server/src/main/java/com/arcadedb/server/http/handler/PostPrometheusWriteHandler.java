@@ -72,14 +72,14 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
 
     // These checks - and the writeRequest.getTimeSeries().isEmpty() short-circuit below - stay ahead of
     // resolving `database` on purpose: httpServer.getServer().getDatabase(..., allowLoad=false) throws
-    // DatabaseOperationException (a plain RuntimeException, not one of the specific arms
-    // AbstractServerHttpHandler.handleRequest's catch chain recognizes) when the database is absent or
-    // closed, which falls through to a 500 instead of a 400/204. An earlier revision of this fix moved
-    // `database` resolution ahead of the isEmpty() check so that response could also carry the bookmark;
-    // review caught that this turns ANY request against a nonexistent database - even a well-formed one
-    // that resolves to zero series - into a 500. None of these checks need the database, and a
-    // zero-series write has nothing to bookmark, so this keeps the pre-#5866 ordering: `database` is
-    // resolved only once there is an actual write to make.
+    // DatabaseNotAvailableException when the database is absent or closed, which AbstractServerHttpHandler's
+    // classification maps to 404 (issue #6778) rather than the 400/204 these checks answer with. An earlier
+    // revision of this fix moved `database` resolution ahead of the isEmpty() check so that response could
+    // also carry the bookmark; review caught that this turns ANY request against a nonexistent database -
+    // even a well-formed one that resolves to zero series - into a 404 instead of the more specific 400/204
+    // these checks give. None of these checks need the database, and a zero-series write has nothing to
+    // bookmark, so this keeps the pre-#5866 ordering: `database` is resolved only once there is an actual
+    // write to make.
     if (rawBytes == null || rawBytes.length == 0)
       return new ExecutionResponse(400, "{ \"error\" : \"Request body is empty\"}");
 
