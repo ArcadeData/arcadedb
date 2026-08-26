@@ -80,7 +80,7 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
       if (record instanceof Vertex vertex)
         delta.addedVertices.add(new TxDelta.VertexDelta(vertex.getIdentity(), extractProperties(vertex)));
       else if (record instanceof Edge edge)
-        delta.addedEdges.add(new TxDelta.EdgeDelta(edge.getTypeName(), edge.getOut(), edge.getIn()));
+        delta.addedEdges.add(new TxDelta.EdgeDelta(edge.getTypeName(), edge.getOut(), edge.getIn(), edge.getIdentity()));
       scheduleSyncCallback(delta);
     } else {
       scheduleAsyncCallback();
@@ -123,7 +123,7 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
       if (record instanceof Vertex vertex)
         delta.deletedVertices.add(vertex.getIdentity());
       else if (record instanceof Edge edge)
-        delta.deletedEdges.add(new TxDelta.EdgeDelta(edge.getTypeName(), edge.getOut(), edge.getIn()));
+        delta.deletedEdges.add(new TxDelta.EdgeDelta(edge.getTypeName(), edge.getOut(), edge.getIn(), edge.getIdentity()));
       scheduleSyncCallback(delta);
     } else {
       scheduleAsyncCallback();

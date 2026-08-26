@@ -5559,10 +5559,13 @@ class GraphAnalyticalViewTest extends TestHelper {
   }
 
   /**
-   * The overlay keys a pending deletion on the (source, target) pair, so deleting one of several parallel
-   * edges masks all of them: {@code isConnectedTo} and {@code getNeighborIds} then report the pair as gone
-   * while the others remain. A count cannot absorb that the way a boolean can, because the caller turns it
-   * into rows, so the count says "unknown" and leaves the caller to walk the edge list (issue #5663).
+   * The overlay tracks a per-pair COUNT of deleted edges, not merely a deleted/not-deleted flag, so deleting
+   * one of several parallel edges leaves the others discoverable: {@code isConnectedTo} and
+   * {@code getNeighborIds} still report the surviving edges, only the deleted one is excluded (issue #6769 -
+   * before that fix, any deletion touching a pair masked every parallel edge between it). A count cannot
+   * absorb that the way a boolean or a neighbour list can, because the caller turns it into rows and an
+   * exact base-CSR-plus-overlay count would have to special-case every deletion combination; it says
+   * "unknown" instead and leaves the caller to walk the edge list (issue #5663).
    */
   @Test
   void countEdgesBetweenAnswersUnknownWhenTheOverlayMasksAPair() {
@@ -5600,11 +5603,13 @@ class GraphAnalyticalViewTest extends TestHelper {
       }
     database.commit();
 
-    // The pair is masked, so the view cannot say how many survive and says so...
+    // countEdgesBetween cannot state the exact survivor count, so it says so...
     assertThat(gav.countEdgesBetween(idA, idB, Vertex.DIRECTION.OUT, "PAID")).isNegative();
-    // ...which is the honest form of what the boolean and the neighbour list already report
-    assertThat(gav.isConnectedTo(idA, idB, Vertex.DIRECTION.OUT, "PAID")).isFalse();
-    assertThat(gav.getNeighborIds(idA, Vertex.DIRECTION.OUT, "PAID")).doesNotContain(idB);
+    // ...but the pair is still connected via its two surviving parallel edges, and both are still
+    // discoverable - only the deleted one is excluded, not the whole pair
+    assertThat(gav.isConnectedTo(idA, idB, Vertex.DIRECTION.OUT, "PAID")).isTrue();
+    // A's PAID out-neighbours: 2 surviving A->B edges plus the untouched A->C edge
+    assertThat(gav.getNeighborIds(idA, Vertex.DIRECTION.OUT, "PAID")).containsExactlyInAnyOrder(idB, idB, idC);
 
     // a pair the deletion did not touch still answers exactly
     assertThat(gav.countEdgesBetween(idA, idC, Vertex.DIRECTION.OUT, "PAID")).isEqualTo(1);
