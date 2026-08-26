@@ -294,4 +294,55 @@ class MongoDBToSqlTranslatorParamsTest {
     assertThat(sql.toString()).isEqualTo("`_id` = :p0");
     assertThat(params.get("p0")).isEqualTo("507f1f77bcf86cd799439011");
   }
+
+  /**
+   * Follow-up to #6745, flagged by review on PR #6767: {@code buildCollection} binds the whole {@code $in}/{@code
+   * $nin} collection as a single parameter without normalizing its elements, so an {@code ObjectId} inside it kept
+   * comparing as {@code toString()} instead of the stored hex string - {@code $in}/{@code $nin} on {@code _id}
+   * never matched even after the scalar case was fixed.
+   */
+  @Test
+  void inNormalizesEachObjectIdElementToItsHexString() {
+    final StringBuilder sql = new StringBuilder();
+    final Map<String, Object> params = new HashMap<>();
+
+    final ObjectId id1 = new ObjectId("507f1f77bcf86cd799439011");
+    final ObjectId id2 = new ObjectId("507f1f77bcf86cd799439012");
+    MongoDBToSqlTranslator.buildExpression(sql, params, new Document("_id", new Document("$in", List.of(id1, id2))));
+
+    assertThat(sql.toString()).isEqualTo("(`_id` IN (:p0))");
+    assertThat(params.get("p0")).isEqualTo(List.of("507f1f77bcf86cd799439011", "507f1f77bcf86cd799439012"));
+  }
+
+  @Test
+  void ninNormalizesEachObjectIdElementToItsHexString() {
+    final StringBuilder sql = new StringBuilder();
+    final Map<String, Object> params = new HashMap<>();
+
+    final ObjectId id = new ObjectId("507f1f77bcf86cd799439011");
+    MongoDBToSqlTranslator.buildExpression(sql, params, new Document("_id", new Document("$nin", List.of(id))));
+
+    assertThat(sql.toString()).isEqualTo("(`_id` NOT IN (:p0))");
+    assertThat(params.get("p0")).isEqualTo(List.of("507f1f77bcf86cd799439011"));
+  }
+
+  /**
+   * Flagged by review on PR #6767: the field-scoped {@code $not} fix only re-emitted the field once, so a
+   * multi-operator operand (a valid Mongo shape, e.g. a range) produced a dangling second comparison with no
+   * left-hand side - {@code NOT (`price` > :p0 <  :p1)} rather than an AND-joined pair of full comparisons.
+   */
+  @Test
+  void notWithAMultiOperatorOperandJoinsEachComparisonWithItsOwnField() {
+    final StringBuilder sql = new StringBuilder();
+    final Map<String, Object> params = new HashMap<>();
+
+    final Document range = new Document();
+    range.put("$gt", 1);
+    range.put("$lt", 5);
+    MongoDBToSqlTranslator.buildExpression(sql, params, new Document("price", new Document("$not", range)));
+
+    assertThat(sql.toString()).isEqualTo("(NOT (`price` > :p0 AND `price` < :p1))");
+    assertThat(params.get("p0")).isEqualTo(1);
+    assertThat(params.get("p1")).isEqualTo(5);
+  }
 }

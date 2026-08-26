@@ -33,6 +33,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import static com.mongodb.client.model.Filters.eq;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -84,6 +87,25 @@ public class MongoDBObjectIdFilterTest extends BaseGraphServerTest {
 
     assertThat(found).isNotNull();
     assertThat(found.getString("name")).isEqualTo("target");
+  }
+
+  /**
+   * Follow-up to #6745, flagged by review on PR #6767: {@code buildCollection} bound {@code $in}/{@code $nin}
+   * collections without normalizing an {@code ObjectId} element, so {@code $in} on {@code _id} kept missing its
+   * document even after the scalar (equality) case was fixed.
+   */
+  @Test
+  void findManyByIdUsingInFilterMatchesEveryListedId() {
+    collection.insertOne(new Document("name", "a"));
+    collection.insertOne(new Document("name", "b"));
+    collection.insertOne(new Document("name", "c"));
+    final ObjectId idA = collection.find(eq("name", "a")).first().getObjectId("_id");
+    final ObjectId idB = collection.find(eq("name", "b")).first().getObjectId("_id");
+
+    final List<Document> found = collection.find(new Document("_id", new Document("$in", List.of(idA, idB))))
+        .into(new ArrayList<>());
+
+    assertThat(found).extracting(d -> d.getString("name")).containsExactlyInAnyOrder("a", "b");
   }
 
   @Test

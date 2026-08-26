@@ -55,7 +55,36 @@ they touch the same three files.
 
 ## Test results
 
-See PR for CI status; local run: `mvn -o -pl mongodbw -am test` - all tests pass (new + pre-existing).
+See PR for CI status; local run: `mvn -o -pl mongodbw test` - all 106 tests pass (new + pre-existing).
+
+## PR #6767
+
+https://github.com/ArcadeData/arcadedb/pull/6767
+
+### Review cycle 1
+
+Head SHA `fcc0e31f87662bfce9a65d077612f1f782d84a99`. `claude` and `coderabbitai` both reviewed. Two real bugs
+surfaced, both fixed and covered by new regression tests, plus two nitpicks applied:
+
+- **Fixed (claude + coderabbitai, actionable):** field-scoped `$not` with a multi-operator operand (e.g. a range,
+  `{field: {$not: {$gt: 1, $lt: 5}}}`) produced invalid SQL (`NOT (`field` > :p0 < :p1)`, missing `AND` and a
+  dangling comparison). `buildAnd`'s `$not` branch now re-emits the field for each operator in the operand,
+  AND-joined, matching the outer loop's behavior across sibling fields.
+- **Fixed (coderabbitai, actionable):** `buildCollection` (backing `$in`/`$nin`) bound the whole collection as one
+  parameter without normalizing elements, so an `ObjectId` inside an `$in`/`$nin` list kept comparing as
+  `toString()` instead of the stored hex string even after the scalar (equality) ObjectId fix. Each collection
+  element is now normalized the same way `buildValue` normalizes a scalar.
+- **Fixed (claude + coderabbitai, nitpick):** `numberToReturn`/`numberToSkip` now use `JSONObject`'s default-value
+  `getInt(name, 0)` getter instead of a `has()` check, matching the project's stated convention.
+- **Fixed (claude, nitpick):** deduplicated three independent ObjectId-to-hex conversions
+  (`MongoDBCollectionWrapper#insertDocuments`'s manual loop and `MongoDBDatabaseWrapper#toHexString`) down to
+  `ObjectId#getHexData()`, the same conversion `buildValue` already uses.
+- **Not actioned:** a pre-existing note that skip/limit are applied in Java after the SQL `ResultSet` is produced
+  rather than pushed into the query - explicitly flagged by the reviewer as out of scope for this PR.
+
+New regression tests: `inNormalizesEachObjectIdElementToItsHexString`, `ninNormalizesEachObjectIdElementToItsHexString`,
+`notWithAMultiOperatorOperandJoinsEachComparisonWithItsOwnField` (unit), `findManyByIdUsingInFilterMatchesEveryListedId`
+(wire-level). Full `mongodbw` suite (106 tests) passes after the fixes.
 
 ## Impact analysis
 

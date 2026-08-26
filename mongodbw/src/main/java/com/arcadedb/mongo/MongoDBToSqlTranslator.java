@@ -83,11 +83,18 @@ public class MongoDBToSqlTranslator {
         if ("$not".equals(subKey)) {
           // buildExpression(sql,params,key,value) has no field parameter, so the negation is built here instead,
           // where the field is still known: recursing into the operand without re-emitting the field would leave
-          // an operator with no left-hand side (e.g. "field NOT > :p0"), which the SQL parser rejects.
+          // an operator with no left-hand side (e.g. "field NOT > :p0"), which the SQL parser rejects. A
+          // multi-operator operand (e.g. a range, {$not: {$gt: 1, $lt: 5}}) needs the field re-emitted for EACH
+          // operator and joined with AND, the same way the outer loop does across sibling fields.
           sql.append("NOT (");
-          if (key != null)
-            sql.append(quoteFieldPath(key.toString()));
-          buildExpression(sql, params, (Document) subValue);
+          int notExpressionCount = 0;
+          for (final Map.Entry<String, Object> notEntry : ((Document) subValue).entrySet()) {
+            if (notExpressionCount++ > 0)
+              sql.append(" AND ");
+            if (key != null)
+              sql.append(quoteFieldPath(key.toString()));
+            buildExpression(sql, params, notEntry.getKey(), notEntry.getValue());
+          }
           sql.append(")");
         } else {
           if (key != null)
@@ -173,10 +180,18 @@ public class MongoDBToSqlTranslator {
   /**
    * Binds the whole collection to a single parameter. The SQL grammar accepts an input parameter between the parentheses of an
    * {@code IN} list, so there is no need to emit one placeholder per element.
+   * <p>
+   * Each element is normalized the same way a scalar value is in {@link #buildValue}: binding the collection as-is would leave
+   * an {@code ObjectId} element comparing as its {@code toString()} rather than the stored hex string, so {@code $in}/{@code
+   * $nin} on {@code _id} would never match even though the scalar (equality) case does.
    */
   protected static void buildCollection(final StringBuilder buffer, final Map<String, Object> params, final Collection coll) {
+    final List<Object> normalized = new ArrayList<>(coll.size());
+    for (final Object element : coll)
+      normalized.add(element instanceof ObjectId objectId ? objectId.getHexData() : element);
+
     buffer.append('(');
-    buildValue(buffer, params, coll);
+    buildValue(buffer, params, normalized);
     buffer.append(')');
   }
 

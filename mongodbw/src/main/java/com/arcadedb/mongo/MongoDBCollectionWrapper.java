@@ -230,18 +230,9 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
 
       for (final Map.Entry<String, Object> p : d.entrySet()) {
         final Object value = p.getValue();
-        if (value instanceof ObjectId id) {
-          final byte[] var2 = id.toByteArray();
-          final int var3 = var2.length;
-
-          final StringBuilder s = new StringBuilder();
-          for (int var4 = 0; var4 < var3; ++var4) {
-            final byte b = var2[var4];
-            s.append("%02x".formatted(b));
-          }
-
-          record.set(p.getKey(), s.toString());
-        } else
+        if (value instanceof ObjectId id)
+          record.set(p.getKey(), id.getHexData());
+        else
           record.set(p.getKey(), value);
       }
 

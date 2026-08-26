@@ -143,8 +143,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     final JSONObject queryJson = new JSONObject(query);
 
     final String collection = queryJson.getString("collection");
-    final int numberToSkip = queryJson.has("numberToSkip") ? queryJson.getInt("numberToSkip") : 0;
-    final int numberToReturn = queryJson.has("numberToReturn") ? queryJson.getInt("numberToReturn") : 0;
+    final int numberToSkip = queryJson.getInt("numberToSkip", 0);
+    final int numberToReturn = queryJson.getInt("numberToReturn", 0);
     final JSONObject q = queryJson.getJSONObject("query");
 
     final Document transformedQuery = json2Document(q);
@@ -640,7 +640,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     }
 
     final ObjectId id = new ObjectId();
-    record.set("_id", toHexString(id));
+    record.set("_id", id.getHexData());
     record.save();
     return id;
   }
@@ -761,16 +761,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         converted.add(toMapValue(item));
       return converted;
     } else if (value instanceof ObjectId id)
-      return toHexString(id);
+      return id.getHexData();
     return value;
-  }
-
-  private static String toHexString(final ObjectId id) {
-    final byte[] bytes = id.toByteArray();
-    final StringBuilder s = new StringBuilder(bytes.length * 2);
-    for (final byte b : bytes)
-      s.append("%02x".formatted(b));
-    return s.toString();
   }
 
   private Document responseOk() {
