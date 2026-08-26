@@ -316,6 +316,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   }
 
   /**
+   * Returns the transaction context currently registered under {@code txId}, or {@code null} if none.
+   * Exposed for testing the finalize-races-dispatch guard (issue #6709) against a real, network-driven RPC:
+   * lets a test occupy a real transaction's dedicated executor with a synthetic blocking task before racing a
+   * client-issued RPC against a concurrent {@link #finalizeTransactionForTesting}.
+   */
+  TransactionContext getActiveTransactionForTesting(final String txId) {
+    return activeTransactions.get(txId);
+  }
+
+  /**
    * Atomically reserves a slot for a new transaction against the global and per-principal caps. Returns {@code true}
    * when both bounds admit the transaction; on rejection no counter is left incremented. A non-positive cap disables
    * that bound. Reserving before the dedicated executor thread is created is what makes the cap effective against a
@@ -1045,6 +1055,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         final Throwable cause = e instanceof ExecutionException && e.getCause() != null ? e.getCause() : e;
         if (cause instanceof RecordNotFoundException)
           resp.onError(Status.NOT_FOUND.withDescription("LookupByRid: " + cause.getMessage()).asException());
+        else if (cause instanceof StatusRuntimeException sre)
+          // Preserve an explicit gRPC status (e.g. FAILED_PRECONDITION from requireTransactionStillActive)
+          // instead of masking it as INTERNAL, mirroring executeQuery/executeCommand/bulkInsert.
+          resp.onError(sre);
         else
           resp.onError(Status.INTERNAL.withDescription("LookupByRid: " + cause.getMessage()).asException());
       }
@@ -1105,6 +1119,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         LogManager.instance().log(this, Level.SEVERE, "ERROR in updateRecord (external tx)", cause);
         if (cause instanceof RecordNotFoundException)
           resp.onError(Status.NOT_FOUND.withDescription("Record not found: " + req.getRid()).asException());
+        else if (cause instanceof StatusRuntimeException sre)
+          // Preserve an explicit gRPC status (e.g. FAILED_PRECONDITION from requireTransactionStillActive)
+          // instead of masking it as INTERNAL, mirroring executeQuery/executeCommand/bulkInsert.
+          resp.onError(sre);
         else
           resp.onError(Status.INTERNAL.withDescription("UpdateRecord: " + cause.getMessage()).asException());
       }
@@ -1284,6 +1302,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         LogManager.instance().log(this, Level.SEVERE, "ERROR in deleteRecord (external tx)", cause);
         if (cause instanceof RecordNotFoundException)
           resp.onError(Status.NOT_FOUND.withDescription("Record not found: " + req.getRid()).asException());
+        else if (cause instanceof StatusRuntimeException sre)
+          // Preserve an explicit gRPC status (e.g. FAILED_PRECONDITION from requireTransactionStillActive)
+          // instead of masking it as INTERNAL, mirroring executeQuery/executeCommand/bulkInsert.
+          resp.onError(sre);
         else
           resp.onError(Status.INTERNAL.withDescription("DeleteRecord: " + cause.getMessage()).asException());
       }
