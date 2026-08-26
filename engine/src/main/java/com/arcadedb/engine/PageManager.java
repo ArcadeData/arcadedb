@@ -510,6 +510,11 @@ public class PageManager extends LockContext {
    * path is only genuinely unconditional if there is ONE exception type to catch - and these callers run inside
    * {@code executeInReadLock}, which wraps a checked exception into something a {@code catch (PageSnapshotException)}
    * would never match, so a leaked {@code IOException} silently disables the fallback.
+   * <p>
+   * {@link PageSnapshotException#getReason()} tells a caller that wants to distinguish them apart WHY the barrier
+   * gave up: {@code SUSPEND_TIMEOUT} is transient and expected under load, {@code FLUSH_TIMEOUT} is a stuck disk
+   * rather than a busy one. The unconditional fallback above does not need the distinction; diagnostics and tests do
+   * (#6394).
    *
    * @return a handle the caller MUST close, ideally in a try-with-resources: the shadow and any file whose deletion
    *     was deferred for it are released there.
@@ -540,7 +545,8 @@ public class PageManager extends LockContext {
       // NOT TIMED AND NOT COUNTED: NOTHING OF THE BARRIER RAN, AND A CALL THAT REFUSED INSTANTLY WOULD OTHERWISE PULL
       // THE AVERAGE THIS METRIC EXISTS TO REPORT TOWARDS ZERO
       throw new PageSnapshotException(
-          "Cannot open a snapshot of database '" + database.getName() + "': the page manager is not running");
+          "Cannot open a snapshot of database '" + database.getName() + "': the page manager is not running",
+          PageSnapshotException.Reason.NOT_RUNNING);
 
     synchronized (snapshotBarrierLock(database)) {
       // THE CLOCK STARTS HERE, NOT AT THE PUBLIC ENTRY POINT: THIS MONITOR ONLY SERIALIZES BARRIERS ON THE SAME
@@ -593,14 +599,15 @@ public class PageManager extends LockContext {
               // FALLS BACK TO SUSPEND-AND-FREEZE, WHICH IS SLOWER FOR ONE DATABASE RATHER THAN BRIEFLY FATAL FOR ALL
               throw new PageSnapshotException("Cannot open a snapshot of database '" + database.getName()
                   + "': the page flush could not be suspended within " + SNAPSHOT_BARRIER_MAX_MILLIS
-                  + " ms because another suspender is still resuming");
+                  + " ms because another suspender is still resuming", PageSnapshotException.Reason.SUSPEND_TIMEOUT);
             suspended = true;
 
             if (!thread.waitForCurrentFlushToCompleteUntil(database, deadline))
               // FATAL, UNLIKE THE DRAIN ABOVE: THE IN-FLIGHT BATCH IS HALF-WRITTEN BY DEFINITION, SO t0 WOULD HOLD
               // HALF A TRANSACTION. A WRITE THAT HAS NOT RETURNED IN THIS LONG IS A SICK DISK, NOT A BUSY ONE
               throw new PageSnapshotException("Cannot open a snapshot of database '" + database.getName()
-                  + "': the in-flight page flush did not complete within " + SNAPSHOT_BARRIER_MAX_MILLIS + " ms");
+                  + "': the in-flight page flush did not complete within " + SNAPSHOT_BARRIER_MAX_MILLIS + " ms",
+                  PageSnapshotException.Reason.FLUSH_TIMEOUT);
 
             if (thread.hasPendingPagesOfDatabase(database)) {
               // NO COMMIT CAN CAUSE THIS ANY MORE, SO THE ONLY REMAINING FEEDER IS INDEX COMPACTION, WHICH SCHEDULES

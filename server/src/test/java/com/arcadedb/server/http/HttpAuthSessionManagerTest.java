@@ -36,6 +36,7 @@ import static org.mockito.Mockito.when;
 class HttpAuthSessionManagerTest {
 
   private HttpAuthSessionManager manager;
+  private long                   fakeNow;
 
   @AfterEach
   void tearDown() {
@@ -49,6 +50,15 @@ class HttpAuthSessionManagerTest {
     when(user.getName()).thenReturn(username);
     when(user.getAuthorizedDatabases()).thenReturn(Set.of());
     return user;
+  }
+
+  /**
+   * Builds a manager backed by a deterministic fake clock (advanced via {@link #fakeNow}) instead of
+   * the wall clock, so idle/absolute timeout assertions cannot flake under a stop-the-world pause (#6398).
+   */
+  private HttpAuthSessionManager createManagerWithFakeClock(final long sessionTimeoutInMs, final long absoluteTimeoutInMs) {
+    fakeNow = 0L;
+    return new HttpAuthSessionManager(sessionTimeoutInMs, absoluteTimeoutInMs, () -> fakeNow);
   }
 
   @Test
@@ -71,7 +81,7 @@ class HttpAuthSessionManagerTest {
 
   @Test
   void sessionIdleTimeout() throws Exception {
-    manager = new HttpAuthSessionManager(100L); // 100ms idle timeout
+    manager = createManagerWithFakeClock(100L, 0); // 100ms idle timeout
     ServerSecurityUser user = createMockUser("testuser");
 
     HttpAuthSession session = manager.createSession(user);
@@ -80,11 +90,9 @@ class HttpAuthSessionManagerTest {
     assertThat(session).isNotNull();
     String token = session.getToken();
 
-    // Wait for idle timeout + timer to run (timer runs every 100ms)
-    Thread.sleep(300);
+    // Advance the fake clock well past the idle timeout; no wall-clock wait needed
+    fakeNow += 300;
 
-    // Session should be cleaned up by the background timer or manually
-    // Either the timer already ran, or we trigger it now
     manager.checkSessionsValidity();
     assertThat(manager.getActiveSessionCount()).isEqualTo(0);
     assertThat(manager.getSessionByToken(token)).isNull();
@@ -92,17 +100,17 @@ class HttpAuthSessionManagerTest {
 
   @Test
   void sessionIdleTimeoutResetByAccess() throws Exception {
-    manager = new HttpAuthSessionManager(200L); // 200ms idle timeout
+    manager = createManagerWithFakeClock(200L, 0); // 200ms idle timeout
     ServerSecurityUser user = createMockUser("testuser");
 
     HttpAuthSession session = manager.createSession(user);
 
     // Access session before it times out (resets idle timer)
-    Thread.sleep(100);
+    fakeNow += 100;
     assertThat(manager.getSessionByToken(session.getToken())).isNotNull();
 
     // Access again
-    Thread.sleep(100);
+    fakeNow += 100;
     assertThat(manager.getSessionByToken(session.getToken())).isNotNull();
 
     // Session should still be valid because we kept accessing it
@@ -112,13 +120,12 @@ class HttpAuthSessionManagerTest {
 
   @Test
   void absoluteTimeoutZeroMeansUnlimited() throws Exception {
-    manager = new HttpAuthSessionManager(10_000L, 0); // 10s idle timeout, 0 = unlimited absolute
+    manager = createManagerWithFakeClock(10_000L, 0); // 10s idle timeout, 0 = unlimited absolute
     ServerSecurityUser user = createMockUser("testuser");
 
     HttpAuthSession session = manager.createSession(user);
 
-    // Wait a bit
-    Thread.sleep(100);
+    fakeNow += 100;
 
     // Session should still be valid (no absolute timeout)
     assertThat(manager.getSessionByToken(session.getToken())).isNotNull();
@@ -128,14 +135,14 @@ class HttpAuthSessionManagerTest {
 
   @Test
   void absoluteTimeoutExpiresSession() throws Exception {
-    manager = new HttpAuthSessionManager(10_000L, 100L); // 10s idle timeout, 100ms absolute timeout
+    manager = createManagerWithFakeClock(10_000L, 100L); // 10s idle timeout, 100ms absolute timeout
     ServerSecurityUser user = createMockUser("testuser");
 
     HttpAuthSession session = manager.createSession(user);
     assertThat(manager.getSessionByToken(session.getToken())).isNotNull();
 
-    // Wait for absolute timeout to expire
-    Thread.sleep(150);
+    // Advance the fake clock past the absolute timeout
+    fakeNow += 150;
 
     // Session should be rejected even though idle timeout hasn't expired
     assertThat(manager.getSessionByToken(session.getToken())).isNull();
@@ -147,20 +154,20 @@ class HttpAuthSessionManagerTest {
 
   @Test
   void absoluteTimeoutNotResetByAccess() throws Exception {
-    manager = new HttpAuthSessionManager(10_000L, 200L); // 10s idle timeout, 200ms absolute timeout
+    manager = createManagerWithFakeClock(10_000L, 200L); // 10s idle timeout, 200ms absolute timeout
     ServerSecurityUser user = createMockUser("testuser");
 
     HttpAuthSession session = manager.createSession(user);
 
     // Access session multiple times (this should reset idle timeout but NOT absolute)
-    Thread.sleep(80);
+    fakeNow += 80;
     assertThat(manager.getSessionByToken(session.getToken())).isNotNull();
 
-    Thread.sleep(80);
+    fakeNow += 80;
     assertThat(manager.getSessionByToken(session.getToken())).isNotNull();
 
-    // Wait for absolute timeout to expire
-    Thread.sleep(100);
+    // Advance the fake clock past the absolute timeout
+    fakeNow += 100;
 
     // Session should now be rejected because absolute timeout expired
     assertThat(manager.getSessionByToken(session.getToken())).isNull();
@@ -194,18 +201,15 @@ class HttpAuthSessionManagerTest {
 
   @Test
   void elapsedFromCreation() throws Exception {
-    manager = new HttpAuthSessionManager(30_000L);
+    manager = createManagerWithFakeClock(30_000L, 0);
     ServerSecurityUser user = createMockUser("testuser");
 
     HttpAuthSession session = manager.createSession(user);
-    long initialElapsed = session.elapsedFromCreation();
-    assertThat(initialElapsed).isGreaterThanOrEqualTo(0);
-    assertThat(initialElapsed).isLessThan(100);
+    assertThat(session.elapsedFromCreation()).isEqualTo(0);
 
-    Thread.sleep(100);
+    fakeNow += 100;
 
-    long laterElapsed = session.elapsedFromCreation();
-    assertThat(laterElapsed).isGreaterThanOrEqualTo(100);
+    assertThat(session.elapsedFromCreation()).isEqualTo(100);
   }
 
   @Test
