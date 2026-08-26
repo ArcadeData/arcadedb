@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
@@ -200,6 +201,82 @@ class DedicatedThreadPoolTest {
       assertThat(pool.getPoolStats().reclaimedTasks()).isZero();
     } finally {
       releaseRunning.countDown();
+      pool.close();
+    }
+  }
+
+  /**
+   * A reclaimed task that THROWS must be indistinguishable from a worker-run one that throws: the exception lands in
+   * the task's own future, so the caller's {@code get()} surfaces it as an {@link java.util.concurrent.ExecutionException}
+   * rather than blowing up in the middle of the reclaim. The whole fix rests on "a reclaim is the same execution a
+   * worker would have given it", and this is the half of that claim liveness alone does not pin.
+   */
+  @Test
+  @Timeout(60)
+  void aReclaimedTaskThatThrowsFailsItsFutureInsteadOfTheReclaimingThread() throws Exception {
+    final TestPool pool = new TestPool(16, DedicatedThreadPool.SaturationPolicy.CALLER_RUNS);
+    final CountDownLatch pinWorker = new CountDownLatch(1);
+    final CountDownLatch workerPinned = new CountDownLatch(1);
+    try {
+      pool.getExecutorService().submit(() -> {
+        workerPinned.countDown();
+        pinWorker.await();
+        return null;
+      });
+      assertThat(awaited(workerPinned)).isTrue();
+
+      final Future<?> queued = pool.getExecutorService().submit(() -> {
+        throw new IllegalStateException("boom");
+      });
+
+      assertThat(pool.runQueuedTaskOnCaller((Runnable) queued))
+          .as("the reclaim itself must succeed - a failing task is still a task this thread ran").isTrue();
+      assertThatThrownBy(queued::get).isInstanceOf(ExecutionException.class)
+          .cause().isInstanceOf(IllegalStateException.class).hasMessage("boom");
+    } finally {
+      pinWorker.countDown();
+      pool.close();
+    }
+  }
+
+  /**
+   * A reclaim borrows the caller's thread exactly as a caller-runs rejection does, so it must go through the same
+   * {@link DedicatedThreadPool#runRejectedTask(Runnable)} hook. {@code AsyncCommandPool} overrides that hook to mark
+   * the borrowed thread as one of its own, and the async barrier reads that mark to avoid waiting for the very
+   * command it is running - a reclaim that bypassed the hook would silently reintroduce that self-deadlock.
+   */
+  @Test
+  @Timeout(60)
+  void aReclaimRunsThroughTheSameHookAsACallerRunsFallback() throws Exception {
+    final AtomicReference<Thread> markedOn = new AtomicReference<>();
+    final CountDownLatch pinWorker = new CountDownLatch(1);
+    final CountDownLatch workerPinned = new CountDownLatch(1);
+    final DedicatedThreadPool pool = new DedicatedThreadPool("ArcadeDB-DedicatedThreadPoolTest-hook-", 1, 16,
+        DedicatedThreadPool.SaturationPolicy.CALLER_RUNS, DedicatedThreadPool::plainWorker, "Test pool", null,
+        GlobalConfiguration.QUERY_PARALLELISM_POOL_THREADS) {
+      @Override
+      protected void runRejectedTask(final Runnable task) {
+        markedOn.set(Thread.currentThread());
+        super.runRejectedTask(task);
+      }
+    };
+    try {
+      pool.getExecutorService().submit(() -> {
+        workerPinned.countDown();
+        pinWorker.await();
+        return null;
+      });
+      assertThat(awaited(workerPinned)).isTrue();
+
+      final Future<?> queued = pool.getExecutorService().submit(() -> {
+      });
+      assertThat(pool.runQueuedTaskOnCaller((Runnable) queued)).isTrue();
+
+      assertThat(markedOn.get())
+          .as("the subclass hook must see the reclaim, on the thread that is borrowing itself out to the pool")
+          .isSameAs(Thread.currentThread());
+    } finally {
+      pinWorker.countDown();
       pool.close();
     }
   }
