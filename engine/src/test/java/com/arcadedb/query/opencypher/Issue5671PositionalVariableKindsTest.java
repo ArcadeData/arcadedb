@@ -114,4 +114,39 @@ class Issue5671PositionalVariableKindsTest {
         .isInstanceOf(CommandParsingException.class)
         .hasMessageContaining("type() requires a relationship argument, got node");
   }
+
+  /**
+   * Found in code review of this issue's own fix: seeding a nested body's incremental walk from the body's
+   * {@code buildVarTypes} <i>end state</i> (rather than from the truly-inherited outer scope) relocates the
+   * exact contamination bug this issue is about to the body boundary instead of removing it. If the body's
+   * first clause is a pass-through {@code WITH} of a name the outer query bound to one kind, and the SAME
+   * name is later reassigned to a different kind further down in the body, the end-state-seeded walk would
+   * read the reassigned kind for the {@code WITH}'s own pass-through - even though the true kind entering the
+   * body, at that point, is still the one inherited from outside.
+   */
+  @Test
+  void aNameReassignedLaterInABodyDoesNotContaminateAnEarlierPassThroughWithOfTheSameName() {
+    database.getSchema().createEdgeType("KNOWS");
+    // r is a relationship from the outer MATCH. Inside the body, the importing "WITH r" passes it through
+    // unchanged and type(r) is checked right there - still genuinely a relationship at that point. Only later,
+    // and only after an intervening WITH that does NOT carry r forward (dropping it from scope), does a fresh
+    // MATCH reuse the name "r" for a node - a completely disconnected rebinding that must not reach backwards
+    // and change what "r" meant at the WITH written above it.
+    try (ResultSet ignored = database.query("opencypher",
+        "MATCH ()-[r:KNOWS]->() "
+            + "CALL { WITH r WHERE type(r) = 'KNOWS' WITH 1 AS x MATCH (r:P) RETURN r, x } "
+            + "RETURN r")) {
+      assertThatCode(ignored::hasNext).doesNotThrowAnyException();
+    }
+  }
+
+  /** The exact query from the code-review comment that first raised this concern, kept as a named anchor. */
+  @Test
+  void reviewCommentReproDoesNotFalselyReject() {
+    database.getSchema().createEdgeType("KNOWS");
+    try (ResultSet ignored = database.query("opencypher",
+        "MATCH ()-[r:KNOWS]->() CALL { WITH r WHERE type(r) = 'KNOWS' WITH 1 AS r RETURN r } RETURN r")) {
+      assertThatCode(ignored::hasNext).doesNotThrowAnyException();
+    }
+  }
 }

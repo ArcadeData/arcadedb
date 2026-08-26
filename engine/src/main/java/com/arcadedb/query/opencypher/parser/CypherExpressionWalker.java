@@ -170,6 +170,14 @@ public final class CypherExpressionWalker {
      * {@code WITH}: its own projection items are evaluated against the scope it inherited, not the one it declares
      * (issue #5671) - so {@code walkWith} is handed both and decides which each part gets, rather than this method
      * trying to express two different answers through one return value.
+     * <p>
+     * Returning {@code null} is <b>not</b> "skip this one clause" the way it is for {@link #forNestedStatement} -
+     * there is no clause-scoped body to skip into, only a scope to keep advancing - so it stops the walk from this
+     * clause on: neither this clause's own expressions nor any clause after it, nor the statement's
+     * {@code RETURN}/{@code ORDER BY}/{@code SKIP}/{@code LIMIT}, are visited. No visitor in this codebase returns
+     * {@code null} here today; a future one that wants to opt out of just one clause should return {@code this}
+     * unchanged for that entry instead; a future one that wants to opt out of a scope's positional tracking wholesale
+     * should decide that at construction rather than mid-walk.
      */
     default Visitor forClauseEntry(final ClauseEntry entry) {
       return this;
@@ -198,41 +206,50 @@ public final class CypherExpressionWalker {
       return;
     }
 
-    final ReturnClause returnClause = statement.getReturnClause();
-    if (returnClause != null)
-      for (final ReturnClause.ReturnItem item : returnClause.getReturnItems())
-        walk(item.getExpression(), visitor);
-
-    // The top-level ORDER BY / SKIP / LIMIT belong to the statement rather than to any clause entry, and are walked
-    // here for the same reason walkWith() walks a WITH's: leaving them out is the clause-dependent asymmetry this
-    // traversal exists to remove.
-    walkOrderBy(statement.getOrderByClause(), visitor);
-    walk(statement.getSkip(), visitor);
-    walk(statement.getLimit(), visitor);
-
     // The ordered clause list is the whole clause tree, WITH included: StatementBuilder.addWith is the one place a
     // WITH is registered and it puts the same object on both getWithClauses() and this list, so walking the second
     // collection as well would walk every WITH twice rather than reach one this misses. That invariant is what makes
     // once-only structural here instead of guarded, and CypherSubqueryParseTimeValidationIssue5626Test pins it -
     // a builder path that ever registers a WITH on the statement alone has to add it here too, or the walk, and every
     // check running through it, will not see it.
-    // Each clause gets the chance to advance the visitor to a scope that includes what IT declares
-    // (Visitor#forClauseEntry), before its own expressions are visited and before the walk moves to the next
-    // clause - so a check that reads variable kinds sees them positionally instead of as one map for the whole
-    // statement (issue #5671, part 2). A visitor with no positional state (the default) just keeps returning
-    // itself, so this is a no-op for every check that does not opt in.
+    //
+    // Walked BEFORE RETURN/ORDER BY/SKIP/LIMIT - the reverse of their order in a statement's own source text -
+    // because RETURN is always the LAST clause a real statement or body has (issue #5671, part 2): its expressions,
+    // and the trailing ORDER BY/SKIP/LIMIT that see what it projects, are evaluated against the scope as of every
+    // clause having already run, which is exactly what walking the clause list to completion first produces. Each
+    // clause gets the chance to advance the visitor to a scope that includes what IT declares
+    // (Visitor#forClauseEntry), before its own expressions are visited and before the walk moves to the next clause,
+    // so a check that reads variable kinds sees them positionally instead of as one map for the whole statement. A
+    // visitor with no positional state (the default) just keeps returning itself, so this reordering changes nothing
+    // for a check that does not opt in.
+    Visitor current = visitor;
     final List<ClauseEntry> clauses = statement.getClausesInOrder();
     if (clauses != null) {
-      Visitor current = visitor;
-      for (int i = 0; i < clauses.size(); i++) {
+      for (int i = 0; i < clauses.size() && current != null; i++) {
         final ClauseEntry entry = clauses.get(i);
         final Visitor advanced = current.forClauseEntry(entry);
-        if (advanced == null)
+        if (advanced == null) {
+          current = null;
           break;
+        }
         walkClause(entry, current, advanced);
         current = advanced;
       }
     }
+    if (current == null)
+      return;
+
+    final ReturnClause returnClause = statement.getReturnClause();
+    if (returnClause != null)
+      for (final ReturnClause.ReturnItem item : returnClause.getReturnItems())
+        walk(item.getExpression(), current);
+
+    // The top-level ORDER BY / SKIP / LIMIT belong to the statement rather than to any clause entry, and are walked
+    // here for the same reason walkWith() walks a WITH's: leaving them out is the clause-dependent asymmetry this
+    // traversal exists to remove.
+    walkOrderBy(statement.getOrderByClause(), current);
+    walk(statement.getSkip(), current);
+    walk(statement.getLimit(), current);
   }
 
   /**
@@ -291,9 +308,13 @@ public final class CypherExpressionWalker {
         walk(callClause.getYieldWhere().getConditionExpression(), after);
     }
     case SUBQUERY -> {
+      // before, not after: what a body inherits is the outer scope as it stood entering this clause, not
+      // "after" - which already has this same subquery's own RETURN output names forgotten out of it, for the
+      // OUTER scope's benefit once the walk continues past this clause (see CypherSemanticValidator's SUBQUERY
+      // case in applyClauseToVarTypes). Seeding the body's own walk from "after" would seed it with itself.
       final SubqueryClause subqueryClause = entry.getTypedClause();
-      walk(subqueryClause.getBatchSize(), after);
-      walkNested(subqueryClause.getInnerStatement(), after);
+      walk(subqueryClause.getBatchSize(), before);
+      walkNested(subqueryClause.getInnerStatement(), before);
     }
     case LOAD_CSV -> walk(((LoadCSVClause) entry.getTypedClause()).getUrlExpression(), after);
     default -> {

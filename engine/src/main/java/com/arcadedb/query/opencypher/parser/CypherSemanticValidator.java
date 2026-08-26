@@ -2085,10 +2085,14 @@ public class CypherSemanticValidator {
    * than as of the {@code MATCH} the {@code type()} call is actually written against, and a check that should have
    * fired on the clause as written silently didn't. {@link FunctionArgumentChecks#forClauseEntry} advances the
    * scope clause by clause instead, so each clause's own expressions are checked against the scope as of that
-   * clause.
+   * clause - which is why this seeds with an empty scope rather than {@code varTypes}: {@code varTypes} IS the
+   * end-state map this phase used to over-apply, and seeding the incremental walk from it would still start every
+   * top-level clause already contaminated with clauses written after it. A statement inherits nothing, so empty is
+   * the correct starting scope; {@link FunctionArgumentChecks#forClauseEntry} builds every declaration back up as
+   * the walk reaches it.
    */
   private void validateFunctionArgumentTypes(final CypherStatement statement) {
-    CypherExpressionWalker.walk(statement, new FunctionArgumentChecks(varTypes));
+    CypherExpressionWalker.walk(statement, new FunctionArgumentChecks(Map.of()));
   }
 
   /**
@@ -2117,18 +2121,30 @@ public class CypherSemanticValidator {
       checkPropertyAccessOnPath(expression, scope);
     }
 
+    /**
+     * Seeds the nested body's walk from {@code this.scope} - the outer scope exactly as it stands at the point the
+     * walk is crossing into the body, already advanced by every {@link #forClauseEntry} call for the clauses before
+     * this one - rather than from {@link #nestedVarTypes}, which is the body's own <i>end</i> state (issue #5671,
+     * part 2 regression found in review). Seeding from the end state would seed the body's first clause with kinds
+     * that clause has not been declared yet - including kinds the body itself only reaches by walking past this
+     * point - the exact contamination this phase exists to remove, just relocated to the nested-body boundary
+     * instead of removed. {@link #buildVarTypes}/{@link #nestedVarTypes} are still exactly right for the other nine
+     * body phases in {@link #validateBodyPhases}, which do want the body's precomputed end state; this is the one
+     * phase that has to build the body's kinds up positionally as it walks, the same as it does for a top-level
+     * statement.
+     */
     @Override
     public CypherExpressionWalker.Visitor forNestedStatement(final CypherStatement nested) {
-      return new FunctionArgumentChecks(nestedVarTypes(scope, nested));
+      return new FunctionArgumentChecks(new HashMap<>(scope));
     }
 
     @Override
     public CypherExpressionWalker.Visitor forClauseEntry(final ClauseEntry entry) {
       // A throwaway declaredHere: applyClauseToVarTypes' only use for it is deciding whether a re-declaration is a
-      // VariableTypeConflict, and that conflict was already raised - for the statement by validateVariableTypes, for
-      // a subquery body by the buildVarTypes call inside nestedVarTypes that seeded this scope in the first place -
-      // before this phase ever runs (see CypherSemanticValidator#validate's phase order). This walk only needs the
-      // resulting kinds, not to re-decide a question already settled.
+      // VariableTypeConflict, and that conflict is always raised independently of this walk - for the statement by
+      // validateVariableTypes, for a subquery body by validateNestedStatements (both run as their own phases of
+      // CypherSemanticValidator#validate, seeing every clause of their scope, not just the one this call was handed).
+      // This walk only needs the resulting kinds, not to re-decide a question those phases already settle.
       final Map<String, VarType> advanced = new HashMap<>(scope);
       applyClauseToVarTypes(entry, advanced, new HashSet<>());
       return new FunctionArgumentChecks(advanced);
