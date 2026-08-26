@@ -80,7 +80,8 @@ import static com.google.gson.stream.JsonToken.NUMBER;
 public class OrientDBImporter {
   /**
    * Per-record attribute the OrientDB exporter uses to carry the field types that cannot be inferred from the JSON
-   * literal alone (e.g. `salary=f,total=l`). It is always emitted as the last attribute of the record.
+   * literal alone (e.g. `salary=f,total=l`). The exporter emits it last, which is why the numbers cannot be typed as
+   * they are read; the resolution below runs once the object is closed, so it does not depend on that position.
    */
   private static final String                     FIELD_TYPES_ATTRIBUTE           = "@fieldTypes";
   private static final int                        CONCURRENT_MAX_RETRY            = 3;
@@ -830,8 +831,8 @@ public class OrientDBImporter {
     final Map<String, Object> attributes = ignore ? null : new LinkedHashMap<>();
 
     // NUMBERS ARE KEPT AS RAW JSON LITERALS UNTIL THE WHOLE RECORD HAS BEEN READ: THE ORIENTDB EXPORTER EMITS THE
-    // PER-FIELD TYPE HINTS (`@fieldTypes`) AS THE *LAST* ATTRIBUTE OF THE RECORD, SO THE DECLARED TYPE IS ONLY KNOWN
-    // ONCE THE OBJECT IS CLOSED (ISSUE #6749).
+    // PER-FIELD TYPE HINTS (`@fieldTypes`) AFTER THE FIELDS THEY DESCRIBE, SO THE DECLARED TYPE IS NOT KNOWN WHILE
+    // THE FIELD IS BEING READ (ISSUE #6749). RESOLVING AFTER endObject() WORKS WHEREVER THE HINT SITS.
     Map<String, String> rawNumbers = null;
 
     reader.beginObject();
@@ -1152,27 +1153,30 @@ public class OrientDBImporter {
 
       final DocumentType type = database.getSchema().getType(className);
 
-      final String[] properties = new String[fieldDefinitions.size()];
+      // THE FIELD NAMES UNDERSTOOD SO FAR. COLLECTED RATHER THAN WRITTEN INTO A PRE-SIZED ARRAY SO THAT THE WARNING
+      // BELOW NAMES THE FIELDS ACTUALLY READ INSTEAD OF PADDING THE LIST WITH THE NULLS OF THE ONES NEVER REACHED.
+      final List<String> propertyNames = new ArrayList<>(fieldDefinitions.size());
 
       // THE PROPERTIES THIS INDEX NEEDS AND THE SCHEMA DOES NOT DECLARE YET. THEY ARE CREATED ONLY ONCE EVERY FIELD
       // OF THE COMPOSITE HAS BEEN VALIDATED: DECLARING THEM WHILE WALKING THE LIST WOULD LEAVE A PROPERTY BEHIND ON
       // THE TYPE WHEN A LATER FIELD TURNS OUT TO BE UNMAPPABLE AND THE WHOLE INDEX IS THEN SKIPPED.
       final Map<String, Type> propertiesToDeclare = new LinkedHashMap<>();
       boolean valid = !fieldDefinitions.isEmpty();
+      String unusableField = null;
 
-      for (int i = 0; valid && i < fieldDefinitions.size(); i++) {
-        final Map<String, Object> fieldDefinition = fieldDefinitions.get(i);
+      for (final Map<String, Object> fieldDefinition : fieldDefinitions) {
         final String fieldName = (String) fieldDefinition.get("field");
         if (fieldName == null) {
           valid = false;
           break;
         }
 
-        properties[i] = fieldName;
+        propertyNames.add(fieldName);
 
         if (!type.existsPolymorphicProperty(fieldName) && !propertiesToDeclare.containsKey(fieldName)) {
           final Type keyType = parseKeyType((String) fieldDefinition.get("keyType"));
           if (keyType == null) {
+            unusableField = fieldName;
             valid = false;
             break;
           }
@@ -1182,16 +1186,19 @@ public class OrientDBImporter {
       }
 
       if (!valid) {
-        logger.logLine(2, """
-                - Skipped %s index creation on %s%s because a property is not defined and its key type\
-                 is unknown""",
-            unique ? "UNIQUE" : "NOTUNIQUE", className, Arrays.toString(properties));
+        logger.logLine(2, "- Skipped %s index creation on %s%s because %s", unique ? "UNIQUE" : "NOTUNIQUE",
+            className, propertyNames,
+            unusableField != null ?
+                "the property '" + unusableField + "' is not defined and its key type is unknown" :
+                "the definition does not name every field it indexes");
         ++warnings;
         continue;
       }
 
       for (final Map.Entry<String, Type> property : propertiesToDeclare.entrySet())
         type.createProperty(property.getKey(), property.getValue());
+
+      final String[] properties = propertyNames.toArray(new String[0]);
 
       // PATCH TO ALWAYS USE SKIP BECAUSE IN ORIENTDB AN INDEX WITHOUT THE IGNORE SETTINGS CAN STILL HAVE NULL
       // PROPERTIES INDEXES. THE EXPORTED `nullValuesIgnored` FLAG IS THEREFORE DELIBERATELY NOT READ: IT IS
