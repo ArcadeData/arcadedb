@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.RID;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -61,7 +62,8 @@ class Issue6399PartialTailPageTest extends TestHelper {
     final DatabaseInternal db = (DatabaseInternal) database;
 
     db.getSchema().createDocumentType("Issue6399Type", 1);
-    db.transaction(() -> db.newDocument("Issue6399Type").set("id", 1).save());
+    final RID[] savedRid = new RID[1];
+    db.transaction(() -> savedRid[0] = db.newDocument("Issue6399Type").set("id", 1).save().getIdentity());
 
     final LocalBucket bucket = (LocalBucket) db.getSchema().getType("Issue6399Type").getBuckets(false).getFirst();
     final int pageSize = bucket.getPageSize();
@@ -81,8 +83,10 @@ class Issue6399PartialTailPageTest extends TestHelper {
     }
 
     final LogCapture capture = attach(LocalBucket.class);
-    final Database reopened = new DatabaseFactory(path).open();
+    Database reopened = null;
     try {
+      reopened = new DatabaseFactory(path).open();
+
       // THE WARNING FIRED AT OPEN, NOT A THROWN EXCEPTION: this is a report, not a tripwire.
       assertThat(capture.handler.snapshot().stream()
           .anyMatch(m -> m.contains("not a multiple of its page size") && m.contains("37")))
@@ -96,7 +100,9 @@ class Issue6399PartialTailPageTest extends TestHelper {
       // THE TORN BYTES WERE ROUNDED AWAY, NOT COUNTED AS AN EXTRA PAGE
       assertThat(reopenedBucket.getTotalPages()).isEqualTo(wholePages);
 
-      // THE DATABASE IS FULLY USABLE: THE PRE-EXISTING RECORD SURVIVED AND MORE CAN STILL BE WRITTEN
+      // THE DATABASE IS FULLY USABLE: THE PRE-EXISTING RECORD IS STILL DIRECTLY LOADABLE BY ITS OWN RID (GROUND
+      // TRUTH - NOT A CACHED/RECOMPUTED AGGREGATE COUNT) AND THE TYPE'S COUNT AGREES WITH IT
+      assertThat(reopenedInternal.lookupByRID(savedRid[0], true)).isNotNull();
       assertThat(reopenedInternal.countType("Issue6399Type", false)).isEqualTo(1);
 
       // ENOUGH RECORDS TO FORCE A REAL PAGE 1 TO BE ALLOCATED AND WRITTEN - THE SAME PAGE NUMBER THE TORN TAIL
@@ -113,7 +119,8 @@ class Issue6399PartialTailPageTest extends TestHelper {
           .as("the torn stub must be gone, overwritten by the real page 1").isZero();
     } finally {
       detach(capture);
-      reopened.drop();
+      if (reopened != null)
+        reopened.drop();
     }
   }
 
