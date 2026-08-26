@@ -776,7 +776,9 @@ public class Console {
     long lastLapTime = System.currentTimeMillis();
     long lastLapExecutedLines = 0L;
 
-    // COLLECTS THE LINES OF A BLOCK COMMENT THAT SPANS MULTIPLE LINES, TO EXECUTE THEM ONLY ONCE THE COMMENT IS CLOSED
+    // COLLECTS THE LINES OF A BLOCK COMMENT OR A JSON OBJECT THAT SPANS MULTIPLE LINES, TO EXECUTE THEM ONLY ONCE THEY ARE
+    // CLOSED. WITHOUT THIS, A MULTI-LINE `CONTENT { ... }` CLAUSE WOULD HIT reportUnbalancedBrace() ON ITS FIRST LINE, WHOSE
+    // '}' IS SIMPLY ON A LINE NOT READ YET (ISSUE #6439)
     final StringBuilder pending = new StringBuilder();
 
     try (final BufferedReader bufferedReader = new BufferedReader(new FileReader(file, DatabaseFactory.getDefaultCharset()))) {
@@ -786,8 +788,8 @@ public class Console {
         pending.append(line).append('\n');
 
         final ParsedLine parsedLine = parser.parse(pending.toString(), 0);
-        if (parser.isBlockCommentOpen()) {
-          // THE COMMENT CONTINUES ON THE NEXT LINE
+        if (parser.isBlockCommentOpen() || parser.getUnbalancedBraceOffset() >= 0) {
+          // THE COMMENT OR THE JSON OBJECT CONTINUES ON THE NEXT LINE
           byteReadFromFile += line.length() + 1;
           continue;
         }
@@ -816,7 +818,8 @@ public class Console {
     }
 
     if (!pending.isEmpty())
-      // THE FILE ENDS WITH AN UNTERMINATED BLOCK COMMENT: EXECUTE WHAT COMES BEFORE IT
+      // THE FILE ENDS WITH AN UNTERMINATED BLOCK COMMENT OR JSON OBJECT: EXECUTE WHAT COMES BEFORE IT. IF IT IS A GENUINELY
+      // UNCLOSED '{' RATHER THAN A COMMENT, THE CALL BELOW REPORTS IT THROUGH reportUnbalancedBrace() AS USUAL
       execute(parser.parse(pending.toString(), 0), true);
 
     elapsed = System.currentTimeMillis() - startedOn;
