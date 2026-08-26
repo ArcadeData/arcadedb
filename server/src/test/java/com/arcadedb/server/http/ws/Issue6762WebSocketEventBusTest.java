@@ -186,6 +186,53 @@ class Issue6762WebSocketEventBusTest {
   }
 
   /**
+   * The cap is expressed in bytes and what sits in the send buffer is the UTF-8 encoding, so a non-ASCII change
+   * stream must be charged its real byte cost - counting chars would let it hold several times the budget
+   * (PR #6783 review).
+   */
+  @Test
+  void theBacklogIsChargedInUtf8BytesNotCharacters() throws Exception {
+    final String db = record.getDatabase().getName();
+    // One emoji per record property value: 1 char in Java's count once, but 4 UTF-8 bytes on the wire.
+    database.begin();
+    ((com.arcadedb.database.MutableDocument) record.asDocument().modify()).set("k", "😀".repeat(64)).save();
+    database.commit();
+
+    final WebSocketEventBus bus = new WebSocketEventBus(null);
+    final EventWatcherSubscription slow = neverCompletingSubscription();
+    final ConcurrentHashMap<UUID, EventWatcherSubscription> subscriptions = new ConcurrentHashMap<>();
+    subscriptions.put(UUID.randomUUID(), slow);
+    injectSubscribers(bus, db, subscriptions);
+
+    final ChangeEvent event = new ChangeEvent(ChangeEvent.TYPE.UPDATE, record);
+    bus.publish(event);
+
+    assertThat(slow.getPendingBytes())
+        .as("the emoji payload must be charged its UTF-8 byte cost, which exceeds its character count")
+        .isGreaterThan(event.toJSON().length());
+  }
+
+  /**
+   * A client that unsubscribes and re-subscribes while a frame is still in flight lands its completion callback on
+   * the REPLACEMENT subscription. That release must not drive the replacement's counter negative, which would give
+   * it a negative baseline and silently let it hold far more than the cap (PR #6783 review).
+   */
+  @Test
+  void aReleaseOnAReplacementSubscriptionCannotDriveItsBacklogNegative() {
+    final EventWatcherSubscription replacement = new EventWatcherSubscription("db", null);
+
+    replacement.releasePending(10_000); // a frame the ORIGINAL subscription reserved, completing late
+
+    assertThat(replacement.getPendingBytes()).isZero();
+    assertThat(replacement.reservePending(512, 1024))
+        .as("the replacement still has its full budget, not a negative head start")
+        .isTrue();
+    assertThat(replacement.reservePending(1024, 1024))
+        .as("and the cap still bites at the configured value")
+        .isFalse();
+  }
+
+  /**
    * Authorization was checked only at SUBSCRIBE time, and the identity is captured once at the handshake, so
    * revoking a user's access to the database - or dropping the user outright - left the change stream flowing
    * until the client happened to disconnect. It has to be re-checked on delivery.

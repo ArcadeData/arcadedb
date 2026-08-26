@@ -1129,10 +1129,13 @@ def test_to_columns_survives_json_metacharacters_in_aliases(temp_db_path):
             for i in range(3):
                 db.command("sql", "INSERT INTO T SET n = ?, s = ?", i, f"v{i}")
 
+        # batch_size=2 so the three rows span MORE THAN ONE non-empty batch: the column spec is only sent back
+        # to Java from the second batch onwards, so a single-batch result would never exercise the round trip
+        # that the ';'-joined form used to break.
         cols = db.query(
             "sql",
             "SELECT s AS `{}`, n AS `{}` FROM T ORDER BY n".format(weird, semi),
-        ).to_columns()
+        ).to_columns(batch_size=2)
         assert cols is not None
         assert sorted(cols.keys()) == sorted([weird, semi])
         assert list(cols[weird]) == ["v0", "v1", "v2"]

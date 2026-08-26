@@ -1386,13 +1386,6 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // re-checks against the restored state instead of the floor (issue #6111).
       clearStaleSnapshotFloor();
 
-      // Wake any threads blocked in RaftHAServer.waitForAppliedIndex()/waitForLocalApply(): this
-      // leader-driven snapshot install advances the applied index without going through
-      // applyTransaction(), the only other notifyApplied() call site (issue #5846).
-      final RaftHAServer raftHA = this.raftHAServer;
-      if (raftHA != null)
-        raftHA.notifyApplied();
-
       LogManager.instance().log(this, Level.INFO,
           "HA resync finished (mode=snapshot, result=%s): snapshotIndex=%d",
           notInstalled.isEmpty() ? "ok" : "partial", snapshotIndex);
@@ -1403,6 +1396,23 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // ... except the ones it did not reinstall. Re-arm those AFTER clearDivergedState()/clearStaleSnapshotFloor()
       // above, which are written for the all-databases-refreshed case (issue #6760).
       markDatabasesNotAtSnapshotIndex(notInstalled, snapshotIndex);
+
+      // Wake any threads blocked in RaftHAServer.waitForAppliedIndex()/waitForLocalApply(): this
+      // leader-driven snapshot install advances the applied index without going through
+      // applyTransaction(), the only other notifyApplied() call site (issue #5846).
+      //
+      // LAST, after every floor and diverged mark of this install is in its final state. notifyApplied() holds
+      // applyNotifier only long enough to notifyAll(), so a waiter can reacquire it and re-check
+      // getTrustedAppliedIndex(db) immediately. Notifying any earlier than this leaves a window in which the
+      // global floor is already cleared and the per-database one is not yet published - clearDivergedState()
+      // above has just wiped it, or the first give-up never had one - so the woken waiter sees the raw Ratis
+      // index, which already equals snapshotIndex, and a LINEARIZABLE or read-your-writes read of a database
+      // this install did NOT refresh passes its wait and is served from the stale copy. That is precisely the
+      // outcome issue #6760 exists to prevent, so the notify has to come after the re-arm, not before it.
+      final RaftHAServer raftHA = this.raftHAServer;
+      if (raftHA != null)
+        raftHA.notifyApplied();
+
       return installedTermIndex;
 
     } catch (final SnapshotRefusedException e) {
