@@ -82,8 +82,10 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
     if (!tsType.isEngineAvailable())
       // Distinct from "not a TimeSeries type" (issue #6356 follow-up, claude-review on PR #6779): this type IS one,
       // its storage just failed to load - the old shared message sent an operator chasing the wrong cause.
-      return new ExecutionResponse(400, "{ \"error\" : \"TimeSeries type '" + typeName
-          + "' has no storage engine available: " + tsType.getEngineUnavailableReason() + "\"}");
+      // Built with JSONObject rather than string concatenation because the reason embeds a file path that could
+      // contain a double quote or backslash, which raw concatenation would turn into invalid JSON.
+      return new ExecutionResponse(400, new JSONObject().put("error", "TimeSeries type '" + typeName
+          + "' has no storage engine available: " + tsType.getEngineUnavailableReason()).toString());
 
     final TimeSeriesEngine engine = tsType.getEngine();
     final List<ColumnDefinition> columns = tsType.getTsColumns();
