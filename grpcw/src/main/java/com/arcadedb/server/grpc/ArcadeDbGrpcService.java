@@ -156,7 +156,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    * Holds transaction state including a single-thread executor to ensure all
    * transaction operations run on the same thread (required by ArcadeDB's thread-local transactions).
    */
-  private static final class TransactionContext {
+  static final class TransactionContext {
     final Database        db;
     final ExecutorService executor;
     final String          txId;
@@ -293,6 +293,29 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   }
 
   /**
+   * Registers a synthetic transaction directly, bypassing beginTransaction's authorization and concurrency-cap
+   * machinery. Exposed for deterministically testing the finalize-races-dispatch guard (issue #6709) without a
+   * real timing race: the returned context can be finalized with {@link #finalizeTransactionForTesting} to
+   * simulate a concurrent commitTransaction/rollbackTransaction/idle-reap winning the race.
+   */
+  TransactionContext registerTransactionForTesting(final String txId) {
+    final TransactionContext txCtx = new TransactionContext(null, txId, null);
+    activeTransactions.put(txId, txCtx);
+    return txCtx;
+  }
+
+  /**
+   * Removes a transaction registered via {@link #registerTransactionForTesting} and shuts down its executor,
+   * simulating a concurrent commitTransaction/rollbackTransaction/idle-reap finalizing it. Exposed for testing
+   * issue #6709.
+   */
+  void finalizeTransactionForTesting(final String txId) {
+    final TransactionContext txCtx = activeTransactions.remove(txId);
+    if (txCtx != null)
+      txCtx.shutdown();
+  }
+
+  /**
    * Atomically reserves a slot for a new transaction against the global and per-principal caps. Returns {@code true}
    * when both bounds admit the transaction; on rejection no counter is left incremented. A non-positive cap disables
    * that bound. Reserving before the dedicated executor thread is created is what makes the cap effective against a
@@ -406,6 +429,21 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   private static Status unknownTransactionStatus(final String txId) {
     return Status.FAILED_PRECONDITION.withDescription(
         "Unknown or expired transaction id: " + txId + " (it may have been rolled back by the idle reaper)");
+  }
+
+  /**
+   * Re-checks, from inside a transaction's dedicated executor task, that {@code txCtx} is still the
+   * transaction registered under its id. A concurrent commitTransaction/rollbackTransaction/idle-reap can
+   * finalize the transaction and shut down its executor between a transaction-scoped RPC's initial resolve
+   * (via {@link #resolveAuthorizedTransaction}) and the dispatched task actually running on it. Without this
+   * check that race surfaces as an opaque {@code RejectedExecutionException} -> {@code Status.INTERNAL}
+   * instead of the same friendly unknown-transaction status callers already get when the id is gone at
+   * resolve time (issue #6709). Package-private so it can be exercised directly in tests without needing a
+   * real timing race.
+   */
+  void requireTransactionStillActive(final TransactionContext txCtx) {
+    if (activeTransactions.get(txCtx.txId) != txCtx)
+      throw unknownTransactionStatus(txCtx.txId).asRuntimeException();
   }
 
   /**
@@ -555,8 +593,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         LogManager.instance().log(this, Level.FINE,
             "executeCommand(): using external transaction %s, executing on dedicated thread", incomingTxId);
 
-        Future<ExecuteCommandResponse> future = txCtx.executor.submit(() ->
-            executeCommandInternal(req, t0, txCtx.db, true));
+        Future<ExecuteCommandResponse> future = txCtx.executor.submit(() -> {
+          requireTransactionStillActive(txCtx);
+          return executeCommandInternal(req, t0, txCtx.db, true);
+        });
 
         response = future.get();
       } else {
@@ -862,7 +902,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     if (txCtx != null) {
       // External transaction — execute on its dedicated thread to maintain thread-local state
       try {
-        final Future<CreateRecordResponse> future = txCtx.executor.submit(() -> createRecordInternal(req, txCtx.db));
+        final Future<CreateRecordResponse> future = txCtx.executor.submit(() -> {
+          requireTransactionStillActive(txCtx);
+          return createRecordInternal(req, txCtx.db);
+        });
         resp.onNext(future.get());
         resp.onCompleted();
       } catch (Exception e) {
@@ -992,7 +1035,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     if (txCtx != null) {
       try {
-        final Future<LookupByRidResponse> future = txCtx.executor.submit(() -> lookupByRidInternal(req, txCtx.db));
+        final Future<LookupByRidResponse> future = txCtx.executor.submit(() -> {
+          requireTransactionStillActive(txCtx);
+          return lookupByRidInternal(req, txCtx.db);
+        });
         resp.onNext(future.get());
         resp.onCompleted();
       } catch (Exception e) {
@@ -1048,7 +1094,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     if (txCtx != null) {
       // External transaction — execute on its dedicated thread to maintain thread-local state
       try {
-        final Future<UpdateRecordResponse> future = txCtx.executor.submit(() -> updateRecordInternal(req, txCtx.db));
+        final Future<UpdateRecordResponse> future = txCtx.executor.submit(() -> {
+          requireTransactionStillActive(txCtx);
+          return updateRecordInternal(req, txCtx.db);
+        });
         resp.onNext(future.get());
         resp.onCompleted();
       } catch (Exception e) {
@@ -1224,7 +1273,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     if (txCtx != null) {
       // External transaction — execute on its dedicated thread to maintain thread-local state
       try {
-        final Future<DeleteRecordResponse> future = txCtx.executor.submit(() -> deleteRecordInternal(req, txCtx.db));
+        final Future<DeleteRecordResponse> future = txCtx.executor.submit(() -> {
+          requireTransactionStillActive(txCtx);
+          return deleteRecordInternal(req, txCtx.db);
+        });
         resp.onNext(future.get());
         resp.onCompleted();
       } catch (Exception e) {
@@ -1323,8 +1375,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       }
 
       try {
-        final Future<ExecuteQueryResponse> future = txCtx.executor.submit(
-            () -> executeQueryInternal(request, txCtx.db));
+        final Future<ExecuteQueryResponse> future = txCtx.executor.submit(() -> {
+          requireTransactionStillActive(txCtx);
+          return executeQueryInternal(request, txCtx.db);
+        });
         final ExecuteQueryResponse response = future.get();
         responseObserver.onNext(response);
         responseObserver.onCompleted();
@@ -1844,6 +1898,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // The transaction lifecycle (begin/commit/rollback) stays with the Begin/Commit/Rollback RPCs, exactly
         // like executeQuery - do NOT begin or commit a throwaway read tx here.
         final Future<?> future = txCtx.executor.submit(() -> {
+          requireTransactionStillActive(txCtx);
           dispatchStream(streamDb, request, batchSize, scso, cancelled, serverTimedOut, projectionConfig, language);
           return null;
         });
@@ -2366,6 +2421,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // External transaction — run on the transaction's dedicated thread
         try {
           final InsertSummary summary = txCtx.executor.submit(() -> {
+            requireTransactionStillActive(txCtx);
             try (InsertContext ctx = new InsertContext(txCtx.db, opts)) {
               final Counts totals = insertRows(ctx, req.getRowsList().iterator());
               ctx.flushCommit(true); // no-op in external tx mode
@@ -2375,8 +2431,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           resp.onNext(summary);
           resp.onCompleted();
         } catch (ExecutionException e) {
-          resp.onError(Status.INTERNAL.withDescription(
-              "bulkInsert: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage())).asException());
+          final Throwable cause = e.getCause() != null ? e.getCause() : e;
+          if (cause instanceof StatusRuntimeException sre)
+            // Preserve an explicit gRPC status (e.g. FAILED_PRECONDITION from requireTransactionStillActive)
+            // instead of masking it as INTERNAL, mirroring executeQuery/executeCommand.
+            resp.onError(sre);
+          else
+            resp.onError(Status.INTERNAL.withDescription("bulkInsert: " + cause.getMessage()).asException());
         }
       } else {
         try (InsertContext ctx = new InsertContext(opts)) {
@@ -2528,7 +2589,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             // ThreadLocal, so inserting on whichever pool thread onNext happens to run on left the
             // external transaction not actually active there.
             try {
-              cts = extTxCtxRef.get().executor.submit(() -> insertRows(runCtx, c.getRowsList().iterator())).get();
+              cts = extTxCtxRef.get().executor.submit(() -> {
+                requireTransactionStillActive(extTxCtxRef.get());
+                return insertRows(runCtx, c.getRowsList().iterator());
+              }).get();
             } catch (final ExecutionException ee) {
               final Throwable cause = ee.getCause();
               throw cause instanceof Exception ex ? ex : ee;
