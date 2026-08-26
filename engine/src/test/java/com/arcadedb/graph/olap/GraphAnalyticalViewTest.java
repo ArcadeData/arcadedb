@@ -2939,10 +2939,19 @@ class GraphAnalyticalViewTest extends TestHelper {
     // effect of checking it, but must never even look at whether LIKES is ready - it doesn't cover FOLLOWS.
     GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS");
 
-    assertThat(follows.getStatus())
+    // The dispatch itself (status flips to BUILDING synchronously, before the background work even starts)
+    // happens on findProvider()'s own call stack, but this assertion runs on a SEPARATE, later call: the
+    // background restore (a virtual thread, reading a few bytes off disk) can legitimately race ahead and
+    // already have flipped status back to READY by the time this line runs, especially under a loaded/
+    // throttled CI runner where the main thread can be descheduled right after findProvider() returns.
+    // Accept either observation - still-in-flight (BUILDING) or already-resolved (READY with the snapshot
+    // actually loaded from the persisted CSR, not the pre-dispatch provisional READY from line 2933-2936) -
+    // as proof the dispatch happened. Only the #6641 regression itself (isReady() never dispatching a real
+    // candidate's restore at all, leaving it forever in the provisional READY with nothing loaded) fails this.
+    assertThat(follows.getStatus() == GraphAnalyticalView.Status.BUILDING || follows.isRestoredFromPersistedCsr())
         .as("the FOLLOWS view was a real candidate for this lookup, so its deferred restore must have been "
-            + "dispatched (status flips to BUILDING synchronously, before the background work even starts)")
-        .isEqualTo(GraphAnalyticalView.Status.BUILDING);
+            + "dispatched: either still building, or already resolved from the persisted CSR")
+        .isTrue();
     assertThat(likes.getStatus())
         .as("issue #6641: the LIKES view does not cover FOLLOWS and must never have been asked about "
             + "readiness at all - its deferred restore must stay untouched")
