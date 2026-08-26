@@ -92,9 +92,11 @@ public class LocalTimeSeriesType extends LocalDocumentType {
    * Marks this type as registered but without a usable storage engine (issue #6356): {@link #initEngine()} failed
    * during schema load, most commonly because one derived file (a {@code .ts.sealed} sealed store) could not be
    * opened. Package-private: only {@code LocalSchema.readConfiguration()} calls this, on the same path that would
-   * otherwise have thrown and left the type out of the schema entirely.
+   * otherwise have thrown and left the type out of the schema entirely, and always from the single-threaded
+   * schema-load path - never concurrently with {@link #initEngine()}. {@code synchronized} to match
+   * {@link #initEngine()}, so a future caller cannot reintroduce a stale-reason race between the two.
    */
-  void markEngineUnavailable(final String reason) {
+  synchronized void markEngineUnavailable(final String reason) {
     this.engineUnavailableReason = reason != null ? reason : "unknown error";
   }
 
