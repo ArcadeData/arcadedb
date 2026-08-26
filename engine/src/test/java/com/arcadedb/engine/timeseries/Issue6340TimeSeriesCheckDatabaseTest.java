@@ -514,6 +514,29 @@ class Issue6340TimeSeriesCheckDatabaseTest extends TestHelper {
   }
 
   /**
+   * The read side of the same guard: {@code SelectExecutionPlanner.handleTypeAsTarget} must call
+   * {@code requireEngine()} and fail loudly, rather than falling through to a generic document scan that would
+   * read zero rows from a type with no record bucket of its own and report the query as having succeeded.
+   */
+  @Test
+  void selectingFromATimeSeriesTypeWhoseEngineFailedToInitializeFailsWithAClearError() throws Exception {
+    final TimeSeriesEngine engine = createType("Cpu");
+    appendRows(engine, ROWS);
+    engine.compactAll();
+    final File sealed = new File(getDatabasePath(), "Cpu_shard_0.ts.sealed");
+
+    database.close();
+    try {
+      flipByteAt(sealed, 0);
+    } finally {
+      database = factory.open();
+    }
+
+    assertThatThrownBy(() -> database.command("sql", "SELECT FROM Cpu").close())
+        .hasMessageContaining("Cpu");
+  }
+
+  /**
    * Bytes past the last readable block: the tail of a write that did not complete. The directory scan stops at
    * the first thing that is not a block magic, so this region is invisible to every other reader - neither used
    * nor reported - which is exactly why the check has to say it is there.
