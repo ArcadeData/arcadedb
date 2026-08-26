@@ -1169,7 +1169,10 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       }
     }
 
-    // Fallback: use SQL command (uses GlobalConfiguration.SERVER_BACKUP_DIRECTORY)
+    // Fallback: use SQL command (uses GlobalConfiguration.SERVER_BACKUP_DIRECTORY). This one does not name the
+    // archive through the coordinator: with no target the SQL statement lets BackupSettings apply its own default,
+    // which is the same convention down to the milliseconds - the coordinator is where that convention was copied
+    // from in the first place.
     try {
       final Database database = server.getDatabase(databaseName);
       try (final var result = database.command("sql", "backup database")) {
