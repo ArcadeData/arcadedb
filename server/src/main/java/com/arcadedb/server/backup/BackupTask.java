@@ -32,9 +32,7 @@ import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.time.LocalDateTime;
 import java.time.LocalTime;
-import java.time.format.DateTimeFormatter;
 import java.util.logging.Level;
 
 /**
@@ -43,8 +41,6 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class BackupTask implements Runnable {
-  private static final DateTimeFormatter BACKUP_TIMESTAMP_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
-
   // Cached reflection objects for better performance
   private static volatile Class<?>                     backupClass;
   private static volatile Constructor<?>               backupConstructor;
@@ -107,6 +103,18 @@ public class BackupTask implements Runnable {
       return;
     }
 
+    // One backup of a database at a time, whichever entry point asked for it: a periodic tick, an immediate trigger
+    // and the HTTP "trigger backup" command are three independent submissions, and two of them running together read
+    // and compress the same database twice for one usable archive - and, when they resolve to the same archive name,
+    // write into the same file (issue #6753). A refused tick costs nothing: the schedule covers this database again
+    // on the next one.
+    final BackupCoordinator coordinator = server.getBackupCoordinator();
+    if (!coordinator.begin(databaseName)) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Skipping backup for database '%s' - a backup of it is already in progress", databaseName);
+      return;
+    }
+
     // Perform the backup
     try {
       LogManager.instance().log(this, Level.INFO, "Starting scheduled backup for database '%s'...", databaseName);
@@ -136,6 +144,8 @@ public class BackupTask implements Runnable {
 
       server.getEventLog().reportEvent(ServerEventLog.EVENT_TYPE.CRITICAL, "Auto-Backup", databaseName,
           "Scheduled backup failed: " + e.getMessage());
+    } finally {
+      coordinator.end(databaseName);
     }
   }
 
@@ -206,9 +216,9 @@ public class BackupTask implements Runnable {
       return null;
     }
 
-    // Generate backup filename
-    final String timestamp = LocalDateTime.now().format(BACKUP_TIMESTAMP_FORMAT);
-    final String backupFileName = databaseName + "-backup-" + timestamp + ".zip";
+    // Generate backup filename. The convention lives on the coordinator so that this task, the HTTP "trigger backup"
+    // command and the default name a CLI or SQL backup gets all agree - and all carry milliseconds (issue #6753).
+    final String backupFileName = server.getBackupCoordinator().newArchiveName(databaseName);
 
     // Prepare backup directory for this database - use Files.createDirectories to avoid TOCTOU
     final Path dbBackupPath = Paths.get(backupDirectory, databaseName);
