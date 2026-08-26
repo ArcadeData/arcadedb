@@ -318,7 +318,7 @@ class Issue5680VertexDeleteEdgeCollectionTest extends TestHelper {
    */
   @Test
   @Tag("slow")
-  void concurrentVertexDeletionAndEdgeAppendingLeaveNoEdgeBehind() throws InterruptedException {
+  void concurrentVertexDeletionAndEdgeAppendingLeaveNoEdgeBehind() throws Exception {
     final int rounds = 10;
     final int hubs = 4;
     final int pool = 100;

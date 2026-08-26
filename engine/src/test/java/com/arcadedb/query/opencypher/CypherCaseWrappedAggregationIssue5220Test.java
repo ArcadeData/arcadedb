@@ -37,7 +37,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class CypherCaseWrappedAggregationIssue5220Test {
+class CypherCaseWrappedAggregationIssue5220Test {
   private Database database;
 
   @BeforeEach

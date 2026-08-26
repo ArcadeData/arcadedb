@@ -81,7 +81,7 @@ class TimeSeriesTagStrideBenchmark extends TestHelper {
       "service", "service_version", "service_environment" };
 
   @Test
-  void tagStrideDominatesIngestOnTagHeavySchemas() throws IOException {
+  void tagStrideDominatesIngestOnTagHeavySchemas() throws Exception {
     final int rows = Integer.getInteger(ROWS_PROPERTY, DEFAULT_ROWS);
 
     final Arm wide = new Arm("WideStride", tenTagColumns(), tenTagColumnValues(TSBS_TAGS, rows), rows);

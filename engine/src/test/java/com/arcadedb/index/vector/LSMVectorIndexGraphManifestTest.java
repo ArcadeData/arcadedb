@@ -23,7 +23,6 @@ import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -89,7 +88,7 @@ class LSMVectorIndexGraphManifestTest {
   }
 
   @Test
-  void aTruncatedOrCorruptedManifestReadsAsAbsent() throws IOException {
+  void aTruncatedOrCorruptedManifestReadsAsAbsent() throws Exception {
     final LSMVectorIndexGraphManifest manifest = manifest();
     manifest.write(5, 99L);
 
@@ -99,7 +98,7 @@ class LSMVectorIndexGraphManifestTest {
   }
 
   @Test
-  void aManifestFromAnotherLayoutReadsAsAbsent() throws IOException {
+  void aManifestFromAnotherLayoutReadsAsAbsent() throws Exception {
     final JSONObject fromTheFuture = new JSONObject();
     fromTheFuture.put("formatVersion", LSMVectorIndexGraphManifest.FORMAT_VERSION + 1);
     fromTheFuture.put("vectorCount", 5);
@@ -135,7 +134,7 @@ class LSMVectorIndexGraphManifestTest {
    * else in the engine knows the file exists. The next write sweeps it.
    */
   @Test
-  void aLeftoverTemporaryIsSweptByTheNextWrite() throws IOException {
+  void aLeftoverTemporaryIsSweptByTheNextWrite() throws Exception {
     final Path leftover = directory.resolve("graph.vecgraph." + LSMVectorIndexGraphManifest.FILE_EXT + ".dead.tmp");
     final Path unrelated = directory.resolve("graph.vecgraph");
     Files.writeString(leftover, "half written", StandardCharsets.UTF_8);

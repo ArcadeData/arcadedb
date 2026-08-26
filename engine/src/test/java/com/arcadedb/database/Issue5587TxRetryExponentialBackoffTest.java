@@ -43,7 +43,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the retry loop's own cost, the same in-run-comparison approach {@code Issue5693TxRetryDelayScopeTest} uses to
  * avoid depending on an absolute wall-clock budget.
  */
-public class Issue5587TxRetryExponentialBackoffTest extends TestHelper {
+class Issue5587TxRetryExponentialBackoffTest extends TestHelper {
   /** One more than the number of forced failures, so the last attempt succeeds. */
   private static final int ATTEMPTS = 10;
   /** Small enough that early windows (2, 4, 8, 16 ms) stay tiny... */

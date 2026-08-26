@@ -63,7 +63,7 @@ class LeaderForwardContextTest {
 
   /** A forwarded request on one worker thread must not make a concurrent, unrelated one refuse to forward. */
   @Test
-  void theMarkerDoesNotEscapeToAnotherThread() throws InterruptedException {
+  void theMarkerDoesNotEscapeToAnotherThread() throws Exception {
     LeaderForwardContext.markAlreadyForwarded();
 
     final AtomicBoolean seenElsewhere = new AtomicBoolean(true);

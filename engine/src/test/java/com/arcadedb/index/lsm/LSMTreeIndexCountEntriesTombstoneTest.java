@@ -23,6 +23,8 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
+
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -45,6 +47,7 @@ class LSMTreeIndexCountEntriesTombstoneTest extends TestHelper {
   private static final String   TYPE_NAME = "T";
   private static final String[] CITIES    = { "Rome", "Milan", "Naples", "Palermo", "Turin" };
 
+  @BeforeEach
   @Override
   public void beforeTest() {
     // keep compaction manual: a full compaction resolves and drops the tombstones, hiding the defect

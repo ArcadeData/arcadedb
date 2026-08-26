@@ -61,7 +61,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
+class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
 
   /**
    * Reproduces the exact defects the issue reports, at the wire level, on a client that never sends a

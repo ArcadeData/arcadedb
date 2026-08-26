@@ -81,7 +81,7 @@ class PinnedDnsResolutionIT {
   }
 
   @Test
-  void pinnedHostResolvesOnlyToTheValidatedAddresses() throws UnknownHostException {
+  void pinnedHostResolvesOnlyToTheValidatedAddresses() throws Exception {
     // Control on a SEPARATE name in the same .invalid TLD: proves such names are genuinely unresolvable here, so the
     // success below cannot be coming from real DNS. It must not be the pinned name itself, or the negative cache would
     // shadow the pin.
@@ -96,7 +96,7 @@ class PinnedDnsResolutionIT {
   }
 
   @Test
-  void unpinnedNamesStillResolveNormally() throws UnknownHostException {
+  void unpinnedNamesStillResolveNormally() throws Exception {
     // The provider must be inert outside a validated fetch: every other name goes to the built-in resolver unchanged.
     PinnedDnsResolution.bind(PINNED_HOST, new InetAddress[] { InetAddress.getLoopbackAddress() });
 

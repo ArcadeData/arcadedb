@@ -39,7 +39,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue6411ByteaIT extends PostgresWireProtocolTestBase {
+class Issue6411ByteaIT extends PostgresWireProtocolTestBase {
 
   /** Every byte value, so that anything the text encoding mangles shows up. */
   private static final byte[] PAYLOAD = allByteValues();

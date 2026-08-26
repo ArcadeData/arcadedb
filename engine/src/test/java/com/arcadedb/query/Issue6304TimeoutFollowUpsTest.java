@@ -283,7 +283,7 @@ class Issue6304TimeoutFollowUpsTest {
   // ── Item 3: one meaning for the word ─────────────────────────────────────
 
   @Test
-  void aSelectClauseIsWallClockLikeEveryOtherBoundInTheEngine() throws InterruptedException {
+  void aSelectClauseIsWallClockLikeEveryOtherBoundInTheEngine() throws Exception {
     // SELECT used to charge only the time spent inside the pipeline, so a consumer that paused between two
     // fetches was not billed for the pause while the identical number on an UPDATE was. Sleeping longer than the
     // clause can only make this assertion more true, so a JVM stall cannot flake it.

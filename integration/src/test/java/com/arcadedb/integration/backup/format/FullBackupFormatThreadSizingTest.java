@@ -20,6 +20,7 @@ package com.arcadedb.integration.backup.format;
 
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -48,7 +49,7 @@ class FullBackupFormatThreadSizingTest {
   }
 
   @ParameterizedTest
-  @CsvSource({ "0", "-1" })
+  @ValueSource(ints = {0, -1})
   void neverReturnsAnUnusableThreadCount(final int availableProcessors) {
     assertThat(FullBackupFormat.autoCompressionThreads(availableProcessors)).isEqualTo(1);
   }

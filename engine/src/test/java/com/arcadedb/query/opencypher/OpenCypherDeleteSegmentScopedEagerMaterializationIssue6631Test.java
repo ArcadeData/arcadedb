@@ -59,7 +59,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class OpenCypherDeleteSegmentScopedEagerMaterializationIssue6631Test {
+class OpenCypherDeleteSegmentScopedEagerMaterializationIssue6631Test {
   private Database database;
 
   @AfterEach

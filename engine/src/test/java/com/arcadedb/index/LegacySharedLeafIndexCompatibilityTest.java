@@ -98,7 +98,7 @@ class LegacySharedLeafIndexCompatibilityTest {
   }
 
   @Test
-  void lookupsReadFirstChunkFromSharedPrecedingLeaf() throws IOException {
+  void lookupsReadFirstChunkFromSharedPrecedingLeaf() throws Exception {
     extractFixture();
 
     try (DatabaseFactory factory = new DatabaseFactory(tempDir.toString())) {

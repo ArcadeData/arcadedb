@@ -43,7 +43,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 @Tag("slow")
-public class Issue4743HashIndexBulkLoadTest {
+class Issue4743HashIndexBulkLoadTest {
   private static final String DB_PATH = "./target/databases/issue4743-hash-bulk";
   private static final int    TOTAL   = Integer.parseInt(System.getProperty("issue4743.total", "200000"));
   private static final int    BATCH   = Integer.parseInt(System.getProperty("issue4743.batch", "10000"));

@@ -416,7 +416,7 @@ class ServerQueryProfilerTest extends StaticBaseServerTest {
   }
 
   @Test
-  void concurrentRecordingCountsExactly() throws InterruptedException {
+  void concurrentRecordingCountsExactly() throws Exception {
     // recordQuery() is an unsynchronized hot path called from many Undertow workers. The total
     // count must be exact under concurrency: a plain int++ loses updates. The number of records
     // exceeds MAX_ENTRIES (10_000) so the ring buffer wraps, but the grand total must still be exact.

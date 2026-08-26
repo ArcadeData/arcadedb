@@ -53,11 +53,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue5286AggregationOrderByGroupingKeyTest {
+class Issue5286AggregationOrderByGroupingKeyTest {
   private Database database;
 
   @BeforeEach
-  public void setUp() {
+  void setUp() {
     final DatabaseFactory factory = new DatabaseFactory("./target/databases/issue5286");
     if (factory.exists())
       factory.open().drop();
@@ -72,7 +72,7 @@ public class Issue5286AggregationOrderByGroupingKeyTest {
   }
 
   @AfterEach
-  public void tearDown() {
+  void tearDown() {
     if (database != null && database.isOpen())
       database.drop();
   }
@@ -92,13 +92,13 @@ public class Issue5286AggregationOrderByGroupingKeyTest {
    * The reported query: the grouping key is aliased, and ORDER BY names the original expression.
    */
   @Test
-  public void orderByAliasedGroupingKey() {
+  void orderByAliasedGroupingKey() {
     assertThat(column("MATCH (n:P) RETURN n.age AS a, count(*) AS c ORDER BY n.age", "a")) //
         .containsExactly(10, 20, 30);
   }
 
   @Test
-  public void orderByAliasedGroupingKeyDescending() {
+  void orderByAliasedGroupingKeyDescending() {
     assertThat(column("MATCH (n:P) RETURN n.age AS a, count(*) AS c ORDER BY n.age DESC", "a")) //
         .containsExactly(30, 20, 10);
   }
@@ -107,7 +107,7 @@ public class Issue5286AggregationOrderByGroupingKeyTest {
    * Ordering by the alias always worked and must keep working.
    */
   @Test
-  public void orderByAliasStillWorks() {
+  void orderByAliasStillWorks() {
     assertThat(column("MATCH (n:P) RETURN n.age AS a, count(*) AS c ORDER BY a", "a")) //
         .containsExactly(10, 20, 30);
   }
@@ -116,7 +116,7 @@ public class Issue5286AggregationOrderByGroupingKeyTest {
    * The un-aliased form resolves by column name and must keep working.
    */
   @Test
-  public void orderByUnaliasedGroupingKeyStillWorks() {
+  void orderByUnaliasedGroupingKeyStillWorks() {
     assertThat(column("MATCH (n:P) RETURN n.age, count(*) AS c ORDER BY n.age", "n.age")) //
         .containsExactly(10, 20, 30);
   }
@@ -125,7 +125,7 @@ public class Issue5286AggregationOrderByGroupingKeyTest {
    * A composite grouping key must match regardless of whitespace.
    */
   @Test
-  public void orderByAliasedCompositeGroupingKey() {
+  void orderByAliasedCompositeGroupingKey() {
     assertThat(column("MATCH (n:P) RETURN n.age + 1 AS x, count(*) AS c ORDER BY n.age+1", "x")) //
         .containsExactly(11L, 21L, 31L);
   }
@@ -134,7 +134,7 @@ public class Issue5286AggregationOrderByGroupingKeyTest {
    * Ordering by a projected aggregate expression is well defined per group and must sort too.
    */
   @Test
-  public void orderByProjectedAggregate() {
+  void orderByProjectedAggregate() {
     // count() is 64-bit, hence Long
     assertThat(column("MATCH (n:P) RETURN n.active AS a, count(*) AS c ORDER BY count(*)", "c")) //
         .containsExactly(1L, 2L);
@@ -146,7 +146,7 @@ public class Issue5286AggregationOrderByGroupingKeyTest {
    * The same rule applies to an aggregating WITH.
    */
   @Test
-  public void withAggregationOrderByAliasedGroupingKey() {
+  void withAggregationOrderByAliasedGroupingKey() {
     assertThat(column("MATCH (n:P) WITH n.age AS a, count(*) AS c ORDER BY n.age RETURN a, c", "a")) //
         .containsExactly(10, 20, 30);
   }
@@ -155,7 +155,7 @@ public class Issue5286AggregationOrderByGroupingKeyTest {
    * Grouping by one key and ordering by another projected key must sort on the requested one.
    */
   @Test
-  public void orderByAliasedGroupingKeyAmongSeveral() {
+  void orderByAliasedGroupingKeyAmongSeveral() {
     assertThat(column("MATCH (n:P) RETURN n.name AS nm, n.age AS a, count(*) AS c ORDER BY n.age", "nm")) //
         .containsExactly("a", "b", "c");
   }
@@ -166,7 +166,7 @@ public class Issue5286AggregationOrderByGroupingKeyTest {
    * projected part, i.e. sorting on {@code a + 1}.
    */
   @Test
-  public void orderByExpressionContainingGroupingKey() {
+  void orderByExpressionContainingGroupingKey() {
     assertThat(column("MATCH (n:P) RETURN n.age AS a, count(*) AS c ORDER BY n.age + 1", "a")) //
         .containsExactly(10, 20, 30);
     assertThat(column("MATCH (n:P) RETURN n.age AS a, count(*) AS c ORDER BY n.age + 1 DESC", "a")) //
@@ -177,7 +177,7 @@ public class Issue5286AggregationOrderByGroupingKeyTest {
    * The substitution reaches inside function-call arguments.
    */
   @Test
-  public void orderByFunctionOfGroupingKey() {
+  void orderByFunctionOfGroupingKey() {
     assertThat(column("MATCH (n:P) RETURN n.name AS nm, count(*) AS c ORDER BY toUpper(n.name) DESC", "nm")) //
         .containsExactly("c", "b", "a");
   }
@@ -187,7 +187,7 @@ public class Issue5286AggregationOrderByGroupingKeyTest {
    * sort: the read follows the variable to the column it was projected as.
    */
   @Test
-  public void orderByPropertyOfProjectedNode() {
+  void orderByPropertyOfProjectedNode() {
     assertThat(column("MATCH (n:P) RETURN n AS node, count(*) AS c ORDER BY n.age", "c")) //
         .containsExactly(1L, 1L, 1L);
     final List<Object> ages = new ArrayList<>();
@@ -203,7 +203,7 @@ public class Issue5286AggregationOrderByGroupingKeyTest {
    * it is the point of the fix: the query used to return unsorted rows and say nothing.
    */
   @Test
-  public void orderByNonGroupingKeyRejected() {
+  void orderByNonGroupingKeyRejected() {
     assertThatThrownBy(() -> database.query("cypher", "MATCH (n:P) RETURN n.age AS a, count(*) AS c ORDER BY n.name").close())
         .isInstanceOf(CommandSemanticException.class)
         .hasMessageContaining("not defined");
@@ -217,7 +217,7 @@ public class Issue5286AggregationOrderByGroupingKeyTest {
    * rewrite must deliberately not touch.
    */
   @Test
-  public void orderByComplexExpressionWithAggregationStaysAmbiguous() {
+  void orderByComplexExpressionWithAggregationStaysAmbiguous() {
     assertThatThrownBy(() -> database
         .query("cypher", "MATCH (n:P) RETURN n.age + 1, count(*) AS c ORDER BY n.age + 1 + count(*)").close())
         .isInstanceOf(CommandParsingException.class)
@@ -229,7 +229,7 @@ public class Issue5286AggregationOrderByGroupingKeyTest {
    * legal and must keep compiling (openCypher ReturnOrderBy6 [3]).
    */
   @Test
-  public void orderBySimplePropertyWithAggregationStillCompiles() {
+  void orderBySimplePropertyWithAggregationStillCompiles() {
     assertThat(column("MATCH (n:P) RETURN n.age AS a, count(*) AS c ORDER BY n.age + count(*)", "a")) //
         .containsExactlyInAnyOrder(10, 20, 30);
   }

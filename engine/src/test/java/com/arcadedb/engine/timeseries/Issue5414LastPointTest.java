@@ -79,7 +79,7 @@ class Issue5414LastPointTest extends TestHelper {
   }
 
   @Test
-  void descendingScanTouchesOnlyTheNewestBlocks() throws IOException {
+  void descendingScanTouchesOnlyTheNewestBlocks() throws Exception {
     int totalBlocks = 0;
     for (int i = 0; i < engine.getShardCount(); i++)
       totalBlocks += engine.getShard(i).getSealedStore().getBlockCount();
@@ -100,7 +100,7 @@ class Issue5414LastPointTest extends TestHelper {
   }
 
   @Test
-  void descendingScanReturnsTheNewestRowsInOrder() throws IOException {
+  void descendingScanReturnsTheNewestRowsInOrder() throws Exception {
     final TagFilter filter = TagFilter.eq(0, "host_5");
     final List<Object[]> rows = engine.queryDescending(Long.MIN_VALUE, Long.MAX_VALUE, null, filter, 100, null);
 
@@ -115,7 +115,7 @@ class Issue5414LastPointTest extends TestHelper {
   }
 
   @Test
-  void descendingScanHonoursTimeBoundsAndUnlimitedMode() throws IOException {
+  void descendingScanHonoursTimeBoundsAndUnlimitedMode() throws Exception {
     final TagFilter filter = TagFilter.eq(0, "host_1");
     final long from = BASE_TS + 50 * STEP_MS;
     final long to = BASE_TS + 150 * STEP_MS;
@@ -129,7 +129,7 @@ class Issue5414LastPointTest extends TestHelper {
   }
 
   @Test
-  void descendingScanSeesRowsStillInTheMutableLayer() throws IOException {
+  void descendingScanSeesRowsStillInTheMutableLayer() throws Exception {
     final long newerTs = BASE_TS + (PER_TAG + 100) * STEP_MS;
     engine.appendSamples(new long[] { newerTs }, new Object[] { "host_3" }, new Object[] { 999.0 });
 
@@ -386,7 +386,7 @@ class Issue5414LastPointTest extends TestHelper {
   }
 
   @Test
-  void descendingScanHandlesNegativeTimestamps() throws IOException {
+  void descendingScanHandlesNegativeTimestamps() throws Exception {
     database.command("sql", "CREATE TIMESERIES TYPE Historic TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE)");
     final TimeSeriesEngine historic = ((LocalTimeSeriesType) database.getSchema().getType("Historic")).getEngine();
 

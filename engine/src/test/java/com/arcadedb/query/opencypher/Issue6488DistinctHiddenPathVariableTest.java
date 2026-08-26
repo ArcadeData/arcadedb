@@ -47,11 +47,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue6488DistinctHiddenPathVariableTest {
+class Issue6488DistinctHiddenPathVariableTest {
   private Database database;
 
   @BeforeEach
-  public void setUp() {
+  void setUp() {
     final DatabaseFactory factory = new DatabaseFactory("./target/databases/issue6488");
     if (factory.exists())
       factory.open().drop();
@@ -64,7 +64,7 @@ public class Issue6488DistinctHiddenPathVariableTest {
   }
 
   @AfterEach
-  public void tearDown() {
+  void tearDown() {
     if (database != null && database.isOpen())
       database.drop();
   }
@@ -73,7 +73,7 @@ public class Issue6488DistinctHiddenPathVariableTest {
    * The reported case: an unreturned path variable {@code p} must not defeat {@code DISTINCT}.
    */
   @Test
-  public void distinctCollapsesSelfLoopZeroAndOneHopPaths() {
+  void distinctCollapsesSelfLoopZeroAndOneHopPaths() {
     try (ResultSet rs = database.query("cypher", """
         MATCH p = WALK (n0)-[*0..1]->(n1)
         RETURN DISTINCT n1, n0""")) {
@@ -88,7 +88,7 @@ public class Issue6488DistinctHiddenPathVariableTest {
    * final RETURN. Both forms must agree.
    */
   @Test
-  public void distinctCollapsesSelfLoopPathsAcrossIdentitySubquery() {
+  void distinctCollapsesSelfLoopPathsAcrossIdentitySubquery() {
     try (ResultSet rs = database.query("cypher", """
         MATCH p = WALK (n0)-[*0..1]->(n1)
         WITH n0, n1
@@ -109,7 +109,7 @@ public class Issue6488DistinctHiddenPathVariableTest {
    * value, so it was equally susceptible to the {@code Document.toString()} load-state instability.
    */
   @Test
-  public void withDistinctCollapsesSelfLoopZeroAndOneHopPaths() {
+  void withDistinctCollapsesSelfLoopZeroAndOneHopPaths() {
     try (ResultSet rs = database.query("cypher", """
         MATCH p = WALK (n0)-[*0..1]->(n1)
         WITH DISTINCT n1, n0
@@ -127,7 +127,7 @@ public class Issue6488DistinctHiddenPathVariableTest {
    * reference from the self-loop traversal, and confirm they still collapse to one row.
    */
   @Test
-  public void unionCollapsesLoadedAndUnloadedReferencesToSameNode() {
+  void unionCollapsesLoadedAndUnloadedReferencesToSameNode() {
     try (ResultSet rs = database.query("cypher", """
         MATCH p = WALK (n0)-[*0..1]->(n1)
         RETURN n1 AS x
@@ -145,7 +145,7 @@ public class Issue6488DistinctHiddenPathVariableTest {
    * {@code DistinctAggregationWrapper}, which also canonicalizes via {@code DistinctNumericKey}.
    */
   @Test
-  public void collectAndCountDistinctCollapseSelfLoopZeroAndOneHopPaths() {
+  void collectAndCountDistinctCollapseSelfLoopZeroAndOneHopPaths() {
     try (ResultSet rs = database.query("cypher", """
         MATCH p = WALK (n0)-[*0..1]->(n1)
         RETURN collect(DISTINCT n1) AS xs, count(DISTINCT n1) AS c""")) {

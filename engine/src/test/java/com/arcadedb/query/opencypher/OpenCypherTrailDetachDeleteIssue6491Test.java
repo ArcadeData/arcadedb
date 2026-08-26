@@ -37,7 +37,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class OpenCypherTrailDetachDeleteIssue6491Test {
+class OpenCypherTrailDetachDeleteIssue6491Test {
   private Database database;
 
   @AfterEach

@@ -26,6 +26,8 @@ import com.arcadedb.index.lsm.LSMTreeIndexCompacted;
 import com.arcadedb.query.sql.parser.DeleteStatement;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -48,6 +50,7 @@ class DeleteFromIndexStepCloseTest extends TestHelper {
   private static final String TYPE_NAME = "IndexDelete";
   private static final int    RECORDS   = 600;
 
+  @BeforeEach
   @Override
   public void beforeTest() {
     GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE.setValue(0);

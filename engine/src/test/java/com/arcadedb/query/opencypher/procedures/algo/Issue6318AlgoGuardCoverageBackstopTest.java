@@ -20,7 +20,6 @@ package com.arcadedb.query.opencypher.procedures.algo;
 
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -96,7 +95,7 @@ class Issue6318AlgoGuardCoverageBackstopTest {
   private static final Pattern GUARD_REFERENCE = Pattern.compile("newWorkGuard\\(|guard\\.check|guard::check");
 
   @Test
-  void everyAlgoProcedureIsEitherSelfGuardedOrAJustifiedSinglePassExemption() throws IOException {
+  void everyAlgoProcedureIsEitherSelfGuardedOrAJustifiedSinglePassExemption() throws Exception {
     final Path dir = algoProcedurePackageDir();
 
     final List<String> unguardedAndUnlisted = new ArrayList<>();
@@ -126,7 +125,7 @@ class Issue6318AlgoGuardCoverageBackstopTest {
    * grown a guard of its own, is dead weight nobody will notice needs removing.
    */
   @Test
-  void everyExemptEntryNamesAFileThatExistsAndIsStillUnguarded() throws IOException {
+  void everyExemptEntryNamesAFileThatExistsAndIsStillUnguarded() throws Exception {
     final Path dir = algoProcedurePackageDir();
     final List<String> stale = new ArrayList<>();
     for (final Map.Entry<String, String> entry : SINGLE_PASS_EXEMPT.entrySet()) {

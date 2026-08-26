@@ -30,7 +30,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Covers the contract of the iterative walk in {@link ScriptLineStep#close()}: every line is released, tail to
  * head, and a plan that fails to close does not strand the ones behind it.
  */
-public class ScriptLineStepCloseTest {
+class ScriptLineStepCloseTest {
   /** Minimal plan that records its own release and can be told to fail while doing so. */
   private static class RecordingPlan implements InternalExecutionPlan {
     private final String            name;

@@ -57,7 +57,7 @@ class Issue6671ExecutionPlanCacheRaceTest {
   }
 
   @Test
-  void planBuiltBeforeAConcurrentInvalidationIsNeverCached() throws InterruptedException {
+  void planBuiltBeforeAConcurrentInvalidationIsNeverCached() throws Exception {
     database.getSchema().createDocumentType("Race6671");
     final String stm = "SELECT FROM Race6671";
 

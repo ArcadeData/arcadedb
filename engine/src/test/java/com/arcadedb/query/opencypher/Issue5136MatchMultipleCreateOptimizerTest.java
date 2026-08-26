@@ -41,7 +41,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue5136MatchMultipleCreateOptimizerTest extends TestHelper {
+class Issue5136MatchMultipleCreateOptimizerTest extends TestHelper {
   @Override
   protected void beginTest() {
     database.transaction(() -> {

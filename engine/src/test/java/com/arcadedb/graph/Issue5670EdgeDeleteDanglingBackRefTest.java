@@ -201,7 +201,7 @@ class Issue5670EdgeDeleteDanglingBackRefTest extends TestHelper {
    */
   @Test
   @Tag("slow")
-  void concurrentDeleteAndAppendNeverLeaveADanglingBackReference() throws InterruptedException {
+  void concurrentDeleteAndAppendNeverLeaveADanglingBackReference() throws Exception {
     final int rounds = 40;
     final int threads = 8;
     final int perThread = 60;

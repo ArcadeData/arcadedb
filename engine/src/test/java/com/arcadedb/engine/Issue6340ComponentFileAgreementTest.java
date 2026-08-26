@@ -24,7 +24,6 @@ import com.arcadedb.database.DatabaseInternal;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
-import java.io.IOException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -59,7 +58,7 @@ class Issue6340ComponentFileAgreementTest extends TestHelper {
    * READ_ONLY and being given a writable file is a weaker guarantee than the caller requested.
    */
   @Test
-  void theByNameGetOrCreateFileRefusesToHandBackAFileOpenInAnotherMode() throws IOException {
+  void theByNameGetOrCreateFileRefusesToHandBackAFileOpenInAnotherMode() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
     final FileManager fileManager = db.getFileManager();
     final int pageSize = GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getValueAsInteger();
@@ -90,7 +89,7 @@ class Issue6340ComponentFileAgreementTest extends TestHelper {
    * component that carries a different one from its file misreads real bytes rather than raising anything.
    */
   @Test
-  void aComponentThatDisagreesWithItsFileAboutTheVersionFailsAtConstruction() throws IOException {
+  void aComponentThatDisagreesWithItsFileAboutTheVersionFailsAtConstruction() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
     final int pageSize = GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getValueAsInteger();
     final String name = "issue6340_version";
@@ -122,7 +121,7 @@ class Issue6340ComponentFileAgreementTest extends TestHelper {
    * path passes the parsed version straight through, so this is the shape every existing database opens in.
    */
   @Test
-  void aComponentBuiltOnTheVersionItsFileNameCarriesOpensNormally() throws IOException {
+  void aComponentBuiltOnTheVersionItsFileNameCarriesOpensNormally() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
     final int pageSize = GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getValueAsInteger();
     final String name = "issue6340_otherversion";

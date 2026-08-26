@@ -52,7 +52,7 @@ class PostBatchHandlerBodyFailureTest {
   private static final String STALE = "POST /api/v1/batch/graph HTTP/1.1\r\n" + SENT + SENT;
 
   @Test
-  void aProbeThatFailsEndsTheBodyInsteadOfPoisoningIt() throws IOException {
+  void aProbeThatFailsEndsTheBodyInsteadOfPoisoningIt() throws Exception {
     final FailsOnProbeThenOffersStaleBytes connection = new FailsOnProbeThenOffersStaleBytes();
     final CountingInputStream body = new CountingInputStream(new HttpServerExchange(null), connection);
 
@@ -84,7 +84,7 @@ class PostBatchHandlerBodyFailureTest {
    * {@code Issue5470BatchStreamStallIT} sees instead of a 408 (issues #6180 and #6176).
    */
   @Test
-  void aReaderOverAFailedBodyNeverSeesTheReplayedLines() throws IOException {
+  void aReaderOverAFailedBodyNeverSeesTheReplayedLines() throws Exception {
     final FailsOnProbeThenOffersStaleBytes connection = new FailsOnProbeThenOffersStaleBytes();
     final BufferedReader reader = new BufferedReader(
         new InputStreamReader(new CountingInputStream(new HttpServerExchange(null), connection),
@@ -95,7 +95,7 @@ class PostBatchHandlerBodyFailureTest {
   }
 
   @Test
-  void aReadThatFailsIsNotAttemptedASecondTime() throws IOException {
+  void aReadThatFailsIsNotAttemptedASecondTime() throws Exception {
     final InputStream connection = new InputStream() {
       private int reads;
 
@@ -115,7 +115,7 @@ class PostBatchHandlerBodyFailureTest {
   }
 
   @Test
-  void anIntactBodyIsUnaffected() throws IOException {
+  void anIntactBodyIsUnaffected() throws Exception {
     final CountingInputStream body = new CountingInputStream(new HttpServerExchange(null),
         new ByteArrayInputStream(SENT.getBytes(StandardCharsets.UTF_8)));
 

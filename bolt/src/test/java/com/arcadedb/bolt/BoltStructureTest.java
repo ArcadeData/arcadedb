@@ -68,7 +68,7 @@ class BoltStructureTest {
   // ============ BoltNode tests ============
 
   @Test
-  void boltNodeCreation() throws IOException {
+  void boltNodeCreation() throws Exception {
     final BoltNode node = new BoltNode(123L, List.of("Person", "Employee"), Map.of("name", "Alice"), "#1:0");
 
     final byte[] header = wireHeader(node);
@@ -112,7 +112,7 @@ class BoltStructureTest {
   // ============ BoltRelationship tests ============
 
   @Test
-  void boltRelationshipCreation() throws IOException {
+  void boltRelationshipCreation() throws Exception {
     final BoltRelationship rel = new BoltRelationship(
         100L, 1L, 2L, "KNOWS", Map.of("since", 2020), "#10:0", "#1:0", "#2:0"
     );
@@ -163,7 +163,7 @@ class BoltStructureTest {
   // ============ BoltUnboundRelationship tests ============
 
   @Test
-  void boltUnboundRelationshipCreation() throws IOException {
+  void boltUnboundRelationshipCreation() throws Exception {
     final BoltUnboundRelationship rel = new BoltUnboundRelationship(1L, "FRIEND", Map.of("weight", 0.5), "#1:0");
 
     final byte[] header = wireHeader(rel);
@@ -205,7 +205,7 @@ class BoltStructureTest {
   // ============ BoltPath tests ============
 
   @Test
-  void boltPathCreation() throws IOException {
+  void boltPathCreation() throws Exception {
     final List<BoltNode> nodes = List.of(
         new BoltNode(1L, List.of("A"), Map.of(), "#1:0"),
         new BoltNode(2L, List.of("B"), Map.of(), "#2:0")
@@ -226,7 +226,7 @@ class BoltStructureTest {
   }
 
   @Test
-  void versionGatedStructuresEmitBolt5HeaderShape() throws IOException {
+  void versionGatedStructuresEmitBolt5HeaderShape() throws Exception {
     // On Bolt >= 5 the version-gated structs append element_id fields, so writeTo() must emit a wider
     // header than the 4.x base: Node 3 -> 4, Relationship 5 -> 8, UnboundRelationship 3 -> 4. This is
     // the exact case the removed accessors got wrong (they returned the 4.x count on a 5.x connection);

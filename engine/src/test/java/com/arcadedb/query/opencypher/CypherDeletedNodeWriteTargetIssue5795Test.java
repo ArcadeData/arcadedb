@@ -44,7 +44,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class CypherDeletedNodeWriteTargetIssue5795Test {
+class CypherDeletedNodeWriteTargetIssue5795Test {
   private Database database;
 
   @BeforeEach

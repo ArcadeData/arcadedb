@@ -20,7 +20,6 @@ package com.arcadedb.query.polyglot;
 
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -37,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class GraalPolyglotEngineHostClassLookupTest {
 
   @Test
-  void aWideOpenAllowListStillCannotReachTheDangerousClasses() throws IOException {
+  void aWideOpenAllowListStillCannotReachTheDangerousClasses() throws Exception {
     try (final GraalPolyglotEngine engine = GraalPolyglotEngine.newBuilder(null,
         PolyglotEngineManager.getInstance().getSharedEngine())//
         .setLanguage("js")//
@@ -82,7 +81,7 @@ class GraalPolyglotEngineHostClassLookupTest {
   }
 
   @Test
-  void anEntryWithoutWildcardIsAnExactClassAndDoesNotOpenItsPackage() throws IOException {
+  void anEntryWithoutWildcardIsAnExactClassAndDoesNotOpenItsPackage() throws Exception {
     try (final GraalPolyglotEngine engine = GraalPolyglotEngine.newBuilder(null,
         PolyglotEngineManager.getInstance().getSharedEngine())//
         .setLanguage("js")//
@@ -97,7 +96,7 @@ class GraalPolyglotEngineHostClassLookupTest {
   }
 
   @Test
-  void callerSuppliedRestrictedPackagesAreEnforced() throws IOException {
+  void callerSuppliedRestrictedPackagesAreEnforced() throws Exception {
     try (final GraalPolyglotEngine engine = GraalPolyglotEngine.newBuilder(null,
         PolyglotEngineManager.getInstance().getSharedEngine())//
         .setLanguage("js")//
@@ -118,7 +117,7 @@ class GraalPolyglotEngineHostClassLookupTest {
    * wiring (e.g. an added {@code hostClassLoader(...)}) would surface here even if the filter's own tests still pass.
    */
   @Test
-  void aResourceBundleSubclassIsDeniedThroughARealContext() throws IOException {
+  void aResourceBundleSubclassIsDeniedThroughARealContext() throws Exception {
     try (final GraalPolyglotEngine engine = GraalPolyglotEngine.newBuilder(null,
         PolyglotEngineManager.getInstance().getSharedEngine())//
         .setLanguage("js")//

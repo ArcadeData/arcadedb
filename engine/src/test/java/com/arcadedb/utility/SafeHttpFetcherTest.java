@@ -144,7 +144,7 @@ class SafeHttpFetcherTest {
   }
 
   @Test
-  void followsAllowedRedirectAndReturnsContent() throws IOException {
+  void followsAllowedRedirectAndReturnsContent() throws Exception {
     // Positive control: legitimate redirects are still followed, including relative Location headers, so the fix does
     // not break imports from hosts that redirect (CDNs, release URLs, ...).
     final var connection = SafeHttpFetcher.open(baseUrl + "/redirect-relative", BLOCK_LINK_LOCAL, "IMPORT DATABASE");
@@ -156,7 +156,7 @@ class SafeHttpFetcherTest {
   }
 
   @Test
-  void fetchesDirectContent() throws IOException {
+  void fetchesDirectContent() throws Exception {
     final var connection = SafeHttpFetcher.open(baseUrl + "/content", BLOCK_LINK_LOCAL, "LOAD CSV");
     try (final var in = connection.getInputStream()) {
       assertThat(new String(in.readAllBytes(), StandardCharsets.UTF_8)).isEqualTo(SECRET);
@@ -173,7 +173,7 @@ class SafeHttpFetcherTest {
   }
 
   @Test
-  void pinningIsInertWithoutAProviderAndDoesNotLeak() throws IOException {
+  void pinningIsInertWithoutAProviderAndDoesNotLeak() throws Exception {
     // arcadedb-engine deliberately ships no resolver provider (installing one is a JVM-global, single-slot decision
     // that must not be taken on an embedder's behalf), so binding must be a harmless no-op here and fetches must keep
     // working through the documented fallback.

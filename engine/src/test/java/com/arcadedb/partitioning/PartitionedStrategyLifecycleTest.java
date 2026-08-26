@@ -81,7 +81,7 @@ class PartitionedStrategyLifecycleTest extends TestHelper {
    * configuration first.
    */
   @Test
-  void theStrategyReachesSchemaJsonWithNoLaterSchemaMutation() throws IOException {
+  void theStrategyReachesSchemaJsonWithNoLaterSchemaMutation() throws Exception {
     createPartitionedType("Persisted");
 
     assertThat(persistedType("Persisted").has("bucketSelectionStrategy"))
@@ -101,7 +101,7 @@ class PartitionedStrategyLifecycleTest extends TestHelper {
 
   /** Setting the same strategy back to the default has to be persisted too, or the reopen resurrects the old one. */
   @Test
-  void revertingToRoundRobinIsPersistedAsWell() throws IOException {
+  void revertingToRoundRobinIsPersistedAsWell() throws Exception {
     createPartitionedType("Reverted");
     database.transaction(() -> database.command("sql", "ALTER TYPE Reverted BucketSelectionStrategy `round-robin`"));
 
@@ -357,7 +357,7 @@ class PartitionedStrategyLifecycleTest extends TestHelper {
    * one would survive either way, while extensions are read strictly after it.
    */
   @Test
-  void anUnresolvableStrategyDoesNotCostTheRestOfTheSchema() throws IOException {
+  void anUnresolvableStrategyDoesNotCostTheRestOfTheSchema() throws Exception {
     database.transaction(() -> {
       database.getSchema().buildDocumentType().withName("Broken").withTotalBuckets(BUCKETS).create();
       database.command("sql", "CREATE PROPERTY Broken.k STRING");
@@ -408,7 +408,7 @@ class PartitionedStrategyLifecycleTest extends TestHelper {
    * reported as issue #5645 rather than pinned by a test that would fail for a different reason than it claims.
    */
   @Test
-  void aSubtypeInheritsAPartitionedStrategyAndItStillPrunes() throws IOException {
+  void aSubtypeInheritsAPartitionedStrategyAndItStillPrunes() throws Exception {
     createPartitionedType("Base");
     database.transaction(() -> database.command("sql", "CREATE DOCUMENT TYPE Derived EXTENDS Base BUCKETS " + BUCKETS));
 

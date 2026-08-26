@@ -30,7 +30,6 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.StandardOpenOption;
 import java.util.Iterator;
@@ -97,7 +96,7 @@ class SuperNodeFullWalkBenchmark extends TestHelper {
   }
 
   @Test
-  void fullWalkAtVariousInterleaveRoundBudgets() throws IOException {
+  void fullWalkAtVariousInterleaveRoundBudgets() throws Exception {
     GlobalConfiguration.MAX_PAGE_RAM.setValue(PAGE_CACHE_MB);
     GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(THRESHOLD);
     GlobalConfiguration.GRAPH_SUPERNODE_STRIPES.setValue(STRIPES);

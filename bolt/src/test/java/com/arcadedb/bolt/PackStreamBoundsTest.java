@@ -144,7 +144,7 @@ class PackStreamBoundsTest {
    * deeper does not. Uses the explicit-bounds constructor to keep the fixture small and the assertion precise.
    */
   @Test
-  void depthBoundIsExactAtConfiguredLimit() throws IOException {
+  void depthBoundIsExactAtConfiguredLimit() throws Exception {
     final int maxDepth = 5;
 
     final byte[] withinBound = nestedTinyLists(maxDepth);
@@ -233,7 +233,7 @@ class PackStreamBoundsTest {
   // ============ Regression: legitimate, in-bounds values still parse correctly ============
 
   @Test
-  void withinBoundsStringStillRoundTrips() throws IOException {
+  void withinBoundsStringStillRoundTrips() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     final String value = "hello, ArcadeDB BOLT!";
     writer.writeString(value);
@@ -243,7 +243,7 @@ class PackStreamBoundsTest {
   }
 
   @Test
-  void withinBoundsBytesStillRoundTrip() throws IOException {
+  void withinBoundsBytesStillRoundTrip() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     final byte[] value = new byte[10_000];
     for (int i = 0; i < value.length; i++)
@@ -255,7 +255,7 @@ class PackStreamBoundsTest {
   }
 
   @Test
-  void withinBoundsNestedListAndMapStillRoundTrip() throws IOException {
+  void withinBoundsNestedListAndMapStillRoundTrip() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
 
     final List<Object> inner = new ArrayList<>();
@@ -278,7 +278,7 @@ class PackStreamBoundsTest {
   }
 
   @Test
-  void withinBoundsLargeListOfManyElementsStillParses() throws IOException {
+  void withinBoundsLargeListOfManyElementsStillParses() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     final List<Object> list = new ArrayList<>();
     for (int i = 0; i < 5000; i++)
@@ -292,7 +292,7 @@ class PackStreamBoundsTest {
   // ============ Explicit-bounds constructor: element-count and value-length ceilings ============
 
   @Test
-  void explicitMaxElementsBoundRejectsOversizedDeclaredListSize() throws IOException {
+  void explicitMaxElementsBoundRejectsOversizedDeclaredListSize() throws Exception {
     final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
     final DataOutputStream out = new DataOutputStream(buffer);
     out.writeByte(0xD6); // LIST_32
@@ -308,7 +308,7 @@ class PackStreamBoundsTest {
   }
 
   @Test
-  void explicitMaxValueLengthBoundRejectsOversizedDeclaredStringLength() throws IOException {
+  void explicitMaxValueLengthBoundRejectsOversizedDeclaredStringLength() throws Exception {
     final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
     final DataOutputStream out = new DataOutputStream(buffer);
     out.writeByte(0xD2); // STRING_32
@@ -330,7 +330,7 @@ class PackStreamBoundsTest {
    * constructor must fall back to the built-in default rather than enforcing the misconfigured value literally.
    */
   @Test
-  void depthBelowUsableFloorFallsBackToDefaultInsteadOfRejectingEveryMessage() throws IOException {
+  void depthBelowUsableFloorFallsBackToDefaultInsteadOfRejectingEveryMessage() throws Exception {
     final int original = GlobalConfiguration.BOLT_PACKSTREAM_MAX_DEPTH.getValueAsInteger();
     GlobalConfiguration.BOLT_PACKSTREAM_MAX_DEPTH.setValue(0);
     try {
@@ -345,7 +345,7 @@ class PackStreamBoundsTest {
   }
 
   @Test
-  void maxValueLengthBelowUsableFloorFallsBackToDefault() throws IOException {
+  void maxValueLengthBelowUsableFloorFallsBackToDefault() throws Exception {
     final int original = GlobalConfiguration.BOLT_PACKSTREAM_MAX_VALUE_LENGTH.getValueAsInteger();
     GlobalConfiguration.BOLT_PACKSTREAM_MAX_VALUE_LENGTH.setValue(0);
     try {
@@ -360,7 +360,7 @@ class PackStreamBoundsTest {
   }
 
   @Test
-  void maxElementsBelowUsableFloorFallsBackToDefault() throws IOException {
+  void maxElementsBelowUsableFloorFallsBackToDefault() throws Exception {
     final int original = GlobalConfiguration.BOLT_PACKSTREAM_MAX_ELEMENTS.getValueAsInteger();
     GlobalConfiguration.BOLT_PACKSTREAM_MAX_ELEMENTS.setValue(0);
     try {

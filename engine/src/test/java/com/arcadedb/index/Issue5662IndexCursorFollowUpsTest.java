@@ -30,6 +30,8 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.BinaryComparator;
+
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -61,6 +63,7 @@ class Issue5662IndexCursorFollowUpsTest extends TestHelper {
   private static final String TYPE_NAME = "CursorFollowUp";
   private static final int    RECORDS   = 600;
 
+  @BeforeEach
   @Override
   public void beforeTest() {
     // explicit compaction only, so the sub-index appears exactly when this test asks for it
