@@ -23,13 +23,13 @@ import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.index.sparsevector.SparseVectorScoringPool;
 import com.arcadedb.query.ParallelScanProducerPool;
 import com.arcadedb.query.QueryEngineManager;
+import com.arcadedb.utility.DedicatedThreadPool.PoolStats;
 
 import io.micrometer.core.instrument.FunctionCounter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 
-import java.util.function.IntSupplier;
-import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 
 import io.micrometer.core.instrument.Tag;
 import io.micrometer.core.instrument.Tags;
@@ -55,55 +55,34 @@ public final class PoolMetrics implements MeterBinder {
    * {@link SparseVectorScoringPool} on the given registry.
    * <p>
    * Each gauge re-reads its source pool's {@code PoolStats} record on scrape - the record is a
-   * tiny allocation (six longs) and Micrometer scrape intervals are typically tens of seconds,
-   * so the cost is negligible. {@code callerRunFallbacks} is a strictly-monotonic counter so we
-   * register it as a gauge that exposes the cumulative count; downstream tools (Prometheus
-   * {@code rate()}, etc.) can derive a rate as needed.
+   * tiny allocation and Micrometer scrape intervals are typically tens of seconds, so the cost is
+   * negligible; one supplier per pool rather than one per gauge, so a new component on the record
+   * reaches every pool's row at once instead of being added to four argument lists. {@code
+   * callerRunFallbacks} and {@code reclaimedTasks} are strictly-monotonic counters so we register
+   * them as gauges that expose the cumulative count; downstream tools (Prometheus {@code rate()},
+   * etc.) can derive a rate as needed.
    */
   @Override
   public void bindTo(final MeterRegistry registry) {
     final QueryEngineManager qem = QueryEngineManager.getInstance();
-    bindPool(registry, "query", "QueryEngineManager parallel-query pool",
-        () -> qem.getExecutorStats().poolSize(),
-        () -> qem.getExecutorStats().activeThreads(),
-        () -> qem.getExecutorStats().queueDepth(),
-        () -> qem.getExecutorStats().queueCapacityRemaining(),
-        () -> qem.getExecutorStats().completedTasks(),
-        () -> qem.getExecutorStats().callerRunFallbacks());
+    bindPool(registry, "query", "QueryEngineManager parallel-query pool", qem::getExecutorStats);
 
     final SparseVectorScoringPool svsp = SparseVectorScoringPool.getInstance();
-    bindPool(registry, "sparse_vector", "SparseVectorScoringPool top-K fan-out pool",
-        () -> svsp.getPoolStats().poolSize(),
-        () -> svsp.getPoolStats().activeThreads(),
-        () -> svsp.getPoolStats().queueDepth(),
-        () -> svsp.getPoolStats().queueCapacityRemaining(),
-        () -> svsp.getPoolStats().completedTasks(),
-        () -> svsp.getPoolStats().callerRunFallbacks());
+    bindPool(registry, "sparse_vector", "SparseVectorScoringPool top-K fan-out pool", svsp::getPoolStats);
     bindSparseVectorSplit(registry, svsp);
 
     // Dedicated pool for the BLOCKING parallel-scan producers (issues #4948/#4950): unbounded task queue by
     // design (backpressure comes from each query's bounded result queue), so callerRunFallbacks is always 0
     // and queueCapacityRemaining reports -1 (not applicable); queue_depth is the signal to watch.
     final ParallelScanProducerPool pspp = ParallelScanProducerPool.getInstance();
-    bindPool(registry, "parallel_scan", "ParallelScanProducerPool bucket-scan producer pool",
-        () -> pspp.getPoolStats().poolSize(),
-        () -> pspp.getPoolStats().activeThreads(),
-        () -> pspp.getPoolStats().queueDepth(),
-        () -> pspp.getPoolStats().queueCapacityRemaining(),
-        () -> pspp.getPoolStats().completedTasks(),
-        () -> pspp.getPoolStats().callerRunFallbacks());
+    bindPool(registry, "parallel_scan", "ParallelScanProducerPool bucket-scan producer pool", pspp::getPoolStats);
 
     // The pool that runs commands dispatched with awaitResponse=false (issue #6303, item 3). Its caller-runs count is
     // the one an operator most wants to see here: a fallback means the pool was saturated and the command ran on the
     // HTTP worker that submitted it, so a client that explicitly asked NOT to wait for the answer waited for it.
     final AsyncCommandPool acp = AsyncCommandPool.getInstance();
     bindPool(registry, "async_command", "AsyncCommandPool asynchronously dispatched command/query pool",
-        () -> acp.getPoolStats().poolSize(),
-        () -> acp.getPoolStats().activeThreads(),
-        () -> acp.getPoolStats().queueDepth(),
-        () -> acp.getPoolStats().queueCapacityRemaining(),
-        () -> acp.getPoolStats().completedTasks(),
-        () -> acp.getPoolStats().callerRunFallbacks());
+        acp::getPoolStats);
 
     // Not a pool, but a graph data-integrity signal surfaced the same way. A monotonic FunctionCounter
     // (not a gauge) so dashboards can compute a rate() and alert on a sudden spike of corruption,
@@ -155,24 +134,28 @@ public final class PoolMetrics implements MeterBinder {
   }
 
   private static void bindPool(final MeterRegistry registry, final String poolTag, final String description,
-      final IntSupplier poolSize, final IntSupplier activeThreads,
-      final IntSupplier queueDepth, final IntSupplier queueCapacityRemaining,
-      final LongSupplier completedTasks, final LongSupplier callerRunFallbacks) {
+      final Supplier<PoolStats> stats) {
     final Tags tags = Tags.of(Tag.of("pool", poolTag));
-    Gauge.builder("arcadedb.executor.pool.size", poolSize::getAsInt)
+    Gauge.builder("arcadedb.executor.pool.size", () -> stats.get().poolSize())
         .description(description + ": currently allocated worker threads").tags(tags).register(registry);
-    Gauge.builder("arcadedb.executor.pool.active", activeThreads::getAsInt)
+    Gauge.builder("arcadedb.executor.pool.active", () -> stats.get().activeThreads())
         .description(description + ": worker threads currently running a task").tags(tags).register(registry);
-    Gauge.builder("arcadedb.executor.queue.depth", queueDepth::getAsInt)
+    Gauge.builder("arcadedb.executor.queue.depth", () -> stats.get().queueDepth())
         .description(description + ": tasks waiting in the queue").tags(tags).register(registry);
-    Gauge.builder("arcadedb.executor.queue.capacity_remaining", queueCapacityRemaining::getAsInt)
+    Gauge.builder("arcadedb.executor.queue.capacity_remaining", () -> stats.get().queueCapacityRemaining())
         .description(description + ": queue slots free before saturation triggers caller-runs fallback").tags(tags)
         .register(registry);
-    Gauge.builder("arcadedb.executor.tasks.completed", completedTasks::getAsLong)
+    Gauge.builder("arcadedb.executor.tasks.completed", () -> stats.get().completedTasks())
         .description(description + ": cumulative tasks finished by pool threads").tags(tags).register(registry);
-    Gauge.builder("arcadedb.executor.tasks.caller_run_fallbacks", callerRunFallbacks::getAsLong)
+    Gauge.builder("arcadedb.executor.tasks.caller_run_fallbacks", () -> stats.get().callerRunFallbacks())
         .description(
             description + ": cumulative tasks that ran on the submitter's thread because the queue was full. Sustained growth means the pool is undersized for the workload.")
+        .tags(tags).register(registry);
+    Gauge.builder("arcadedb.executor.tasks.reclaimed", () -> stats.get().reclaimedTasks())
+        .description(description + ": cumulative queued tasks taken back out of the queue and run by the thread that "
+            + "was about to wait for them (issue #6568). Unlike caller_run_fallbacks this is not a sizing signal - the "
+            + "pool was busy, not full - but sustained growth alongside a high pool.active says the fan-out callers are "
+            + "spending their time doing the pool's work, which is the shape that used to deadlock.")
         .tags(tags).register(registry);
   }
 }
