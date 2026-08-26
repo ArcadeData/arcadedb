@@ -51,9 +51,11 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -68,6 +70,7 @@ import static com.google.gson.stream.JsonToken.BEGIN_OBJECT;
 import static com.google.gson.stream.JsonToken.END_ARRAY;
 import static com.google.gson.stream.JsonToken.END_OBJECT;
 import static com.google.gson.stream.JsonToken.NULL;
+import static com.google.gson.stream.JsonToken.NUMBER;
 
 /**
  * Importer from OrientDB. OrientDB is a registered mark of SAP.
@@ -75,6 +78,11 @@ import static com.google.gson.stream.JsonToken.NULL;
  * @author Luca Garulli
  */
 public class OrientDBImporter {
+  /**
+   * Per-record attribute the OrientDB exporter uses to carry the field types that cannot be inferred from the JSON
+   * literal alone (e.g. `salary=f,total=l`). It is always emitted as the last attribute of the record.
+   */
+  private static final String                     FIELD_TYPES_ATTRIBUTE           = "@fieldTypes";
   private static final int                        CONCURRENT_MAX_RETRY            = 3;
   private final        File                       file;
   private final        Map<String, OrientDBClass> classes                         = new LinkedHashMap<>();
@@ -821,9 +829,27 @@ public class OrientDBImporter {
   private Map<String, Object> parseRecord(final JsonReader reader, final boolean ignore) throws IOException {
     final Map<String, Object> attributes = ignore ? null : new LinkedHashMap<>();
 
+    // NUMBERS ARE KEPT AS RAW JSON LITERALS UNTIL THE WHOLE RECORD HAS BEEN READ: THE ORIENTDB EXPORTER EMITS THE
+    // PER-FIELD TYPE HINTS (`@fieldTypes`) AS THE *LAST* ATTRIBUTE OF THE RECORD, SO THE DECLARED TYPE IS ONLY KNOWN
+    // ONCE THE OBJECT IS CLOSED (ISSUE #6749).
+    Map<String, String> rawNumbers = null;
+
     reader.beginObject();
     while (reader.peek() != END_OBJECT) {
       final String attributeName = reader.nextName();
+
+      if (reader.peek() == NUMBER) {
+        final String rawNumber = reader.nextString();
+        if (!ignore) {
+          if (rawNumbers == null)
+            rawNumbers = new LinkedHashMap<>();
+          rawNumbers.put(attributeName, rawNumber);
+          // PLACEHOLDER: REPLACED BELOW ONCE THE TYPE HINTS ARE KNOWN. KEEPS THE ATTRIBUTE ORDER OF THE EXPORT.
+          attributes.put(attributeName, null);
+          ++totalAttributesParsed;
+        }
+        continue;
+      }
 
       final Object attributeValue = parseAttributeValue(reader, attributeName, ignore);
 
@@ -834,7 +860,83 @@ public class OrientDBImporter {
     }
 
     reader.endObject();
+
+    if (rawNumbers != null) {
+      final Object fieldTypesHint = attributes.get(FIELD_TYPES_ATTRIBUTE);
+      final Map<String, Character> fieldTypes = parseFieldTypes(
+          fieldTypesHint instanceof String hint ? hint : null);
+      for (final Map.Entry<String, String> rawNumber : rawNumbers.entrySet())
+        attributes.put(rawNumber.getKey(), convertNumber(rawNumber.getValue(), fieldTypes.get(rawNumber.getKey())));
+    }
+
     return attributes;
+  }
+
+  /**
+   * Parses the OrientDB `@fieldTypes` hint, a comma separated list of `&lt;fieldName&gt;=&lt;typeChar&gt;` pairs
+   * (e.g. `salary=f,total=l`). The exporter only emits an entry for the types that cannot be inferred from the JSON
+   * literal itself, so a missing entry means the default inference applies.
+   */
+  private static Map<String, Character> parseFieldTypes(final String fieldTypes) {
+    if (fieldTypes == null || fieldTypes.isEmpty())
+      return Collections.emptyMap();
+
+    final Map<String, Character> result = new HashMap<>();
+    for (final String pair : fieldTypes.split(",")) {
+      final int sep = pair.lastIndexOf('=');
+      if (sep > 0 && sep == pair.length() - 2)
+        result.put(pair.substring(0, sep), pair.charAt(sep + 1));
+    }
+    return result;
+  }
+
+  /**
+   * Converts a raw JSON number literal into the closest Java type, honouring the OrientDB `@fieldTypes` hint when
+   * present. Reading everything as a double (the previous behaviour) silently corrupted longs beyond 2^53 and turned
+   * every schemaless integer into a DOUBLE (issue #6749).
+   * <p>
+   * When no hint is available the inference mirrors the one OrientDB itself applies when it re-imports the JSON: an
+   * integral literal is an INTEGER (a LONG when it does not fit an int) and a fractional one is a DOUBLE. Integral
+   * literals wider than a long are kept as {@link BigDecimal} so no digit is lost before
+   * {@link Type#convert(com.arcadedb.database.Database, Object, Class, Property)} narrows them against the declared
+   * property type.
+   */
+  private static Object convertNumber(final String raw, final Character fieldType) {
+    if (fieldType != null) {
+      try {
+        switch (fieldType) {
+        case 'b':
+          return Byte.parseByte(raw);
+        case 's':
+          return Short.parseShort(raw);
+        case 'l':
+          return Long.parseLong(raw);
+        case 'f':
+          return Float.parseFloat(raw);
+        case 'd':
+          return Double.parseDouble(raw);
+        case 'c':
+          return new BigDecimal(raw);
+        default:
+          // NOT A NUMERIC HINT (COLLECTIONS, LINKS, DATES, ...): FALL BACK TO THE DEFAULT INFERENCE
+          break;
+        }
+      } catch (final NumberFormatException e) {
+        // THE HINT DOES NOT MATCH THE LITERAL: BE LENIENT AND FALL BACK TO THE DEFAULT INFERENCE
+      }
+    }
+
+    if (raw.indexOf('.') < 0 && raw.indexOf('e') < 0 && raw.indexOf('E') < 0) {
+      try {
+        final long value = Long.parseLong(raw);
+        return value >= Integer.MIN_VALUE && value <= Integer.MAX_VALUE ? (Object) (int) value : (Object) value;
+      } catch (final NumberFormatException e) {
+        // WIDER THAN A LONG: KEEP EVERY DIGIT
+        return new BigDecimal(raw);
+      }
+    }
+
+    return Double.parseDouble(raw);
   }
 
   private Object parseAttributeValue(final JsonReader reader, final String attributeName, final boolean ignore) throws IOException {
@@ -846,7 +948,7 @@ public class OrientDBImporter {
         attributeValue = reader.nextString();
         break;
       case NUMBER:
-        attributeValue = reader.nextDouble();
+        attributeValue = convertNumber(reader.nextString(), null);
         break;
       case BOOLEAN:
         attributeValue = reader.nextBoolean();
@@ -880,7 +982,8 @@ public class OrientDBImporter {
           entryValue = reader.nextString();
           break;
         case NUMBER:
-          entryValue = reader.nextDouble();
+          // COLLECTION ENTRIES CARRY NO PER-ELEMENT TYPE HINT IN THE ORIENTDB EXPORT: USE THE DEFAULT INFERENCE
+          entryValue = convertNumber(reader.nextString(), null);
           break;
         case BOOLEAN:
           entryValue = reader.nextBoolean();
@@ -1029,44 +1132,63 @@ public class OrientDBImporter {
 
   private void createIndexes() {
     for (final Map<String, Object> parsedIndex : parsedIndexes) {
-      parsedIndex.get("name");
       final boolean unique = parsedIndex.get("type").toString().startsWith("UNIQUE");
 
       final Map<String, Object> indexDefinition = (Map<String, Object>) parsedIndex.get("indexDefinition");
-      final String className = (String) indexDefinition.get("className");
-      final String keyType = (String) indexDefinition.get("keyType");
+      if (indexDefinition == null)
+        continue;
 
-      if (!classes.containsKey(className))
+      final String className = (String) indexDefinition.get("className");
+      if (className == null || !classes.containsKey(className))
         continue;
 
       if (excludeClasses.contains(className))
         continue;
 
-      final String fieldName = (String) indexDefinition.get("field");
-      final String[] properties = new String[]{fieldName};
-      boolean nullValuesIgnored = (boolean) indexDefinition.get("nullValuesIgnored");
+      // A COMPOSITE (MULTI-FIELD) INDEX NESTS ONE DEFINITION PER FIELD AND CARRIES NO TOP-LEVEL `field`/`keyType`.
+      // BEFORE ISSUE #6750 ONLY THE SINGLE-FIELD SHAPE WAS UNDERSTOOD, SO A MULTI-COLUMN UNIQUE CONSTRAINT WAS
+      // SILENTLY DROPPED AND DUPLICATES BECAME INSERTABLE AFTER THE MIGRATION.
+      final List<Map<String, Object>> fieldDefinitions = getIndexFieldDefinitions(indexDefinition);
 
       final DocumentType type = database.getSchema().getType(className);
-      if (!type.existsPolymorphicProperty(fieldName)) {
-        if (keyType == null) {
-          logger.logLine(2, """
-                  - Skipped %s index creation on %s%s because the property is not defined and the key type\
-                   is unknown""",
-              unique ? "UNIQUE" : "NOTUNIQUE", className, Arrays.toString(properties));
-          ++warnings;
-          continue;
+
+      final String[] properties = new String[fieldDefinitions.size()];
+      boolean valid = !fieldDefinitions.isEmpty();
+
+      for (int i = 0; valid && i < fieldDefinitions.size(); i++) {
+        final Map<String, Object> fieldDefinition = fieldDefinitions.get(i);
+        final String fieldName = (String) fieldDefinition.get("field");
+        if (fieldName == null) {
+          valid = false;
+          break;
         }
 
-        type.createProperty(fieldName, Type.valueOf(keyType));
+        properties[i] = fieldName;
+
+        if (!type.existsPolymorphicProperty(fieldName)) {
+          final Type keyType = parseKeyType((String) fieldDefinition.get("keyType"));
+          if (keyType == null) {
+            valid = false;
+            break;
+          }
+
+          type.createProperty(fieldName, keyType);
+        }
+      }
+
+      if (!valid) {
+        logger.logLine(2, """
+                - Skipped %s index creation on %s%s because a property is not defined and its key type\
+                 is unknown""",
+            unique ? "UNIQUE" : "NOTUNIQUE", className, Arrays.toString(properties));
+        ++warnings;
+        continue;
       }
 
       // PATCH TO ALWAYS USE SKIP BECAUSE IN ORIENTDB AN INDEX WITHOUT THE IGNORE SETTINGS CAN STILL HAVE NULL
-      // PROPERTIES INDEXES.
-      nullValuesIgnored = true;
-
-      final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = nullValuesIgnored ?
-          LSMTreeIndexAbstract.NULL_STRATEGY.SKIP :
-          LSMTreeIndexAbstract.NULL_STRATEGY.ERROR;
+      // PROPERTIES INDEXES. THE EXPORTED `nullValuesIgnored` FLAG IS THEREFORE DELIBERATELY NOT READ: IT IS
+      // OPTIONAL IN THE EXPORT AND UNBOXING IT WOULD NPE ON A DEFINITION THAT OMITS IT (ISSUE #6750).
+      final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.SKIP;
 
       database.getSchema()
           .getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, unique, className, properties,
@@ -1075,6 +1197,45 @@ public class OrientDBImporter {
 
       logger.logLine(2, "- Created index %s on %s%s", unique ? "UNIQUE" : "NOTUNIQUE", className,
           Arrays.toString(properties));
+    }
+  }
+
+  /**
+   * Returns the per-field definitions of an OrientDB index, in key order. An `OCompositeIndexDefinition` nests one
+   * definition per field under `indexDefinitions`; every other shape (`OPropertyIndexDefinition` and its
+   * list/set/map/ridbag subclasses) carries the single `field`/`keyType` pair inline.
+   */
+  private static List<Map<String, Object>> getIndexFieldDefinitions(final Map<String, Object> indexDefinition) {
+    final Object nested = indexDefinition.get("indexDefinitions");
+    if (nested instanceof List<?> nestedList) {
+      final List<Map<String, Object>> result = new ArrayList<>(nestedList.size());
+      for (final Object entry : nestedList)
+        if (entry instanceof Map)
+          result.add((Map<String, Object>) entry);
+        else
+          // AN ENTRY THAT IS NOT A DEFINITION MAKES THE KEY ORDER UNRELIABLE: REFUSE THE WHOLE INDEX
+          return Collections.emptyList();
+
+      return result;
+    }
+
+    return List.of(indexDefinition);
+  }
+
+  /**
+   * Maps an OrientDB key type name onto the ArcadeDB {@link Type}, returning {@code null} when there is no
+   * equivalent. Returning {@code null} lets the caller skip that one index with a warning instead of letting an
+   * {@link IllegalArgumentException} abort the creation of every remaining index.
+   */
+  private static Type parseKeyType(final String keyType) {
+    if (keyType == null)
+      return null;
+
+    try {
+      return Type.valueOf(keyType);
+    } catch (final IllegalArgumentException e) {
+      // ORIENTDB-ONLY TYPE (EMBEDDEDLIST, LINKBAG, ANY, ...): NO ARCADEDB EQUIVALENT TO DECLARE THE PROPERTY WITH
+      return null;
     }
   }
 
