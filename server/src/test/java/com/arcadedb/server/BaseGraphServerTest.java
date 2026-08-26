@@ -29,6 +29,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONObject;
@@ -45,6 +46,7 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintWriter;
+import java.io.RandomAccessFile;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URL;
@@ -496,6 +498,31 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
 
   protected String getDatabasePath(final int serverId) {
     return GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + serverId + File.separator + getDatabaseName();
+  }
+
+  /**
+   * Compacts {@code typeName}'s shard 0 so a {@code .ts.sealed} file exists, then flips its header's first byte
+   * and closes/reopens the database from disk - reproducing issue #6356 (a TimeSeries type whose sealed store
+   * fails to load) the same way a real restart would discover it, rather than poking the in-memory schema
+   * directly. After this returns, {@code typeName} is registered but {@code isEngineAvailable()} is {@code false}.
+   * Single-server only: HA snapshot install/resync during a close-and-reopen is out of scope for this fixture.
+   */
+  protected void corruptSealedStoreAndReopen(final int serverIndex, final String typeName) throws Exception {
+    final ArcadeDBServer server = getServer(serverIndex);
+    final DatabaseInternal embedded = (DatabaseInternal) server.getDatabase(getDatabaseName()).getEmbedded();
+    ((LocalTimeSeriesType) embedded.getSchema().getType(typeName)).getEngine().compactAll();
+
+    final File sealed = new File(getDatabasePath(serverIndex), typeName + "_shard_0.ts.sealed");
+
+    embedded.close();
+    server.removeDatabase(getDatabaseName());
+    try (final RandomAccessFile raf = new RandomAccessFile(sealed, "rw")) {
+      raf.seek(0);
+      final int b = raf.read();
+      raf.seek(0);
+      raf.write(b ^ 0x01);
+    }
+    server.getDatabase(getDatabaseName());
   }
 
   protected static String readResponse(final HttpURLConnection connection) throws IOException {
