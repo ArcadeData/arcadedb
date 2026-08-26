@@ -54,6 +54,37 @@ public interface ServerPlugin {
   }
 
   /**
+   * Invoked right after a database entered the server registry: created at runtime, restored, imported, opened on
+   * demand or re-registered by the HA snapshot installer. A plugin that keeps per-database state (a schedule, a
+   * cache, a listener) uses this to pick up a database that did not exist when the plugin started.
+   * <p>
+   * Called on the thread that performed the registration, which may still hold the server's database lock, so the
+   * implementation has to be short and non-blocking. Any exception thrown here is logged and swallowed: a
+   * misbehaving plugin must not fail the operation that created the database.
+   *
+   * @param databaseName name of the database that has just been registered
+   */
+  default void onDatabaseRegistered(final String databaseName) {
+    // DEFAULT IMPLEMENTATION
+  }
+
+  /**
+   * Invoked right after a database left the server registry: dropped, explicitly closed, or removed by the HA
+   * apply/snapshot-install paths. A plugin that keeps per-database state must release it here, otherwise the state
+   * outlives its database - a scheduled task, for instance, would keep firing against a name that is either gone or
+   * that the operator explicitly closed (issue #6752).
+   * <p>
+   * Called on the thread that performed the removal, which may still hold the server's database lock, so the
+   * implementation has to be short and non-blocking. Any exception thrown here is logged and swallowed: a
+   * misbehaving plugin must not fail the drop/close.
+   *
+   * @param databaseName name of the database that has just been unregistered
+   */
+  default void onDatabaseUnregistered(final String databaseName) {
+    // DEFAULT IMPLEMENTATION
+  }
+
+  /**
    * Whether this plugin activates on classpath presence alone, without an entry in {@code SERVER_PLUGINS}.
    * <p>
    * The default is {@code false}: a plugin is opt-in and a deployment names it explicitly. A plugin that is

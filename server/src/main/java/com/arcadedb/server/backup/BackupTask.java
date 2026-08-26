@@ -74,6 +74,17 @@ public class BackupTask implements Runnable {
 
   @Override
   public void run() {
+    // A schedule can outlive its database: it is dropped, or the operator explicitly closes it. Resolving the
+    // database below with load-on-demand would then either reopen a database somebody deliberately closed, or throw
+    // on every single tick after a drop. The plugin cancels the schedule on the unregister callback; this check is
+    // the belt-and-braces half, and also covers the window while an HA snapshot install has the database
+    // unregistered (issue #6752).
+    if (!server.existsDatabase(databaseName)) {
+      LogManager.instance().log(this, Level.FINE,
+          "Skipping backup for database '%s' - not available on this server", databaseName);
+      return;
+    }
+
     // Check if backup should run on this server
     if (!shouldRunOnThisServer()) {
       LogManager.instance().log(this, Level.FINE,
@@ -172,7 +183,8 @@ public class BackupTask implements Runnable {
    * threads - uncommitted changes are simply not included.
    */
   private String performBackup() throws Exception {
-    final Database database = server.getDatabase(databaseName);
+    // allowLoad=false: a scheduled backup must never be the thing that (re)opens a database (issue #6752).
+    final Database database = server.getDatabase(databaseName, false, false);
 
     // Generate backup filename
     final String timestamp = LocalDateTime.now().format(BACKUP_TIMESTAMP_FORMAT);

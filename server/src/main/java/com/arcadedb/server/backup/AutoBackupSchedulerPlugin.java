@@ -167,6 +167,28 @@ public class AutoBackupSchedulerPlugin implements ServerPlugin {
   }
 
   /**
+   * Picks up a database created, restored, imported or opened after the plugin started. Without this a runtime
+   * database was never backed up until someone reloaded the configuration by hand (issue #6752).
+   */
+  @Override
+  public void onDatabaseRegistered(final String databaseName) {
+    scheduleDatabase(databaseName);
+  }
+
+  /**
+   * Drops the schedule of a database that left the server registry. A schedule that outlives its database either
+   * reopens a database the operator explicitly closed (the backup task resolves it with load-on-demand) or throws on
+   * every single tick after a drop (issue #6752).
+   */
+  @Override
+  public void onDatabaseUnregistered(final String databaseName) {
+    cancelDatabase(databaseName);
+
+    if (retentionManager != null)
+      retentionManager.unregisterDatabase(databaseName);
+  }
+
+  /**
    * Triggers an immediate backup for a database.
    */
   public void triggerBackup(final String databaseName) {

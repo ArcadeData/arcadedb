@@ -30,6 +30,7 @@ import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.time.temporal.WeekFields;
 import java.util.*;
+import java.util.concurrent.*;
 import java.util.logging.Level;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -59,7 +60,8 @@ public class BackupRetentionManager {
 
   public BackupRetentionManager(final String backupDirectory) {
     this.backupDirectory = backupDirectory;
-    this.databaseConfigs = new HashMap<>();
+    // Mutated from the server thread (schedule/cancel) and read from the backup threads (applyRetention).
+    this.databaseConfigs = new ConcurrentHashMap<>();
   }
 
   /**
@@ -67,6 +69,15 @@ public class BackupRetentionManager {
    */
   public void registerDatabase(final String databaseName, final DatabaseBackupConfig config) {
     databaseConfigs.put(databaseName, config);
+  }
+
+  /**
+   * Forgets the retention configuration of a database that no longer exists on this server, so the map does not grow
+   * with names that will never be backed up again (issue #6752). The archives already on disk are left untouched:
+   * a backup taken before the drop is exactly what an operator restores from.
+   */
+  public void unregisterDatabase(final String databaseName) {
+    databaseConfigs.remove(databaseName);
   }
 
   /**
