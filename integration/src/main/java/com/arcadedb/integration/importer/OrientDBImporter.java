@@ -879,6 +879,10 @@ public class OrientDBImporter {
    * Parses the OrientDB `@fieldTypes` hint, a comma separated list of `&lt;fieldName&gt;=&lt;typeChar&gt;` pairs
    * (e.g. `salary=f,total=l`). The exporter only emits an entry for the types that cannot be inferred from the JSON
    * literal itself, so a missing entry means the default inference applies.
+   * <p>
+   * The separator is not escaped by the exporter, so the hint cannot express a field name containing a comma in the
+   * first place: such a name is already ambiguous on the way out. A pair that does not parse is dropped rather than
+   * rejected, which lands that one field on the default inference - the same place it would be with no hint at all.
    */
   private static Map<String, Character> parseFieldTypes(final String fieldTypes) {
     if (fieldTypes == null || fieldTypes.isEmpty())
