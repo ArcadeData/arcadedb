@@ -327,8 +327,9 @@ class Issue5467SmallCorpusTraversalCostTest extends TestHelper {
       }
 
       // {@code -Dbench.reps=N} raises the rep count for a profiling run, where a 60-second sampling
-      // window has to fall inside the measured loop.
-      final int reps = Integer.getInteger("bench.reps", 400);
+      // window has to fall inside the measured loop. Clamped at 1 so the knob cannot turn the
+      // statistics below into an out-of-bounds read on an empty sample array.
+      final int reps = Math.max(1, Integer.getInteger("bench.reps", 400));
       final double[] samples = new double[reps];
       long decoded = 0;
       long payloadBytes = 0;
