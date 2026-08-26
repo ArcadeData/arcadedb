@@ -67,7 +67,7 @@ Head SHA `fcc0e31f87662bfce9a65d077612f1f782d84a99`. `claude` and `coderabbitai`
 surfaced, both fixed and covered by new regression tests, plus two nitpicks applied:
 
 - **Fixed (claude + coderabbitai, actionable):** field-scoped `$not` with a multi-operator operand (e.g. a range,
-  `{field: {$not: {$gt: 1, $lt: 5}}}`) produced invalid SQL (`NOT (`field` > :p0 < :p1)`, missing `AND` and a
+  `{field: {$not: {$gt: 1, $lt: 5}}}`) produced invalid SQL (``NOT (`field` > :p0 < :p1)``, missing `AND` and a
   dangling comparison). `buildAnd`'s `$not` branch now re-emits the field for each operator in the operand,
   AND-joined, matching the outer loop's behavior across sibling fields.
 - **Fixed (coderabbitai, actionable):** `buildCollection` (backing `$in`/`$nin`) bound the whole collection as one
@@ -85,6 +85,24 @@ surfaced, both fixed and covered by new regression tests, plus two nitpicks appl
 New regression tests: `inNormalizesEachObjectIdElementToItsHexString`, `ninNormalizesEachObjectIdElementToItsHexString`,
 `notWithAMultiOperatorOperandJoinsEachComparisonWithItsOwnField` (unit), `findManyByIdUsingInFilterMatchesEveryListedId`
 (wire-level). Full `mongodbw` suite (106 tests) passes after the fixes.
+
+### Review cycle 2
+
+Head SHA `a2e6479c851d1111b4fe8396621103afc093c907`. `claude` and `coderabbitai` both reviewed again.
+
+- **Fixed (claude, actionable):** the multi-operator `$not` fix from cycle 1 itself had two unguarded edge cases -
+  a nested `$not` operand (e.g. `{field: {$not: {$not: {$gt: 5}}}}`) fell through to the top-level `$not` branch
+  with no field in scope and produced invalid SQL, and an empty `$not` operand (`{field: {$not: {}}}`) produced
+  `NOT ()`. Neither is a real Mongo query shape, so both are now rejected with an explicit
+  `IllegalArgumentException` instead of silently reaching the database as malformed SQL.
+- **Fixed (coderabbitai, nitpick):** a markdown lint warning (MD038, nested single backticks) in this tracking
+  doc's own cycle-1 section.
+- CodeRabbit's `$in`/`$nin` ObjectId-normalization comment from cycle 1 reappeared verbatim on this cycle (stale
+  re-post of an already-addressed comment; it says "Addressed in commit a2e6479" in its own body) - no new action.
+- **Not actioned (claude, already flagged/deferred):** the skip/limit-applied-in-Java note from cycle 1, repeated
+  for visibility; still out of scope for this bug-fix PR per cycle 1's disposition.
+
+New regression tests: `nestedNotIsRejectedRatherThanProducingInvalidSql`, `emptyNotOperandIsRejectedRatherThanProducingInvalidSql`.
 
 ## Impact analysis
 

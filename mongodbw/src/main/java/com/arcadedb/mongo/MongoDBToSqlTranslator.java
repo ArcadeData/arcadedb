@@ -86,9 +86,17 @@ public class MongoDBToSqlTranslator {
           // an operator with no left-hand side (e.g. "field NOT > :p0"), which the SQL parser rejects. A
           // multi-operator operand (e.g. a range, {$not: {$gt: 1, $lt: 5}}) needs the field re-emitted for EACH
           // operator and joined with AND, the same way the outer loop does across sibling fields.
+          final Document notOperand = (Document) subValue;
+          if (notOperand.isEmpty())
+            throw new IllegalArgumentException("$not requires a non-empty operator expression");
+
           sql.append("NOT (");
           int notExpressionCount = 0;
-          for (final Map.Entry<String, Object> notEntry : ((Document) subValue).entrySet()) {
+          for (final Map.Entry<String, Object> notEntry : notOperand.entrySet()) {
+            // real MongoDB does not accept $not nested inside $not; rejecting it here avoids silently falling
+            // through to the top-level $not branch with no field in scope, which produces invalid SQL
+            if ("$not".equals(notEntry.getKey()))
+              throw new IllegalArgumentException("Nested $not is not supported");
             if (notExpressionCount++ > 0)
               sql.append(" AND ");
             if (key != null)

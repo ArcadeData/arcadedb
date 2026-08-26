@@ -28,6 +28,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * A MongoDB filter is translated into a SQL statement, so every value taken off the wire used to be spelled into that
@@ -344,5 +345,35 @@ class MongoDBToSqlTranslatorParamsTest {
     assertThat(sql.toString()).isEqualTo("(NOT (`price` > :p0 AND `price` < :p1))");
     assertThat(params.get("p0")).isEqualTo(1);
     assertThat(params.get("p1")).isEqualTo(5);
+  }
+
+  /**
+   * Flagged by review on PR #6767: a nested {@code $not} operand (e.g. {@code {field: {$not: {$not: {$gt: 5}}}}})
+   * would fall through to the top-level {@code $not} branch with no field in scope, silently producing invalid SQL
+   * ({@code NOT (`field` NOT  > :p0)}). Double negation is not a real Mongo query shape, so this is guarded
+   * explicitly rather than left to produce a malformed statement.
+   */
+  @Test
+  void nestedNotIsRejectedRatherThanProducingInvalidSql() {
+    final StringBuilder sql = new StringBuilder();
+    final Map<String, Object> params = new HashMap<>();
+
+    assertThatThrownBy(() -> MongoDBToSqlTranslator.buildExpression(sql, params,
+        new Document("field", new Document("$not", new Document("$not", new Document("$gt", 5))))))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  /**
+   * Flagged by review on PR #6767: an empty {@code $not} operand (e.g. {@code {field: {$not: {}}}}) would produce
+   * {@code NOT ()}, empty parentheses that the SQL parser rejects. Guarded explicitly rather than left to produce
+   * a malformed statement.
+   */
+  @Test
+  void emptyNotOperandIsRejectedRatherThanProducingInvalidSql() {
+    final StringBuilder sql = new StringBuilder();
+    final Map<String, Object> params = new HashMap<>();
+
+    assertThatThrownBy(() -> MongoDBToSqlTranslator.buildExpression(sql, params, new Document("field", new Document("$not", new Document()))))
+        .isInstanceOf(IllegalArgumentException.class);
   }
 }
