@@ -55,7 +55,7 @@ class Issue6283BucketHeaderAccessorsTest extends TestHelper {
    * calls {@code initHeaderPage()} afterwards. Every reader must report emptiness rather than invent a page.
    */
   @Test
-  void aBucketWithoutAHeaderPageReportsEmptyAndLeavesNoPhantomPage() throws IOException {
+  void aBucketWithoutAHeaderPageReportsEmptyAndLeavesNoPhantomPage() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
 
     database.begin();
@@ -85,7 +85,7 @@ class Issue6283BucketHeaderAccessorsTest extends TestHelper {
    * the append that follows - must be the ones the readers see, before any commit.
    */
   @Test
-  void headerWrittenInTheCurrentTransactionIsVisibleToTheReaders() throws IOException {
+  void headerWrittenInTheCurrentTransactionIsVisibleToTheReaders() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
 
     database.begin();

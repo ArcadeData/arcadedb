@@ -56,7 +56,7 @@ class UnflushedDictionaryRecoveryTest {
   }
 
   @Test
-  void recoveryReplaysTheWalWhenTheDictionaryPageWasNeverFlushed() throws IOException {
+  void recoveryReplaysTheWalWhenTheDictionaryPageWasNeverFlushed() throws Exception {
     try (final DatabaseFactory factory = new DatabaseFactory(DATABASE_PATH)) {
       // A clean create+close flushes the dictionary page and retires the WAL, so the entries written
       // below are the only dictionary versions the recovery WAL will carry.

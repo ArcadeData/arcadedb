@@ -52,7 +52,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue5517BloomFilterReplicationIT extends BaseRaftHATest {
+class Issue5517BloomFilterReplicationIT extends BaseRaftHATest {
   private static final int    FIRST_BATCH  = 40_000;
   private static final int    SECOND_BATCH = 40_000;
   private static final int    TX_CHUNK     = 250;
@@ -89,7 +89,7 @@ public class Issue5517BloomFilterReplicationIT extends BaseRaftHATest {
   }
 
   @Test
-  public void theFiltersReachEveryNodeAndHideNothing() throws Exception {
+  void theFiltersReachEveryNodeAndHideNothing() throws Exception {
     final int leaderIndex = findLeaderIndex();
     assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
 

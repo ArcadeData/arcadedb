@@ -58,7 +58,7 @@ class RecoveryLockOrderingTest {
   }
 
   @Test
-  void openOfALockedCrashedDatabaseWritesNothingBeforeItIsRejected() throws IOException {
+  void openOfALockedCrashedDatabaseWritesNothingBeforeItIsRejected() throws Exception {
     try (final DatabaseFactory factory = new DatabaseFactory(DATABASE_PATH)) {
       crashDatabaseWithUnflushedDictionary(factory);
 
@@ -82,7 +82,7 @@ class RecoveryLockOrderingTest {
   }
 
   @Test
-  void readOnlyOpenOfACrashedDatabaseIsRejectedBeforeTheSchemaIsLoaded() throws IOException {
+  void readOnlyOpenOfACrashedDatabaseIsRejectedBeforeTheSchemaIsLoaded() throws Exception {
     try (final DatabaseFactory factory = new DatabaseFactory(DATABASE_PATH)) {
       crashDatabaseWithUnflushedDictionary(factory);
 

@@ -77,7 +77,7 @@ class SuperNodeConcurrentAppendHABenchmark extends BaseRaftHATest {
   // fix (folded into this PR) means the super-node workload now keeps every committed edge.
 
   @Test
-  void concurrentAppendToSuperNodeUnderHA() throws InterruptedException {
+  void concurrentAppendToSuperNodeUnderHA() throws Exception {
     // Toggle the feature from a plain system property so the baseline run is reliable regardless of how the
     // surefire fork forwards -D flags: -DedgeAppendMerge=false for the OFF comparison.
     // Control switch: -DsuperNode=false makes each edge target a fresh per-transaction vertex instead of the

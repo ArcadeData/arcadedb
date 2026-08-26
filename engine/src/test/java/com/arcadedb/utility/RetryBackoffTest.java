@@ -101,7 +101,7 @@ class RetryBackoffTest {
   }
 
   @Test
-  void sleepRestoresTheInterruptFlagInsteadOfSwallowingIt() throws InterruptedException {
+  void sleepRestoresTheInterruptFlagInsteadOfSwallowingIt() throws Exception {
     final AtomicBoolean interruptedAfterSleep = new AtomicBoolean(false);
     final Thread worker = new Thread(() -> {
       Thread.currentThread().interrupt();

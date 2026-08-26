@@ -41,7 +41,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * behaviour under test does not depend on the backoff shape, only on which configuration wins, so pinning the
  * shape keeps this test's timing budget identical to before #5587.
  */
-public class Issue5693TxRetryDelayScopeTest extends TestHelper {
+class Issue5693TxRetryDelayScopeTest extends TestHelper {
   /** One more than the number of forced failures, so the last attempt succeeds. */
   private static final int ATTEMPTS         = 7;
   /** Each of the {@link #ATTEMPTS} - 1 backoffs sleeps a random 1..RAISED_DELAY_MS, so the sum dwarfs the gap. */

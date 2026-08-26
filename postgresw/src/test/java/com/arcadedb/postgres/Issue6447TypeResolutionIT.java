@@ -40,7 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue6447TypeResolutionIT extends PostgresWireProtocolTestBase {
+class Issue6447TypeResolutionIT extends PostgresWireProtocolTestBase {
 
   @Test
   void aDecimalPropertyRoundTripsAsNumericWhetherOrNotARowWasSampled() throws Exception {

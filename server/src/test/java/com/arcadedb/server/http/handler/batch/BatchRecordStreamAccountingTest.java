@@ -36,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class BatchRecordStreamAccountingTest {
 
   @Test
-  void jsonlCountsEveryLineItReads() throws IOException {
+  void jsonlCountsEveryLineItReads() throws Exception {
     final String payload = """
         {"@type":"vertex","@class":"V1","@id":"a"}
 
@@ -59,7 +59,7 @@ class BatchRecordStreamAccountingTest {
    * either, and counting them as records would make a perfectly good load look like it had dropped some.
    */
   @Test
-  void csvCountsHeadersAndSeparatorsAsSkipped() throws IOException {
+  void csvCountsHeadersAndSeparatorsAsSkipped() throws Exception {
     final String payload = """
         @type,@class,@id,id
         vertex,V1,c1,200
@@ -81,7 +81,7 @@ class BatchRecordStreamAccountingTest {
   }
 
   @Test
-  void anEmptyPayloadReadsAndSkipsNothing() throws IOException {
+  void anEmptyPayloadReadsAndSkipsNothing() throws Exception {
     final JsonlBatchRecordStream stream = new JsonlBatchRecordStream(stream(""));
 
     assertThat(stream.hasNext()).isFalse();

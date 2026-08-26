@@ -34,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * The command context's own configuration is not a substitute: the script engine is handed an empty one on the
  * embedded API and the server's one over HTTP, and neither carries a per-database override.
  */
-public class Issue5693RetryStepDelayScopeTest extends TestHelper {
+class Issue5693RetryStepDelayScopeTest extends TestHelper {
   @Test
   void theStepReadsTheDelayConfiguredOnThisDatabase() {
     final int savedGlobal = GlobalConfiguration.TX_RETRY_DELAY.getValueAsInteger();

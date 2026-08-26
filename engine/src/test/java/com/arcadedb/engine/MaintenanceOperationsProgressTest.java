@@ -79,7 +79,7 @@ class MaintenanceOperationsProgressTest extends TestHelper {
 
   @Test
   @Tag("slow")
-  void rebuildIndexPublishesAndRetiresProgress() throws InterruptedException {
+  void rebuildIndexPublishesAndRetiresProgress() throws Exception {
     createIndexedType(100_000);
 
     final List<OperationProgress> samples = sampleWhile(() ->

@@ -24,6 +24,8 @@ import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -53,6 +55,7 @@ class Issue5120CompactionDuplicatesTest extends TestHelper {
   private static final int    SHORT_KEY  = 8;
   private static final int    LONG_KEY   = 60;
 
+  @BeforeEach
   @Override
   public void beforeTest() {
     // Explicit compaction only, so the failure and the following success are deterministic (a background round

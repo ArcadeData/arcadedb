@@ -145,7 +145,7 @@ class PropertyDefaultValueTest extends TestHelper {
    * fresh value on every record.
    */
   @Test
-  void perRecordDefaultsAreStillReEvaluated() throws InterruptedException {
+  void perRecordDefaultsAreStillReEvaluated() throws Exception {
     database.transaction(() -> {
       final DocumentType type = database.getSchema().createDocumentType("Probe");
       type.createProperty("createdOn", Type.DATETIME_MICROS).setDefaultValue("sysdate()");
@@ -191,7 +191,7 @@ class PropertyDefaultValueTest extends TestHelper {
    * {@code sysdate()} hammered from several threads must all produce correct values and raise nothing.
    */
   @Test
-  void aCompiledDefaultIsSafeToEvaluateConcurrently() throws InterruptedException {
+  void aCompiledDefaultIsSafeToEvaluateConcurrently() throws Exception {
     database.transaction(() -> {
       final DocumentType type = database.getSchema().createDocumentType("Probe");
       type.createProperty("constant", Type.STRING).setDefaultValue("'ok'");
@@ -377,7 +377,7 @@ class PropertyDefaultValueTest extends TestHelper {
    * statement that can repair it, ALTER PROPERTY, must work on it - which means not evaluating the outgoing default.
    */
   @Test
-  void aLegacyInvalidDefaultDoesNotBlockTheSchemaLoadAndCanBeRepaired() throws IOException {
+  void aLegacyInvalidDefaultDoesNotBlockTheSchemaLoadAndCanBeRepaired() throws Exception {
     database.transaction(() -> {
       final DocumentType type = database.getSchema().createDocumentType("Probe");
       type.createProperty("broken", Type.STRING).setDefaultValue("'placeholder'");
@@ -406,7 +406,7 @@ class PropertyDefaultValueTest extends TestHelper {
    * survive the load; this covers the second.
    */
   @Test
-  void aLegacyBareIdentifierDefaultLoadsAndKeepsEvaluatingToNull() throws IOException {
+  void aLegacyBareIdentifierDefaultLoadsAndKeepsEvaluatingToNull() throws Exception {
     database.transaction(() -> {
       final DocumentType type = database.getSchema().createDocumentType("Probe");
       type.createProperty("bare", Type.STRING).setDefaultValue("'placeholder'");

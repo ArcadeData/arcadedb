@@ -23,7 +23,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -79,7 +78,7 @@ class Issue6297TeardownPathResolutionTest {
    * same call touches nothing at all instead of walking off to {@code /databases0}.
    */
   @Test
-  void deleteDatabaseFoldersCleansWhenResolvedAndRefusesWhenNot(@TempDir final Path tempDir) throws IOException {
+  void deleteDatabaseFoldersCleansWhenResolvedAndRefusesWhenNot(@TempDir final Path tempDir) throws Exception {
     final Path root = tempDir.resolve("root");
     final Path server0 = root.resolve("databases0");
     Files.createDirectories(server0);

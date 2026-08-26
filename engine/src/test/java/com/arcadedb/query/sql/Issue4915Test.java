@@ -31,7 +31,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue4915Test extends TestHelper {
+class Issue4915Test extends TestHelper {
   @Test
   void contentBracketNotationWithStringKey() {
     database.command("sql", "CREATE DOCUMENT TYPE yolo");

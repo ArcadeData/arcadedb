@@ -48,7 +48,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue6410IdleConnectionIT extends PostgresWireProtocolTestBase {
+class Issue6410IdleConnectionIT extends PostgresWireProtocolTestBase {
 
   private static final int    POSTGRES_PORT     = 5432;
   private static final String EXECUTOR_THREAD   = "ArcadeDB-postgres/";

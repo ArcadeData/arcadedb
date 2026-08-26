@@ -30,11 +30,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * A batch script chains one execution step per statement, so releasing the plan must not walk the
  * chain recursively: a large import would blow the stack.
  */
-public class SQLScriptLargeBatchTest extends TestHelper {
+class SQLScriptLargeBatchTest extends TestHelper {
   private static final int STATEMENTS = 20_000;
 
   @Test
-  void closingALargeBatchScriptDoesNotOverflowTheStack() throws InterruptedException {
+  void closingALargeBatchScriptDoesNotOverflowTheStack() throws Exception {
     database.command("sql", "CREATE DOCUMENT TYPE ImportRow");
 
     final StringBuilder script = new StringBuilder("begin;\n");

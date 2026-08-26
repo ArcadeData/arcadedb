@@ -24,7 +24,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import redis.clients.jedis.Jedis;
 
-import java.io.IOException;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 
@@ -46,7 +45,7 @@ public class RedisProtocolLimitsTest extends BaseGraphServerTest {
   private static final String PASSWORD = DEFAULT_PASSWORD_FOR_TESTS;
 
   @Test
-  void deeplyNestedArrayIsRejectedInsteadOfOverflowingTheStack() throws IOException {
+  void deeplyNestedArrayIsRejectedInsteadOfOverflowingTheStack() throws Exception {
     // Well beyond both the configured nesting cap and the depth that used to overflow the default JVM
     // stack (~11,861 levels / ~47 KB in the original report), so the fix is exercised either way.
     final int          depth   = 50_000;
@@ -79,7 +78,7 @@ public class RedisProtocolLimitsTest extends BaseGraphServerTest {
   }
 
   @Test
-  void oversizedArrayLengthIsRejectedImmediately() throws IOException {
+  void oversizedArrayLengthIsRejectedImmediately() throws Exception {
     // A header this large would previously start a two-billion-iteration parse loop, tying up the
     // connection thread for as long as the client trickles bytes.
     final String payload = "*2000000000\r\n";
@@ -105,7 +104,7 @@ public class RedisProtocolLimitsTest extends BaseGraphServerTest {
   }
 
   @Test
-  void oversizedBulkStringLengthIsRejectedImmediately() throws IOException {
+  void oversizedBulkStringLengthIsRejectedImmediately() throws Exception {
     // Same DoS class as the array-length case above, but on the $ path every command actually uses (the
     // command name and every argument, including GET/SET's own payloads, are RESP bulk strings). A header
     // this large would previously tie up the connection thread indefinitely and, if the client actually sent
@@ -133,7 +132,7 @@ public class RedisProtocolLimitsTest extends BaseGraphServerTest {
   }
 
   @Test
-  void malformedLengthClosesCleanlyInsteadOfCrashingTheThread() throws IOException {
+  void malformedLengthClosesCleanlyInsteadOfCrashingTheThread() throws Exception {
     // A non-numeric length used to throw an uncaught NumberFormatException, killing the connection thread
     // outright instead of getting the same -ERR Protocol error + close treatment as the size-related cases.
     final String payload = "$abc\r\n";
@@ -159,7 +158,7 @@ public class RedisProtocolLimitsTest extends BaseGraphServerTest {
   }
 
   @Test
-  void malformedLengthReplyDoesNotEmbedRawNewline() throws IOException {
+  void malformedLengthReplyDoesNotEmbedRawNewline() throws Exception {
     // parseValueUntilLF() only treats \r as the start of the CRLF terminator, so a malformed length token
     // can itself contain a bare \n; that used to be echoed verbatim into the RESP -ERR reply instead of
     // going through respErrorMessage()'s \r/\n sanitization, breaking the single-line contract every other
@@ -189,7 +188,7 @@ public class RedisProtocolLimitsTest extends BaseGraphServerTest {
   }
 
   @Test
-  void unterminatedTokenIsRejectedInsteadOfGrowingUnbounded() throws IOException {
+  void unterminatedTokenIsRejectedInsteadOfGrowingUnbounded() throws Exception {
     // The new size/depth checks only fire once parseValueUntilLF() has actually produced a token (it looks
     // for a terminating CRLF), so a client that never sends one - e.g. "$" followed by a very long run of
     // digits with no \r\n - grows that buffer unbounded and holds the thread before maxBulkLength ever gets
@@ -217,7 +216,7 @@ public class RedisProtocolLimitsTest extends BaseGraphServerTest {
   }
 
   @Test
-  void configuredDepthLimitIsHonored() throws IOException {
+  void configuredDepthLimitIsHonored() throws Exception {
     // Confirms arcadedb.redis.maxMultiBulkDepth is actually wired end to end, rather than the tests above
     // only ever exercising the (also never-directly-asserted) built-in default.
     GlobalConfiguration.REDIS_MAX_MULTIBULK_DEPTH.setValue(3);
@@ -251,7 +250,7 @@ public class RedisProtocolLimitsTest extends BaseGraphServerTest {
   }
 
   @Test
-  void misconfiguredDepthLimitFallsBackToDefault() throws IOException {
+  void misconfiguredDepthLimitFallsBackToDefault() throws Exception {
     // Below sanitizedLimit's floor (2, since depth >= maxMultiBulkDepth would otherwise reject even a flat
     // command's single argument): must fall back to the built-in default (32) rather than locking every
     // connection out.
@@ -285,7 +284,7 @@ public class RedisProtocolLimitsTest extends BaseGraphServerTest {
   }
 
   @Test
-  void configuredMultiBulkLengthLimitIsHonored() throws IOException {
+  void configuredMultiBulkLengthLimitIsHonored() throws Exception {
     // Confirms arcadedb.redis.maxMultiBulkLength is actually wired end to end, not just the built-in default.
     GlobalConfiguration.REDIS_MAX_MULTIBULK_LENGTH.setValue(5);
     try {
@@ -315,7 +314,7 @@ public class RedisProtocolLimitsTest extends BaseGraphServerTest {
   }
 
   @Test
-  void configuredBulkLengthLimitIsHonored() throws IOException {
+  void configuredBulkLengthLimitIsHonored() throws Exception {
     // Confirms arcadedb.redis.maxBulkLength is actually wired end to end, not just the built-in default.
     // 64 comfortably fits every bulk string AUTH/PING send (including the test password), while still being
     // a small, clearly non-default value to prove the setting is honored rather than ignored.

@@ -27,6 +27,8 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -60,6 +62,7 @@ class LSMTreeIndexCursorTombstoneRunTest extends TestHelper {
   // ids [0, DELETED) are removed: a contiguous tombstone run far larger than the old guard budget
   private static final int    DELETED   = 15_000;
 
+  @BeforeEach
   @Override
   public void beforeTest() {
     // keep compaction manual so each test controls the index shape deterministically

@@ -27,7 +27,6 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -78,7 +77,7 @@ class Issue5475ColumnTypesTest extends TestHelper {
    * behind for the rest of the row, so the value AND every column after it came back wrong.
    */
   @Test
-  void everySupportedTypeRoundTripsWithoutDisturbingTheNextColumn() throws IOException {
+  void everySupportedTypeRoundTripsWithoutDisturbingTheNextColumn() throws Exception {
     for (final Object[] spec : SUPPORTED) {
       final String declared = (String) spec[0];
       final Object value = spec[1];
@@ -103,7 +102,7 @@ class Issue5475ColumnTypesTest extends TestHelper {
    * The Java type a query returns must not depend on whether the sample has been compacted yet.
    */
   @Test
-  void theSealedLayerReturnsTheDeclaredType() throws IOException {
+  void theSealedLayerReturnsTheDeclaredType() throws Exception {
     for (final Object[] spec : SUPPORTED) {
       final String declared = (String) spec[0];
       final Object value = spec[1];
@@ -134,7 +133,7 @@ class Issue5475ColumnTypesTest extends TestHelper {
    * datetime field used to get.
    */
   @Test
-  void aDateTimeFieldSealsAsIntegersNotText() throws IOException {
+  void aDateTimeFieldSealsAsIntegersNotText() throws Exception {
     database.command("sql", "CREATE TIMESERIES TYPE Instants TIMESTAMP ts FIELDS (observed DATETIME_MICROS) SHARDS 1");
     database.command("sql", "CREATE TIMESERIES TYPE InstantsAsText TIMESTAMP ts FIELDS (observed STRING) SHARDS 1");
 
@@ -205,7 +204,7 @@ class Issue5475ColumnTypesTest extends TestHelper {
    * definition and the tag filter compares them as strings), and must still round-trip.
    */
   @Test
-  void aDateTimeTagRoundTripsThroughBothLayers() throws IOException {
+  void aDateTimeTagRoundTripsThroughBothLayers() throws Exception {
     database.command("sql",
         "CREATE TIMESERIES TYPE TaggedInstant TIMESTAMP ts TAGS (day DATE) FIELDS (v DOUBLE) SHARDS 1");
 
@@ -316,7 +315,7 @@ class Issue5475ColumnTypesTest extends TestHelper {
    * the literal arrives in.
    */
   @Test
-  void aNonStringTagFiltersFromBothLayersAndInEitherForm() throws IOException {
+  void aNonStringTagFiltersFromBothLayersAndInEitherForm() throws Exception {
     database.command("sql", "CREATE TIMESERIES TYPE Filtered TIMESTAMP ts TAGS (ok BOOLEAN, day DATE) "
         + "FIELDS (v DOUBLE) SHARDS 1");
 
@@ -354,7 +353,7 @@ class Issue5475ColumnTypesTest extends TestHelper {
    * boolean: the extra match forms a filter carries can only ever equal a value of that other type.
    */
   @Test
-  void aStringTagIsNotConfusedByNumericOrBooleanLookingValues() throws IOException {
+  void aStringTagIsNotConfusedByNumericOrBooleanLookingValues() throws Exception {
     database.command("sql", "CREATE TIMESERIES TYPE StringTags TIMESTAMP ts TAGS (host STRING) FIELDS (v DOUBLE) SHARDS 1");
 
     final TimeSeriesEngine engine = ((LocalTimeSeriesType) database.getSchema().getType("StringTags")).getEngine();
@@ -375,7 +374,7 @@ class Issue5475ColumnTypesTest extends TestHelper {
    * and must not shift the columns after it.
    */
   @Test
-  void nullsDoNotShiftTheRow() throws IOException {
+  void nullsDoNotShiftTheRow() throws Exception {
     database.command("sql",
         "CREATE TIMESERIES TYPE Nulls TIMESTAMP ts FIELDS (a DATE, b BOOLEAN, c DOUBLE) SHARDS 1");
 

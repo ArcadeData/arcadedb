@@ -31,7 +31,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class MatchClauseTest {
+class MatchClauseTest {
 
   private static NodePattern node(final String variable) {
     return new NodePattern(variable, null, null);

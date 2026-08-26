@@ -27,7 +27,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class PostgresQuotedIdentifierRewriterTest {
+class PostgresQuotedIdentifierRewriterTest {
 
   @Test
   void noDoubleQuoteReturnsTheSameInstance() {

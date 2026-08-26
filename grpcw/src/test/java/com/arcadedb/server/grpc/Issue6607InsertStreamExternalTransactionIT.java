@@ -41,7 +41,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * active there, so the rows are written outside it (auto-committing independently) and survive a
  * rollback of the transaction the client believes wraps them.
  */
-public class Issue6607InsertStreamExternalTransactionIT extends BaseGraphServerTest {
+class Issue6607InsertStreamExternalTransactionIT extends BaseGraphServerTest {
 
   private DatabaseCredentials credentials() {
     return DatabaseCredentials.newBuilder().setUsername("root").setPassword(DEFAULT_PASSWORD_FOR_TESTS).build();

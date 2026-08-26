@@ -57,7 +57,7 @@ class Issue6175ChunkOnHeadPageTest extends BucketPageLayoutTestSupport {
    * because chunk 3 of the chain came home to page 0 and poisoned it.
    */
   @Test
-  void aChainThatComesBackToTheHeadChunksPageDoesNotCostItsMerge() throws InterruptedException {
+  void aChainThatComesBackToTheHeadChunksPageDoesNotCostItsMerge() throws Exception {
     final RID[] spilling = new RID[1];
     final RID[] neighbour = new RID[1];
 
@@ -92,7 +92,7 @@ class Issue6175ChunkOnHeadPageTest extends BucketPageLayoutTestSupport {
    * identical call in {@code updateMultiPageRecord}: growing the chain must not poison the head chunk's page either.
    */
   @Test
-  void growingAnExistingChainDoesNotCostTheHeadChunksPageEither() throws InterruptedException {
+  void growingAnExistingChainDoesNotCostTheHeadChunksPageEither() throws Exception {
     final RID[] spilling = new RID[1];
     final RID[] neighbour = new RID[1];
 

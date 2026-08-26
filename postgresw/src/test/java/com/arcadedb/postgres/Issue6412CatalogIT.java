@@ -43,7 +43,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue6412CatalogIT extends PostgresWireProtocolTestBase {
+class Issue6412CatalogIT extends PostgresWireProtocolTestBase {
 
   @Test
   void theSchemaListNamesTheConnectedDatabase() throws Exception {

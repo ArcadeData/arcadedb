@@ -48,7 +48,7 @@ import java.util.Random;
  */
 @Tag("performance")
 @Tag("benchmark")
-public class LightweightEdgeBenchmark {
+class LightweightEdgeBenchmark {
   private static final String DB_PATH = "target/databases/lightedge-benchmark";
   private static final int    WARMUPS = 1;
   private static final long   SEED    = 20260801L;

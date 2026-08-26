@@ -159,7 +159,7 @@ class Issue5152CountRecomputeRaceTest extends TestHelper {
 
   @Test
   @Tag("slow")
-  void cachedCounterStaysConsistentUnderConcurrentRecomputeAndCommits() throws InterruptedException {
+  void cachedCounterStaysConsistentUnderConcurrentRecomputeAndCommits() throws Exception {
     insert(0, BASE);
     int expected = BASE;
 

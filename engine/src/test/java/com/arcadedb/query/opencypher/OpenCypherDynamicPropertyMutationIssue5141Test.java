@@ -34,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class OpenCypherDynamicPropertyMutationIssue5141Test {
+class OpenCypherDynamicPropertyMutationIssue5141Test {
   private Database database;
 
   @BeforeEach

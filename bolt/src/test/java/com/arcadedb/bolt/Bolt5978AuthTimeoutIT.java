@@ -64,7 +64,7 @@ public class Bolt5978AuthTimeoutIT extends BaseGraphServerTest {
 
   @Test
   @Tag("slow")
-  void idlePostHandshakeUnauthenticatedConnectionIsClosedInsteadOfHeldOpenIndefinitely() throws IOException {
+  void idlePostHandshakeUnauthenticatedConnectionIsClosedInsteadOfHeldOpenIndefinitely() throws Exception {
     GlobalConfiguration.NETWORK_SOCKET_TIMEOUT.setValue(500);
     try {
       try (final Socket socket = new Socket()) {
@@ -87,7 +87,7 @@ public class Bolt5978AuthTimeoutIT extends BaseGraphServerTest {
 
   @Test
   @Tag("slow")
-  void stalledBeforeHandshakeConnectionIsClosedInsteadOfHeldOpenIndefinitely() throws IOException {
+  void stalledBeforeHandshakeConnectionIsClosedInsteadOfHeldOpenIndefinitely() throws Exception {
     // Even before the BOLT magic/version negotiation completes, the connection must be bounded - not just
     // the subsequent AUTH/HELLO-LOGON phase.
     GlobalConfiguration.NETWORK_SOCKET_TIMEOUT.setValue(500);

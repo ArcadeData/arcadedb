@@ -100,7 +100,7 @@ public class Issue5042CommitRollbackThrowIT extends BaseGraphServerTest {
   }
 
   @Test
-  void commitThrowsWhenTransactionWasReaped() throws InterruptedException {
+  void commitThrowsWhenTransactionWasReaped() throws Exception {
     grpc.begin();
 
     // Simulate a long client pause (GC pause, network stall, debugger): the idle reaper rolls the
@@ -113,7 +113,7 @@ public class Issue5042CommitRollbackThrowIT extends BaseGraphServerTest {
   }
 
   @Test
-  void rollbackThrowsWhenTransactionWasReaped() throws InterruptedException {
+  void rollbackThrowsWhenTransactionWasReaped() throws Exception {
     grpc.begin();
 
     Thread.sleep(Long.parseLong(MAX_IDLE_MS) + 1500L);
