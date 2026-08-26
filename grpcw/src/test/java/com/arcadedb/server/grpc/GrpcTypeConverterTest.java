@@ -241,6 +241,22 @@ class GrpcTypeConverterTest {
   }
 
   @Test
+  void toGrpcValueShort() {
+    // Issue #6754: SHORT values fell through to the string_value fallback instead of int32_value.
+    GrpcValue result = GrpcTypeConverter.toGrpcValue((short) 1000);
+    assertThat(result.getKindCase()).isEqualTo(GrpcValue.KindCase.INT32_VALUE);
+    assertThat(result.getInt32Value()).isEqualTo(1000);
+  }
+
+  @Test
+  void toGrpcValueByte() {
+    // Issue #6754: BYTE values fell through to the string_value fallback instead of int32_value.
+    GrpcValue result = GrpcTypeConverter.toGrpcValue((byte) 5);
+    assertThat(result.getKindCase()).isEqualTo(GrpcValue.KindCase.INT32_VALUE);
+    assertThat(result.getInt32Value()).isEqualTo(5);
+  }
+
+  @Test
   void toGrpcValueLong() {
     GrpcValue result = GrpcTypeConverter.toGrpcValue(123456789012L);
     assertThat(result.getInt64Value()).isEqualTo(123456789012L);

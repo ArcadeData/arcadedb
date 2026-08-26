@@ -260,6 +260,10 @@ public class ProtoUtils {
       return dbgEnc("toGrpcValue", value, b.setBoolValue(v).build());
     if (value instanceof Integer v)
       return dbgEnc("toGrpcValue", value, b.setInt32Value(v).build());
+    if (value instanceof Short v)
+      return dbgEnc("toGrpcValue", value, b.setInt32Value(v).build());
+    if (value instanceof Byte v)
+      return dbgEnc("toGrpcValue", value, b.setInt32Value(v).build());
     if (value instanceof Long v)
       return dbgEnc("toGrpcValue", value, b.setInt64Value(v).build());
     if (value instanceof Float v)

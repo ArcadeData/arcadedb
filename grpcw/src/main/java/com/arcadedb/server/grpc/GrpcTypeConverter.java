@@ -145,6 +145,10 @@ class GrpcTypeConverter {
       return b.setBoolValue(v).build();
     if (o instanceof Integer v)
       return b.setInt32Value(v).build();
+    if (o instanceof Short v)
+      return b.setInt32Value(v).build();
+    if (o instanceof Byte v)
+      return b.setInt32Value(v).build();
     if (o instanceof Long v)
       return b.setInt64Value(v).build();
     if (o instanceof Float v)

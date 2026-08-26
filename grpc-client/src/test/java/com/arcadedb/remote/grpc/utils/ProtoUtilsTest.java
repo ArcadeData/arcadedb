@@ -77,6 +77,22 @@ class ProtoUtilsTest {
   }
 
   @Test
+  void toGrpcValueShort() {
+    // Issue #6754: SHORT values fell through to the string_value fallback instead of int32_value.
+    final GrpcValue value = ProtoUtils.toGrpcValue((short) 1000);
+    assertThat(value.getKindCase()).isEqualTo(GrpcValue.KindCase.INT32_VALUE);
+    assertThat(value.getInt32Value()).isEqualTo(1000);
+  }
+
+  @Test
+  void toGrpcValueByte() {
+    // Issue #6754: BYTE values fell through to the string_value fallback instead of int32_value.
+    final GrpcValue value = ProtoUtils.toGrpcValue((byte) 5);
+    assertThat(value.getKindCase()).isEqualTo(GrpcValue.KindCase.INT32_VALUE);
+    assertThat(value.getInt32Value()).isEqualTo(5);
+  }
+
+  @Test
   void toGrpcValueLong() {
     final GrpcValue value = ProtoUtils.toGrpcValue(9876543210L);
     assertThat(value.getInt64Value()).isEqualTo(9876543210L);
