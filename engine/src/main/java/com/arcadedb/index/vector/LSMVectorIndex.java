@@ -214,8 +214,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // for the sessions that happen not to write first. needsGraphBuild()'s javadoc already draws this distinction
   // for the close path ("LOADING means not loaded into memory, which is not the same as not persisted on disk");
   // this field is that distinction made explicit for the search path, so the promotion can no longer erase it.
-  // Starts true - a freshly constructed index has resolved nothing - and is cleared exactly once, by whichever of
-  // ensureGraphAvailable() or buildGraphFromScratchWithRetry() first settles the question under graphBuildLock.
+  // Starts true - a freshly constructed index has resolved nothing - and is cleared under graphBuildLock by
+  // whichever of ensureGraphAvailable(), reuseStalePrefixGraph() or buildGraphFromScratchWithRetry() first settles
+  // the question. Cleared at PUBLISH time, not at decision time: see ensureGraphAvailable()'s finally for why the
+  // prefix-reuse branch hands ownership of this flag to reuseStalePrefixGraph() instead of clearing it itself.
   private volatile boolean                       persistedGraphUnresolved = true;
   private volatile ImmutableGraphIndex           graphIndex;        // Current graph (OnHeap or OnDisk)
   private volatile int[]                         ordinalToVectorId; // Maps graph ordinals to vector IDs
@@ -1795,20 +1797,34 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (prefixReuseCandidate == null)
         buildGraphFromScratch();
     } finally {
-      // Cleared here rather than in each branch above, and in a finally rather than on the success paths only,
-      // because the latch means "still to be decided", not "decided successfully" (issue #6772). Every exit from
-      // this section - graph loaded, prefix queued for reuse, rebuilt from scratch, or a load that threw and fell
-      // through to the rebuild - has settled the question of what happens to the on-disk graph, and leaving the
-      // latch set on any of them would make the NEXT search redo the O(live vector count) validation scan above.
+      // Cleared in a finally rather than on the success paths only, because the latch means "still to be decided",
+      // not "decided successfully" (issue #6772): a graph loaded, a rebuild from scratch, and a load that threw and
+      // fell through to the rebuild have all settled the question of what happens to the on-disk graph, and leaving
+      // the latch set on any of them would make the NEXT search redo the O(live vector count) validation scan above.
       // A build that fails outright still leaves graphState at LOADING, and graphNotYetMaterialised() keeps
       // answering true on that alone, so the retry this method has always offered is unaffected.
-      persistedGraphUnresolved = false;
+      //
+      // The prefix-reuse branch is the exception, and it is deliberately NOT cleared here: it has decided but not
+      // yet PUBLISHED - reuseStalePrefixGraph() runs after this lock is released and only sets graphIndex there.
+      // Clearing at decision time would open a window in which graphState is already MUTABLE (this session wrote
+      // before it searched - the very case this fix exists for), the latch is false, and graphIndex is still null,
+      // so a SECOND search thread would find graphNotYetMaterialised() false, fall through to
+      // rebuildGraphBeforeSearch(), read that null as "small graph" and run the whole synchronous rebuild this fix
+      // removes - the same cost back, gated on a race instead of on a promotion (PR #6784 review). Ownership of the
+      // latch passes to reuseStalePrefixGraph(), which clears it under the same mutex once the graph is published.
+      if (prefixReuseCandidate == null)
+        persistedGraphUnresolved = false;
       graphBuildLock.unlock();
     }
 
     if (prefixReuseCandidate != null) {
       // Unlocked with respect to lock.writeLock(): reuseStalePrefixGraph() does its own graphBuildLock-serialized
-      // I/O and a brief re-lock only to publish (see its javadoc).
+      // I/O and a brief re-lock only to publish (see its javadoc). A second search thread that slips in between
+      // this unlock and that method's own lock() still sees the latch set, so the worst it can do is repeat the
+      // validation scan and reach the same decision - one of the two then loses the graphIndex double-check and
+      // discards its work. That is exactly what a racing pair already does on the query-only path of issue #6655,
+      // where graphState stays LOADING across the same window, and it is bounded by a scan rather than by a
+      // rebuild.
       reuseStalePrefixGraph(prefixReuseCandidate);
     }
   }
@@ -1955,6 +1971,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
               + "graph, %d queued into the delta buffer pending an async rebuild (issues #6655, #6772)",
           indexName, graphSize, rebuiltOrdinalToVectorId.length, queuedIntoDelta);
     } finally {
+      // ensureGraphAvailable() handed the latch over rather than clearing it at decision time, so this is where it
+      // is released - after the publish above and, crucially, still under graphBuildLock, so the next thread to
+      // take that mutex sees the cleared latch and the published graphIndex together rather than one without the
+      // other (PR #6784 review). In the finally for the same reason it is one there: the early return above and any
+      // exception have both settled the question just as much as the publish has, and a latch left set would make
+      // every later search redo ensureGraphAvailable()'s O(live vector count) validation scan.
+      persistedGraphUnresolved = false;
       graphBuildLock.unlock();
     }
 
