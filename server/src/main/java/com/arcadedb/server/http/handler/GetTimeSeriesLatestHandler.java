@@ -65,8 +65,13 @@ public class GetTimeSeriesLatestHandler extends AbstractServerHttpHandler {
       return new ExecutionResponse(400, "{ \"error\" : \"Type '" + typeName + "' does not exist\"}");
 
     final DocumentType docType = database.getSchema().getType(typeName);
-    if (!(docType instanceof LocalTimeSeriesType tsType) || tsType.getEngine() == null)
+    if (!(docType instanceof LocalTimeSeriesType tsType))
       return new ExecutionResponse(400, "{ \"error\" : \"Type '" + typeName + "' is not a TimeSeries type\"}");
+    if (!tsType.isEngineAvailable())
+      // Distinct from "not a TimeSeries type" (issue #6356 follow-up, claude-review on PR #6779): this type IS one,
+      // its storage just failed to load - the old shared message sent an operator chasing the wrong cause.
+      return new ExecutionResponse(400, "{ \"error\" : \"TimeSeries type '" + typeName
+          + "' has no storage engine available: " + tsType.getEngineUnavailableReason() + "\"}");
 
     final TimeSeriesEngine engine = tsType.getEngine();
     final List<ColumnDefinition> columns = tsType.getTsColumns();

@@ -90,8 +90,15 @@ public class PostGrafanaQueryHandler extends AbstractServerHttpHandler {
       }
 
       final DocumentType docType = database.getSchema().getType(typeName);
-      if (!(docType instanceof LocalTimeSeriesType tsType) || tsType.getEngine() == null) {
+      if (!(docType instanceof LocalTimeSeriesType tsType)) {
         results.put(refId, buildErrorFrame("Type '" + typeName + "' is not a TimeSeries type"));
+        continue;
+      }
+      if (!tsType.isEngineAvailable()) {
+        // Distinct from "not a TimeSeries type" (issue #6356 follow-up, claude-review on PR #6779): this type IS
+        // one, its storage just failed to load - the old shared message sent an operator chasing the wrong cause.
+        results.put(refId, buildErrorFrame(
+            "TimeSeries type '" + typeName + "' has no storage engine available: " + tsType.getEngineUnavailableReason()));
         continue;
       }
 

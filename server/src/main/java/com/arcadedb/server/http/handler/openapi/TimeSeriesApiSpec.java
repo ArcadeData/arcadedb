@@ -231,6 +231,9 @@ public class TimeSeriesApiSpec implements OpenApiContributor {
     schema.addProperty("nonTimeSeriesTypes", SpecBuilders.arrayOf(
         SpecBuilders.string("Type name"),
         "Measurements naming a type that exists but is not a time-series type"));
+    schema.addProperty("unavailableTypes", SpecBuilders.arrayOf(
+        SpecBuilders.string("Type name"),
+        "Measurements naming a time-series type whose storage engine failed to load; see the server log for why"));
     return schema;
   }
 }

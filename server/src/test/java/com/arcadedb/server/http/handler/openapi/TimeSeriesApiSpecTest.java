@@ -84,7 +84,7 @@ class TimeSeriesApiSpecTest {
   void writeErrorBodyCarriesTheIngestionCounts() {
     final Schema<?> schema = openAPI.getComponents().getSchemas().get("TimeSeriesWriteError");
     assertThat(schema.getProperties().keySet()).containsExactlyInAnyOrder(
-        "error", "requestId", "written", "dropped", "unknownTypes", "nonTimeSeriesTypes");
+        "error", "requestId", "written", "dropped", "unknownTypes", "nonTimeSeriesTypes", "unavailableTypes");
     assertThat(openAPI.getPaths().get("/api/v1/ts/{database}/write").getPost()
         .getResponses().get("400").getContent().get("application/json").getSchema().get$ref())
         .isEqualTo("#/components/schemas/TimeSeriesWriteError");
