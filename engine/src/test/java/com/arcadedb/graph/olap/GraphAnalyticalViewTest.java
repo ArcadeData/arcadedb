@@ -3939,6 +3939,61 @@ class GraphAnalyticalViewTest extends TestHelper {
     gav.drop();
   }
 
+  /**
+   * Regression for #6775: an edge added and then deleted within the same not-yet-compacted overlay
+   * window (SYNCHRONOUS mode) must not surface as a live neighbour. The overlay's added-edge index is
+   * append-only — an edge is never removed from {@code addedEdgesPerType} — so
+   * {@link #getNeighborIds}/{@link #getVertices} and {@link #isConnectedTo} must exclude added
+   * neighbours whose pair the overlay also records as deleted. The base-CSR case is covered by
+   * {@link #getVerticesExcludesEdgesDeletedInOverlay}; this covers the overlay-added path.
+   */
+  @Test
+  void addedThenDeletedEdgeWithinOverlayWindowIsNotALiveNeighbour() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("add-then-del-edge")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+
+    final int aliceId = gav.getNodeId(alice.getIdentity());
+    final int bobId = gav.getNodeId(bob.getIdentity());
+
+    // Add the edge within the overlay window (no compaction in between).
+    database.begin();
+    alice.newEdge("FOLLOWS", bob);
+    database.commit();
+
+    // The freshly added edge is live in the overlay.
+    assertThat(gav.getVertices(aliceId, Vertex.DIRECTION.OUT, "FOLLOWS")).containsExactly(bobId);
+    assertThat(gav.isConnectedTo(aliceId, bobId, Vertex.DIRECTION.OUT, "FOLLOWS")).isTrue();
+
+    // Delete it in a later transaction, still within the same uncompacted overlay window.
+    database.begin();
+    alice.getIdentity().asVertex().getEdges(Vertex.DIRECTION.OUT, "FOLLOWS").forEach(e -> e.delete());
+    database.commit();
+
+    // The phantom edge must no longer be reported as a live neighbour.
+    assertThat(gav.getNeighborIds(aliceId, Vertex.DIRECTION.OUT, "FOLLOWS")).isEmpty();
+    assertThat(gav.getVertices(aliceId, Vertex.DIRECTION.OUT, "FOLLOWS")).isEmpty();
+    assertThat(gav.getVertices(bobId, Vertex.DIRECTION.IN, "FOLLOWS")).isEmpty();
+    assertThat(gav.isConnectedTo(aliceId, bobId, Vertex.DIRECTION.OUT, "FOLLOWS")).isFalse();
+    assertThat(gav.isConnectedTo(bobId, aliceId, Vertex.DIRECTION.IN, "FOLLOWS")).isFalse();
+    // Counts must agree with the neighbour lists.
+    assertThat(gav.countEdges(aliceId, Vertex.DIRECTION.OUT, "FOLLOWS")).isEqualTo(0);
+    assertThat(gav.countEdges(bobId, Vertex.DIRECTION.IN, "FOLLOWS")).isEqualTo(0);
+
+    gav.drop();
+  }
+
   @Test
   void incrementalDeleteVertex() {
     database.getSchema().createVertexType("Person");
