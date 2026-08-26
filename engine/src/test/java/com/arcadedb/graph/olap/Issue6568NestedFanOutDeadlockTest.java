@@ -153,6 +153,13 @@ class Issue6568NestedFanOutDeadlockTest {
    * Pinning discipline, as {@code QueryEngineManagerPoolTest} documents it: the pool is JVM-wide, the release latch
    * is counted down in a {@code finally} with no assertion before the {@code try}, and the test waits for the
    * workers to drain before returning so it cannot hand the next test class a busy pool.
+   * <p>
+   * <b>What that discipline rests on</b>, said out loud because it is a fact about the BUILD and not about this
+   * file: Surefire runs this project's test classes sequentially ({@code forkCount} 1, no {@code parallel} mode,
+   * and no {@code junit.jupiter.execution.parallel.enabled} in {@code junit-platform.properties}), so nothing else
+   * is using the shared pool while every one of its workers is pinned here. Enabling parallel test execution would
+   * make this class - and every other one that pins this singleton - able to wedge an unrelated test, so that
+   * change needs a home for these tests first. Same caveat {@code ParallelScanSafetyTest} carries.
    */
   @Test
   @Timeout(value = HANG_DETECTOR_SECONDS, unit = TimeUnit.SECONDS, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
