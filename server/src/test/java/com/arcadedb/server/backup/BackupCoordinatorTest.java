@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.backup;
 
+import com.arcadedb.integration.backup.BackupSettings;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -133,6 +134,24 @@ class BackupCoordinatorTest {
 
     assertThat(BackupCoordinator.parseArchiveTimestamp("mydb-backup-20260826-143000456.zip"))
         .isEqualTo(LocalDateTime.of(2026, 8, 26, 14, 30, 0, 456_000_000));
+  }
+
+  /**
+   * The convention exists twice - here, for everything the server writes, and as the default {@code BackupSettings}
+   * assigns a CLI or SQL backup that names no target, because the server cannot depend on the integration module
+   * (it reaches {@code Backup} reflectively so it stays buildable without it). Both write into the same directories,
+   * and retention reads both through the parser above, so the day one of them changes and the other does not is the
+   * day retention silently stops rotating half the archives. A comment asking the next editor to change both is not
+   * enforcement; this is.
+   */
+  @Test
+  void theDefaultNameOfACliOrSqlBackupFollowsTheSameConvention() {
+    final BackupSettings settings = new BackupSettings();
+    settings.databaseName = "mydb";
+    settings.validateSettings();
+
+    assertThat(settings.file).matches("mydb-backup-\\d{8}-\\d{9}\\.zip");
+    assertThat(BackupCoordinator.parseArchiveTimestamp(settings.file)).isNotNull();
   }
 
   @Test
