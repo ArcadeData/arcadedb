@@ -186,6 +186,38 @@ class ConsoleTest {
   }
 
   /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/6439: a script is loaded line by line, so a `CONTENT` clause whose JSON
+   * object spans multiple lines must keep accumulating exactly like a multi-line block comment does, rather than being reported
+   * as an unbalanced '{' on its first line - the closing '}' is simply on a line not read yet.
+   */
+  @Test
+  void loadScriptWithMultiLineJsonContent() throws Exception {
+    assertThat(console.parse("connect " + DB_NAME)).isTrue();
+
+    final File script = new File("./target/issue-6439.sql");
+    try {
+      Files.writeString(script.toPath(), """
+          create document type Loaded;
+          insert into Loaded content {
+            "id": 66
+          };
+          """);
+
+      final StringBuilder buffer = new StringBuilder();
+      console.setOutput(output -> buffer.append(output));
+
+      assertThat(console.parse("load " + script.getAbsolutePath())).isTrue();
+      assertThat(buffer.toString()).doesNotContain("ERROR");
+
+      buffer.setLength(0);
+      assertThat(console.parse("select from Loaded")).isTrue();
+      assertThat(buffer.toString()).contains("66").doesNotContain("ERROR");
+    } finally {
+      script.delete();
+    }
+  }
+
+  /**
    * Issue https://github.com/ArcadeData/arcadedb/issues/6372: an empty line in a script loaded with LOAD must not echo an
    * empty prompt of its own - only the real commands are echoed.
    */
