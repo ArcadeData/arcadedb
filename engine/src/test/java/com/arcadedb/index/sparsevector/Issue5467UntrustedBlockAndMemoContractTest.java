@@ -227,6 +227,50 @@ class Issue5467UntrustedBlockAndMemoContractTest extends TestHelper {
   }
 
   /**
+   * The maximum-width VarLong case, which the ascending-RID check cannot see: nine continuation bytes
+   * followed by a terminal {@code 0x02}. A tenth byte contributes only bit 63, so Java's shift
+   * discards the {@code 2}, and the delta decodes as a perfectly ordered zero. No encoder can produce
+   * that byte sequence - {@link VarInt#writeUnsignedVarLong} emits a tenth byte only for bit 63, with
+   * payload 0 or 1 - so the width is checked rather than the resulting value.
+   */
+  @Test
+  void aVarLongWiderThanALongReadsAsACorruptSegment() throws Exception {
+    final AtomicReference<SparseSegmentComponent> component = new AtomicReference<>();
+    inTx(() -> component.set(buildSegment("seg-5467-corrupt-varwidth", 640)));
+
+    final int[] blockLocator = new int[2];
+    inTx(() -> {
+      final PaginatedSegmentReader reader = new PaginatedSegmentReader(component.get());
+      try (final PaginatedSegmentDimCursor c = reader.openCursor(0)) {
+        blockLocator[0] = c.metadata().blockPageNum(1);
+        blockLocator[1] = c.metadata().blockOffset(1);
+      }
+    });
+
+    inTx(() -> {
+      final MutablePage page = component.get().modifyPage(blockLocator[0]);
+      final int payloadStart = blockLocator[1] + SegmentFormat.BLOCK_HEADER_SIZE;
+      for (int i = 0; i < VarInt.MAX_VARLONG_BYTES - 1; i++)
+        page.writeByte(payloadStart + i, (byte) 0x80);
+      // Payload 2 at shift 63: the bits Java throws away, leaving a delta of 0.
+      page.writeByte(payloadStart + VarInt.MAX_VARLONG_BYTES - 1, (byte) 0x02);
+    });
+
+    inTx(() -> {
+      final PaginatedSegmentReader reader = new PaginatedSegmentReader(component.get());
+      try (final PaginatedSegmentDimCursor c = reader.openCursor(0)) {
+        assertThatThrownBy(() -> {
+          c.start();
+          while (c.advance())
+            ;
+        }).isInstanceOf(IOException.class)
+            .hasMessageContaining("segment is corrupt")
+            .hasMessageContaining("payload bits past the width of a long");
+      }
+    });
+  }
+
+  /**
    * {@link DimCursor#blockBoundsAt} must hand back exactly what the two single-edge readers would for
    * the same probe. Fusing them is what lets the block-max skip consult the memo once instead of
    * twice, so it is worth pinning that the fusion is faithful and not merely fast - and that the pair

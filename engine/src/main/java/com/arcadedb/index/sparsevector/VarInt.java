@@ -64,6 +64,13 @@ public final class VarInt {
       if (shift >= 64)
         throw new IllegalStateException("VarLong overflow at position " + in.position());
       final byte b = in.get();
+      // A tenth byte is reached at shift 63 and contributes only bit 63, so {@link #writeUnsignedVarLong}
+      // can only ever emit 0 or 1 there. A larger payload is bits this shift would silently discard,
+      // which decodes a byte sequence no encoder produced into a plausible-looking small value - so it
+      // is rejected rather than truncated.
+      if (shift == 63 && (b & 0x7F) > 1)
+        throw new IllegalStateException("VarLong carries payload bits past the width of a long at position "
+            + in.position());
       result |= ((long) (b & 0x7F)) << shift;
       if ((b & 0x80) == 0)
         return result;

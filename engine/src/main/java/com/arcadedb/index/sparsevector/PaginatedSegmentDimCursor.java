@@ -540,6 +540,12 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
       // local offset instead of a ByteBuffer position (absolute reads only - see {@code pageBuf}),
       // and a method cannot return both the value and the bytes it consumed without either a second
       // pass or an allocation. This is the traversal's innermost loop.
+      // <p>
+      // {@code shift == 70} means a tenth byte was read, and a tenth byte contributes only bit 63, so
+      // its payload can be 0 or 1. Above that, the bits Java's shift silently discards would let a
+      // nine-continuation-bytes-then-{@code 0x02} encoding decode as a plausible small value that the
+      // ascending-order check below cannot see anything wrong with - so the width is checked once per
+      // VarLong, on a branch that is always false on anything a writer produced.
       int prevBucket = blockBuckets[0];
       long prevPosition = blockPositions[0];
       for (int i = 1; i < n; i++) {
@@ -553,6 +559,8 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
           bucketDelta |= ((long) (b & 0x7F)) << shift;
           shift += 7;
         } while ((b & 0x80) != 0);
+        if (shift == 70 && (b & 0x7F) > 1)
+          throw new IOException(corruptBlockMessage() + OVERWIDE_VARLONG);
         long secondField = 0L;
         shift = 0;
         do {
@@ -562,6 +570,8 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
           secondField |= ((long) (b & 0x7F)) << shift;
           shift += 7;
         } while ((b & 0x80) != 0);
+        if (shift == 70 && (b & 0x7F) > 1)
+          throw new IOException(corruptBlockMessage() + OVERWIDE_VARLONG);
         // Strictly ascending RIDs are a write-side invariant that the read side never checked:
         // SparseSegmentBuilder.appendInternal rejects a non-increasing RID and flushBlock fails loud
         // on a negative delta, precisely because "a negative delta would silently encode as a huge
@@ -610,6 +620,9 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
     weightResolved = false;
   }
 
+  private static final String OVERWIDE_VARLONG =
+      " (a VarLong carries payload bits past the width of a long, which no encoder can produce)";
+
   private String notAscending(final int previousBucketId, final long previousPosition) {
     return " (postings are not in strictly ascending RID order after #" + previousBucketId + ":" + previousPosition + ")";
   }
@@ -632,6 +645,9 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
       return;
     weightResolved = true;
     resolvedWeightCount++;
+    // Branching on the stride rather than on the quantization enum keeps this to an int compare on the
+    // hot path; the stride IS the quantization here, mapped once in the constructor, so a new width
+    // has to be added in both places.
     final int at = weightsOffset + currentInBlock * weightStride;
     if (weightStride == 1) {
       final byte b = pageBuf.get(at);
