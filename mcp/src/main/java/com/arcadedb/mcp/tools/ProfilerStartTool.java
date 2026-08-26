@@ -27,6 +27,9 @@ import com.arcadedb.server.security.ServerSecurityUser;
 
 public class ProfilerStartTool {
 
+  private static final int DEFAULT_TIMEOUT_SECONDS = 60;
+  private static final int MAX_TIMEOUT_SECONDS     = 3600;
+
   public static JSONObject getDefinition() {
     return new JSONObject()
         .put("name", "profiler_start")
@@ -41,9 +44,11 @@ public class ProfilerStartTool {
             .put("properties", new JSONObject()
                 .put("timeoutSeconds", new JSONObject()
                     .put("type", "integer")
-                    .put("description", "Recording timeout in seconds. The profiler auto-stops after this duration. Default: 60.")
+                    .put("description",
+                        "Recording timeout in seconds. The profiler auto-stops after this duration. Default: "
+                            + DEFAULT_TIMEOUT_SECONDS + ".")
                     .put("minimum", 1)
-                    .put("maximum", 3600)))
+                    .put("maximum", MAX_TIMEOUT_SECONDS)))
             .put("required", new JSONArray()));
   }
 
@@ -58,7 +63,11 @@ public class ProfilerStartTool {
     MCPToolUtils.checkServerAdmin(user, "profiler_start");
 
     final ServerQueryProfiler profiler = server.getQueryProfiler();
-    final int timeout = args.getInt("timeoutSeconds", 60);
+    final int timeout = args.getInt("timeoutSeconds", DEFAULT_TIMEOUT_SECONDS);
+    // The declared schema range is advisory - the MCP client is the one that would enforce it - so re-check it
+    // here, as every sibling tool does with its own window (issue #6762).
+    if (timeout < 1 || timeout > MAX_TIMEOUT_SECONDS)
+      throw new IllegalArgumentException("'timeoutSeconds' must be between 1 and " + MAX_TIMEOUT_SECONDS);
 
     if (profiler.isRecording()) {
       final JSONObject result = new JSONObject();

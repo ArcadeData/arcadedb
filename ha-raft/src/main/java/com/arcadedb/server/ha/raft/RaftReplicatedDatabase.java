@@ -593,7 +593,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // turn into a NeedRetryException telling the caller to retry a write that is durably committed.
       final RaftHAServer raft = raftHAServer;
       if (raft != null && committedLogIndex > 0) {
-        raft.waitForAppliedIndex(committedLogIndex);
+        raft.waitForAppliedIndex(getName(), committedLogIndex);
 
         // The wait degrades to best-effort on timeout, and releasing the locks below with the pages still
         // behind is exactly the pre-#5503 condition. waitForAppliedIndex does log, but as a READ_YOUR_WRITES
@@ -1511,14 +1511,16 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     if (consistency == null || consistency == Database.READ_CONSISTENCY.EVENTUAL)
       return;
 
+    // Scoped to THIS database: a snapshot install that gave up on one database publishes a read floor for it
+    // alone, and the healthy co-located databases must keep serving unclamped reads (issue #6760).
     if (consistency == Database.READ_CONSISTENCY.READ_YOUR_WRITES) {
       if (!isLeader() && ctx.readAfterIndex() >= 0)
-        raftHAServer.waitForAppliedIndex(ctx.readAfterIndex());
+        raftHAServer.waitForAppliedIndex(getName(), ctx.readAfterIndex());
     } else if (consistency == Database.READ_CONSISTENCY.LINEARIZABLE) {
       if (isLeader())
-        raftHAServer.ensureLinearizableRead();
+        raftHAServer.ensureLinearizableRead(getName());
       else
-        raftHAServer.ensureLinearizableFollowerRead();
+        raftHAServer.ensureLinearizableFollowerRead(getName());
     }
   }
 

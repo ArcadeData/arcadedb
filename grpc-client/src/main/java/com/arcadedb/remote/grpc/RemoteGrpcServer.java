@@ -77,8 +77,11 @@ public class RemoteGrpcServer implements AutoCloseable {
   // path off any DNS lookup.
   private final boolean                 refuseCredentialsOverChannel;
 
-  private ManagedChannel channel;
-  private EventLoopGroup eventLoopGroup;
+  // Volatile: mutated only under this object's monitor by start()/close(), but channel() and the stub factories
+  // read it WITHOUT the monitor, so without volatile a reader racing the first start() or a close() has no
+  // happens-before edge and may observe a stale (or half-published) value (issue #6762).
+  private volatile ManagedChannel channel;
+  private volatile EventLoopGroup eventLoopGroup;
 
   private ArcadeDbAdminServiceGrpc.ArcadeDbAdminServiceBlockingV2Stub adminServiceBlockingV2Stub;
 
@@ -148,14 +151,21 @@ public class RemoteGrpcServer implements AutoCloseable {
 
   /**
    * Returns a Channel (wrapped with interceptors if provided).
+   * <p>
+   * Reads the field ONCE per decision: re-reading it after the null check let a concurrent {@link #close()} turn the
+   * return value into {@code null} between the two reads, surfacing as an NPE inside gRPC rather than as a usable
+   * error (issue #6762).
    */
   public Channel channel() {
-
-    if (channel == null) {
+    ManagedChannel current = channel;
+    if (current == null) {
       start();
+      current = channel;
+      if (current == null)
+        throw new IllegalStateException("The gRPC channel to '" + host + "' is not available: the connection is closed");
     }
 
-    return interceptors.isEmpty() ? channel : ClientInterceptors.intercept(channel, interceptors);
+    return interceptors.isEmpty() ? current : ClientInterceptors.intercept(current, interceptors);
   }
 
   public ArcadeDbServiceGrpc.ArcadeDbServiceBlockingV2Stub newBlockingStub(int timeout) {

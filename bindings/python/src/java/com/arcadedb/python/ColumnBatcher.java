@@ -13,6 +13,8 @@ package com.arcadedb.python;
 
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
@@ -47,8 +49,8 @@ public final class ColumnBatcher {
   }
 
   public static byte[] nextColumnBatch(final ResultSet rs, final int max, final String joinedColumns) {
-    // empty joinedColumns: derive the column set from the first row
-    String[] columns = joinedColumns.isEmpty() ? null : joinedColumns.split(";");
+    // empty column spec: derive the column set from the first row
+    String[] columns = parseColumnSpec(joinedColumns);
     final List<Result> results = new ArrayList<>(Math.min(max, 1 << 16));
     while (results.size() < max && rs.hasNext())
       results.add(rs.next());
@@ -68,7 +70,11 @@ public final class ColumnBatcher {
     }
     final int count = rows.size();
 
-    final StringBuilder header = new StringBuilder("{\"count\":" + count + ",\"cols\":[");
+    // The header goes through JSONObject/JSONArray rather than string concatenation: a column name is an
+    // arbitrary query projection alias, so a name carrying a quote, a backslash or a control character used to
+    // emit invalid JSON and break the decode of the WHOLE batch on the Python side. RowBatcher already does it
+    // this way; the cost is n objects per batch, not per row.
+    final JSONArray headerColumns = new JSONArray();
     final ByteArrayOutputStream body = new ByteArrayOutputStream(count * n * 8);
 
     for (int c = 0; c < n; c++) {
@@ -227,17 +233,21 @@ public final class ColumnBatcher {
         colBuf = bb.array();
       }
 
-      if (c > 0)
-        header.append(',');
-      header.append("{\"name\":\"").append(columns[c]).append("\",\"type\":\"").append(type)
-          .append("\",\"nulls\":").append(nulls.length).append(",\"bytes\":").append(colBuf.length);
+      final JSONObject columnHeader = new JSONObject();
+      columnHeader.put("name", columns[c]);
+      columnHeader.put("type", type);
+      columnHeader.put("nulls", nulls.length);
+      columnHeader.put("bytes", colBuf.length);
       if (vdim > 0 && (type.equals("f4v") || type.equals("f8v")))
-        header.append(",\"dim\":").append(vdim);
-      header.append('}');
+        columnHeader.put("dim", vdim);
+      headerColumns.put(columnHeader);
       body.write(nulls, 0, nulls.length);
       body.write(colBuf, 0, colBuf.length);
     }
-    header.append("]}");
+
+    final JSONObject header = new JSONObject();
+    header.put("count", count);
+    header.put("cols", headerColumns);
 
     final byte[] headerBytes = header.toString().getBytes(StandardCharsets.UTF_8);
     final byte[] bodyBytes = body.toByteArray();
@@ -247,5 +257,27 @@ public final class ColumnBatcher {
     out.put(headerBytes);
     out.put(bodyBytes);
     return out.array();
+  }
+
+  /**
+   * Decodes the caller-supplied column spec, which pins the column set across the batches of one result set.
+   * <p>
+   * The canonical form is a JSON array, because the names are arbitrary projection aliases: the legacy
+   * {@code ';'}-joined form silently split a name that contained a semicolon into two bogus columns. The legacy
+   * form is still accepted so an older Python side paired with a newer bridge jar keeps working.
+   *
+   * @return the pinned column names, or {@code null} when the spec is empty and the set must be derived from the
+   *         first row
+   */
+  private static String[] parseColumnSpec(final String spec) {
+    if (spec == null || spec.isEmpty())
+      return null;
+    if (spec.charAt(0) != '[')
+      return spec.split(";");
+    final JSONArray names = new JSONArray(spec);
+    final String[] columns = new String[names.length()];
+    for (int i = 0; i < columns.length; i++)
+      columns[i] = names.getString(i);
+    return columns;
   }
 }

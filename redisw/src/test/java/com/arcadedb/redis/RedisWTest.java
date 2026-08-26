@@ -529,6 +529,46 @@ public class RedisWTest extends BaseGraphServerTest {
     assertThat(results.get(3)).isNull();
   }
 
+  /**
+   * Issue #6762 sibling (#6757): HMGET on a persistent composite index used to cast the key Object to String[]
+   * before handing it to JSONArray, so a bracketed composite key threw a ClassCastException while the very same
+   * key worked through the single-key HGET path. Both are asserted here so the two can never drift again.
+   */
+  @Test
+  void hmgetWithBracketedCompositeIndexKey() {
+    final Jedis jedis = new Jedis("localhost", DEF_PORT);
+    jedis.auth("root", DEFAULT_PASSWORD_FOR_TESTS);
+
+    final Database database = getServerDatabase(0, getDatabaseName());
+    database.command("sqlscript", "CREATE DOCUMENT TYPE Person;" +//
+        "CREATE PROPERTY Person.firstName STRING;" +//
+        "CREATE PROPERTY Person.lastName STRING;" +//
+        "CREATE INDEX ON Person (firstName, lastName) UNIQUE;");
+
+    jedis.hset(getDatabaseName(), "Person", "{'firstName':'Jay','lastName':'Miner'}");
+    jedis.hset(getDatabaseName(), "Person", "{'firstName':'Bill','lastName':'Herd'}");
+
+    final String indexKey = getDatabaseName() + ".Person[firstName,lastName]";
+
+    // HGET has always worked: it is the reference behaviour HMGET has to match.
+    final JSONObject viaHGet = new JSONObject(jedis.hget(indexKey, "[\"Jay\",\"Miner\"]"));
+    assertThat(viaHGet.getString("firstName")).isEqualTo("Jay");
+    assertThat(viaHGet.getString("lastName")).isEqualTo("Miner");
+
+    final List<String> results = jedis.hmget(indexKey, "[\"Jay\",\"Miner\"]", "[\"Bill\",\"Herd\"]", "[\"No\",\"Body\"]");
+    assertThat(results).hasSize(3);
+
+    final JSONObject jay = new JSONObject(results.get(0));
+    assertThat(jay.getString("firstName")).isEqualTo("Jay");
+    assertThat(jay.getString("lastName")).isEqualTo("Miner");
+
+    final JSONObject bill = new JSONObject(results.get(1));
+    assertThat(bill.getString("firstName")).isEqualTo("Bill");
+    assertThat(bill.getString("lastName")).isEqualTo("Herd");
+
+    assertThat(results.get(2)).isNull();
+  }
+
   @Override
   protected void populateDatabase() {
   }

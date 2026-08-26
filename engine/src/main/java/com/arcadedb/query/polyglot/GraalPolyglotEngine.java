@@ -32,9 +32,13 @@ import org.graalvm.polyglot.io.IOAccess;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.time.Duration;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeoutException;
 import java.util.logging.Level;
 
 /**
@@ -83,8 +87,13 @@ public class GraalPolyglotEngine implements AutoCloseable {
     this.allowedPackages = allowedPackages == null ? Collections.emptyList() : allowedPackages;
     this.restrictedPackages = restrictedPackages;
 
-    // DISABLED LIMIT BECAUSE THE CONTEXT IS INVOKED MULTIPLE TIMES
-    //final ResourceLimits limits = ResourceLimits.newBuilder().statementLimit(10000, null).build();
+    // No ResourceLimits here, and none is available: GraalVM CE's only limit is statementLimit(), which is
+    // CUMULATIVE over the life of a context and permanently cancels it once reached, so on a context that serves
+    // every command of a database it would eventually kill the engine on a legitimate workload. A per-execution
+    // context would let it back in, but the engine deliberately shares one so registerFunctions()' declarations
+    // survive across commands. The CPU bound is therefore enforced by PolyglotQueryEngine's timeout (which now
+    // cancels through Context.interrupt(), not only Thread.interrupt()); there is no allocation bound, because
+    // GraalVM CE exposes none (issue #6759).
 
     //final HostAccess hostAccess = HostAccess.newBuilder(HostAccess.ALL).targetTypeMapping(Double.class, Float.class, null, x -> x.floatValue()).build();
 
@@ -223,6 +232,87 @@ public class GraalPolyglotEngine implements AutoCloseable {
   public void setAttribute(final String name, final Object value) {
     context.getBindings(language).putMember(name, value);
     context.getPolyglotBindings().putMember(name, value);
+  }
+
+  /**
+   * Binds {@code parameters} for one evaluation and returns what they displaced, so
+   * {@link #restoreAttributes(Map)} can put the bindings back afterwards.
+   * <p>
+   * Parameters used to be bound and never removed. The context is shared by every caller on the database
+   * ({@code PolyglotQueryEngine} is a reusable engine), so a value passed by one command stayed visible to every
+   * later one - {@code command("js", "return x", Map.of("x", 5))} followed by {@code command("js", "return x")}
+   * returned 5 instead of failing, across callers (issue #6759).
+   * <p>
+   * A snapshot rather than a plain removal because a parameter may shadow a binding the engine itself owns
+   * (a parameter literally named {@code database}, or a function declared through {@link #eval(String)}):
+   * removing those would break every subsequent script instead of merely un-leaking one value.
+   *
+   * @return the displaced value per parameter name, {@code null} for a name that was not bound before
+   */
+  public Map<String, Value> setAttributes(final Map<String, Object> parameters) {
+    final Value languageBindings = context.getBindings(language);
+    final Map<String, Value> displaced = new HashMap<>(parameters.size());
+    for (final Map.Entry<String, Object> entry : parameters.entrySet()) {
+      final String name = entry.getKey();
+      displaced.put(name, languageBindings.hasMember(name) ? languageBindings.getMember(name) : null);
+      setAttribute(name, entry.getValue());
+    }
+    return displaced;
+  }
+
+  /**
+   * Undoes {@link #setAttributes(Map)}: a name that carried a value before the evaluation gets it back, one that
+   * did not is removed outright.
+   */
+  public void restoreAttributes(final Map<String, Value> displaced) {
+    for (final Map.Entry<String, Value> entry : displaced.entrySet()) {
+      final Value previous = entry.getValue();
+      if (previous != null)
+        setAttribute(entry.getKey(), previous);
+      else
+        removeAttribute(entry.getKey());
+    }
+  }
+
+  /** Unbinds {@code name} from both the language and the polyglot bindings. */
+  public void removeAttribute(final String name) {
+    removeMember(context.getBindings(language), name);
+    removeMember(context.getPolyglotBindings(), name);
+  }
+
+  private static void removeMember(final Value bindings, final String name) {
+    if (!bindings.hasMember(name))
+      return;
+    try {
+      bindings.removeMember(name);
+    } catch (final UnsupportedOperationException e) {
+      // A language whose top-level bindings refuse removal (or a member declared non-configurable by the script
+      // itself): overwriting with null still stops the value from leaking into the next command.
+      bindings.putMember(name, null);
+    }
+  }
+
+  /**
+   * Asks GraalVM to cancel whatever is executing in this context, waiting up to {@code timeout} for the guest
+   * frames to unwind.
+   * <p>
+   * {@code Future.cancel(true)} only interrupts the host thread, which a guest loop ignores unless the language
+   * happens to poll for it; {@code Context.interrupt} is the supported cancellation and unwinds the guest stack at
+   * the next safepoint. It matters because every command on the database serialises on this one context, so a
+   * script that outlives its timeout without releasing it blocks the whole engine (issue #6759).
+   *
+   * @return {@code true} when the context came to rest within {@code timeout}
+   */
+  public boolean interrupt(final Duration timeout) {
+    try {
+      context.interrupt(timeout);
+      return true;
+    } catch (final TimeoutException e) {
+      return false;
+    } catch (final IllegalStateException e) {
+      // Called from a thread that is itself inside the context: nothing to interrupt from here.
+      return true;
+    }
   }
 
   public static boolean isCriticalError(final PolyglotException e) {
