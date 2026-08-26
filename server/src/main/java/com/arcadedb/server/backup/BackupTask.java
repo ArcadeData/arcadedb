@@ -80,6 +80,11 @@ public class BackupTask implements Runnable {
     // on every single tick after a drop. The plugin cancels the schedule on the unregister callback; this check is
     // the belt-and-braces half, and also covers the window while an HA snapshot install has the database
     // unregistered (issue #6752).
+    //
+    // It keys off the registry, not off the database being open, so a database closed WITHOUT going through
+    // removeDatabase() still looks present here: no unregister callback fired, the schedule is still installed, and
+    // every tick reaches performBackup() and skips there instead. That costs a wakeup and a FINE line per tick and
+    // nothing else - it still cannot reopen the database - and removeDatabase() is the path every caller uses.
     if (!server.existsDatabase(databaseName)) {
       LogManager.instance().log(this, Level.FINE,
           "Skipping backup for database '%s' - not available on this server", databaseName);
