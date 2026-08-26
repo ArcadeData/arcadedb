@@ -2934,6 +2934,12 @@ class GraphAnalyticalViewTest extends TestHelper {
         .as("both views' persisted CSRs must still be provisionally READY, unresolved, right after reopen")
         .isEqualTo(GraphAnalyticalView.Status.READY);
     assertThat(likes.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+    assertThat(follows.isBuilt())
+        .as("precondition for the relaxed post-lookup assertion below: FOLLOWS must have nothing loaded yet "
+            + "(status READY here is the provisional, pre-dispatch one), so that assertion's READY branch "
+            + "can only be satisfied by a restore this lookup itself dispatched, not one already resolved "
+            + "before it ran")
+        .isFalse();
 
     // A query for FOLLOWS only: findProvider() must resolve the FOLLOWS view's deferred restore as a side
     // effect of checking it, but must never even look at whether LIKES is ready - it doesn't cover FOLLOWS.
