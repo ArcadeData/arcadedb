@@ -16,24 +16,24 @@ fix):
 - In the **live, non-compaction** merge path (`merge(delta, baseMapping)`), every
   genuinely new edge add is unconditionally recorded in `addedEdgesPerType`, keyed by its
   own RID. So a later deletion of that same RID **always** finds it there and takes the
-  "withdraw the add" branch (#6775) — which is safe regardless of what
+  "withdraw the add" branch (#6775), which is safe regardless of what
   `deletedEdgeRIDsPerType` already holds. The dedup Set is never consulted for a
   same-window add+delete pair.
 - The **only** way an edge's add is *not* recorded in `addedEdgesPerType` is the
   post-compaction buffered-delta re-application path (`merge(delta, baseMapping,
   baseCsrPerType)`, #4588): if the freshly built base CSR already contains the edge's
   pair (the read-committed scan crossed its bucket after the edge committed), the add is
-  skipped as "already represented by the fresh base CSR" — the edge is treated as part of
+  skipped as "already represented by the fresh base CSR", the edge is treated as part of
   the base, not tracked by identity.
 
 Combining these: if an edge E1 is deleted (RID `r` recorded in
-`deletedEdgeRIDsPerType`), and — within the same buffered-delta replay, in commit order —
+`deletedEdgeRIDsPerType`), and, within the same buffered-delta replay, in commit order,
 a **different** edge E2 is created reusing RID `r` (physically possible only after E1's
 delete freed the slot) and the fresh base CSR already reflects E2 (so its add is skipped
 per #4588), then E2's own later deletion looks up `r` in `deletedEdgeRIDsPerType`, finds
 it already present (from E1), and is silently dropped by `Set.add()` returning `false`.
 
-The window is exactly the post-compaction buffered-delta replay of one compaction cycle —
+The window is exactly the post-compaction buffered-delta replay of one compaction cycle,
 narrower than "the whole overlay lifetime" the issue worried about, but real.
 
 ## Fix
@@ -44,15 +44,15 @@ path), also drop that RID from `deletedEdgeRIDsPerType` for the edge type, if pr
 Going forward, that RID's dedup identity belongs to the edge the fresh base now says is
 live at that physical slot, not to whatever edge originally recorded a deletion under it.
 This does not disturb the earlier deletion's already-recorded exclusion budget
-(`deletedEdgesPerType`, keyed by pair, not RID) — only the identity-dedup Set entry that
+(`deletedEdgesPerType`, keyed by pair, not RID), only the identity-dedup Set entry that
 would otherwise falsely absorb a later, unrelated deletion under the same reused RID.
 
 ## Test plan
 
 - `DeltaOverlayCompactionDedupTest.deletionOfDifferentEdgeReusingAReplayedRidIsNotDropped()`
-  (new): reproduces the exact 3-step buffered-delta sequence above — delete E1 (pair
-  0→1, RID r), add E2 (pair 0→2, RID r, already in the fresh base CSR so skipped), delete
-  E2 (pair 0→2, RID r) — and asserts E2's deletion is recorded (count, `isEdgeDeleted`,
+  (new): reproduces the exact 3-step buffered-delta sequence above: delete E1 (pair
+  0→1, RID r); add E2 (pair 0→2, RID r, already in the fresh base CSR so skipped); delete
+  E2 (pair 0→2, RID r). Asserts E2's deletion is recorded (count, `isEdgeDeleted`,
   `deltaEdgeCount`) without disturbing E1's own recorded exclusion.
 - Full `DeltaOverlayTest` + `DeltaOverlayCompactionDedupTest` suites, to confirm the #4587
   and #6769/#6775 regression coverage stays green.
