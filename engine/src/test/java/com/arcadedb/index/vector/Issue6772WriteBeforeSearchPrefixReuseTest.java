@@ -141,7 +141,10 @@ class Issue6772WriteBeforeSearchPrefixReuseTest {
     try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
       final Database db = factory.open();
       try {
-        try (final ResultSet rs = db.query("sql", "SELECT count(*) as cnt FROM Doc")) {
+        // count(`@rid`) rather than count(*): the latter answers from the maintained counter, which is written by
+        // the very session kill() interrupted, so it can agree with the expected number while the records are
+        // absent. This precondition is about what WAL recovery actually restored, so it has to count records.
+        try (final ResultSet rs = db.query("sql", "SELECT count(`@rid`) as cnt FROM Doc")) {
           assertThat(rs.next().<Long>getProperty("cnt"))
               .as("precondition: WAL recovery must have restored every record from the crashed session")
               .isEqualTo((long) (NUM_VECTORS + GAP_VECTORS));
