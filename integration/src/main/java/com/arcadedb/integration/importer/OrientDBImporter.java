@@ -1155,6 +1155,11 @@ public class OrientDBImporter {
       final DocumentType type = database.getSchema().getType(className);
 
       final String[] properties = new String[fieldDefinitions.size()];
+
+      // THE PROPERTIES THIS INDEX NEEDS AND THE SCHEMA DOES NOT DECLARE YET. THEY ARE CREATED ONLY ONCE EVERY FIELD
+      // OF THE COMPOSITE HAS BEEN VALIDATED: DECLARING THEM WHILE WALKING THE LIST WOULD LEAVE A PROPERTY BEHIND ON
+      // THE TYPE WHEN A LATER FIELD TURNS OUT TO BE UNMAPPABLE AND THE WHOLE INDEX IS THEN SKIPPED.
+      final Map<String, Type> propertiesToDeclare = new LinkedHashMap<>();
       boolean valid = !fieldDefinitions.isEmpty();
 
       for (int i = 0; valid && i < fieldDefinitions.size(); i++) {
@@ -1167,14 +1172,14 @@ public class OrientDBImporter {
 
         properties[i] = fieldName;
 
-        if (!type.existsPolymorphicProperty(fieldName)) {
+        if (!type.existsPolymorphicProperty(fieldName) && !propertiesToDeclare.containsKey(fieldName)) {
           final Type keyType = parseKeyType((String) fieldDefinition.get("keyType"));
           if (keyType == null) {
             valid = false;
             break;
           }
 
-          type.createProperty(fieldName, keyType);
+          propertiesToDeclare.put(fieldName, keyType);
         }
       }
 
@@ -1186,6 +1191,9 @@ public class OrientDBImporter {
         ++warnings;
         continue;
       }
+
+      for (final Map.Entry<String, Type> property : propertiesToDeclare.entrySet())
+        type.createProperty(property.getKey(), property.getValue());
 
       // PATCH TO ALWAYS USE SKIP BECAUSE IN ORIENTDB AN INDEX WITHOUT THE IGNORE SETTINGS CAN STILL HAVE NULL
       // PROPERTIES INDEXES. THE EXPORTED `nullValuesIgnored` FLAG IS THEREFORE DELIBERATELY NOT READ: IT IS

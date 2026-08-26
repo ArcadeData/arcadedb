@@ -193,6 +193,14 @@ public class AutoBackupSchedulerPlugin implements ServerPlugin {
    * two threads can deliver "registered" last and leave a schedule behind for a database that is already gone.
    * Deciding from the registry as it is now makes the outcome depend on the registry rather than on the delivery
    * order, so whichever callback runs last converges on the right answer.
+   * <p>
+   * On the cost side: the callback can run on a thread that still holds the server's database lock (the HA snapshot
+   * installer holds it across its whole close-&gt;swap-&gt;reopen), and the scheduling branch resolves the effective
+   * config, which stats - and, when it exists, reads - the per-database `backup.json` override. That is deliberate
+   * rather than overlooked: the branch that removes a schedule touches nothing but memory, and every path that can
+   * deliver a registration under that lock has just opened or reopened a whole database under it, so one stat is not
+   * what makes those paths slow. Caching the override instead would trade a stat for a staleness window on a file an
+   * operator edits expecting the next reload to pick it up.
    */
   private void syncDatabase(final String databaseName) {
     if (!enabled || scheduler == null)

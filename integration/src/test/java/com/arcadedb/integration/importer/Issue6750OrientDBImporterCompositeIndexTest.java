@@ -162,6 +162,47 @@ class Issue6750OrientDBImporterCompositeIndexTest {
   }
 
   /**
+   * An index whose key types are only partly mappable is skipped whole. A composite whose first field is mappable and
+   * whose second is not must not leave the first field's property behind on the type: the property would then exist
+   * for an index that was never built, and the only trace would be a verbose-level warning.
+   */
+  @Test
+  void anUnmappableFieldLeavesNoHalfDeclaredSchemaBehind() throws Exception {
+    final File export = tempDir.resolve("unmappable-export.gz").toFile();
+
+    OrientDBExportFixture.write(export, "unmappable",
+        """
+        {"name":"Person","default-cluster-id":3,"cluster-ids":[3],"cluster-selection":"round-robin"}""",
+        """
+        {"@type":"d","@version":0,"name":"Person.zone_tags","indexVersion":4,\
+        "indexDefinition":{"@type":"d","@version":0,"className":"Person","indexDefinitions":[\
+        {"@type":"d","field":"zone","className":"Person","keyType":"STRING"},\
+        {"@type":"d","field":"tags","className":"Person","keyType":"LINKBAG"}]},\
+        "type":"NOTUNIQUE",\
+        "indexDefinitionClass":"com.orientechnologies.orient.core.index.OCompositeIndexDefinition"}""",
+        "");
+
+    final OrientDBImporter importer = new OrientDBImporter(
+        ("-i " + export.getAbsolutePath() + " -d " + DATABASE_PATH + " -o").split(" "));
+    importer.run().close();
+
+    assertThat(importer.isError()).isFalse();
+
+    try (final DatabaseFactory factory = new DatabaseFactory(DATABASE_PATH)) {
+      final Database database = factory.open();
+      try {
+        assertThat(database.getSchema().getType("Person").getAllIndexes(true)).isEmpty();
+
+        // `zone` IS MAPPABLE AND COMES FIRST, BUT ITS INDEX WAS NEVER BUILT, SO IT MUST NOT HAVE BEEN DECLARED.
+        assertThat(database.getSchema().getType("Person").existsProperty("zone")).isFalse();
+        assertThat(database.getSchema().getType("Person").existsProperty("tags")).isFalse();
+      } finally {
+        database.drop();
+      }
+    }
+  }
+
+  /**
    * A single-property definition that omits the optional `nullValuesIgnored` flag used to unbox a null and abort the
    * creation of every remaining index of the import.
    */
