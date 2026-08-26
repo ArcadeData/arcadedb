@@ -72,7 +72,8 @@ class Issue6751GraphSONMultiPropertyTest {
       assertThat(n1.get("name")).isEqualTo("Marko");
       assertThat(n2.get("name")).isEqualTo("Vadas");
 
-      // ENTRIES A PRODUCER LISTED AS BARE TYPED VALUES, WITHOUT THE {id, value} WRAPPER, ARE IMPORTED TOO.
+      // ENTRIES A PRODUCER LISTED AS BARE TYPED VALUES, WITHOUT THE {id, value} WRAPPER, ARE IMPORTED TOO - AND A
+      // TYPED ENTRY WHOSE `@value` IS JSON NULL IS DROPPED RATHER THAN THROWN ON, WHICH WOULD ABORT THE IMPORT.
       assertThat((Iterable<Object>) n2.get("port")).containsExactly(8080, 9090);
     } finally {
       database.drop();

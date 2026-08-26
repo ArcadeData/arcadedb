@@ -53,6 +53,9 @@ public class AutoBackupSchedulerPlugin implements ServerPlugin {
   private BackupScheduler        scheduler;
   private BackupRetentionManager retentionManager;
   private boolean                enabled;
+  // Serialises the per-database reconciliation so the callback that reads the registry last is also the one that
+  // writes the schedule last (issue #6752).
+  private final Object           lifecycleLock = new Object();
 
   @Override
   public void configure(final ArcadeDBServer arcadeDBServer, final ContextConfiguration configuration) {
@@ -206,13 +209,18 @@ public class AutoBackupSchedulerPlugin implements ServerPlugin {
     if (!enabled || scheduler == null)
       return;
 
-    if (server.existsDatabase(databaseName))
-      scheduleDatabase(databaseName);
-    else {
-      cancelDatabase(databaseName);
+    // Reading the registry and updating the schedule have to happen as one step: two callbacks for the same database
+    // that interleave their read and their write can otherwise let the stale one land last, which is exactly the
+    // outcome reconciling was meant to rule out.
+    synchronized (lifecycleLock) {
+      if (server.existsDatabase(databaseName))
+        scheduleDatabase(databaseName);
+      else {
+        cancelDatabase(databaseName);
 
-      if (retentionManager != null)
-        retentionManager.unregisterDatabase(databaseName);
+        if (retentionManager != null)
+          retentionManager.unregisterDatabase(databaseName);
+      }
     }
   }
 
@@ -291,13 +299,13 @@ public class AutoBackupSchedulerPlugin implements ServerPlugin {
 
     this.backupConfig = newConfig;
 
-    // Re-schedule all databases with new configuration
+    // Re-schedule all databases with the new configuration. syncDatabase() re-reads the registry and takes the
+    // lifecycle lock, so a reload cannot interleave with a concurrent create/drop callback. scheduleBackup() cancels
+    // any schedule the database already had, so no separate cancel pass is needed.
     if (scheduler != null) {
       final Set<String> databaseNames = server.getDatabaseNames();
-      for (final String databaseName : databaseNames) {
-        scheduler.cancelBackup(databaseName);
-        scheduleDatabase(databaseName);
-      }
+      for (final String databaseName : databaseNames)
+        syncDatabase(databaseName);
     }
 
     LogManager.instance().log(this, Level.INFO, "Auto-backup configuration reloaded");
