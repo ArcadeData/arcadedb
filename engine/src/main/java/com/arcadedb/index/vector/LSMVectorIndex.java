@@ -1219,6 +1219,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
             .log(this, Level.WARNING, "Could not load vectors from pages for index %s: %s", indexName, e.getMessage());
         this.graphState = GraphState.LOADING;
       } finally {
+        // The load may have thrown AFTER inserting entries, and the failure above is swallowed by design (one
+        // attempt, carry on with whatever was read). Leaving the allocator at 0 on top of those entries is exactly
+        // what allocateVectorId() exists to prevent: the next put() would hand out 0, 1, 2... and addOrUpdate
+        // would supersede live vectors instead of adding new ones (issue #6762). A no-op on the success path,
+        // where loadVectorsFromPages() already computed the same value.
+        syncNextIdWithResidentLocations();
         // Written last, and volatile: a thread that reads it true has a happens-before edge on every entry the
         // loop above put into the map, which is what lets vectorIndex()'s fast path hand the instance out with no
         // lock at all. Set even when the load threw, so the one-attempt contract above holds.
@@ -3753,7 +3759,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
               getTotalPages(), residentLocations.size());
 
       int entriesRead = 0;
-      int maxVectorId = -1;
 
       // Load from compacted sub-index first (if it exists)
       if (compactedSubIndex != null) {
@@ -3772,8 +3777,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Compute nextId from the maximum vector ID found across both files. Tombstoned ids are not resident
       // (issue #5516) but they were still handed out, so the location index's own high-water mark - which every
       // addOrUpdate advances, tombstones included - is what guarantees an id is never reused.
-      maxVectorId = residentLocations.getAllVectorIds().max().orElse(-1);
-      nextId.set(Math.max(maxVectorId + 1, residentLocations.getNextId()));
+      syncNextIdWithResidentLocations();
 
       LogManager.instance().log(this, Level.FINE,
           "loadVectorsFromPages DONE: Loaded " + residentLocations.size() + " vector locations (" + entriesRead
@@ -3791,9 +3795,27 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Graph initialization is handled separately by the constructor and ensureGraphAvailable()
 
     } catch (final Exception e) {
+      // A parse that threw partway may already have inserted entries, and materializeLocations() swallows this
+      // failure while still marking the (one-attempt) materialisation done. Leaving nextId at 0 on top of those
+      // entries is exactly what allocateVectorId() exists to prevent: the next put() would hand out 0, 1, 2... and
+      // addOrUpdate would supersede live vectors. Advance the allocator over whatever was actually read before
+      // propagating the failure (issue #6762).
+      syncNextIdWithResidentLocations();
       LogManager.instance().log(this, Level.SEVERE, "Error loading vectors from pages", e);
       throw new IndexException("Error loading vectors from pages", e);
     }
+  }
+
+  /**
+   * Points {@link #nextId} past every id the location index has ever handed out.
+   * <p>
+   * Tombstoned ids are not resident (issue #5516) but they were still allocated, so the location index's own
+   * high-water mark - which every {@code addOrUpdate} advances, tombstones included - is the other half of the
+   * bound.
+   */
+  private void syncNextIdWithResidentLocations() {
+    final int maxVectorId = residentLocations.getAllVectorIds().max().orElse(-1);
+    nextId.set(Math.max(maxVectorId + 1, residentLocations.getNextId()));
   }
 
   /**

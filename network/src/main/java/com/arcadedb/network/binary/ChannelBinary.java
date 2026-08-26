@@ -275,22 +275,27 @@ public abstract class ChannelBinary extends Channel implements ChannelDataInput,
       super.flush();
   }
 
+  /**
+   * Closes the output side before the input side (issue #6761): {@code in.close()} closes the underlying socket, so
+   * closing it first turned the {@code out.close()} that should have flushed the last buffered bytes into a failed
+   * write, silently dropping them with a FINE log.
+   */
   @Override
   public synchronized void close() {
-    try {
-      if (in != null) {
-        in.close();
-      }
-    } catch (final IOException e) {
-      LogManager.instance().log(this, Level.FINE, "Error during closing of input stream", e);
-    }
-
     try {
       if (out != null) {
         out.close();
       }
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.FINE, "Error during closing of output stream", e);
+    }
+
+    try {
+      if (in != null) {
+        in.close();
+      }
+    } catch (final IOException e) {
+      LogManager.instance().log(this, Level.FINE, "Error during closing of input stream", e);
     }
 
     super.close();

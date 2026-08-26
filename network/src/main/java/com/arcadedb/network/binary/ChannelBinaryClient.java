@@ -61,9 +61,18 @@ public class ChannelBinaryClient extends ChannelBinary {
         throw new NetworkProtocolException("Error on reading data from remote server " + socket.getRemoteSocketAddress() + ": ", e);
       }
 
-    } catch (final RuntimeException e) {
-      if (socket.isConnected())
+    } catch (final Throwable e) {
+      // Every failure path above throws a CHECKED exception (IOException / SocketException / the wrapping
+      // NetworkProtocolException), so a catch limited to RuntimeException never ran at all, and the
+      // isConnected() guard inside it was wrong anyway: a connect that failed leaves the socket unconnected.
+      // On JDK 21 the descriptor is not actually leaked - NioSocketImpl releases it itself when connect()
+      // fails - so this closes a dead code path rather than a live leak, and keeps the cleanup honest for any
+      // socket implementation (SSL, a future JDK) that does hold on to it (issue #6761).
+      try {
         socket.close();
+      } catch (final IOException ignore) {
+        // closing a socket that never connected is best-effort; the original failure is what the caller needs
+      }
       throw e;
     }
   }

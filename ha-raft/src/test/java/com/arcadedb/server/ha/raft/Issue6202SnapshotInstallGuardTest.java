@@ -40,6 +40,7 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Proxy;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -270,14 +271,17 @@ class Issue6202SnapshotInstallGuardTest {
 
   /** Records the endpoints the install hands it, and does nothing else: no network, no databases. */
   private static class CapturingReconciler extends DatabaseReconciler {
-    private volatile String httpAddr;
-    private volatile String httpsAddr;
+    private volatile String      httpAddr;
+    private volatile String      httpsAddr;
+    /** What the reconcile reports as not brought to the snapshot index (issue #6760); nothing, by default. */
+    private volatile Set<String> givenUp = Set.of();
 
     @Override
-    void reconcileDatabasesFromLeader(final String leaderHttpAddr, final String leaderHttpsAddr,
+    Set<String> reconcileDatabasesFromLeader(final String leaderHttpAddr, final String leaderHttpsAddr,
         final String clusterToken) {
       this.httpAddr = leaderHttpAddr;
       this.httpsAddr = leaderHttpsAddr;
+      return givenUp;
     }
   }
 

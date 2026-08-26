@@ -83,6 +83,19 @@ public class DatabaseReconciler {
   }
 
   /**
+   * What a reconcile pass concluded (issue #6760).
+   *
+   * @param retryWorthwhile whether at least one failed database is still inside its retry budget, so the overall
+   *                        install should be failed and Ratis made to re-drive it
+   * @param givenUp         the databases that failed and have EXHAUSTED that budget. The install proceeds without
+   *                        them - which is the point of the budget - so the caller has to remember that these
+   *                        databases are NOT at the snapshot index, or the node would ACK the index and advertise
+   *                        itself caught up over stale data
+   */
+  public record ReconcileVerdict(boolean retryWorthwhile, Set<String> givenUp) {
+  }
+
+  /**
    * Per-database auto-acquisition status (issue #4727), surfaced in the cluster status endpoint and the
    * Studio HA panel. Updated by {@link #reconcileDatabasesFromLeader} as a joining node reconciles its
    * local database set against the leader's.
@@ -186,10 +199,14 @@ public class DatabaseReconciler {
    * {@link AcquireState#LEADER_MISSING} alert plus the leadership-transfer flow cover the #4522 redistribution
    * edge, so this boundary is not reachable in normal operation.
    *
-   * @throws IOException if a database install fails (so the caller leaves the Ratis snapshot install incomplete
-   *                     and Ratis re-triggers it; installs are idempotent).
+   * @return the databases this pass gave up on, i.e. that failed and have exhausted their retry budget so the
+   *         install is allowed to proceed without them. The caller MUST treat those as not-at-the-snapshot-index
+   *         (issue #6760). Empty on every clean pass and on every path that fails the install outright.
+   *
+   * @throws IOException if a database install fails while still inside its retry budget (so the caller leaves the
+   *                     Ratis snapshot install incomplete and Ratis re-triggers it; installs are idempotent).
    */
-  void reconcileDatabasesFromLeader(final String leaderHttpAddr, final String leaderHttpsAddr,
+  Set<String> reconcileDatabasesFromLeader(final String leaderHttpAddr, final String leaderHttpsAddr,
       final String clusterToken) throws IOException {
 
     final boolean autoAcquire = server.getConfiguration().getValueAsBoolean(
@@ -197,7 +214,7 @@ public class DatabaseReconciler {
 
     if (!autoAcquire) {
       refreshExistingDatabases(leaderHttpAddr, leaderHttpsAddr, clusterToken);
-      return;
+      return Set.of();
     }
 
     // Enumerate the leader's databases via the existing bootstrap-state RPC. On failure, degrade to the legacy
@@ -215,13 +232,13 @@ public class DatabaseReconciler {
           "Interrupted while listing the leader's databases for auto-acquire; refreshing only the databases "
               + "already present locally.");
       refreshExistingDatabasesOrFailWhenEmpty(leaderHttpAddr, leaderHttpsAddr, clusterToken);
-      return;
+      return Set.of();
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING,
           "Could not list the leader's databases for auto-acquire (%s); refreshing only the databases already "
               + "present locally. Missing databases will be retried on the next reconcile.", e.getMessage());
       refreshExistingDatabasesOrFailWhenEmpty(leaderHttpAddr, leaderHttpsAddr, clusterToken);
-      return;
+      return Set.of();
     }
 
     // Build the leader's database set. Skip entries the leader reported it could not open (lastTxId < 0): such a
@@ -267,9 +284,11 @@ public class DatabaseReconciler {
     // Apply the status-map / failure-counter bookkeeping and decide whether to fail the overall install so Ratis
     // re-triggers it. Extracted to a package-private method so these transitions are unit-testable without a live
     // cluster (the InstallSnapshot path is not deterministically reachable in-process - see SnapshotAcquireNewDatabaseIT).
-    if (applyReconcileOutcome(plan, outcome))
+    final ReconcileVerdict verdict = applyReconcileOutcome(plan, outcome);
+    if (verdict.retryWorthwhile())
       throw new IOException(String.format("Reconcile from leader had database failure(s); will retry (acquire=%s, refresh=%s)",
           outcome.acquireFailures(), outcome.refreshFailures()));
+    return verdict.givenUp();
   }
 
   /**
@@ -278,11 +297,13 @@ public class DatabaseReconciler {
    * leader/network I/O so the FAILED/ACQUIRED/LEADER_MISSING transitions and the give-up decision are directly
    * unit-testable.
    *
-   * @return {@code true} if at least one failed database is still within its retry budget
-   *         ({@link #ACQUIRE_GIVE_UP_AFTER}); {@code false} when there were no failures, or every failure has
-   *         exhausted its budget (so a persistently bad database no longer forces the whole install to re-run).
+   * @return a {@link ReconcileVerdict} carrying whether at least one failed database is still within its retry
+   *         budget ({@link #ACQUIRE_GIVE_UP_AFTER}) - {@code false} when there were no failures, or every failure
+   *         has exhausted its budget, so a persistently bad database no longer forces the whole install to re-run -
+   *         together with the databases that exhausted it, which the caller must not treat as installed
+   *         (issue #6760).
    */
-  boolean applyReconcileOutcome(final ReconcilePlan plan, final ReconcileOutcome outcome) {
+  ReconcileVerdict applyReconcileOutcome(final ReconcilePlan plan, final ReconcileOutcome outcome) {
     // acquireStatuses records only genuine acquisitions, so operators can tell a true pull from a routine refresh.
     // A success also resets the consecutive-failure counter for that database.
     for (final String dbName : outcome.acquired()) {
@@ -316,19 +337,20 @@ public class DatabaseReconciler {
     // FAILED and is still attempted on the next *natural* InstallSnapshot - which already re-downloads every
     // database anyway - so it can still recover if the leader's copy is later fixed; it just no longer hot-loops.
     boolean retryWorthwhile = false;
+    final Set<String> givenUp = new HashSet<>();
     for (final String dbName : outcome.acquireFailures().keySet())
-      retryWorthwhile |= bumpFailureAndShouldRetry(dbName);
+      retryWorthwhile |= bumpFailureOrGiveUp(dbName, givenUp);
     for (final String dbName : outcome.refreshFailures().keySet())
-      retryWorthwhile |= bumpFailureAndShouldRetry(dbName);
-    return retryWorthwhile;
+      retryWorthwhile |= bumpFailureOrGiveUp(dbName, givenUp);
+    return new ReconcileVerdict(retryWorthwhile, givenUp);
   }
 
   /**
    * Increments the consecutive-failure counter for a database and returns whether it is still within the retry
-   * budget ({@link #ACQUIRE_GIVE_UP_AFTER}). Once exceeded, logs once and returns false so the caller stops
-   * forcing Ratis to re-trigger the whole install for this one database.
+   * budget ({@link #ACQUIRE_GIVE_UP_AFTER}). Once exceeded, logs once, records the database in {@code givenUp} and
+   * returns false so the caller stops forcing Ratis to re-trigger the whole install for this one database.
    */
-  private boolean bumpFailureAndShouldRetry(final String dbName) {
+  private boolean bumpFailureOrGiveUp(final String dbName, final Set<String> givenUp) {
     final int count = acquireFailureCounts.merge(dbName, 1, Integer::sum);
     if (count < ACQUIRE_GIVE_UP_AFTER)
       return true;
@@ -337,6 +359,9 @@ public class DatabaseReconciler {
           "Database '%s' failed to acquire/refresh %d times in a row; leaving it FAILED and no longer re-triggering "
               + "the snapshot install for it (it will be retried on the next install). Check the leader's copy.",
           dbName, count);
+    // Reported to the caller so the install does not record this database as being at the snapshot index: giving up
+    // on the RETRY must not be the same thing as declaring the database installed (issue #6760).
+    givenUp.add(dbName);
     return false;
   }
 

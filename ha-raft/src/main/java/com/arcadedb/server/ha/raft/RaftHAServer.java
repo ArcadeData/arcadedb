@@ -2683,7 +2683,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * LINEARIZABLE path - see {@link #waitForAppliedIndex(long, boolean)}.
    */
   public void waitForAppliedIndex(final long targetIndex) {
-    waitForAppliedIndex(targetIndex, false);
+    waitForAppliedIndex(null, targetIndex, false);
+  }
+
+  /** Database-scoped lenient overload: see {@link #waitForAppliedIndex(String, long, boolean)}. */
+  public void waitForAppliedIndex(final String databaseName, final long targetIndex) {
+    waitForAppliedIndex(databaseName, targetIndex, false);
   }
 
   /**
@@ -2703,13 +2708,23 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    *                              reached before the local applied index catches up.
    */
   public void waitForAppliedIndex(final long targetIndex, final boolean throwOnTimeout) {
+    waitForAppliedIndex(null, targetIndex, throwOnTimeout);
+  }
+
+  /**
+   * As {@link #waitForAppliedIndex(long, boolean)}, but scoped to the database the read targets so a per-database
+   * read floor applies (issue #6760).
+   *
+   * @param databaseName the database the read targets, or {@code null} for a node-wide wait
+   */
+  public void waitForAppliedIndex(final String databaseName, final long targetIndex, final boolean throwOnTimeout) {
     if (targetIndex <= 0)
       return;
     try {
       final long deadline = System.currentTimeMillis() + quorumTimeout;
       synchronized (applyNotifier) {
-        while (getTrustedAppliedIndex() < targetIndex) {
-          if (!throwOnTimeout && getStaleSnapshotAppliedFloor() >= 0) {
+        while (getTrustedAppliedIndex(databaseName) < targetIndex) {
+          if (!throwOnTimeout && (getStaleSnapshotAppliedFloor() >= 0 || getDatabaseAppliedFloor(databaseName) >= 0)) {
             // No explicit "targetIndex > floor" test is needed, and adding one would be dead code:
             // reaching this line means the loop condition held, i.e. getTrustedAppliedIndex() (pinned at
             // the floor for the whole life of an outstanding gap, since Ratis' own counter starts at the
@@ -2721,13 +2736,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
             // holds while the floor is outstanding. Anything that changes what that branch publishes
             // must revisit this reasoning.
             //
+            // The same holds for a per-database floor (issue #6760): it is published exactly when the install
+            // could not bring THIS database to the snapshot index, so only a later resync can close it.
+            //
             // READ_YOUR_WRITES / bookmark: the target therefore sits inside a gap that only the pending
             // snapshot resync can fill, so waiting out the quorum timeout cannot change the outcome.
             // Degrade now with the same contract the timeout branch below applies (issue #6111).
             LogManager.instance().log(this, Level.WARNING,
-                "READ_YOUR_WRITES target %d is inside a pending snapshot resync gap (trusted applied=%d): "
-                    + "consistency degraded to EVENTUAL without waiting",
-                targetIndex, getTrustedAppliedIndex());
+                "READ_YOUR_WRITES target %d is inside a pending snapshot resync gap on database '%s' "
+                    + "(trusted applied=%d): consistency degraded to EVENTUAL without waiting",
+                targetIndex, databaseName, getTrustedAppliedIndex(databaseName));
             return;
           }
           final long remaining = deadline - System.currentTimeMillis();
@@ -2735,15 +2753,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
             if (throwOnTimeout) {
               LogManager.instance().log(this, Level.WARNING,
                   "LINEARIZABLE read failed: local apply timeout applied=%d < readIndex=%d after %dms "
-                      + "(staleSnapshotFloor=%d, failing read)",
-                  getTrustedAppliedIndex(), targetIndex, quorumTimeout, getStaleSnapshotAppliedFloor());
+                      + "(staleSnapshotFloor=%d, database '%s' floor=%d, failing read)",
+                  getTrustedAppliedIndex(databaseName), targetIndex, quorumTimeout, getStaleSnapshotAppliedFloor(),
+                  databaseName, getDatabaseAppliedFloor(databaseName));
               throw new ReplicationException(
-                  "LINEARIZABLE read timed out waiting for local apply: applied=" + getTrustedAppliedIndex()
+                  "LINEARIZABLE read timed out waiting for local apply: applied=" + getTrustedAppliedIndex(databaseName)
                       + " < readIndex=" + targetIndex);
             }
             LogManager.instance().log(this, Level.WARNING,
                 "READ_YOUR_WRITES consistency timeout: applied=%d < target=%d (consistency degraded to EVENTUAL)",
-                getTrustedAppliedIndex(), targetIndex);
+                getTrustedAppliedIndex(databaseName), targetIndex);
             return;
           }
           applyNotifier.wait(Math.min(remaining, APPLY_WAIT_RECHECK_INTERVAL_MS));
@@ -2832,9 +2851,25 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * lag detection) deliberately keep using the raw Ratis value.
    */
   public long getTrustedAppliedIndex() {
-    final long applied = getLastAppliedIndex();
+    return getTrustedAppliedIndex(null);
+  }
+
+  /**
+   * As {@link #getTrustedAppliedIndex()}, additionally clamped to the read floor of {@code databaseName} when a
+   * snapshot install gave up on that database (issue #6760).
+   * <p>
+   * The two floors are independent and both conservative, so the answer is the minimum of whichever are
+   * outstanding. Passing {@code null} asks the node-wide question and consults the global floor only.
+   */
+  public long getTrustedAppliedIndex(final String databaseName) {
+    long trusted = getLastAppliedIndex();
     final long floor = getStaleSnapshotAppliedFloor();
-    return floor < 0 ? applied : Math.min(applied, floor);
+    if (floor >= 0)
+      trusted = Math.min(trusted, floor);
+    final long databaseFloor = getDatabaseAppliedFloor(databaseName);
+    if (databaseFloor >= 0)
+      trusted = Math.min(trusted, databaseFloor);
+    return trusted;
   }
 
   /**
@@ -2844,6 +2879,17 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private long getStaleSnapshotAppliedFloor() {
     final ArcadeStateMachine sm = stateMachine;
     return sm == null ? -1 : sm.getStaleSnapshotAppliedFloor();
+  }
+
+  /**
+   * The read floor of a single database, or {@code -1} when it has none, the state machine is not wired yet, or no
+   * database was named. See {@link ArcadeStateMachine#getDatabaseAppliedFloor(String)} (issue #6760).
+   */
+  private long getDatabaseAppliedFloor(final String databaseName) {
+    if (databaseName == null)
+      return -1;
+    final ArcadeStateMachine sm = stateMachine;
+    return sm == null ? -1 : sm.getDatabaseAppliedFloor(databaseName);
   }
 
   public long getCommitIndex() {
@@ -2949,11 +2995,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * the local state machine cannot catch up to the read index before the quorum timeout.
    */
   public void ensureLinearizableRead() {
+    ensureLinearizableRead(null);
+  }
+
+  /** As {@link #ensureLinearizableRead()}, scoped to the database the read targets (issue #6760). */
+  public void ensureLinearizableRead(final String databaseName) {
     final long readIndex = fetchReadIndex(true);
     if (!isLeader())
       throw new ReplicationException("Lost leadership after ReadIndex confirmation");
     // LINEARIZABLE: a timeout MUST throw (HTTP 503) - never silently degrade to a stale read.
-    waitForAppliedIndex(readIndex, true);
+    waitForAppliedIndex(databaseName, readIndex, true);
   }
 
   /**
@@ -2965,9 +3016,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * state machine cannot catch up to it before the quorum timeout (never serves stale state).
    */
   public void ensureLinearizableFollowerRead() {
+    ensureLinearizableFollowerRead(null);
+  }
+
+  /** As {@link #ensureLinearizableFollowerRead()}, scoped to the database the read targets (issue #6760). */
+  public void ensureLinearizableFollowerRead(final String databaseName) {
     final long readIndex = fetchReadIndex(false);
     // LINEARIZABLE: a timeout MUST throw (HTTP 503) - never silently degrade to a stale read.
-    waitForAppliedIndex(readIndex, true);
+    waitForAppliedIndex(databaseName, readIndex, true);
   }
 
   /**
