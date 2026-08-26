@@ -168,6 +168,15 @@ public final class GraphAlgorithms {
   public static void awaitFutures(final Future<?>[] futures, final int count, final DedicatedThreadPool pool) {
     Throwable firstError = null;
     for (int i = 0; i < count; i++) {
+      // The interrupt is checked BEFORE the reclaim below, not left to get() alone. A reclaimed chunk runs inline,
+      // and FutureTask.run() does not consult the interrupt flag, so an already-interrupted waiter would run the
+      // chunk to completion, find its get() returning normally (the future IS done), and go on to run every
+      // remaining chunk the same way - returning normally, with the flag still set, from a wait that was supposed
+      // to abort. That is #4951's guarantee (a killed or timed-out query must never merge partial results and call
+      // them complete) undone by the reclaim, so the check is part of the fix rather than a tidy-up.
+      if (Thread.currentThread().isInterrupted())
+        throw abort(futures, count, i, firstError, "interrupted");
+
       if (futures[i] == null)
         // Defensive: a caller that partially populated the array must not NPE the whole await.
         continue;
@@ -194,6 +203,11 @@ public final class GraphAlgorithms {
         throw abort(futures, count, i, firstError, "cancelled, the executor was shut down");
       }
     }
+    // An interrupt that landed while the LAST chunk was being reclaimed has no further get() to surface it: the
+    // loop condition ends first. Without this the wait would return normally from work that was already abandoned.
+    if (Thread.currentThread().isInterrupted())
+      throw abort(futures, count, count, firstError, "interrupted");
+
     if (firstError != null) {
       if (firstError instanceof RuntimeException re)
         throw re;
@@ -206,7 +220,7 @@ public final class GraphAlgorithms {
   /**
    * Cancels every chunk this wait has not yet collected and builds the exception that replaces the partial result.
    * <p>
-   * The guarantee both callers need (#4951): a fan-out that ends early must not leave background chunks running,
+   * The guarantee every caller needs (#4951): a fan-out that ends early must not leave background chunks running,
    * because they keep writing into the per-chunk arrays the caller is about to abandon, and it must never let a
    * truncated result be read as a complete one.
    *
