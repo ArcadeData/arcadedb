@@ -171,10 +171,10 @@ public final class GraphAlgorithms {
         // Defensive: a caller that partially populated the array must not NPE the whole await.
         continue;
       try {
-        // Deadlock avoidance, not an optimisation: see the #6568 note above. Skipped for a future already
-        // resolved, so the common uncontended case never pays for the queue scan.
-        if (pool != null && !futures[i].isDone() && futures[i] instanceof Runnable queued)
-          pool.runQueuedTaskOnCaller(queued);
+        // Deadlock avoidance, not an optimisation: see the #6568 note above. Reclaim only the chunk about to be
+        // waited on, PER INDEX, rather than sweeping the whole batch out of the queue up front - see
+        // reclaimQueuedChunk for why the greedier version is worse.
+        reclaimQueuedChunk(futures[i], pool);
         futures[i].get();
       } catch (final ExecutionException e) {
         if (firstError == null)
@@ -199,6 +199,35 @@ public final class GraphAlgorithms {
         throw er;
       throw new RuntimeException(firstError);
     }
+  }
+
+  /**
+   * Runs ONE chunk on the waiting thread if the pool has accepted it but not started it. Called per index from the
+   * wait above, immediately before that index is blocked on.
+   * <p>
+   * <b>Why per index and not a sweep of the whole batch up front.</b> The greedier version looks strictly better -
+   * the caller is about to block anyway, so why leave siblings queued - and it is not: the pool's threads are
+   * created lazily, so a fan-out that submits every chunk and awaits at once (both {@code GAVFusedChainOperator}
+   * paths do) would find its own chunks still queued and run them ITSELF, serialising a fan-out that was about to
+   * become parallel a microsecond later. Per index cannot do that for more than one chunk: reaching index i means
+   * every earlier chunk has finished, by which time the workers have long since drained the queue.
+   * <p>
+   * It costs nothing in liveness, which is the only thing that has to be guaranteed. If {@code futures[i]} is
+   * running rather than queued, some worker is making progress on it, and that worker reclaims its own nested work
+   * when it waits - which is exactly what the induction in the javadoc above rests on. The waiter can be idle
+   * while a sibling sits queued; it can never be deadlocked.
+   * <p>
+   * Costs nothing when there is nothing to reclaim either: an already-resolved future is skipped, and an empty
+   * queue is one {@code AtomicInteger} read inside {@code runQueuedTaskOnCaller}.
+   * <p>
+   * The {@code instanceof Runnable} gate is what {@code submit()} guarantees - {@code AbstractExecutorService}
+   * queues the very {@code RunnableFuture} it returns. A caller that hands in a future it wrapped (a derived
+   * {@code CompletableFuture}, say) silently loses reclaiming and gets the old parking behaviour back, which is
+   * why the fan-outs pass the array {@code submit()} gave them and nothing else.
+   */
+  private static void reclaimQueuedChunk(final Future<?> future, final DedicatedThreadPool pool) {
+    if (pool != null && !future.isDone() && future instanceof Runnable queued)
+      pool.runQueuedTaskOnCaller(queued);
   }
 
   /**

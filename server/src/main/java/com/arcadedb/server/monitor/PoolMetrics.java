@@ -56,11 +56,18 @@ public final class PoolMetrics implements MeterBinder {
    * <p>
    * Each gauge re-reads its source pool's {@code PoolStats} record on scrape - the record is a
    * tiny allocation and Micrometer scrape intervals are typically tens of seconds, so the cost is
-   * negligible; one supplier per pool rather than one per gauge, so a new component on the record
-   * reaches every pool's row at once instead of being added to four argument lists. {@code
-   * callerRunFallbacks} and {@code reclaimedTasks} are strictly-monotonic counters so we register
-   * them as gauges that expose the cumulative count; downstream tools (Prometheus {@code rate()},
-   * etc.) can derive a rate as needed.
+   * negligible.
+   * <p>
+   * The per-pool {@code Supplier<PoolStats>} buys MAINTENANCE, not scrape cost: every gauge still
+   * calls it once, exactly as the six separate suppliers it replaced did, so the record is still
+   * built once per gauge per scrape. What changes is that a new component on {@code PoolStats}
+   * reaches every pool's row by being read in one place, instead of having to be threaded through
+   * four call sites' argument lists - which is how the previous shape would have absorbed
+   * {@code reclaimedTasks}.
+   * <p>
+   * {@code callerRunFallbacks} and {@code reclaimedTasks} are strictly-monotonic counters so we
+   * register them as gauges that expose the cumulative count; downstream tools (Prometheus
+   * {@code rate()}, etc.) can derive a rate as needed.
    */
   @Override
   public void bindTo(final MeterRegistry registry) {
