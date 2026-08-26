@@ -156,6 +156,24 @@ public final class CypherExpressionWalker {
     default Visitor forNestedStatement(final CypherStatement statement) {
       return this;
     }
+
+    /**
+     * Called once per clause of the ordered clause list, immediately before that clause's own expressions are
+     * visited, with the chance to advance to a scope that includes what THIS clause itself declares - a
+     * {@code MATCH}'s pattern variables, a {@code WITH}'s post-projection bindings, an {@code UNWIND}'s loop
+     * variable - so that a check reading variable kinds sees a clause's own declarations when it checks that same
+     * clause's expressions (an inline {@code MATCH} predicate reads the pattern it is written against), and sees
+     * them for every clause after it too (issue #5671, part 2). Returning {@code this} keeps the current visitor,
+     * right for a check that carries no positional state.
+     * <p>
+     * The one clause that needs the visitor from <i>before</i> this call as well as the one from after it is
+     * {@code WITH}: its own projection items are evaluated against the scope it inherited, not the one it declares
+     * (issue #5671) - so {@code walkWith} is handed both and decides which each part gets, rather than this method
+     * trying to express two different answers through one return value.
+     */
+    default Visitor forClauseEntry(final ClauseEntry entry) {
+      return this;
+    }
   }
 
   private CypherExpressionWalker() {
@@ -198,67 +216,86 @@ public final class CypherExpressionWalker {
     // once-only structural here instead of guarded, and CypherSubqueryParseTimeValidationIssue5626Test pins it -
     // a builder path that ever registers a WITH on the statement alone has to add it here too, or the walk, and every
     // check running through it, will not see it.
+    // Each clause gets the chance to advance the visitor to a scope that includes what IT declares
+    // (Visitor#forClauseEntry), before its own expressions are visited and before the walk moves to the next
+    // clause - so a check that reads variable kinds sees them positionally instead of as one map for the whole
+    // statement (issue #5671, part 2). A visitor with no positional state (the default) just keeps returning
+    // itself, so this is a no-op for every check that does not opt in.
     final List<ClauseEntry> clauses = statement.getClausesInOrder();
-    if (clauses != null)
-      for (int i = 0; i < clauses.size(); i++)
-        walkClause(clauses.get(i), visitor);
+    if (clauses != null) {
+      Visitor current = visitor;
+      for (int i = 0; i < clauses.size(); i++) {
+        final ClauseEntry entry = clauses.get(i);
+        final Visitor advanced = current.forClauseEntry(entry);
+        if (advanced == null)
+          break;
+        walkClause(entry, current, advanced);
+        current = advanced;
+      }
+    }
   }
 
   /**
-   * Visits every expression of one clause.
+   * Visits every expression of one clause. {@code before} is the visitor from before this clause declared
+   * anything of its own, {@code after} is the one {@link Visitor#forClauseEntry} returned for it - the same for
+   * every clause type except {@code WITH}, whose own projection items are evaluated against {@code before} while
+   * everything else about it (its {@code WHERE}, {@code ORDER BY}, {@code SKIP}, {@code LIMIT}) is evaluated
+   * against {@code after} - see {@code walkWith}.
    */
-  private static void walkClause(final ClauseEntry entry, final Visitor visitor) {
+  private static void walkClause(final ClauseEntry entry, final Visitor before, final Visitor after) {
     switch (entry.getType()) {
     case MATCH -> {
       final MatchClause matchClause = entry.getTypedClause();
       if (matchClause.hasWhereClause())
-        walk(matchClause.getWhereClause().getConditionExpression(), visitor);
+        walk(matchClause.getWhereClause().getConditionExpression(), after);
       if (matchClause.getPathPatterns() != null)
         for (final PathPattern pattern : matchClause.getPathPatterns())
-          walk(pattern, visitor);
+          walk(pattern, after);
     }
-    case WITH -> walkWith(entry.getTypedClause(), visitor);
-    case UNWIND -> walk(((UnwindClause) entry.getTypedClause()).getListExpression(), visitor);
+    case WITH -> walkWith(entry.getTypedClause(), before, after);
+    case UNWIND -> walk(((UnwindClause) entry.getTypedClause()).getListExpression(), after);
     case CREATE -> {
       final CreateClause createClause = entry.getTypedClause();
       if (createClause.getPathPatterns() != null)
         for (final PathPattern pattern : createClause.getPathPatterns())
-          walk(pattern, visitor);
+          walk(pattern, after);
     }
     case MERGE -> {
       final MergeClause mergeClause = entry.getTypedClause();
-      walk(mergeClause.getPathPattern(), visitor);
-      walkSet(mergeClause.getOnCreateSet(), visitor);
-      walkSet(mergeClause.getOnMatchSet(), visitor);
+      walk(mergeClause.getPathPattern(), after);
+      walkSet(mergeClause.getOnCreateSet(), after);
+      walkSet(mergeClause.getOnMatchSet(), after);
     }
-    case SET -> walkSet(entry.getTypedClause(), visitor);
+    case SET -> walkSet(entry.getTypedClause(), after);
     case DELETE -> {
       final DeleteClause deleteClause = entry.getTypedClause();
       if (deleteClause.getExpressions() != null)
         for (final Expression expression : deleteClause.getExpressions())
-          walk(expression, visitor);
+          walk(expression, after);
     }
     case FOREACH -> {
       final ForeachClause foreachClause = entry.getTypedClause();
-      walk(foreachClause.getListExpression(), visitor);
+      walk(foreachClause.getListExpression(), after);
+      // The inner clauses are FOREACH's own body, which lives and dies inside the loop (see buildVarTypes): they
+      // are walked flat, all against the scope FOREACH itself declared, rather than advancing between them.
       if (foreachClause.getInnerClauses() != null)
         for (final ClauseEntry inner : foreachClause.getInnerClauses())
-          walkClause(inner, visitor);
+          walkClause(inner, after, after);
     }
     case CALL -> {
       final CallClause callClause = entry.getTypedClause();
       if (callClause.getArguments() != null)
         for (final Expression argument : callClause.getArguments())
-          walk(argument, visitor);
+          walk(argument, after);
       if (callClause.getYieldWhere() != null)
-        walk(callClause.getYieldWhere().getConditionExpression(), visitor);
+        walk(callClause.getYieldWhere().getConditionExpression(), after);
     }
     case SUBQUERY -> {
       final SubqueryClause subqueryClause = entry.getTypedClause();
-      walk(subqueryClause.getBatchSize(), visitor);
-      walkNested(subqueryClause.getInnerStatement(), visitor);
+      walk(subqueryClause.getBatchSize(), after);
+      walkNested(subqueryClause.getInnerStatement(), after);
     }
-    case LOAD_CSV -> walk(((LoadCSVClause) entry.getTypedClause()).getUrlExpression(), visitor);
+    case LOAD_CSV -> walk(((LoadCSVClause) entry.getTypedClause()).getUrlExpression(), after);
     default -> {
       // RETURN is walked from the statement, and REMOVE / FINISH name variables, properties and labels rather than
       // carrying an expression of their own.
@@ -279,16 +316,23 @@ public final class CypherExpressionWalker {
       walk(statement, nested);
   }
 
-  private static void walkWith(final WithClause withClause, final Visitor visitor) {
+  /**
+   * A {@code WITH}'s own projection items are evaluated against {@code before} - the scope from before this
+   * {@code WITH}, matching real Cypher: {@code WITH r.name AS x} reads {@code r} as whatever it was up to this
+   * point, not as whatever the projection turns it into. Everything the projection's result governs -
+   * {@code WHERE}, {@code ORDER BY}, {@code SKIP}, {@code LIMIT} - is evaluated against {@code after}, which
+   * {@link Visitor#forClauseEntry} already built from the projection (issue #5671, part 2).
+   */
+  private static void walkWith(final WithClause withClause, final Visitor before, final Visitor after) {
     if (withClause == null)
       return;
     for (final ReturnClause.ReturnItem item : withClause.getItems())
-      walk(item.getExpression(), visitor);
+      walk(item.getExpression(), before);
     if (withClause.getWhereClause() != null)
-      walk(withClause.getWhereClause().getConditionExpression(), visitor);
-    walkOrderBy(withClause.getOrderByClause(), visitor);
-    walk(withClause.getSkip(), visitor);
-    walk(withClause.getLimit(), visitor);
+      walk(withClause.getWhereClause().getConditionExpression(), after);
+    walkOrderBy(withClause.getOrderByClause(), after);
+    walk(withClause.getSkip(), after);
+    walk(withClause.getLimit(), after);
   }
 
   private static void walkSet(final SetClause setClause, final Visitor visitor) {
