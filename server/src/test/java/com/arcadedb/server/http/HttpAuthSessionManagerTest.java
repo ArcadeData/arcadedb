@@ -36,7 +36,10 @@ import static org.mockito.Mockito.when;
 class HttpAuthSessionManagerTest {
 
   private HttpAuthSessionManager manager;
-  private long                   fakeNow;
+  // Also read by the manager's background cleanup Timer thread via the () -> fakeNow supplier passed to
+  // createManagerWithFakeClock(): volatile so that read is guaranteed to see this thread's writes, even though
+  // every test only asserts after advancing the clock and calling checkSessionsValidity() itself.
+  private volatile long          fakeNow;
 
   @AfterEach
   void tearDown() {
