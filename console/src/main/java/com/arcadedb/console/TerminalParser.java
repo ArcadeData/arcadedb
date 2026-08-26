@@ -43,10 +43,10 @@ public class TerminalParser extends DefaultParser {
   private static final String SQL_LINE_COMMENT   = "--";
   private static final String OTHER_LINE_COMMENT = "//";
 
-  private String  lineComment            = SQL_LINE_COMMENT;
-  private boolean lineCommentNeedsBlank  = true;
-  private boolean blockCommentOpen       = false;
-  private int     unbalancedBraceOffset  = -1;
+  private String  lineComment           = SQL_LINE_COMMENT;
+  private boolean lineCommentNeedsBlank = true;
+  private boolean blockCommentOpen      = false;
+  private int     unbalancedBraceOffset = -1;
 
   /**
    * Returns true if the text of the last parse ends inside a block comment, so the following lines are still part of it. Valid

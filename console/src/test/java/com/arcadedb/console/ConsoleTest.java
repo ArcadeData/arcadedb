@@ -363,6 +363,13 @@ class ConsoleTest {
         .hasMessageContaining("missing closing quote");
   }
 
+  @Test
+  void setWithMissingClosingDoubleQuoteIsRejected() throws Exception {
+    assertThat(console.parse("connect " + DB_NAME)).isTrue();
+    assertThatThrownBy(() -> console.parse("set language = \"sql")).isInstanceOf(ConsoleException.class)
+        .hasMessageContaining("missing closing quote");
+  }
+
   /**
    * Issue https://github.com/ArcadeData/arcadedb/issues/6439: content trailing after a properly closed quote is a different
    * typo than a missing quote, and deserves a message that says so rather than "unbalanced".
@@ -371,6 +378,13 @@ class ConsoleTest {
   void setWithContentAfterClosingQuoteIsRejected() throws Exception {
     assertThat(console.parse("connect " + DB_NAME)).isTrue();
     assertThatThrownBy(() -> console.parse("set language = 'sql' extra")).isInstanceOf(ConsoleException.class)
+        .hasMessageContaining("unexpected content after the closing quote");
+  }
+
+  @Test
+  void setWithContentAfterClosingDoubleQuoteIsRejected() throws Exception {
+    assertThat(console.parse("connect " + DB_NAME)).isTrue();
+    assertThatThrownBy(() -> console.parse("set language = \"sql\" extra")).isInstanceOf(ConsoleException.class)
         .hasMessageContaining("unexpected content after the closing quote");
   }
 
