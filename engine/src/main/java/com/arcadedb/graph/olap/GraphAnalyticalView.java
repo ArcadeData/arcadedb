@@ -2215,7 +2215,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       }
     }
 
-    // Check overlay added edges
+    // Check overlay added edges. Same known gap as getNeighborsFromCSR (issue #6775): not filtered
+    // against deletedEdgesPerType, so an edge added and deleted within the same overlay window
+    // before compaction is still reported connected here.
     if (ov != null) {
       if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
         for (final int neighbor : ov.getAddedOutNeighbors(nodeA, edgeType))
@@ -2412,6 +2414,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       }
     }
 
+    // KNOWN GAP (issue #6775): unlike baseOut/baseIn above, the overlay-added neighbours below are
+    // not filtered against deletedEdgesPerType. An edge added and then deleted within the same
+    // not-yet-compacted overlay window still surfaces here. countEdgesBetween is unaffected - it
+    // answers "unknown" for any pair with a recorded deletion before it looks at added neighbours -
+    // but getNeighborIds/getVertices/isConnectedTo's overlay-added branch is not.
     int[] ovOut = EMPTY_INT;
     int[] ovIn = EMPTY_INT;
     if (ov != null) {
