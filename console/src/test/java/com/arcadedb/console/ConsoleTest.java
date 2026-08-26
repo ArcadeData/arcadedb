@@ -375,6 +375,18 @@ class ConsoleTest {
   }
 
   /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/6439: checking only the LAST character against the opening quote would
+   * wrongly accept this value, since it also ends with a quote character - but that trailing quote is unrelated to the real
+   * closing quote right after `sql`, and the content between them must still be rejected.
+   */
+  @Test
+  void setWithContentAfterClosingQuoteEndingInAnotherQuoteIsRejected() throws Exception {
+    assertThat(console.parse("connect " + DB_NAME)).isTrue();
+    assertThatThrownBy(() -> console.parse("set language = 'sql' extra'")).isInstanceOf(ConsoleException.class)
+        .hasMessageContaining("unexpected content after the closing quote");
+  }
+
+  /**
    * Issue https://github.com/ArcadeData/arcadedb/issues/6439: an unclosed '{' in a CONTENT clause used to swallow every
    * following command into one malformed statement, which then failed downstream with a confusing syntax error pointing at
    * text typed several statements earlier. The commands before the corrupted one must still run, and the corrupted tail must
