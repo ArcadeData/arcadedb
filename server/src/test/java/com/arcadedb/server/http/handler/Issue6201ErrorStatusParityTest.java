@@ -23,6 +23,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -88,6 +89,10 @@ class Issue6201ErrorStatusParityTest {
           () -> new ConcurrentModificationException("Record modified by another transaction")),
       new MappedFailure("RecordNotFoundException", 404,
           () -> new RecordNotFoundException("Record not found", new RID(1, 1))),
+      // A database closed out from under an in-flight request by an HA snapshot-reinstall resync (issue #5977
+      // pattern) is a transient condition, not a permanent failure - it used to fall through to a hard 500,
+      // which a remote client's own retry-on-503 loop never saw (issue #6770).
+      new MappedFailure("DatabaseIsClosedException", 503, () -> new DatabaseIsClosedException("mydb")),
       // The mappings each earlier issue had to add to two or three chains by hand.
       new MappedFailure("DuplicatedKeyException", 409, () -> new DuplicatedKeyException("Idx", "[1]", new RID(1, 1))),
       new MappedFailure("TransactionCommittedRemotelyException", 409,
@@ -149,6 +154,23 @@ class Issue6201ErrorStatusParityTest {
     // The typed exception survives too: the remote Java driver and the HA leader-exception reconstruction both
     // rebuild the retryable type from this field, and a generic TransactionException is not retryable.
     assertThat(json.getString("exception")).isEqualTo(ConcurrentModificationException.class.getName());
+  }
+
+  /**
+   * The concrete defect reported in #6770: a follower's database closes out from under an in-flight read or write
+   * request while an HA snapshot-reinstall resync (issue #5977 pattern) is running. Before this fix that degraded
+   * to a hard 500 "Internal error" - opaque to a client, and invisible to {@code RemoteHttpComponent}'s
+   * NeedRetryException-driven auto-retry, which only fires on a 503. A resync closing and reinstalling the
+   * database is transient by construction (the fresh handle the retry resolves sees the reinstalled database), so
+   * it must be reported the same retryable way a Raft conflict already is.
+   */
+  @Test
+  void aDatabaseClosedByAConcurrentResyncIsReportedAsRetryable() {
+    final HandledResponse response = handle(new DatabaseIsClosedException("mydb"));
+
+    assertThat(response.statusCode).isEqualTo(503);
+    final JSONObject json = new JSONObject(response.body);
+    assertThat(json.getString("exception")).isEqualTo(DatabaseIsClosedException.class.getName());
   }
 
   /**
