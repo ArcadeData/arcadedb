@@ -118,4 +118,28 @@ public class Issue6756ExecuteCommandMaxRowsTest extends BaseGraphServerTest {
     verify(resp).onNext(captor.capture());
     assertThat(captor.getValue().getRecordsCount()).isEqualTo(10);
   }
+
+  @Test
+  void resultExactlyAtMaxRowsSucceedsWithoutThrowing() {
+    // Boundary case for the "emitted >= maxRows && rs.hasNext()" throw condition (code review, cycle 2):
+    // when the row count exactly equals max_rows there are no rows left once the cap is reached, so this
+    // must succeed normally rather than throw.
+    final ExecuteCommandRequest req = ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName()).setCredentials(credentials())
+        .setCommand("SELECT FROM " + TYPE_NAME)
+        .setReturnRows(true)
+        .setMaxRows(10) // exactly 10 rows exist
+        .build();
+
+    @SuppressWarnings("unchecked")
+    final StreamObserver<ExecuteCommandResponse> resp = mock(StreamObserver.class);
+
+    service.executeCommand(req, resp);
+
+    verify(resp, never()).onError(any());
+    final org.mockito.ArgumentCaptor<ExecuteCommandResponse> captor =
+        org.mockito.ArgumentCaptor.forClass(ExecuteCommandResponse.class);
+    verify(resp).onNext(captor.capture());
+    assertThat(captor.getValue().getRecordsCount()).isEqualTo(10);
+  }
 }

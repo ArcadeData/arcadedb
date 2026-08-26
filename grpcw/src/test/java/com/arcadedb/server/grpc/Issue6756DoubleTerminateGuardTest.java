@@ -121,6 +121,9 @@ public class Issue6756DoubleTerminateGuardTest extends BaseGraphServerTest {
     service.createRecord(req, resp);
 
     verify(resp).onNext(any());
+    // Proves onCompleted() was actually reached (not skipped by an early return) - the configured throw
+    // alone does not distinguish "invoked and threw" from "never invoked" (CodeRabbit review, cycle 2).
+    verify(resp).onCompleted();
     verify(resp, never()).onError(any());
   }
 
@@ -138,6 +141,9 @@ public class Issue6756DoubleTerminateGuardTest extends BaseGraphServerTest {
     service.lookupByRid(req, resp);
 
     verify(resp).onNext(any());
+    // Proves onCompleted() was actually reached (not skipped by an early return) - the configured throw
+    // alone does not distinguish "invoked and threw" from "never invoked" (CodeRabbit review, cycle 2).
+    verify(resp).onCompleted();
     verify(resp, never()).onError(any());
   }
 
@@ -158,6 +164,9 @@ public class Issue6756DoubleTerminateGuardTest extends BaseGraphServerTest {
     service.updateRecord(req, resp);
 
     verify(resp).onNext(any());
+    // Proves onCompleted() was actually reached (not skipped by an early return) - the configured throw
+    // alone does not distinguish "invoked and threw" from "never invoked" (CodeRabbit review, cycle 2).
+    verify(resp).onCompleted();
     verify(resp, never()).onError(any());
   }
 
@@ -175,6 +184,9 @@ public class Issue6756DoubleTerminateGuardTest extends BaseGraphServerTest {
     service.deleteRecord(req, resp);
 
     verify(resp).onNext(any());
+    // Proves onCompleted() was actually reached (not skipped by an early return) - the configured throw
+    // alone does not distinguish "invoked and threw" from "never invoked" (CodeRabbit review, cycle 2).
+    verify(resp).onCompleted();
     verify(resp, never()).onError(any());
   }
 
@@ -190,6 +202,9 @@ public class Issue6756DoubleTerminateGuardTest extends BaseGraphServerTest {
     service.executeQuery(req, resp);
 
     verify(resp).onNext(any());
+    // Proves onCompleted() was actually reached (not skipped by an early return) - the configured throw
+    // alone does not distinguish "invoked and threw" from "never invoked" (CodeRabbit review, cycle 2).
+    verify(resp).onCompleted();
     verify(resp, never()).onError(any());
   }
 
@@ -209,6 +224,9 @@ public class Issue6756DoubleTerminateGuardTest extends BaseGraphServerTest {
     service.bulkInsert(req, resp);
 
     verify(resp).onNext(any());
+    // Proves onCompleted() was actually reached (not skipped by an early return) - the configured throw
+    // alone does not distinguish "invoked and threw" from "never invoked" (CodeRabbit review, cycle 2).
+    verify(resp).onCompleted();
     verify(resp, never()).onError(any());
   }
 
@@ -224,6 +242,9 @@ public class Issue6756DoubleTerminateGuardTest extends BaseGraphServerTest {
     service.beginTransaction(req, resp);
 
     verify(resp).onNext(any());
+    // Proves onCompleted() was actually reached (not skipped by an early return) - the configured throw
+    // alone does not distinguish "invoked and threw" from "never invoked" (CodeRabbit review, cycle 2).
+    verify(resp).onCompleted();
     verify(resp, never()).onError(any());
   }
 
@@ -255,6 +276,9 @@ public class Issue6756DoubleTerminateGuardTest extends BaseGraphServerTest {
     service.commitTransaction(req, resp);
 
     verify(resp).onNext(any());
+    // Proves onCompleted() was actually reached (not skipped by an early return) - the configured throw
+    // alone does not distinguish "invoked and threw" from "never invoked" (CodeRabbit review, cycle 2).
+    verify(resp).onCompleted();
     verify(resp, never()).onError(any());
   }
 
@@ -274,6 +298,9 @@ public class Issue6756DoubleTerminateGuardTest extends BaseGraphServerTest {
     service.rollbackTransaction(req, resp);
 
     verify(resp).onNext(any());
+    // Proves onCompleted() was actually reached (not skipped by an early return) - the configured throw
+    // alone does not distinguish "invoked and threw" from "never invoked" (CodeRabbit review, cycle 2).
+    verify(resp).onCompleted();
     verify(resp, never()).onError(any());
   }
 }

@@ -293,13 +293,25 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   }
 
   /**
-   * Returns whether the idle-transaction reaper thread has actually been shut down (as opposed to merely
-   * configured). Unlike {@link #isIdleReaperActive()} - which only reflects the constructor-time decision
-   * and stays {@code true} forever once a reaper was created - this reflects live state, so it is the
-   * right check for "did {@link #close()} actually stop the background thread" (issue #6756).
+   * Returns whether the idle-transaction reaper thread has actually terminated (as opposed to merely
+   * configured, or merely told to shut down). Unlike {@link #isIdleReaperActive()} - which only reflects
+   * the constructor-time decision and stays {@code true} forever once a reaper was created - this reflects
+   * live state, so it is the right check for "did {@link #close()} actually stop the background thread"
+   * (issue #6756). {@code shutdownNow()} returns as soon as shutdown is requested, so
+   * {@code isShutdown()} alone would be true well before the thread has actually stopped running; wait
+   * (briefly, bounded) for real termination instead.
    */
   boolean isIdleReaperShutdown() {
-    return txReaper == null || txReaper.isShutdown();
+    if (txReaper == null)
+      return true;
+    if (!txReaper.isShutdown())
+      return false;
+    try {
+      return txReaper.awaitTermination(2, TimeUnit.SECONDS);
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return false;
+    }
   }
 
   /**
