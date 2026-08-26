@@ -545,7 +545,9 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
       // its payload can be 0 or 1. Above that, the bits Java's shift silently discards would let a
       // nine-continuation-bytes-then-{@code 0x02} encoding decode as a plausible small value that the
       // ascending-order check below cannot see anything wrong with - so the width is checked once per
-      // VarLong, on a branch that is always false on anything a writer produced.
+      // VarLong, on a branch that is always false on anything a writer produced. This is the same
+      // condition {@link VarInt#readUnsignedVarLong} tests as {@code shift == 63}: that one checks
+      // before its {@code shift += 7}, this one after the loop has already applied it.
       int prevBucket = blockBuckets[0];
       long prevPosition = blockPositions[0];
       for (int i = 1; i < n; i++) {
@@ -603,7 +605,9 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
         blockPositions[i] = prevPosition;
       }
     } else {
-      if (p + (n - 1) * (4 + 8) > limit)
+      // The first posting's RID lives in the block header, so the payload holds n-1 of them at the
+      // format's fixed width.
+      if (p + (n - 1) * SegmentFormat.RID_SIZE_BYTES > limit)
         throw new IOException(corruptBlockMessage());
       for (int i = 1; i < n; i++) {
         blockBuckets[i] = buf.getInt(p);
