@@ -1418,9 +1418,15 @@ jobs:
       - go-e2e-tests
       - coverage-report
     steps:
+      # NEEDS_JSON goes through env, not spliced straight into the script body: every value in
+      # `needs` today is a fixed job id or one of GitHub's result enum strings, but a future job
+      # output could put free-form text there, and env is what keeps that from ever becoming a
+      # script injection instead of just a jq parse.
       - name: Check every required job succeeded
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
-          failed="$(echo '${{ toJSON(needs) }}' | jq -r 'to_entries[] | select(.value.result != "success") | "\(.key): \(.value.result)"')"
+          failed="$(echo "$NEEDS_JSON" | jq -r 'to_entries[] | select(.value.result != "success") | "\(.key): \(.value.result)"')"
           if [ -n "$failed" ]; then
             echo "::error::One or more required jobs did not succeed:"
             {
