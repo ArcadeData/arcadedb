@@ -165,10 +165,18 @@ public class Issue6709GrpcTransactionFinalizeRaceIT extends BaseGraphServerTest 
     try {
       final Future<StatusRuntimeException> rpcResult = clientExecutor.submit(() -> rpcCall.apply(txId));
 
-      // Generous window for the RPC to reach the server, resolve the still-registered transaction and queue
-      // its dispatched task behind the blocker, before finalizing the transaction out from under it. The
-      // assertion below is on the resulting status code, not on this timing.
-      Thread.sleep(300);
+      // Deterministically wait for the RPC's own task to actually be enqueued behind the blocker, rather
+      // than a fixed sleep: since the blocker occupies the executor's single core thread, a second submitted
+      // task can only land in the queue, so a non-empty queue proves resolveAuthorizedTransaction already
+      // succeeded and submitToActiveTransaction was called - i.e. that finalizing now genuinely races the
+      // dispatched task's requireTransactionStillActive check, not the earlier isUnknownSuppliedTransaction
+      // check at resolve time (cycle-2 review: a fixed sleep could pass without exercising that path at all).
+      final long deadlineNanos = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+      while (txCtx.executor.getQueue().isEmpty()) {
+        if (System.nanoTime() > deadlineNanos)
+          throw new AssertionError("RPC task was never enqueued behind the blocker within 5s");
+        Thread.sleep(5);
+      }
       service.finalizeTransactionForTesting(txId);
       release.countDown();
 
@@ -232,6 +240,53 @@ public class Issue6709GrpcTransactionFinalizeRaceIT extends BaseGraphServerTest 
     assertThat(err.getStatus().getCode())
         .as("deleteRecord must surface FAILED_PRECONDITION, not an opaque INTERNAL, when the transaction is "
             + "finalized while its dispatched task is queued")
+        .isEqualTo(Status.Code.FAILED_PRECONDITION);
+  }
+
+  @Test
+  void executeCommandFailsPreconditionWhenFinalizeRacesDispatch() throws Exception {
+    final StatusRuntimeException err = raceFinalizeAgainstDispatch(txId ->
+        catchThrowableOfType(StatusRuntimeException.class, () -> authenticatedStub.executeCommand(
+            ExecuteCommandRequest.newBuilder()
+                .setDatabase(getDatabaseName())
+                .setCredentials(credentials())
+                .setCommand("INSERT INTO Person SET name = 'raced-executeCommand'")
+                .setTransaction(TransactionContext.newBuilder().setTransactionId(txId).build())
+                .build())));
+
+    assertThat(err).as("executeCommand must reject the finalize-race, not hang or succeed").isNotNull();
+    assertThat(err.getStatus().getCode())
+        .as("executeCommand must surface FAILED_PRECONDITION, not an opaque INTERNAL, when the transaction is "
+            + "finalized while its dispatched task is queued")
+        .isEqualTo(Status.Code.FAILED_PRECONDITION);
+  }
+
+  @Test
+  void bulkInsertFailsPreconditionWhenFinalizeRacesDispatch() throws Exception {
+    final GrpcRecord record = GrpcRecord.newBuilder()
+        .setType("Person")
+        .putProperties("name", GrpcValue.newBuilder().setStringValue("raced-bulkInsert").build())
+        .build();
+
+    final StatusRuntimeException err = raceFinalizeAgainstDispatch(txId ->
+        catchThrowableOfType(StatusRuntimeException.class, () -> authenticatedStub.bulkInsert(
+            BulkInsertRequest.newBuilder()
+                .setOptions(InsertOptions.newBuilder()
+                    .setDatabase(getDatabaseName())
+                    .setCredentials(credentials())
+                    .setTargetClass("Person")
+                    .setTransactionMode(InsertOptions.TransactionMode.PER_BATCH)
+                    .build())
+                .addRows(record)
+                .setCredentials(credentials())
+                .setTransaction(TransactionContext.newBuilder().setTransactionId(txId).build())
+                .build())));
+
+    assertThat(err).as("bulkInsert must reject the finalize-race, not hang or succeed").isNotNull();
+    assertThat(err.getStatus().getCode())
+        .as("bulkInsert must surface FAILED_PRECONDITION, not an opaque INTERNAL, when the transaction is "
+            + "finalized while its dispatched task is queued - the catch block here changed non-trivially in "
+            + "this PR")
         .isEqualTo(Status.Code.FAILED_PRECONDITION);
   }
 }

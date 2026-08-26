@@ -28,14 +28,17 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Unit tests for {@link ArcadeDbGrpcService#requireTransactionStillActive}, the guard added for issue #6709:
- * every transaction-scoped RPC resolves a {@code TransactionContext} and then dispatches its real work onto
- * that transaction's dedicated executor, but a concurrent commitTransaction/rollbackTransaction/idle-reap can
- * finalize the same transaction (and shut down its executor) in the window between the resolve and the
- * dispatched task actually running. These tests simulate that window deterministically via
+ * Unit tests for {@link ArcadeDbGrpcService#requireTransactionStillActive} and
+ * {@link ArcadeDbGrpcService#submitToActiveTransaction}, the guards added for issue #6709: every
+ * transaction-scoped RPC resolves a {@code TransactionContext} and then dispatches its real work onto that
+ * transaction's dedicated executor, but a concurrent commitTransaction/rollbackTransaction/idle-reap can
+ * finalize the same transaction (removing it from the active-transaction map and shutting down its executor)
+ * in the window between the resolve and the dispatched task actually running - or even before the task is
+ * submitted at all, in which case {@code submit()} itself throws {@link java.util.concurrent.RejectedExecutionException}.
+ * These tests simulate both windows deterministically via
  * {@link ArcadeDbGrpcService#registerTransactionForTesting} / {@link ArcadeDbGrpcService#finalizeTransactionForTesting}
  * instead of racing real threads, per the issue's own suggested approach. No server or database is needed:
- * {@code requireTransactionStillActive} only compares against the in-memory active-transaction map.
+ * both guards only touch the in-memory active-transaction map and the executor's own shutdown state.
  */
 class Issue6709TransactionFinalizeRaceTest {
 
@@ -91,6 +94,45 @@ class Issue6709TransactionFinalizeRaceTest {
       assertThat(freshTxCtx).isNotSameAs(staleTxCtx);
     } finally {
       service.finalizeTransactionForTesting("tx-reused");
+      service.close();
+    }
+  }
+
+  @Test
+  @DisplayName("submitToActiveTransaction converts a RejectedExecutionException from an already-shut-down "
+      + "executor into FAILED_PRECONDITION")
+  void submitToActiveTransactionConvertsRejectedExecutionAfterFinalize() {
+    final ArcadeDbGrpcService service = new ArcadeDbGrpcService("/tmp/notused", null, 0L, 0L, 0L);
+    try {
+      final var txCtx = service.registerTransactionForTesting("tx-shutdown-before-submit");
+
+      // Finalizing also shuts down the executor, so a submit() attempted afterwards - the case where a
+      // concurrent commit/rollback/idle-reap fully completes before this RPC even calls submit(), not just
+      // before its task runs - throws RejectedExecutionException synchronously, before the task (and
+      // requireTransactionStillActive) ever runs.
+      service.finalizeTransactionForTesting("tx-shutdown-before-submit");
+
+      assertThatThrownBy(() -> service.submitToActiveTransaction(txCtx, () -> "should never run"))
+          .isInstanceOf(StatusRuntimeException.class)
+          .extracting(e -> ((StatusRuntimeException) e).getStatus().getCode())
+          .isEqualTo(Status.Code.FAILED_PRECONDITION);
+    } finally {
+      service.close();
+    }
+  }
+
+  @Test
+  @DisplayName("submitToActiveTransaction runs the task and revalidates when the transaction is still active")
+  void submitToActiveTransactionRunsTaskWhenStillActive() throws Exception {
+    final ArcadeDbGrpcService service = new ArcadeDbGrpcService("/tmp/notused", null, 0L, 0L, 0L);
+    try {
+      final var txCtx = service.registerTransactionForTesting("tx-submit-ok");
+
+      final String result = service.submitToActiveTransaction(txCtx, () -> "ran").get();
+
+      assertThat(result).isEqualTo("ran");
+    } finally {
+      service.finalizeTransactionForTesting("tx-submit-ok");
       service.close();
     }
   }
