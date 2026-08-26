@@ -256,7 +256,11 @@ class DeltaOverlay {
       // KNOWN GAP (issue #6777): this assumes an edge's RID is never reused while it sits in this set,
       // but LocalBucket deliberately reuses a slot freed by a delete for a later insert ("hole reuse",
       // #5279). A different, unrelated edge landing on the same freed slot and later being deleted too
-      // would collide here and have ITS deletion silently dropped.
+      // would collide here and have ITS deletion silently dropped. The window this can happen in is
+      // bounded by the same compaction trigger #4587 protects: a full rebuild clears this set entirely
+      // (see the no-delta constructor), so the exposure is at most GraphAnalyticalView.compactionThreshold
+      // (default GraphAnalyticalView.DEFAULT_COMPACTION_THRESHOLD = 10,000) net edge deltas of churn on
+      // one covered edge type - not unbounded, but wide enough to be reachable on a busy graph.
       if (newDeletedEdgeRIDs.computeIfAbsent(ed.edgeType, k -> new HashSet<>()).add(ed.rid)) {
         newDeletedEdges.computeIfAbsent(ed.edgeType, k -> new HashMap<>())
             .merge(packEdge(srcId, tgtId), 1, Integer::sum);

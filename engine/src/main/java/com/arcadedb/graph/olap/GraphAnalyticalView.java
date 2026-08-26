@@ -2244,10 +2244,13 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * <b>Why a deleted pair is still answered "unknown" rather than the exact survivor count.</b>
    * {@link DeltaOverlay} now tracks an exact per-pair deleted count (issue #6769), which is exactly
    * what {@link #isConnectedTo} and {@link #getNeighborIds} compare against the base CSR's occurrence
-   * count for the pair to keep the surviving parallel edges discoverable. This method could do the
-   * same arithmetic and return an exact number, but a pattern hop turns the count directly into rows,
-   * and getting that arithmetic wrong silently produces the wrong row count rather than an exception -
-   * so it keeps the conservative "unknown" answer here and leaves
+   * count for the pair to keep the surviving parallel edges discoverable. This method could mirror that
+   * arithmetic and return an exact number for the base-CSR side, but the overlay's ADDED neighbours are
+   * not filtered against deletedEdgesPerType at all yet (issue #6775), so a masked pair's added-edge
+   * contribution here has no safe way to exclude a since-deleted add. A pattern hop turns the count
+   * directly into rows, and getting that arithmetic wrong silently produces the wrong row count rather
+   * than an exception - so it keeps the conservative "unknown" answer here until #6775 closes that gap,
+   * and leaves
    * {@code com.arcadedb.query.opencypher.executor.operators.GAVExpandInto}'s existing OLTP fallback
    * to do the exact counting, which it already had to have for the "vertex not in the GAV mapping"
    * case anyway.
