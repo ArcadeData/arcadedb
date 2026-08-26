@@ -172,7 +172,7 @@ public class AutoBackupSchedulerPlugin implements ServerPlugin {
    */
   @Override
   public void onDatabaseRegistered(final String databaseName) {
-    scheduleDatabase(databaseName);
+    syncDatabase(databaseName);
   }
 
   /**
@@ -182,10 +182,30 @@ public class AutoBackupSchedulerPlugin implements ServerPlugin {
    */
   @Override
   public void onDatabaseUnregistered(final String databaseName) {
-    cancelDatabase(databaseName);
+    syncDatabase(databaseName);
+  }
 
-    if (retentionManager != null)
-      retentionManager.unregisterDatabase(databaseName);
+  /**
+   * Brings this database's schedule in line with the server registry.
+   * <p>
+   * Both lifecycle callbacks land here rather than acting on the event they carry, because the callbacks are
+   * dispatched after the registry mutation rather than under its lock: a create and a drop of the same name racing on
+   * two threads can deliver "registered" last and leave a schedule behind for a database that is already gone.
+   * Deciding from the registry as it is now makes the outcome depend on the registry rather than on the delivery
+   * order, so whichever callback runs last converges on the right answer.
+   */
+  private void syncDatabase(final String databaseName) {
+    if (!enabled || scheduler == null)
+      return;
+
+    if (server.existsDatabase(databaseName))
+      scheduleDatabase(databaseName);
+    else {
+      cancelDatabase(databaseName);
+
+      if (retentionManager != null)
+        retentionManager.unregisterDatabase(databaseName);
+    }
   }
 
   /**

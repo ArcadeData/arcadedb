@@ -898,7 +898,7 @@ public class OrientDBImporter {
    * When no hint is available the inference mirrors the one OrientDB itself applies when it re-imports the JSON: an
    * integral literal is an INTEGER (a LONG when it does not fit an int) and a fractional one is a DOUBLE. Integral
    * literals wider than a long are kept as {@link BigDecimal} so no digit is lost before
-   * {@link Type#convert(com.arcadedb.database.Database, Object, Class, Property)} narrows them against the declared
+   * {@link Type#convert(Database, Object, Class, Property)} narrows them against the declared
    * property type.
    */
   private static Object convertNumber(final String raw, final Character fieldType) {

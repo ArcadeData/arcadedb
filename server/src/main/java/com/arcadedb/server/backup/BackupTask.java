@@ -19,6 +19,7 @@
 package com.arcadedb.server.backup;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.event.ServerEventLog;
@@ -106,6 +107,14 @@ public class BackupTask implements Runnable {
       LogManager.instance().log(this, Level.INFO, "Starting scheduled backup for database '%s'...", databaseName);
 
       final String backupFile = performBackup();
+      if (backupFile == null) {
+        // Closed or dropped between the check above and the lookup: the check and the lookup cannot be made atomic,
+        // and cancel(false) cannot stop a task that has already started, so losing this race is expected. Report it
+        // as the skip it is instead of as a backup failure with a CRITICAL server event (issue #6752).
+        LogManager.instance().log(this, Level.FINE,
+            "Skipping backup for database '%s' - it went away while the backup was starting", databaseName);
+        return;
+      }
 
       LogManager.instance().log(this, Level.INFO, "Scheduled backup completed for database '%s': %s", databaseName,
           backupFile);
@@ -183,8 +192,14 @@ public class BackupTask implements Runnable {
    * threads - uncommitted changes are simply not included.
    */
   private String performBackup() throws Exception {
-    // allowLoad=false: a scheduled backup must never be the thing that (re)opens a database (issue #6752).
-    final Database database = server.getDatabase(databaseName, false, false);
+    final Database database;
+    try {
+      // allowLoad=false: a scheduled backup must never be the thing that (re)opens a database (issue #6752).
+      database = server.getDatabase(databaseName, false, false);
+    } catch (final DatabaseOperationException e) {
+      // Removed between run()'s availability check and here. Reported by the caller as a skip.
+      return null;
+    }
 
     // Generate backup filename
     final String timestamp = LocalDateTime.now().format(BACKUP_TIMESTAMP_FORMAT);

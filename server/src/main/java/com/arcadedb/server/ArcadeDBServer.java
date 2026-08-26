@@ -897,8 +897,13 @@ public class ArcadeDBServer {
    * <p>
    * Called after the registry mutation, on the thread that performed it. That thread may still hold
    * {@link #databasesLock} - the HA snapshot installer holds it across its whole close-&gt;swap-&gt;reopen sequence -
-   * so an implementation has to be short and non-blocking. A plugin that throws is logged and skipped: the mutation
-   * has already happened and cannot be undone by a failing listener.
+   * so an implementation has to be short and non-blocking.
+   * <p>
+   * Dispatching here rather than inside the lock keeps plugin code off the monitor that every database open
+   * contends on, at the cost of ordering: two threads mutating the same name concurrently can deliver their
+   * callbacks in either order. Plugins are therefore told to reconcile against the registry as it is now instead of
+   * replaying the event, which is what {@code AutoBackupSchedulerPlugin} does. A plugin that throws is logged and
+   * skipped: the mutation has already happened and cannot be undone by a failing listener.
    */
   private void notifyPlugins(final String databaseName, final boolean registered) {
     if (pluginManager == null)
