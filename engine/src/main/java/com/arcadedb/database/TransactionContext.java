@@ -1561,7 +1561,15 @@ public class TransactionContext implements Transaction {
 
         final PageId pageId = new PageId(database, p.fileId, p.pageNumber);
 
-        final boolean isNew = p.pageNumber >= file.getTotalPages();
+        // #5976's fix at getPage() (above, ~line 613) applies here too: file.getTotalPages() is the PHYSICAL,
+        // on-disk page count, which lags a page that is committed but not yet reached by the async flush thread.
+        // The component's OWN count (PaginatedComponent.getTotalPages(), bumped synchronously at commit) is the
+        // authoritative "does this page exist" answer. Misclassifying a committed page as "new" here files it
+        // into newPages instead of modifiedPages, and rollback() only replays the dictionary repair for pages in
+        // modifiedPages - so a dictionary page misfiled this way would skip that repair on a rolled-back apply
+        // (issue #6399).
+        final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileByIdIfExists(p.fileId);
+        final boolean isNew = component == null || p.pageNumber >= component.getTotalPages();
 
         final MutablePage page = getPageToModify(pageId, pageSize, isNew);
 
