@@ -102,8 +102,10 @@ public final class PartitionedTriangleOp implements CountOp {
       // #4952: the calling thread runs chunk 0 itself (same discipline as GraphAlgorithms.parallelForRange)
       // instead of submitting ALL chunks and blocking. Submitting everything meant that, when this operator
       // was reached from a pool thread (or with the pool full of blocked producers), the caller waited on
-      // tasks queued behind threads that were themselves waiting: a pool-starvation deadlock only mitigated
-      // by the bounded queue's caller-runs rejection.
+      // tasks queued behind threads that were themselves waiting: a pool-starvation deadlock.
+      // #6568: the caller-runs rejection was never the mitigation it was taken for - it fires only once the
+      // queue is FULL. What makes the wait below safe is that awaitFutures RECLAIMS a still-queued chunk and
+      // runs it here; chunk 0 on the caller is now a latency win rather than the liveness argument.
       // #5063: chunk 0 runs inside try/finally so the submitted chunks are ALWAYS awaited.
       // Without it, a chunk-0 exception unwound this frame while chunks 1..N-1 kept running and writing
       // into partialCounts (and holding pool threads) behind the caller's back.

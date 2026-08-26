@@ -58,7 +58,7 @@ class ThreeNodesLoadTestIT extends ContainersTestTemplate {
   @ParameterizedTest(name = "Three-node Raft HA Load test with {0} protocol")
   @EnumSource(DatabaseWrapper.Protocol.class)
   @DisplayName("Three-node Raft HA: replication across all nodes with consistency check")
-  void threeNodeReplication(DatabaseWrapper.Protocol protocol) throws InterruptedException {
+  void threeNodeReplication(DatabaseWrapper.Protocol protocol) throws Exception {
     runThreeNodeLoad(protocol, false);
   }
 
@@ -73,7 +73,7 @@ class ThreeNodesLoadTestIT extends ContainersTestTemplate {
   @Test
   @Tag("slow")
   @DisplayName("Three-node Raft HA: a REFRESH INCREMENTAL materialized view must not cost committed writes (#5492)")
-  void threeNodeReplicationWithMaterializedView() throws InterruptedException {
+  void threeNodeReplicationWithMaterializedView() throws Exception {
     runThreeNodeLoad(DatabaseWrapper.Protocol.HTTP, true);
   }
 

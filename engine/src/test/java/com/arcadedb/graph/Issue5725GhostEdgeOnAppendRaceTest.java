@@ -331,7 +331,7 @@ class Issue5725GhostEdgeOnAppendRaceTest extends TestHelper {
    */
   @Test
   @Tag("slow")
-  void concurrentAppendsAndVertexDeletesLeaveNoEdgeBehind() throws InterruptedException {
+  void concurrentAppendsAndVertexDeletesLeaveNoEdgeBehind() throws Exception {
     final int rounds = 10;
     final int hubs = 4;
     final int pool = 100;

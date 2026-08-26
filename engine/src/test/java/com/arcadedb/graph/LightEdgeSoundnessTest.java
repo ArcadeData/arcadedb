@@ -45,7 +45,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class LightEdgeSoundnessTest extends TestHelper {
+class LightEdgeSoundnessTest extends TestHelper {
   private static final String V     = "V";
   private static final String KNOWS = "Knows";
   private static final String LIKES = "Likes";

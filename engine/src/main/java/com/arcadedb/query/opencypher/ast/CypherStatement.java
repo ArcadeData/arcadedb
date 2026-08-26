@@ -93,6 +93,31 @@ public interface CypherStatement {
   }
 
   /**
+   * Returns true if this statement contains a non-empty SET clause.
+   * Defaults to false for non-query (control/admin/DDL/session) statements.
+   * <p>
+   * Kept as a predicate rather than requiring callers to inspect {@link #getSetClause()} directly, because that
+   * accessor has no single answer for a {@code UnionStatement} - unlike {@link #hasCreate()}, {@link #hasMerge()}
+   * and {@link #hasDelete()}, which already avoid the same trap (issue #5671).
+   *
+   * @return true if contains SET
+   */
+  default boolean hasSet() {
+    return false;
+  }
+
+  /**
+   * Returns true if this statement contains REMOVE operations.
+   * Defaults to false for non-query (control/admin/DDL/session) statements.
+   * See {@link #hasSet()} for why this is a predicate rather than {@link #getRemoveClauses()} emptiness.
+   *
+   * @return true if contains REMOVE
+   */
+  default boolean hasRemove() {
+    return false;
+  }
+
+  /**
    * Returns the ORDER BY clause if present.
    * Defaults to null for non-query (control/admin/DDL/session) statements.
    *

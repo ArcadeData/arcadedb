@@ -19,7 +19,23 @@
 package com.arcadedb.console;
 
 public class ConsoleException extends RuntimeException {
+  private final boolean alreadyReported;
+
   public ConsoleException(final String message) {
+    this(message, false);
+  }
+
+  /**
+   * @param alreadyReported true when the thrower already sent this error to the console output, so a generic catch further up
+   *                        the call chain - for example the one wrapping every command in {@code Console.execute(String)} -
+   *                        must not report it a second time (issue #6439).
+   */
+  public ConsoleException(final String message, final boolean alreadyReported) {
     super(message);
+    this.alreadyReported = alreadyReported;
+  }
+
+  public boolean isAlreadyReported() {
+    return alreadyReported;
   }
 }

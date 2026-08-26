@@ -38,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue6061BinaryPropertyListConversionTest extends TestHelper {
+class Issue6061BinaryPropertyListConversionTest extends TestHelper {
 
   @Override
   protected void beginTest() {

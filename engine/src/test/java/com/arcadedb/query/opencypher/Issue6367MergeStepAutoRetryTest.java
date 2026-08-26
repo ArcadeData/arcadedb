@@ -85,7 +85,7 @@ class Issue6367MergeStepAutoRetryTest {
   }
 
   @Test
-  void mergeFindOrCreateRetriesOnMvccConflictWithoutAnOuterTransactionWrapper() throws InterruptedException {
+  void mergeFindOrCreateRetriesOnMvccConflictWithoutAnOuterTransactionWrapper() throws Exception {
     // A UNIQUE index on the matched property is what gives MERGE's find-or-create an atomicity guarantee
     // under concurrency in the first place (mirrors MergeInsertSlowdownTest's schema): without it, two
     // threads can both legitimately find no match and both create, since nothing conflicts. With it, a

@@ -61,7 +61,7 @@ class CypherConcurrentIncrementTest {
   }
 
   @Test
-  void concurrentIncrementDoesNotLoseUpdates() throws InterruptedException {
+  void concurrentIncrementDoesNotLoseUpdates() throws Exception {
     // A few rounds keep the (probabilistic) regression reliably caught: pre-fix a single round already loses
     // updates the large majority of the time, so several independent rounds make a false pass vanishingly unlikely.
     for (int round = 0; round < 5; round++)

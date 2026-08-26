@@ -148,7 +148,7 @@ public class ConsoleAsyncInsertTest {
   }
 
   @Test
-  void bulkAsyncInsertProductsUsingSQL() throws IOException {
+  void bulkAsyncInsertProductsUsingSQL() throws Exception {
     GlobalConfiguration.SERVER_ROOT_PATH.setValue(".");
     GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("./target/databases");
 
@@ -222,7 +222,7 @@ public class ConsoleAsyncInsertTest {
   }
 
   @Test
-  void bulkAsyncInsertProductsUsingAPI() throws IOException {
+  void bulkAsyncInsertProductsUsingAPI() throws Exception {
     GlobalConfiguration.SERVER_ROOT_PATH.setValue(".");
     GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("./target/databases");
 

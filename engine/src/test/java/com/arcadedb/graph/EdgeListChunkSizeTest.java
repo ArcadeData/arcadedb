@@ -36,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class EdgeListChunkSizeTest extends TestHelper {
+class EdgeListChunkSizeTest extends TestHelper {
 
   @Override
   protected void beginTest() {

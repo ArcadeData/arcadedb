@@ -49,7 +49,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class HashIndexConcurrentStructureTest {
+class HashIndexConcurrentStructureTest {
   private static final String DB_ROOT = "./target/databases/hash-index-concurrent-structure";
 
   /**

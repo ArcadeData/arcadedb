@@ -27,7 +27,6 @@ import com.arcadedb.exception.TransactionException;
 
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.lang.reflect.Field;
 import java.util.Collections;
@@ -48,7 +47,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class InterruptedIOFailsLoudTest extends TestHelper {
 
   @Test
-  void interruptedPageLoadThrowsInsteadOfCachingZeroPage() throws IOException {
+  void interruptedPageLoadThrowsInsteadOfCachingZeroPage() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
 
     db.getSchema().createDocumentType("Doc");

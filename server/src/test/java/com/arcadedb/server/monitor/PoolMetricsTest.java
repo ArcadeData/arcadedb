@@ -46,7 +46,10 @@ class PoolMetricsTest {
       "arcadedb.executor.queue.depth",
       "arcadedb.executor.queue.capacity_remaining",
       "arcadedb.executor.tasks.completed",
-      "arcadedb.executor.tasks.caller_run_fallbacks");
+      "arcadedb.executor.tasks.caller_run_fallbacks",
+      // #6568: queued tasks a waiting caller ran itself. On the same row as caller_run_fallbacks
+      // deliberately - the two are read together and say opposite things (busy vs full).
+      "arcadedb.executor.tasks.reclaimed");
 
   /**
    * Gauges only the sparse-vector pool publishes: they explain its per-query decision to split a
@@ -69,7 +72,7 @@ class PoolMetricsTest {
     final Set<String> registeredNames = registry.getMeters().stream()
         .map(m -> m.getId().getName())
         .collect(Collectors.toSet());
-    assertThat(registeredNames).as("all six gauges should be registered (per-pool tagging adds duplicates)")
+    assertThat(registeredNames).as("every shared gauge should be registered (per-pool tagging adds duplicates)")
         .containsAll(EXPECTED_GAUGE_NAMES);
 
     for (final String poolTag : new String[] { "query", "sparse_vector", "async_command" }) {
@@ -113,7 +116,7 @@ class PoolMetricsTest {
    * Studio's {@code studio-server.js} reads {@code metrics.executors.<pool>.<gauge>} from the
    * {@code GET /api/v1/server} JSON response - so the wire format produced by
    * {@link com.arcadedb.server.http.handler.GetServerHandler#buildExecutorsJSON} has to match
-   * what the JS expects: one object per pool tag, each holding the six gauges keyed by their
+   * what the JS expects: one object per pool tag, each holding the shared gauges keyed by their
    * post-prefix names ({@code "pool.size"}, {@code "pool.active"}, ...). This test pins that
    * contract without booting a full server - if the JSON shape ever changes, the dashboard
    * would silently render zeros and only this test would catch the regression.

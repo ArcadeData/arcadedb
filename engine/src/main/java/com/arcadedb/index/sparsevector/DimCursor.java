@@ -195,6 +195,39 @@ public final class DimCursor implements AutoCloseable {
   }
 
   /**
+   * Both edges of the Block-Max bound for one probe: the merged block max as the return value, and
+   * the merged block end in {@code endOut[0]}.
+   * <p>
+   * The block-max skip needs both for the same probe, and asking for them through
+   * {@link #blockMaxAt(int, long)} and {@link #blockEndAt(int, long)} ran the memo's two range
+   * comparisons twice for one bound - per aligned term per candidate, which made them a double-digit
+   * share of query CPU on a learned-sparse workload (issue #5467).
+   * <p>
+   * Handing both back from one call is what keeps that cheap <b>without</b> creating a temporal
+   * contract to get wrong. An earlier version of this fix exposed the block end as a separate reader
+   * that assumed the caller had just refreshed the memo with the same probe; that is invisible to the
+   * compiler, and a caller inserting another {@link #blockMaxAt} or {@link #seekTo} between the two
+   * would have got a bound for the wrong block - which shows up not as a crash but as an
+   * over-aggressive skip quietly dropping a document from the top-K. Here the pairing is structural:
+   * there is no window in which the two can disagree.
+   *
+   * @param endOut single-slot scratch array, owned by the caller, that receives the block end (or
+   *               {@code null} when no live source bounds a finite one). Reporting a float and an
+   *               object from one call without allocating per candidate is what it is for.
+   *
+   * @return the merged block max, or {@code 0} when the cursor is exhausted
+   */
+  float blockBoundsAt(final int bucketId, final long position, final RID[] endOut) {
+    if (exhausted) {
+      endOut[0] = null;
+      return 0.0f;
+    }
+    ensureBlockBounds(bucketId, position);
+    endOut[0] = boundsEndRid;
+    return boundsBlockMax;
+  }
+
+  /**
    * Refresh {@code boundsBlockMax} / {@code boundsEndRid} unless the memo already covers
    * {@code (bucketId, position)}, i.e. unless the probe falls inside {@code [boundsFrom, boundsEnd]}.
    * <p>
@@ -314,6 +347,16 @@ public final class DimCursor implements AutoCloseable {
     if (currentBucketId >= 0
         && SparseSegmentBuilder.compareRid(currentBucketId, currentPosition, targetBucketId, targetPosition) >= 0)
       return true;
+
+    // Single source: same short-circuit as {@link #advance()}. Every non-essential probe of a
+    // MaxScore traversal is a seek, and on a settled index each was walking the source array and
+    // running the min-selection pass over a merge that has nothing to merge (issue #5467).
+    if (single != null) {
+      if (!single.seekTo(targetBucketId, targetPosition))
+        sourceLive[0] = false;
+      materializeSingle();
+      return !exhausted;
+    }
 
     for (int i = 0; i < sources.length; i++) {
       if (!sourceLive[i])

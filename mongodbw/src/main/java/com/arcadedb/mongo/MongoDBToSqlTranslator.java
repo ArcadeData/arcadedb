@@ -80,11 +80,36 @@ public class MongoDBToSqlTranslator {
         if (expressionCount++ > 0)
           sql.append(" AND ");
 
-        if (key != null)
-          sql.append(quoteFieldPath(key.toString()));
+        if ("$not".equals(subKey)) {
+          // buildExpression(sql,params,key,value) has no field parameter, so the negation is built here instead,
+          // where the field is still known: recursing into the operand without re-emitting the field would leave
+          // an operator with no left-hand side (e.g. "field NOT > :p0"), which the SQL parser rejects. A
+          // multi-operator operand (e.g. a range, {$not: {$gt: 1, $lt: 5}}) needs the field re-emitted for EACH
+          // operator and joined with AND, the same way the outer loop does across sibling fields.
+          final Document notOperand = (Document) subValue;
+          if (notOperand.isEmpty())
+            throw new IllegalArgumentException("$not requires a non-empty operator expression");
 
-        buildExpression(sql, params, subKey, subValue);
+          sql.append("NOT (");
+          int notExpressionCount = 0;
+          for (final Map.Entry<String, Object> notEntry : notOperand.entrySet()) {
+            // real MongoDB does not accept $not nested inside $not; rejecting it here avoids silently falling
+            // through to the top-level $not branch with no field in scope, which produces invalid SQL
+            if ("$not".equals(notEntry.getKey()))
+              throw new IllegalArgumentException("Nested $not is not supported");
+            if (notExpressionCount++ > 0)
+              sql.append(" AND ");
+            if (key != null)
+              sql.append(quoteFieldPath(key.toString()));
+            buildExpression(sql, params, notEntry.getKey(), notEntry.getValue());
+          }
+          sql.append(")");
+        } else {
+          if (key != null)
+            sql.append(quoteFieldPath(key.toString()));
 
+          buildExpression(sql, params, subKey, subValue);
+        }
       }
     }
 
@@ -124,7 +149,7 @@ public class MongoDBToSqlTranslator {
       sql.append(" >= ");
       buildValue(sql, params, value);
     } else if ("$exists".equals(key)) {
-      sql.append(" IS DEFINED ");
+      sql.append(Utils.isTrue(value) ? " IS DEFINED " : " IS NOT DEFINED ");
     } else if ("$size".equals(key)) {
       sql.append(".size() = ");
       buildValue(sql, params, value);
@@ -133,6 +158,11 @@ public class MongoDBToSqlTranslator {
     } else if ("$and".equals(key)) {
       buildAnd(sql, params, key, value);
     } else if ("$not".equals(key)) {
+      // Reached only for a top-level "$not" (no preceding field in the buffer), whose operand is a nested
+      // {field: {...}} query fragment - buildExpression(Document) below re-enters buildAnd for it and emits its own
+      // field name, so this recursion is self-contained. The field-scoped "$not" (a raw {$op: value} operand
+      // applied to one field, e.g. {field: {$not: {$gt: 5}}}) is intercepted earlier, in buildAnd, because only
+      // that call site still has the field name in scope.
       sql.append(" NOT ");
       buildExpression(sql, params, (Document) value);
     } else
@@ -158,10 +188,30 @@ public class MongoDBToSqlTranslator {
   /**
    * Binds the whole collection to a single parameter. The SQL grammar accepts an input parameter between the parentheses of an
    * {@code IN} list, so there is no need to emit one placeholder per element.
+   * <p>
+   * Each element is normalized the same way a scalar value is in {@link #buildValue}: binding the collection as-is would leave
+   * an {@code ObjectId} element comparing as its {@code toString()} rather than the stored hex string, so {@code $in}/{@code
+   * $nin} on {@code _id} would never match even though the scalar (equality) case does.
    */
   protected static void buildCollection(final StringBuilder buffer, final Map<String, Object> params, final Collection coll) {
+    // avoid the copy on the common case where nothing needs normalizing
+    boolean hasObjectId = false;
+    for (final Object element : coll)
+      if (element instanceof ObjectId) {
+        hasObjectId = true;
+        break;
+      }
+
+    Collection<?> normalized = coll;
+    if (hasObjectId) {
+      final List<Object> converted = new ArrayList<>(coll.size());
+      for (final Object element : coll)
+        converted.add(element instanceof ObjectId objectId ? objectId.getHexData() : element);
+      normalized = converted;
+    }
+
     buffer.append('(');
-    buildValue(buffer, params, coll);
+    buildValue(buffer, params, normalized);
     buffer.append(')');
   }
 
@@ -169,8 +219,11 @@ public class MongoDBToSqlTranslator {
    * Binds a value taken off the wire as a named parameter and appends only its placeholder. Nothing the client sent reaches the
    * statement text, so a value can no longer close a quoted literal and append clauses of its own - the injection is
    * unreachable by construction instead of by remembering to escape at each call site. Binding also preserves the value's Java
-   * type: spelling it went through {@code String.valueOf}, which renders a {@code Date} or an {@code ObjectId} as text no SQL
-   * parser accepts.
+   * type: spelling it went through {@code String.valueOf}, which renders a {@code Date} as text no SQL parser accepts.
+   * <p>
+   * An {@link ObjectId} is the one exception: it is converted to the same lowercase-hex string used to store it (see
+   * {@link MongoDBCollectionWrapper#insertDocuments}), because ArcadeDB has no dedicated ObjectId type. Binding the object
+   * itself would compare against its {@code toString()} ({@code "ObjectId[<hex>]"}), which never equals the stored hex text.
    * <p>
    * The parameter name is derived from the map's current size, so names are unique and assigned in the order the values are
    * met. That holds only while the map contains nothing but names this method generated: {@code params} must start empty and
@@ -178,7 +231,7 @@ public class MongoDBToSqlTranslator {
    */
   protected static void buildValue(final StringBuilder buffer, final Map<String, Object> params, final Object value) {
     final String name = "p" + params.size();
-    params.put(name, value);
+    params.put(name, value instanceof ObjectId objectId ? objectId.getHexData() : value);
     buffer.append(':').append(name);
   }
 
@@ -204,10 +257,12 @@ public class MongoDBToSqlTranslator {
 
   protected static void fillResultSet(final int numberToSkip, final int numberToReturn, final List<Document> result, final Iterator it) {
     for (int i = 0; it.hasNext(); ++i) {
-      if (numberToSkip > 0 && i < numberToSkip - 1)
-        continue;
-
+      // consume the element before deciding whether to skip it - a "continue" that never calls next() burns loop
+      // counter iterations without advancing the iterator, so skip has no effect for any numberToSkip >= 1
       final Object next = it.next();
+
+      if (numberToSkip > 0 && i < numberToSkip)
+        continue;
 
       if (next instanceof com.arcadedb.database.Document document)
         result.add(convertDocumentToMongoDB(document));

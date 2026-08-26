@@ -85,7 +85,7 @@ class GraphBatchWALRestoreTest extends TestHelper {
   }
 
   @Test
-  void buildsOnThreadWithoutTransactionContext() throws InterruptedException {
+  void buildsOnThreadWithoutTransactionContext() throws Exception {
     // Regression for the CI breakage introduced by the first #5378 fix: PostBatchHandler builds the
     // batch on an HTTP worker thread that has never run a transaction, so no TransactionContext exists
     // yet and the constructor must not require one. The saved policy falls back to the configured

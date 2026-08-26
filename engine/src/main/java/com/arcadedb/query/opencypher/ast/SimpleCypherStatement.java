@@ -416,6 +416,16 @@ public class SimpleCypherStatement implements CypherStatement {
   }
 
   @Override
+  public boolean hasSet() {
+    return setClause != null && !setClause.isEmpty();
+  }
+
+  @Override
+  public boolean hasRemove() {
+    return hasRemove;
+  }
+
+  @Override
   public OrderByClause getOrderByClause() {
     return orderByClause;
   }
@@ -473,10 +483,6 @@ public class SimpleCypherStatement implements CypherStatement {
   @Override
   public List<RemoveClause> getRemoveClauses() {
     return removeClauses;
-  }
-
-  public boolean hasRemove() {
-    return hasRemove;
   }
 
   @Override

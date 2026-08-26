@@ -358,7 +358,7 @@ class FileUtilsTest {
   }
 
   @Test
-  void atomicWriteFileCreatesDirsAndWritesContent() throws IOException {
+  void atomicWriteFileCreatesDirsAndWritesContent() throws Exception {
     final Path target = tempDir.resolve("nested/dir/config.json");
     FileUtils.atomicWriteFile(target.toFile(), "{\"a\":1}");
 
@@ -371,7 +371,7 @@ class FileUtilsTest {
   }
 
   @Test
-  void atomicWriteFileReplacesExistingContentAtomically() throws IOException {
+  void atomicWriteFileReplacesExistingContentAtomically() throws Exception {
     final Path target = tempDir.resolve("value.txt");
     FileUtils.atomicWriteFile(target.toFile(), "first");
     FileUtils.atomicWriteFile(target.toFile(), "second-longer-content");

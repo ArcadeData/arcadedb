@@ -311,6 +311,51 @@ public class ArcadeDbGrpcServiceExtendedTest extends BaseGraphServerTest {
   }
 
   @Test
+  void executeQueryReturnsShortAndByteColumnsAsInt32NotString() {
+    // Issue #6754: SHORT/BYTE values had no numeric branch in toGrpcValue() and fell through to
+    // the string fallback, so a type-sensitive client received a String where HTTP/SQL return a
+    // number. Assert on the wire kind directly - getInteger()-style decoding would parse the
+    // string back to a number and mask the regression.
+    authenticatedStub.executeCommand(ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setCommand("CREATE VERTEX TYPE Issue6754Vertex IF NOT EXISTS")
+        .build());
+    authenticatedStub.executeCommand(ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setCommand("CREATE PROPERTY Issue6754Vertex.s IF NOT EXISTS SHORT")
+        .build());
+    authenticatedStub.executeCommand(ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setCommand("CREATE PROPERTY Issue6754Vertex.b IF NOT EXISTS BYTE")
+        .build());
+    authenticatedStub.executeCommand(ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setCommand("INSERT INTO Issue6754Vertex SET s = 1000, b = 5")
+        .build());
+
+    final ExecuteQueryResponse response = authenticatedStub.executeQuery(ExecuteQueryRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setQuery("SELECT FROM Issue6754Vertex")
+        .build());
+
+    final GrpcRecord record = response.getResults(0).getRecords(0);
+    final GrpcValue shortValue = record.getPropertiesMap().get("s");
+    final GrpcValue byteValue = record.getPropertiesMap().get("b");
+
+    assertThat(shortValue.getKindCase()).as("SHORT column must encode as int32_value, not string_value")
+        .isEqualTo(GrpcValue.KindCase.INT32_VALUE);
+    assertThat(shortValue.getInt32Value()).isEqualTo(1000);
+    assertThat(byteValue.getKindCase()).as("BYTE column must encode as int32_value, not string_value")
+        .isEqualTo(GrpcValue.KindCase.INT32_VALUE);
+    assertThat(byteValue.getInt32Value()).isEqualTo(5);
+  }
+
+  @Test
   void createRecordWithNonExistentTypeReturnsError() {
     final GrpcRecord record = GrpcRecord.newBuilder()
         .setType("NonExistentType")

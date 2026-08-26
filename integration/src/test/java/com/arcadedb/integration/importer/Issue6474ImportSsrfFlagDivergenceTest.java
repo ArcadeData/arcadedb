@@ -23,8 +23,6 @@ import com.arcadedb.GlobalConfiguration;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
-
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -62,7 +60,7 @@ class Issue6474ImportSsrfFlagDivergenceTest {
   }
 
   @Test
-  void explicitOverrideAllowsLocalUrlEvenWhenStaticDefaultBlocks() throws IOException {
+  void explicitOverrideAllowsLocalUrlEvenWhenStaticDefaultBlocks() throws Exception {
     // Static default is true (blocking); the explicit per-call override must still allow the fetch to be attempted.
     // (It still fails - port 1 refuses the connection - but with a connection error, never a SecurityException.)
     assertThatThrownBy(() -> new SourceDiscovery(LOOPBACK_URL, true).getSource())

@@ -98,7 +98,7 @@ class GremlinStringPathGAVTest {
   }
 
   @Test
-  void labeledOutHopSubmittedAsStringUsesTheGAVStep() throws ScriptException {
+  void labeledOutHopSubmittedAsStringUsesTheGAVStep() throws Exception {
     final GraphTraversal<?, ?> traversal = parseWithoutExecuting("g.V().has('name','A').out('KNOWS')");
     assertThat(TraversalPlans.hasStepOfType(traversal, ArcadeGAVVertexStep.class))
         .as("plan was: %s", TraversalPlans.describe(traversal))
@@ -106,7 +106,7 @@ class GremlinStringPathGAVTest {
   }
 
   @Test
-  void labeledInHopSubmittedAsStringUsesTheGAVStep() throws ScriptException {
+  void labeledInHopSubmittedAsStringUsesTheGAVStep() throws Exception {
     final GraphTraversal<?, ?> traversal = parseWithoutExecuting("g.V().has('name','B').in('KNOWS')");
     assertThat(TraversalPlans.hasStepOfType(traversal, ArcadeGAVVertexStep.class))
         .as("plan was: %s", TraversalPlans.describe(traversal))
@@ -114,7 +114,7 @@ class GremlinStringPathGAVTest {
   }
 
   @Test
-  void labeledBothHopSubmittedAsStringUsesTheGAVStep() throws ScriptException {
+  void labeledBothHopSubmittedAsStringUsesTheGAVStep() throws Exception {
     final GraphTraversal<?, ?> traversal = parseWithoutExecuting("g.V().has('name','B').both('KNOWS')");
     assertThat(TraversalPlans.hasStepOfType(traversal, ArcadeGAVVertexStep.class))
         .as("plan was: %s", TraversalPlans.describe(traversal))
@@ -122,7 +122,7 @@ class GremlinStringPathGAVTest {
   }
 
   @Test
-  void labeledHopWithADifferentEdgeLabelSubmittedAsStringUsesTheGAVStep() throws ScriptException {
+  void labeledHopWithADifferentEdgeLabelSubmittedAsStringUsesTheGAVStep() throws Exception {
     final GraphTraversal<?, ?> traversal = parseWithoutExecuting("g.V().has('name','A').out('LIKES')");
     assertThat(TraversalPlans.hasStepOfType(traversal, ArcadeGAVVertexStep.class))
         .as("plan was: %s", TraversalPlans.describe(traversal))
@@ -130,7 +130,7 @@ class GremlinStringPathGAVTest {
   }
 
   @Test
-  void labeledTwoHopChainSubmittedAsStringFusesIntoASingleStep() throws ScriptException {
+  void labeledTwoHopChainSubmittedAsStringFusesIntoASingleStep() throws Exception {
     final GraphTraversal<?, ?> traversal = parseWithoutExecuting("g.V().has('name','A').out('KNOWS').out('KNOWS')");
     assertThat(TraversalPlans.hasStepOfType(traversal, ArcadeGAVFusedStep.class))
         .as("plan was: %s", TraversalPlans.describe(traversal))
@@ -138,7 +138,7 @@ class GremlinStringPathGAVTest {
   }
 
   @Test
-  void labelLessMultiHopSubmittedAsStringFusesIntoASingleStep() throws ScriptException {
+  void labelLessMultiHopSubmittedAsStringFusesIntoASingleStep() throws Exception {
     // The one shape the issue observed already engaging ArcadeGAVFusedStep via the string path, but with
     // no committed test covering it.
     final GraphTraversal<?, ?> traversal = parseWithoutExecuting("g.V().has('name','A').out().out()");

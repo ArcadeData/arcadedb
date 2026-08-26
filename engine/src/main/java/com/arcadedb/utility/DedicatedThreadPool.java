@@ -51,6 +51,12 @@ import java.util.logging.Level;
  * <p>
  * <b>"No JDK common ForkJoinPool" rule.</b> See {@code com.arcadedb.query.QueryEngineManager}'s class javadoc. Every
  * pool built here exists because of it.
+ * <p>
+ * <b>Waiting for a task on the pool you are running on.</b> Never park on it - reclaim it. A thread that blocks on a
+ * task it submitted to a pool whose workers can block the same way deadlocks as soon as the workers outnumber the
+ * free ones, and the caller-runs policy does NOT prevent it: the queue accepts long before it rejects.
+ * {@link #runQueuedTaskOnCaller(Runnable)} is the primitive, {@code GraphAlgorithms.awaitFutures} the ready-made
+ * wait that uses it, and issue #6568 the write-up.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -93,6 +99,13 @@ public abstract class DedicatedThreadPool {
   private final boolean    boundedQueue;
   private final AtomicLong callerRunCount       = new AtomicLong();
   /**
+   * Tasks {@link #runQueuedTaskOnCaller(Runnable)} took back out of the queue for a thread that was about to wait
+   * for them. Counted separately from {@link #callerRunCount} because the two say opposite things about the pool:
+   * a caller-runs fallback means the pool was FULL, a reclaim means the pool was BUSY and the waiter had a whole
+   * thread's worth of nothing to do.
+   */
+  private final AtomicLong reclaimedTaskCount   = new AtomicLong();
+  /**
    * Initialised to {@code 0L} and not {@code Long.MIN_VALUE}: the throttle below subtracts it from
    * {@code System.currentTimeMillis()}, and {@code MIN_VALUE} would overflow that subtraction and silently suppress
    * the first-ever warning - the one that matters most.
@@ -129,7 +142,7 @@ public abstract class DedicatedThreadPool {
 
   /**
    * Point-in-time snapshot of a pool's load, read by the metrics binder ({@code pool=<name>} gauges, Studio's
-   * "Executor Pools" card) and by tests. The six values are read under no lock and are not mutually consistent - the
+   * "Executor Pools" card) and by tests. The values are read under no lock and are not mutually consistent - the
    * pool may transition between two of them - but each individual reading is safe.
    *
    * @param poolSize               live thread count. Can be below the configured maximum when no work has needed the
@@ -144,9 +157,14 @@ public abstract class DedicatedThreadPool {
    *                               under caller-runs is counted by the next field and not by this one
    * @param callerRunFallbacks     cumulative tasks the rejection policy redirected to the submitting thread. Sustained
    *                               growth means the pool is undersized for the workload
+   * @param reclaimedTasks         cumulative tasks a thread about to wait for them took back out of the queue and ran
+   *                               itself, see {@link #runQueuedTaskOnCaller(Runnable)}. Not a fault: it is the pool
+   *                               being busy rather than full, and the waiter being the one thread with nothing to do.
+   *                               Like a caller-runs fallback, and for the same reason, a reclaimed task is counted
+   *                               here and NOT by {@code completedTasks} - no pool thread ran it
    */
   public record PoolStats(int poolSize, int activeThreads, int queueDepth, int queueCapacityRemaining,
-                          long completedTasks, long callerRunFallbacks) {
+                          long completedTasks, long callerRunFallbacks, long reclaimedTasks) {
   }
 
   /**
@@ -238,6 +256,51 @@ public abstract class DedicatedThreadPool {
     runRejectedTask(task);
   }
 
+  /**
+   * Takes a task this pool has ACCEPTED BUT NOT STARTED back out of its queue and runs it on the calling thread,
+   * for a caller that is about to block waiting for exactly that task. Returns {@code false}, having done nothing,
+   * when the task is not (or no longer) queued - it is already running on a worker, has finished, or never reached
+   * the queue at all because the rejection policy ran it inline.
+   * <p>
+   * <b>This is what makes a blocking fan-out on a dedicated pool deadlock-free (issue #6568).</b> The caller-runs
+   * saturation policy is often mistaken for that guarantee, and it is not: it only fires once the queue is FULL,
+   * and a queue with 1024 free slots accepts the task, parks the submitter, and leaves it there. If every worker is
+   * itself a thread parked on a task it submitted, nothing in the pool can ever run again - the exact shape
+   * {@code ParallelScanSafetyTest} hit with a latch, and the shape every nested fan-out has by construction. A
+   * waiter that reclaims first cannot be part of such a cycle: it always has work of its own it can make progress
+   * on, so by induction on nesting depth the whole fan-out completes.
+   * <p>
+   * <b>Safety.</b> {@link ThreadPoolExecutor#remove(Runnable)} succeeding is proof that no worker had taken the
+   * task, so it runs exactly once here and never concurrently with a worker. The task runs on the caller's thread
+   * with the caller's thread-locals ({@code DatabaseContext}, transaction bindings, security principal) - which is
+   * not a new exposure for any pool with a caller-runs policy, because a rejected task already runs there.
+   * <p>
+   * <b>And it runs through {@link #runRejectedTask(Runnable)}, not through a bare {@code task.run()}</b>, so a
+   * reclaim and a caller-runs fallback are the same execution for every pool rather than only for the pools that
+   * do no bookkeeping. {@code AsyncCommandPool} overrides that hook to mark the borrowed thread as one of its own
+   * for the duration, and everything that asks "is this thread itself a dispatched command?" - the async barrier
+   * in {@code DatabaseAsyncExecutorImpl.waitCompletion} above all - has to get the same answer on a reclaimed
+   * task as on a rejected one, or the reclaim reintroduces the self-deadlock that override exists to prevent.
+   * The hook is also what makes a reclaim from a SHUT-DOWN pool end the caller's wait (#4961) instead of leaving
+   * it holding a task the queue no longer has and no worker will run.
+   * <p>
+   * Cheap when there is nothing to reclaim: the queue-empty check is one {@code AtomicInteger} read, and only a
+   * non-empty queue pays for {@code remove}'s scan.
+   *
+   * @param task the task to reclaim, i.e. the {@link RunnableFuture} {@code submit()} returned
+   *
+   * @return true when the task was taken out of the queue and disposed of here - run to completion, or, on a
+   * shut-down pool whose policy says so, cancelled. Either way the caller's wait for it will not park.
+   */
+  public final boolean runQueuedTaskOnCaller(final Runnable task) {
+    if (task == null || executor.getQueue().isEmpty() || !executor.remove(task))
+      return false;
+
+    reclaimedTaskCount.incrementAndGet();
+    runRejectedTask(task);
+    return true;
+  }
+
   /** " Raise 'a' or 'b' if this persists.", or nothing when the pool has no sizing settings to name. */
   private static String raiseSettingsAdvice(final GlobalConfiguration[] sizingSettingKeys) {
     if (sizingSettingKeys.length == 0)
@@ -261,9 +324,12 @@ public abstract class DedicatedThreadPool {
   }
 
   /**
-   * Runs a task the queue refused. Overridable for a pool that has to mark the borrowed thread for the duration -
-   * the submitter IS one of this pool's tasks while it runs one, and everything that asks has to get that answer
-   * there too.
+   * Runs a task the queue refused, or one {@link #runQueuedTaskOnCaller(Runnable)} took back out of it. Overridable
+   * for a pool that has to mark the borrowed thread for the duration - the submitter IS one of this pool's tasks
+   * while it runs one, and everything that asks has to get that answer there too.
+   * <p>
+   * Both paths come through here on purpose: a reclaim borrows the caller's thread exactly as a rejection does, so a
+   * subclass that has to know about one has to know about the other.
    */
   protected void runRejectedTask(final Runnable task) {
     if (saturationPolicy == SaturationPolicy.CALLER_RUNS_EVEN_WHEN_SHUT_DOWN || !executor.isShutdown())
@@ -289,7 +355,7 @@ public abstract class DedicatedThreadPool {
   public PoolStats getPoolStats() {
     return new PoolStats(executor.getPoolSize(), executor.getActiveCount(), executor.getQueue().size(),
         boundedQueue ? executor.getQueue().remainingCapacity() : -1, executor.getCompletedTaskCount(),
-        callerRunCount.get());
+        callerRunCount.get(), reclaimedTaskCount.get());
   }
 
   /**

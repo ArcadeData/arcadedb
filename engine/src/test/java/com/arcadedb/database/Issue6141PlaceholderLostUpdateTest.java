@@ -49,7 +49,7 @@ class Issue6141PlaceholderLostUpdateTest extends BucketPageLayoutTestSupport {
    * quietly winning.
    */
   @Test
-  void aConcurrentUpdateOfThePlaceholderContentIsRefused() throws InterruptedException {
+  void aConcurrentUpdateOfThePlaceholderContentIsRefused() throws Exception {
     final RID placeholder = placeholderBackedRecord("Absorbed");
 
     final String concurrent = "c".repeat(CONTENT_SIZE);
@@ -73,7 +73,7 @@ class Issue6141PlaceholderLostUpdateTest extends BucketPageLayoutTestSupport {
    * that write just as silently.
    */
   @Test
-  void aConcurrentUpdateIsRefusedEvenWhenTheContentRecordHasToBeRebuilt() throws InterruptedException {
+  void aConcurrentUpdateIsRefusedEvenWhenTheContentRecordHasToBeRebuilt() throws Exception {
     final RID placeholder = placeholderBackedRecord("Rebuilt");
 
     final String concurrent = "c".repeat(CONTENT_SIZE);
@@ -97,7 +97,7 @@ class Issue6141PlaceholderLostUpdateTest extends BucketPageLayoutTestSupport {
    * its business.
    */
   @Test
-  void anUnrelatedConcurrentUpdateStillCommits() throws InterruptedException {
+  void anUnrelatedConcurrentUpdateStillCommits() throws Exception {
     final RID placeholder = placeholderBackedRecord("Unrelated");
 
     final RID[] other = new RID[1];
@@ -125,7 +125,7 @@ class Issue6141PlaceholderLostUpdateTest extends BucketPageLayoutTestSupport {
    * which restores the unconditional page poisoning that predates it - must not switch the protection off with it.
    */
   @Test
-  void theConcurrentUpdateIsRefusedWithTheSlotMergeSwitchedOffToo() throws InterruptedException {
+  void theConcurrentUpdateIsRefusedWithTheSlotMergeSwitchedOffToo() throws Exception {
     final RID placeholder = placeholderBackedRecord("MergeOff");
 
     final String concurrent = "c".repeat(CONTENT_SIZE);

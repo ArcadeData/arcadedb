@@ -38,7 +38,6 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.assertj.core.api.Assertions.fail;
 
 /**
  * #4936/#4937: the WAL append must be the commit's point of no return. Phase 2 used to append the
@@ -101,12 +100,7 @@ class WalCommitOrderingTest {
       PageManager.INSTANCE.putPageInReadCache(new CachedPage(conflicting, false));
 
       final long walBytesBefore = totalWalBytes();
-      try {
-        tx.commit2ndPhase(phase1);
-        fail("phase 2 must fail validation against the conflicting version");
-      } catch (final ConcurrentModificationException e) {
-        // expected
-      }
+      assertThatThrownBy(() -> tx.commit2ndPhase(phase1)).isInstanceOf(ConcurrentModificationException.class);
 
       assertThat(totalWalBytes())
           .as("a transaction that failed validation must leave NO record in the WAL (#4936)")

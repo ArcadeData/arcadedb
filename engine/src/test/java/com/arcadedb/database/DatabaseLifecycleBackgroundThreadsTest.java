@@ -48,12 +48,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class DatabaseLifecycleBackgroundThreadsTest {
+class DatabaseLifecycleBackgroundThreadsTest {
   private static final String DB_PATH            = "./target/databases/issue-5418-lifecycle";
   private static final String TIMER_THREAD_PREFIX = "VectorIndex-InactivityTimer-";
 
   @AfterEach
-  public void cleanUp() {
+  void cleanUp() {
     final Database db = DatabaseFactory.getActiveDatabaseInstance(DB_PATH);
     if (db != null && db.isOpen())
       db.close();
@@ -61,7 +61,7 @@ public class DatabaseLifecycleBackgroundThreadsTest {
   }
 
   @Test
-  public void engineBackgroundThreadsAreDaemon() {
+  void engineBackgroundThreadsAreDaemon() {
     try (final DatabaseFactory factory = new DatabaseFactory(DB_PATH)) {
       final Database database = factory.create();
       try {
@@ -94,7 +94,7 @@ public class DatabaseLifecycleBackgroundThreadsTest {
   }
 
   @Test
-  public void shutdownHookClosesLeakedDatabases() {
+  void shutdownHookClosesLeakedDatabases() {
     final DatabaseFactory factory = new DatabaseFactory(DB_PATH);
     final Database database = factory.create();
     database.command("sql", "CREATE DOCUMENT TYPE Doc");
@@ -122,7 +122,7 @@ public class DatabaseLifecycleBackgroundThreadsTest {
   }
 
   @Test
-  public void vectorIndexInactivityTimerIsCancelledOnDatabaseClose() {
+  void vectorIndexInactivityTimerIsCancelledOnDatabaseClose() {
     withArmedVectorInactivityTimer((database, timerThreadName) -> {
       database.close();
 
@@ -133,7 +133,7 @@ public class DatabaseLifecycleBackgroundThreadsTest {
   }
 
   @Test
-  public void vectorIndexInactivityTimerIsCancelledOnDatabaseDrop() {
+  void vectorIndexInactivityTimerIsCancelledOnDatabaseDrop() {
     withArmedVectorInactivityTimer((database, timerThreadName) -> {
       database.drop();
 

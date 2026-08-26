@@ -48,7 +48,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue6377PreAuthTimeoutIT extends PostgresWireProtocolTestBase {
+class Issue6377PreAuthTimeoutIT extends PostgresWireProtocolTestBase {
 
   private static final int POSTGRES_PORT = 5432;
   /** Lowered so an unbounded phase shows up as a hung test rather than a half-minute one. */

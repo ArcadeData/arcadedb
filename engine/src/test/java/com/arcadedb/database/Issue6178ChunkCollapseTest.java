@@ -120,7 +120,7 @@ class Issue6178ChunkCollapseTest extends BucketPageLayoutTestSupport {
    * new replay is what this passes through and not some other path.
    */
   @Test
-  void theCollapseIsReplayedOnACommittedPage() throws InterruptedException {
+  void theCollapseIsReplayedOnACommittedPage() throws Exception {
     final RID[] collapsing = new RID[1];
     final RID[] neighbour = new RID[1];
 
@@ -161,7 +161,7 @@ class Issue6178ChunkCollapseTest extends BucketPageLayoutTestSupport {
    * is about to free is the one it read, and the pre-image plus the chain fingerprint have to say so.
    */
   @Test
-  void aConcurrentUpdateOfTheSameRecordStillConflicts() throws InterruptedException {
+  void aConcurrentUpdateOfTheSameRecordStillConflicts() throws Exception {
     final RID[] collapsing = new RID[1];
 
     database.transaction(() -> {

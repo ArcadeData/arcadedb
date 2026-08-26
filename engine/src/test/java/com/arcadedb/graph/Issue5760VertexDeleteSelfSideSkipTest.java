@@ -484,7 +484,7 @@ class Issue5760VertexDeleteSelfSideSkipTest extends TestHelper {
    */
   @Test
   @Tag("slow")
-  void deletingAVertexWhileItsNeighboursListsAreBeingAppendedTo() throws InterruptedException {
+  void deletingAVertexWhileItsNeighboursListsAreBeingAppendedTo() throws Exception {
     final int rounds = 6;
     final int neighbours = 40;
     final int appenders = 4;

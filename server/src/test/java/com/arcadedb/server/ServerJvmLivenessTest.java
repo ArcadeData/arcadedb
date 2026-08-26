@@ -34,10 +34,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class ServerJvmLivenessTest extends BaseGraphServerTest {
+class ServerJvmLivenessTest extends BaseGraphServerTest {
 
   @Test
-  public void httpListenerKeepsTheServerProcessAlive() {
+  void httpListenerKeepsTheServerProcessAlive() {
     final List<String> nonDaemonHttpThreads = new ArrayList<>();
     for (final Thread t : Thread.getAllStackTraces().keySet())
       if (t.isAlive() && !t.isDaemon() && t.getName().startsWith("XNIO-"))

@@ -305,7 +305,7 @@ function displayMetrics() {
   // PoolMetrics; expected pool names are "query" (QueryEngineManager), "sparse_vector"
   // (SparseVectorScoringPool) and "parallel_scan" (ParallelScanProducerPool). Each pool's gauges
   // are: pool.size, pool.active, queue.depth, queue.capacity_remaining, tasks.completed,
-  // tasks.caller_run_fallbacks. The sparse-vector pool adds pool.reserved, queries.in_flight and
+  // tasks.caller_run_fallbacks, tasks.reclaimed. The sparse-vector pool adds pool.reserved, queries.in_flight and
   // queries.split, which explain its per-query decision to parallelise or not (#4085).
   var ex = serverData.metrics.executors || {};
   var executorRowLabels = { "query": "Query Parallelism", "sparse_vector": "Sparse Vector Scoring",
@@ -329,6 +329,10 @@ function displayMetrics() {
     executorsHtml += "<td class='text-end'>" + Math.round(pool["queue.capacity_remaining"] || 0).toLocaleString() + "</td>";
     executorsHtml += "<td class='text-end'>" + Math.round(pool["tasks.completed"] || 0).toLocaleString() + "</td>";
     executorsHtml += "<td class='" + fallbackCellClass + "'>" + fallbacks.toLocaleString() + "</td>";
+    // Reclaimed (#6568): queued tasks a caller about to wait for them ran itself. Deliberately NOT
+    // highlighted like the fallback cell - it is the pool being busy rather than full, and it is the
+    // mechanism that keeps a blocking fan-out from deadlocking, so a non-zero value is healthy.
+    executorsHtml += "<td class='text-end'>" + Math.round(pool["tasks.reclaimed"] || 0).toLocaleString() + "</td>";
     // Split-decision columns (#4085). Only the sparse-vector pool decides per query whether to
     // parallelise, so a pool that does not report them shows "-" rather than a zero that would read
     // as "nothing is splitting" when the concept simply does not apply. "Queries Split" is the
@@ -339,7 +343,7 @@ function displayMetrics() {
     executorsHtml += "<td class='text-end'>" + gaugeOrDash(pool, "queries.split") + "</td>";
     executorsHtml += "</tr>";
   }
-  $("#srvMetricExecutorsTable").html(executorsHtml || "<tr><td colspan='9' class='text-muted text-center'>No executor pool metrics available.</td></tr>");
+  $("#srvMetricExecutorsTable").html(executorsHtml || "<tr><td colspan='10' class='text-muted text-center'>No executor pool metrics available.</td></tr>");
 
   // Sparse Vector Indexes table - rendered from metrics.sparseVectorIndexes. Shape:
   //   { dbName: { typeIndexName: { memtablePostings, segmentCount, totalPostings } } }

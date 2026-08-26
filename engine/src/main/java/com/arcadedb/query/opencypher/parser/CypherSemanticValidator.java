@@ -199,62 +199,75 @@ public class CypherSemanticValidator {
       return scope;
     }
 
-    for (final ClauseEntry entry : clauses) {
-      switch (entry.getType()) {
-      case MATCH -> {
-        final MatchClause matchClause = entry.getTypedClause();
-        if (matchClause.hasPathPatterns())
-          for (final PathPattern path : matchClause.getPathPatterns())
-            declarePatternVarTypes(path, scope, declaredHere);
-      }
-      case CREATE -> {
-        final CreateClause createClause = entry.getTypedClause();
-        if (createClause != null && !createClause.isEmpty())
-          for (final PathPattern path : createClause.getPathPatterns())
-            declarePatternVarTypes(path, scope, declaredHere);
-      }
-      case MERGE -> {
-        final MergeClause mergeClause = entry.getTypedClause();
-        if (mergeClause != null)
-          declarePatternVarTypes(mergeClause.getPathPattern(), scope, declaredHere);
-      }
-      case WITH -> applyWithProjection(entry.getTypedClause(), scope, declaredHere);
-      case UNWIND -> forget(((UnwindClause) entry.getTypedClause()).getVariable(), scope, declaredHere);
-      case LOAD_CSV -> forget(((LoadCSVClause) entry.getTypedClause()).getVariable(), scope, declaredHere);
-      // Only the FOREACH variable itself: what the clause's inner CREATE/MERGE bind lives and dies inside the loop
-      // and is not in scope after it, so declaring those kinds here would be declaring them where they cannot be
-      // referenced. The expression walk still descends into the inner clauses and checks them against this scope.
-      case FOREACH -> forget(((ForeachClause) entry.getTypedClause()).getVariable(), scope, declaredHere);
-      case CALL -> {
-        final CallClause callClause = entry.getTypedClause();
-        if (callClause.hasYield()) {
-          if (callClause.isYieldAll()) {
-            final List<String> yieldAllFields = resolveYieldAllFieldNames(callClause);
-            if (yieldAllFields != null)
-              for (final String field : yieldAllFields)
-                forget(field, scope, declaredHere);
-          } else
-            for (final CallClause.YieldItem item : callClause.getYieldItems())
-              forget(item.getOutputName(), scope, declaredHere);
-        }
-      }
-      case SUBQUERY -> {
-        // What a nested CALL subquery returns enters this scope under a kind this phase does not track back through
-        // it; that subquery's body is a scope of its own and gets its own map when the walk descends.
-        final SubqueryClause subqueryClause = entry.getTypedClause();
-        if (subqueryClause.getInnerStatement() != null) {
-          final ReturnClause innerReturn = subqueryClause.getInnerStatement().getReturnClause();
-          if (innerReturn != null)
-            for (final ReturnClause.ReturnItem item : innerReturn.getReturnItems())
-              forget(item.getOutputName(), scope, declaredHere);
-        }
-      }
-      default -> {
-        // No binding of its own.
-      }
+    for (final ClauseEntry entry : clauses)
+      applyClauseToVarTypes(entry, scope, declaredHere);
+    return scope;
+  }
+
+  /**
+   * Applies one clause's effect on the variable kinds in scope - a graph pattern declares them, a {@code WITH}
+   * resets the scope to what it projects, a binding that says nothing about the kind drops whatever the name held.
+   * <p>
+   * Factored out of {@link #buildVarTypes} so the same per-clause rule serves two callers: that method applying it
+   * to every clause up front to build one end-state map, and {@link FunctionArgumentChecks#forClauseEntry} applying
+   * it one clause at a time as {@link CypherExpressionWalker} walks the statement, so a check reads a clause's own
+   * declarations positionally instead of the whole statement's end state (issue #5671, part 2).
+   */
+  private static void applyClauseToVarTypes(final ClauseEntry entry, final Map<String, VarType> scope,
+      final Set<String> declaredHere) {
+    switch (entry.getType()) {
+    case MATCH -> {
+      final MatchClause matchClause = entry.getTypedClause();
+      if (matchClause.hasPathPatterns())
+        for (final PathPattern path : matchClause.getPathPatterns())
+          declarePatternVarTypes(path, scope, declaredHere);
+    }
+    case CREATE -> {
+      final CreateClause createClause = entry.getTypedClause();
+      if (createClause != null && !createClause.isEmpty())
+        for (final PathPattern path : createClause.getPathPatterns())
+          declarePatternVarTypes(path, scope, declaredHere);
+    }
+    case MERGE -> {
+      final MergeClause mergeClause = entry.getTypedClause();
+      if (mergeClause != null)
+        declarePatternVarTypes(mergeClause.getPathPattern(), scope, declaredHere);
+    }
+    case WITH -> applyWithProjection(entry.getTypedClause(), scope, declaredHere);
+    case UNWIND -> forget(((UnwindClause) entry.getTypedClause()).getVariable(), scope, declaredHere);
+    case LOAD_CSV -> forget(((LoadCSVClause) entry.getTypedClause()).getVariable(), scope, declaredHere);
+    // Only the FOREACH variable itself: what the clause's inner CREATE/MERGE bind lives and dies inside the loop
+    // and is not in scope after it, so declaring those kinds here would be declaring them where they cannot be
+    // referenced. The expression walk still descends into the inner clauses and checks them against this scope.
+    case FOREACH -> forget(((ForeachClause) entry.getTypedClause()).getVariable(), scope, declaredHere);
+    case CALL -> {
+      final CallClause callClause = entry.getTypedClause();
+      if (callClause.hasYield()) {
+        if (callClause.isYieldAll()) {
+          final List<String> yieldAllFields = resolveYieldAllFieldNames(callClause);
+          if (yieldAllFields != null)
+            for (final String field : yieldAllFields)
+              forget(field, scope, declaredHere);
+        } else
+          for (final CallClause.YieldItem item : callClause.getYieldItems())
+            forget(item.getOutputName(), scope, declaredHere);
       }
     }
-    return scope;
+    case SUBQUERY -> {
+      // What a nested CALL subquery returns enters this scope under a kind this phase does not track back through
+      // it; that subquery's body is a scope of its own and gets its own map when the walk descends.
+      final SubqueryClause subqueryClause = entry.getTypedClause();
+      if (subqueryClause.getInnerStatement() != null) {
+        final ReturnClause innerReturn = subqueryClause.getInnerStatement().getReturnClause();
+        if (innerReturn != null)
+          for (final ReturnClause.ReturnItem item : innerReturn.getReturnItems())
+            forget(item.getOutputName(), scope, declaredHere);
+      }
+    }
+    default -> {
+      // No binding of its own.
+    }
+    }
   }
 
   /**
@@ -2065,9 +2078,21 @@ public class CypherSemanticValidator {
    * Issue #5626 closed the last gap: the body of a {@code CALL { ... }} clause and of the three subquery expressions
    * ({@code EXISTS}, {@code COUNT}, {@code COLLECT}) are walked too. Each body is a scope of its own, so the visitor
    * re-binds itself to the variable kinds visible inside it - see {@link FunctionArgumentChecks#forNestedStatement}.
+   * <p>
+   * Issue #5671 (part 2) closed the last asymmetry in the <i>other</i> dimension: which kind a variable has when a
+   * check reads it. The scope used to be one end-state map built once for the whole statement (or body), so
+   * {@code MATCH (m) WHERE type(m) = 'X' WITH 1 AS m RETURN m} read {@code m}'s kind as of the last clause rather
+   * than as of the {@code MATCH} the {@code type()} call is actually written against, and a check that should have
+   * fired on the clause as written silently didn't. {@link FunctionArgumentChecks#forClauseEntry} advances the
+   * scope clause by clause instead, so each clause's own expressions are checked against the scope as of that
+   * clause - which is why this seeds with an empty scope rather than {@code varTypes}: {@code varTypes} IS the
+   * end-state map this phase used to over-apply, and seeding the incremental walk from it would still start every
+   * top-level clause already contaminated with clauses written after it. A statement inherits nothing, so empty is
+   * the correct starting scope; {@link FunctionArgumentChecks#forClauseEntry} builds every declaration back up as
+   * the walk reaches it.
    */
   private void validateFunctionArgumentTypes(final CypherStatement statement) {
-    CypherExpressionWalker.walk(statement, new FunctionArgumentChecks(varTypes));
+    CypherExpressionWalker.walk(statement, new FunctionArgumentChecks(Map.of()));
   }
 
   /**
@@ -2075,8 +2100,13 @@ public class CypherSemanticValidator {
    * <p>
    * Most of what they look at - the function name, how many arguments it was given, whether a literal argument is of
    * a type the function accepts - is the same wherever the call was written. What is not is the <i>kind</i> of a
-   * variable ({@code length(node)}, {@code p.name} on a path), and a subquery body has a variable scope of its own:
-   * hence one instance per scope rather than one per statement.
+   * variable ({@code length(node)}, {@code p.name} on a path), and both a subquery body and each clause within a
+   * statement or body have a variable scope of their own: hence one instance per scope, advanced by
+   * {@link #forClauseEntry} as the walk crosses a clause boundary and by {@link #forNestedStatement} as it crosses
+   * into a subquery body, rather than one shared instance checking every expression against a single end-state map
+   * (issue #5671, part 2). {@code type(m) = 'KNOWS'} in a {@code MATCH} is checked against the scope as of that
+   * {@code MATCH}, so a later {@code WITH 1 AS m} that drops {@code m}'s kind no longer erases the check on the
+   * clause written before it.
    */
   private final class FunctionArgumentChecks implements CypherExpressionWalker.Visitor {
     private final Map<String, VarType> scope;
@@ -2091,9 +2121,33 @@ public class CypherSemanticValidator {
       checkPropertyAccessOnPath(expression, scope);
     }
 
+    /**
+     * Seeds the nested body's walk from {@code this.scope} - the outer scope exactly as it stands at the point the
+     * walk is crossing into the body, already advanced by every {@link #forClauseEntry} call for the clauses before
+     * this one - rather than from {@link #nestedVarTypes}, which is the body's own <i>end</i> state (issue #5671,
+     * part 2 regression found in review). Seeding from the end state would seed the body's first clause with kinds
+     * that clause has not been declared yet - including kinds the body itself only reaches by walking past this
+     * point - the exact contamination this phase exists to remove, just relocated to the nested-body boundary
+     * instead of removed. {@link #buildVarTypes}/{@link #nestedVarTypes} are still exactly right for the other nine
+     * body phases in {@link #validateBodyPhases}, which do want the body's precomputed end state; this is the one
+     * phase that has to build the body's kinds up positionally as it walks, the same as it does for a top-level
+     * statement.
+     */
     @Override
     public CypherExpressionWalker.Visitor forNestedStatement(final CypherStatement nested) {
-      return new FunctionArgumentChecks(nestedVarTypes(scope, nested));
+      return new FunctionArgumentChecks(new HashMap<>(scope));
+    }
+
+    @Override
+    public CypherExpressionWalker.Visitor forClauseEntry(final ClauseEntry entry) {
+      // A throwaway declaredHere: applyClauseToVarTypes' only use for it is deciding whether a re-declaration is a
+      // VariableTypeConflict, and that conflict is always raised independently of this walk - for the statement by
+      // validateVariableTypes, for a subquery body by validateNestedStatements (both run as their own phases of
+      // CypherSemanticValidator#validate, seeing every clause of their scope, not just the one this call was handed).
+      // This walk only needs the resulting kinds, not to re-decide a question those phases already settle.
+      final Map<String, VarType> advanced = new HashMap<>(scope);
+      applyClauseToVarTypes(entry, advanced, new HashSet<>());
+      return new FunctionArgumentChecks(advanced);
     }
   }
 
@@ -2229,19 +2283,18 @@ public class CypherSemanticValidator {
    * harmless, because {@link #validateVariableScope} runs first and reports such a reference as the undefined variable
    * it is, before this phase gets to read a kind for it.
    * <p>
-   * What comes back is the body's <i>end</i> state, one map applied to every expression in it wherever that expression
-   * sits - deliberately, because it is the same approximation the top-level statement already runs on ({@code varTypes}
-   * is one map for the whole statement), and answering a body more precisely than the query around it would put back a
-   * clause-dependent asymmetry of exactly the kind #5602 and this issue exist to remove. It errs one way only: a name a
-   * later {@code WITH} re-binds to something kindless loses its kind for the clauses before it too, so a check is
-   * missed, never invented. It cannot err the other way, because the only rebinding Cypher allows on a bound name is a
-   * {@code WITH} projection, which can drop a kind but never turn a name into a path.
+   * What comes back is the body's <i>end</i> state, one map seeding every check that runs against it. For nine of the
+   * ten body phases (see {@link #validateBodyPhases}) and for {@link NestedStatementChecks} itself that is also the
+   * final answer, deliberately: it is the same approximation the top-level statement's own {@code varTypes} runs on,
+   * and answering a body more precisely than the query around it would put back a clause-dependent asymmetry of
+   * exactly the kind #5602 exists to remove. {@link FunctionArgumentChecks} is the one exception - it refines this
+   * seed further, clause by clause, as {@link CypherExpressionWalker} descends through the body (issue #5671, part
+   * 2), because unlike the other nine it already had to run positionally against the top-level statement too, and a
+   * body deserves the same precision as the query around it rather than less.
    */
   private static Map<String, VarType> nestedVarTypes(final Map<String, VarType> outer, final CypherStatement nested) {
     // A UNION declares nothing of its own - each branch is a scope of its own and is entered as a nested statement
     // in its own right, so it is the branch, not the union, that builds a scope over what is inherited here.
-    // (UnionStatement.getClausesInOrder() answers with its FIRST branch's clauses, which is why this returns before
-    // delegating rather than letting the shared build walk them as if they were the union's.)
     if (nested instanceof UnionStatement)
       return new HashMap<>(outer);
 

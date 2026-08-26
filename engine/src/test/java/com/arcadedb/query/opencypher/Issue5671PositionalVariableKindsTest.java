@@ -1,0 +1,189 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.query.opencypher;
+
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.query.sql.executor.ResultSet;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/**
+ * Issue #5671, part 2: variable-kind checks (the function-argument-type phase - {@code type(m)} needs a
+ * relationship, {@code labels(m)} needs a node, and so on) used to be built as one end-state map for the
+ * whole statement, applied to every expression in it wherever that expression sits. A name a later
+ * {@code WITH} re-binds to something kindless (or to a different kind) lost its kind - or its wrongness -
+ * for every clause <i>before</i> that {@code WITH} too, so a check that should have fired against the
+ * clause as written silently didn't.
+ * <p>
+ * {@code MATCH (m:P) WHERE type(m) = 'KNOWS' WITH 1 AS m RETURN m}: {@code type(m)} is written against a
+ * {@code MATCH}-bound node, which is always a type error - {@code type()} needs a relationship - regardless
+ * of what a later clause does with the name {@code m}. The old end-state map disagreed: by the time it was
+ * built, {@code m} was whatever the last clause left it as ({@code WITH 1 AS m} makes it a SCALAR), so the
+ * check read the wrong kind and never fired.
+ * <p>
+ * Now {@link com.arcadedb.query.opencypher.parser.CypherExpressionWalker} advances the variable-kind scope
+ * clause by clause as it walks (issue #5671's {@code Visitor#forClauseEntry}), so a clause's own expressions
+ * are checked against the scope as of that clause, not the statement's end state - both at the top level and
+ * inside a {@code CALL { ... }} body, the shape the issue's own example uses.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+class Issue5671PositionalVariableKindsTest {
+  private Database database;
+
+  @BeforeEach
+  void setUp() {
+    database = new DatabaseFactory("./target/databases/testissue5671positional").create();
+    database.getSchema().createVertexType("P");
+  }
+
+  @AfterEach
+  void tearDown() {
+    if (database != null) {
+      database.drop();
+      database = null;
+    }
+  }
+
+  @Test
+  void typeOnANodeBeforeARebindingWithIsStillRejectedAtTopLevel() {
+    // m is a node from MATCH; type() requires a relationship. The later "WITH 1 AS m" must not retroactively
+    // excuse the type() call written against the node.
+    assertThatThrownBy(() -> database.query("opencypher", "MATCH (m:P) WHERE type(m) = 'KNOWS' WITH 1 AS m RETURN m"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("type() requires a relationship argument, got node");
+  }
+
+  @Test
+  void typeOnANodeBeforeARebindingWithIsStillRejectedInsideACallSubqueryBody() {
+    // The issue's own example, executed: CALL { ... } bodies are validated positionally too, not just the
+    // top-level statement.
+    assertThatThrownBy(() -> database.query("opencypher",
+        "CALL { MATCH (m:P) WHERE type(m) = 'KNOWS' WITH 1 AS m RETURN m } RETURN m"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("type() requires a relationship argument, got node");
+  }
+
+  @Test
+  void typeOnANodeIsRejectedEvenWithNoTrailingWithAtAll() {
+    // Sanity check the pre-existing behavior (no WITH involved) is unaffected by the positional rework.
+    assertThatThrownBy(() -> database.query("opencypher", "MATCH (m:P) WHERE type(m) = 'KNOWS' RETURN m"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("type() requires a relationship argument, got node");
+  }
+
+  @Test
+  void typeOnARelationshipCarriedThroughAWithIsStillAccepted() {
+    // Sanity check the other direction: a kind that a WITH legitimately carries forward unchanged must not
+    // start being rejected by the positional rework.
+    database.getSchema().createEdgeType("KNOWS");
+    try (ResultSet ignored = database.query("opencypher",
+        "MATCH ()-[m:KNOWS]->() WITH m AS m RETURN type(m)")) {
+      // Statement must parse and plan without a semantic error; an empty database yields zero rows, which is fine.
+      assertThatCode(ignored::hasNext).doesNotThrowAnyException();
+    }
+  }
+
+  @Test
+  void typeOnANodeAfterAWithThatKeepsItANodeIsStillRejected() {
+    // The check must still fire when the WITH does NOT change the kind - only a kind CHANGE/loss should shift
+    // when the check does or doesn't fire.
+    assertThatThrownBy(() -> database.query("opencypher", "MATCH (m:P) WITH m AS m WHERE type(m) = 'KNOWS' RETURN m"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("type() requires a relationship argument, got node");
+  }
+
+  /**
+   * Found in code review of this issue's own fix: seeding a nested body's incremental walk from the body's
+   * {@code buildVarTypes} <i>end state</i> (rather than from the truly-inherited outer scope) relocates the
+   * exact contamination bug this issue is about to the body boundary instead of removing it. If the body's
+   * first clause is a pass-through {@code WITH} of a name the outer query bound to one kind, and the SAME
+   * name is later reassigned to a different kind further down in the body, the end-state-seeded walk would
+   * read the reassigned kind for the {@code WITH}'s own pass-through - even though the true kind entering the
+   * body, at that point, is still the one inherited from outside.
+   */
+  @Test
+  void aNameReassignedLaterInABodyDoesNotContaminateAnEarlierPassThroughWithOfTheSameName() {
+    database.getSchema().createEdgeType("KNOWS");
+    // r is a relationship from the outer MATCH. Inside the body, the importing "WITH r" passes it through
+    // unchanged and type(r) is checked right there - still genuinely a relationship at that point. Only later,
+    // and only after an intervening WITH that does NOT carry r forward (dropping it from scope), does a fresh
+    // MATCH reuse the name "r" for a node - a completely disconnected rebinding that must not reach backwards
+    // and change what "r" meant at the WITH written above it.
+    try (ResultSet ignored = database.query("opencypher",
+        "MATCH ()-[r:KNOWS]->() "
+            + "CALL { WITH r WHERE type(r) = 'KNOWS' WITH 1 AS x MATCH (r:P) RETURN r, x } "
+            + "RETURN r")) {
+      assertThatCode(ignored::hasNext).doesNotThrowAnyException();
+    }
+  }
+
+  /** The exact query from the code-review comment that first raised this concern, kept as a named anchor. */
+  @Test
+  void reviewCommentReproDoesNotFalselyReject() {
+    database.getSchema().createEdgeType("KNOWS");
+    try (ResultSet ignored = database.query("opencypher",
+        "MATCH ()-[r:KNOWS]->() CALL { WITH r WHERE type(r) = 'KNOWS' WITH 1 AS r RETURN r } RETURN r")) {
+      assertThatCode(ignored::hasNext).doesNotThrowAnyException();
+    }
+  }
+
+  /**
+   * Found in code review: {@code UNWIND}'s own list expression (and, by the same reasoning, a procedure
+   * {@code CALL}'s own arguments) is evaluated <i>before</i> the clause's binding takes effect, the same as a
+   * {@code WITH}'s projection items - so it must be checked against the scope from before this clause, not the
+   * one {@code forClauseEntry} advanced to. {@code m} is a node here; {@code UNWIND [...] AS m} reuses the name,
+   * but {@code type(m)} inside the list is still the node from the {@code MATCH}, not yet rebound.
+   */
+  @Test
+  void unwindListExpressionIsCheckedAgainstTheScopeBeforeItsOwnVariableIsRebound() {
+    assertThatThrownBy(() -> database.query("opencypher", "MATCH (m:P) UNWIND [type(m)] AS m RETURN m"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("type() requires a relationship argument, got node");
+  }
+
+  /** Sanity check the other direction: an UNWIND that does not reuse an outer name is unaffected. */
+  @Test
+  void unwindListExpressionReferencingAnUnrelatedNodeIsUnaffected() {
+    assertThatThrownBy(() -> database.query("opencypher", "MATCH (m:P) UNWIND [type(m)] AS u RETURN u"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("type() requires a relationship argument, got node");
+  }
+
+  /**
+   * Found in a second code-review round: {@code FOREACH}'s inner clauses were walked flat, all against the
+   * single scope {@code FOREACH} itself declared, so a later inner clause could not see what an earlier inner
+   * clause in the SAME body had just bound - unlike every other clause list, where {@link #forClauseEntry}
+   * advances the scope from one clause to the next. An inner {@code CREATE} followed by an inner {@code SET}
+   * reading what it just created is the concrete case: {@code n} is a node the moment the {@code CREATE} runs,
+   * and {@code type()} must still reject it inside the very next inner clause.
+   */
+  @Test
+  void foreachInnerClauseSeesWhatAnEarlierInnerClauseInTheSameBodyJustDeclared() {
+    assertThatThrownBy(() -> database.query("opencypher", "FOREACH (i IN [1] | CREATE (n:P) SET n.kind = type(n))"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("type() requires a relationship argument, got node");
+  }
+}

@@ -74,7 +74,7 @@ class Issue6441CorruptedSlotRepairSideTest extends BucketPageLayoutTestSupport {
    * the transaction that happens to be running the scan, and the slot still where it was afterwards.
    */
   @Test
-  void theStatisticsScanReportsTheCorruptedSlotAndTouchesNothing() throws IOException {
+  void theStatisticsScanReportsTheCorruptedSlotAndTouchesNothing() throws Exception {
     final RID corrupted = corruptOnPageZero()[1];
 
     final long entryBefore = slotEntryOf(corrupted);
@@ -112,7 +112,7 @@ class Issue6441CorruptedSlotRepairSideTest extends BucketPageLayoutTestSupport {
    * slot-table entry pointing into whatever moved on top of it.
    */
   @Test
-  void checkDatabaseCompressFreesTheCorruptedSlot() throws IOException {
+  void checkDatabaseCompressFreesTheCorruptedSlot() throws Exception {
     final RID corrupted = corruptOnPageZero()[1];
     assertThat(slotEntryOf(corrupted)).isPositive();
 
@@ -138,7 +138,7 @@ class Issue6441CorruptedSlotRepairSideTest extends BucketPageLayoutTestSupport {
    * corrupted slot does not wait for an operator to notice it.
    */
   @Test
-  void anOrdinaryCommitOnThePageFreesTheCorruptedSlot() throws IOException {
+  void anOrdinaryCommitOnThePageFreesTheCorruptedSlot() throws Exception {
     final RID[] rids = corruptOnPageZero();
     final RID corrupted = rids[1];
     final RID neighbour = rids[2];

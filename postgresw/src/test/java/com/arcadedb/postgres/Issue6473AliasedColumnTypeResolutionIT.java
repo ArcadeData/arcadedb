@@ -43,7 +43,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue6473AliasedColumnTypeResolutionIT extends PostgresWireProtocolTestBase {
+class Issue6473AliasedColumnTypeResolutionIT extends PostgresWireProtocolTestBase {
 
   @Test
   void anAliasedEmptyListPropertyReportsTheDeclaredElementTypeInsteadOfDefaultingToText() throws Exception {

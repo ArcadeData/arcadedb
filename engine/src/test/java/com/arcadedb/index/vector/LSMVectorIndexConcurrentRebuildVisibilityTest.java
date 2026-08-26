@@ -56,8 +56,16 @@ import static org.assertj.core.api.Assertions.assertThat;
  * returned however good its score - the miss is stable across retries and survives any {@code efSearch}. On a miss
  * the test therefore reports whether the vector is reachable from the entry node at all, which is what separates
  * this from ordinary ANN recall.
+ * <p>
+ * Tagged {@code vector}, not {@code slow}: this test deliberately drives 4 indexes' worth of concurrent async
+ * rebuilds against the single JVM-wide {@code REBUILD_SEMAPHORE} permit, and a rebuild whose JVector compute
+ * loop does not respond promptly to {@code releaseBackgroundResources()}'s cancellation can still be holding
+ * that permit when the test method returns and {@code TestHelper}'s teardown drops the database. Running in
+ * the {@code slow} lane, that leftover thread would convoy against whichever unrelated test happens to run
+ * next and needs its own rebuild permit - exactly the failure mode the {@code vector} lane exists to contain
+ * (see CLAUDE.md's {@code @Tag("vector")} note).
  */
-@Tag("slow")
+@Tag("vector")
 class LSMVectorIndexConcurrentRebuildVisibilityTest extends TestHelper {
 
   private static final int EMBEDDING_DIM = 32;

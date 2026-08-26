@@ -36,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class LightweightEdgeTypeTest extends TestHelper {
+class LightweightEdgeTypeTest extends TestHelper {
 
   @Override
   protected void beginTest() {

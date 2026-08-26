@@ -32,7 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue5362DuplicatePredicateIndexSeekTest extends TestHelper {
+class Issue5362DuplicatePredicateIndexSeekTest extends TestHelper {
   @Override
   protected void beginTest() {
     database.transaction(() -> {

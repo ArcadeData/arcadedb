@@ -22,7 +22,11 @@ import com.arcadedb.GlobalConfiguration;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
 import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -38,6 +42,14 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class DedicatedThreadPoolTest {
+
+  /**
+   * Plain wall clock, because {@code @Timeout} cannot be stall-discounted - so it is sized as a hang detector and
+   * never as a bound on anything. The tests that wait for something get their actual verdict from
+   * {@link #awaited(CountDownLatch)}, whose budget IS stall-discounted (#6260); this only stops a genuine wedge
+   * from hanging the build. Same sizing as {@code Issue6568NestedFanOutDeadlockTest}, for the same reason.
+   */
+  private static final int HANG_DETECTOR_SECONDS = 300;
 
   private static final class TestPool extends DedicatedThreadPool {
     private TestPool(final int queueCapacity, final SaturationPolicy policy) {
@@ -126,6 +138,168 @@ class DedicatedThreadPoolTest {
 
     assertThat(ran.get()).as("the submitter has already counted this as in flight: dropping it strands that count")
         .isTrue();
+  }
+
+  /**
+   * The #6568 primitive: a task the queue has accepted but no worker has started is handed back to the thread that
+   * is about to wait for it, and runs there. What makes it safe is that {@code remove} succeeding is proof no
+   * worker took it, so it runs exactly once.
+   */
+  @Test
+  @Timeout(HANG_DETECTOR_SECONDS)
+  void aQueuedTaskIsReclaimedAndRunByTheThreadWaitingForIt() throws Exception {
+    final TestPool pool = new TestPool(16, DedicatedThreadPool.SaturationPolicy.CALLER_RUNS);
+    final CountDownLatch pinWorker = new CountDownLatch(1);
+    final CountDownLatch workerPinned = new CountDownLatch(1);
+    try {
+      // The pool has exactly one worker: pin it, and everything else submitted is queued but unreachable.
+      pool.getExecutorService().submit(() -> {
+        workerPinned.countDown();
+        pinWorker.await();
+        return null;
+      });
+      assertThat(awaited(workerPinned)).as("the pool's single worker must be pinned before anything can be queued")
+          .isTrue();
+
+      final AtomicReference<Thread> ranOn = new AtomicReference<>();
+      final Future<?> queued = pool.getExecutorService().submit(() -> ranOn.set(Thread.currentThread()));
+
+      assertThat(pool.runQueuedTaskOnCaller((Runnable) queued)).isTrue();
+      assertThat(ranOn.get()).as("the reclaimed task runs on the reclaiming thread, not on a worker")
+          .isSameAs(Thread.currentThread());
+      assertThat(queued.isDone()).as("...and its future is resolved, so the wait that follows returns at once").isTrue();
+      assertThat(pool.getPoolStats().reclaimedTasks()).isEqualTo(1);
+      assertThat(pool.getPoolStats().callerRunFallbacks())
+          .as("a reclaim is the pool being busy, never the pool being full: it must not read as a sizing problem")
+          .isZero();
+    } finally {
+      pinWorker.countDown();
+      pool.close();
+    }
+  }
+
+  /**
+   * And it refuses everything it must refuse: a task already taken by a worker (reclaiming it would run it twice),
+   * one that has already finished, and one that was never submitted to this pool at all.
+   */
+  @Test
+  @Timeout(HANG_DETECTOR_SECONDS)
+  void aTaskAWorkerAlreadyHasIsNeverReclaimed() throws Exception {
+    final TestPool pool = new TestPool(16, DedicatedThreadPool.SaturationPolicy.CALLER_RUNS);
+    final CountDownLatch releaseRunning = new CountDownLatch(1);
+    final CountDownLatch running = new CountDownLatch(1);
+    try {
+      final Future<?> started = pool.getExecutorService().submit(() -> {
+        running.countDown();
+        releaseRunning.await();
+        return null;
+      });
+      assertThat(awaited(running)).as("the task must be running on the worker, not still queued").isTrue();
+
+      assertThat(pool.runQueuedTaskOnCaller((Runnable) started))
+          .as("a task a worker is already running must never be run a second time on the caller").isFalse();
+
+      final FutureTask<Void> foreign = new FutureTask<>(() -> null);
+      assertThat(pool.runQueuedTaskOnCaller(foreign)).as("a task this pool never queued is not this pool's to run")
+          .isFalse();
+      assertThat(foreign.isDone()).isFalse();
+
+      assertThat(pool.runQueuedTaskOnCaller(null)).as("nothing to reclaim, and no NPE either").isFalse();
+      assertThat(pool.getPoolStats().reclaimedTasks()).isZero();
+    } finally {
+      releaseRunning.countDown();
+      pool.close();
+    }
+  }
+
+  /**
+   * A reclaimed task that THROWS must be indistinguishable from a worker-run one that throws: the exception lands in
+   * the task's own future, so the caller's {@code get()} surfaces it as an {@link java.util.concurrent.ExecutionException}
+   * rather than blowing up in the middle of the reclaim. The whole fix rests on "a reclaim is the same execution a
+   * worker would have given it", and this is the half of that claim liveness alone does not pin.
+   */
+  @Test
+  @Timeout(HANG_DETECTOR_SECONDS)
+  void aReclaimedTaskThatThrowsFailsItsFutureInsteadOfTheReclaimingThread() throws Exception {
+    final TestPool pool = new TestPool(16, DedicatedThreadPool.SaturationPolicy.CALLER_RUNS);
+    final CountDownLatch pinWorker = new CountDownLatch(1);
+    final CountDownLatch workerPinned = new CountDownLatch(1);
+    try {
+      pool.getExecutorService().submit(() -> {
+        workerPinned.countDown();
+        pinWorker.await();
+        return null;
+      });
+      assertThat(awaited(workerPinned)).isTrue();
+
+      final Future<?> queued = pool.getExecutorService().submit(() -> {
+        throw new IllegalStateException("boom");
+      });
+
+      assertThat(pool.runQueuedTaskOnCaller((Runnable) queued))
+          .as("the reclaim itself must succeed - a failing task is still a task this thread ran").isTrue();
+      assertThatThrownBy(queued::get).isInstanceOf(ExecutionException.class)
+          .cause().isInstanceOf(IllegalStateException.class).hasMessage("boom");
+    } finally {
+      pinWorker.countDown();
+      pool.close();
+    }
+  }
+
+  /**
+   * A reclaim borrows the caller's thread exactly as a caller-runs rejection does, so it must go through the same
+   * {@link DedicatedThreadPool#runRejectedTask(Runnable)} hook. {@code AsyncCommandPool} overrides that hook to mark
+   * the borrowed thread as one of its own, and the async barrier reads that mark to avoid waiting for the very
+   * command it is running - a reclaim that bypassed the hook would silently reintroduce that self-deadlock.
+   */
+  @Test
+  @Timeout(HANG_DETECTOR_SECONDS)
+  void aReclaimRunsThroughTheSameHookAsACallerRunsFallback() throws Exception {
+    final AtomicReference<Thread> markedOn = new AtomicReference<>();
+    final CountDownLatch pinWorker = new CountDownLatch(1);
+    final CountDownLatch workerPinned = new CountDownLatch(1);
+    final DedicatedThreadPool pool = new DedicatedThreadPool("ArcadeDB-DedicatedThreadPoolTest-hook-", 1, 16,
+        DedicatedThreadPool.SaturationPolicy.CALLER_RUNS, DedicatedThreadPool::plainWorker, "Test pool", null,
+        GlobalConfiguration.QUERY_PARALLELISM_POOL_THREADS) {
+      @Override
+      protected void runRejectedTask(final Runnable task) {
+        markedOn.set(Thread.currentThread());
+        super.runRejectedTask(task);
+      }
+    };
+    try {
+      pool.getExecutorService().submit(() -> {
+        workerPinned.countDown();
+        pinWorker.await();
+        return null;
+      });
+      assertThat(awaited(workerPinned)).isTrue();
+
+      final Future<?> queued = pool.getExecutorService().submit(() -> {
+      });
+      assertThat(pool.runQueuedTaskOnCaller((Runnable) queued)).isTrue();
+
+      assertThat(markedOn.get())
+          .as("the subclass hook must see the reclaim, on the thread that is borrowing itself out to the pool")
+          .isSameAs(Thread.currentThread());
+    } finally {
+      pinWorker.countDown();
+      pool.close();
+    }
+  }
+
+  /**
+   * Waits for a readiness latch against a STALL-DISCOUNTED budget (#6260): a stop-the-world pause late in a
+   * full-suite run must not be charged to a wait that is only there to order two threads, or the test goes red
+   * for the JVM's mood rather than for the code. Polled, because that is what makes the discount possible.
+   */
+  private static boolean awaited(final CountDownLatch latch) throws InterruptedException {
+    final StallAwareStopwatch watch = StallAwareStopwatch.start();
+    do {
+      if (latch.await(250, TimeUnit.MILLISECONDS))
+        return true;
+    } while (watch.effectiveMs() < 30_000L);
+    return false;
   }
 
   /** The shared sizing: an explicit positive value wins, anything else is cores with a floor of two. */

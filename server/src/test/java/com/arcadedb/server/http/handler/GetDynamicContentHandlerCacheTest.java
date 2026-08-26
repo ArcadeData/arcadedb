@@ -20,7 +20,6 @@ package com.arcadedb.server.http.handler;
 
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -35,14 +34,14 @@ class GetDynamicContentHandlerCacheTest {
   private static final String PROBE = "static/js/cache-probe.js";
 
   @Test
-  void returnsResourceBytes() throws IOException {
+  void returnsResourceBytes() throws Exception {
     final byte[] bytes = GetDynamicContentHandler.loadStaticResource(PROBE);
     assertThat(bytes).isNotNull();
     assertThat(new String(bytes, StandardCharsets.UTF_8)).contains("cache-probe");
   }
 
   @Test
-  void secondCallReturnsSameCachedInstance() throws IOException {
+  void secondCallReturnsSameCachedInstance() throws Exception {
     final byte[] first = GetDynamicContentHandler.loadStaticResource(PROBE);
     final byte[] second = GetDynamicContentHandler.loadStaticResource(PROBE);
     assertThat(first).isNotNull();
@@ -51,7 +50,7 @@ class GetDynamicContentHandlerCacheTest {
   }
 
   @Test
-  void missingResourceReturnsNull() throws IOException {
+  void missingResourceReturnsNull() throws Exception {
     assertThat(GetDynamicContentHandler.loadStaticResource("static/js/does-not-exist-5035.js")).isNull();
   }
 }

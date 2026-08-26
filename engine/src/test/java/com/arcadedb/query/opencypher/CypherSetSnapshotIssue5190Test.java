@@ -35,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class CypherSetSnapshotIssue5190Test {
+class CypherSetSnapshotIssue5190Test {
   private Database database;
 
   @BeforeEach

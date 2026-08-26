@@ -54,7 +54,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue5517BloomFilterFullCompactionIT extends BaseRaftHATest {
+class Issue5517BloomFilterFullCompactionIT extends BaseRaftHATest {
   private static final int    FIRST_BATCH  = 20_000;
   private static final int    SECOND_BATCH = 20_000;
   private static final int    THIRD_BATCH  = 20_000;
@@ -90,7 +90,7 @@ public class Issue5517BloomFilterFullCompactionIT extends BaseRaftHATest {
   }
 
   @Test
-  public void aFullCompactionShipsTheNewFiltersAndDropsTheOld() throws Exception {
+  void aFullCompactionShipsTheNewFiltersAndDropsTheOld() throws Exception {
     final int leaderIndex = findLeaderIndex();
     assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
 

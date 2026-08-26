@@ -33,7 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * immutable instance across the transaction that adds the edge, which is the only shape that meets the defect: an edge
  * added through a freshly looked-up vertex never sees a stale parse.
  */
-public class Issue5771VertexReloadEdgePointerTest extends BaseGraphTest {
+class Issue5771VertexReloadEdgePointerTest extends BaseGraphTest {
 
   @Test
   void reloadRefreshesOutEdgesHeadChunk() {

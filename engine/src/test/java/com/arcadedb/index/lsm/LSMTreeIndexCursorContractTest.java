@@ -29,6 +29,8 @@ import com.arcadedb.index.RangeIndex;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -65,6 +67,7 @@ class LSMTreeIndexCursorContractTest extends TestHelper {
   private static final int    SURVIVOR_TO   = 1_900;
   private static final int    SURVIVORS     = SURVIVOR_TO - SURVIVOR_FROM;
 
+  @BeforeEach
   @Override
   public void beforeTest() {
     // keep compaction manual so each test controls the index shape deterministically

@@ -186,6 +186,75 @@ class ConsoleTest {
   }
 
   /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/6439: a script is loaded line by line, so a `CONTENT` clause whose JSON
+   * object spans multiple lines must keep accumulating exactly like a multi-line block comment does, rather than being reported
+   * as an unbalanced '{' on its first line - the closing '}' is simply on a line not read yet.
+   */
+  @Test
+  void loadScriptWithMultiLineJsonContent() throws Exception {
+    assertThat(console.parse("connect " + DB_NAME)).isTrue();
+
+    final File script = new File("./target/issue-6439.sql");
+    try {
+      Files.writeString(script.toPath(), """
+          create document type Loaded;
+          insert into Loaded content {
+            "id": 66
+          };
+          """);
+
+      final StringBuilder buffer = new StringBuilder();
+      console.setOutput(output -> buffer.append(output));
+
+      assertThat(console.parse("load " + script.getAbsolutePath())).isTrue();
+      assertThat(buffer.toString()).doesNotContain("ERROR");
+
+      buffer.setLength(0);
+      assertThat(console.parse("select from Loaded")).isTrue();
+      assertThat(buffer.toString()).contains("66").doesNotContain("ERROR");
+    } finally {
+      script.delete();
+    }
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/6439: {@code executeLoad} re-buffers one statement at a time, resetting
+   * after every executed command, so an unclosed '{' must be reported at its real position in the FILE - here line 4 - not at
+   * "line 1" relative to the buffer that happened to be accumulating when the error was found.
+   */
+  @Test
+  void unbalancedBraceInLoadedScriptReportsTheActualFileLine() throws Exception {
+    assertThat(console.parse("connect " + DB_NAME)).isTrue();
+
+    final File script = new File("./target/issue-6439-load-line.sql");
+    try {
+      Files.writeString(script.toPath(), """
+          create document type Loaded;
+          insert into Loaded set id = 1;
+          insert into Loaded set id = 2;
+          insert into Loaded content {"a": 1
+          """);
+
+      final StringBuilder buffer = new StringBuilder();
+      console.setOutput(output -> buffer.append(output));
+
+      assertThatThrownBy(() -> console.parse("load " + script.getAbsolutePath())).isInstanceOf(ConsoleException.class)
+          .hasMessageContaining("line 4");
+
+      // THE ERROR MUST BE REPORTED ONCE, NOT ONCE BY reportUnbalancedBrace() AND AGAIN BY THE GENERIC CATCH WRAPPING THE
+      // "load" COMMAND DISPATCH (ISSUE #6439)
+      final String output = buffer.toString();
+      final String marker = "Unbalanced '{'";
+      int occurrences = 0;
+      for (int idx = output.indexOf(marker); idx != -1; idx = output.indexOf(marker, idx + marker.length()))
+        ++occurrences;
+      assertThat(occurrences).isEqualTo(1);
+    } finally {
+      script.delete();
+    }
+  }
+
+  /**
    * Issue https://github.com/ArcadeData/arcadedb/issues/6372: an empty line in a script loaded with LOAD must not echo an
    * empty prompt of its own - only the real commands are echoed.
    */
@@ -252,6 +321,112 @@ class ConsoleTest {
   @Test
   void setLanguage() throws Exception {
     console.parse("connect " + DB_NAME + ";set language = sql; select 1");
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/6439: `set language = 'sql'` used to store the value with its quotes,
+   * and `'sql'.startsWith("sql")` is false, so TerminalParser.setLanguage() picked the non-SQL `//` comment marker. That left
+   * `--` unrecognised, so the semicolon inside the comment below would have split the command in two instead of being dropped.
+   */
+  @Test
+  void setLanguageWithQuotedSqlValueKeepsTheSqlCommentMarker() throws Exception {
+    assertThat(console.parse("connect " + DB_NAME)).isTrue();
+    assertThat(console.parse("set language = 'sql'")).isTrue();
+
+    final StringBuilder buffer = new StringBuilder();
+    console.setOutput(output -> buffer.append(output));
+
+    assertThat(console.parse("select 11 as value -- a comment with a semicolon ; here")).isTrue();
+    assertThat(buffer.toString()).contains("11").doesNotContain("ERROR");
+  }
+
+  @Test
+  void setLanguageWithDoubleQuotedValueStripsTheQuotes() throws Exception {
+    assertThat(console.parse("connect " + DB_NAME)).isTrue();
+    assertThat(console.parse("set language = \"sql\"")).isTrue();
+
+    final StringBuilder buffer = new StringBuilder();
+    console.setOutput(output -> buffer.append(output));
+
+    assertThat(console.parse("select 11 as value -- a comment with a semicolon ; here")).isTrue();
+    assertThat(buffer.toString()).contains("11").doesNotContain("ERROR");
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/6439: a SET value that starts with a quote character but never closes
+   * it is always a typo, so it must be rejected instead of being stored half-quoted.
+   */
+  @Test
+  void setWithMissingClosingQuoteIsRejected() throws Exception {
+    assertThat(console.parse("connect " + DB_NAME)).isTrue();
+    assertThatThrownBy(() -> console.parse("set language = 'sql")).isInstanceOf(ConsoleException.class)
+        .hasMessageContaining("missing closing quote");
+  }
+
+  @Test
+  void setWithMissingClosingDoubleQuoteIsRejected() throws Exception {
+    assertThat(console.parse("connect " + DB_NAME)).isTrue();
+    assertThatThrownBy(() -> console.parse("set language = \"sql")).isInstanceOf(ConsoleException.class)
+        .hasMessageContaining("missing closing quote");
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/6439: content trailing after a properly closed quote is a different
+   * typo than a missing quote, and deserves a message that says so rather than "unbalanced".
+   */
+  @Test
+  void setWithContentAfterClosingQuoteIsRejected() throws Exception {
+    assertThat(console.parse("connect " + DB_NAME)).isTrue();
+    assertThatThrownBy(() -> console.parse("set language = 'sql' extra")).isInstanceOf(ConsoleException.class)
+        .hasMessageContaining("unexpected content after the closing quote");
+  }
+
+  @Test
+  void setWithContentAfterClosingDoubleQuoteIsRejected() throws Exception {
+    assertThat(console.parse("connect " + DB_NAME)).isTrue();
+    assertThatThrownBy(() -> console.parse("set language = \"sql\" extra")).isInstanceOf(ConsoleException.class)
+        .hasMessageContaining("unexpected content after the closing quote");
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/6439: TerminalParser strips the escaping backslash from an escaped
+   * inner quote before executeSet ever sees the value, so a value like this reaches stripMatchingQuotes as
+   * {@code 'it's a test'} - indistinguishable from a real closing quote followed by trailing garbage that happens to also end
+   * in a quote. It must still be accepted as the escaped value the user intended, not rejected.
+   */
+  @Test
+  void setLanguageWithEscapedQuoteInsideValueIsPreserved() throws Exception {
+    assertThat(console.parse("connect " + DB_NAME)).isTrue();
+
+    final StringBuilder buffer = new StringBuilder();
+    console.setOutput(output -> buffer.append(output));
+
+    assertThat(console.parse("set language = 'it\\'s a test'")).isTrue();
+    assertThat(buffer.toString()).contains("it's a test").doesNotContain("ERROR");
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/6439: an unclosed '{' in a CONTENT clause used to swallow every
+   * following command into one malformed statement, which then failed downstream with a confusing syntax error pointing at
+   * text typed several statements earlier. The commands before the corrupted one must still run, and the corrupted tail must
+   * be reported clearly instead of being forwarded to the query engine.
+   */
+  @Test
+  void unbalancedOpeningBraceRunsEarlierCommandsThenReportsTheCorruptedTail() throws Exception {
+    assertThat(console.parse("connect " + DB_NAME)).isTrue();
+
+    final StringBuilder buffer = new StringBuilder();
+    console.setOutput(output -> buffer.append(output));
+
+    assertThatThrownBy(
+        () -> console.parse("select 11 as value; insert into doc content {\"a\": 1 ; select 99999 as value"))
+        .isInstanceOf(ConsoleException.class)
+        .hasMessageContaining("Unbalanced '{'");
+
+    // "select 99999" IS PART OF THE CORRUPTED TAIL, GLUED TO THE MALFORMED CONTENT CLAUSE BY THE UNCLOSED '{': IT MUST NEVER
+    // REACH THE QUERY ENGINE, NOT EVEN AS A DIGIT SUBSTRING OF A LARGER MATCHED NUMBER
+    final String output = buffer.toString();
+    assertThat(output).contains("11").contains("ERROR").doesNotContain("99999");
   }
 
   @Test

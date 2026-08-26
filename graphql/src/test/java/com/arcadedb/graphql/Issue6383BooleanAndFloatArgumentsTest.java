@@ -47,7 +47,7 @@ class Issue6383BooleanAndFloatArgumentsTest {
 
   @BeforeEach
   @AfterEach
-  public void clean() {
+  void clean() {
     FileUtils.deleteRecursively(new File(DB_PATH));
   }
 
