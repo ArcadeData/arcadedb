@@ -23,6 +23,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.Vertex.DIRECTION;
 
 import com.arcadedb.query.QueryEngineManager;
+import com.arcadedb.utility.DedicatedThreadPool;
 
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
@@ -136,14 +137,44 @@ public final class GraphAlgorithms {
    * a {@link CommandExecutionException} is thrown, with the interrupt flag preserved for the caller.
    * Public because the parallel Cypher operators (GAV fused chain, partitioned triangle count) reuse
    * it for the same guarantee.
+   * <p>
+   * #6568: it also RECLAIMS - a chunk still queued on the query pool is run on this thread rather than waited for,
+   * which is what makes the wait deadlock-free instead of relying on every caller running a chunk itself. See the
+   * {@link #awaitFutures(Future[], int, DedicatedThreadPool)} overload for why the caller-runs policy is not that
+   * guarantee.
    */
   public static void awaitFutures(final Future<?>[] futures, final int count) {
+    awaitFutures(futures, count, QueryEngineManager.getInstance());
+  }
+
+  /**
+   * {@link #awaitFutures(Future[], int)} for a fan-out submitted to a pool other than the query-parallelism one.
+   * <p>
+   * <b>#6568: the wait RECLAIMS before it parks.</b> Every future still sitting in {@code pool}'s queue is taken
+   * back out and run on this thread rather than waited for. That is what makes the fan-out deadlock-free rather
+   * than merely usually-fine: a caller that parks on a queued task while every worker is itself parked on a queued
+   * task can never be woken by anything, and the bounded queue's caller-runs policy does not save it - the policy
+   * only fires when the queue is FULL, and a queue with free slots quietly accepts the task and parks the
+   * submitter. Reclaiming means the waiter always has work it can make progress on, so by induction on nesting
+   * depth the whole fan-out completes. See {@link DedicatedThreadPool#runQueuedTaskOnCaller(Runnable)}.
+   * <p>
+   * A reclaimed task runs to completion inside {@code run()} and records its outcome in its own future, so the
+   * {@code get()} below still surfaces its exception exactly as if a worker had run it.
+   *
+   * @param pool the pool the futures were submitted to, or null to skip reclaiming (a foreign future is simply
+   *             never found in the queue, so passing the wrong pool costs a queue scan and nothing else)
+   */
+  public static void awaitFutures(final Future<?>[] futures, final int count, final DedicatedThreadPool pool) {
     Throwable firstError = null;
     for (int i = 0; i < count; i++) {
       if (futures[i] == null)
         // Defensive: a caller that partially populated the array must not NPE the whole await.
         continue;
       try {
+        // Deadlock avoidance, not an optimisation: see the #6568 note above. Skipped for a future already
+        // resolved, so the common uncontended case never pays for the queue scan.
+        if (pool != null && !futures[i].isDone() && futures[i] instanceof Runnable queued)
+          pool.runQueuedTaskOnCaller(queued);
         futures[i].get();
       } catch (final ExecutionException e) {
         if (firstError == null)

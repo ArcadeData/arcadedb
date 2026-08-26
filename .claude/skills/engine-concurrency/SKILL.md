@@ -52,9 +52,10 @@ Used sparingly, only for publish-side serialization:
 
 ## Metrics (Micrometer)
 
-- `PoolMetrics` MeterBinder registers six gauges per pool with a `pool=<name>` tag: `size`, `active`, `queue_depth`, `queue_capacity_remaining`, `completed_tasks`, `caller_run_fallbacks`.
+- `PoolMetrics` MeterBinder registers seven gauges per pool with a `pool=<name>` tag: `size`, `active`, `queue_depth`, `queue_capacity_remaining`, `completed_tasks`, `caller_run_fallbacks`, `reclaimed`.
 - Studio surfaces these via the "Executor Pools" card on the Server tab (live numbers).
 - A sustained non-zero `caller_run_fallbacks` indicates pool saturation; the engine logs a throttled WARNING the first time and at most once per 60 s afterward.
+- `reclaimed` is NOT a fault signal and is not warned about: it counts queued tasks a caller about to wait for them ran itself (`runQueuedTaskOnCaller`, issue #6568). It says the pool was busy, where `caller_run_fallbacks` says it was full.
 
 ## The shared base: `com.arcadedb.utility.DedicatedThreadPool`
 
@@ -76,6 +77,29 @@ That is the checklist below being enforced rather than remembered.
 Each pool's REASONS stay in its own class javadoc - why blocking producers may not share a pool with non-blocking
 compute, why dispatched DDL cannot run on an async worker, why a sparse-vector fan-out must not nest.
 
+## Waiting for a task on a pool your thread may itself be running on (#6568)
+
+**Never park on it. Reclaim it.**
+
+The caller-runs saturation policy is routinely mistaken for the deadlock guarantee here, and it is not one: it fires
+only when the queue is **full**. A queue with a thousand free slots accepts the task, parks the submitter, and the
+deadlock is that both workers and submitters are now parked on tasks nobody is left to run. Every blocking fan-out has
+that shape by construction as soon as two of them nest, and the failure presents as a lane timeout with no failing
+assertion - which is how #6568 arrived, as a wedged `ParallelScanSafetyTest`.
+
+- `DedicatedThreadPool.runQueuedTaskOnCaller(task)` takes a task the queue accepted but no worker has started back out
+  and runs it on the calling thread. `ThreadPoolExecutor.remove` succeeding is the proof no worker has it, so it runs
+  exactly once. It counts into `PoolStats.reclaimedTasks()`.
+- `GraphAlgorithms.awaitFutures(futures, count[, pool])` is the ready-made reclaiming wait, and is what
+  `parallelForRange`, `GAVFusedChainOperator` and `PartitionedTriangleOp` use. Prefer it over a bare `Future.get()`
+  loop for anything submitted to a `DedicatedThreadPool`.
+- "The caller runs chunk 0 itself" (`parallelForRange`, `PartitionedTriangleOp`) is a latency optimisation, not the
+  liveness argument. It does not stop chunks 1..N-1 from queueing behind parked workers.
+- The other shape that is safe is refusing to nest at all, as `SparseVectorScoringPool.isPoolThread()` does. Use it
+  when the nested fan-out has no value; use the reclaiming wait when it does.
+- A reclaimed task runs with the CALLER's thread-locals (`DatabaseContext`, transaction, principal). That is the same
+  exposure caller-runs already has, so nothing on a caller-runs pool may depend on running on a worker thread.
+
 ## When adding new parallelism to engine code
 
 1. Pick the right home pool (`QueryEngineManager` for query-time, `SparseVectorScoringPool` if scoping to sparse vectors, etc.). If none fits, justify a new pool and add a `PoolMetrics` binding for it.
@@ -84,3 +108,4 @@ compute, why dispatched DDL cannot run on an async worker, why a sparse-vector f
 4. Throttled WARNING on saturation (60-second window, `WARN_THROTTLE_INTERVAL_MS`) so operators notice without getting spammed.
 5. Wire the pool into `PoolMetrics` so the Studio "Executor Pools" card shows it.
 6. If using the JDK common ForkJoinPool is unavoidable in the short term, tag the call site with a `NOTE (concurrency)` comment pointing at this skill so the migration stays tracked.
+7. If the submitting thread then WAITS for what it submitted, wait with `GraphAlgorithms.awaitFutures` (or reclaim by hand) rather than `Future.get()`. See the #6568 section above - the caller-runs policy is not the guarantee.

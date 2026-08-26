@@ -22,7 +22,10 @@ import com.arcadedb.GlobalConfiguration;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Future;
 import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -126,6 +129,78 @@ class DedicatedThreadPoolTest {
 
     assertThat(ran.get()).as("the submitter has already counted this as in flight: dropping it strands that count")
         .isTrue();
+  }
+
+
+  /**
+   * The #6568 primitive: a task the queue has accepted but no worker has started is handed back to the thread that
+   * is about to wait for it, and runs there. What makes it safe is that {@code remove} succeeding is proof no
+   * worker took it, so it runs exactly once.
+   */
+  @Test
+  @Timeout(60)
+  void aQueuedTaskIsReclaimedAndRunByTheThreadWaitingForIt() throws Exception {
+    final TestPool pool = new TestPool(16, DedicatedThreadPool.SaturationPolicy.CALLER_RUNS);
+    final CountDownLatch pinWorker = new CountDownLatch(1);
+    final CountDownLatch workerPinned = new CountDownLatch(1);
+    try {
+      // The pool has exactly one worker: pin it, and everything else submitted is queued but unreachable.
+      pool.getExecutorService().submit(() -> {
+        workerPinned.countDown();
+        pinWorker.await();
+        return null;
+      });
+      assertThat(workerPinned.await(30, TimeUnit.SECONDS)).isTrue();
+
+      final AtomicReference<Thread> ranOn = new AtomicReference<>();
+      final Future<?> queued = pool.getExecutorService().submit(() -> ranOn.set(Thread.currentThread()));
+
+      assertThat(pool.runQueuedTaskOnCaller((Runnable) queued)).isTrue();
+      assertThat(ranOn.get()).as("the reclaimed task runs on the reclaiming thread, not on a worker")
+          .isSameAs(Thread.currentThread());
+      assertThat(queued.isDone()).as("...and its future is resolved, so the wait that follows returns at once").isTrue();
+      assertThat(pool.getPoolStats().reclaimedTasks()).isEqualTo(1);
+      assertThat(pool.getPoolStats().callerRunFallbacks())
+          .as("a reclaim is the pool being busy, never the pool being full: it must not read as a sizing problem")
+          .isZero();
+    } finally {
+      pinWorker.countDown();
+      pool.close();
+    }
+  }
+
+  /**
+   * And it refuses everything it must refuse: a task already taken by a worker (reclaiming it would run it twice),
+   * one that has already finished, and one that was never submitted to this pool at all.
+   */
+  @Test
+  @Timeout(60)
+  void aTaskAWorkerAlreadyHasIsNeverReclaimed() throws Exception {
+    final TestPool pool = new TestPool(16, DedicatedThreadPool.SaturationPolicy.CALLER_RUNS);
+    final CountDownLatch releaseRunning = new CountDownLatch(1);
+    final CountDownLatch running = new CountDownLatch(1);
+    try {
+      final Future<?> started = pool.getExecutorService().submit(() -> {
+        running.countDown();
+        releaseRunning.await();
+        return null;
+      });
+      assertThat(running.await(30, TimeUnit.SECONDS)).isTrue();
+
+      assertThat(pool.runQueuedTaskOnCaller((Runnable) started))
+          .as("a task a worker is already running must never be run a second time on the caller").isFalse();
+
+      final FutureTask<Void> foreign = new FutureTask<>(() -> null);
+      assertThat(pool.runQueuedTaskOnCaller(foreign)).as("a task this pool never queued is not this pool's to run")
+          .isFalse();
+      assertThat(foreign.isDone()).isFalse();
+
+      assertThat(pool.runQueuedTaskOnCaller(null)).as("nothing to reclaim, and no NPE either").isFalse();
+      assertThat(pool.getPoolStats().reclaimedTasks()).isZero();
+    } finally {
+      releaseRunning.countDown();
+      pool.close();
+    }
   }
 
   /** The shared sizing: an explicit positive value wins, anything else is cores with a floor of two. */
