@@ -297,6 +297,30 @@ class PluginManagerTest {
     assertThat(plugins).contains(plugin);
   }
 
+  /**
+   * Issue #6762: a plugin whose startService() throws is never marked started, so stopPlugins() skips it and
+   * whatever it acquired before failing (AutoBackupSchedulerPlugin starts a ScheduledThreadPool and only then
+   * schedules the databases) lives as long as the JVM. The failure itself must still reach the caller.
+   */
+  @Test
+  void aPluginThatFailsToStartIsStoppedAnyway() {
+    LeakyFailingPlugin.stopped.set(false);
+    final LeakyFailingPlugin plugin = new LeakyFailingPlugin();
+    pluginManager.registerPlugin("leaky-failing-plugin", plugin);
+
+    assertThatExceptionOfType(ServerException.class).isThrownBy(
+        () -> pluginManager.startPlugins(ServerPlugin.PluginInstallationPriority.BEFORE_HTTP_ON));
+
+    assertThat(LeakyFailingPlugin.stopped.get()).isTrue();
+
+    // it is still not "started", so the later stopPlugins() must not stop it a second time
+    final PluginDescriptor descriptor = pluginManager.getPluginDescriptor("leaky-failing-plugin");
+    assertThat(descriptor.isStarted()).isFalse();
+    LeakyFailingPlugin.stopped.set(false);
+    pluginManager.stopPlugins();
+    assertThat(LeakyFailingPlugin.stopped.get()).isFalse();
+  }
+
   @Test
   void classLoaderIsolation() throws Exception {
     final Path pluginsDir = tempDir.resolve("lib/plugins");
@@ -411,6 +435,21 @@ class PluginManagerTest {
     @Override
     public void startService() {
       throw new RuntimeException("Plugin failed to start");
+    }
+  }
+
+  /** A plugin that acquires something (here: sets a flag) and then fails, like AutoBackupSchedulerPlugin can. */
+  public static class LeakyFailingPlugin implements ServerPlugin {
+    public static final AtomicBoolean stopped = new AtomicBoolean(false);
+
+    @Override
+    public void startService() {
+      throw new RuntimeException("Plugin failed to start after acquiring its resources");
+    }
+
+    @Override
+    public void stopService() {
+      stopped.set(true);
     }
   }
 

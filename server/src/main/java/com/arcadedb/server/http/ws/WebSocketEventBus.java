@@ -21,6 +21,8 @@ package com.arcadedb.server.http.ws;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.security.ServerSecurity;
+import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.websockets.core.WebSocketCallback;
 import io.undertow.websockets.core.WebSocketChannel;
 import io.undertow.websockets.core.WebSockets;
@@ -71,8 +73,15 @@ public class WebSocketEventBus {
       if (databaseSubscribers == null)
         return;
       databaseSubscribers.remove(channelId);
-      if (databaseSubscribers.isEmpty())
+      if (databaseSubscribers.isEmpty()) {
         toStop = this.databaseWatchers.remove(databaseName);
+        // Flip the watcher off while still holding the lock (issue #6762): a subscribe() that wins the lock in the
+        // gap between here and the shutdown() below would otherwise start a second watcher and register its
+        // listeners while this one is still running with its own attached, so a commit in that window would be
+        // enqueued on both and published twice to the very same subscriber.
+        if (toStop != null)
+          toStop.signalStop();
+      }
     }
     // Join the watcher OUTSIDE the lock: shutdown() blocks until the watcher thread terminates, and that thread may need
     // the same per-database lock (unsubscribeAll during publish). Holding the lock across the join would deadlock them.
@@ -94,16 +103,30 @@ public class WebSocketEventBus {
     // onError may run on an XNIO IO thread after sendText returns, so the zombie collector must be thread-safe.
     final var zombieConnections = new ConcurrentLinkedQueue<UUID>();
 
+    // Charged per subscriber before the send and released when Undertow reports the frame done, so a subscriber that
+    // stops reading cannot accumulate an unbounded send backlog on the server's heap (issue #6762).
+    //
+    // The UTF-8 BYTE length, not json.length(): the cap is expressed in bytes and what actually sits in Undertow's
+    // send buffer is the UTF-8 encoding WebSockets.sendText produces, which is up to 3 bytes per char for CJK and
+    // 4 for an emoji. Counting chars would let a non-ASCII change stream hold several times the configured budget.
+    // Computed in one pass rather than via getBytes(UTF_8).length, which would copy the whole payload per event.
+    final int messageSize = utf8Length(json);
+    final long maxPendingBytes = this.arcadeServer != null ?
+        this.arcadeServer.getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_WS_EVENT_BUS_MAX_PENDING_BYTES) :
+        GlobalConfiguration.SERVER_WS_EVENT_BUS_MAX_PENDING_BYTES.getValueAsLong();
+
     // A single callback shared by every subscriber of this event: onError reads the failing channel from its argument,
     // so there is no need to allocate a new callback per subscriber per event.
     final WebSocketCallback<Void> callback = new WebSocketCallback<>() {
       @Override
       public void complete(final WebSocketChannel webSocketChannel, final Void unused) {
+        releasePending(webSocketChannel);
         webSocketChannel.flush();
       }
 
       @Override
       public void onError(final WebSocketChannel webSocketChannel, final Void unused, final Throwable throwable) {
+        releasePending(webSocketChannel);
         final var channelId = (UUID) webSocketChannel.getAttribute(CHANNEL_ID);
         if (throwable instanceof IOException) {
           LogManager.instance().log(this, Level.FINE, "Closing zombie connection: %s", null, channelId);
@@ -112,12 +135,56 @@ public class WebSocketEventBus {
           LogManager.instance().log(this, Level.SEVERE, "Unexpected error while sending message.", throwable);
         }
       }
+
+      private void releasePending(final WebSocketChannel webSocketChannel) {
+        // Looks the subscription up rather than capturing it, so this callback stays shared by the whole fan-out
+        // instead of being allocated per subscriber per event. That is safe because releasePending() floors at
+        // zero: if the client unsubscribed and re-subscribed before this frame completed, the reservation is
+        // released against the REPLACEMENT subscription, which never made it - and a release that would drive a
+        // counter negative is dropped instead, so the replacement cannot end up with a negative baseline that
+        // silently lets it exceed the cap. The original subscription is unreachable by then, so its own
+        // outstanding bytes die with it.
+        final var subscription = databaseSubscribers.get((UUID) webSocketChannel.getAttribute(CHANNEL_ID));
+        if (subscription != null)
+          subscription.releasePending(messageSize);
+      }
     };
 
-    databaseSubscribers.values().forEach(subscription -> {
+    databaseSubscribers.forEach((channelId, subscription) -> {
       try {
-        if (subscription.isMatch(event))
+        if (!subscription.isMatch(event))
+          return;
+
+        // Authorization is re-checked on DELIVERY, not only at SUBSCRIBE time (issue #6762): the identity is
+        // captured once at the handshake, so revoking a user's access to the database - or dropping the user
+        // outright - otherwise left the change stream flowing until the client happened to disconnect.
+        if (!isStillAuthorized(subscription, databaseName)) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Dropping change-stream subscription %s: the user is no longer authorized on database '%s'", null,
+              channelId, databaseName);
+          zombieConnections.add(channelId);
+          subscription.close();
+          return;
+        }
+
+        if (!subscription.reservePending(messageSize, maxPendingBytes)) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Evicting slow change-stream subscriber %s on database '%s': more than %d bytes are still outstanding "
+                  + "towards it. Raise " + GlobalConfiguration.SERVER_WS_EVENT_BUS_MAX_PENDING_BYTES.getKey()
+                  + " if this is a legitimately bursty consumer", null, channelId, databaseName, maxPendingBytes);
+          zombieConnections.add(channelId);
+          subscription.close();
+          return;
+        }
+
+        try {
           WebSockets.sendText(json, subscription.getChannel(), callback);
+        } catch (final Exception e) {
+          // The frame never reached Undertow, so nothing is outstanding: give the reservation back rather than let
+          // a channel that fails synchronously look like a slow consumer.
+          subscription.releasePending(messageSize);
+          throw e;
+        }
       } catch (final Exception e) {
         // NEVER LET A SINGLE SUBSCRIPTION FAILURE KILL THE WATCHER THREAD AND STOP THE WHOLE CHANGE STREAM (ISSUE #4479).
         LogManager.instance().log(this, Level.SEVERE, "Error while publishing change event to subscription %s", e, subscription);
@@ -140,14 +207,60 @@ public class WebSocketEventBus {
       DatabaseEventWatcherThread toStop = null;
       synchronized (lockFor(databaseName)) {
         channels.remove(channelId);
-        if (channels.isEmpty())
+        if (channels.isEmpty()) {
           toStop = this.databaseWatchers.remove(databaseName);
+          // See unsubscribe(): stop accepting events while the lock still excludes a concurrent subscribe.
+          if (toStop != null)
+            toStop.signalStop();
+        }
       }
       // shutdown() outside the lock. When this runs on the watcher thread (zombie cleanup during publish), shutdown()
       // detects the self-call and returns without awaiting, so the run() loop can unwind and unregister its listeners.
       if (toStop != null)
         toStop.shutdown();
     });
+  }
+
+  /**
+   * Whether the identity that opened this channel may still read {@code databaseName}.
+   * <p>
+   * The {@link ServerSecurityUser} captured at the handshake is a snapshot: {@code ServerSecurity.updateUser}
+   * replaces the instance and {@code dropUser} removes it, so the current grant has to be re-resolved by name. A
+   * channel with no identity attached (embedded/test wiring, where no security is installed) is left alone.
+   */
+  private boolean isStillAuthorized(final EventWatcherSubscription subscription, final String databaseName) {
+    final WebSocketChannel channel = subscription.getChannel();
+    if (channel == null || this.arcadeServer == null)
+      return true;
+    final var connectedUser = (ServerSecurityUser) channel.getAttribute(USER);
+    if (connectedUser == null)
+      return true;
+    final ServerSecurity security = this.arcadeServer.getSecurity();
+    if (security == null)
+      return true;
+    final ServerSecurityUser current = security.getUser(connectedUser.getName());
+    return current != null && current.canAccessToDatabase(databaseName);
+  }
+
+  /**
+   * The number of bytes {@code s} occupies once UTF-8 encoded, without allocating the encoded copy.
+   */
+  private static int utf8Length(final String s) {
+    int bytes = 0;
+    for (int i = 0; i < s.length(); i++) {
+      final char c = s.charAt(i);
+      if (c < 0x80)
+        bytes += 1;
+      else if (c < 0x800)
+        bytes += 2;
+      else if (Character.isHighSurrogate(c) && i + 1 < s.length() && Character.isLowSurrogate(s.charAt(i + 1))) {
+        // one code point spread over a surrogate pair encodes as 4 bytes, not 3 + 3
+        bytes += 4;
+        i++;
+      } else
+        bytes += 3;
+    }
+    return bytes;
   }
 
   private Object lockFor(final String database) {

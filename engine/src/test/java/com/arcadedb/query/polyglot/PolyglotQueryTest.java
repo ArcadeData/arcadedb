@@ -31,6 +31,7 @@ import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeoutException;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -136,6 +137,65 @@ class PolyglotQueryTest extends TestHelper {
     } finally {
       GlobalConfiguration.POLYGLOT_COMMAND_TIMEOUT.reset();
     }
+  }
+
+  /**
+   * Issue #6759: the script context is shared by every caller on the database, and parameters used to be bound to it
+   * and never removed, so a value one command passed stayed readable by the next one - from any caller.
+   */
+  @Test
+  void parametersDoNotLeakIntoTheNextCommand() {
+    final ResultSet withParameter = database.command("js", "x", Map.of("x", 5));
+    assertThat(withParameter.next().<Object>getProperty("value")).isEqualTo(5);
+
+    // Same engine, same context, no parameter: 'x' must be gone rather than still resolving to 5.
+    try {
+      database.command("js", "x");
+      fail("The parameter of the previous command is still bound");
+    } catch (final CommandExecutionException e) {
+      assertThat(e.getCause()).isInstanceOf(PolyglotException.class);
+      assertThat(e.getCause().getMessage()).contains("x is not defined");
+    }
+  }
+
+  /**
+   * Issue #6759: a parameter is allowed to shadow a binding the engine owns for the duration of one command, but the
+   * original must come back afterwards - removing it outright would break every later script.
+   */
+  @Test
+  void aParameterShadowingAnEngineBindingIsRestored() {
+    final ResultSet shadowed = database.command("js", "database", Map.of("database", "not-a-database"));
+    assertThat(shadowed.next().<Object>getProperty("value")).isEqualTo("not-a-database");
+
+    database.transaction(() -> database.getSchema().createVertexType("Restored"));
+
+    // The real 'database' binding is back: this would throw if the parameter had simply been unbound.
+    final ResultSet result = database.command("js", "database.query('sql', 'select from Restored')");
+    assertThat(result.hasNext()).isFalse();
+  }
+
+  /**
+   * Issue #6759: a timed-out script must leave the shared context usable. Before the fix the only cancellation was
+   * {@code Future.cancel(true)}, i.e. a host-thread interrupt a guest loop is free to ignore.
+   */
+  @Test
+  void theEngineStaysUsableAfterATimeout() {
+    GlobalConfiguration.POLYGLOT_COMMAND_TIMEOUT.setValue(2000);
+    try {
+      try {
+        database.command("js", "while(true);");
+        fail("It should go in timeout");
+      } catch (final Exception e) {
+        assertThat(e).isInstanceOf(CommandExecutionException.class);
+        assertThat(e.getCause()).isInstanceOf(TimeoutException.class);
+      }
+    } finally {
+      GlobalConfiguration.POLYGLOT_COMMAND_TIMEOUT.reset();
+    }
+
+    final ResultSet result = database.command("js", "3 + 5");
+    assertThat(result.hasNext()).isTrue();
+    assertThat((Integer) result.next().getProperty("value")).isEqualTo(8);
   }
 
   @Test

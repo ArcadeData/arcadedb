@@ -40,6 +40,8 @@ import java.util.Set;
 public class ExecuteCommandTool {
 
   private static final int DEFAULT_LIMIT = 1000;
+  /** Same reason as {@link QueryTool}: the result rows are accumulated in memory before the reply (issue #6762). */
+  private static final int MAX_LIMIT     = 100_000;
 
   public static JSONObject getDefinition() {
     return new JSONObject()
@@ -63,7 +65,11 @@ public class ExecuteCommandTool {
                     .put("description", "The command to execute"))
                 .put("limit", new JSONObject()
                     .put("type", "integer")
-                    .put("description", "Maximum number of results to return (default: 1000)")))
+                    .put("description",
+                        "Maximum number of results to return (default: " + DEFAULT_LIMIT + ", maximum: " + MAX_LIMIT
+                            + ")")
+                    .put("minimum", 1)
+                    .put("maximum", MAX_LIMIT)))
             .put("required", new JSONArray().put("database").put("command")));
   }
 
@@ -73,6 +79,8 @@ public class ExecuteCommandTool {
     final String language = args.getString("language", "cypher");
     final String command = args.getString("command");
     final int limit = args.getInt("limit", DEFAULT_LIMIT);
+    if (limit < 1 || limit > MAX_LIMIT)
+      throw new IllegalArgumentException("'limit' must be between 1 and " + MAX_LIMIT);
 
     final MCPToolUtils.DatabaseAccess access = MCPToolUtils.resolveDatabase(
         server, user, databaseName, config, MCPToolUtils.RequiredAccess.ACCESS);

@@ -1113,6 +1113,35 @@ def test_to_columns_typed_bulk_materialization(temp_db_path):
         assert db.query("sql", "SELECT FROM T WHERE n > 99").to_columns() == {}
 
 
+def test_to_columns_survives_json_metacharacters_in_aliases(temp_db_path):
+    """A projection alias is arbitrary text, so the columnar header must be real JSON (issue #6758).
+
+    The Java side used to concatenate the alias straight into the header string, so a quote produced
+    invalid JSON and killed the decode of the whole batch; a semicolon additionally broke the
+    ``;``-joined column spec that pins the column set across batches.
+    """
+    pytest.importorskip("numpy")
+    weird = 'we"ird'
+    semi = "a;b"
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE DOCUMENT TYPE T")
+        with db.transaction():
+            for i in range(3):
+                db.command("sql", "INSERT INTO T SET n = ?, s = ?", i, f"v{i}")
+
+        # batch_size=2 so the three rows span MORE THAN ONE non-empty batch: the column spec is only sent back
+        # to Java from the second batch onwards, so a single-batch result would never exercise the round trip
+        # that the ';'-joined form used to break.
+        cols = db.query(
+            "sql",
+            "SELECT s AS `{}`, n AS `{}` FROM T ORDER BY n".format(weird, semi),
+        ).to_columns(batch_size=2)
+        assert cols is not None
+        assert sorted(cols.keys()) == sorted([weird, semi])
+        assert list(cols[weird]) == ["v0", "v1", "v2"]
+        assert list(cols[semi]) == [0, 1, 2]
+
+
 def test_to_dataframe_fast_path(temp_db_path):
     """to_dataframe uses the columnar path and yields typed dtypes."""
     pytest.importorskip("pandas")

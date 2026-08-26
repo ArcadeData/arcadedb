@@ -149,12 +149,13 @@ class DatabaseReconcilerTest {
     final var reconciler = new DatabaseReconciler();
     final var plan = new DatabaseReconciler.ReconcilePlan(List.of("newok", "newbad"), List.of(), List.of("orphan"));
 
-    final boolean retry = reconciler.applyReconcileOutcome(plan, outcome(List.of("newok"), List.of("newbad"), List.of(), List.of()));
+    final var verdict = reconciler.applyReconcileOutcome(plan, outcome(List.of("newok"), List.of("newbad"), List.of(), List.of()));
 
     assertThat(reconciler.getAcquireStatus("newok").state()).isEqualTo(DatabaseReconciler.AcquireState.ACQUIRED);
     assertThat(reconciler.getAcquireStatus("newbad").state()).isEqualTo(DatabaseReconciler.AcquireState.FAILED);
     assertThat(reconciler.getAcquireStatus("orphan").state()).isEqualTo(DatabaseReconciler.AcquireState.LEADER_MISSING);
-    assertThat(retry).as("a fresh failure is still within the retry budget").isTrue();
+    assertThat(verdict.retryWorthwhile()).as("a fresh failure is still within the retry budget").isTrue();
+    assertThat(verdict.givenUp()).as("nothing has been given up yet").isEmpty();
   }
 
   @Test
@@ -196,15 +197,41 @@ class DatabaseReconcilerTest {
     final var failing = outcome(List.of(), List.of("bad"), List.of(), List.of());
 
     // Within the budget the failure keeps forcing a retry; once the threshold is hit it stops.
-    assertThat(reconciler.applyReconcileOutcome(plan, failing)).isTrue();  // 1
-    assertThat(reconciler.applyReconcileOutcome(plan, failing)).isTrue();  // 2
-    assertThat(reconciler.applyReconcileOutcome(plan, failing)).isFalse(); // 3 -> give up
+    assertThat(reconciler.applyReconcileOutcome(plan, failing).retryWorthwhile()).isTrue();  // 1
+    assertThat(reconciler.applyReconcileOutcome(plan, failing).retryWorthwhile()).isTrue();  // 2
+    final var giveUp = reconciler.applyReconcileOutcome(plan, failing);                      // 3 -> give up
+    assertThat(giveUp.retryWorthwhile()).isFalse();
     assertThat(reconciler.getAcquireStatus("bad").state()).isEqualTo(DatabaseReconciler.AcquireState.FAILED);
+
+    // Issue #6760: giving up on the RETRY must not be reported as "installed". The database has to come back in
+    // the verdict so the install does not record it at the snapshot index.
+    assertThat(giveUp.givenUp()).containsExactly("bad");
 
     // A later success resets the counter (and would let it retry again if it failed afresh).
     reconciler.applyReconcileOutcome(new DatabaseReconciler.ReconcilePlan(List.of("bad"), List.of(), List.of()),
         outcome(List.of("bad"), List.of(), List.of(), List.of()));
     assertThat(reconciler.getAcquireStatus("bad").state()).isEqualTo(DatabaseReconciler.AcquireState.ACQUIRED);
-    assertThat(reconciler.applyReconcileOutcome(plan, failing)).as("counter reset after success").isTrue();
+    final var afterReset = reconciler.applyReconcileOutcome(plan, failing);
+    assertThat(afterReset.retryWorthwhile()).as("counter reset after success").isTrue();
+    assertThat(afterReset.givenUp()).as("back inside the budget, so nothing is given up").isEmpty();
+  }
+
+  /**
+   * Issue #6760: only the databases that exhausted their budget are reported, and one healthy database failing
+   * afresh alongside them still forces the retry.
+   */
+  @Test
+  void onlyTheExhaustedDatabasesAreReportedAsGivenUp() {
+    final var reconciler = new DatabaseReconciler();
+    final var plan = new DatabaseReconciler.ReconcilePlan(List.of(), List.of("stubborn", "flaky"), List.of());
+
+    reconciler.applyReconcileOutcome(plan, outcome(List.of(), List.of(), List.of(), List.of("stubborn")));
+    reconciler.applyReconcileOutcome(plan, outcome(List.of(), List.of(), List.of(), List.of("stubborn")));
+
+    final var verdict = reconciler.applyReconcileOutcome(plan,
+        outcome(List.of(), List.of(), List.of(), List.of("stubborn", "flaky")));
+
+    assertThat(verdict.givenUp()).containsExactly("stubborn");
+    assertThat(verdict.retryWorthwhile()).as("'flaky' is on its first failure, so the install must still retry").isTrue();
   }
 }

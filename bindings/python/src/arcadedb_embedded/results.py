@@ -330,7 +330,9 @@ class ResultSet:
                 break
             total += count
             if first_names is not None and not joined:
-                joined = ";".join(first_names)  # keep column set stable
+                # JSON, not ";".join: a projection alias may legally contain a semicolon, a quote or a
+                # backslash, and the legacy separator split such a name into two bogus columns.
+                joined = json.dumps(first_names)  # keep column set stable
 
         if total == 0:
             return {}
@@ -470,7 +472,8 @@ class ResultSet:
                 break
             total += count
             if first_names is not None and not joined:
-                joined = ";".join(first_names)
+                # See to_columns: the column spec is JSON so odd-but-legal aliases survive the round trip.
+                joined = json.dumps(first_names)
 
         if total == 0 or not first_names:
             return pa.table({})

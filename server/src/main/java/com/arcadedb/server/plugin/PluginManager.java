@@ -247,7 +247,17 @@ public class PluginManager {
 
           // Configure and start the plugin
           plugin.configure(server, configuration);
-          plugin.startService();
+          try {
+            plugin.startService();
+          } catch (final Exception | Error e) {
+            // startService() is free to acquire resources before it fails - AutoBackupSchedulerPlugin starts its
+            // ScheduledThreadPool and only then schedules the databases - and the descriptor is not marked started
+            // yet, so stopPlugins() would skip it and those resources would live as long as the JVM. Release them
+            // here and let the original failure propagate (issue #6762).
+            CodeUtils.executeIgnoringExceptions(plugin::stopService,
+                "Error stopping plugin '" + pluginName + "' after a failed start", false);
+            throw e;
+          }
 
           if (plugin.isActive()) {
             descriptor.setStarted(true);

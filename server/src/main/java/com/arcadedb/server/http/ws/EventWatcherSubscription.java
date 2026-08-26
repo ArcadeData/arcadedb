@@ -24,12 +24,20 @@ import io.undertow.websockets.core.WebSocketChannel;
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 public class EventWatcherSubscription {
   private final String                             database;
   private final WebSocketChannel                   channel;
   private final Map<String, Set<ChangeEvent.TYPE>> typeSubscriptions = new ConcurrentHashMap<>();
+  /**
+   * Bytes handed to Undertow for this channel that it has not reported as sent yet (issue #6762). Change events are
+   * fanned out fire-and-forget, so without this a subscriber that never reads accumulates frames in the server's
+   * send buffer indefinitely: the producer-side queue is bounded, but a slow consumer is charged to the server's
+   * heap rather than to its own.
+   */
+  private final AtomicLong                         pendingBytes      = new AtomicLong();
 
   private final static Set<ChangeEvent.TYPE> allTypes = Arrays.stream(ChangeEvent.TYPE.values()).collect(Collectors.toSet());
 
@@ -58,6 +66,43 @@ public class EventWatcherSubscription {
 
   public WebSocketChannel getChannel() {
     return channel;
+  }
+
+  /**
+   * Charges {@code bytes} to this subscriber's outstanding-send budget.
+   *
+   * @param maxPendingBytes the budget, or {@code 0} (or less) to disable the cap
+   *
+   * @return {@code false} when the send would push the subscriber past its budget, in which case nothing is charged
+   *         and the caller must evict it instead of sending
+   */
+  public boolean reservePending(final int bytes, final long maxPendingBytes) {
+    final long pending = pendingBytes.addAndGet(bytes);
+    if (maxPendingBytes <= 0 || pending <= maxPendingBytes)
+      return true;
+    pendingBytes.addAndGet(-bytes);
+    return false;
+  }
+
+  /**
+   * Releases a reservation made by {@link #reservePending(int, long)} once Undertow reports the frame done.
+   * <p>
+   * Floored at zero: a client that unsubscribes and re-subscribes while a frame is still in flight has its
+   * completion callback land on the REPLACEMENT subscription, which never reserved anything. Letting that drive
+   * the counter negative would give the replacement a negative baseline and silently let it hold several times
+   * the configured budget before {@link #reservePending(int, long)} noticed.
+   */
+  public void releasePending(final int bytes) {
+    pendingBytes.updateAndGet(pending -> Math.max(0L, pending - bytes));
+  }
+
+  // @VisibleForTesting
+  public long getPendingBytes() {
+    return pendingBytes.get();
+  }
+
+  public String getDatabase() {
+    return database;
   }
 
   public boolean isMatch(final ChangeEvent event) {

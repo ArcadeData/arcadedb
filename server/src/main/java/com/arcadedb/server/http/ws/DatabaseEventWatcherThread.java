@@ -65,18 +65,31 @@ final public class DatabaseEventWatcherThread extends Thread {
   }
 
   /**
+   * Stops accepting events, without waiting for the thread to terminate.
+   * <p>
+   * Split out of {@link #shutdown()} so the event bus can flip this watcher off while it still holds the
+   * per-database lock (issue #6762). It used to flip it off only outside the lock, so a re-subscribe landing in that
+   * gap started a SECOND watcher while this one was still running with its listeners attached, and a commit in the
+   * window was enqueued on both and published twice to the same subscriber.
+   */
+  public void signalStop() {
+    this.running = false;
+  }
+
+  /**
    * Sends the shutdown signal to the thread and waits for termination.
    * <p>
    * When invoked from the watcher thread itself (e.g. {@code publish()} cleans up the last subscriber as a zombie and
    * ends up stopping its own watcher), the wait is skipped: the {@code run()} loop unwinds and unregisters the database
    * listeners on its own as soon as it observes {@code running == false}. Awaiting here would park the thread on a latch
    * that only its own {@code run()} finally-block can count down, deadlocking it forever.
+   * <p>
+   * Deliberately no "already stopped, nothing to do" shortcut: {@link #signalStop()} may have run first, and returning
+   * on that would skip the join this method exists for. Once {@code run()} has finished the latch is already down, so
+   * a repeated call still returns immediately.
    */
   public void shutdown() {
-    if (!running)
-      return;
-
-    this.running = false;
+    signalStop();
 
     if (Thread.currentThread() == this)
       return;
@@ -84,7 +97,7 @@ final public class DatabaseEventWatcherThread extends Thread {
     try {
       runningLock.await();
     } catch (final InterruptedException e) {
-      // IGNORE IT
+      Thread.currentThread().interrupt();
     }
   }
 

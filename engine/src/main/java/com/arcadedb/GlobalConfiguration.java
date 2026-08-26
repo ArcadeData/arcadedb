@@ -1214,6 +1214,28 @@ public enum GlobalConfiguration {
 
   NETWORK_SOCKET_TIMEOUT("arcadedb.network.socketTimeout", SCOPE.SERVER, "TCP/IP Socket timeout (in ms)", Integer.class, 30000),
 
+  NETWORK_SOCKET_KEEP_ALIVE("arcadedb.network.socketKeepAlive", SCOPE.SERVER, """
+      Enable TCP keepalive (SO_KEEPALIVE) on every wire-protocol socket. The Postgres and Redis executors drop the
+      socket read timeout to infinite once a connection is authenticated, because an authenticated client legitimately
+      holds an idle connection open, and those protocols carry no application-level heartbeat. With keepalive off, a
+      peer that dies without a FIN/RST (host crash, silent partition) leaves the server thread blocked in read()
+      forever, leaking a thread and a file descriptor per event. Keepalive lets the OS discover the dead peer and fail
+      the read.""", Boolean.class, true),
+
+  NETWORK_SOCKET_KEEP_ALIVE_IDLE("arcadedb.network.socketKeepAliveIdle", SCOPE.SERVER, """
+      Seconds an authenticated connection may sit idle before the OS sends the first TCP keepalive probe. Only applied
+      when the JDK and the platform expose TCP_KEEPIDLE (Linux and macOS do); elsewhere the system-wide default
+      applies, which is typically 2 hours. 0 leaves the system default in place.""", Integer.class, 120),
+
+  NETWORK_SOCKET_KEEP_ALIVE_INTERVAL("arcadedb.network.socketKeepAliveInterval", SCOPE.SERVER, """
+      Seconds between TCP keepalive probes once the first one has gone unanswered (TCP_KEEPINTERVAL). 0 leaves the
+      system default in place.""", Integer.class, 15),
+
+  NETWORK_SOCKET_KEEP_ALIVE_COUNT("arcadedb.network.socketKeepAliveCount", SCOPE.SERVER, """
+      Number of unanswered TCP keepalive probes after which the connection is declared dead (TCP_KEEPCOUNT). With the
+      defaults a dead peer is detected about 3 minutes after the connection goes idle. 0 leaves the system default in
+      place.""", Integer.class, 4),
+
   NETWORK_MAX_PREAUTH_CONNECTIONS("arcadedb.network.maxPreAuthConnections", SCOPE.SERVER, """
       Maximum number of connections a binary wire-protocol listener (Postgres, Redis, BOLT) may hold in the phase
       before authentication. Each accepted socket costs one thread and one file descriptor before the client has
@@ -1443,6 +1465,13 @@ public enum GlobalConfiguration {
   // SERVER WS
   SERVER_WS_EVENT_BUS_QUEUE_SIZE("arcadedb.server.eventBusQueueSize", SCOPE.SERVER,
       "Size of the queue used as a buffer for unserviced database change events.", Integer.class, 1000),
+
+  SERVER_WS_EVENT_BUS_MAX_PENDING_BYTES("arcadedb.server.eventBusMaxPendingBytes", SCOPE.SERVER, """
+      Maximum number of bytes of change-stream frames that may be outstanding towards a single WebSocket subscriber
+      before it is evicted. Frames are sent asynchronously, so a subscriber that never reads accumulates them in the
+      server's send buffer: the producer-side queue is bounded but a slow consumer is charged to the server's heap,
+      not to its own. Past this cap the subscription is dropped and the channel closed, which is what the client
+      would experience anyway. 0 disables the cap (the pre-26.9.1 behaviour).""", Long.class, 16 * 1024 * 1024L),
 
   // SERVER SECURITY
   SERVER_SECURITY_ALGORITHM("arcadedb.server.securityAlgorithm", SCOPE.SERVER,

@@ -314,6 +314,21 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // last cleared. Throttles the HealthMonitor-driven backstop, which ticks far more often than a full
   // multi-database resync costs.
   private final AtomicLong    lastStaleSnapshotRetryMs   = new AtomicLong();
+  // Per-database read floor (issue #6760), the per-database counterpart of staleSnapshotAppliedFloor above.
+  //
+  // A leader-driven install may "give up" on a database that failed to refresh ACQUIRE_GIVE_UP_AFTER times in a
+  // row: past that point the reconciler stops failing the whole install for it, so Ratis is not made to re-download
+  // every healthy database on this node in a tight loop. That is the right call for the RETRY, but the install then
+  // went on to record snapshotIndex as applied for EVERY database, clear the global floor and the diverged marks,
+  // and return the installed TermIndex to Ratis - which purges the log. The node re-entered the ready set
+  // advertising itself fully caught up while one database was still on its old copy, so a LINEARIZABLE (or
+  // read-your-writes) read of THAT database passed the apply wait instantly and was served from stale state.
+  //
+  // Unlike the global floor, which is derived from a global signal and therefore has to clamp everything, this one
+  // is published from a per-database verdict: exactly the databases the install did not bring to snapshotIndex are
+  // clamped, and the healthy co-located ones keep serving unclamped reads. Entries are removed when the database is
+  // genuinely refreshed (a later install, a targeted resync, or a full resync).
+  private final ConcurrentHashMap<String, Long> staleDatabaseAppliedFloors = new ConcurrentHashMap<>();
   // Set to true after applyTransaction hits a genuinely unrecoverable, node-wide condition: a JVM
   // Error (OOM, StackOverflow - the JVM itself is unstable), an unknown committed entry type (#4798,
   // rolling-upgrade safety), or an unexpected error on an entry with no single target database
@@ -1329,7 +1344,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
       final String leaderHttpsAddr = source.httpsAddress();
       final String clusterToken = raftHAServer.getClusterToken();
 
-      reconciler.reconcileDatabasesFromLeader(leaderHttpAddr, leaderHttpsAddr, clusterToken);
+      // Databases the reconciler gave up on: it stopped failing the install for them, so they are NOT at the
+      // snapshot index and must not be recorded as if they were (issue #6760).
+      final Set<String> notInstalled = reconciler.reconcileDatabasesFromLeader(leaderHttpAddr, leaderHttpsAddr,
+          clusterToken);
 
       // Compute the installed snapshot TermIndex. firstTermIndexInLog is the first log entry
       // AFTER the snapshot, so the snapshot covers all entries up to getIndex()-1.
@@ -1362,25 +1380,39 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // replay-skip honest after a full resync (issue #4824).
       lastAppliedIndex.set(snapshotIndex);
       updateLastAppliedTermIndex(snapshotTerm, snapshotIndex);
-      writePersistedAppliedIndexForAllDatabases(snapshotIndex);
+      writePersistedAppliedIndexForAllDatabases(snapshotIndex, notInstalled);
       // The install brought every database up to the snapshot point, so any read floor an earlier
       // stale marker published is now satisfied. Cleared BEFORE the notify below so a woken waiter
       // re-checks against the restored state instead of the floor (issue #6111).
       clearStaleSnapshotFloor();
 
-      // Wake any threads blocked in RaftHAServer.waitForAppliedIndex()/waitForLocalApply(): this
-      // leader-driven snapshot install advances the applied index without going through
-      // applyTransaction(), the only other notifyApplied() call site (issue #5846).
-      final RaftHAServer raftHA = this.raftHAServer;
-      if (raftHA != null)
-        raftHA.notifyApplied();
-
       LogManager.instance().log(this, Level.INFO,
-          "HA resync finished (mode=snapshot, result=ok): snapshotIndex=%d", snapshotIndex);
+          "HA resync finished (mode=snapshot, result=%s): snapshotIndex=%d",
+          notInstalled.isEmpty() ? "ok" : "partial", snapshotIndex);
       clearDivergedState();
       // A leader-driven install reinstalls every database present on this node, so a copy the bootstrap
       // overwrite guard had kept is gone and its divergence mark with it (issue #6124).
       clearAllBootstrapUnreconciled();
+      // ... except the ones it did not reinstall. Re-arm those AFTER clearDivergedState()/clearStaleSnapshotFloor()
+      // above, which are written for the all-databases-refreshed case (issue #6760).
+      markDatabasesNotAtSnapshotIndex(notInstalled, snapshotIndex);
+
+      // Wake any threads blocked in RaftHAServer.waitForAppliedIndex()/waitForLocalApply(): this
+      // leader-driven snapshot install advances the applied index without going through
+      // applyTransaction(), the only other notifyApplied() call site (issue #5846).
+      //
+      // LAST, after every floor and diverged mark of this install is in its final state. notifyApplied() holds
+      // applyNotifier only long enough to notifyAll(), so a waiter can reacquire it and re-check
+      // getTrustedAppliedIndex(db) immediately. Notifying any earlier than this leaves a window in which the
+      // global floor is already cleared and the per-database one is not yet published - clearDivergedState()
+      // above has just wiped it, or the first give-up never had one - so the woken waiter sees the raw Ratis
+      // index, which already equals snapshotIndex, and a LINEARIZABLE or read-your-writes read of a database
+      // this install did NOT refresh passes its wait and is served from the stale copy. That is precisely the
+      // outcome issue #6760 exists to prevent, so the notify has to come after the re-arm, not before it.
+      final RaftHAServer raftHA = this.raftHAServer;
+      if (raftHA != null)
+        raftHA.notifyApplied();
+
       return installedTermIndex;
 
     } catch (final SnapshotRefusedException e) {
@@ -2688,12 +2720,23 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * the shared temp file.
    */
   void writePersistedAppliedIndexForAllDatabases(final long index) {
+    writePersistedAppliedIndexForAllDatabases(index, Set.of());
+  }
+
+  /**
+   * Same, minus {@code excluded}: the databases a snapshot install gave up on are not at {@code index}, so recording
+   * them there would make {@link #reinitialize()} skip exactly the replay that would have caught them up on the next
+   * restart, and would silently launder a stale copy into "applied" (issue #6760). The GLOBAL position still
+   * advances: it is the Raft-log position Ratis is being told about, and Ratis has been told.
+   */
+  void writePersistedAppliedIndexForAllDatabases(final long index, final Set<String> excluded) {
     synchronized (appliedIndexFileLock) {
       ensureAppliedIndexLoaded();
       globalAppliedIndex = index;
       if (server != null)
         for (final String dbName : server.getDatabaseNames())
-          appliedIndexByDb.put(dbName, index);
+          if (!excluded.contains(dbName))
+            appliedIndexByDb.put(dbName, index);
       persistAppliedIndexFile();
     }
   }
@@ -3208,7 +3251,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
     if (raftHA == null || server == null || raftHA.isLeader())
       return;
     final long floor = staleSnapshotAppliedFloor.get();
-    if (floor < 0)
+    // A per-database floor is an unfilled gap too: it is published exactly when an install gave up on a database,
+    // which is the case that otherwise never re-arms anything (issue #6760). Same throttle, same single-flight.
+    if (floor < 0 && staleDatabaseAppliedFloors.isEmpty())
       return; // no unfilled gap
     if (snapshotDownloadInProgress.get())
       return; // one is genuinely running; it will clear the floor or re-arm the request
@@ -3232,8 +3277,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return; // another tick won the throttle slot
 
     LogManager.instance().log(this, Level.WARNING,
-        "Snapshot marker is still ahead of the applied state (read floor=%d) with no download in flight: "
-            + "retrying the resync from the leader (issue #6111)", floor);
+        "Local state is still behind what the snapshot marker claims (read floor=%d, databases short of the "
+            + "snapshot index=%s) with no download in flight: retrying the resync from the leader "
+            + "(issues #6111, #6760)", floor, staleDatabaseAppliedFloors.keySet());
     try {
       lifecycleExecutor.submit(this::triggerSnapshotDownload);
     } catch (final RejectedExecutionException ree) {
@@ -3250,6 +3296,45 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   public long getStaleSnapshotAppliedFloor() {
     return staleSnapshotAppliedFloor.get();
+  }
+
+  /**
+   * Highest Raft-log index whose data is genuinely present in {@code dbName}, or {@code -1} when this database is
+   * not known to be behind (the normal case). Consumed by
+   * {@link RaftHAServer#getTrustedAppliedIndex(String)} so a read of a database a snapshot install gave up on is
+   * clamped, while its healthy co-located databases are not (issue #6760).
+   */
+  public long getDatabaseAppliedFloor(final String dbName) {
+    if (dbName == null)
+      return -1;
+    final Long floor = staleDatabaseAppliedFloors.get(dbName);
+    return floor != null ? floor : -1;
+  }
+
+  /**
+   * Records that a snapshot install completed WITHOUT bringing {@code databases} to {@code snapshotIndex}
+   * (issue #6760).
+   * <p>
+   * Each one keeps its diverged mark - so the node does not advertise readiness while it holds a copy it knows is
+   * behind - and publishes a read floor at its own honest applied position, so a LINEARIZABLE or read-your-writes
+   * read targeting it fails or degrades instead of being served from the stale copy. Recovery is the existing
+   * machinery: the mark keeps {@link #isResyncInProgress()} true, and {@link #retryUnfilledSnapshotGap()} re-drives
+   * the resync on the HealthMonitor tick until the database is refreshed for real.
+   */
+  private void markDatabasesNotAtSnapshotIndex(final Set<String> databases, final long snapshotIndex) {
+    for (final String dbName : databases) {
+      // The persisted position was deliberately NOT advanced for this database above, so it still carries whatever
+      // this node genuinely applied. -1 (never recorded) clamps to 0, which is the honest answer for a database
+      // nothing is known about.
+      final long floor = Math.max(0L, readPersistedAppliedIndex(dbName));
+      staleDatabaseAppliedFloors.put(dbName, floor);
+      markStateDiverged(dbName);
+      LogManager.instance().log(this, Level.SEVERE,
+          "Snapshot install did not bring database '%s' to snapshotIndex=%d: keeping it marked diverged and "
+              + "clamping its LINEARIZABLE / read-your-writes reads at appliedIndex=%d until a resync succeeds. "
+              + "The other databases on this node are unaffected. Check the leader's copy of '%s'.",
+          dbName, snapshotIndex, floor, dbName);
+    }
   }
 
   /**
@@ -3331,6 +3416,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
   void clearDivergedDatabase(final String dbName) {
     divergedDatabases.remove(dbName);
     lastDivergedResyncLogByDb.remove(dbName);
+    // The resync restored this database, so its read floor is satisfied (issue #6760).
+    staleDatabaseAppliedFloors.remove(dbName);
     if (divergedDatabases.isEmpty())
       divergedSwallowedErrors.set(0);
   }
@@ -3372,6 +3459,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
     divergedDatabases.clear();
     lastDivergedResyncLogByDb.clear();
     divergedSwallowedErrors.set(0);
+    // A resync reinstalls every database, so every per-database read floor is satisfied too (issue #6760). The
+    // snapshot-install path re-publishes the floors of the databases it could NOT reinstall right after calling
+    // this, so clearing wholesale here stays correct.
+    staleDatabaseAppliedFloors.clear();
   }
 
   // @VisibleForTesting
@@ -3421,7 +3512,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * and must not advertise itself as ready.
    */
   public boolean isResyncInProgress() {
-    return isSnapshotDownloadPending() || !divergedDatabases.isEmpty() || staleSnapshotAppliedFloor.get() >= 0;
+    return isSnapshotDownloadPending() || !divergedDatabases.isEmpty() || staleSnapshotAppliedFloor.get() >= 0
+        || !staleDatabaseAppliedFloors.isEmpty();
   }
 
   /**
