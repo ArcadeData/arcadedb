@@ -271,6 +271,81 @@ class Issue5467UntrustedBlockAndMemoContractTest extends TestHelper {
   }
 
   /**
+   * A VarLong is unsigned, so a value at or above 2^63 arrives as a negative long - and neither
+   * ordering check can see what is wrong with it.
+   * <p>
+   * A bucket delta of {@code 2^63 + 1} narrows to {@code 1}, which reads as an ordinary step to the
+   * next bucket. A position of {@code 2^63} rides in on a bucket that genuinely did increase, so the
+   * RID compares as greater however negative the position is. Both are rejected on range before
+   * anything narrows or accumulates.
+   */
+  @Test
+  void aDecodedRidComponentTooLargeForItsTypeReadsAsACorruptSegment() throws Exception {
+    // (bucketDelta = 2^63 + 1): bit 0 in the first byte, bit 63 in the tenth.
+    final byte[] hugeBucketDelta = new byte[VarInt.MAX_VARLONG_BYTES];
+    hugeBucketDelta[0] = (byte) 0x81;
+    for (int i = 1; i < VarInt.MAX_VARLONG_BYTES - 1; i++)
+      hugeBucketDelta[i] = (byte) 0x80;
+    hugeBucketDelta[VarInt.MAX_VARLONG_BYTES - 1] = (byte) 0x01;
+    assertCorruptPayload("seg-5467-huge-bucket", hugeBucketDelta);
+
+    // (bucketDelta = 1, position = 2^63): a real bucket step carrying a negative absolute position.
+    final byte[] negativePosition = new byte[1 + VarInt.MAX_VARLONG_BYTES];
+    negativePosition[0] = (byte) 0x01;
+    for (int i = 1; i < negativePosition.length - 1; i++)
+      negativePosition[i] = (byte) 0x80;
+    negativePosition[negativePosition.length - 1] = (byte) 0x01;
+    assertCorruptPayload("seg-5467-negative-position", negativePosition);
+  }
+
+  /**
+   * The payload has to land where the block header says it ends. This is the check that does not
+   * depend on spotting anything wrong with the bytes themselves: a payload can decode to a perfectly
+   * well-ordered sequence of in-range RIDs and still be the wrong sequence, and the header's last RID
+   * is an independent witness of what the builder actually wrote.
+   * <p>
+   * Bumping the first posting's delta by one shifts every RID after it, so the block ends one past
+   * where the header says - ordered, in range, and wrong.
+   */
+  @Test
+  void aPayloadThatDoesNotEndWhereTheHeaderSaysReadsAsACorruptSegment() throws Exception {
+    final AtomicReference<SparseSegmentComponent> component = new AtomicReference<>();
+    inTx(() -> component.set(buildSegment("seg-5467-header-mismatch", 640)));
+
+    final int[] blockLocator = new int[2];
+    inTx(() -> {
+      final PaginatedSegmentReader reader = new PaginatedSegmentReader(component.get());
+      try (final PaginatedSegmentDimCursor c = reader.openCursor(0)) {
+        blockLocator[0] = c.metadata().blockPageNum(1);
+        blockLocator[1] = c.metadata().blockOffset(1);
+      }
+    });
+
+    inTx(() -> {
+      // The fixture's RIDs are consecutive, so the first delta pair is (bucket 0, position 1).
+      // Raising the position delta to 2 keeps everything ordered and in range, and moves the end.
+      final MutablePage page = component.get().modifyPage(blockLocator[0]);
+      final int payloadStart = blockLocator[1] + SegmentFormat.BLOCK_HEADER_SIZE;
+      assertThat(page.readByte(payloadStart)).as("first bucket delta").isEqualTo((byte) 0x00);
+      assertThat(page.readByte(payloadStart + 1)).as("first position delta").isEqualTo((byte) 0x01);
+      page.writeByte(payloadStart + 1, (byte) 0x02);
+    });
+
+    inTx(() -> {
+      final PaginatedSegmentReader reader = new PaginatedSegmentReader(component.get());
+      try (final PaginatedSegmentDimCursor c = reader.openCursor(0)) {
+        assertThatThrownBy(() -> {
+          c.start();
+          while (c.advance())
+            ;
+        }).isInstanceOf(IOException.class)
+            .hasMessageContaining("segment is corrupt")
+            .hasMessageContaining("but the block header says");
+      }
+    });
+  }
+
+  /**
    * {@link DimCursor#blockBoundsAt} must hand back exactly what the two single-edge readers would for
    * the same probe. Fusing them is what lets the block-max skip consult the memo once instead of
    * twice, so it is worth pinning that the fusion is faithful and not merely fast - and that the pair
@@ -314,6 +389,42 @@ class Issue5467UntrustedBlockAndMemoContractTest extends TestHelper {
   }
 
   // ---------- helpers ----------
+
+  /** Overwrite the start of a block payload with {@code bytes} and assert the decode reports corruption. */
+  private void assertCorruptPayload(final String name, final byte[] bytes) throws Exception {
+    final AtomicReference<SparseSegmentComponent> component = new AtomicReference<>();
+    inTx(() -> component.set(buildSegment(name, 640)));
+
+    final int[] blockLocator = new int[2];
+    inTx(() -> {
+      final PaginatedSegmentReader reader = new PaginatedSegmentReader(component.get());
+      try (final PaginatedSegmentDimCursor c = reader.openCursor(0)) {
+        blockLocator[0] = c.metadata().blockPageNum(1);
+        blockLocator[1] = c.metadata().blockOffset(1);
+      }
+    });
+
+    inTx(() -> {
+      final MutablePage page = component.get().modifyPage(blockLocator[0]);
+      final int payloadStart = blockLocator[1] + SegmentFormat.BLOCK_HEADER_SIZE;
+      for (int i = 0; i < bytes.length; i++)
+        page.writeByte(payloadStart + i, bytes[i]);
+    });
+
+    inTx(() -> {
+      final PaginatedSegmentReader reader = new PaginatedSegmentReader(component.get());
+      try (final PaginatedSegmentDimCursor c = reader.openCursor(0)) {
+        assertThatThrownBy(() -> {
+          c.start();
+          while (c.advance())
+            ;
+        }).as("payload %s must not decode", name)
+            .isInstanceOf(IOException.class)
+            .hasMessageContaining("segment is corrupt")
+            .hasMessageContaining("outside the range a bucket id or a position can hold");
+      }
+    });
+  }
 
   @FunctionalInterface
   private interface CheckedRunnable {
