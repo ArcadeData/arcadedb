@@ -27,6 +27,10 @@ jobs:
   # named failure. This job is deliberately NOT a dependency of `build-and-package` or any test lane
   # any more, so a lint failure here shows up as its own red check without ever silencing the tests.
   # The `ci-status` job at the end of this file is what still catches it project-wide.
+  #
+  # The tradeoff: `build-and-package`'s multi-minute Docker build now always runs, even on a PR whose
+  # `lint` is going to fail anyway. Deliberate - a few wasted CI minutes on a lint-only failure beats
+  # a silent full-suite skip - but real, and worth remembering if this job's CI cost is ever questioned.
   lint:
     runs-on: ubuntu-latest
     steps:
