@@ -237,14 +237,39 @@ public class GraphSONImporterFormat extends CSVImporterFormat {
     final Object propObj = properties.get(propName);
 
     if (propObj instanceof JSONArray propArray) {
-      // GraphSON format: properties are arrays of {id, value} objects
-      if (propArray.length() > 0) {
-        final Object firstObj = propArray.get(0);
-        if (firstObj instanceof JSONObject first && first.has("value")) {
-          return extractTypedValue(first.get("value"));
-        }
+      // GraphSON format: vertex properties are arrays of {id, value} objects. A list/set cardinality property
+      // carries more than one entry and every one of them belongs to the vertex: keeping only element [0] silently
+      // discarded the rest (issue #6751).
+      final int length = propArray.length();
+      if (length == 0)
+        return null;
+
+      final List<Object> values = new ArrayList<>(length);
+      for (int i = 0; i < length; i++) {
+        final Object entry = propArray.get(i);
+
+        final Object value;
+        if (entry instanceof JSONObject entryJson) {
+          final Object wrapped = entryJson.get("value", null);
+          if (wrapped != null)
+            value = extractTypedValue(wrapped);
+          else if (entryJson.has("@type") && entryJson.has("@value"))
+            // A PRODUCER THAT LISTS THE TYPED VALUES DIRECTLY, WITHOUT THE {id, value} WRAPPER
+            value = extractTypedValue(entryJson);
+          else
+            continue;
+        } else
+          value = extractTypedValue(entry);
+
+        if (value != null)
+          values.add(value);
       }
-      return null;
+
+      if (values.isEmpty())
+        return null;
+
+      // A single entry is a single-cardinality property: keep it scalar so the property type is not widened to a list.
+      return values.size() == 1 ? values.getFirst() : values;
     } else if (propObj instanceof JSONObject propJson) {
       // Check for typed value format
       if (propJson.has("@type") && propJson.has("@value")) {
@@ -265,8 +290,13 @@ public class GraphSONImporterFormat extends CSVImporterFormat {
   private Object extractTypedValue(final Object value) {
     if (value instanceof JSONObject json) {
       if (json.has("@type") && json.has("@value")) {
-        final String type = json.getString("@type");
-        final Object innerValue = json.get("@value");
+        final String type = json.getString("@type", null);
+        final Object innerValue = json.get("@value", null);
+
+        // A JSON null on either side carries nothing to convert, and the conversions below would call toString() on
+        // it and abort the whole import. Drop the value instead; the caller already treats null as "no value".
+        if (type == null || innerValue == null)
+          return null;
 
         return switch (type) {
           case "g:Int32" -> innerValue instanceof Number ? ((Number) innerValue).intValue() : Integer.parseInt(innerValue.toString());

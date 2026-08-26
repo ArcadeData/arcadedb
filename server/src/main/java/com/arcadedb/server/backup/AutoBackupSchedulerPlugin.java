@@ -53,6 +53,9 @@ public class AutoBackupSchedulerPlugin implements ServerPlugin {
   private BackupScheduler        scheduler;
   private BackupRetentionManager retentionManager;
   private boolean                enabled;
+  // Serialises the per-database reconciliation so the callback that reads the registry last is also the one that
+  // writes the schedule last (issue #6752).
+  private final Object           lifecycleLock = new Object();
 
   @Override
   public void configure(final ArcadeDBServer arcadeDBServer, final ContextConfiguration configuration) {
@@ -105,15 +108,20 @@ public class AutoBackupSchedulerPlugin implements ServerPlugin {
       throw new RuntimeException("Failed to create backup directory: " + backupDirectory, e);
     }
 
-    // Initialize retention manager
-    this.retentionManager = new BackupRetentionManager(backupDirectory);
+    // Published under the lifecycle lock, which every reader takes: a lifecycle callback firing while this method
+    // runs then either sees no scheduler at all and does nothing (scheduleAllDatabases below still covers it) or
+    // sees a fully constructed one.
+    synchronized (lifecycleLock) {
+      // Initialize retention manager
+      this.retentionManager = new BackupRetentionManager(backupDirectory);
 
-    // Initialize and start scheduler
-    this.scheduler = new BackupScheduler(server, backupDirectory, retentionManager);
-    this.scheduler.start();
+      // Initialize and start scheduler
+      this.scheduler = new BackupScheduler(server, backupDirectory, retentionManager);
+      this.scheduler.start();
 
-    // Schedule backups for all existing databases
-    scheduleAllDatabases();
+      // Schedule backups for all existing databases
+      scheduleAllDatabases();
+    }
 
     LogManager.instance().log(this, Level.INFO, "Auto-backup scheduler started. Backup directory: %s", backupDirectory);
 
@@ -132,38 +140,106 @@ public class AutoBackupSchedulerPlugin implements ServerPlugin {
   }
 
   /**
-   * Schedules backup for a specific database.
+   * Brings this database's schedule in line with its effective configuration.
+   * <p>
+   * A database whose configuration disables backups has its schedule released rather than simply not installed: the
+   * configuration can go from enabled to disabled across a reload, and returning early would leave the schedule the
+   * previous configuration installed still firing.
    */
   public void scheduleDatabase(final String databaseName) {
-    if (!enabled || scheduler == null)
-      return;
+    synchronized (lifecycleLock) {
+      if (!enabled || scheduler == null)
+        return;
 
-    // Get effective config for this database
-    final DatabaseBackupConfig dbConfig = configLoader.getEffectiveConfig(backupConfig, databaseName);
+      // Get effective config for this database
+      final DatabaseBackupConfig dbConfig = configLoader.getEffectiveConfig(backupConfig, databaseName);
 
-    if (!dbConfig.isEnabled()) {
-      LogManager.instance().log(this, Level.INFO,
-          "Backup disabled for database '%s'", databaseName);
-      return;
+      if (!dbConfig.isEnabled()) {
+        LogManager.instance().log(this, Level.INFO,
+            "Backup disabled for database '%s'", databaseName);
+        releaseDatabase(databaseName);
+        return;
+      }
+
+      // Register with retention manager
+      retentionManager.registerDatabase(databaseName, dbConfig);
+
+      // Schedule the backup
+      scheduler.scheduleBackup(databaseName, dbConfig);
+
+      LogManager.instance().log(this, Level.INFO, "Scheduled automatic backup for database '%s'", databaseName);
     }
-
-    // Register with retention manager
-    retentionManager.registerDatabase(databaseName, dbConfig);
-
-    // Schedule the backup
-    scheduler.scheduleBackup(databaseName, dbConfig);
-
-    LogManager.instance().log(this, Level.INFO, "Scheduled automatic backup for database '%s'", databaseName);
   }
 
   /**
    * Cancels scheduled backup for a database.
    */
   public void cancelDatabase(final String databaseName) {
-    if (!enabled || scheduler == null)
-      return;
+    synchronized (lifecycleLock) {
+      if (!enabled || scheduler == null)
+        return;
 
-    scheduler.cancelBackup(databaseName);
+      scheduler.cancelBackup(databaseName);
+    }
+  }
+
+  /**
+   * Drops everything this plugin holds for a database: its schedule and its retention registration. Called both when
+   * the database leaves the server and when its configuration turns backups off.
+   */
+  private void releaseDatabase(final String databaseName) {
+    cancelDatabase(databaseName);
+
+    if (retentionManager != null)
+      retentionManager.unregisterDatabase(databaseName);
+  }
+
+  /**
+   * Picks up a database created, restored, imported or opened after the plugin started. Without this a runtime
+   * database was never backed up until someone reloaded the configuration by hand (issue #6752).
+   */
+  @Override
+  public void onDatabaseRegistered(final String databaseName) {
+    syncDatabase(databaseName);
+  }
+
+  /**
+   * Drops the schedule of a database that left the server registry. A schedule that outlives its database either
+   * reopens a database the operator explicitly closed (the backup task resolves it with load-on-demand) or throws on
+   * every single tick after a drop (issue #6752).
+   */
+  @Override
+  public void onDatabaseUnregistered(final String databaseName) {
+    syncDatabase(databaseName);
+  }
+
+  /**
+   * Brings this database's schedule in line with the server registry.
+   * <p>
+   * Both lifecycle callbacks land here rather than acting on the event they carry, because the callbacks are
+   * dispatched after the registry mutation rather than under its lock: a create and a drop of the same name racing on
+   * two threads can deliver "registered" last and leave a schedule behind for a database that is already gone.
+   * Deciding from the registry as it is now makes the outcome depend on the registry rather than on the delivery
+   * order, so whichever callback runs last converges on the right answer.
+   * <p>
+   * On the cost side: the callback can run on a thread that still holds the server's database lock (the HA snapshot
+   * installer holds it across its whole close-&gt;swap-&gt;reopen), and the scheduling branch resolves the effective
+   * config, which stats - and, when it exists, reads - the per-database `backup.json` override. That is deliberate
+   * rather than overlooked: the branch that removes a schedule touches nothing but memory, and every path that can
+   * deliver a registration under that lock has just opened or reopened a whole database under it, so one stat is not
+   * what makes those paths slow. Caching the override instead would trade a stat for a staleness window on a file an
+   * operator edits expecting the next reload to pick it up.
+   */
+  private void syncDatabase(final String databaseName) {
+    // Reading the registry and updating the schedule have to happen as one step: two callbacks for the same database
+    // that interleave their read and their write can otherwise let the stale one land last, which is exactly the
+    // outcome reconciling was meant to rule out.
+    synchronized (lifecycleLock) {
+      if (server.existsDatabase(databaseName))
+        scheduleDatabase(databaseName);
+      else
+        releaseDatabase(databaseName);
+    }
   }
 
   /**
@@ -228,29 +304,36 @@ public class AutoBackupSchedulerPlugin implements ServerPlugin {
 
   /**
    * Reloads the backup configuration from disk.
+   * <p>
+   * Reading the file, publishing the result and reconciling every database happen as one step under the lifecycle
+   * lock. Two concurrent reloads would otherwise be free to read different versions of the file and publish them in
+   * the opposite order, and publishing outside the lock would leave the readers in {@link #scheduleDatabase} with no
+   * happens-before edge to the new configuration. Java monitors are reentrant, so the nested calls below still work.
    */
   public void reloadConfiguration() {
-    if (!configLoader.configExists()) {
-      LogManager.instance().log(this, Level.WARNING, "Cannot reload configuration: config/backup.json not found");
-      return;
-    }
-
-    final AutoBackupConfig newConfig = configLoader.loadConfig();
-    if (newConfig == null)
-      return;
-
-    this.backupConfig = newConfig;
-
-    // Re-schedule all databases with new configuration
-    if (scheduler != null) {
-      final Set<String> databaseNames = server.getDatabaseNames();
-      for (final String databaseName : databaseNames) {
-        scheduler.cancelBackup(databaseName);
-        scheduleDatabase(databaseName);
+    synchronized (lifecycleLock) {
+      if (!configLoader.configExists()) {
+        LogManager.instance().log(this, Level.WARNING, "Cannot reload configuration: config/backup.json not found");
+        return;
       }
-    }
 
-    LogManager.instance().log(this, Level.INFO, "Auto-backup configuration reloaded");
+      final AutoBackupConfig newConfig = configLoader.loadConfig();
+      if (newConfig == null)
+        return;
+
+      this.backupConfig = newConfig;
+
+      // Re-reconcile every database against the new configuration. scheduleBackup() cancels any schedule the database
+      // already had, and scheduleDatabase() releases the ones the new configuration disables, so no separate cancel
+      // pass is needed.
+      if (scheduler != null) {
+        final Set<String> databaseNames = server.getDatabaseNames();
+        for (final String databaseName : databaseNames)
+          syncDatabase(databaseName);
+      }
+
+      LogManager.instance().log(this, Level.INFO, "Auto-backup configuration reloaded");
+    }
   }
 
   /**

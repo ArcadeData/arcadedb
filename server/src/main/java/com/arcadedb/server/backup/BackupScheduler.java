@@ -25,6 +25,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
@@ -280,5 +281,12 @@ public class BackupScheduler {
    */
   public int getScheduledCount() {
     return scheduledTasks.size();
+  }
+
+  /**
+   * Returns the names of the databases that currently have a backup scheduled.
+   */
+  public Set<String> getScheduledDatabases() {
+    return Set.copyOf(scheduledTasks.keySet());
   }
 }
