@@ -136,6 +136,13 @@ public class GrpcServerPlugin implements ServerPlugin {
 
     } catch (IOException e) {
       LogManager.instance().log(this, Level.SEVERE, "Failed to start gRPC server", e);
+      // Issue #6756 (1): ArcadeDBServer.start() deliberately does not call stopService() on a plugin
+      // whose startService() threw, so a partially-started server (the service/reaper created by
+      // configureServer() before the failing build().start(), or - in "both" mode - a fully running
+      // standard server left behind when the xDS server fails afterward) would otherwise leak with no
+      // teardown path. stopService() is idempotent (guarded by the "stopped" CAS), so this is safe even
+      // when nothing was actually started yet.
+      stopService();
       throw new RuntimeException("Failed to start gRPC server", e);
     }
   }
