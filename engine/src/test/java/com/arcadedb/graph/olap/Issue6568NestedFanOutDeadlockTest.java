@@ -254,6 +254,53 @@ class Issue6568NestedFanOutDeadlockTest {
   }
 
   /**
+   * An already-interrupted waiter must ABORT, not quietly do the pool's work for it.
+   * <p>
+   * This is the reclaim's own way of undoing #4951. A reclaimed chunk runs inline and {@code FutureTask.run()}
+   * never looks at the interrupt flag, so without the check an interrupted caller would run the queued chunk to
+   * completion, find {@code get()} returning normally because the future IS now done, and walk the rest of the
+   * batch the same way - returning normally, flag still set, from a wait whose whole job was to abort and discard.
+   * A query killed by a timeout or a cancel would have merged partial results and reported them as complete.
+   */
+  @Test
+  @Timeout(value = HANG_DETECTOR_SECONDS, unit = TimeUnit.SECONDS, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+  void anInterruptedWaiterAbortsInsteadOfRunningTheQueuedChunkItself() throws Exception {
+    final FanOutPool pool = new FanOutPool(1);
+    final CountDownLatch pinWorker = new CountDownLatch(1);
+    final CountDownLatch workerPinned = new CountDownLatch(1);
+    try {
+      final ExecutorService executor = pool.getExecutorService();
+      executor.submit(() -> {
+        workerPinned.countDown();
+        pinWorker.await();
+        return null;
+      });
+      assertThat(awaited(workerPinned, WORKER_PIN_MS)).isTrue();
+
+      final AtomicInteger ran = new AtomicInteger();
+      final Future<?>[] chunks = { executor.submit(ran::incrementAndGet), executor.submit(ran::incrementAndGet) };
+
+      Thread.currentThread().interrupt();
+      assertThatThrownBy(() -> GraphAlgorithms.awaitFutures(chunks, 2, pool))
+          .as("an interrupted wait must abort, whether or not its chunks are reclaimable")
+          .isInstanceOf(CommandExecutionException.class)
+          .hasMessageContaining("interrupted").hasMessageContaining("partial results discarded");
+
+      assertThat(ran.get()).as("the interrupted thread must not have run a reclaimed chunk").isZero();
+      assertThat(chunks[0].isCancelled()).as("every outstanding chunk must be cancelled").isTrue();
+      assertThat(chunks[1].isCancelled()).isTrue();
+      assertThat(Thread.currentThread().isInterrupted())
+          .as("the interrupt must survive the abort, so the caller above can act on it too").isTrue();
+    } finally {
+      // Clear the flag before it leaks into the next test in this JVM, and only then release the pin: an
+      // interrupted thread cannot wait on anything.
+      Thread.interrupted();
+      pinWorker.countDown();
+      pool.close();
+    }
+  }
+
+  /**
    * True when the future completed within a STALL-DISCOUNTED budget, false when it is wedged - in which case it is
    * cancelled so nothing outlives the test.
    * <p>
