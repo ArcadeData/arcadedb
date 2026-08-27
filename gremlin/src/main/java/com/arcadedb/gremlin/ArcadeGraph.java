@@ -95,6 +95,7 @@ public class ArcadeGraph implements Graph, Closeable {
   private              GremlinGroovyScriptEngine   gremlinGroovyEngine;
   private              ServiceRegistry             serviceRegistry;
   private              GraphTraversalSource        traversal;
+  private              Cluster                     cluster;
   private              ImportGremlinPlugin.Builder importPlugin;
 
   static {
@@ -209,7 +210,10 @@ public class ArcadeGraph implements Graph, Closeable {
         final GraphBinaryMessageSerializerV1 serializer = new GraphBinaryMessageSerializerV1(
             new TypeSerializerRegistry.Builder().addRegistry(new ArcadeIoRegistry()));
 
-        Cluster cluster = Cluster.build().enableSsl(false).addContactPoints(hosts).port(GREMLIN_SERVER_PORT)
+        // KEEP THE CLUSTER IN A FIELD: IT OWNS A NETTY EVENT-LOOP GROUP, A SCHEDULED EXECUTOR AND A CONNECTION POOL,
+        // AND DriverRemoteConnection.using(Cluster, String) DOES NOT TAKE OWNERSHIP OF IT, SO ONLY close() CAN
+        // RELEASE THOSE RESOURCES (ISSUE #6822).
+        cluster = Cluster.build().enableSsl(false).addContactPoints(hosts).port(GREMLIN_SERVER_PORT)
             .credentials(remoteDatabase.getUserName(), remoteDatabase.getUserPassword()).serializer(serializer).create();
 
         // Use database name as the traversal source alias (dynamically registered by ArcadeGraphManager)
@@ -429,17 +433,18 @@ public class ArcadeGraph implements Graph, Closeable {
       gremlinGroovyEngine = null;
     }
 
+    releaseTraversal();
+
     if (this.database != null) {
-      if (sharedDatabase) {
-        // Database lifecycle is managed externally; do not close it.
-        // Roll back any open transaction to avoid leaving stale state.
-        if (this.database.isTransactionActive())
-          this.database.rollback();
-      } else {
-        if (this.database.isTransactionActive())
-          this.database.commit();
+      // END AN IN-FLIGHT UNIT OF WORK THROUGH THE TRANSACTION'S CONFIGURED CLOSE BEHAVIOUR, WHOSE DEFAULT IS
+      // ROLLBACK: CLOSING A GRAPH IS NOT A COMMIT, SO WORK THAT NEVER REACHED commit() MUST NOT BECOME DURABLE
+      // (ISSUE #6820). tx().close() ALSO CLEARS THE THREAD-LOCAL STATE OF AbstractThreadLocalTransaction.
+      if (this.database.isTransactionActive())
+        this.transaction.close();
+
+      // WHEN THE DATABASE LIFECYCLE IS MANAGED EXTERNALLY (e.g. BY ArcadeDBServer) DO NOT CLOSE IT.
+      if (!sharedDatabase)
         this.database.close();
-      }
     }
   }
 
@@ -450,6 +455,8 @@ public class ArcadeGraph implements Graph, Closeable {
       gremlinGroovyEngine = null;
     }
 
+    releaseTraversal();
+
     if (this.database != null) {
       if (!this.database.isOpen())
         FileUtils.deleteRecursively(new File(this.database.getDatabasePath()));
@@ -459,6 +466,39 @@ public class ArcadeGraph implements Graph, Closeable {
         this.database.drop();
       }
     }
+  }
+
+  /**
+   * Releases the cached traversal source and, when the traversal goes through the TinkerPop driver, the
+   * {@link Cluster} built for it. The cluster owns a Netty event-loop group, a scheduled executor and a connection
+   * pool: nothing else closes them, so leaving them behind leaked those per graph instance (issue #6822).
+   */
+  private void releaseTraversal() {
+    if (traversal != null) {
+      try {
+        traversal.close();
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING, "Error on closing the Gremlin traversal source", e);
+      }
+      traversal = null;
+    }
+
+    if (cluster != null) {
+      try {
+        cluster.close();
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING, "Error on closing the Gremlin driver cluster", e);
+      }
+      cluster = null;
+    }
+  }
+
+  /**
+   * Returns the TinkerPop driver {@link Cluster} backing {@link #traversal()}, or {@code null} when the traversal is
+   * executed embedded. Visible for testing the cluster lifecycle.
+   */
+  Cluster getCluster() {
+    return cluster;
   }
 
   @Override

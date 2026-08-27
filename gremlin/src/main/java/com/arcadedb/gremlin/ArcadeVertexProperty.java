@@ -36,6 +36,8 @@ import java.util.NoSuchElementException;
  */
 public class ArcadeVertexProperty<T> implements VertexProperty<T> {
 
+  private static final String ID_SEPARATOR = "-";
+
   protected final String       key;
   protected final T            value;
   protected final ArcadeVertex vertex;
@@ -80,9 +82,17 @@ public class ArcadeVertexProperty<T> implements VertexProperty<T> {
 
   }
 
+  /**
+   * A vertex property has single cardinality here, so {@code (vertex, key)} is its identity. TinkerPop's
+   * {@code ElementHelper} compares vertex properties by id alone, so the id must be unique: deriving it from a sum of
+   * hash codes made distinct properties of the same vertex compare equal and be deduplicated away (issue #6823).
+   * The vertex id is a RID, which never contains the separator, so no pair of (vertex, key) can produce the same id.
+   */
   @Override
   public Object id() {
-    return (long) (this.key.hashCode() + this.value.hashCode() + this.vertex.id().hashCode());
+    final Object vertexId = this.vertex.id();
+    // AN UNSAVED VERTEX HAS NO RID YET: FALL BACK TO ITS INSTANCE IDENTITY SO id() NEITHER THROWS NOR COLLIDES.
+    return (vertexId != null ? vertexId : "?" + System.identityHashCode(this.vertex)) + ID_SEPARATOR + this.key;
   }
 
   @Override
