@@ -49,9 +49,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 class SlowWaitInstrumentTest {
 
   /**
-   * The fraction of the budget at which a wait becomes worth a line. Held at a sixth since the instrument was
-   * added: 10s of 120s, 5s of 30s, 2.5s of 15s. Asserted as a ratio rather than as two literals, so that
-   * retuning both numbers together stays legal while letting either drift away from the other does not.
+   * The fraction of the budget at which a wait becomes worth a line. A sixth since issue #6267 (5s of 30s, and
+   * now 2.5s of 15s) - NOT since the instrument was added, which is worth stating precisely in a test whose job
+   * is stopping a documented claim from drifting: 10s of 120s was a twelfth. Asserted as a ratio rather than as
+   * two literals, so that retuning both numbers together stays legal while letting either drift away from the
+   * other does not.
    */
   private static final long REPORT_THRESHOLD_FRACTION_OF_BUDGET = 6;
 
@@ -146,10 +148,10 @@ class SlowWaitInstrumentTest {
     assertThat(threshold).isPositive();
     assertThat(threshold * REPORT_THRESHOLD_FRACTION_OF_BUDGET)
         .as("the report threshold is %d ms of a %d ms budget, which is not the one-%d-th that BaseRaftHATest "
-                + "documents and that all three settings of this pair have used (10s of 120s, 5s of 30s, 2.5s of "
-                + "15s). Above that ratio a wait burns more of the budget in silence than it ever has; below it "
-                + "the instrument reports on waits that are simply normal and stops being able to point at the "
-                + "ones that are not. If the ratio itself is what you meant to change, change it here and in that "
+                + "documents and that this pair has used since issue #6267 (5s of 30s, then 2.5s of 15s). Above "
+                + "that ratio a wait burns more of the budget in silence than it has since then; below it the "
+                + "instrument reports on waits that are simply normal and stops being able to point at the ones "
+                + "that are not. If the ratio itself is what you meant to change, change it here and in that "
                 + "javadoc together", threshold, budget, REPORT_THRESHOLD_FRACTION_OF_BUDGET)
         .isEqualTo(budget);
   }
