@@ -34,7 +34,17 @@
     <name>ArcadeDB HA Raft</name>
 
     <properties>
-        <ratis.version>3.2.2</ratis.version>
+        <ratis.version>3.3.0</ratis.version>
+
+        <!-- "exclude nothing extra", written as a contradiction rather than as an empty string, so that the
+             default execution below can compose this property into a tag expression without the result ever
+             being malformed. The parent leaves it empty (issue #5697) and "ha-heavy | " does not parse.
+
+             With this, -Dfailsafe.excludedGroups=vector still skips @Tag("vector") ITs in this module, exactly as
+             it does in every other one, while the ha-heavy split stays immune to it. Both properties matter and
+             they are not the same property: this one is composed IN, and -Dgroups/-DexcludedGroups - which
+             cannot be, because they are the parameters themselves - are locked out below. -->
+        <failsafe.excludedGroups>any() &amp; none()</failsafe.excludedGroups>
     </properties>
 
     <dependencies>
@@ -230,7 +240,13 @@
                                  command runs them all. Explicit configuration wins over a user property, so the
                                  only way to write "everything" such that nothing can narrow it is to say so. -->
                             <groups>any() | none()</groups>
-                            <excludedGroups>ha-heavy</excludedGroups>
+                            <!-- The heavy classes, plus whatever ${failsafe.excludedGroups} asks for - see the
+                                 property above, which defaults to a contradiction so that this composes to just
+                                 "ha-heavy" when nobody asks for anything. Composed rather than hardcoded so that
+                                 this module does not quietly stop honouring the one knob every other module's ITs
+                                 honour; a literal here would make -Dfailsafe.excludedGroups=vector do nothing in
+                                 ha-raft alone, and it would do nothing silently. -->
+                            <excludedGroups>ha-heavy | (${failsafe.excludedGroups})</excludedGroups>
                             <systemPropertyVariables>
                                 <arcadedb.it.fork>default</arcadedb.it.fork>
                             </systemPropertyVariables>
