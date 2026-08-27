@@ -490,8 +490,12 @@ public class ArcadeGraph implements Graph, Closeable {
    * Releases the cached traversal source and, when the traversal goes through the TinkerPop driver, the
    * {@link Cluster} built for it. The cluster owns a Netty event-loop group, a scheduled executor and a connection
    * pool: nothing else closes them, so leaving them behind leaked those per graph instance (issue #6822).
+   * <p>
+   * Takes the same monitor as {@link #traversal()}: without it a concurrent close could null and shut down the
+   * cluster field between the two statements that build and then use it, handing a dead cluster to the remote
+   * connection and leaving the one built after the close with nothing left to release it.
    */
-  private void releaseTraversal() {
+  private synchronized void releaseTraversal() {
     if (traversal != null) {
       try {
         traversal.close();
