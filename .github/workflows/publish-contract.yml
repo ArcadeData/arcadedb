@@ -32,7 +32,7 @@ jobs:
       - name: Start the released server
         run: |
           docker run -d --name arcadedb-contract -p 127.0.0.1:2480:2480 \
-            -e JAVA_OPTS="-Darcadedb.server.rootPassword=$ROOT_PASSWORD" \
+            -e ARCADEDB_SETTINGS="-Darcadedb.server.rootPassword=$ROOT_PASSWORD" \
             "arcadedata/arcadedb:$TAG"
 
       - name: Wait for readiness

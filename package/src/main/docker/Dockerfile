@@ -19,9 +19,18 @@ FROM eclipse-temurin:21-alpine@sha256:4fb80de7aeb277ad949cfbe89b4f504e50bb34c57f
 LABEL maintainer="Arcade Data LTD (info@arcadedb.com)"
 LABEL io.modelcontextprotocol.server.name="com.arcadedb/mcp-server"
 
-ENV JAVA_OPTS="-XX:+UseZGC -XX:+ZGenerational"
+# GC selection lives in its own variable, NOT in JAVA_OPTS: quickstarts and orchestrators routinely
+# set JAVA_OPTS to pass extra flags, and Docker replaces an environment variable instead of appending
+# to it, so a GC choice parked there would silently vanish exactly when the user customises the image.
+# Pass database settings with ARCADEDB_SETTINGS and extra JVM flags with JAVA_OPTS: bin/server.sh
+# puts all of them on the java command line alongside this one.
+ENV ARCADEDB_OPTS_GC="-XX:+UseZGC -XX:+ZGenerational"
 
-ENV ARCADEDB_OPTS_MEMORY="-Xms2G -Xmx2G"
+# Size the heap as a percentage of the container memory limit rather than pinning it: a fixed -Xmx
+# larger than the cgroup limit kills the container at startup, and a fixed -Xmx smaller than the
+# limit wastes whatever the operator granted. The JVM reads the cgroup limit, so this one value
+# works from a 512Mi sandbox up to a multi-GB production node.
+ENV ARCADEDB_OPTS_MEMORY="-XX:MaxRAMPercentage=75"
 
 ENV ARCADEDB_JMX="-Dcom.sun.management.jmxremote=true \
     -Dcom.sun.management.jmxremote.local.only=false \
@@ -58,8 +67,8 @@ VOLUME [ "/home/arcadedb/log"]
 # ArcadeDB HTTP API & STUDIO
 EXPOSE 2480
 
-# ArcadeDB Binary Protocol (replication)
-EXPOSE 2424
+# Raft gRPC (replication)
+EXPOSE 2434
 
 # Gremlin Server (Apache TinkerPop)
 EXPOSE 8182
