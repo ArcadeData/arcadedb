@@ -48,6 +48,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.ZipEntry;
@@ -137,29 +138,35 @@ public class SourceDiscovery {
     final boolean blockLocalNetworks = allowLocalUrls != null ?
         !allowLocalUrls : GlobalConfiguration.SERVER_SECURITY_IMPORT_BLOCK_LOCAL_NETWORKS.getValueAsBoolean();
 
-    final HttpURLConnection connection = ImportSecurityValidator.openRemoteConnection(urlPath, blockLocalNetworks);
+    // EVERY RESET REPLACES THE CONNECTION, SO THE CLOSE CALLBACK HAS TO TEAR DOWN THE ONE THE STREAM CURRENTLY COMES
+    // FROM, NOT THE FIRST ONE EVER OPENED
+    final AtomicReference<HttpURLConnection> currentConnection = new AtomicReference<>(
+        ImportSecurityValidator.openRemoteConnection(urlPath, blockLocalNetworks));
 
     try {
-      return getSourceFromContent(new BufferedInputStream(connection.getInputStream()), connection.getContentLengthLong(), resource,
+      return getSourceFromContent(new BufferedInputStream(currentConnection.get().getInputStream()),
+          currentConnection.get().getContentLengthLong(), resource,
           source -> {
             try {
               source.inputStream.close();
-              connection.disconnect();
+              currentConnection.get().disconnect();
 
-              final HttpURLConnection connection1 = ImportSecurityValidator.openRemoteConnection(urlPath, blockLocalNetworks);
+              final HttpURLConnection reopened = ImportSecurityValidator.openRemoteConnection(urlPath, blockLocalNetworks);
               try {
                 if (source.inputStream instanceof GZIPInputStream)
-                  source.inputStream = new GZIPInputStream(connection1.getInputStream(), 2048);
+                  source.inputStream = new GZIPInputStream(reopened.getInputStream(), 2048);
                 else if (source.inputStream instanceof ZipInputStream)
                   // THE NEW STREAM MUST BE POSITIONED ON THE ENTRY TO READ, THE OLD ONE IS GONE (issue #6810)
-                  source.inputStream = reopenZip(new BufferedInputStream(connection1.getInputStream()), resource);
+                  source.inputStream = reopenZip(new BufferedInputStream(reopened.getInputStream()), resource);
                 else
-                  source.inputStream = new BufferedInputStream(connection1.getInputStream());
+                  source.inputStream = new BufferedInputStream(reopened.getInputStream());
               } catch (final IOException | RuntimeException e) {
                 // THE REPLACEMENT STREAM WAS NEVER INSTALLED ON THE SOURCE, SO NOTHING ELSE WOULD EVER DISCONNECT IT
-                connection1.disconnect();
+                reopened.disconnect();
                 throw e;
               }
+
+              currentConnection.set(reopened);
             } catch (final ImportException e) {
               throw e;
             } catch (final Exception e) {
@@ -167,12 +174,12 @@ public class SourceDiscovery {
             }
             return null;
           }, () -> {
-            connection.disconnect();
+            currentConnection.get().disconnect();
             return null;
           });
     } catch (final IOException | RuntimeException e) {
       // THE SOURCE THAT WOULD HAVE OWNED (AND EVENTUALLY DISCONNECTED) THE CONNECTION WAS NEVER BUILT
-      connection.disconnect();
+      currentConnection.get().disconnect();
       throw e;
     }
   }
