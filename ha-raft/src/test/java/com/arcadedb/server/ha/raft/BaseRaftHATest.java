@@ -90,6 +90,18 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
   // lane - the trade the instrument exists to avoid. From here the instrument's job is to catch a regression
   // rather than to propose the next cut.
   //
+  // Both of those measurements are indirect - they say no wait CROSSED a threshold. A later experiment for
+  // issue #6343 measured the wait itself, by running the lane with the report threshold at 1ms so every wait
+  // printed its duration: Issue5410AbandonedTicketReleaseIT's awaitValue satisfied in 252 ms and then 1 ms
+  // (run 33074663154). The budget here is sixty times the wait it exists for, which is the number that should
+  // be reassuring rather than the absence of report lines.
+  //
+  // That experiment also found something this comment must not be read as covering: the same wait NEVER
+  // completes - 120s was not enough - if the heavy ITs are moved into a failsafe fork of their own, because
+  // this class turns out to pass only when RaftHAComprehensiveIT has run before it in the same JVM. That is
+  // issue #6848, and it is a property of the suite and probably of the abandoned-ticket path, not of this
+  // budget. Nothing here is safe to reason about under a different fork arrangement without re-measuring.
+  //
   // Which means reading its lines correctly, and 2.5s is low enough that they will appear: a local run of the
   // eleven helper-calling IT classes reported a wait satisfied at 3013 ms, a perfectly ordinary one that the
   // old 5s threshold simply could not see. A line is EVIDENCE ABOUT THAT WAIT, not an alarm - what would be a
