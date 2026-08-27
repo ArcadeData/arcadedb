@@ -122,6 +122,22 @@ class ArcadeVertexPropertyIdTest {
 
     assertThat(first.id()).as("an unsaved vertex must not make id() blow up").isNotNull();
     assertThat(first.id()).isNotEqualTo(second.id());
+    assertThat(new ArcadeVertexProperty<>(vertex, "a", "b").id())
+        .as("the transient id must be stable for as long as the vertex has no RID")
+        .isEqualTo(first.id());
+    graph.tx().rollback();
+  }
+
+  @Test
+  void twoUnsavedVerticesDoNotShareAPropertyId() {
+    graph.tx().begin();
+    graph.getDatabase().getSchema().getOrCreateVertexType("Person");
+    final ArcadeVertex first = new ArcadeVertex(graph, graph.getDatabase().newVertex("Person"));
+    final ArcadeVertex second = new ArcadeVertex(graph, graph.getDatabase().newVertex("Person"));
+
+    assertThat(new ArcadeVertexProperty<>(first, "name", "same").id())
+        .as("distinct unsaved vertices must not produce the same property id")
+        .isNotEqualTo(new ArcadeVertexProperty<>(second, "name", "same").id());
     graph.tx().rollback();
   }
 }
