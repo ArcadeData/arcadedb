@@ -183,6 +183,9 @@ public class GraphQLResultSet implements ResultSet {
             if (directive.getArguments() != null) {
               String type = null;
               Vertex.DIRECTION direction = Vertex.DIRECTION.BOTH;
+              // THESE ARGUMENTS BELONG TO THE SCHEMA, NOT TO THE OPERATION, SO NO VARIABLE VALUE CAN BE IN SCOPE
+              // FOR THEM AND THE RAW getValue() CHAIN IS THE RIGHT ONE. A `$variable` WRITTEN HERE ANYWAY USED TO
+              // NPE ON THE null THE OLD VariableLiteral.getValue() RETURNED; IT NOW REPORTS ITSELF. SEE #6834
               for (final Argument argument : directive.getArguments().getList()) {
                 if ("type".equals(argument.getName())) {
                   type = argument.getValueWithVariable().getValue().getValue().toString();
