@@ -204,36 +204,11 @@
                  RaftHAComprehensiveIT (the longest-running IT in the module at ~344s of continuous
                  three-server activity).
 
-                 If you touch this block, these are the four things to re-check, none of which fails loudly on
-                 its own. Each is one command against a handful of classes rather than the full hour:
-
-                   1. the partition still runs each class exactly once -
-                      ./mvnw -o -pl ha-raft verify -Pintegration -DskipTests -DfailIfNoSpecifiedTests=false \
-                        -Dit.test=RaftMigrationCompactionRaceIT,RaftVerifyDatabaseIT
-                      RaftVerifyDatabaseIT must appear under (default) and RaftMigrationCompactionRaceIT under
-                      (heavy-its-in-their-own-fork), each once, and both failsafe-summary files must be written.
-                   2. each heavy class still gets its own JVM - add two throwaway tagged ITs that write
-                      ProcessHandle.current().pid() to a file, run them, and check the pids differ.
-                   3. a failing heavy IT still fails the build AND names this execution - add a throwaway tagged
-                      IT that asserts false; the error must read "verify (heavy-its-in-their-own-fork)".
-                   4. HeavyForkWiringIT and HeavyItForkIsolationTest are both green.
-                   5. no command-line tag filter can narrow either execution - re-run step 1 with
-                      -Dgroups=bogus-tag -DexcludedGroups=bogus-tag and expect the same two classes in the same
-                      two forks. THIS IS THE ONE STEP WITH NO AUTOMATED GUARD BEHIND IT (issue #6794): it needs a
-                      real Maven subprocess with command-line properties, which no unit test can do. It is also
-                      the step whose failure is quietest - the default execution runs 0 tests and the build
-                      passes - so it is the one actually worth running by hand.
-                   6. -Dfailsafe.excludedGroups=ha-heavy still ends in BUILD SUCCESS with both executions empty,
-                      not in a failIfNoTests failure. Documented at that parameter; re-check it there if either
-                      setting is ever touched.
-
-                 Steps 1-3 are how the split was verified in the first place; step 4 is what now watches it.
-
-                 Run all five again after any surefire/failsafe version bump, not only after editing this block.
-                 Two of the expressions here rest on JUnit Platform's tag-expression grammar behaving as measured
-                 on 3.5.6 - any() meaning "at least one tag" rather than "every class", and any() & none() being
-                 a satisfiable-by-nothing contradiction - and a grammar change would not error. It would run zero
-                 tests and pass. -->
+                 If you touch this block, or bump the surefire/failsafe version, six things need re-checking and
+                 not one of them fails loudly on its own. The recipe lives in ha-raft/CLAUDE.md, under
+                 "Re-verifying the IT fork split" - next to this module's other things-the-code-will-not-tell-you
+                 notes rather than buried in an XML comment, because a checklist is read BEFORE an edit and this
+                 is not where anybody looks first. -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-failsafe-plugin</artifactId>
