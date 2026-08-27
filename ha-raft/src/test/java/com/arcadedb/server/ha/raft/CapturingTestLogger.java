@@ -22,9 +22,11 @@ import com.arcadedb.log.DefaultLogger;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.log.Logger;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Function;
 import java.util.logging.Level;
 
 /**
@@ -36,22 +38,45 @@ import java.util.logging.Level;
  */
 final class CapturingTestLogger implements Logger {
 
-  private final List<String> messages  = new CopyOnWriteArrayList<>();
-  /** The same messages with their arguments substituted; see {@link #countFormattedContaining}. */
-  private final List<String> formatted = new CopyOnWriteArrayList<>();
+  /**
+   * One captured call. One element per call rather than parallel lists of levels and texts: the servers under
+   * test log from many threads, and separate {@code add}s to separate lists cannot be made to interleave safely
+   * - a reader would eventually pair one call's level with another call's text, which is exactly the "the
+   * assertion passed, about the wrong line" result a capturing logger exists to rule out.
+   *
+   * @param level     the level the call was made at
+   * @param message   the raw format string, before argument substitution
+   * @param formatted the same message with its arguments substituted, or the raw message if that failed
+   */
+  private record Entry(Level level, String message, String formatted) {
+  }
+
+  private final List<Entry> entries = new CopyOnWriteArrayList<>();
+
+  /** The logger this one displaced, so {@link #uninstall()} can put it back rather than guess at it. */
+  private Logger previous;
 
   static CapturingTestLogger install() {
     final CapturingTestLogger logger = new CapturingTestLogger();
+    logger.previous = LogManager.instance().getLogger();
     LogManager.instance().setLogger(logger);
     return logger;
   }
 
+  /**
+   * Restores the logger that was installed before, which is what {@link LogManager#setLogger} asks callers to do
+   * and what the capturing tests elsewhere in the codebase already do. This used to install a fresh
+   * {@link DefaultLogger} instead - harmless in a clean JVM, where that is what it displaced anyway, but not
+   * harmless here: surefire runs this module's unit tests with forkCount=1, so they share one JVM, and a helper
+   * that hardcodes its own idea of "the normal logger" overwrites whatever a surrounding test had installed.
+   * Restoring makes nesting work by construction rather than by luck.
+   */
   void uninstall() {
-    LogManager.instance().setLogger(new DefaultLogger());
+    LogManager.instance().setLogger(previous != null ? previous : new DefaultLogger());
   }
 
   int countContaining(final String... needles) {
-    return countIn(messages, needles);
+    return countIn(collect(Entry::message), needles);
   }
 
   /**
@@ -61,7 +86,27 @@ final class CapturingTestLogger implements Logger {
    * fails the assertion instead of silently vanishing from the list.
    */
   int countFormattedContaining(final String... needles) {
-    return countIn(formatted, needles);
+    return countIn(collect(Entry::formatted), needles);
+  }
+
+  /**
+   * The messages logged at exactly {@code level}, with their arguments substituted - for an assertion about the
+   * severity a message was reported at, not only about its text. A warning that quietly became an INFO has
+   * stopped doing its job while still satisfying every assertion about what it says.
+   */
+  List<String> formattedAt(final Level level) {
+    final List<String> matching = new ArrayList<>();
+    for (final Entry e : entries)
+      if (level.equals(e.level()))
+        matching.add(e.formatted());
+    return matching;
+  }
+
+  private List<String> collect(final Function<Entry, String> field) {
+    final List<String> values = new ArrayList<>(entries.size());
+    for (final Entry e : entries)
+      values.add(field.apply(e));
+    return values;
   }
 
   private static int countIn(final List<String> where, final String... needles) {
@@ -84,21 +129,20 @@ final class CapturingTestLogger implements Logger {
       final String context, final Object arg1, final Object arg2, final Object arg3, final Object arg4, final Object arg5,
       final Object arg6, final Object arg7, final Object arg8, final Object arg9, final Object arg10, final Object arg11,
       final Object arg12, final Object arg13, final Object arg14, final Object arg15, final Object arg16, final Object arg17) {
-    record(iMessage, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14, arg15,
-        arg16, arg17);
+    record(iLevel, iMessage, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14,
+        arg15, arg16, arg17);
   }
 
   @Override
   public void log(final Object iRequester, final Level iLevel, final String iMessage, final Throwable iException,
       final String context, final Object... args) {
-    record(iMessage, args);
+    record(iLevel, iMessage, args);
   }
 
-  private void record(final String message, final Object... args) {
+  private void record(final Level level, final String message, final Object... args) {
     if (message == null)
       return;
-    messages.add(message);
-    formatted.add(substitute(message, args));
+    entries.add(new Entry(level, message, substitute(message, args)));
   }
 
   /**
