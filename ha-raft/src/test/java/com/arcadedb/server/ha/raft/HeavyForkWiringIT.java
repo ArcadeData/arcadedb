@@ -77,13 +77,24 @@ class HeavyForkWiringIT {
    * POM, and if that merge ever stopped happening, the heavy fork would silently lose every setting the parent
    * supplies there - starting with this one and including anything added later. Asserted here because the
    * assumption is invisible everywhere else, and because the stamp above depends on the same merge working.
+   * <p>
+   * Presence, not value. The property belongs to the root POM for a reason of its own - it silences a GraalVM
+   * polyglot warning - and this test has no opinion about what it should be set to. Pinning "false" would turn
+   * an unrelated edit in another file into a red build here, under a message about a merge that had not
+   * actually broken: the reader would go looking for the bug in the wrong place, which is worse than not having
+   * checked at all.
    */
   @Test
   void theExecutionInheritsTheParentSystemProperties() {
     assumeTrue(System.getProperty(FORK_PROPERTY) != null, "not run through failsafe; nothing to check");
 
     assertThat(System.getProperty("polyglot.engine.WarnInterpreterOnly"))
-        .as("the heavy execution's <systemPropertyVariables> must MERGE with the root POM's, not replace them")
-        .isEqualTo("false");
+        .as("""
+            polyglot.engine.WarnInterpreterOnly is set by the root POM's plugin-level <systemPropertyVariables>
+            and did not reach this fork, so the heavy execution's own <systemPropertyVariables> REPLACED the
+            parent's instead of merging with it. Everything the parent supplies there is missing from this fork,
+            which today is that one property and tomorrow is whatever gets added next to it. Any value at all
+            passes this - only its absence is the finding.""")
+        .isNotNull();
   }
 }
