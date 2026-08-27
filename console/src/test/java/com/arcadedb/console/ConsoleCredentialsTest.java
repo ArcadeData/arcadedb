@@ -36,7 +36,6 @@ class ConsoleCredentialsTest {
         .isEqualTo("connect remote:localhost/mydb root ***");
     assertThat(ConsoleCredentials.mask("connect remote://localhost:2480/mydb root MySecret1!"))
         .isEqualTo("connect remote://localhost:2480/mydb root ***");
-    assertThat(ConsoleCredentials.carriesPassword("connect remote:localhost/mydb root MySecret1!")).isTrue();
   }
 
   /**
@@ -74,7 +73,6 @@ class ConsoleCredentialsTest {
     for (final String command : new String[] { "select from V", "connect mydb", "connect remote:localhost/mydb root",
         "create user bob identified by", "", "close" }) {
       assertThat(ConsoleCredentials.mask(command)).isEqualTo(command);
-      assertThat(ConsoleCredentials.carriesPassword(command)).isFalse();
     }
     assertThat(ConsoleCredentials.mask(null)).isNull();
   }
@@ -103,6 +101,17 @@ class ConsoleCredentialsTest {
   void aSemicolonInsideThePasswordDoesNotEndTheStatement() {
     assertThat(ConsoleCredentials.mask("connect remote:localhost/mydb root 'a;b'"))
         .isEqualTo("connect remote:localhost/mydb root ***");
+  }
+
+  /**
+   * The masker keys off the command keyword, so it deliberately does NOT recognise a bare password typed on its own -
+   * which is exactly what the masked `Password for 'root': ` prompt reads. That line must therefore be kept out of the
+   * history by disabling the history around the read (see {@code Console.askPassword}), never by hoping this class will
+   * catch it: there is nothing in `MySecret1!` to key off.
+   */
+  @Test
+  void aBarePasswordIsNotRecognisedAndMustNotBeLeftToThisClass() {
+    assertThat(ConsoleCredentials.mask("MySecret1!")).isEqualTo("MySecret1!");
   }
 
   /**

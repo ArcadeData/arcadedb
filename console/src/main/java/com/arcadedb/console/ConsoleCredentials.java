@@ -73,13 +73,6 @@ public class ConsoleCredentials {
     return masked.toString();
   }
 
-  /**
-   * Returns true when {@link #mask} would change the text, i.e. when it carries a password in plaintext.
-   */
-  public static boolean carriesPassword(final String text) {
-    return text != null && !text.equals(mask(text));
-  }
-
   private static String maskStatement(final String statement) {
     final String lowerCase = statement.trim().toLowerCase(Locale.ENGLISH);
 

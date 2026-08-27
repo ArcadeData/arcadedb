@@ -262,13 +262,18 @@ public class Console {
    * time there is nothing left for the user to do about them.
    */
   public void close() {
-    // COMMITTING NEEDS AN ACTIVE TRANSACTION ON A LIVE PROXY, NOT JUST A NON-ZERO COUNTER: commit() ON AN INACTIVE
-    // TRANSACTION IS NOT A NO-OP, WHICH IS WHY executeCommit()/executeClose() GUARD ON isTransactionActive() TOO
-    if (transactionBatchSize > 0 && currentOperationsInBatch > 0 && databaseProxy != null
-        && databaseProxy.isTransactionActive()) {
+    if (transactionBatchSize > 0 && currentOperationsInBatch > 0 && databaseProxy != null) {
       try {
-        currentOperationsInBatch = 0;
-        databaseProxy.commit();
+        // COMMITTING NEEDS AN ACTIVE TRANSACTION, NOT JUST A NON-ZERO COUNTER: commit() ON AN INACTIVE TRANSACTION IS
+        // NOT A NO-OP, WHICH IS WHY executeCommit()/executeClose() GUARD ON isTransactionActive() TOO. THE GUARD IS
+        // INSIDE THE TRY BECAUSE IT CAN THROW ON ITS OWN: ON THE EMBEDDED PATH isTransactionActive() RESOLVES THE
+        // THREAD'S CACHED TRANSACTION AND RAISES InvalidDatabaseInstanceException WHEN IT BELONGS TO A DIFFERENT
+        // LocalDatabase INSTANCE FOR THE SAME PATH - RECONNECTING TO THE SAME DATABASE IN ONE SESSION DOES THAT. A
+        // THROW HERE WOULD SKIP THE FLUSH AND THE TWO CLOSES ALL OVER AGAIN, JUST FROM ANOTHER TRIGGER (ISSUE #6828)
+        if (databaseProxy.isTransactionActive()) {
+          currentOperationsInBatch = 0;
+          databaseProxy.commit();
+        }
       } catch (Throwable t) {
         errored = true;
         outputError(t);
@@ -1376,7 +1381,25 @@ public class Console {
     if (batchMode || !systemTerminal)
       throw new ConsoleException("Password for user '" + userName + "' is missing");
 
-    final String password = getLineReader().readLine("Password for '" + userName + "': ", '*');
+    final LineReader reader = getLineReader();
+
+    // BELT AND BRACES ON THE ONE LINE THAT IS A BARE PASSWORD. jline ALREADY DROPS A MASKED LINE - ITS
+    // SimpleMaskingCallback.history() RETURNS null AND LineReaderImpl.finish() SKIPS A null - BUT THAT IS A LIBRARY
+    // INTERNAL, AND ConsoleCredentials CANNOT BE THE SAFETY NET HERE: IT RECOGNISES A PASSWORD BY THE COMMAND KEYWORD
+    // IN FRONT OF IT, AND THIS LINE HAS NONE. SAYING IT OUT LOUD KEEPS THE GUARANTEE LOCAL TO THE CODE THAT NEEDS IT
+    final Object previousSetting = reader.getVariable(LineReader.DISABLE_HISTORY);
+    reader.setVariable(LineReader.DISABLE_HISTORY, true);
+    final String password;
+    try {
+      password = reader.readLine("Password for '" + userName + "': ", '*');
+    } catch (final UserInterruptException | EndOfFileException e) {
+      // CTRL-C / CTRL-D AT THE PROMPT IS A DECISION, NOT A FAILURE: SAY SO INSTEAD OF LETTING A jline EXCEPTION
+      // SURFACE AS AN OPAQUE ERROR FROM connect / create user
+      throw new ConsoleException("Password entry cancelled");
+    } finally {
+      reader.setVariable(LineReader.DISABLE_HISTORY, previousSetting);
+    }
+
     if (password == null || password.isEmpty())
       throw new ConsoleException("Password for user '" + userName + "' is empty");
     return password;
