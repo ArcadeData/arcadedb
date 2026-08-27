@@ -546,6 +546,43 @@ class Issue6315EdgeWeightsUnderOverlayTest {
     }
   }
 
+  /**
+   * The cap on individually-tracked edge property changes counts the edges touched, not the calls made, so a
+   * transaction that rewrites one edge's weight over and over - an accumulator - holds one entry and stays
+   * resolvable against the overlay. Counting the calls would trip the cap and force a full rebuild for a
+   * single edge the overlay was holding all along.
+   */
+  @Test
+  void repeatedUpdatesOfOneEdgeCountOnceAgainstTheTrackingCap() {
+    starGraph();
+
+    final GraphAnalyticalView view = syncView("overlay-repeated-updates-of-one-edge");
+    try {
+      final int a = view.getNodeId(vertex("A").getIdentity());
+      database.transaction(() -> {
+        final MutableVertex e = database.newVertex("N").set("name", "E").save();
+        vertex("A").newEdge("ROAD", e, true, new Object[] { "w", 1.0 }).save();
+      });
+
+      // Well past DeltaCollector's 1024 cap in calls, one edge in edges.
+      database.transaction(() -> {
+        for (final Edge edge : vertex("A").getEdges(Vertex.DIRECTION.OUT, "ROAD"))
+          if ("E".equals(edge.getInVertex().get("name"))) {
+            for (int i = 1; i <= 2000; i++)
+              edge.modify().set("w", (double) i).save();
+            return;
+          }
+      });
+
+      assertThat(view.hasEdgeProperty("ROAD", "w"))
+          .as("one overlay-held edge was touched, so nothing about the base columns went out of date")
+          .isTrue();
+      assertThat(weightsByName(view, a).get("E")).isEqualTo(2000.0);
+    } finally {
+      view.drop();
+    }
+  }
+
   // ── Helpers ──────────────────────────────────────────────────────────────
 
   /** The {@code algo.dijkstra.singleSource} cost from A to B over the {@code w} property. */

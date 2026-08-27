@@ -282,7 +282,7 @@ class DeltaOverlay {
     // date and only the rebuild GraphAnalyticalView.applyDelta() forces can repair them (issues #4513, #6315).
     // Runs after the additions above so that an edge added and updated within the same transaction is found.
     boolean newEdgePropertiesDirty = delta.forceEdgePropertyRebuild;
-    for (final TxDelta.EdgeDelta ed : delta.updatedEdges) {
+    for (final TxDelta.EdgeDelta ed : delta.updatedEdges.values()) {
       final Map<RID, AddedEdge> addedForType = newAddedEdges.get(ed.edgeType);
       final AddedEdge added = addedForType != null ? addedForType.get(ed.rid) : null;
       if (added != null)

@@ -43,7 +43,12 @@ class TxDelta {
   // RID, so an update to one leaves the columns holding a value the database no longer has and only a rebuild
   // can repair them - which DeltaOverlay.merge() decides, being the one place that knows which of the two this
   // is. See issues #4513 and #6315.
-  final List<EdgeDelta>            updatedEdges     = new ArrayList<>();
+  // Keyed by the edge's own identity so that a transaction updating one edge's weight repeatedly - an
+  // accumulator, say - holds one entry rather than one per call. Last write wins, which is what
+  // DeltaOverlay.merge() would have arrived at anyway by overwriting as it walked the list, and it keeps the
+  // cap below a count of the edges actually touched instead of of the calls made. Insertion-ordered, so the
+  // merge walks them in the order the transaction made them.
+  final Map<RID, EdgeDelta>        updatedEdges     = new LinkedHashMap<>();
 
   // Set only by the synthetic delta GraphAnalyticalView uses to schedule the follow-up rebuild an edge
   // property update buffered during a compaction needs (#4513). It stands for no edge in particular, so it
