@@ -253,26 +253,27 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
    * Captured here, at commit time, rather than looked up from the record when an algorithm asks: the overlay
    * outlives the transaction, and an added edge has no column slot to be read from - the columns were built
    * with the base CSR - so this is what lets the view answer for it exactly instead of at a default weight
-   * (issue #6315). Only the materialised names are kept, so an edge with fifty properties on a view that
-   * indexes one costs one entry.
+   * (issue #6315). One slot per materialised name, in the filter's own order, so an edge with fifty properties
+   * on a view that indexes one costs one slot - and the reader resolves the name to a position once per slice
+   * rather than hashing it per edge.
    */
-  private Map<String, Object> extractMaterialisedEdgeProperties(final Edge edge) {
+  private Object[] extractMaterialisedEdgeProperties(final Edge edge) {
     final String[] materialised = view.getEdgePropertyFilter();
     if (materialised == null || materialised.length == 0)
       return null;
 
-    Map<String, Object> props = null;
-    for (final String name : materialised) {
-      final Object value = edge.get(name);
+    Object[] values = null;
+    for (int i = 0; i < materialised.length; i++) {
+      final Object value = edge.get(materialised[i]);
       if (value == null)
         continue;
-      // Sized so the whole filter fits without a resize: HashMap's argument is the bucket count, and it grows
-      // once past load factor x capacity, not past capacity.
-      if (props == null)
-        props = new HashMap<>((int) (materialised.length / 0.75f) + 1);
-      props.put(name, value);
+      // Allocated only once a value is actually found, so an edge carrying none of the materialised
+      // properties - and a bulk insert of them - costs nothing here.
+      if (values == null)
+        values = new Object[materialised.length];
+      values[i] = value;
     }
-    return props;
+    return values;
   }
 
   private static Map<String, Object> extractProperties(final Document doc) {

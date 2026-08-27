@@ -330,4 +330,60 @@ class DeltaOverlayTest {
     assertThat(afterDeleteAll.getOverflowCount()).isEqualTo(0);
     assertThat(afterDeleteAll.getTotalNodeCount()).isEqualTo(2); // only base nodes remain
   }
+
+  /**
+   * Issue #6315: a change to one edge type's properties leaves that type's columns out of date and no other
+   * type's. Serving the columnar path is decided per type, so disqualifying every type for an update to one of
+   * them would cost a view that materialises several of them the fast path it could still honestly offer.
+   */
+  @Test
+  void anEdgePropertyUpdateDirtiesOnlyItsOwnEdgeType() {
+    final NodeIdMapping mapping = baseMappingWith(2);
+    final TxDelta delta = new TxDelta();
+    delta.updatedEdges.put(rid(10), new TxDelta.EdgeDelta(EDGE_TYPE, rid(0), rid(1), rid(10), null));
+
+    final DeltaOverlay overlay = new DeltaOverlay(mapping.size()).merge(delta, mapping);
+
+    assertThat(overlay.isEdgePropertiesDirty(EDGE_TYPE)).isTrue();
+    assertThat(overlay.isEdgePropertiesDirty("SomeOtherType")).isFalse();
+    assertThat(overlay.isEdgePropertiesDirty()).as("some type is out of date").isTrue();
+  }
+
+  /**
+   * Issue #6315: the bulk case, where the collector gave up on naming the edges individually, has to leave
+   * every type out of date - it no longer knows which ones it would otherwise have named.
+   */
+  @Test
+  void aBulkEdgePropertyRewriteDirtiesEveryEdgeType() {
+    final NodeIdMapping mapping = baseMappingWith(2);
+    final TxDelta delta = new TxDelta();
+    delta.forceEdgePropertyRebuild = true;
+
+    final DeltaOverlay overlay = new DeltaOverlay(mapping.size()).merge(delta, mapping);
+
+    assertThat(overlay.isEdgePropertiesDirty(EDGE_TYPE)).isTrue();
+    assertThat(overlay.isEdgePropertiesDirty("SomeOtherType")).isTrue();
+  }
+
+  /**
+   * Issue #6315: an update to an edge the overlay itself holds is applied to that edge's own entry, so nothing
+   * about the base columns went out of date - which is what keeps the ordinary insert, reported as one create
+   * and one update of the same edge, from forcing a rebuild.
+   */
+  @Test
+  void updatingAnEdgeTheOverlayHoldsDirtiesNothing() {
+    final NodeIdMapping mapping = baseMappingWith(2);
+    final RID edgeRid = rid(10);
+
+    final TxDelta delta = new TxDelta();
+    delta.addedEdges.add(new TxDelta.EdgeDelta(EDGE_TYPE, rid(0), rid(1), edgeRid, new Object[] { 1.0 }));
+    delta.updatedEdges.put(edgeRid, new TxDelta.EdgeDelta(EDGE_TYPE, rid(0), rid(1), edgeRid, new Object[] { 2.0 }));
+
+    final DeltaOverlay overlay = new DeltaOverlay(mapping.size()).merge(delta, mapping);
+
+    assertThat(overlay.isEdgePropertiesDirty(EDGE_TYPE)).isFalse();
+    assertThat(overlay.getAdded(0, EDGE_TYPE, true).properties()[0])
+        .as("the added edge's own entry carries the value the update set")
+        .isEqualTo(new Object[] { 2.0 });
+  }
 }

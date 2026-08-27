@@ -161,8 +161,8 @@ public interface GraphTraversalProvider {
   /**
    * Returns the edge types this provider actually holds, or {@code null} when it cannot enumerate them.
    * <p>
-   * {@link #getEdgeProperty} is addressed per edge type, so a caller that was given no type filter but needs
-   * edge properties has to ask which types exist rather than pass "all types" down. A provider that answers
+   * {@link #edgeWeightsForSlice} is addressed per edge type, so a caller that was given no type filter but
+   * needs edge properties has to ask which types exist rather than pass "all types" down. A provider that answers
    * {@code null} simply cannot serve such a caller, which then falls back to reading the edge records.
    */
   default String[] getMaterializedEdgeTypes() {

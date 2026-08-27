@@ -103,7 +103,7 @@ public class GraphAnalyticalViewBuilder {
    * Specifies the edge properties to materialize in columnar storage alongside the CSR adjacency.
    * If not called or null, no edge properties are stored (default — zero overhead).
    * When specified, edge properties are stored aligned to the forward CSR arrays and accessible
-   * via {@link GraphTraversalProvider#getEdgeProperty} for both forward and backward traversals.
+   * via {@link GraphTraversalProvider#edgeWeightsForSlice} for both forward and backward traversals.
    * <p>
    * Example: {@code .withEdgeProperties("weight")} to store edge weights for Dijkstra/SSSP.
    */
