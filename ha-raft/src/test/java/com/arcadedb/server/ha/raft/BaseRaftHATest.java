@@ -566,7 +566,11 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
   static String slowWaitReport(final String what, final long elapsedMs, final boolean satisfied) {
     if (elapsedMs < SLOW_WAIT_REPORT_MS)
       return null;
-    return "%s %s %s after %d ms of the %d ms budget (issue #6343: evidence about this wait, not a failure - it is the number climbing toward the budget that would be the finding)".formatted(
+    // The issue number, and nothing else editorial: what a line means belongs in the javadoc on
+    // RESYNC_RETRY_TIMEOUT_MS, which is where somebody reading one will end up anyway, and not repeated in every
+    // occurrence of it in a CI log. Everything here is load-bearing for a grep or for the reader of a single
+    // line - the marker, which wait, how long, and out of how much.
+    return "%s %s %s after %d ms of the %d ms budget (issue #6343)".formatted(
         SLOW_WAIT_MARKER, what, satisfied ? "satisfied" : "GAVE UP", elapsedMs, RESYNC_RETRY_TIMEOUT_MS);
   }
 
