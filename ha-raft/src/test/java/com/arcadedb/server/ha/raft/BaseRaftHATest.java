@@ -98,11 +98,17 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
   // between them.
   private static final long RESYNC_RETRY_TIMEOUT_MS = 15_000;
   /**
-   * Above this, a wait is worth a line in the log: it is evidence about the budget above, not noise. Held at a
-   * sixth of that budget - 10s of 120s (issue #6221), 5s of 30s (issue #6267), 2.5s of 15s (issue #6343) - so
-   * that the fraction of the budget a wait can consume while still saying nothing never grows. That fraction
-   * IS the blindness that let the 120s stand unmeasured for years, and it is a ratio, not an absolute: a
-   * threshold left at 5s under a 15s budget would let a wait burn a third of it in silence.
+   * Above this, a wait is worth a line in the log: it is evidence about the budget above, not noise. What
+   * matters is the ratio between the two, because that is the fraction of the budget a wait can consume while
+   * still saying nothing - the blindness that let the 120s stand unmeasured for years - and it is not an
+   * absolute: leaving this at 5s under a 15s budget would let a wait burn a THIRD of it in silence.
+   *
+   * <p>The history, stated accurately because it is cited as evidence: 10s of 120s (issue #6221) was a
+   * twelfth; 5s of 30s (issue #6267) was a sixth, so that cut halved the resolution even as it improved the
+   * budget; 2.5s of 15s (issue #6343) is a sixth again. So the rule is not "it has always been a sixth" - it
+   * has been a sixth since #6267, and this cut holds it there rather than letting it slip to a third. A sixth
+   * is the floor the equality in {@code SlowWaitInstrumentTest} now pins, and the twelfth is worth knowing
+   * only as the reminder that a budget can be so large that even a generous threshold sees nothing.
    *
    * @see #slowWaitReport(String, long, boolean)
    */
