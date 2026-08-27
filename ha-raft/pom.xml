@@ -231,8 +231,17 @@
                              execution exists to run, which fails by running nothing and reporting success. -->
                         <id>default</id>
                         <configuration>
-                            <!-- "any tag, or no tag" - every class there is. A tautology written out on purpose,
-                                 because a parameter left unset is NOT the same as one set to everything: unset,
+                            <!-- "any tag, or no tag" - every class there is. Both halves are load-bearing, which
+                                 is worth stating because it reads like a tautology with a redundant limb:
+                                 any() matches a class that carries AT LEAST ONE tag, not every class, so any()
+                                 alone silently drops every untagged IT - which is most of the ~118 this
+                                 execution owns. Measured on 3.5.6 rather than reasoned about: with <groups>any()
+                                 </groups> the @Tag("slow") IT in a mixed selection ran and the untagged one did
+                                 not, and the build passed while doing it. none() is what puts the untagged ones
+                                 back.
+
+                                 Written out on purpose for a second reason too: a parameter left unset is NOT
+                                 the same as one set to everything. Unset,
                                  it resolves through the mojo's ${groups} default and a stray -Dgroups=... on the
                                  command line selects this execution down to whatever that names. Measured on
                                  3.5.6 with -Dgroups=bogus-tag: without this line the execution ran 0 tests and
