@@ -292,17 +292,20 @@ class DeltaOverlay {
     // date and only the rebuild GraphAnalyticalView.applyDelta() forces can repair them (issues #4513, #6315).
     // Runs after the additions above so that an edge added and updated within the same transaction is found.
     final boolean newAllDirty = allEdgeTypesDirty || delta.forceEdgePropertyRebuild;
+    // Copied on the first type this delta actually dirties and not before, so an overlay whose updates all
+    // resolved against its own additions - the ordinary insert - keeps sharing the previous set.
     Set<String> newDirtyTypes = dirtyEdgeTypes;
+    boolean dirtyTypesCopied = false;
     for (final TxDelta.EdgeDelta ed : delta.updatedEdges.values()) {
       final Map<RID, AddedEdge> addedForType = newAddedEdges.get(ed.edgeType);
       final AddedEdge added = addedForType != null ? addedForType.get(ed.rid) : null;
       if (added != null)
         addedForType.put(ed.rid, new AddedEdge(added.src(), added.tgt(), ed.properties));
       else if (!newDirtyTypes.contains(ed.edgeType)) {
-        // Copied on the first type this delta actually dirties, so an overlay whose updates all resolved
-        // against its own additions - the ordinary insert - keeps sharing the previous set.
-        if (newDirtyTypes == dirtyEdgeTypes)
+        if (!dirtyTypesCopied) {
           newDirtyTypes = new HashSet<>(dirtyEdgeTypes);
+          dirtyTypesCopied = true;
+        }
         newDirtyTypes.add(ed.edgeType);
       }
     }
