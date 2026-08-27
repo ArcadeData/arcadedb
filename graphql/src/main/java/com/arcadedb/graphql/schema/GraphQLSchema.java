@@ -211,8 +211,11 @@ public class GraphQLSchema {
    * depend on the SQL string-literal rules happening to match the GraphQL ones (issue #6836).
    * <p>
    * The one exception is the reserved {@code where} argument, which is a free-form SQL predicate by design and is
-   * therefore still interpolated verbatim - including when its value arrives through a variable. Whatever an
-   * application puts in that argument is SQL, so it must be trusted the same way a hand-written statement is.
+   * therefore still interpolated verbatim. Whatever is written there is SQL and has to be trusted the same way a
+   * hand-written statement is - which is why it cannot be filled from a variable: an application that treats its
+   * GraphQL document as trusted and its variables as untrusted input would otherwise be handing a caller raw SQL
+   * without meaning to. Variables never resolved before issue #6834, so nothing can depend on that combination; a
+   * predicate that genuinely has to vary at runtime belongs in a {@code @sql} directive with a bound parameter.
    */
   private String buildWhereClause(final Arguments queryArguments, final Set<String> typeArgumentNames,
       final Map<String, Object> variables, final Map<String, Object> boundParameters) {
@@ -224,7 +227,14 @@ public class GraphQLSchema {
         if (!typeArgumentNames.contains(argName))
           throw new CommandParsingException("Parameter '" + argName + "' not defined in query");
 
-        final Object argValue = resolveValue(queryArgument.getValueWithVariable(), variables);
+        final ValueWithVariable argument = queryArgument.getValueWithVariable();
+
+        if ("where".equals(argName) && argument != null && argument.getValue() instanceof VariableLiteral variable)
+          throw new CommandParsingException("The reserved 'where' argument is interpolated into the statement verbatim, "
+              + "so it cannot be filled from the variable '$" + variable.getName()
+              + "': use a @sql directive with a bound parameter for a predicate that has to vary at runtime");
+
+        final Object argValue = resolveValue(argument, variables);
 
         if (!where.isEmpty())
           where.append(" and ");
