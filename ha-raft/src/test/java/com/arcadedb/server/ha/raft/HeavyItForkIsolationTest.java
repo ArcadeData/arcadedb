@@ -104,6 +104,11 @@ class HeavyItForkIsolationTest {
   /**
    * Every compiled class in this package that carries the heavy tag, by name.
    * <p>
+   * Deliberately shallow: {@code Files.list} does not descend, and does not need to. Every IT the split routes
+   * lives flat in this package, and a subdirectory is a different package whose classes this test has no claim
+   * over - so the shallow scan cannot produce a false negative here, and a reader should not assume it walks a
+   * tree.
+   * <p>
    * Loaded with {@code initialize=false}: these are IT classes whose static initializers stand up servers and
    * touch the filesystem, and this test wants their annotations, not their behaviour.
    */

@@ -277,15 +277,22 @@
                         </goals>
                         <configuration>
                             <groups>ha-heavy</groups>
-                            <!-- "tagged and untagged at once" - a contradiction, so it excludes nothing, and the
-                                 same reasoning as above in the other direction. Left unset, this resolves through
-                                 the parent's ${failsafe.excludedGroups}, and -Dfailsafe.excludedGroups=ha-heavy
-                                 would then exclude precisely the five classes this execution exists to run. That
-                                 is the worst failure this split has: they are excluded from the default execution
-                                 too, so they would not run AT ALL, and failIfNoTests cannot see it (below).
-                                 Verified with all three hostile properties at once - -Dgroups, -DexcludedGroups
-                                 and -Dfailsafe.excludedGroups - the partition is unchanged. -->
-                            <excludedGroups>any() &amp; none()</excludedGroups>
+                            <!-- The same expression as the default execution's, minus the ha-heavy term, so that
+                                 ${failsafe.excludedGroups} means ONE thing across this module. It has to be
+                                 written out rather than left unset for the reason given above - unset, the
+                                 parameter is the user property and -DexcludedGroups narrows it - but written out
+                                 it can still compose the namespaced property, and it should: two of these classes
+                                 also carry @Tag("slow"), and a -Dfailsafe.excludedGroups=slow that skipped the
+                                 slow ITs in the fork next door while running these two would be the sort of
+                                 surprise nobody finds until it costs them an hour.
+                                 The residual case is -Dfailsafe.excludedGroups=ha-heavy, which empties this
+                                 execution - and those classes are excluded from the default one too, so they run
+                                 nowhere. That is deliberate: it is what was asked for, in a namespaced property
+                                 nobody sets by accident, and the flags that DO leak between lanes (-Dgroups and
+                                 -DexcludedGroups, which are the parameters themselves) are locked out on both
+                                 sides. A filter aimed at something else cannot break the partition; a filter
+                                 aimed at these classes is allowed to skip them. -->
+                            <excludedGroups>${failsafe.excludedGroups}</excludedGroups>
                             <!-- An execution that matches nothing must not pass. Measured rather than assumed,
                                  because this parameter sees less than its name suggests: surefire evaluates it
                                  against the CLASS SCAN, before the provider applies the tag filter. Confirmed
