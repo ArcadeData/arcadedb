@@ -583,6 +583,60 @@ class Issue6315EdgeWeightsUnderOverlayTest {
     }
   }
 
+  /**
+   * The same contract at the boundary, which is where the check's order matters rather than its number: with
+   * exactly the cap's worth of distinct edges already tracked, a repeat update of one of them does not grow the
+   * set at all and so must not trip it either. Sized from the constant rather than from a literal, so retuning
+   * the cap is a decision rather than a test failure.
+   */
+  @Test
+  void aRepeatUpdateDoesNotTripTheCapEvenWithItAlreadyFull() {
+    final int distinctEdges = DeltaCollector.MAX_TRACKED_EDGE_UPDATES;
+    database.transaction(() -> {
+      final MutableVertex a = database.newVertex("N").set("name", "A").save();
+      final MutableVertex b = database.newVertex("N").set("name", "B").save();
+      // One edge at build time, so the view materialises a `w` column to begin with.
+      a.newEdge("ROAD", b, true, new Object[] { "w", 1.0 }).save();
+    });
+
+    final GraphAnalyticalView view = syncView("overlay-repeat-update-at-the-cap");
+    try {
+      // Added in their own transaction, so the overlay holds them and their updates resolve against it.
+      database.transaction(() -> {
+        final Vertex a = vertex("A");
+        for (int i = 0; i < distinctEdges; i++) {
+          final MutableVertex target = database.newVertex("N").set("name", "T" + i).save();
+          a.newEdge("ROAD", target, true, new Object[] { "w", 1.0 }).save();
+        }
+      });
+      assertThat(view.hasEdgeProperty("ROAD", "w")).isTrue();
+
+      // Only the overlay-held ones: the edge that was there at build time is a base edge, and updating it
+      // would put the columns out of date for a reason that has nothing to do with the cap.
+      database.transaction(() -> {
+        Edge first = null;
+        for (final Edge edge : vertex("A").getEdges(Vertex.DIRECTION.OUT, "ROAD")) {
+          if ("B".equals(edge.getInVertex().get("name")))
+            continue;
+          edge.modify().set("w", 2.0).save();
+          if (first == null)
+            first = edge;
+        }
+        // The cap is now exactly full of distinct edges. This one is already in it.
+        first.modify().set("w", 3.0).save();
+      });
+
+      assertThat(view.hasEdgeProperty("ROAD", "w"))
+          .as("a repeat update grows nothing, so it cannot be what tips the set over its cap")
+          .isTrue();
+      assertThat(weightsByName(view, view.getNodeId(vertex("A").getIdentity())).values())
+          .as("every edge took the update, one of them twice")
+          .containsOnlyOnce(3.0);
+    } finally {
+      view.drop();
+    }
+  }
+
   // ── Helpers ──────────────────────────────────────────────────────────────
 
   /** The {@code algo.dijkstra.singleSource} cost from A to B over the {@code w} property. */
