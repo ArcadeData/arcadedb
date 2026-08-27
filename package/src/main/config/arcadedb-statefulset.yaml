@@ -22,6 +22,12 @@
 # on a cluster that already has it), but the Secret has to exist inside it before the pods start, and
 # `kubectl create secret --namespace arcadedb` fails if the namespace is not there yet.
 #
+# BEFORE COPYING THIS INTO PRODUCTION: the root password is mounted from a Secret rather than passed
+# on the command line, but the mounted file is world-readable inside the pod (`defaultMode: 0444`, see
+# the note on that line for why, and for the `fsGroup` + 0440 alternative). The resource requests are
+# sized for a real three-node cluster, and the Raft gRPC port is unauthenticated - restrict it to the
+# StatefulSet's own pods with a NetworkPolicy.
+#
 # NOTE ON VARIABLE EXPANSION: Kubernetes expands only the `$(VAR)` form in `command`/`args`, and only
 # for variables declared in this container's `env`. The `${VAR}` form is NOT expanded, and since the
 # arguments are not run through a shell there is no POSIX expansion either: a `${VAR}` written below
@@ -146,10 +152,12 @@ spec:
             # restart never drops the write quorum.
             - "-Darcadedb.server.readinessRequiresHA=true"
             - "-Darcadedb.ha.enabled=true"
-            # Only the first pod is listed: the remaining pods synthesize their own peer entry from
-            # the pod name plus the DNS suffix below and auto-join the running cluster. Short pod
-            # names are expanded with that suffix, so this entry stays namespace-agnostic. The second
-            # port is the HTTP port, required for replica-to-leader command forwarding.
+            # arcadedb-0 lists itself, and must: this list IS the initial Raft group membership, so a
+            # node absent from it is not a member. Only the first pod is listed because the remaining
+            # pods are not members at boot - they synthesize their own peer entry from the pod name
+            # plus the DNS suffix below and auto-join the running cluster. Short pod names are
+            # expanded with that suffix, so this entry stays namespace-agnostic. The second port is
+            # the HTTP port, required for replica-to-leader command forwarding.
             - "-Darcadedb.ha.serverList=arcadedb-0:2434:2480"
             - "-Darcadedb.ha.k8s=true"
             - "-Darcadedb.ha.k8sSuffix=.arcadedb.arcadedb.svc.cluster.local"
