@@ -218,8 +218,11 @@
                       IT that asserts false; the error must read "verify (heavy-its-in-their-own-fork)".
                    4. HeavyForkWiringIT and HeavyItForkIsolationTest are both green.
                    5. no command-line tag filter can narrow either execution - re-run step 1 with
-                      -Dgroups=bogus-tag -DexcludedGroups=bogus-tag -Dfailsafe.excludedGroups=ha-heavy and
-                      expect the same two classes in the same two forks.
+                      -Dgroups=bogus-tag -DexcludedGroups=bogus-tag and expect the same two classes in the same
+                      two forks. THIS IS THE ONE STEP WITH NO AUTOMATED GUARD BEHIND IT (issue #6794): it needs a
+                      real Maven subprocess with command-line properties, which no unit test can do. It is also
+                      the step whose failure is quietest - the default execution runs 0 tests and the build
+                      passes - so it is the one actually worth running by hand.
 
                  Steps 1-3 are how the split was verified in the first place; step 4 is what now watches it. -->
             <plugin>
