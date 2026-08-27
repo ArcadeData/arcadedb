@@ -834,6 +834,10 @@ class Database:
         wal_flush: Optional[str] = None,
         pre_allocate_edge_chunks: Optional[bool] = None,
         parallel_flush: Optional[bool] = None,
+        commit_retries: Optional[int] = None,
+        commit_retry_delay_ms: Optional[int] = None,
+        chunk_cache_capacity: Optional[int] = None,
+        max_deferred_incoming_edges: Optional[int] = None,
     ) -> GraphBatch:
         """
         Create a GraphBatch helper for high-throughput graph ingestion.
@@ -853,6 +857,24 @@ class Database:
             wal_flush: WAL flush mode: `"no"`, `"yes_nometadata"`, `"yes_full"`.
             pre_allocate_edge_chunks: Pre-allocate edge chunks during `create_vertex()`.
             parallel_flush: Parallelize flush/close connectivity work across buckets.
+            commit_retries: Times a vertex-creation commit is retried on a transient
+                `NeedRetryException` (for example a Raft `QuorumNotReachedException`
+                during a leader re-election). Default 10; `0` fails fast on the first
+                error.
+            commit_retry_delay_ms: Initial back-off in milliseconds before the first
+                vertex-commit retry. Later retries back off exponentially, capped at
+                10000 ms. Default 1000.
+            chunk_cache_capacity: Maximum entries retained in each of the OUT/IN
+                head-chunk RID lookup caches. Both are pure accelerators, so a miss
+                just reloads the vertex's head chunk from disk; bounding them keeps
+                memory flat on a long-lived stream instead of growing with the number
+                of distinct vertices touched. Default 1,000,000 (roughly 100-150 MB
+                per cache).
+            max_deferred_incoming_edges: Buffered deferred incoming edges allowed
+                before the incoming-edge connection pass runs early from `flush()`
+                rather than once at `close()`, amortizing it over the load. Default
+                5,000,000; `0` defers everything to `close()` and lets the buffer grow
+                unbounded.
 
         Returns:
             GraphBatch instance. Use it as a context manager when possible.
@@ -876,6 +898,10 @@ class Database:
             wal_flush=wal_flush,
             pre_allocate_edge_chunks=pre_allocate_edge_chunks,
             parallel_flush=parallel_flush,
+            commit_retries=commit_retries,
+            commit_retry_delay_ms=commit_retry_delay_ms,
+            chunk_cache_capacity=chunk_cache_capacity,
+            max_deferred_incoming_edges=max_deferred_incoming_edges,
         )
 
     def import_documents(
@@ -895,6 +921,7 @@ class Database:
         probe_only: Optional[bool] = None,
         force_database_create: Optional[bool] = None,
         trim_text: Optional[bool] = None,
+        on_row_error: Optional[str] = None,
         extra_settings: Optional[Mapping[str, Any]] = None,
     ) -> ImportResult:
         """
@@ -918,6 +945,14 @@ class Database:
             probe_only: Analyze only without writing records when True.
             force_database_create: Recreate database when importer opens its own DB.
             trim_text: Trim textual values during import when True.
+            on_row_error: `"abort"` (default) or `"skip"`. `"skip"` logs and
+                skips a malformed or out-of-range row instead of failing the whole
+                job, but it commits per row, so it needs exclusive control of the
+                transaction and raises if one is already active. It also drops the
+                async path for vertex imports, making them synchronous and
+                single-threaded regardless of `commit_every`/`parallel`. Any other
+                value raises `ValueError`, because the engine treats everything
+                that is not `"skip"` as `"abort"`.
             extra_settings: Additional raw importer settings.
 
         Returns:
@@ -940,6 +975,7 @@ class Database:
             probe_only=probe_only,
             force_database_create=force_database_create,
             trim_text=trim_text,
+            on_row_error=on_row_error,
             extra_settings=extra_settings,
         )
 

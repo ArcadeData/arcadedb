@@ -10,6 +10,10 @@ import jpype
 
 from .exceptions import ArcadeDBError
 
+# ImporterSettings.isSkipOnRowError() tests only for "skip", so anything else
+# means "abort". Keep this list in step with that method, not with the docs.
+_VALID_ON_ROW_ERROR = frozenset({"abort", "skip"})
+
 
 @dataclass(slots=True)
 class ImportResult:
@@ -97,8 +101,27 @@ def _build_import_settings(
     probe_only: bool | None,
     force_database_create: bool | None,
     trim_text: bool | None,
+    on_row_error: str | None,
     extra_settings: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
+    # The engine reads this as `"skip".equalsIgnoreCase(onRowError)`, so every
+    # value that is not "skip" silently means "abort". A typo would therefore
+    # turn a requested skip-and-continue import back into abort-on-first-bad-row
+    # with no error anywhere, which is the failure mode this rejects up front.
+    # isinstance BEFORE .lower(): on_row_error=1 otherwise raises AttributeError
+    # from inside the validation, while the public API documents ValueError for
+    # anything unsupported. A caller catching ValueError would miss it.
+    if on_row_error is not None and not isinstance(on_row_error, str):
+        raise ValueError(
+            f"Invalid on_row_error mode: {on_row_error!r}. "
+            f"Expected one of {sorted(_VALID_ON_ROW_ERROR)}"
+        )
+    if on_row_error is not None and on_row_error.lower() not in _VALID_ON_ROW_ERROR:
+        raise ValueError(
+            f"Invalid on_row_error mode: {on_row_error!r}. "
+            f"Expected one of {sorted(_VALID_ON_ROW_ERROR)}"
+        )
+
     settings: dict[str, Any] = {
         "documents": source_url,
         "documentType": document_type,
@@ -117,6 +140,7 @@ def _build_import_settings(
         "probeOnly": probe_only,
         "forceDatabaseCreate": force_database_create,
         "trimText": trim_text,
+        "onRowError": on_row_error,
     }
 
     settings.update(
@@ -157,6 +181,7 @@ def import_documents(
     probe_only: bool | None = None,
     force_database_create: bool | None = None,
     trim_text: bool | None = None,
+    on_row_error: str | None = None,
     extra_settings: Mapping[str, Any] | None = None,
 ) -> ImportResult:
     source_url = normalize_import_source(source)
@@ -175,6 +200,7 @@ def import_documents(
         probe_only=probe_only,
         force_database_create=force_database_create,
         trim_text=trim_text,
+        on_row_error=on_row_error,
         extra_settings=extra_settings,
     )
 
