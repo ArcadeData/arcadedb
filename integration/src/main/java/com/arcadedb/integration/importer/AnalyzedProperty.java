@@ -24,6 +24,9 @@ import java.util.HashSet;
 import java.util.Set;
 
 public class AnalyzedProperty {
+  /** A value longer than this is not worth keeping as a sample, but it is still evidence about the type. */
+  private static final int MAX_SAMPLE_LENGTH = 100;
+
   private final String      name;
   private final long        maxValueSampling;
   private final int         index;
@@ -61,44 +64,48 @@ public class AnalyzedProperty {
     return index;
   }
 
+  /**
+   * Sampling and type refutation are two independent concerns and are handled in that order here. Sample collection is
+   * a memory bound and legitimately stops - on an oversized value or once enough distinct values have been seen. Type
+   * refutation is evidence: skipping it for a value, or stopping it for the rest of the column, is how a text column
+   * used to end up declared LONG and blow the import up on the very value the analysis never looked at (issue #6814).
+   */
   public void setLastContent(final String lastContent) {
-    if (!collectingSamples)
+    if (lastContent == null)
       return;
 
-    if (lastContent != null) {
-      if (lastContent.length() > 100) {
-        collectingSamples = false;
-        contents.clear();
-        return;
-      }
+    this.lastContent = lastContent;
 
-      this.lastContent = lastContent;
-      if (contents.size() > maxValueSampling) {
-        collectingSamples = false;
-        contents.clear();
-        return;
-      }
-
-      contents.add(lastContent);
-
-      if (!lastContent.isEmpty()) {
-        if (candidateForInteger) {
-          try {
-            Long.parseLong(lastContent);
-          } catch (final NumberFormatException e) {
-            candidateForInteger = false;
-          }
+    if (!lastContent.isEmpty()) {
+      // EVERY VALUE IS PROBED, NO MATTER ITS LENGTH OR HOW MANY CAME BEFORE IT. THE PROBES COST NOTHING ONCE THE
+      // CANDIDATE HAS ALREADY BEEN REFUTED, WHICH IS THE COMMON CASE FOR A TEXT COLUMN.
+      if (candidateForInteger) {
+        try {
+          Long.parseLong(lastContent);
+        } catch (final NumberFormatException e) {
+          candidateForInteger = false;
         }
+      }
 
-        if (candidateForDecimal) {
-          try {
-            Double.parseDouble(lastContent);
-          } catch (final NumberFormatException e) {
-            candidateForDecimal = false;
-          }
+      if (candidateForDecimal) {
+        try {
+          Double.parseDouble(lastContent);
+        } catch (final NumberFormatException e) {
+          candidateForDecimal = false;
         }
       }
     }
+
+    if (!collectingSamples)
+      return;
+
+    if (lastContent.length() > MAX_SAMPLE_LENGTH || contents.size() > maxValueSampling) {
+      collectingSamples = false;
+      contents.clear();
+      return;
+    }
+
+    contents.add(lastContent);
   }
 
   public Set<String> getContents() {
