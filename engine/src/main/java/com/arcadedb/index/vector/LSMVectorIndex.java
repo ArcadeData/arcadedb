@@ -8431,9 +8431,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (gf == null || !gf.hasPersistedGraph())
       return 0; // Case 1: no graph anywhere. A first build must not be gated - see the javadoc above.
 
-    // Case 3. getActiveCount() is O(allocated chunks) over an already-materialised location index: this method is
-    // only ever reached with pending mutations outstanding, and recording those materialised it.
-    return (int) Math.min(vectorIndex().getActiveCount(), Integer.MAX_VALUE);
+    // Case 3. size(), not getActiveCount(): the two agree on this backend - markDeleted() drops the location and
+    // keeps only the id in the tombstone set, so a resident location IS a live vector, the same equivalence
+    // estimatePagesForLiveSet() relies on - but size() is O(1) where getActiveCount() popcounts every allocated
+    // chunk. That matters here specifically: inactivityRebuildIsWorthIt() runs from scheduleInactivityRebuild(),
+    // which put() calls after EVERY single insert, and graphNotYetMaterialised() stays true for a whole
+    // ingest-then-idle load - so a per-chunk scan here would make an O(N) load O(N^2), on exactly the workload
+    // this fix exists to protect, and would do it inside the instance monitor every other insert serializes on.
+    // The location index is already materialised: this is only reached with pending mutations, and recording
+    // those materialised it.
+    return vectorIndex().size();
   }
 
   /**
@@ -8478,6 +8485,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
             timeoutMs, mutationsSinceSerialize.get(), indexName);
 
         try {
+          // Asked again rather than reusing what inactivityRebuildIsWorthIt() just computed: the two questions
+          // are "is a rebuild worth it" and "which arm", and answering the second from a value read before the
+          // first would pin the arm to a graph size that a concurrent rebuild may already have moved on from.
+          // O(1) either way - see inactivityRebuildScopeSize() on why it does not walk anything.
           if (inactivityRebuildScopeSize() >= ASYNC_REBUILD_MIN_GRAPH_SIZE) {
             // Large graph: async rebuild (semaphore acquired inside the async thread).
             // Asked through inactivityRebuildScopeSize() so a large graph this session has never loaded takes
