@@ -576,13 +576,22 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
    * {@code "Type with name 'null' was not found"} wrapped in a convert error that named neither the missing key nor
    * the declared type - a requirement both undiscoverable and, since the schema already pins the type, redundant.
    * <p>
-   * A map on a property the schema says nothing about, or on one of any other type, is left alone: it is a value,
-   * not an embedded document.
+   * The two sources are <em>not</em> symmetric, and deliberately so:
+   * <ul>
+   * <li>An explicit {@code "@type"} materialises an embedded document <b>whatever the property is declared as</b>,
+   * including a property the schema says nothing about. That is long-standing behaviour and the idiom by which a
+   * nested typed object survives a JSON round-trip onto a schemaless type - {@code toMap()}/{@code toJSON()} write
+   * the {@code "@type"} back out, and this is what reads it. Narrowing it to declared {@code EMBEDDED} properties
+   * would silently store those nested objects as plain maps.</li>
+   * <li>The {@code ofType} fallback applies only to a property declared {@code EMBEDDED}, because that is the only
+   * declaration that says a map <em>is</em> an embedded document. On a {@code MAP} property {@code ofType} names the
+   * type of the values, not of the map, so a map there stays a map.</li>
+   * </ul>
    *
    * @param map          the map to convert; also the source of the embedded document's properties
    * @param propertyName the property the map is being assigned to
    *
-   * @return the embedded document, or {@code map} itself when the property does not call for one
+   * @return the embedded document, or {@code map} itself when neither source names an embedded type
    */
   private Object transformMapToEmbedded(final Map<String, Object> map, final String propertyName) {
     if (database == null)
@@ -591,14 +600,15 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       // subclasses override convertValueToSchemaType() to a pass-through
       return map;
 
-    final Object declaredType = map.get("@type");
+    final Object explicitType = map.get("@type");
 
     final Property property = type != null ? type.getPolymorphicPropertyIfExists(propertyName) : null;
-    final String ofType = property != null && property.getType() == Type.EMBEDDED ? property.getOfType() : null;
+    final boolean embeddedProperty = property != null && property.getType() == Type.EMBEDDED;
+    final String ofType = embeddedProperty ? property.getOfType() : null;
 
     final String embType;
-    if (declaredType != null) {
-      embType = declaredType.toString();
+    if (explicitType != null) {
+      embType = explicitType.toString();
       if (ofType != null && !ofType.equals(embType)) {
         // VALIDATE THE SCHEMA CONSTRAINT HERE, WHERE THE PROPERTY NAME IS STILL IN HAND, RATHER THAN LEAVING IT ALL
         // TO DocumentValidator AT SAVE TIME
@@ -610,12 +620,12 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       }
     } else if (ofType != null)
       embType = ofType;
-    else if (property != null && property.getType() == Type.EMBEDDED)
+    else if (embeddedProperty)
       throw new ValidationException("Cannot determine the type of the embedded document to store in property '"
           + propertyName + "': the map carries no '@type' entry and the property declares no 'ofType'. Either add "
           + "an \"@type\" entry to the map, or declare the embedded type on the property with `ofType`");
     else
-      // NOT AN EMBEDDED PROPERTY: THE MAP IS THE VALUE
+      // NEITHER SOURCE NAMES AN EMBEDDED TYPE: THE MAP IS THE VALUE
       return map;
 
     final MutableEmbeddedDocument embedded = newEmbeddedDocument(embType, propertyName);

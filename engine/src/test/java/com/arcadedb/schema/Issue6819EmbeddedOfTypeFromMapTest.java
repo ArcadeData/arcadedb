@@ -96,6 +96,48 @@ class Issue6819EmbeddedOfTypeFromMapTest extends TestHelper {
     })).hasMessageContaining("Address6819c");
   }
 
+  /**
+   * The {@code "@type"} source is deliberately not restricted to declared {@code EMBEDDED} properties: it is how a
+   * nested typed object survives a JSON round-trip onto a schemaless type, since {@code toMap()}/{@code toJSON()}
+   * write the {@code "@type"} back out. Narrowing it would silently downgrade those nested objects to plain maps,
+   * so this pins the behaviour rather than leaving it to be "tidied up" later.
+   */
+  @Test
+  void explicitTypeMaterialisesEvenOnAnUndeclaredProperty() {
+    database.getSchema().createDocumentType("Address6819e").createProperty("city", Type.STRING);
+    database.getSchema().createDocumentType("Person6819e");
+
+    database.transaction(() -> {
+      final Map<String, Object> map = new LinkedHashMap<>();
+      map.put("@type", "Address6819e");
+      map.put("city", "Rome");
+
+      final MutableDocument person = database.newDocument("Person6819e").set("address", map);
+      person.save();
+
+      assertThat(person.getEmbedded("address").getTypeName()).isEqualTo("Address6819e");
+      assertThat(person.getEmbedded("address").getString("city")).isEqualTo("Rome");
+    });
+  }
+
+  /**
+   * On a {@code MAP} property the {@code ofType} names the type of the <em>values</em>, not of the map itself, so a
+   * map assigned there stays a map: only a property declared {@code EMBEDDED} makes the declaration a statement
+   * about the map as a whole.
+   */
+  @Test
+  void aMapPropertyKeepsItsMap() {
+    database.getSchema().createDocumentType("Person6819f").createProperty("attributes", Type.MAP).setOfType("STRING");
+
+    database.transaction(() -> {
+      final MutableDocument person = database.newDocument("Person6819f").set("attributes", Map.of("city", "Rome"));
+      person.save();
+
+      assertThat(person.get("attributes")).isInstanceOf(Map.class);
+      assertThat(person.getMap("attributes")).containsEntry("city", "Rome");
+    });
+  }
+
   @Test
   void missingTypeAndMissingOfTypeReportsTheMissingKey() {
     database.getSchema().createDocumentType("Person6819d").createProperty("address", Type.EMBEDDED);
