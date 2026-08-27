@@ -87,9 +87,15 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
   //
   // Cutting further is deliberately NOT the plan: the ratchet stops here. Below ~10s the budget stops being
   // three times a measured wait and starts being the wait itself, which converts a busy runner into a red
-  // lane - the trade the instrument exists to avoid. The instrument stays for the opposite purpose from now
-  // on: it is a REGRESSION TRIPWIRE, not a cut proposal. With SLOW_WAIT_REPORT_MS at a sixth of the budget,
-  // a single line in a green run means a wait got materially slower, which is a finding on its own.
+  // lane - the trade the instrument exists to avoid. From here the instrument's job is to catch a regression
+  // rather than to propose the next cut.
+  //
+  // Which means reading its lines correctly, and 2.5s is low enough that they will appear: a local run of the
+  // eleven helper-calling IT classes reported a wait satisfied at 3013 ms, a perfectly ordinary one that the
+  // old 5s threshold simply could not see. A line is EVIDENCE ABOUT THAT WAIT, not an alarm - what would be a
+  // finding is the number in it climbing toward the budget, or a GAVE UP appearing at all. That is the whole
+  // reason the elapsed and the budget are both printed: the line is only worth as much as the comparison
+  // between them.
   private static final long RESYNC_RETRY_TIMEOUT_MS = 15_000;
   /**
    * Above this, a wait is worth a line in the log: it is evidence about the budget above, not noise. Held at a
@@ -560,7 +566,7 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
   static String slowWaitReport(final String what, final long elapsedMs, final boolean satisfied) {
     if (elapsedMs < SLOW_WAIT_REPORT_MS)
       return null;
-    return "%s %s %s after %d ms of the %d ms budget (issue #6343: a line here means a wait got materially slower, not that the budget is wrong)".formatted(
+    return "%s %s %s after %d ms of the %d ms budget (issue #6343: evidence about this wait, not a failure - it is the number climbing toward the budget that would be the finding)".formatted(
         SLOW_WAIT_MARKER, what, satisfied ? "satisfied" : "GAVE UP", elapsedMs, RESYNC_RETRY_TIMEOUT_MS);
   }
 
