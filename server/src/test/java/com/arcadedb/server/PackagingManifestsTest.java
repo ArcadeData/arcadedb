@@ -107,6 +107,11 @@ class PackagingManifestsTest {
     final Map<String, String> containerPorts = namedPorts(manifest, "containerPort", "name");
     assertThat(containerPorts).containsEntry("raft", raftPort).containsEntry("http", entry[2]);
     assertThat(namedPorts(manifest, "name", "port")).containsEntry("raft", raftPort);
+
+    // ...including where the Service forwards to. A targetPort drifting away from its port would send
+    // traffic at a container port nothing listens on while every check above stayed green.
+    assertThat(serviceForwards(manifest)).containsEntry("raft", raftPort + " -> " + raftPort)
+        .containsEntry("http", entry[2] + " -> " + entry[2]);
   }
 
   @Test
@@ -229,6 +234,22 @@ class PackagingManifestsTest {
       final boolean nameFirst = "name".equals(firstKey);
       found.put(nameFirst ? m.group(1) : m.group(2), nameFirst ? m.group(2) : m.group(1));
     }
+    return found;
+  }
+
+  /**
+   * Service port name to its {@code port -> targetPort} pair, for the entries that spell a targetPort
+   * out. Kubernetes defaults targetPort to port when it is omitted, so only the declared ones are
+   * checked - but the manifest declares them, and a check that silently empties itself when a line is
+   * deleted is worse than no check.
+   */
+  private static Map<String, String> serviceForwards(final String yaml) {
+    final Map<String, String> found = new LinkedHashMap<>();
+    final Matcher m = Pattern.compile(
+        "^\\s*-\\s*name:\\s*(\\S+)\\s*\\n\\s*port:\\s*(\\S+)\\s*\\n\\s*targetPort:\\s*(\\S+)\\s*$",
+        Pattern.MULTILINE).matcher(yaml);
+    while (m.find())
+      found.put(m.group(1), m.group(2) + " -> " + m.group(3));
     return found;
   }
 
