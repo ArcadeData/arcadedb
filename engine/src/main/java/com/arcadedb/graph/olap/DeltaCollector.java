@@ -225,6 +225,16 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
    * regardless, and until it lands the view serves no edge properties at all, so no stale one can escape.
    */
   private void trackEdgeUpdate(final TxDelta delta, final Edge edge) {
+    // A view that materialises no edge property columns has nothing that can go out of date when an edge's
+    // properties change, and nothing to rebuild them from - the base CSR holds the topology, which an update
+    // does not touch. It was rebuilt anyway, on every single edge update, because #4513's flag was raised
+    // before anyone asked whether there were columns at all. Which property changed is still not asked, and
+    // cannot be: the listener is handed the record, not a diff against its previous values, so a view that
+    // materialises `weight` cannot tell an update of `weight` from an update of `label` and has to assume the
+    // worse of the two.
+    final String[] materialised = view.getEdgePropertyFilter();
+    if (materialised == null || materialised.length == 0)
+      return;
     if (delta.forceEdgePropertyRebuild)
       return;
     if (delta.updatedEdges.size() >= MAX_TRACKED_EDGE_UPDATES) {
@@ -250,6 +260,7 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
     final String[] materialised = view.getEdgePropertyFilter();
     if (materialised == null || materialised.length == 0)
       return null;
+
     Map<String, Object> props = null;
     for (final String name : materialised) {
       final Object value = edge.get(name);

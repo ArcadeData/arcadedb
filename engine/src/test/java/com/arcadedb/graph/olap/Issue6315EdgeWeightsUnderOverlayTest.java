@@ -497,6 +497,55 @@ class Issue6315EdgeWeightsUnderOverlayTest {
     }
   }
 
+  /**
+   * A view that materialises no edge property columns has nothing that can go out of date when an edge's
+   * properties change - the base CSR holds the topology, which an update does not touch - so the full rebuild
+   * #4513 forces for such an update has nothing to repair. It was forced anyway, on every edge update, because
+   * the flag was raised before anyone asked whether there were columns at all. The overlay surviving is the
+   * observable half of that: a rebuild would have compacted it away.
+   */
+  @Test
+  void anEdgeUpdateOnAViewWithoutEdgeColumnsDoesNotForceARebuild() throws InterruptedException {
+    starGraph();
+
+    final GraphAnalyticalView view = GraphAnalyticalView.builder(database)
+        .withName("no-edge-columns-update")
+        .withVertexTypes("N")
+        .withEdgeTypes("ROAD")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+    try {
+      assertThat(view.hasEdgeProperties()).as("no edge property columns were asked for").isFalse();
+
+      // An added edge, so there is an overlay for the rebuild to compact away if one is forced.
+      database.transaction(() -> {
+        final MutableVertex e = database.newVertex("N").set("name", "E").save();
+        vertex("A").newEdge("ROAD", e, true, new Object[] { "w", 99.0 }).save();
+      });
+      assertThat(view.getStats().get("overlayActive")).isEqualTo(true);
+
+      database.transaction(() -> {
+        for (final Edge edge : vertex("A").getEdges(Vertex.DIRECTION.OUT, "ROAD"))
+          if ("B".equals(edge.getInVertex().get("name")))
+            edge.modify().set("w", 77.0).save();
+      });
+
+      // Long enough for a rebuild of a five-vertex graph to have finished several times over.
+      final long deadline = System.currentTimeMillis() + 1_000;
+      while (System.currentTimeMillis() < deadline) {
+        assertThat(view.getStats().get("overlayActive"))
+            .as("nothing was rebuilt, so the overlay is still the one the added edge went into")
+            .isEqualTo(true);
+        Thread.sleep(25);
+      }
+      assertThat(view.getNeighborIds(view.getNodeId(vertex("A").getIdentity()), Vertex.DIRECTION.OUT, "ROAD"))
+          .as("and the topology still has all four outgoing edges")
+          .hasSize(4);
+    } finally {
+      view.drop();
+    }
+  }
+
   // ── Helpers ──────────────────────────────────────────────────────────────
 
   /** The {@code algo.dijkstra.singleSource} cost from A to B over the {@code w} property. */

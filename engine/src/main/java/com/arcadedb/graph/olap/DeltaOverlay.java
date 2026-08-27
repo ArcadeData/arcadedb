@@ -396,24 +396,16 @@ class DeltaOverlay {
   }
 
   /**
-   * Returns the property values of the added outgoing edges of {@code nodeId}, one entry per entry of
-   * {@link #getAddedOutNeighbors}, or {@code null} when none of them carries any.
+   * Returns one node's added edges of a type and direction - the neighbours and, beside them, each edge's own
+   * property values - or {@code null} when it has none.
+   * <p>
+   * The two together rather than one accessor each, because a caller that needs both (
+   * {@link GraphAnalyticalView#edgeWeightsForSlice} does) would otherwise walk the same index twice for one
+   * slice.
+   *
+   * @param outgoing true for the added edges leaving {@code nodeId}, false for those reaching it
    */
-  Map<String, Object>[] getAddedOutEdgeProperties(final int nodeId, final String edgeType) {
-    final AddedNeighbors added = getAdded(nodeId, edgeType, true);
-    return added != null ? added.properties() : null;
-  }
-
-  /**
-   * Returns the property values of the added incoming edges of {@code nodeId}, one entry per entry of
-   * {@link #getAddedInNeighbors}, or {@code null} when none of them carries any.
-   */
-  Map<String, Object>[] getAddedInEdgeProperties(final int nodeId, final String edgeType) {
-    final AddedNeighbors added = getAdded(nodeId, edgeType, false);
-    return added != null ? added.properties() : null;
-  }
-
-  private AddedNeighbors getAdded(final int nodeId, final String edgeType, final boolean outgoing) {
+  AddedNeighbors getAdded(final int nodeId, final String edgeType, final boolean outgoing) {
     final Map<String, Map<Integer, AddedNeighbors>> index = outgoing ? outNeighborIndex : inNeighborIndex;
     final Map<Integer, AddedNeighbors> typeIndex = index.get(edgeType);
     return typeIndex == null ? null : typeIndex.get(nodeId);
