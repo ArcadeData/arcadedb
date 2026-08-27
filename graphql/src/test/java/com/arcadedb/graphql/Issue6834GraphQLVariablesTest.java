@@ -23,6 +23,9 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashMap;
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -164,6 +167,42 @@ class Issue6834GraphQLVariablesTest extends AbstractGraphQLTest {
       assertThatThrownBy(() -> database.query("graphql", "query($n: String!) { bookByName(name: $n) { id } }").close())
           .isInstanceOf(CommandParsingException.class)
           .hasMessageContaining("$n");
+
+      return null;
+    });
+  }
+
+  @Test
+  void nonNullVariableExplicitlySetToNullIsRejected() {
+    executeTest(database -> {
+      defineTypes(database);
+
+      // The key is present, so an "is it missing?" check alone would let this through: the specification requires
+      // a non-null variable to reject a null value, not just an absent one.
+      final Map<String, Object> parameters = new HashMap<>();
+      parameters.put("n", null);
+
+      assertThatThrownBy(
+          () -> database.query("graphql", "query($n: String!) { bookByName(name: $n) { id } }", parameters).close())
+          .isInstanceOf(CommandParsingException.class)
+          .hasMessageContaining("$n");
+
+      return null;
+    });
+  }
+
+  @Test
+  void nullableVariableExplicitlySetToNullIsAccepted() {
+    executeTest(database -> {
+      defineTypes(database);
+
+      final Map<String, Object> parameters = new HashMap<>();
+      parameters.put("n", null);
+
+      try (final ResultSet resultSet = database.query("graphql", "query($n: String) { bookByName(name: $n) { id } }",
+          parameters)) {
+        assertThat(resultSet.hasNext()).isFalse();
+      }
 
       return null;
     });
