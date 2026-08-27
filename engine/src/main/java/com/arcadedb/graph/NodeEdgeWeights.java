@@ -18,6 +18,8 @@
  */
 package com.arcadedb.graph;
 
+import java.util.Arrays;
+
 /**
  * One node's neighbours and the edge-property value of each edge reaching them, produced together.
  * <p>
@@ -33,4 +35,28 @@ package com.arcadedb.graph;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public record NodeEdgeWeights(int[] neighbors, double[] weights) {
+  /**
+   * By content, not by array identity. A record's generated {@code equals} compares its components with
+   * {@code Object.equals}, which for two arrays is identity - so two separately built rows describing the very
+   * same neighbourhood would answer "not equal", and one used as a map key would never be found again. Nobody
+   * relies on that today; the point of writing it out is that the reader who eventually does will not have to
+   * discover it first.
+   */
+  @Override
+  public boolean equals(final Object other) {
+    if (this == other)
+      return true;
+    return other instanceof NodeEdgeWeights that
+        && Arrays.equals(neighbors, that.neighbors) && Arrays.equals(weights, that.weights);
+  }
+
+  @Override
+  public int hashCode() {
+    return 31 * Arrays.hashCode(neighbors) + Arrays.hashCode(weights);
+  }
+
+  @Override
+  public String toString() {
+    return "NodeEdgeWeights[neighbors=" + Arrays.toString(neighbors) + ", weights=" + Arrays.toString(weights) + "]";
+  }
 }
