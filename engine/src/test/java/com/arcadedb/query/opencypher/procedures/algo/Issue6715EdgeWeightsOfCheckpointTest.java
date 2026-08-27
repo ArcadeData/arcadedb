@@ -82,8 +82,9 @@ class Issue6715EdgeWeightsOfCheckpointTest {
    * The interrupt is armed from inside the provider itself, once the walk is a handful of edges into the
    * supernode's row - not before the call, which the outer per-node checkpoint would already catch regardless of
    * this fix. Before the fix, {@code edgeWeightsOf} has no checkpoint of its own, so the row is built to
-   * completion (all {@code supernodeDegree} of the supernode's edges) before the interrupt is ever observed. After the fix, the per-edge checkpoint restarts at zero for this call and
-   * fires at the next multiple of 1024, so the walk stops within about one checkpoint stride of where the
+   * completion (all {@code supernodeDegree} of the supernode's edges) before the interrupt is ever observed.
+   * After the fix, the per-edge checkpoint restarts at zero for this call and fires at the next multiple of
+   * 1024, so the walk stops within about one checkpoint stride of where the
    * interrupt was raised - orders of magnitude short of the full degree.
    */
   @Test
