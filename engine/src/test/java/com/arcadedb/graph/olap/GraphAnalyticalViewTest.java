@@ -29,6 +29,7 @@ import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.NeighborView;
+import com.arcadedb.graph.NodeEdgeWeights;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
@@ -2398,7 +2399,7 @@ class GraphAnalyticalViewTest extends TestHelper {
     Arrays.sort(expectedP0Out);
     final Object expectedName = gav.getProperty(p1, "name");
     final Object expectedAge = gav.getProperty(p1, "age");
-    final Object expectedWeight = gav.getEdgeProperty(p0, 0, Vertex.DIRECTION.OUT, "FOLLOWS", "weight");
+    final double[] expectedWeights = gav.edgeWeightsForSlice(p0, Vertex.DIRECTION.OUT, "FOLLOWS", "weight", -1.0, null).weights();
 
     final String dbPath = database.getDatabasePath();
     database.close();
@@ -2424,7 +2425,8 @@ class GraphAnalyticalViewTest extends TestHelper {
       assertThat(restoredP0Out).isEqualTo(expectedP0Out);
       assertThat(restored.getProperty(restoredP1, "name")).isEqualTo(expectedName);
       assertThat(restored.getProperty(restoredP1, "age")).isEqualTo(expectedAge);
-      assertThat(restored.getEdgeProperty(restoredP0, 0, Vertex.DIRECTION.OUT, "FOLLOWS", "weight")).isEqualTo(expectedWeight);
+      assertThat(restored.edgeWeightsForSlice(restoredP0, Vertex.DIRECTION.OUT, "FOLLOWS", "weight", -1.0, null).weights())
+          .isEqualTo(expectedWeights);
 
       restored.drop();
     } finally {
@@ -5426,25 +5428,28 @@ class GraphAnalyticalViewTest extends TestHelper {
     // Forward (OUT) edge properties
     // A has 1 outgoing edge to B with weight 1.0
     assertThat(gav.countEdges(idA, Vertex.DIRECTION.OUT, "ROAD")).isEqualTo(1);
-    final Object weightAB = gav.getEdgeProperty(idA, 0, Vertex.DIRECTION.OUT, "ROAD", "weight");
-    assertThat(weightAB).isInstanceOf(Double.class);
-    assertThat((Double) weightAB).isEqualTo(1.0);
+    final NodeEdgeWeights outA = gav.edgeWeightsForSlice(idA, Vertex.DIRECTION.OUT, "ROAD", "weight", -1.0, null);
+    assertThat(outA.neighbors()).containsExactly(idB);
+    assertThat(outA.weights()).containsExactly(1.0);
 
     // B has 1 outgoing edge to C with weight 2.5
     assertThat(gav.countEdges(idB, Vertex.DIRECTION.OUT, "ROAD")).isEqualTo(1);
-    final Object weightBC = gav.getEdgeProperty(idB, 0, Vertex.DIRECTION.OUT, "ROAD", "weight");
-    assertThat((Double) weightBC).isEqualTo(2.5);
+    final NodeEdgeWeights outB = gav.edgeWeightsForSlice(idB, Vertex.DIRECTION.OUT, "ROAD", "weight", -1.0, null);
+    assertThat(outB.neighbors()).containsExactly(idC);
+    assertThat(outB.weights()).containsExactly(2.5);
 
     // Backward (IN) edge properties — should resolve via bwdToFwd indirection
     // B has 1 incoming edge from A with weight 1.0
     assertThat(gav.countEdges(idB, Vertex.DIRECTION.IN, "ROAD")).isEqualTo(1);
-    final Object weightBA = gav.getEdgeProperty(idB, 0, Vertex.DIRECTION.IN, "ROAD", "weight");
-    assertThat((Double) weightBA).isEqualTo(1.0);
+    final NodeEdgeWeights inB = gav.edgeWeightsForSlice(idB, Vertex.DIRECTION.IN, "ROAD", "weight", -1.0, null);
+    assertThat(inB.neighbors()).containsExactly(idA);
+    assertThat(inB.weights()).containsExactly(1.0);
 
     // C has 1 incoming edge from B with weight 2.5
     assertThat(gav.countEdges(idC, Vertex.DIRECTION.IN, "ROAD")).isEqualTo(1);
-    final Object weightCB = gav.getEdgeProperty(idC, 0, Vertex.DIRECTION.IN, "ROAD", "weight");
-    assertThat((Double) weightCB).isEqualTo(2.5);
+    final NodeEdgeWeights inC = gav.edgeWeightsForSlice(idC, Vertex.DIRECTION.IN, "ROAD", "weight", -1.0, null);
+    assertThat(inC.neighbors()).containsExactly(idB);
+    assertThat(inC.weights()).containsExactly(2.5);
 
     // C has no outgoing edges
     assertThat(gav.countEdges(idC, Vertex.DIRECTION.OUT, "ROAD")).isEqualTo(0);
@@ -5471,8 +5476,8 @@ class GraphAnalyticalViewTest extends TestHelper {
 
     assertThat(gav.hasEdgeProperties()).isFalse();
     final int idA = gav.getNodeId(a.getIdentity());
-    // getEdgeProperty should return null gracefully
-    assertThat(gav.getEdgeProperty(idA, 0, Vertex.DIRECTION.OUT, "ROAD", "weight")).isNull();
+    // no columns at all: the view says it cannot serve the property rather than answering at a default weight
+    assertThat(gav.edgeWeightsForSlice(idA, Vertex.DIRECTION.OUT, "ROAD", "weight", -1.0, null)).isNull();
 
     gav.drop();
   }
@@ -5503,13 +5508,17 @@ class GraphAnalyticalViewTest extends TestHelper {
     final int hubId = gav.getNodeId(hub.getIdentity());
     assertThat(gav.countEdges(hubId, Vertex.DIRECTION.OUT, "LINK")).isEqualTo(5);
 
-    // Verify all 5 edge properties are correct (order may differ due to CSR sorting)
-    final int[] neighbors = gav.getNeighborIds(hubId, Vertex.DIRECTION.OUT, "LINK");
+    // Verify all 5 edge properties are correct, and that each lands on its own spoke: the neighbours come back
+    // sorted by dense id while the edges were created in spoke order, so a build that paired them by position
+    // would put spoke i's cost on whichever spoke sorted i-th
+    final NodeEdgeWeights hubEdges = gav.edgeWeightsForSlice(hubId, Vertex.DIRECTION.OUT, "LINK", "cost", -1.0, null);
+    assertThat(hubEdges.neighbors()).isEqualTo(gav.getNeighborIds(hubId, Vertex.DIRECTION.OUT, "LINK"));
     final Set<Double> retrievedWeights = new HashSet<>();
-    for (int i = 0; i < neighbors.length; i++) {
-      final Object cost = gav.getEdgeProperty(hubId, i, Vertex.DIRECTION.OUT, "LINK", "cost");
-      assertThat(cost).isNotNull();
-      retrievedWeights.add((Double) cost);
+    for (int i = 0; i < hubEdges.neighbors().length; i++) {
+      retrievedWeights.add(hubEdges.weights()[i]);
+      for (int spoke = 0; spoke < 5; spoke++)
+        if (hubEdges.neighbors()[i] == gav.getNodeId(spokes[spoke].getIdentity()))
+          assertThat(hubEdges.weights()[i]).isEqualTo(expectedWeights[spoke]);
     }
     assertThat(retrievedWeights).containsExactlyInAnyOrder(0.1, 0.2, 0.3, 0.4, 0.5);
 
@@ -5517,9 +5526,9 @@ class GraphAnalyticalViewTest extends TestHelper {
     for (int i = 0; i < 5; i++) {
       final int spokeId = gav.getNodeId(spokes[i].getIdentity());
       assertThat(gav.countEdges(spokeId, Vertex.DIRECTION.IN, "LINK")).isEqualTo(1);
-      final Object cost = gav.getEdgeProperty(spokeId, 0, Vertex.DIRECTION.IN, "LINK", "cost");
-      assertThat(cost).isNotNull();
-      assertThat(expectedWeights).contains((Double) cost);
+      final NodeEdgeWeights spokeEdges = gav.edgeWeightsForSlice(spokeId, Vertex.DIRECTION.IN, "LINK", "cost", -1.0, null);
+      assertThat(spokeEdges.neighbors()).containsExactly(hubId);
+      assertThat(spokeEdges.weights()).containsExactly(expectedWeights[i]);
     }
 
     gav.drop();

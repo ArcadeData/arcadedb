@@ -960,8 +960,8 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
         return new WeightedAdjacency(neighbors, weights, totalEntries);
       }
 
-      // getEdgeProperty() addresses an edge by (type, direction, position), so "all types" has to be resolved
-      // to the actual list before the columnar path can be used at all. A provider that cannot enumerate its
+      // Edge properties are served per type, so "all types" has to be resolved to the actual list before the
+      // columnar path can be used at all. A provider that cannot enumerate its
       // types, or cannot serve THIS property for every one of them, sends us to the edge records - which are
       // exact. Asking only whether the provider has edge properties at all is not enough: a view built over
       // `distance` answers yes to a call asking for `cost`, and then every getEdgeProperty returns null and the
@@ -1030,9 +1030,19 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
       final long maxEntryCheckpoint = ADJACENCY_CHECKPOINT_ENTRIES / 3;
       long entries = 0;
       long totalEntries = 0;
+      RecordRowReader fallback = null;
       for (int i = 0; i < nodeCount; i++) {
         guard.checkPeriodically(i);
-        final NodeEdgeWeights edges = provider.edgeWeightsOf(i, dir, weightProperty, 1.0, guard::checkPeriodically, types);
+        NodeEdgeWeights edges = provider.edgeWeightsOf(i, dir, weightProperty, 1.0, guard::checkPeriodically, types);
+        if (edges == null) {
+          // The provider could serve the property when this walk started and cannot serve this node now - a
+          // view that absorbs committed changes as it goes can lose the ability partway through (issue #6315).
+          // One row read from the records is the whole cost of that, and it is the same row: both builds
+          // produce the same multiset of (neighbour, weight) pairs for a node.
+          if (fallback == null)
+            fallback = new RecordRowReader();
+          edges = fallback.readRow(guard, i, dir, weightProperty, types);
+        }
         neighbors[i] = edges.neighbors();
         weights[i] = edges.weights();
         entries += edges.neighbors().length;
@@ -1070,22 +1080,46 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
       reserveWeightedAdjacency(nodeCount, 0);
       final int[][] neighbors = new int[nodeCount][];
       final double[][] weights = new double[nodeCount][];
-      // One growable pair of scratch buffers for the whole graph rather than a list per node: the degree is
-      // unknown before the walk, and a per-node ArrayList<Double> would box every weight.
-      int[] scratchNeighbors = new int[16];
-      double[] scratchWeights = new double[16];
-      int edgeStep = 0;
+      final RecordRowReader reader = new RecordRowReader();
       long entries = 0;
       long totalEntries = 0;
 
       for (int i = 0; i < nodeCount; i++) {
-        final Vertex vertex = getVertex(i);
-        if (vertex == null) {
-          // Deleted since the CSR was built: no edges to read, and every other caller in this package skips it.
-          neighbors[i] = EMPTY_NEIGHBORS;
-          weights[i] = EMPTY_WEIGHTS;
-          continue;
+        final NodeEdgeWeights row = reader.readRow(guard, i, dir, weightProperty, relTypes);
+        neighbors[i] = row.neighbors();
+        weights[i] = row.weights();
+        entries += row.neighbors().length;
+        totalEntries += row.neighbors().length;
+        if (entries >= ADJACENCY_CHECKPOINT_ENTRIES || (i & 1023) == 1023) {
+          reserveWeightedAdjacency(0, entries);
+          entries = 0;
         }
+      }
+      reserveWeightedAdjacency(0, entries);
+      return new WeightedAdjacency(neighbors, weights, totalEntries);
+    }
+
+    /**
+     * Reads one node's neighbours and their edge weights off the edge records, which are exact.
+     * <p>
+     * A class rather than a method so that the scratch buffers and the edge-checkpoint counter live across the
+     * nodes of one walk: the degree is unknown before the walk, and a per-node {@code ArrayList<Double>} would
+     * box every weight. It is also the reason the whole-graph record build and the per-node fallback the
+     * columnar build needs (issue #6315) are the same code: two spellings of "read this node's weighted
+     * neighbourhood" would eventually answer differently, and a fallback that answers differently from the
+     * path it stands in for is worse than no fallback.
+     */
+    private class RecordRowReader {
+      private int[]    scratchNeighbors = new int[16];
+      private double[] scratchWeights   = new double[16];
+      private int      edgeStep;
+
+      private NodeEdgeWeights readRow(final WorkGuard guard, final int i, final Vertex.DIRECTION dir,
+          final String weightProperty, final String[] relTypes) {
+        final Vertex vertex = getVertex(i);
+        if (vertex == null)
+          // Deleted since the CSR was built: no edges to read, and every other caller in this package skips it.
+          return new NodeEdgeWeights(EMPTY_NEIGHBORS, EMPTY_WEIGHTS);
 
         final RID vertexRid = vertex.getIdentity();
         final Iterable<Edge> edges = relTypes != null && relTypes.length > 0 ?
@@ -1114,17 +1148,8 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
             GhostEdgeReporter.reportSkipped(rnf);
           }
         }
-        neighbors[i] = Arrays.copyOf(scratchNeighbors, degree);
-        weights[i] = Arrays.copyOf(scratchWeights, degree);
-        entries += degree;
-        totalEntries += degree;
-        if (entries >= ADJACENCY_CHECKPOINT_ENTRIES || (i & 1023) == 1023) {
-          reserveWeightedAdjacency(0, entries);
-          entries = 0;
-        }
+        return new NodeEdgeWeights(Arrays.copyOf(scratchNeighbors, degree), Arrays.copyOf(scratchWeights, degree));
       }
-      reserveWeightedAdjacency(0, entries);
-      return new WeightedAdjacency(neighbors, weights, totalEntries);
     }
   }
 
