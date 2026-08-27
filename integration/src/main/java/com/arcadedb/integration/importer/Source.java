@@ -43,13 +43,15 @@ public class Source {
     this.closeCallback = closeCallback;
   }
 
+  /**
+   * Rebuilds {@link #inputStream} from the beginning of the source.
+   * <p>
+   * A failure here is propagated on purpose: swallowing it leaves the caller reading a stream that is closed or not
+   * positioned on any entry, which reads as an empty - but successful - import instead of as an error (issue #6810).
+   */
   public void reset() throws IOException {
     if (resetCallback != null)
-      try {
-        resetCallback.call(this);
-      } catch (final Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error on resetting source %s", e, this);
-      }
+      resetCallback.call(this);
   }
 
   public void close() {

@@ -141,17 +141,20 @@ public class SourceDiscovery {
     return getSourceFromContent(new BufferedInputStream(connection.getInputStream()), connection.getContentLengthLong(), resource,
         source -> {
           try {
+            source.inputStream.close();
             connection.disconnect();
 
             final HttpURLConnection connection1 = ImportSecurityValidator.openRemoteConnection(urlPath, blockLocalNetworks);
 
             if (source.inputStream instanceof GZIPInputStream)
               source.inputStream = new GZIPInputStream(connection1.getInputStream(), 2048);
-            else if (source.inputStream instanceof ZipInputStream stream) {
-              source.inputStream = new ZipInputStream(connection1.getInputStream());
-              stream.getNextEntry();
-            } else
+            else if (source.inputStream instanceof ZipInputStream)
+              // THE NEW STREAM MUST BE POSITIONED ON THE ENTRY TO READ, THE OLD ONE IS GONE (issue #6810)
+              source.inputStream = reopenZip(new BufferedInputStream(connection1.getInputStream()), resource);
+            else
               source.inputStream = new BufferedInputStream(connection1.getInputStream());
+          } catch (final ImportException e) {
+            throw e;
           } catch (final Exception e) {
             throw new ImportException("Error on reset remote resource", e);
           }
@@ -190,10 +193,10 @@ public class SourceDiscovery {
         source.inputStream.close();
         if (source.inputStream instanceof GZIPInputStream)
           source.inputStream = new GZIPInputStream(new FileInputStream(file), 2048);
-        else if (source.inputStream instanceof ZipInputStream stream) {
-          source.inputStream = new ZipInputStream(new FileInputStream(file));
-          stream.getNextEntry();
-        } else
+        else if (source.inputStream instanceof ZipInputStream)
+          // THE NEW STREAM MUST BE POSITIONED ON THE ENTRY TO READ, THE OLD ONE IS CLOSED (issue #6810)
+          source.inputStream = reopenZip(new BufferedInputStream(new FileInputStream(file)), resource);
+        else
           source.inputStream = new BufferedInputStream(new FileInputStream(file));
       } catch (final IOException e) {
         throw new ImportException("Error on reset local resource", e);
@@ -480,24 +483,9 @@ public class SourceDiscovery {
     in.mark(0);
 
     final ZipInputStream zip = new ZipInputStream(in);
-    ZipEntry entry = zip.getNextEntry();
-    if (entry != null) {
+    if (positionOnZipEntry(zip, resource) != null)
       // ZIPPED FILE
-      if (resource != null) {
-        // SEARCH FOR THE RIGHT ENTRY
-        while (entry != null) {
-          if (resource.equals(entry.getName()))
-            return new Source(url, zip, totalSize, true, resetCallback, closeCallback);
-
-          zip.closeEntry();
-          entry = zip.getNextEntry();
-        }
-
-        throw new IllegalArgumentException("Resource '" + resource + "' not found");
-      }
-
       return new Source(url, zip, totalSize, true, resetCallback, closeCallback);
-    }
 
     in.reset();
     in.mark(in.available());
@@ -513,6 +501,55 @@ public class SourceDiscovery {
 
     // ANALYZE THE INPUT AS TEXT
     return new Source(url, in, totalSize, false, resetCallback, closeCallback);
+  }
+
+  /**
+   * Positions a freshly built {@link ZipInputStream} on the entry the import has to read: the one named
+   * {@code resource} when specified, otherwise the first entry of the archive.
+   * <p>
+   * This has to be repeated every time the stream is rebuilt (see the reset callbacks above), because a
+   * {@link ZipInputStream} sitting on no entry is not an error condition: {@link ZipInputStream#read()} just returns
+   * {@code -1}, so the import reads an empty input and reports success on 0 records (issue #6810).
+   *
+   * @return the entry the stream is now positioned on, or {@code null} if the content is not a zip archive at all
+   *
+   * @throws IllegalArgumentException if {@code resource} is not contained in the archive
+   */
+  private static ZipEntry positionOnZipEntry(final ZipInputStream zip, final String resource) throws IOException {
+    ZipEntry entry = zip.getNextEntry();
+    if (entry == null)
+      // NOT A ZIP ARCHIVE
+      return null;
+
+    if (resource == null)
+      return entry;
+
+    // SEARCH FOR THE RIGHT ENTRY
+    while (entry != null) {
+      if (resource.equals(entry.getName()))
+        return entry;
+
+      zip.closeEntry();
+      entry = zip.getNextEntry();
+    }
+
+    throw new IllegalArgumentException("Resource '" + resource + "' not found");
+  }
+
+  /**
+   * Rebuilds a zip source from the given (re-opened) raw stream, positioned on the same entry the original stream was
+   * reading. The raw stream is closed if the archive turns out to be unreadable, so the caller cannot leak it.
+   */
+  private ZipInputStream reopenZip(final InputStream in, final String resource) throws IOException {
+    final ZipInputStream zip = new ZipInputStream(in);
+    try {
+      if (positionOnZipEntry(zip, resource) == null)
+        throw new ImportException("Error on resetting source '" + url + "': no entry found in the zip archive");
+    } catch (final IOException | RuntimeException e) {
+      zip.close();
+      throw e;
+    }
+    return zip;
   }
 
   private String getFormatFromExtension(String fileName) {
