@@ -19,14 +19,22 @@
 /* ParserGeneratorCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.graphql.parser;
 
+import com.arcadedb.exception.CommandParsingException;
+
 public class VariableLiteral extends AbstractValue {
   public VariableLiteral(final int id) {
     super(id);
   }
 
+  /**
+   * A variable has no value of its own: it is resolved against the variable values of the operation being executed
+   * (see {@code GraphQLSchema.resolveValue}). Reaching this method means the caller is on a path that cannot bind
+   * variables, which used to return the never-assigned {@code SimpleNode.value}, i.e. {@code null}, and silently
+   * produce a wrong result instead of an error. See issue #6834.
+   */
   @Override
   public Object getValue() {
-    return value;
+    throw new CommandParsingException("GraphQL variable '$" + getName() + "' cannot be resolved in this context");
   }
 
 

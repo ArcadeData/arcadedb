@@ -32,5 +32,31 @@ public class Value extends SimpleNode {
     super(id);
   }
 
+  /**
+   * Returns the single scalar literal this value node holds, mirroring {@link ValueWithVariable#getValue()} for the
+   * variable-free productions (currently the default value of a variable definition). Returns {@code null} for the
+   * list and object productions: unlike their {@code WithVariable} counterparts those do not extend
+   * {@link AbstractValue}, so there is no value to hand back and the caller reports the unsupported literal with the
+   * context it has.
+   */
+  public AbstractValue getValue() {
+    if (intValue != null)
+      return intValue;
+    else if (floatValue != null)
+      return floatValue;
+    else if (stringValue != null)
+      return stringValue;
+    else if (booleanValue != null)
+      return booleanValue;
+    else if (enumValue != null)
+      return enumValue;
+
+    return null;
+  }
+
+  @Override
+  public String toString() {
+    return "" + getValue();
+  }
 }
 /* ParserGeneratorCC - OriginalChecksum=3b4e38a9efac4b8f5a5e4a77f5ffce49 (do not edit this line) */
