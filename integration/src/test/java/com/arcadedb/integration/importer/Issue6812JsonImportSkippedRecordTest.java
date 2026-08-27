@@ -110,6 +110,32 @@ class Issue6812JsonImportSkippedRecordTest {
   }
 
   @Test
+  void unresolvableIdRecordIsSkippedInsteadOfSavedAsAnonymousDocument() {
+    final String databasePath = "target/databases/test-import-6812-missing-id";
+
+    // "@id" points at a property none of the entries carries, so createRecord() finds no id value and skips the
+    // record before allocating anything for it.
+    final Map<String, Object> result = importWithMapping(databasePath, """
+        {
+          "Users":[
+            {
+              "@cat":"v",
+              "@type":"User",
+              "@id":"missingId"
+            }
+          ]
+        }""");
+
+    assertThat(result.get("errors")).isEqualTo(2L);
+
+    withDatabase(databasePath, db -> {
+      // The vertex type is created before the @id check, so it exists but must stay empty.
+      assertThat(db.countType("User", true)).isEqualTo(0);
+      assertThat(db.getSchema().existsType("Document")).isFalse();
+    });
+  }
+
+  @Test
   void topLevelEdgeMappingIsSkippedInsteadOfSavedAsAnonymousDocument() {
     final String databasePath = "target/databases/test-import-6812-top-level-edge";
 
