@@ -80,8 +80,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li>The follower's loaded schema does not emit "Cannot find indexes" warnings.</li>
  * </ol>
  *
+ * <p>
+ * Runs in a fork of its own: 48k records from 6 writer threads across 12 compaction rounds. See the
+ * failsafe configuration in {@code ha-raft/pom.xml} for why the heaviest ITs here no longer share a
+ * JVM with the rest (issue #6343).
+ *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+@Tag("ha-heavy")
 @Tag("slow")
 class RaftBulkInsertCompactionRaceIT extends BaseRaftHATest {
 

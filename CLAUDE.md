@@ -57,6 +57,7 @@ General design principles:
   - Apply at the class level when every method in the class is slow; at the method level when only some methods are slow
   - The tags are a partition, not a set of overlapping labels: CI selects each lane with `-Dgroups`/`-DexcludedGroups` such that every test runs in exactly one lane. Tagging a class `vector` and one of its methods `slow` is fine, but do not expect that method in the slow lane
   - Required imports: `import org.junit.jupiter.api.Tag;`
+  - `ha-heavy` is a different axis and not part of that partition: it is read only by failsafe, only in `ha-raft`, and it routes an IT to a second failsafe execution that runs with `reuseForks=false` so the heaviest classes get a JVM of their own instead of poisoning whatever runs next in the shared one (issue #6343, rationale in `ha-raft/pom.xml`). A class can carry it alongside `slow`; adding it changes which fork a test runs in, never which lane
   - A JUnit tag on a Cucumber `@Suite` does not work: Surefire's `groups`/`excludedGroups` reach the scenarios inside the suite rather than the suite class. Route a suite to a lane with `-Dsurefire.includes` instead, as `.github/workflows/mvn-test.yml` does for the openCypher TCK
 - Never assert on raw wall-clock elapsed time. A full-suite run shares one JVM, and a stop-the-world pause of tens of
   seconds late in a 12,000-test run turns any bound with less headroom than that into a coin flip on the JVM's mood
