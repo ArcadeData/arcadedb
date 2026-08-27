@@ -267,6 +267,33 @@ class Issue6834GraphQLVariablesTest extends AbstractGraphQLTest {
     executeTest(database -> {
       final String types = """
           type Query {
+            bookByName(name: BookName): Book
+          }
+
+          type Book {
+            id: String
+            name: String
+          }""";
+      database.command("graphql", types);
+
+      // BookName is not a type this module models: rejecting what it cannot describe would be worse than passing
+      // it through, so a variable declared with a custom scalar keeps working whatever its value is.
+      try (final ResultSet resultSet = database.query("graphql",
+          "query($n: BookName) { bookByName(name: $n) { id } }", "n", "Mr. brain")) {
+        assertThat(resultSet.hasNext()).isTrue();
+        assertThat(resultSet.next().<String>getProperty("id")).isEqualTo("book-2");
+        assertThat(resultSet.hasNext()).isFalse();
+      }
+
+      return null;
+    });
+  }
+
+  @Test
+  void reservedWhereArgumentCannotBeFilledFromAVariable() {
+    executeTest(database -> {
+      final String types = """
+          type Query {
             books(where: WHERE): [Book!]!
           }
 
@@ -276,10 +303,17 @@ class Issue6834GraphQLVariablesTest extends AbstractGraphQLTest {
           }""";
       database.command("graphql", types);
 
-      // WHERE is not a type this module models: rejecting what it cannot describe would be worse than passing it
-      // through, so the free-form predicate argument keeps working through a variable.
-      try (final ResultSet resultSet = database.query("graphql",
-          "query($w: WHERE) { books(where: $w) { id } }", "w", "name = 'Mr. brain'")) {
+      // `where` is interpolated verbatim, so filling it from a variable would hand raw SQL to whoever supplies the
+      // parameters - typically the caller an application considers untrusted. It never resolved before #6834, so
+      // refusing it costs nothing and closes the hole that making variables work would otherwise open.
+      assertThatThrownBy(() -> database.query("graphql", "query($w: WHERE) { books(where: $w) { id } }", "w",
+          "name = 'Mr. brain' or 1 = 1").close())
+          .isInstanceOf(CommandParsingException.class)
+          .hasMessageContaining("$w")
+          .hasMessageContaining("@sql");
+
+      // A predicate written in the document itself keeps working: that text is authored, not supplied.
+      try (final ResultSet resultSet = database.query("graphql", "{ books( where: \"name = 'Mr. brain'\" ) { id } }")) {
         assertThat(resultSet.hasNext()).isTrue();
         assertThat(resultSet.next().<String>getProperty("id")).isEqualTo("book-2");
         assertThat(resultSet.hasNext()).isFalse();

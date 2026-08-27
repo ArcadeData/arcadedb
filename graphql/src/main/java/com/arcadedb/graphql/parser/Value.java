@@ -56,7 +56,9 @@ public class Value extends SimpleNode {
 
   @Override
   public String toString() {
-    return "" + getValue();
+    final AbstractValue value = getValue();
+    // FALL BACK TO THE NODE NAME FOR THE LIST AND OBJECT PRODUCTIONS, RATHER THAN PRINTING A BARE "null"
+    return value != null ? value.toString() : super.toString();
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=3b4e38a9efac4b8f5a5e4a77f5ffce49 (do not edit this line) */
