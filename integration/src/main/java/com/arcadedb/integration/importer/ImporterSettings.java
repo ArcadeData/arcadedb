@@ -30,6 +30,19 @@ public class ImporterSettings {
   public int     verboseLevel = 2;
   public boolean probeOnly    = false;
 
+  /**
+   * The generic {@code -delimiter} / {@code WITH delimiter = ';'} setting: the fallback used by any CSV source that
+   * carries no per-source delimiter of its own ({@code -documentsDelimiter}, {@code -verticesDelimiter},
+   * {@code -edgesDelimiter}), and the only delimiter source available to the main {@code -url}, which is analyzed as
+   * {@code EntityType.DATABASE} and has no per-source setting at all.
+   * <p>
+   * It is held in its own field rather than read back from {@link #options} because {@code SourceDiscovery} resolves
+   * a delimiter per source and writes the answer into {@code options["delimiter"]}, where {@code CSVImporterFormat}
+   * reads it. Keeping the user's own value only in that same entry made it collateral damage of the first source
+   * analyzed (issue #6811).
+   */
+  public String delimiter;
+
   public String documents;
   public String documentsFileType;
   public String documentsDelimiter;
@@ -185,6 +198,7 @@ public class ImporterSettings {
     case "parsingLimitBytes" -> parsingLimitBytes = FileUtils.getSizeAsNumber(value);
     case "parsingLimitEntries" -> parsingLimitEntries = Long.parseLong(value);
     case "mapping" -> mapping = value;
+    case "delimiter" -> delimiter = value;
     case "probeOnly" -> probeOnly = Boolean.parseBoolean(value);
     case "onRowError" -> {
       if (!"abort".equalsIgnoreCase(value) && !"skip".equalsIgnoreCase(value))

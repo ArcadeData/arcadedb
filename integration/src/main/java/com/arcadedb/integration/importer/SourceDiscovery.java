@@ -233,7 +233,7 @@ public class SourceDiscovery {
       break;
 
     case DATABASE:
-      // NO SPECIAL SETTINGS
+      // NO PER-SOURCE SETTINGS: THE GENERIC `delimiter` IS THE ONLY ONE THIS SOURCE CAN HAVE
       knownFileType = getFileTypeByExtension(settings.url);
       break;
 
@@ -241,9 +241,20 @@ public class SourceDiscovery {
       throw new IllegalArgumentException("entityType '" + entityType + "' not supported");
     }
 
+    if (knownDelimiter == null)
+      // FALL BACK TO THE GENERIC `-delimiter` / `WITH delimiter = ...`: THE PER-SOURCE SETTING WINS WHEN PRESENT
+      knownDelimiter = settings.delimiter;
+
     if (knownFileType != null) {
       if ("csv".equalsIgnoreCase(knownFileType)) {
-        settings.options.put("delimiter", knownDelimiter);
+        // RESOLVE THE DELIMITER FOR *THIS* SOURCE. WRITING null HERE USED TO DESTROY THE USER'S OWN SETTING, WHICH
+        // LANDS IN THE VERY SAME MAP ENTRY, LEAVING NO WAY AT ALL TO IMPORT A NON-COMMA CSV VIA -url (issue #6811).
+        // REMOVING INSTEAD OF LEAVING THE ENTRY ALONE MATTERS TOO: EACH SOURCE OF A MULTI-SOURCE IMPORT IS ANALYZED
+        // AGAINST THE SAME SETTINGS, SO A PREVIOUS SOURCE'S DELIMITER MUST NOT LEAK INTO THIS ONE'S DEFAULT.
+        if (knownDelimiter != null)
+          settings.options.put("delimiter", knownDelimiter);
+        else
+          settings.options.remove("delimiter");
         return new CSVImporterFormat();
       } else if ("json".equalsIgnoreCase(knownFileType)) {
         return new JSONImporterFormat();
