@@ -58,14 +58,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * shape: 8 types, each with an LSM index, 8 writer threads round-robin across the types, and a
  * dedicated compactor that walks every type each round.
  *
- * <p>
- * Runs in a fork of its own: 72k records from 12 writer threads across 24 compaction rounds, and the
- * class whose stalls in a shared fork bought the original 120s resync budget. See the failsafe
- * configuration in {@code ha-raft/pom.xml} (issue #6343).
- *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-@Tag("ha-heavy")
 @Tag("slow")
 class RaftMigrationCompactionRaceIT extends BaseRaftHATest {
 

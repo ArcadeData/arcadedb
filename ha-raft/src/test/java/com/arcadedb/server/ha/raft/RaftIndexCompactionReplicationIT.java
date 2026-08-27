@@ -44,12 +44,6 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Runs in a fork of its own: 5k records plus index compaction replicated across three servers. See
- * the failsafe configuration in {@code ha-raft/pom.xml} for why the heaviest ITs here no longer share
- * a JVM with the rest (issue #6343).
- */
-@Tag("ha-heavy")
 class RaftIndexCompactionReplicationIT extends BaseRaftHATest {
 
   private static final int TOTAL_RECORDS = 5_000;
