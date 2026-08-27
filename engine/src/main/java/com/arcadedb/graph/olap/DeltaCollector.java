@@ -161,7 +161,7 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
           frozen.addedEdges.addAll(delta.addedEdges);
           frozen.deletedEdges.addAll(delta.deletedEdges);
           frozen.updatedProperties.putAll(delta.updatedProperties);
-          frozen.updatedEdges.addAll(delta.updatedEdges);
+          frozen.updatedEdges.putAll(delta.updatedEdges);
           frozen.forceEdgePropertyRebuild = delta.forceEdgePropertyRebuild;
           delta.clear();
           perThreadDeltas.remove(Thread.currentThread().threadId());
@@ -242,8 +242,8 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
       delta.updatedEdges.clear();
       return;
     }
-    delta.updatedEdges.add(new TxDelta.EdgeDelta(edge.getTypeName(), edge.getOut(), edge.getIn(),
-        edge.getIdentity(), extractMaterialisedEdgeProperties(edge)));
+    delta.updatedEdges.put(edge.getIdentity(), new TxDelta.EdgeDelta(edge.getTypeName(), edge.getOut(),
+        edge.getIn(), edge.getIdentity(), extractMaterialisedEdgeProperties(edge)));
   }
 
   /**
@@ -266,8 +266,10 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
       final Object value = edge.get(name);
       if (value == null)
         continue;
+      // Sized so the whole filter fits without a resize: HashMap's argument is the bucket count, and it grows
+      // once past load factor x capacity, not past capacity.
       if (props == null)
-        props = new HashMap<>(materialised.length);
+        props = new HashMap<>((int) (materialised.length / 0.75f) + 1);
       props.put(name, value);
     }
     return props;

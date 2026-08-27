@@ -1173,6 +1173,10 @@ public final class GraphAlgorithms {
    */
   public static double[] dijkstraSingleSource(final GraphAnalyticalView view, final int source,
       final String weightProperty, final Vertex.DIRECTION direction, final String... edgeTypes) {
+    // Point-in-time, not a pin: the CSR arrays and weight columns below are each fetched by their own
+    // accessor, so a commit landing between here and them is not caught. That is this whole class's existing
+    // shape - every algorithm in it reads the view through several independent accessor calls rather than one
+    // captured snapshot - and the window this narrows was wide open before.
     if (view.hasActiveOverlay())
       return null;
 
