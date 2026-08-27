@@ -33,6 +33,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -50,10 +51,18 @@ public class InCondition extends BooleanExpression {
   public Expression            right;
   public boolean               not;
 
-  private static final Object  UNSET                    = new Object();
-  private static final Pattern FIELD_IDENTIFIER_PATTERN =
+  private static final Pattern   FIELD_IDENTIFIER_PATTERN  =
       Pattern.compile("[a-zA-Z_][a-zA-Z0-9_]*(\\.[a-zA-Z_][a-zA-Z0-9_]*)*");
-  private final        Object inputFinalValue = UNSET;
+  /**
+   * Hands every node instance its own key into {@link CommandContext#getCachedValue(String)}. That cache is
+   * keyed by string, so a key derived from the node's content or its identity hash could collide with another
+   * condition's - a hazard that has already shipped a real bug once (see {@code MatchesCondition}) - while a
+   * sequence cannot.
+   */
+  private static final AtomicLong MEMO_KEY_SEQUENCE         = new AtomicLong();
+
+  /** Lazily assigned on the first row that can use the memo; see {@link #constantRightHandSide}. */
+  private volatile String memoKey;
 
   public InCondition() {
   }
@@ -61,11 +70,20 @@ public class InCondition extends BooleanExpression {
   @Override
   public Boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
     final Object leftVal = evaluateLeft(currentRecord, context);
-    final Object rightVal = evaluateRight(currentRecord, context);
-    if (rightVal == null)
-      return null;
 
-    final Boolean result = evaluateExpressionThreeValued(leftVal, rightVal);
+    final InListMembership membership = constantRightHandSide(context);
+    final Boolean result;
+    if (membership != null) {
+      if (membership.getRightValue() == null)
+        return null;
+      result = membership.evaluate(leftVal);
+    } else {
+      final Object rightVal = evaluateRight(currentRecord, context);
+      if (rightVal == null)
+        return null;
+      result = evaluateExpressionThreeValued(leftVal, rightVal);
+    }
+
     if (result == null)
       return null;
     return not != result;
@@ -92,14 +110,56 @@ public class InCondition extends BooleanExpression {
   @Override
   public Boolean evaluate(final Result currentRecord, final CommandContext context) {
     final Object leftVal = evaluateLeft(currentRecord, context);
-    final Object rightVal = evaluateRight(currentRecord, context);
-    if (rightVal == null)
-      return null;
 
-    final Boolean result = evaluateExpressionThreeValued(leftVal, rightVal);
+    final InListMembership membership = constantRightHandSide(context);
+    final Boolean result;
+    if (membership != null) {
+      if (membership.getRightValue() == null)
+        return null;
+      result = membership.evaluate(leftVal);
+    } else {
+      final Object rightVal = evaluateRight(currentRecord, context);
+      if (rightVal == null)
+        return null;
+      result = evaluateExpressionThreeValued(leftVal, rightVal);
+    }
+
     if (result == null)
       return null;
     return not != result;
+  }
+
+  /**
+   * The membership probe for a right-hand side that cannot change while this command runs - a literal list, or
+   * one built out of literals and bound parameters - evaluated once per execution and then reused for every
+   * row, or {@code null} when the right-hand side has to be re-evaluated per row after all.
+   * <p>
+   * Without it a residual {@code IN} filter costs {@code rows * listSize}: the whole list is rebuilt from the
+   * parse tree for every row and then scanned linearly. That is the only path a {@code NOT IN} has - it
+   * declines the index by construction, see {@link #isIndexAware} - so the query the negation was silently
+   * losing (#6796) would have been correct but unusable at the reported scale.
+   * <p>
+   * {@code isLiteral(true)} rather than {@code isEarlyCalculated()}: the latter also admits function calls that
+   * merely need no record, so memoizing on it would collapse {@code x IN [uuid(), uuid()]} - re-evaluated per
+   * row today - into a single draw (see the contract on {@link Expression#isEarlyCalculated}).
+   */
+  private InListMembership constantRightHandSide(final CommandContext context) {
+    if (rightParam == null && (rightMathExpression == null || !rightMathExpression.isLiteral(true)))
+      return null;
+
+    String key = memoKey;
+    if (key == null) {
+      // A benign race: two threads may hand this node two keys, and the loser's memo is simply rebuilt once.
+      key = "$IN$" + MEMO_KEY_SEQUENCE.incrementAndGet();
+      memoKey = key;
+    }
+
+    InListMembership membership = (InListMembership) context.getCachedValue(key);
+    if (membership == null) {
+      membership = InListMembership.build(evaluateRight((Result) null, context));
+      context.setCachedValue(key, membership);
+    }
+    return membership;
   }
 
   public Object evaluateRight(final Result currentRecord, final CommandContext context) {
@@ -274,7 +334,10 @@ public class InCondition extends BooleanExpression {
 
   @Override
   protected Object[] getIdentityElements() {
-    return new Object[] { left, operator, rightStatement, rightParam, rightMathExpression, right, inputFinalValue };
+    // `not` belongs here: without it `x IN [1]` and `x NOT IN [1]` compare equal and hash the same, so any
+    // structure that de-duplicates or looks conditions up by value would answer one with the other - the same
+    // silent loss of the negation this class was reported for (#6796), one level up.
+    return new Object[] { left, operator, rightStatement, rightParam, rightMathExpression, right, not };
   }
 
   @Override
@@ -328,8 +391,11 @@ public class InCondition extends BooleanExpression {
   public boolean isIndexAware(final IndexSearchInfo info) {
     // A NOT IN has no negated-cursor counterpart in FetchFromIndexStep: every branch below builds a cursor
     // over the values that DO match, not their complement, so treating a `not` condition as index-aware here
-    // would fetch the wrong rows. Declining leaves it to the full-scan evaluator, whose `evaluate()` already
-    // applies `not` correctly - the same reasoning already tracked for the native Select API in #6575.
+    // would fetch the wrong rows - which is exactly what was reported in #6796, where NOT IN on an indexed
+    // property silently returned the same rows as IN while the unindexed sibling property answered correctly.
+    // Declining leaves it to the full-scan evaluator, whose `evaluate()` already applies `not` correctly - the
+    // same reasoning already tracked for the native Select API in #6575. See InListMembership for what keeps
+    // that full scan affordable now that it is the only path a NOT IN can take.
     if (not)
       return false;
 

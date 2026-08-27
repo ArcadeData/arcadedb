@@ -120,7 +120,9 @@ public class NotBlock extends BooleanExpression {
   }
 
   protected Object[] getIdentityElements() {
-    return new Object[] { sub };
+    // A NotBlock is built for both branches of `NOT? conditionBlock`, so leaving `negate` out made the negated
+    // and the plain form of the same condition compare equal and hash the same (see InCondition, same fix).
+    return new Object[] { sub, negate };
   }
 
   @Override
