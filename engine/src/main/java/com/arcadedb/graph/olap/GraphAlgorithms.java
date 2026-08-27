@@ -1155,15 +1155,27 @@ public final class GraphAlgorithms {
    * Computes single-source shortest paths using Dijkstra's algorithm directly on CSR arrays
    * with edge weights from columnar storage. Zero OLTP access.
    *
+   * <b>Answers {@code null} while a delta overlay is active</b>, and the caller must then read the edges
+   * itself. This kernel reads the CSR offset and neighbour arrays directly - that is what makes it worth
+   * having - and those arrays are the graph as it stood at the last build: the edges a committed transaction
+   * has since added or deleted live in the overlay, which nothing here consults. Refusing is decided here
+   * rather than left to the caller because the caller cannot see the difference in the result; it used to be
+   * decided for it, as a side effect of the view reporting no edge properties whenever an overlay was active,
+   * and that reason went away when the view learned to serve them exactly through it (issue #6315).
+   *
    * @param view           the analytical view (must be built with edge properties)
    * @param source         source dense node ID
    * @param weightProperty edge property name for weights (must be numeric)
    * @param direction      traversal direction (OUT, IN, or BOTH)
    * @param edgeTypes      edge types to traverse (null or empty = all)
-   * @return double[] of distances indexed by dense node ID (POSITIVE_INFINITY = unreachable)
+   * @return double[] of distances indexed by dense node ID (POSITIVE_INFINITY = unreachable), or {@code null}
+   * if the base CSR arrays are not the whole graph right now
    */
   public static double[] dijkstraSingleSource(final GraphAnalyticalView view, final int source,
       final String weightProperty, final Vertex.DIRECTION direction, final String... edgeTypes) {
+    if (view.hasActiveOverlay())
+      return null;
+
     final int n = view.getNodeMapping().size();
     final double[] dist = new double[n];
     Arrays.fill(dist, Double.POSITIVE_INFINITY);

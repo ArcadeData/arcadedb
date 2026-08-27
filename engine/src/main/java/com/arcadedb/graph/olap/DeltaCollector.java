@@ -53,6 +53,10 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
 
   private static final AtomicInteger ANONYMOUS_COUNTER = new AtomicInteger();
 
+  // Past this many edge property changes in one transaction, they stop being tracked individually. See
+  // trackEdgeUpdate().
+  private static final int          MAX_TRACKED_EDGE_UPDATES = 1024;
+
   private final GraphAnalyticalView view;
   private final String              callbackKey;
 
@@ -80,7 +84,8 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
       if (record instanceof Vertex vertex)
         delta.addedVertices.add(new TxDelta.VertexDelta(vertex.getIdentity(), extractProperties(vertex)));
       else if (record instanceof Edge edge)
-        delta.addedEdges.add(new TxDelta.EdgeDelta(edge.getTypeName(), edge.getOut(), edge.getIn(), edge.getIdentity()));
+        delta.addedEdges.add(new TxDelta.EdgeDelta(edge.getTypeName(), edge.getOut(), edge.getIn(), edge.getIdentity(),
+            extractMaterialisedEdgeProperties(edge)));
       scheduleSyncCallback(delta);
     } else {
       scheduleAsyncCallback();
@@ -98,13 +103,14 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
         final TxDelta delta = getOrCreateDelta();
         delta.updatedProperties.put(vertex.getIdentity(), extractProperties(vertex));
         scheduleSyncCallback(delta);
-      } else if (record instanceof Edge) {
-        // Edge property updates have no overlay representation (the columnar edge stores are read
-        // directly by the array-based algorithms, bypassing the overlay), so flag the delta to
-        // force a rebuild on commit. Without this, edge property changes (e.g. weight updates read
-        // by Dijkstra) would be silently dropped until the next compaction. See issue #4513.
+      } else if (record instanceof Edge edge) {
+        // Reported with its new values rather than as a bare "something changed" flag: an edge the overlay
+        // itself holds carries its values there and can simply take the new ones, while an edge in the base
+        // CSR is addressed by a column slot nothing maps back from its RID and needs the rebuild the flag used
+        // to force unconditionally. DeltaOverlay.merge() is where the two are told apart, since it is what
+        // knows which edges the overlay holds. See issues #4513 and #6315.
         final TxDelta delta = getOrCreateDelta();
-        delta.edgePropertiesUpdated = true;
+        trackEdgeUpdate(delta, edge);
         scheduleSyncCallback(delta);
       }
     } else {
@@ -155,7 +161,8 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
           frozen.addedEdges.addAll(delta.addedEdges);
           frozen.deletedEdges.addAll(delta.deletedEdges);
           frozen.updatedProperties.putAll(delta.updatedProperties);
-          frozen.edgePropertiesUpdated = delta.edgePropertiesUpdated;
+          frozen.updatedEdges.addAll(delta.updatedEdges);
+          frozen.forceEdgePropertyRebuild = delta.forceEdgePropertyRebuild;
           delta.clear();
           perThreadDeltas.remove(Thread.currentThread().threadId());
           if (!frozen.isEmpty())
@@ -205,6 +212,54 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
   void close() {
     if (perThreadDeltas != null)
       perThreadDeltas.clear();
+  }
+
+  /**
+   * Records one edge property change, or gives up on recording them individually.
+   * <p>
+   * Tracking each one is what lets {@link DeltaOverlay#merge} apply an update to an edge the overlay itself
+   * holds without marking the base columns out of date (issue #6315). It is worth an entry per edge only while
+   * there are few of them: a transaction rewriting a million edges' weights would otherwise hold a million of
+   * these, where the old boolean flag held nothing. Past the cap the delta says only "the columns are out of
+   * date", which is what a bulk rewrite means anyway - the rebuild it forces is going to reread every value
+   * regardless, and until it lands the view serves no edge properties at all, so no stale one can escape.
+   */
+  private void trackEdgeUpdate(final TxDelta delta, final Edge edge) {
+    if (delta.forceEdgePropertyRebuild)
+      return;
+    if (delta.updatedEdges.size() >= MAX_TRACKED_EDGE_UPDATES) {
+      delta.forceEdgePropertyRebuild = true;
+      delta.updatedEdges.clear();
+      return;
+    }
+    delta.updatedEdges.add(new TxDelta.EdgeDelta(edge.getTypeName(), edge.getOut(), edge.getIn(),
+        edge.getIdentity(), extractMaterialisedEdgeProperties(edge)));
+  }
+
+  /**
+   * Reads the values of the edge properties the view materialises columns for, or {@code null} when it
+   * materialises none.
+   * <p>
+   * Captured here, at commit time, rather than looked up from the record when an algorithm asks: the overlay
+   * outlives the transaction, and an added edge has no column slot to be read from - the columns were built
+   * with the base CSR - so this is what lets the view answer for it exactly instead of at a default weight
+   * (issue #6315). Only the materialised names are kept, so an edge with fifty properties on a view that
+   * indexes one costs one entry.
+   */
+  private Map<String, Object> extractMaterialisedEdgeProperties(final Edge edge) {
+    final String[] materialised = view.getEdgePropertyFilter();
+    if (materialised == null || materialised.length == 0)
+      return null;
+    Map<String, Object> props = null;
+    for (final String name : materialised) {
+      final Object value = edge.get(name);
+      if (value == null)
+        continue;
+      if (props == null)
+        props = new HashMap<>(materialised.length);
+      props.put(name, value);
+    }
+    return props;
   }
 
   private static Map<String, Object> extractProperties(final Document doc) {

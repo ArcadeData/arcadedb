@@ -111,11 +111,11 @@ public class SQLFunctionBellmanFord extends SQLFunctionMathAbstract {
 
     final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(db);
     // The columnar path is taken per node and only when edgeWeightsOf() can answer - i.e. when the provider can
-    // serve THIS property for every type it holds. Pairing getNeighborIds with getEdgeProperty by hand was wrong
-    // in two ways (issue #6301): the neighbour list is merged and sorted across types while the columns are per
-    // type, and `direction` defaults to BOTH here, which has no column at all - so the plain three-argument call
-    // read a null property value for every edge and silently unit-weighted the whole graph. Anything the
-    // provider cannot answer exactly falls to the edge records below, which are.
+    // serve THIS property for every type it holds. Assembling the neighbourhood by hand was wrong in two ways
+    // (issue #6301): the neighbour list is merged and sorted across types while the values are served per type,
+    // and `direction` defaults to BOTH here, which has no adjacency slice at all - so the hand-rolled version
+    // read no property value for any edge and silently unit-weighted the whole graph. Anything the provider
+    // cannot answer exactly falls to the edge records below, which are.
     final String weightColumn = weightProperty != null && !weightProperty.isEmpty() ? weightProperty : null;
 
     for (int i = 0; i < n; i++) {

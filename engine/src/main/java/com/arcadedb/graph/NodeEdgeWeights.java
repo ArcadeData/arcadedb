@@ -22,9 +22,10 @@ package com.arcadedb.graph;
  * One node's neighbours and the edge-property value of each edge reaching them, produced together.
  * <p>
  * {@code weights[j]} belongs to the edge to {@code neighbors[j]} <em>by construction</em>: both arrays are filled
- * from one walk of the same per-type, per-direction adjacency slices, each of which is positional against
- * {@link GraphTraversalProvider#getEdgeProperty}. Handing the two back together is what removes the reconciliation
- * step - and every place that reconciled them afterwards got it wrong, which is issue #6301.
+ * from one walk of the same edges, by {@link GraphTraversalProvider#edgeWeightsForSlice} for a single (type,
+ * direction) slice and by {@link GraphTraversalProvider#edgeWeightsOf} for the concatenation of them. Handing the
+ * two back together is what removes the reconciliation step - and every place that reconciled them afterwards got
+ * it wrong, which is issues #6301 and #6315.
  *
  * @param neighbors dense neighbour ids
  * @param weights   the property value of the edge to the neighbour at the same index

@@ -48,16 +48,18 @@ class DeltaOverlay {
   // Deleted overflow nodes (indexed by overflowIdx = globalId - baseNodeCount)
   private final BitSet                      deletedOverflowNodes;
 
-  // Added edges per type: edgeType -> the added edge's own identity -> (srcGlobalId, tgtGlobalId) pair.
+  // Added edges per type: edgeType -> the added edge's own identity -> its endpoints and materialised
+  // property values.
   // Keyed by RID rather than held in a plain list so that an edge added and later deleted within the SAME
   // not-yet-compacted overlay window can be withdrawn from here by identity, instead of being masked with a
   // pair-keyed deletion it has no right to spend (issue #6775 - see merge()). Insertion-ordered, because
   // the neighbour index below is built from it and parallel edges must keep their addition order.
-  private final Map<String, Map<RID, long[]>> addedEdgesPerType;
+  private final Map<String, Map<RID, AddedEdge>> addedEdgesPerType;
 
-  // Secondary indexes for O(1) neighbor lookup: edgeType -> nodeId -> neighbor list
-  private final Map<String, Map<Integer, int[]>> outNeighborIndex;
-  private final Map<String, Map<Integer, int[]>> inNeighborIndex;
+  // Secondary indexes for O(1) neighbor lookup: edgeType -> nodeId -> neighbor list (with the edges' own
+  // property values beside it, when the view materialises any)
+  private final Map<String, Map<Integer, AddedNeighbors>> outNeighborIndex;
+  private final Map<String, Map<Integer, AddedNeighbors>> inNeighborIndex;
 
   // Deleted edges per type: edgeType -> packed (src << 32 | tgt) -> number of distinct edges deleted for
   // that pair. A count rather than a presence flag: two parallel edges between the same pair, only one of
@@ -83,6 +85,15 @@ class DeltaOverlay {
   private final int overflowCount;
   private final int deltaEdgeCount;
 
+  // True once a transaction has changed a covered edge's properties. Such a change has no overlay
+  // representation - an edge already in the base CSR is addressed by its column slot, and nothing maps that
+  // slot back from the edge's RID - so the base columns are simply out of date until the rebuild
+  // GraphAnalyticalView.applyDelta() forces for it lands. Until then the view answers "no edge properties"
+  // rather than a stale weight: the added edges below carry their own values and could be served exactly, but
+  // a base edge whose weight was just updated could not, and there is no honest way to serve one without the
+  // other (issues #4513 and #6315).
+  private final boolean edgePropertiesDirty;
+
   @SuppressWarnings("unchecked")
   DeltaOverlay(final int baseNodeCount) {
     this.baseNodeCount = baseNodeCount;
@@ -101,6 +112,7 @@ class DeltaOverlay {
     this.inNeighborIndex = Collections.emptyMap();
     this.overflowCount = 0;
     this.deltaEdgeCount = 0;
+    this.edgePropertiesDirty = false;
   }
 
   // The private constructor takes ownership of all passed collections — callers MUST NOT
@@ -111,15 +123,15 @@ class DeltaOverlay {
       final Map<RID, Integer> overflowNodeIds, final RID[] overflowIdToRID,
       final Map<String, Object>[] overflowProperties,
       final BitSet deletedBaseNodes, final BitSet deletedOverflowNodes,
-      final Map<String, Map<RID, long[]>> addedEdgesPerType,
+      final Map<String, Map<RID, AddedEdge>> addedEdgesPerType,
       final Map<String, Map<Long, Integer>> deletedEdgesPerType,
       final Map<String, Set<RID>> deletedEdgeRIDsPerType,
       final Map<String, IntIntHashMap> deletedOutEdgeCounts,
       final Map<String, IntIntHashMap> deletedInEdgeCounts,
       final Map<Integer, Map<String, Object>> propertyOverrides,
-      final Map<String, Map<Integer, int[]>> outNeighborIndex,
-      final Map<String, Map<Integer, int[]>> inNeighborIndex,
-      final int overflowCount, final int deltaEdgeCount) {
+      final Map<String, Map<Integer, AddedNeighbors>> outNeighborIndex,
+      final Map<String, Map<Integer, AddedNeighbors>> inNeighborIndex,
+      final int overflowCount, final int deltaEdgeCount, final boolean edgePropertiesDirty) {
     this.baseNodeCount = baseNodeCount;
     this.overflowNodeIds = overflowNodeIds;
     this.overflowIdToRID = overflowIdToRID;
@@ -136,6 +148,7 @@ class DeltaOverlay {
     this.inNeighborIndex = inNeighborIndex;
     this.overflowCount = overflowCount;
     this.deltaEdgeCount = deltaEdgeCount;
+    this.edgePropertiesDirty = edgePropertiesDirty;
   }
 
   /**
@@ -166,7 +179,7 @@ class DeltaOverlay {
     final List<Map<String, Object>> overflowPropsList = new ArrayList<>(Arrays.asList(overflowProperties));
     final BitSet newDeleted = (BitSet) deletedBaseNodes.clone();
     final BitSet newDeletedOverflow = (BitSet) deletedOverflowNodes.clone();
-    final Map<String, Map<RID, long[]>> newAddedEdges = new HashMap<>();
+    final Map<String, Map<RID, AddedEdge>> newAddedEdges = new HashMap<>();
     for (final var entry : addedEdgesPerType.entrySet())
       newAddedEdges.put(entry.getKey(), new LinkedHashMap<>(entry.getValue()));
     final Map<String, Map<Long, Integer>> newDeletedEdges = new HashMap<>();
@@ -258,8 +271,24 @@ class DeltaOverlay {
       // Keyed by the edge's own identity, so a replayed add of an edge the overlay already holds is
       // absorbed instead of appending a second, phantom, occurrence of the same edge.
       if (newAddedEdges.computeIfAbsent(ed.edgeType, k -> new LinkedHashMap<>())
-          .put(ed.rid, new long[] { srcId, tgtId }) == null)
+          .put(ed.rid, new AddedEdge(srcId, tgtId, ed.properties)) == null)
         newDeltaEdgeCount++;
+    }
+
+    // Process edge property updates. An edge this overlay window holds as an addition takes the new values
+    // straight into its own entry - it has no column slot to be out of step with, and the ordinary
+    // `newEdge(...).save()` reports exactly this, one create and one update of the same edge. Anything else is
+    // an edge the base CSR holds, whose column slot cannot be found from its RID, so the columns are now out of
+    // date and only the rebuild GraphAnalyticalView.applyDelta() forces can repair them (issues #4513, #6315).
+    // Runs after the additions above so that an edge added and updated within the same transaction is found.
+    boolean newEdgePropertiesDirty = delta.forceEdgePropertyRebuild;
+    for (final TxDelta.EdgeDelta ed : delta.updatedEdges) {
+      final Map<RID, AddedEdge> addedForType = newAddedEdges.get(ed.edgeType);
+      final AddedEdge added = addedForType != null ? addedForType.get(ed.rid) : null;
+      if (added != null)
+        addedForType.put(ed.rid, new AddedEdge(added.src(), added.tgt(), ed.properties));
+      else
+        newEdgePropertiesDirty = true;
     }
 
     // Process deleted edges
@@ -275,7 +304,7 @@ class DeltaOverlay {
       // the append-only added index used to surface an added-then-deleted edge as a live neighbour. Done by
       // identity, before the dedup guard below, so a RID recycled onto a new edge (see #6777) still cancels
       // its own add rather than having the whole deletion dropped.
-      final Map<RID, long[]> addedForType = newAddedEdges.get(ed.edgeType);
+      final Map<RID, AddedEdge> addedForType = newAddedEdges.get(ed.edgeType);
       if (addedForType != null && addedForType.remove(ed.rid) != null) {
         newDeltaEdgeCount--; // undo the +1 the withdrawn add contributed
         if (addedForType.isEmpty())
@@ -313,8 +342,8 @@ class DeltaOverlay {
     }
 
     // Build secondary neighbor indexes for O(1) lookup
-    final Map<String, Map<Integer, int[]>> newOutIndex = buildNeighborIndex(newAddedEdges, true);
-    final Map<String, Map<Integer, int[]>> newInIndex = buildNeighborIndex(newAddedEdges, false);
+    final Map<String, Map<Integer, AddedNeighbors>> newOutIndex = buildNeighborIndex(newAddedEdges, true);
+    final Map<String, Map<Integer, AddedNeighbors>> newInIndex = buildNeighborIndex(newAddedEdges, false);
 
     // Build per-node deleted edge count indexes for O(1) lookup
     final Map<String, IntIntHashMap> newDelOutCounts = buildDeletedEdgeCounts(newDeletedEdges, true);
@@ -327,7 +356,7 @@ class DeltaOverlay {
         newDeleted, newDeletedOverflow, newAddedEdges, newDeletedEdges, newDeletedEdgeRIDs,
         newDelOutCounts, newDelInCounts, newPropOverrides,
         newOutIndex, newInIndex,
-        newOverflowCount, newDeltaEdgeCount);
+        newOverflowCount, newDeltaEdgeCount, edgePropertiesDirty || newEdgePropertiesDirty);
   }
 
   // --- Query helpers ---
@@ -362,12 +391,40 @@ class DeltaOverlay {
   }
 
   private int[] getAddedNeighbors(final int nodeId, final String edgeType, final boolean outgoing) {
-    final Map<String, Map<Integer, int[]>> index = outgoing ? outNeighborIndex : inNeighborIndex;
-    final Map<Integer, int[]> typeIndex = index.get(edgeType);
-    if (typeIndex == null)
-      return EMPTY_INT;
-    final int[] result = typeIndex.get(nodeId);
-    return result != null ? result : EMPTY_INT;
+    final AddedNeighbors added = getAdded(nodeId, edgeType, outgoing);
+    return added != null ? added.nodeIds() : EMPTY_INT;
+  }
+
+  /**
+   * Returns the property values of the added outgoing edges of {@code nodeId}, one entry per entry of
+   * {@link #getAddedOutNeighbors}, or {@code null} when none of them carries any.
+   */
+  Map<String, Object>[] getAddedOutEdgeProperties(final int nodeId, final String edgeType) {
+    final AddedNeighbors added = getAdded(nodeId, edgeType, true);
+    return added != null ? added.properties() : null;
+  }
+
+  /**
+   * Returns the property values of the added incoming edges of {@code nodeId}, one entry per entry of
+   * {@link #getAddedInNeighbors}, or {@code null} when none of them carries any.
+   */
+  Map<String, Object>[] getAddedInEdgeProperties(final int nodeId, final String edgeType) {
+    final AddedNeighbors added = getAdded(nodeId, edgeType, false);
+    return added != null ? added.properties() : null;
+  }
+
+  private AddedNeighbors getAdded(final int nodeId, final String edgeType, final boolean outgoing) {
+    final Map<String, Map<Integer, AddedNeighbors>> index = outgoing ? outNeighborIndex : inNeighborIndex;
+    final Map<Integer, AddedNeighbors> typeIndex = index.get(edgeType);
+    return typeIndex == null ? null : typeIndex.get(nodeId);
+  }
+
+  /**
+   * True once a covered edge's properties were changed by a committed transaction, which leaves the base
+   * columns holding a value the database no longer has. See the field's own comment.
+   */
+  boolean isEdgePropertiesDirty() {
+    return edgePropertiesDirty;
   }
 
   boolean isEdgeDeleted(final String edgeType, final int srcId, final int tgtId) {
@@ -456,7 +513,7 @@ class DeltaOverlay {
   boolean hasChanges() {
     return overflowCount > 0 || !deletedBaseNodes.isEmpty()
         || !addedEdgesPerType.isEmpty() || !deletedEdgesPerType.isEmpty()
-        || !propertyOverrides.isEmpty();
+        || !propertyOverrides.isEmpty() || edgePropertiesDirty;
   }
 
   // --- Internals ---
@@ -471,38 +528,52 @@ class DeltaOverlay {
   }
 
   /**
-   * Builds a secondary index: edgeType -> nodeId -> int[] neighbors, for O(1) lookup.
+   * Builds a secondary index: edgeType -> nodeId -> its added neighbours, for O(1) lookup.
    * Uses a two-pass approach: first counts the degree per node to allocate exact-size arrays,
    * then fills them in a second pass. This avoids repeated doubling and trimming allocations
    * that would occur with a growable-array approach for high-degree nodes.
+   * <p>
+   * The edges' own property values are filled in the same pass as the neighbour ids and into an array of the
+   * same length, so an added edge's weight is found at the index its neighbour is found at - the pairing
+   * {@link GraphAnalyticalView#edgeWeightsForSlice} hands on to its caller, and the reason it can serve an
+   * overlay-added edge exactly rather than at a default weight (issue #6315). The property array is left
+   * {@code null} for a type no added edge of which carries any value, which is every type of a view that
+   * materialises no edge property columns at all - the common case, and it costs nothing there.
    */
-  private static Map<String, Map<Integer, int[]>> buildNeighborIndex(
-      final Map<String, Map<RID, long[]>> addedEdges, final boolean outgoing) {
+  @SuppressWarnings("unchecked")
+  private static Map<String, Map<Integer, AddedNeighbors>> buildNeighborIndex(
+      final Map<String, Map<RID, AddedEdge>> addedEdges, final boolean outgoing) {
     if (addedEdges.isEmpty())
       return Collections.emptyMap();
-    final Map<String, Map<Integer, int[]>> result = new HashMap<>();
+    final Map<String, Map<Integer, AddedNeighbors>> result = new HashMap<>();
     for (final var entry : addedEdges.entrySet()) {
-      final Collection<long[]> edges = entry.getValue().values();
+      final Collection<AddedEdge> edges = entry.getValue().values();
 
       // Pass 1: count neighbors per node
       final IntIntHashMap counts = new IntIntHashMap();
-      for (final long[] pair : edges) {
-        final int key = (int) (outgoing ? pair[0] : pair[1]);
-        counts.increment(key);
+      boolean anyProperties = false;
+      for (final AddedEdge edge : edges) {
+        counts.increment(outgoing ? edge.src() : edge.tgt());
+        if (edge.properties() != null && !edge.properties().isEmpty())
+          anyProperties = true;
       }
 
       // Allocate exact-size arrays
-      final Map<Integer, int[]> perNode = new HashMap<>(counts.size());
-      counts.forEach((key, count) -> perNode.put(key, new int[count]));
+      final boolean withProperties = anyProperties;
+      final Map<Integer, AddedNeighbors> perNode = new HashMap<>(counts.size());
+      counts.forEach((key, count) -> perNode.put(key,
+          new AddedNeighbors(new int[count], withProperties ? new Map[count] : null)));
 
       // Pass 2: fill arrays (use a fresh map as fill-position tracker)
       final IntIntHashMap positions = new IntIntHashMap(counts.size());
-      for (final long[] pair : edges) {
-        final int key = (int) (outgoing ? pair[0] : pair[1]);
-        final int neighbor = (int) (outgoing ? pair[1] : pair[0]);
-        final int[] arr = perNode.get(key);
+      for (final AddedEdge edge : edges) {
+        final int key = outgoing ? edge.src() : edge.tgt();
+        final int neighbor = outgoing ? edge.tgt() : edge.src();
+        final AddedNeighbors added = perNode.get(key);
         final int pos = positions.get(key, 0);
-        arr[pos] = neighbor;
+        added.nodeIds()[pos] = neighbor;
+        if (added.properties() != null)
+          added.properties()[pos] = edge.properties();
         positions.put(key, pos + 1);
       }
 
@@ -538,6 +609,29 @@ class DeltaOverlay {
 
   private static long packEdge(final int src, final int tgt) {
     return ((long) src << 32) | (tgt & UNSIGNED_INT_MASK);
+  }
+
+  /**
+   * One edge the overlay holds that the base CSR does not: its endpoints as dense ids, and the values of the
+   * edge properties the view materialises columns for, captured at commit time by {@link DeltaCollector}.
+   * <p>
+   * The values are carried rather than re-read from the record later because the overlay outlives the
+   * transaction that produced it, and by the time an algorithm asks for the weight the edge may be gone. They
+   * are also what makes an overlay-added edge answerable at all: it has no column slot to be addressed by.
+   *
+   * @param properties the materialised edge properties' values, or {@code null} when the view materialises none
+   */
+  record AddedEdge(int src, int tgt, Map<String, Object> properties) {
+  }
+
+  /**
+   * One node's added neighbours of one edge type and direction, each beside its own edge's property values.
+   *
+   * @param nodeIds    the added neighbours' dense ids
+   * @param properties the property values of the edge reaching the neighbour at the same index, or {@code null}
+   *                   when no added edge of this type carries any
+   */
+  record AddedNeighbors(int[] nodeIds, Map<String, Object>[] properties) {
   }
 
   static final Object UNSET = new Object();

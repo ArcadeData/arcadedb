@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.NodeEdgeWeights;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -33,6 +34,7 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.IntConsumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -80,8 +82,7 @@ class Issue6715EdgeWeightsOfCheckpointTest {
    * The interrupt is armed from inside the provider itself, once the walk is a handful of edges into the
    * supernode's row - not before the call, which the outer per-node checkpoint would already catch regardless of
    * this fix. Before the fix, {@code edgeWeightsOf} has no checkpoint of its own, so the row is built to
-   * completion (all {@code supernodeDegree} calls to {@link WeightedSupernodeProvider#getEdgeProperty}) before
-   * the interrupt is ever observed. After the fix, the per-edge checkpoint restarts at zero for this call and
+   * completion (all {@code supernodeDegree} of the supernode's edges) before the interrupt is ever observed. After the fix, the per-edge checkpoint restarts at zero for this call and
    * fires at the next multiple of 1024, so the walk stops within about one checkpoint stride of where the
    * interrupt was raised - orders of magnitude short of the full degree.
    */
@@ -269,14 +270,21 @@ class Issue6715EdgeWeightsOfCheckpointTest {
     }
 
     @Override
-    public Object getEdgeProperty(final int nodeId, final int neighborIndex, final Vertex.DIRECTION direction,
-        final String edgeType, final String propertyName) {
-      if (nodeId == supernodeIndex) {
+    public NodeEdgeWeights edgeWeightsForSlice(final int nodeId, final Vertex.DIRECTION direction,
+        final String edgeType, final String propertyName, final double defaultWeight,
+        final IntConsumer edgeCheckpoint) {
+      final int degree = nodeId == supernodeIndex ? supernodeDegree : 0;
+      final int[] neighbors = new int[degree];
+      final double[] weights = new double[degree];
+      for (int i = 0; i < degree; i++) {
+        if (edgeCheckpoint != null)
+          edgeCheckpoint.accept(i);
         final int calls = supernodeEdgeCalls.incrementAndGet();
         if (selfInterruptAfterCalls >= 0 && calls == selfInterruptAfterCalls)
           Thread.currentThread().interrupt();
+        weights[i] = 1.0;
       }
-      return 1.0;
+      return new NodeEdgeWeights(neighbors, weights);
     }
   }
 
@@ -369,10 +377,18 @@ class Issue6715EdgeWeightsOfCheckpointTest {
     }
 
     @Override
-    public Object getEdgeProperty(final int nodeId, final int neighborIndex, final Vertex.DIRECTION direction,
-        final String edgeType, final String propertyName) {
-      edgePropertyCalls.incrementAndGet();
-      return 1.0;
+    public NodeEdgeWeights edgeWeightsForSlice(final int nodeId, final Vertex.DIRECTION direction,
+        final String edgeType, final String propertyName, final double defaultWeight,
+        final IntConsumer edgeCheckpoint) {
+      final int[] neighbors = new int[degreePerNode];
+      final double[] weights = new double[degreePerNode];
+      for (int i = 0; i < degreePerNode; i++) {
+        if (edgeCheckpoint != null)
+          edgeCheckpoint.accept(i);
+        edgePropertyCalls.incrementAndGet();
+        weights[i] = 1.0;
+      }
+      return new NodeEdgeWeights(neighbors, weights);
     }
   }
 }
