@@ -177,7 +177,23 @@
                  RaftHARandomCrashIT (15k vertices while servers are killed and restarted under it),
                  RaftIndexCompactionReplicationIT (5k records plus index compaction across three servers) and
                  RaftHAComprehensiveIT (the longest-running IT in the module at ~344s of continuous
-                 three-server activity). -->
+                 three-server activity).
+
+                 If you touch this block, these are the four things to re-check, none of which fails loudly on
+                 its own. Each is one command against a handful of classes rather than the full hour:
+
+                   1. the partition still runs each class exactly once -
+                      ./mvnw -o -pl ha-raft verify -Pintegration -DskipTests -DfailIfNoSpecifiedTests=false \
+                        -Dit.test=RaftMigrationCompactionRaceIT,RaftVerifyDatabaseIT
+                      RaftVerifyDatabaseIT must appear under (default) and RaftMigrationCompactionRaceIT under
+                      (heavy-its-in-their-own-fork), each once, and both failsafe-summary files must be written.
+                   2. each heavy class still gets its own JVM - add two throwaway tagged ITs that write
+                      ProcessHandle.current().pid() to a file, run them, and check the pids differ.
+                   3. a failing heavy IT still fails the build AND names this execution - add a throwaway tagged
+                      IT that asserts false; the error must read "verify (heavy-its-in-their-own-fork)".
+                   4. HeavyForkWiringIT and HeavyItForkIsolationTest are both green.
+
+                 Steps 1-3 are how the split was verified in the first place; step 4 is what now watches it. -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-failsafe-plugin</artifactId>
@@ -196,6 +212,9 @@
                         <id>default</id>
                         <configuration>
                             <excludedGroups>ha-heavy</excludedGroups>
+                            <systemPropertyVariables>
+                                <arcadedb.it.fork>default</arcadedb.it.fork>
+                            </systemPropertyVariables>
                         </configuration>
                     </execution>
                     <execution>
@@ -231,6 +250,16 @@
                                  already rely on. -->
                             <failIfNoTests>true</failIfNoTests>
                             <reuseForks>false</reuseForks>
+                            <!-- Which execution a fork belongs to, so the wiring can check itself. Re-targeting
+                                 the parent's unnamed execution by <id>default</id> is correct but obscure Maven
+                                 inheritance, and if it ever stopped working these classes would rejoin the shared
+                                 fork without anything failing - the pom would still look right and the tags would
+                                 still be there, so neither the comment above nor HeavyItForkIsolationTest would
+                                 notice. HeavyForkWiringIT reads this property and is itself tagged ha-heavy, so a
+                                 broken split lands it in the "default" fork and it says so by name. -->
+                            <systemPropertyVariables>
+                                <arcadedb.it.fork>ha-heavy</arcadedb.it.fork>
+                            </systemPropertyVariables>
                             <summaryFile>${project.build.directory}/failsafe-reports/failsafe-summary-ha-heavy.xml</summaryFile>
                         </configuration>
                     </execution>
