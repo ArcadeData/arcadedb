@@ -148,7 +148,7 @@ public class SourceDiscovery {
           currentConnection.get().getContentLengthLong(), resource,
           source -> {
             try {
-              source.inputStream.close();
+              closeBestEffort(source.inputStream);
               currentConnection.get().disconnect();
 
               final HttpURLConnection reopened = ImportSecurityValidator.openRemoteConnection(urlPath, blockLocalNetworks);
@@ -210,7 +210,7 @@ public class SourceDiscovery {
     try {
       return getSourceFromContent(fis, file.length(), resource, source -> {
         try {
-          source.inputStream.close();
+          closeBestEffort(source.inputStream);
           if (source.inputStream instanceof GZIPInputStream)
             source.inputStream = new GZIPInputStream(new FileInputStream(file), 2048);
           else if (source.inputStream instanceof ZipInputStream)
@@ -589,6 +589,19 @@ public class SourceDiscovery {
       closeable.close();
     } catch (final IOException e) {
       pending.addSuppressed(e);
+    }
+  }
+
+  /**
+   * Closes the stream a reset is about to replace. A stream that refuses to close must not abort the reset: the
+   * replacement is what the caller will read, and on the remote path the connection behind the old stream still has to
+   * be disconnected afterwards.
+   */
+  private void closeBestEffort(final Closeable closeable) {
+    try {
+      closeable.close();
+    } catch (final IOException e) {
+      LogManager.instance().log(this, Level.FINE, "Error on closing the previous stream while resetting source '%s'", e, url);
     }
   }
 
