@@ -43,7 +43,15 @@
              With this, -Dfailsafe.excludedGroups=vector still skips @Tag("vector") ITs in this module, exactly as
              it does in every other one, while the ha-heavy split stays immune to it. Both properties matter and
              they are not the same property: this one is composed IN, and -Dgroups/-DexcludedGroups - which
-             cannot be, because they are the parameters themselves - are locked out below. -->
+             cannot be, because they are the parameters themselves - are locked out below.
+
+             Setting it to blank rather than overriding it - -Dfailsafe.excludedGroups= with nothing after the
+             equals - is a build failure, on purpose. The default execution's expression becomes "ha-heavy | ()"
+             and JUnit says so by name: "Unable to parse tag expression "ha-heavy | ()": missing rhs operand for
+             '|' at index <9>". Measured, not assumed. That is the right failure for it to have - loud, naming
+             the expression and the position - and it is why the "nothing" value here is a contradiction rather
+             than the empty string the parent uses. If you want this module's ITs unfiltered, leave the property
+             alone; blank is not the way to say that. -->
         <failsafe.excludedGroups>any() &amp; none()</failsafe.excludedGroups>
     </properties>
 
