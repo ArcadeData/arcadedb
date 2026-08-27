@@ -214,6 +214,22 @@
                         </goals>
                         <configuration>
                             <groups>ha-heavy</groups>
+                            <!-- An execution that matches nothing must not pass. Measured rather than assumed,
+                                 because this parameter sees less than its name suggests: surefire evaluates it
+                                 against the CLASS SCAN, before the provider applies the tag filter. Confirmed
+                                 both ways against 3.5.6 - an <includes> pattern matching no file fails the build
+                                 with "No tests were executed!", while a <groups> tag matching none of the classes
+                                 the scan did find reports "Tests run: 0" and passes.
+                                 So it guards the scan-level version of the regression (somebody narrows the
+                                 includes, or the ITs move) and cannot guard the likelier one: the tag being
+                                 dropped, renamed or mistyped, which puts these classes back in the shared fork
+                                 silently. HeavyItForkIsolationTest is the guard for that, and for the finer case
+                                 no build-level setting could catch either - one class losing the tag while the
+                                 other four keep it.
+                                 Harmless to local work: a developer narrowing a run with -Dit.test falls under
+                                 failIfNoSpecifiedTests instead, which the default execution's own zero-match runs
+                                 already rely on. -->
+                            <failIfNoTests>true</failIfNoTests>
                             <reuseForks>false</reuseForks>
                             <summaryFile>${project.build.directory}/failsafe-reports/failsafe-summary-ha-heavy.xml</summaryFile>
                         </configuration>
