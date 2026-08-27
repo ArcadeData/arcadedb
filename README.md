@@ -154,10 +154,16 @@ projects with Docker Compose, SQL schemas, and runnable demos covering:
 Start ArcadeDB Server with Docker:
 
 ```
-docker run --rm -p 2480:2480 -p 2424:2424 \
-           -e JAVA_OPTS="-Darcadedb.server.rootPassword=playwithdata -Darcadedb.server.defaultDatabases=Imported[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz}" \
+docker run --rm -p 2480:2480 \
+           -e ARCADEDB_SETTINGS="-Darcadedb.server.rootPassword=playwithdata -Darcadedb.server.defaultDatabases=Imported[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz}" \
            arcadedata/arcadedb:latest
 ```
+
+Pass database settings in `ARCADEDB_SETTINGS` and any extra JVM flags in `JAVA_OPTS`: Docker replaces
+an environment variable rather than appending to it, so keeping the two apart leaves the image's own
+garbage collector and heap sizing (`ARCADEDB_OPTS_GC` and `ARCADEDB_OPTS_MEMORY`) intact. The heap is
+sized as a percentage of the container memory limit, so `docker run -m 512m` and a multi-GB
+production container both work without further tuning.
 
 Now open your browser on http://localhost:2480 and play with [ArcadeDB Studio](https://docs.arcadedb.com/#studio) and the
 imported `OpenBeer` database to find your favorite beer.

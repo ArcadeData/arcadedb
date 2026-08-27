@@ -16,18 +16,36 @@
 # under the License.
 # SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
 # SPDX-License-Identifier: Apache-2.0
-version: "3.9"
+# The `version` key is obsolete under Compose v2 and only produces a deprecation warning, so it is
+# intentionally absent.
 services:
   arcade:
     image: arcadedata/arcadedb:latest
     ports:
       - 2480:2480 # host : container port
-      - 2424:2424 # host : container port
     environment:
-      JAVA_OPTS: >
+      # Database settings go in ARCADEDB_SETTINGS, never in JAVA_OPTS: the image parks its garbage
+      # collector selection in its own variable, but JAVA_OPTS is still the place for extra JVM
+      # flags, and Docker replaces an environment variable rather than appending to it. Keeping the
+      # two apart means a quickstart and a bare `docker run` produce the same JVM.
+      ARCADEDB_SETTINGS: >
         -Darcadedb.server.rootPassword=playwithdata
         -Darcadedb.dumpConfigAtStartup=true
         -Darcadedb.server.defaultDatabases=Imported[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz}
+    # Without this mount the image's `VOLUME /home/arcadedb/databases` resolves to a fresh anonymous
+    # volume on every `up`, so the imported database is lost on the next `down`/`up` cycle while the
+    # named volume declared below stays empty.
+    volumes:
+      - arcade_db_vol:/home/arcadedb/databases
+    # /api/v1/ready is the server's own unauthenticated readiness endpoint. Without a healthcheck a
+    # crash-looping container under `restart: always` still reports as "running". wget comes from the
+    # BusyBox base image, so no extra tooling is needed.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:2480/api/v1/ready || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 30s
     restart: always
 volumes:
   arcade_db_vol:

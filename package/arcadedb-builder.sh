@@ -917,7 +917,12 @@ FROM eclipse-temurin:21-jre-alpine
 ARG ARCADEDB_USER=arcadedb
 ARG ARCADEDB_HOME=/home/arcadedb
 
-ENV JAVA_OPTS="-Xms1G -Xmx4G"
+# Same reasoning as package/src/main/docker/Dockerfile: never pin the heap (a fixed -Xmx above the
+# container memory limit kills the container at startup, one below it wastes what the operator
+# granted), and never park the GC choice in JAVA_OPTS, which a caller overrides to add its own flags
+# and thereby replaces. bin/server.sh expands both of these alongside JAVA_OPTS and ARCADEDB_SETTINGS.
+ENV ARCADEDB_OPTS_GC="-XX:+UseZGC -XX:+ZGenerational"
+ENV ARCADEDB_OPTS_MEMORY="-XX:MaxRAMPercentage=75"
 
 RUN addgroup -S ${ARCADEDB_USER} && adduser -S ${ARCADEDB_USER} -G ${ARCADEDB_USER}
 
@@ -929,7 +934,7 @@ RUN chmod +x ${ARCADEDB_HOME}/bin/*.sh
 
 USER ${ARCADEDB_USER}
 
-EXPOSE 2480 2424
+EXPOSE 2480 2434
 
 VOLUME ["${ARCADEDB_HOME}/databases", "${ARCADEDB_HOME}/backups", "${ARCADEDB_HOME}/log"]
 

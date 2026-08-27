@@ -101,7 +101,13 @@ rem the JVM "you have 512MB, fill it" and G1GC has no pressure to collect young-
 rem the heap-used gauge in Studio can sit at hundreds of MB on an idle server even though the
 rem live working set is only ~30-50MB. A smaller initial heap makes the JVM collect early and
 rem Studio reports the actual live heap.
-set ARCADEDB_OPTS_MEMORY=
+if not defined ARCADEDB_OPTS_MEMORY set ARCADEDB_OPTS_MEMORY=
+
+rem Garbage collector selection, kept apart from JAVA_OPTS on purpose. JAVA_OPTS is the variable users
+rem and orchestrators overwrite to pass their own JVM flags, and an environment variable is replaced,
+rem never appended to, so a GC choice parked in JAVA_OPTS disappears the moment anybody customises it.
+rem The Docker image sets this to ZGC; a bare distribution leaves it empty and keeps the JVM default.
+if not defined ARCADEDB_OPTS_GC set ARCADEDB_OPTS_GC=
 
 set ARCADEDB_JMX=-Dcom.sun.management.jmxremote=true ^
   -Dcom.sun.management.jmxremote.local.only=false ^
@@ -116,6 +122,7 @@ rem AND ATTACH TO THE CURRENT HOST, PORT 1044
 
 "%JAVACMD%" ^
  -server %JAVA_OPTS% ^
+ %ARCADEDB_OPTS_GC% ^
  %ARCADEDB_OPTS_MEMORY% ^
  %JAVA_OPTS_SCRIPT% ^
  %ARCADEDB_JMX% ^

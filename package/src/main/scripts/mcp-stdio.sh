@@ -55,6 +55,14 @@ if [ -z "$ARCADEDB_OPTS_MEMORY" ]; then
   ARCADEDB_OPTS_MEMORY=""
 fi
 
+# Garbage collector selection, kept apart from JAVA_OPTS on purpose: JAVA_OPTS is what users overwrite
+# to pass their own JVM flags, and an environment variable is replaced rather than appended to, so a
+# GC choice parked there disappears the moment anybody customises it. The Docker image sets this to
+# ZGC; a bare distribution leaves it empty and keeps the JVM default.
+if [ -z "$ARCADEDB_OPTS_GC" ]; then
+  ARCADEDB_OPTS_GC=""
+fi
+
 if [ -z "$JAVA_OPTS_SCRIPT" ] ; then
     JAVA_OPTS_SCRIPT="-XX:+HeapDumpOnOutOfMemoryError \
         --add-exports java.management/sun.management=ALL-UNNAMED \
@@ -69,6 +77,7 @@ if [ -z "$JAVA_OPTS_SCRIPT" ] ; then
 fi
 
 exec "$JAVA" $JAVA_OPTS \
+    $ARCADEDB_OPTS_GC \
     $ARCADEDB_OPTS_MEMORY \
     $JAVA_OPTS_SCRIPT \
     $ARCADEDB_SETTINGS \

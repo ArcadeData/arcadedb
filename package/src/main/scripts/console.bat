@@ -71,10 +71,17 @@ set JAVA_OPTS_SCRIPT=-XX:+HeapDumpOnOutOfMemoryError ^
   -Djava.util.logging.config.file=config/arcadedb-log.properties ^
   --enable-native-access=ALL-UNNAMED
 
+rem Mirrors server.sh/server.bat: the GC choice is kept out of JAVA_OPTS, which callers overwrite to
+rem pass their own flags. Declared here only so all six launchers read alike - an undefined %VAR%
+rem expands to nothing in a batch file, which is what the JAVA_HOME check at the top of this script
+rem has always relied on.
+if not defined ARCADEDB_OPTS_GC set ARCADEDB_OPTS_GC=
+
 "%JAVACMD%" ^
  -client ^
  %JAVA_OPTS% ^
  %JAVA_OPTS_SCRIPT% ^
+ %ARCADEDB_OPTS_GC% ^
  %ARCADEDB_OPTS_MEMORY% ^
  %ARCADEDB_JMX% ^
  %ARCADEDB_SETTINGS% ^
