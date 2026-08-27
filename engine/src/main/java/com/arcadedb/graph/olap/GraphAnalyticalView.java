@@ -1504,10 +1504,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // the ordinary pair joined by a single edge.
     if (deleted != null && isPartialDeletionOfParallelEdges(baseNeighbors, baseStart, baseEnd, deleted))
       return null;
-    final int[] addedNeighbors = outgoing ? ov.getAddedOutNeighbors(nodeId, edgeType)
-        : ov.getAddedInNeighbors(nodeId, edgeType);
-    final Map<String, Object>[] addedProperties = outgoing ? ov.getAddedOutEdgeProperties(nodeId, edgeType)
-        : ov.getAddedInEdgeProperties(nodeId, edgeType);
+    // One lookup for both halves: the neighbours and their weights come out of the same index entry.
+    final DeltaOverlay.AddedNeighbors added = ov.getAdded(nodeId, edgeType, outgoing);
+    final int[] addedNeighbors = added != null ? added.nodeIds() : EMPTY_INT;
+    final Map<String, Object>[] addedProperties = added != null ? added.properties() : null;
 
     int keptBase = baseEnd - baseStart;
     if (deleted != null)
