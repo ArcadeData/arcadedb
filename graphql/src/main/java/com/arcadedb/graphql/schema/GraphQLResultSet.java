@@ -53,21 +53,27 @@ public class GraphQLResultSet implements ResultSet {
   private final List<Selection>      projections;
   private final ObjectTypeDefinition returnType;
 
-  private static class Projection {
-    final String               name;      // output key: the alias when present, otherwise the field name
-    final String               fieldName; // real field/property name to resolve, ignoring any alias
-    final AbstractField        field;
-    final ObjectTypeDefinition type;
-    final List<Selection>      set;
+  /**
+   * The types currently being expanded from the schema by {@link #mapByReturnType}, innermost last. It guards the
+   * automatic expansion against a cyclic schema (e.g. {@code Book.authors -> Author.wrote -> Book}), which would
+   * otherwise recurse until the stack overflows once directives are resolved against the right type. It is only
+   * touched by {@code mapByReturnType}, always in a push/pop pair, so it is empty again at the end of every
+   * {@link #next()}: an explicit selection set states its own depth and is never limited by it.
+   */
+  private final List<ObjectTypeDefinition> expansionPath = new ArrayList<>(4);
 
-    private Projection(final String name, final String fieldName, final AbstractField field, final ObjectTypeDefinition type,
-        final List<Selection> set) {
-      this.name = name;
-      this.fieldName = fieldName;
-      this.field = field;
-      this.type = type;
-      this.set = set;
-    }
+  /**
+   * @param name        output key: the alias when present, otherwise the field name
+   * @param fieldName   real field/property name to resolve, ignoring any alias
+   * @param field       the field as written in the query document, carrying any inline directive
+   * @param schemaField the field of the schema type this selection belongs to, carrying any schema-declared
+   *                    directive. Resolved against the type of the enclosing selection, not against the top-level
+   *                    query return type: see issue #6833
+   * @param type        the object type this field returns, when the schema declares one
+   * @param set         the sub-selections written in the query document, if any
+   */
+  private record Projection(String name, String fieldName, AbstractField field, FieldDefinition schemaField,
+                            ObjectTypeDefinition type, List<Selection> set) {
   }
 
   public GraphQLResultSet(final GraphQLSchema schema, final ResultSet resultSet, final List<Selection> projections,
@@ -88,20 +94,38 @@ public class GraphQLResultSet implements ResultSet {
 
   @Override
   public Result next() {
-    return projections != null ? mapBySelections(resultSet.next(), projections) : mapByReturnType(resultSet.next(), returnType);
+    return projections != null ?
+        mapBySelections(resultSet.next(), projections, returnType) :
+        mapByReturnType(resultSet.next(), returnType);
   }
 
   private GraphQLResult mapByReturnType(final Result current, final ObjectTypeDefinition type) {
-    final List<Projection> projections = new ArrayList<>(type.getFieldDefinitions().size());
-    // ADD ALL THE TYPE FIELDS AUTOMATICALLY
-    for (final FieldDefinition fieldDefinition : type.getFieldDefinitions()) {
-      final ObjectTypeDefinition subType = schema.getTypeFromField(fieldDefinition);
-      projections.add(new Projection(fieldDefinition.getName(), fieldDefinition.getName(), null, subType, null));
+    expansionPath.add(type);
+    try {
+      final List<Projection> projections = new ArrayList<>(type.getFieldDefinitions().size());
+      // ADD ALL THE TYPE FIELDS AUTOMATICALLY
+      for (final FieldDefinition fieldDefinition : type.getFieldDefinitions()) {
+        final ObjectTypeDefinition subType = schema.getTypeFromField(fieldDefinition);
+        if (subType != null && isBeingExpanded(subType))
+          // THE SCHEMA IS CYCLIC ON THIS FIELD: STOP THE AUTOMATIC EXPANSION HERE RATHER THAN RECURSE FOREVER.
+          // ONLY A QUERY THAT ASKS FOR THE FIELD EXPLICITLY GETS IT, AND THEN AT THE DEPTH IT ASKS FOR
+          continue;
+
+        projections.add(
+            new Projection(fieldDefinition.getName(), fieldDefinition.getName(), null, fieldDefinition, subType, null));
+      }
+      return mapProjections(current, projections);
+    } finally {
+      expansionPath.removeLast();
     }
-    return mapProjections(current, projections);
   }
 
-  private GraphQLResult mapBySelections(final Result current, final List<Selection> definedProjections) {
+  /**
+   * @param parentType the schema type the selections are written against - the type of the enclosing field, not the
+   *                   top-level query return type, so a schema directive declared two levels deep is found (#6833)
+   */
+  private GraphQLResult mapBySelections(final Result current, final List<Selection> definedProjections,
+      final ObjectTypeDefinition parentType) {
     final List<Projection> projections = new ArrayList<>(definedProjections.size());
     for (final Selection selection : definedProjections) {
       // A selection written as `alias: field` parses into fieldWithAlias (name = the real field,
@@ -116,10 +140,26 @@ public class GraphQLResultSet implements ResultSet {
         set = aliasedField.getSelectionSet();
       else
         set = plainField != null ? plainField.getSelectionSet() : null;
-      projections.add(
-          new Projection(selection.getName(), fieldName, field, null, set != null ? set.getSelections() : null));
+
+      final FieldDefinition schemaField = parentType != null ? parentType.getFieldDefinitionByName(fieldName) : null;
+      final ObjectTypeDefinition subType = schemaField != null ? schema.getTypeFromField(schemaField) : null;
+
+      projections.add(new Projection(selection.getName(), fieldName, field, schemaField, subType,
+          set != null ? set.getSelections() : null));
     }
     return mapProjections(current, projections);
+  }
+
+  /**
+   * Identity lookup over the (at most a handful of entries deep) automatic-expansion path. The schema keeps one
+   * {@link ObjectTypeDefinition} instance per type name, so reference equality is the right comparison and costs
+   * nothing.
+   */
+  private boolean isBeingExpanded(final ObjectTypeDefinition type) {
+    for (int i = 0; i < expansionPath.size(); i++)
+      if (expansionPath.get(i) == type)
+        return true;
+    return false;
   }
 
   @Override
@@ -183,8 +223,8 @@ public class GraphQLResultSet implements ResultSet {
     }
 
     for (final Projection entry : projections) {
-      final String projName = entry.name;
-      final String realName = entry.fieldName;
+      final String projName = entry.name();
+      final String realName = entry.fieldName();
 
       Object projectionValue = current.getProperty(realName);
 
@@ -194,15 +234,13 @@ public class GraphQLResultSet implements ResultSet {
 
       if (projectionValue == null) {
         // TRY THE FIELD FIRST
-        projectionValue = evaluateDirectives(current, entry.field);
-        if (projectionValue == null) {
-          // SEARCH IN THE SCHEMA
-          final AbstractField fieldDefinition = returnType.getFieldDefinitionByName(realName);
-          projectionValue = evaluateDirectives(current, fieldDefinition);
-        }
+        projectionValue = evaluateDirectives(current, entry.field());
+        if (projectionValue == null)
+          // SEARCH IN THE SCHEMA, IN THE TYPE THIS SELECTION BELONGS TO
+          projectionValue = evaluateDirectives(current, entry.schemaField());
       }
 
-      final AbstractField field = entry.field;
+      final AbstractField field = entry.field();
       if (projectionValue == null && field != null) {
         if (field.getDirectives() != null) {
           for (final Directive directive : field.getDirectives().getDirectives()) {
@@ -217,22 +255,22 @@ public class GraphQLResultSet implements ResultSet {
         }
       }
 
-      final List<Selection> selectionSet = entry.set;
-      final ObjectTypeDefinition projectionType = entry.type;
+      final List<Selection> selectionSet = entry.set();
+      final ObjectTypeDefinition projectionType = entry.type();
 
       if (selectionSet != null) {
         switch (projectionValue) {
-        case Map m -> projectionValue = mapBySelections(new ResultInternal(m), selectionSet);
-        case EmbeddedDocument emb -> projectionValue = mapBySelections(new ResultInternal(emb), selectionSet);
-        case Result result -> projectionValue = mapBySelections(result, selectionSet);
+        case Map m -> projectionValue = mapBySelections(new ResultInternal(m), selectionSet, projectionType);
+        case EmbeddedDocument emb -> projectionValue = mapBySelections(new ResultInternal(emb), selectionSet, projectionType);
+        case Result result -> projectionValue = mapBySelections(result, selectionSet, projectionType);
         case Iterable iterable -> {
           final List<Result> subResults = new ArrayList<>();
           for (final Object o : iterable) {
             final Result item;
             if (o instanceof Document document)
-              item = mapBySelections(new ResultInternal(document), selectionSet);
+              item = mapBySelections(new ResultInternal(document), selectionSet, projectionType);
             else if (o instanceof Result result)
-              item = mapBySelections(result, selectionSet);
+              item = mapBySelections(result, selectionSet, projectionType);
             else
               continue;
 
@@ -247,7 +285,9 @@ public class GraphQLResultSet implements ResultSet {
       } else if (projectionType != null) {
         switch (projectionValue) {
         case Map m -> projectionValue = mapByReturnType(new ResultInternal(m), projectionType);
-        case EmbeddedDocument emb -> projectionValue = mapBySelections(new ResultInternal(emb), selectionSet);
+        // MIRRORS THE Map/Result ARMS: THIS BRANCH IS THE ONE WHERE selectionSet IS NULL BY CONSTRUCTION, SO
+        // DELEGATING TO mapBySelections() WITH IT WAS A GUARANTEED NPE. SEE ISSUE #6835
+        case EmbeddedDocument emb -> projectionValue = mapByReturnType(new ResultInternal(emb), projectionType);
         case Result result -> projectionValue = mapByReturnType(result, projectionType);
         case Iterable iterable -> {
           final List<Result> subResults = new ArrayList<>();

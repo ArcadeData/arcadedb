@@ -127,8 +127,9 @@ public class GraphQLQueryEngine implements QueryEngine {
   @Override
   public ResultSet command(final String query, ContextConfiguration configuration, final Map<String, Object> parameters) {
     try {
-      final ResultSet resultSet = graphQLSchema.execute(query);
-      return resultSet;
+      // The parameters are the GraphQL variable values of the operation: see issue #6834, before they were dropped
+      // and every `$variable` silently resolved to null.
+      return graphQLSchema.execute(query, parameters);
     } catch (final CommandParsingException | CommandExecutionException e) {
       // An execution failure raised by the delegated statement is not a syntax problem with the GraphQL document.
       // Narrower than ArcadeDBException on purpose - see the note in GraphQLSchema.executeQuery. Issue #5628.

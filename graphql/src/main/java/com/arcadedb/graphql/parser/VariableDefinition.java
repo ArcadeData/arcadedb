@@ -29,5 +29,16 @@ public class VariableDefinition extends SimpleNode {
     super(id);
   }
 
+  public VariableLiteral getVariableLiteral() {
+    return variableLiteral;
+  }
+
+  public Type getType() {
+    return type;
+  }
+
+  public DefaultValue getDefaultValue() {
+    return defaultValue;
+  }
 }
 /* ParserGeneratorCC - OriginalChecksum=d27742fee491b437eadc17b1257844df (do not edit this line) */
