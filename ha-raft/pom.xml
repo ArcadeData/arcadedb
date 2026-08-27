@@ -167,11 +167,19 @@
                      the adjacency that caused them does not even exist any more. "Immediately after
                      RaftMigrationCompactionRaceIT" is now Issue5064CommittedRemotelyContractIT.
 
-                 That last point is why this is a split rather than reuseForks=false for the whole module. A
-                 fresh JVM per class would settle the question outright, but it buys 122 extra JVM starts plus
-                 the loss of all cross-class JIT warm-up, against twenty minutes of headroom - and it would be
-                 paying that on every run forever to defend against an adjacency that is one `ls` away from
-                 rearranging itself again. Isolating the classes that generate the pressure removes the hazard
+                 That last point is why this is a split rather than reuseForks=false for the whole module, and
+                 the cost of the option not taken is measured rather than estimated. A throwaway branch ran the
+                 module-wide variant through this very lane (run 33045220743, all 238 tests, all 123 classes):
+
+                   86.9 minutes, against a baseline of 59.7-71.8 (p50 62.2, p90 68.2) and a 90-minute timeout.
+
+                 That is +24.7 minutes on the median, +40%, and 3.1 minutes of headroom left - about twelve
+                 seconds per extra fork, which is JVM start plus classload plus the cross-class JIT warm-up
+                 thrown away 122 times. A lane that finishes 3 minutes inside its timeout is not a lane, it is a
+                 future flake with a schedule; the next test added to this module would push it over. So the
+                 option is closed on a number, not on an intuition - and it would have been paying that forever
+                 to defend against an adjacency that is one `ls` away from rearranging itself again.
+                 Isolating the classes that generate the pressure removes the hazard
                  at its source instead: whatever a heavy IT leaves behind - heap it churned, threads it did not
                  join, page cache it dirtied - dies with its fork rather than being inherited by whatever ran
                  next. It works in either execution order, so it does not quietly depend on Maven running the
