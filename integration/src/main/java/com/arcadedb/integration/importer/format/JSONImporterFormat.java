@@ -217,7 +217,14 @@ public class JSONImporterFormat implements FormatImporter {
         if (recordFailed.get())
           throw new ImportException("A nested object/array failed to import, skipping the whole record", null);
 
-        if (record instanceof Map)
+        // parseRecord() hands back the raw attribute map for two opposite reasons: either there was no mapping
+        // object for this record at all - the legitimate "save it as an anonymous document" case - or createRecord()
+        // refused to build one (no @cat/@type, unresolvable/unsupported type, no @id value, "@cat":"e" at top level)
+        // or resolved the record to an already existing one with no "merge" strategy. Every one of those has already
+        // been logged as skipped and, where applicable, counted in context.errors, so materializing it here under
+        // settings.documentTypeName would resurrect a record the import just reported as dropped (#6812). The
+        // mapping object is the discriminator: only its absence means "anonymous".
+        if (record instanceof Map && mappingObject == null)
           saveAnonymousRecord(database, settings, (Map<String, Object>) record);
 
         database.commit();
