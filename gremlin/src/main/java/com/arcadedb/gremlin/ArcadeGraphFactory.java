@@ -21,12 +21,14 @@ package com.arcadedb.gremlin;
 import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.remote.RemoteDatabase;
 import org.apache.commons.configuration2.Configuration;
 
 import java.io.Closeable;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
 
 /**
  * ArcadeDB Gremlin implementation factory class. Utilizes a pool of ArcadeGraph to avoid creating a new instance every time.
@@ -53,14 +55,36 @@ public class ArcadeGraphFactory implements Closeable {
       this.factory = factory;
     }
 
-    protected PooledArcadeGraph(final ArcadeGraphFactory factory, final BasicDatabase database) {
-      super(database);
+    protected PooledArcadeGraph(final ArcadeGraphFactory factory, final BasicDatabase database, final boolean sharedDatabase) {
+      super(database, sharedDatabase);
       this.factory = factory;
     }
 
+    /**
+     * Returns the instance to the pool. A borrowed instance must always be handed back clean: any transaction still
+     * in flight is ended here, otherwise the next borrower inherits (and commits) another caller's writes, which
+     * across threads is cross-request data mixing (issue #6821).
+     */
     @Override
     public void close() {
-      factory.release(this);
+      try {
+        // HONOUR THE CONFIGURED CLOSE BEHAVIOUR FIRST (ROLLBACK BY DEFAULT), AS A NON-POOLED ArcadeGraph.close() DOES.
+        if (tx().isOpen())
+          tx().close();
+      } catch (final Exception e) {
+        LogManager.instance()
+            .log(this, Level.WARNING, "Error on ending the pending transaction while releasing a pooled ArcadeGraph instance", e);
+      } finally {
+        try {
+          // WHATEVER THE CLOSE BEHAVIOUR DID, THE INSTANCE MUST NOT GO BACK ON THE QUEUE WITH AN OPEN TRANSACTION.
+          if (getDatabase().isTransactionActive())
+            getDatabase().rollback();
+        } catch (final Exception e) {
+          LogManager.instance()
+              .log(this, Level.WARNING, "Error on rolling back the pending transaction while releasing a pooled ArcadeGraph instance", e);
+        }
+        factory.release(this);
+      }
     }
 
     public void dispose() {
@@ -135,9 +159,11 @@ public class ArcadeGraphFactory implements Closeable {
             + " instances in the pool. Assure the instances were correctly released with Graph.close()");
 
       if (localDatabase != null)
-        instance = new PooledArcadeGraph(this, localDatabase);
+        // THE LOCAL DATABASE IS SHARED BY EVERY POOLED INSTANCE AND OWNED BY THE FACTORY: DISPOSING ONE INSTANCE MUST
+        // NOT CLOSE IT UNDER THE OTHERS. THE FACTORY CLOSES IT ITSELF IN close().
+        instance = new PooledArcadeGraph(this, localDatabase, true);
       else
-        instance = new PooledArcadeGraph(this, new RemoteDatabase(host, port, databaseName, userName, userPassword));
+        instance = new PooledArcadeGraph(this, new RemoteDatabase(host, port, databaseName, userName, userPassword), false);
       totalInstancesCreated.incrementAndGet();
     }
     return instance;
