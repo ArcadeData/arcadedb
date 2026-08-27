@@ -272,6 +272,13 @@ public class PluginManager {
         } finally {
           currentThread.setContextClassLoader(originalClassLoader);
         }
+      } catch (final Error e) {
+        // THE INNER HANDLER RETHROWS `Exception | Error`, AND A PLUGIN JAR MISSING A CLASS FAILS WITH THE SECOND ONE.
+        // CATCHING ONLY Exception HERE WOULD LEAVE THE DESCRIPTOR INITIALIZED AFTER stopService() HAS ALREADY RELEASED
+        // THE PLUGIN'S STATE, SO LIFECYCLE CALLBACKS WOULD KEEP ARRIVING AT IT. RETHROWN UNWRAPPED: AN Error IS NOT
+        // THIS LAYER'S TO REINTERPRET
+        descriptor.setInitialized(false);
+        throw e;
       } catch (final Exception e) {
         // THE PLUGIN NEVER CAME UP: STOP DELIVERING LIFECYCLE CALLBACKS TO IT, ITS STATE IS WHATEVER THE FAILED START
         // LEFT BEHIND

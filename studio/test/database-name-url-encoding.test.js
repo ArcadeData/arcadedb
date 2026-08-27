@@ -96,6 +96,36 @@ test("every api/v1 URL in the Studio builds its database segment with encodeData
   assert.deepEqual(offenders, [], "these call sites build the URL path segment without encodeDatabaseName");
 });
 
+test("no admin command is sent as a hand-built JSON string", () => {
+  // A database name may contain a single quote - the server rejects only / \\ NUL and .. - and the
+  // `create/drop database` payloads used to be assembled as "{ 'command': '... " + name + "' }". Such a name
+  // made the body malformed, so the database could not be created, dropped or reset at all. JSON.stringify
+  // escapes it; nothing else here needs to, since the server reads the name as the verbatim rest of the command.
+  const offenders = [];
+  for (const file of fs.readdirSync(JS_DIR).filter((f) => f.endsWith(".js"))) {
+    const src = fs.readFileSync(path.join(JS_DIR, file), "utf8");
+    src.split("\n").forEach((line, i) => {
+      if (/data:\s*"\{/.test(line)) offenders.push(file + ":" + (i + 1) + " -> " + line.trim());
+    });
+  }
+  assert.deepEqual(offenders, [], "build the request body with JSON.stringify, not by concatenating JSON text");
+
+  // And the payload a quote-carrying name produces is valid JSON that round-trips to the original name.
+  const body = JSON.stringify({ command: "drop database " + "bob's db" });
+  assert.equal(JSON.parse(body).command, "drop database bob's db");
+});
+
+test("a database name is never URL-encoded on its way into a command payload", () => {
+  // The mirror image of the reported bug: createDatabase() ran the typed name through encodeURI(), so a name
+  // typed as `my db` created a database actually named `my%20db`.
+  const dbSrc = fs.readFileSync(path.join(JS_DIR, "studio-database.js"), "utf8");
+  // Match an assignment rather than the bare call, so the comment explaining this rule is not itself a hit.
+  assert.ok(
+    !/=\s*encodeURI\((?!Component)/.test(dbSrc),
+    "encodeURI() encodes for a URL, not for a command payload - it changes the name that reaches the server"
+  );
+});
+
 test("no database name is HTML-escaped on its way into a URL or a SQL command", () => {
   const offenders = [];
   for (const file of fs.readdirSync(JS_DIR).filter((f) => f.endsWith(".js"))) {

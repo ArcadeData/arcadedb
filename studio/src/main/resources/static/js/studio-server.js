@@ -537,7 +537,7 @@ function getServerEvents(file) {
     .ajax({
       type: "POST",
       url: "api/v1/server",
-      data: "{ command: 'get server events" + (file != null ? " " + file : "") + "' }",
+      data: JSON.stringify({ command: "get server events" + (file != null ? " " + file : "") }),
       beforeSend: function (xhr) {
         xhr.setRequestHeader("Authorization", globalCredentials);
       },
