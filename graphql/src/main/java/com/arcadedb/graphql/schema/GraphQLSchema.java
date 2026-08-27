@@ -258,8 +258,14 @@ public class GraphQLSchema {
         continue;
 
       final String name = literal.getName();
+      final boolean nonNull = definition.getType() != null && definition.getType().isBang();
+
       if (parameters != null && parameters.containsKey(name)) {
-        variables.put(name, parameters.get(name));
+        final Object parameterValue = parameters.get(name);
+        // A NON-NULL VARIABLE IS NOT SATISFIED BY A KEY THAT IS PRESENT WITH A NULL VALUE
+        if (parameterValue == null && nonNull)
+          throw new CommandParsingException("GraphQL variable '$" + name + "' is declared as non-null but null was passed");
+        variables.put(name, parameterValue);
         continue;
       }
 
@@ -272,7 +278,7 @@ public class GraphQLSchema {
         continue;
       }
 
-      if (definition.getType() != null && definition.getType().isBang())
+      if (nonNull)
         throw new CommandParsingException("GraphQL variable '$" + name + "' is declared as non-null but no value was passed");
 
       variables.put(name, null);
