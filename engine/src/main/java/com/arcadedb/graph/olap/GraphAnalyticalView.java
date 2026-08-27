@@ -764,7 +764,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     final Snapshot snap = checkBuilt();
 
     // Cannot provide zero-copy view when overlay is active (delta edges modify topology)
-    if (snap.overlay != null)
+    if (hasActiveOverlay(snap))
       return null;
 
     final int n = snap.nodeMapping.size();
@@ -1194,7 +1194,15 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * {@link #getVertices} applies the overlay itself and needs no such check.
    */
   boolean hasActiveOverlay() {
-    final Snapshot snap = this.snapshot;
+    return hasActiveOverlay(this.snapshot);
+  }
+
+  /**
+   * The same question asked of a snapshot a caller has already captured, which is how every method that goes
+   * on to read that snapshot must ask it: re-reading the field would let a commit land between the check and
+   * the read and hand back base arrays belonging to a snapshot that does have an overlay.
+   */
+  private static boolean hasActiveOverlay(final Snapshot snap) {
     return snap != null && snap.overlay != null;
   }
 
@@ -1457,6 +1465,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     final CSRAdjacencyIndex csr = snap.csrPerType.get(edgeType);
 
     // The base slice this node's edges of this type occupy, as offsets into the CSR's own neighbour array.
+    //
+    // A missing CSR is not a reason to refuse, unlike in the positional accessor this replaced - that one had
+    // to compute an index into the slice and had none without it. Here the base slice is simply empty, which
+    // for a node with no base edges of this type is the truth, and the overlay's own additions below are
+    // answerable regardless: they carry their values rather than being addressed by a column slot. A type with
+    // a column store but no CSR is not a state a build produces (Snapshot builds the two together), and if it
+    // ever were, an edge type whose edges all arrived after the build would answer for them exactly rather
+    // than sending the caller to the records for nothing.
     int[] baseNeighbors = null;
     int baseStart = 0;
     int baseEnd = 0;
