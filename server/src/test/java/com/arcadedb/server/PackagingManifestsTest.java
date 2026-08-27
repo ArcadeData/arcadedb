@@ -102,11 +102,11 @@ class PackagingManifestsTest {
     // one the pod actually gets: with a single server per pod that is always the first of the range.
     final String httpPortRange = String.valueOf(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT.getDefValue());
     assertThat(entry[2]).isEqualTo(httpPortRange.split("-")[0]);
-    assertThat(manifest).contains("- containerPort: " + entry[2] + "\n              name: http");
 
-    // The Service and the container port have to agree with it, or nothing reaches the listener.
-    assertThat(manifest).contains("- name: raft\n      port: " + raftPort);
-    assertThat(manifest).contains("- containerPort: " + raftPort + "\n              name: raft");
+    // The Service and the container ports have to agree with it, or nothing reaches the listener.
+    final Map<String, String> containerPorts = namedPorts(manifest, "containerPort", "name");
+    assertThat(containerPorts).containsEntry("raft", raftPort).containsEntry("http", entry[2]);
+    assertThat(namedPorts(manifest, "name", "port")).containsEntry("raft", raftPort);
   }
 
   @Test
@@ -214,6 +214,22 @@ class PackagingManifestsTest {
         .doesNotContain("\nversion:");
     assertThat(compose).as("without a healthcheck a crash-looping container still reports as running")
         .contains("healthcheck:");
+  }
+
+  /**
+   * Pairs of adjacent YAML lines - a name and a port, in either order - as name to port. No whitespace
+   * anywhere in the pattern is pinned, so a cosmetic re-indent of the manifest cannot redden a check
+   * whose whole purpose is to catch a port drifting away from the code.
+   */
+  private static Map<String, String> namedPorts(final String yaml, final String firstKey, final String secondKey) {
+    final Map<String, String> found = new LinkedHashMap<>();
+    final Matcher m = Pattern.compile(
+        "^\\s*-\\s*" + firstKey + ":\\s*(\\S+)\\s*\\n\\s*" + secondKey + ":\\s*(\\S+)\\s*$", Pattern.MULTILINE).matcher(yaml);
+    while (m.find()) {
+      final boolean nameFirst = "name".equals(firstKey);
+      found.put(nameFirst ? m.group(1) : m.group(2), nameFirst ? m.group(2) : m.group(1));
+    }
+    return found;
   }
 
   /**
