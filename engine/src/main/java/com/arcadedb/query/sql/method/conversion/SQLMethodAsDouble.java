@@ -40,6 +40,7 @@ public class SQLMethodAsDouble extends AbstractSQLMethod {
       final Object[] params) {
     if (value instanceof Number number)
       return number.doubleValue();
-    return value != null ? Double.valueOf(value.toString().trim()) : null;
+    final String text = numericTextOrNull(value);
+    return text != null ? Double.valueOf(text) : null;
   }
 }
