@@ -54,6 +54,12 @@ public class GraphQLResultSet implements ResultSet {
   private final ObjectTypeDefinition returnType;
 
   /**
+   * The variable values of the operation, for the directives written in the query document. Never used for a
+   * directive declared in the schema: see {@link #evaluateDirectives}.
+   */
+  private final Map<String, Object> variables;
+
+  /**
    * The types currently being expanded from the schema by {@link #mapByReturnType}, innermost last. It guards the
    * automatic expansion against a cyclic schema (e.g. {@code Book.authors -> Author.wrote -> Book}), which would
    * otherwise recurse until the stack overflows once directives are resolved against the right type. It is only
@@ -77,7 +83,7 @@ public class GraphQLResultSet implements ResultSet {
   }
 
   public GraphQLResultSet(final GraphQLSchema schema, final ResultSet resultSet, final List<Selection> projections,
-      final ObjectTypeDefinition returnType) {
+      final ObjectTypeDefinition returnType, final Map<String, Object> variables) {
     if (resultSet == null)
       throw new IllegalArgumentException("NULL resultSet");
 
@@ -85,6 +91,7 @@ public class GraphQLResultSet implements ResultSet {
     this.resultSet = resultSet;
     this.projections = projections;
     this.returnType = returnType;
+    this.variables = variables;
   }
 
   @Override
@@ -172,7 +179,13 @@ public class GraphQLResultSet implements ResultSet {
     return Optional.empty();
   }
 
-  private Object evaluateDirectives(final Result current, final AbstractField fieldDefinition) {
+  /**
+   * @param variables the operation's variable values when {@code fieldDefinition} is a field of the query document,
+   *                  whose inline directives can reference them; {@code null} for a field of the schema, whose
+   *                  directives are authored in the SDL and have no operation in scope to take a variable from
+   */
+  private Object evaluateDirectives(final Result current, final AbstractField fieldDefinition,
+      final Map<String, Object> variables) {
     Object projectionValue = null;
 
     if (fieldDefinition != null) {
@@ -183,14 +196,14 @@ public class GraphQLResultSet implements ResultSet {
             if (directive.getArguments() != null) {
               String type = null;
               Vertex.DIRECTION direction = Vertex.DIRECTION.BOTH;
-              // THESE ARGUMENTS BELONG TO THE SCHEMA, NOT TO THE OPERATION, SO NO VARIABLE VALUE CAN BE IN SCOPE
-              // FOR THEM AND THE RAW getValue() CHAIN IS THE RIGHT ONE. A `$variable` WRITTEN HERE ANYWAY USED TO
-              // NPE ON THE null THE OLD VariableLiteral.getValue() RETURNED; IT NOW REPORTS ITSELF. SEE #6834
               for (final Argument argument : directive.getArguments().getList()) {
                 if ("type".equals(argument.getName())) {
-                  type = argument.getValueWithVariable().getValue().getValue().toString();
+                  final Object value = GraphQLSchema.resolveValue(argument.getValueWithVariable(), variables);
+                  type = value != null ? value.toString() : null;
                 } else if ("direction".equals(argument.getName())) {
-                  direction = Vertex.DIRECTION.valueOf(argument.getValueWithVariable().getValue().getValue().toString());
+                  final Object value = GraphQLSchema.resolveValue(argument.getValueWithVariable(), variables);
+                  if (value != null)
+                    direction = Vertex.DIRECTION.valueOf(value.toString());
                 }
               }
 
@@ -237,10 +250,12 @@ public class GraphQLResultSet implements ResultSet {
 
       if (projectionValue == null) {
         // TRY THE FIELD FIRST
-        projectionValue = evaluateDirectives(current, entry.field());
+        // AN INLINE DIRECTIVE IS WRITTEN IN THE QUERY DOCUMENT, SO IT CAN REFERENCE THE OPERATION'S VARIABLES
+        projectionValue = evaluateDirectives(current, entry.field(), variables);
         if (projectionValue == null)
-          // SEARCH IN THE SCHEMA, IN THE TYPE THIS SELECTION BELONGS TO
-          projectionValue = evaluateDirectives(current, entry.schemaField());
+          // SEARCH IN THE SCHEMA, IN THE TYPE THIS SELECTION BELONGS TO. A DIRECTIVE DECLARED THERE IS PART OF THE
+          // SDL, NOT OF THE OPERATION, SO NO VARIABLE IS IN SCOPE FOR IT
+          projectionValue = evaluateDirectives(current, entry.schemaField(), null);
       }
 
       final AbstractField field = entry.field();
