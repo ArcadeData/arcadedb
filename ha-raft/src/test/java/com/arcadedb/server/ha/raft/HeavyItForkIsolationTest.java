@@ -68,7 +68,11 @@ class HeavyItForkIsolationTest {
       RaftBulkInsertCompactionRaceIT.class,
       RaftHARandomCrashIT.class,
       RaftIndexCompactionReplicationIT.class,
-      RaftHAComprehensiveIT.class);
+      RaftHAComprehensiveIT.class,
+      // Not heavy - it does nothing but read two system properties. It is tagged because it is the check that
+      // the tag still routes anywhere, and it can only make that check from inside the fork it is asserting
+      // about. See HeavyForkWiringIT.
+      HeavyForkWiringIT.class);
 
   @Test
   void exactlyTheDeclaredItsRunInAForkOfTheirOwn() {
@@ -120,13 +124,21 @@ class HeavyItForkIsolationTest {
     }
   }
 
+  /**
+   * Fails closed. Returning {@code false} for a class that would not load would drop it from the scanned set, and
+   * a drift test that quietly forgets a class it could not read is worse than no drift test: a tag genuinely
+   * going missing and a class failing to load would report the same way round, and the second would be the one
+   * that looked like success. The scan only ever sees {@code .class} files this module just compiled into its own
+   * package, so a load failure here means something is wrong that is worth stopping for and naming.
+   */
   private static boolean carriesHeavyTag(final String className) {
     try {
       final Class<?> loaded = Class.forName(className, false, HeavyItForkIsolationTest.class.getClassLoader());
       return Arrays.stream(loaded.getAnnotationsByType(Tag.class)).anyMatch(t -> HEAVY_TAG.equals(t.value()));
-    } catch (final ClassNotFoundException | NoClassDefFoundError e) {
-      // A test class whose dependencies are not on this module's test classpath cannot be one of ours.
-      return false;
+    } catch (final ClassNotFoundException | LinkageError e) {
+      throw new IllegalStateException(
+          "cannot read the annotations of " + className + ", which this module compiled into its own test classes; "
+              + "the ha-heavy drift check cannot be trusted while that is true", e);
     }
   }
 
