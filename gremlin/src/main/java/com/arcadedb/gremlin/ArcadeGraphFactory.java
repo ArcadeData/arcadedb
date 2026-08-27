@@ -69,8 +69,10 @@ public class ArcadeGraphFactory implements Closeable {
     public void close() {
       try {
         // HONOUR THE CONFIGURED CLOSE BEHAVIOUR FIRST (ROLLBACK BY DEFAULT), AS A NON-POOLED ArcadeGraph.close() DOES.
-        if (tx().isOpen())
-          tx().close();
+        // UNCONDITIONALLY, EVEN WITH NO TRANSACTION OPEN: AbstractThreadLocalTransaction.doClose() ALSO CLEARS THE
+        // onClose()/onReadWrite() CONSUMERS, AND THE TRANSACTION OBJECT OUTLIVES THE BORROW. SKIPPING THE CALL WOULD
+        // LEAVE A BORROWER'S onClose(COMMIT) IN PLACE FOR THE NEXT ONE, WHICH IS #6821 THROUGH A SIDE DOOR.
+        tx().close();
       } catch (final Exception e) {
         LogManager.instance()
             .log(this, Level.WARNING, "Error on ending the pending transaction while releasing a pooled ArcadeGraph instance", e);

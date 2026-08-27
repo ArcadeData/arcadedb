@@ -42,6 +42,12 @@ public class ArcadeVertexProperty<T> implements VertexProperty<T> {
   protected final T            value;
   protected final ArcadeVertex vertex;
 
+  /**
+   * Cached only once the vertex has a RID, because {@code equals()}/{@code hashCode()} both go through {@link #id()}
+   * and would otherwise rebuild the string on every probe of a {@code Set}, a {@code Map} or a {@code dedup()}.
+   */
+  private String id;
+
   protected ArcadeVertexProperty(final ArcadeVertex vertex, final String key, final T value) {
     this.vertex = vertex;
     this.key = key;
@@ -90,9 +96,16 @@ public class ArcadeVertexProperty<T> implements VertexProperty<T> {
    */
   @Override
   public Object id() {
-    final Object vertexId = this.vertex.id();
-    // AN UNSAVED VERTEX HAS NO RID YET: FALL BACK TO ITS TRANSIENT ID SO id() NEITHER THROWS NOR COLLIDES.
-    return (vertexId != null ? vertexId : this.vertex.transientId()) + ID_SEPARATOR + this.key;
+    String result = id;
+    if (result == null) {
+      final Object vertexId = this.vertex.id();
+      // AN UNSAVED VERTEX HAS NO RID YET: FALL BACK TO ITS TRANSIENT ID SO id() NEITHER THROWS NOR COLLIDES.
+      result = (vertexId != null ? vertexId : this.vertex.transientId()) + ID_SEPARATOR + this.key;
+      if (vertexId != null)
+        // ONLY A RID IS FINAL: AN UNSAVED VERTEX WILL GET ONE LATER AND THE ID HAS TO FOLLOW IT.
+        id = result;
+    }
+    return result;
   }
 
   @Override
