@@ -54,10 +54,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 class SlowWaitInstrumentTest {
 
   /**
-   * The fraction of the budget a silent wait is allowed to consume. Held at a sixth since the instrument was
-   * added: 10s of 120s, 5s of 30s, 2.5s of 15s. Asserted as a ratio rather than as two literals so that
-   * retuning both numbers together stays legal and dropping the threshold's resolution behind the budget does
-   * not.
+   * The fraction of the budget at which a wait becomes worth a line. Held at a sixth since the instrument was
+   * added: 10s of 120s, 5s of 30s, 2.5s of 15s. Asserted as a ratio rather than as two literals, so that
+   * retuning both numbers together stays legal while letting either drift away from the other does not.
    */
   private static final long REPORT_THRESHOLD_FRACTION_OF_BUDGET = 6;
 
@@ -141,9 +140,14 @@ class SlowWaitInstrumentTest {
   }
 
   /**
-   * The invariant behind every cut so far. A threshold that stays put while the budget comes down is how a
-   * budget goes back to being unmeasurable: at 5s of a 15s budget a wait could burn a third of it and still
-   * report nothing, which is the same blindness - in miniature - that let 120s stand unexamined for years.
+   * The invariant behind every cut so far, asserted as the equality the javadoc on those two constants claims -
+   * not as an upper bound on the threshold, which is only half of it.
+   * <p>
+   * Too high and the budget goes back to being unmeasurable: a threshold left at 5s while the budget came down
+   * to 15s would let a wait burn a third of it and still report nothing, the same blindness in miniature that
+   * let 120s stand unexamined for years. Too low and the instrument stops discriminating - at 1 ms every wait
+   * reports, the log fills with lines that mean nothing, and the next reader has no more idea which waits were
+   * slow than if there had been no lines at all. Both directions destroy the evidence, so both are asserted.
    */
   @Test
   void theReportThresholdStaysAFixedFractionOfTheBudget() {
@@ -151,7 +155,14 @@ class SlowWaitInstrumentTest {
     final long threshold = reportThresholdMs();
 
     assertThat(threshold).isPositive();
-    assertThat(threshold * REPORT_THRESHOLD_FRACTION_OF_BUDGET).isLessThanOrEqualTo(budget);
+    assertThat(threshold * REPORT_THRESHOLD_FRACTION_OF_BUDGET)
+        .as("the report threshold is %d ms of a %d ms budget, which is not the one-%d-th that BaseRaftHATest "
+                + "documents and that all three settings of this pair have used (10s of 120s, 5s of 30s, 2.5s of "
+                + "15s). Above that ratio a wait burns more of the budget in silence than it ever has; below it "
+                + "the instrument reports on waits that are simply normal and stops being able to point at the "
+                + "ones that are not. If the ratio itself is what you meant to change, change it here and in that "
+                + "javadoc together", threshold, budget, REPORT_THRESHOLD_FRACTION_OF_BUDGET)
+        .isEqualTo(budget);
   }
 
   /**
