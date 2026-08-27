@@ -91,7 +91,7 @@ class RootPasswordFromFileTest {
   }
 
   @Test
-  void anUnreadablePasswordFileIsRejectedWithTheOffendingPath() {
+  void aMissingPasswordFileIsRejectedWithTheOffendingPath() {
     final String missing = CONFIG_PATH + "/does-not-exist";
     GlobalConfiguration.SERVER_ROOT_PASSWORD_PATH.setValue(missing);
 
