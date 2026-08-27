@@ -109,10 +109,10 @@ class Issue6811DelimiterOptionTest {
 
   /**
    * The generic {@code -delimiter} also has to reach a source that has its own setting name but no value for it,
-   * here the vertices file, while a per-source delimiter still wins over it.
+   * here the vertices file.
    */
   @Test
-  void genericDelimiterAppliesToVerticesAndPerSourceOneWins() {
+  void genericDelimiterAppliesToVertices() {
     final String databasePath = "target/databases/test-import-6811-generic";
     FileUtils.deleteRecursively(new File(databasePath));
 
@@ -124,6 +124,39 @@ class Issue6811DelimiterOptionTest {
         "-vertices", "src/test/resources/importer-vertices-semicolon.csv",//
         "-database", databasePath,//
         "-delimiter", ";",//
+        "-typeIdProperty", "Id",//
+        "-typeIdType", "Long",//
+        "-typeIdUnique", "true",//
+        "-forceDatabaseCreate", "true" }).load();
+
+    try (final Database db = databaseFactory.open()) {
+      assertThat(db.countType("Node", true)).isEqualTo(6);
+      assertThat(db.lookupByKey("Node", "Id", 0).next().getRecord().asVertex().<Object>get("First Name")).isEqualTo("Jay");
+    }
+
+    databaseFactory.open().drop();
+    TestHelper.checkActiveDatabases();
+  }
+
+  /**
+   * The other half of the precedence rule: a per-source delimiter wins over the generic one, so the semicolon
+   * vertices file is still parsed on {@code ;} even though the generic setting says comma. A fallback applied in the
+   * wrong order would parse the whole line as one column here and lose the {@code First Name} property.
+   */
+  @Test
+  void perSourceDelimiterWinsOverTheGenericOne() {
+    final String databasePath = "target/databases/test-import-6811-precedence";
+    FileUtils.deleteRecursively(new File(databasePath));
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    new Importer(new String[] {//
+        "-vertices", "src/test/resources/importer-vertices-semicolon.csv",//
+        "-verticesDelimiter", ";",//
+        "-database", databasePath,//
+        "-delimiter", ",",//
         "-typeIdProperty", "Id",//
         "-typeIdType", "Long",//
         "-typeIdUnique", "true",//
