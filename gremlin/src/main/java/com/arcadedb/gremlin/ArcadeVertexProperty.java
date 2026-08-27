@@ -46,7 +46,7 @@ public class ArcadeVertexProperty<T> implements VertexProperty<T> {
    * Cached only once the vertex has a RID, because {@code equals()}/{@code hashCode()} both go through {@link #id()}
    * and would otherwise rebuild the string on every probe of a {@code Set}, a {@code Map} or a {@code dedup()}.
    */
-  private String id;
+  private volatile String id;
 
   protected ArcadeVertexProperty(final ArcadeVertex vertex, final String key, final T value) {
     this.vertex = vertex;
