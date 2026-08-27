@@ -133,6 +133,93 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
             </plugin>
+
+            <!-- Issue #6343, item 2: the heaviest ITs in this module no longer share a JVM with the rest.
+                 =====================================================================================
+
+                 The parent runs failsafe with reuseForks=true and forkCount=1, so every IT in a module shares
+                 one JVM with everything that ran before it. In this module that is 123 IT classes and roughly
+                 an hour of continuous three-node cluster work in a single process, and it is the setting behind
+                 the only stalls this module has ever produced that nobody could reproduce in isolation: two CI
+                 runs (31578870619, 31587763511) in which Issue5410AbandonedTicketReleaseIT consumed its ENTIRE
+                 poll budget immediately after RaftMigrationCompactionRaceIT - 72k records, 24 compaction rounds,
+                 12 writer threads - had run in the same fork. That bought a 120s resync budget on a suspicion;
+                 see BaseRaftHATest.RESYNC_RETRY_TIMEOUT_MS for how the measurements since took it back to 15s.
+
+                 MEASURED FIRST, as issue #6343 asked. Forty full ha-integration-tests runs on main between
+                 2026-08-18 and 2026-08-26:
+                   - the lane costs 59.7-71.8 minutes (p50 62.2, p90 68.2) against a 90-minute job timeout, so
+                     roughly twenty minutes of headroom exist and no more;
+                   - the sum of per-class elapsed times is ~3600s of that, i.e. the JVM is busy essentially the
+                     whole time;
+                   - the class order was byte-for-byte identical in all forty runs, but it is failsafe's
+                     filesystem order, not a declared one - and it has already drifted since those stalls, so
+                     the adjacency that caused them does not even exist any more. "Immediately after
+                     RaftMigrationCompactionRaceIT" is now Issue5064CommittedRemotelyContractIT.
+
+                 That last point is why this is a split rather than reuseForks=false for the whole module. A
+                 fresh JVM per class would settle the question outright, but it buys 122 extra JVM starts plus
+                 the loss of all cross-class JIT warm-up, against twenty minutes of headroom - and it would be
+                 paying that on every run forever to defend against an adjacency that is one `ls` away from
+                 rearranging itself again. Isolating the classes that generate the pressure costs four extra
+                 JVM starts and removes the hazard at its source: whatever a heavy IT leaves behind - heap it
+                 churned, threads it did not join, page cache it dirtied - dies with its fork instead of being
+                 inherited by whatever ran next. It works in either execution order, so it does not quietly
+                 depend on Maven running the inherited execution first.
+
+                 Deliberately NOT changed: runOrder. With the heavy classes hoisted out, reordering the other
+                 118 would be a behaviour change to a lane that is currently stable, made without evidence -
+                 which is the thing this issue exists to stop doing.
+
+                 The heavy set is tagged @Tag("ha-heavy") at the class, chosen for what a class leaves behind in
+                 a shared JVM rather than for its wall clock: RaftMigrationCompactionRaceIT and
+                 RaftBulkInsertCompactionRaceIT (72k and 48k records against concurrent compaction),
+                 RaftHARandomCrashIT (15k vertices while servers are killed and restarted under it),
+                 RaftIndexCompactionReplicationIT (5k records plus index compaction across three servers) and
+                 RaftHAComprehensiveIT (the longest-running IT in the module at ~344s of continuous
+                 three-server activity). -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <!-- The parent's execution, which has no id of its own and so is called "default". Named
+                             here only to take the heavy classes off its hands. The two executions are a
+                             partition by construction - "everything but the tag" and "only the tag" - so adding
+                             a class to the heavy set is one annotation, not two lists that can drift apart.
+
+                             This has to be excludedGroups on the execution rather than an override of the
+                             parent's ${failsafe.excludedGroups} property, because the heavy execution below then
+                             has no way to opt back in: an empty <excludedGroups/> there resolves through the
+                             mojo's own ${failsafe.excludedGroups} default and excludes exactly the classes that
+                             execution exists to run, which fails by running nothing and reporting success. -->
+                        <id>default</id>
+                        <configuration>
+                            <excludedGroups>ha-heavy</excludedGroups>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <!-- The heavy classes, a fresh JVM for each - verified by two throwaway ITs that
+                             recorded ProcessHandle.current().pid() and got different ones.
+
+                             Its own summary file: failsafe merges into an existing summary rather than replacing
+                             it, so sharing the default path would still count both executions, but it would
+                             attribute a heavy failure to the "default" execution's verify goal and name the wrong
+                             half of the split in the error. A failing heavy IT should say "heavy-its-in-their-
+                             own-fork", and with this it does. -->
+                        <id>heavy-its-in-their-own-fork</id>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                        <configuration>
+                            <groups>ha-heavy</groups>
+                            <reuseForks>false</reuseForks>
+                            <summaryFile>${project.build.directory}/failsafe-reports/failsafe-summary-ha-heavy.xml</summaryFile>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
         </plugins>
     </build>
 </project>

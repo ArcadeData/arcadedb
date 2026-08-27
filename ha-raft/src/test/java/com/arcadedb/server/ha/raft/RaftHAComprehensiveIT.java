@@ -53,7 +53,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Comprehensive HA test suite for the Ratis-based replication engine.
  * Tests data consistency, failover, catch-up, concurrency, and edge cases.
+ * <p>
+ * Runs in a fork of its own: at some 344s of continuous three-server activity it is the
+ * longest-running IT in the module. See the failsafe configuration in {@code ha-raft/pom.xml} for
+ * why the heaviest ITs here no longer share a JVM with the rest (issue #6343).
  */
+@Tag("ha-heavy")
 @Tag("IntegrationTest")
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @Timeout(120)

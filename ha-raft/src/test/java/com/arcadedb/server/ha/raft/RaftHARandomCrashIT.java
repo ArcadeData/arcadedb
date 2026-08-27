@@ -34,6 +34,7 @@ import com.arcadedb.remote.RemoteException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.utility.CodeUtils;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.Set;
@@ -44,6 +45,12 @@ import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * Runs in a fork of its own: 15k vertices written while servers are killed and restarted underneath
+ * the writer. See the failsafe configuration in {@code ha-raft/pom.xml} for why the heaviest ITs here
+ * no longer share a JVM with the rest (issue #6343).
+ */
+@Tag("ha-heavy")
 class RaftHARandomCrashIT extends BaseRaftHATest {
 
   private static final int TXS                    = 1_500;
