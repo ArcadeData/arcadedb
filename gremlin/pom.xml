@@ -138,9 +138,54 @@
             <artifactId>commons-beanutils</artifactId>
             <version>${commons-beanutils.version}</version>
         </dependency>
+        <!-- ARCADEDB DOES NOT USE THIS LIBRARY BUT GREMLIN DOES. REPLACING IT WITH THE LAST RELEASE BECAUSE OF THE SECURITY ISSUE
+ https://nvd.nist.gov/vuln/detail/CVE-2022-1471 -->
+        <dependency>
+            <groupId>org.yaml</groupId>
+            <artifactId>snakeyaml</artifactId>
+            <version>${snakeyaml.version}</version>
+        </dependency>
+
+        <!-- ARCADEDB DOES NOT USE THIS LIBRARY BUT GREMLIN DOES: gremlin-groovy pulls Ivy in to
+             back Groovy's Grape dependency loader. TinkerPop 3.8.1 resolves 2.5.3, which is
+             affected by the PackagerResolver path traversal
+             https://nvd.nist.gov/vuln/detail/CVE-2026-26032 -->
+        <dependency>
+            <groupId>org.apache.ivy</groupId>
+            <artifactId>ivy</artifactId>
+            <version>${ivy.version}</version>
+        </dependency>
+
         <dependency>
             <groupId>org.apache.groovy</groupId>
-            <artifactId>groovy</artifactId>
+            <artifactId>groovy-groovysh</artifactId>
+            <version>${groovy.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>jline</groupId>
+                    <artifactId>jline</artifactId>
+                </exclusion>
+                <!-- groovy-console drags in groovy-swing, i.e. an AWT/Swing UI that a headless
+                     server never opens. It also ships META-INF/groovy/org.codehaus.groovy.runtime.ExtensionModule.
+                     That descriptor is a single-module properties file at a fixed path, so a
+                     consumer that resolves groovy-swing normally (gremlin-groovy pulls 4.0.25)
+                     ends up with two descriptors naming module groovy-swing at different versions
+                     and Groovy aborts with "Conflicting module versions" (issue #6771). Dropping
+                     groovy-swing removes the descriptor, and with it the conflict. -->
+                <exclusion>
+                    <groupId>org.apache.groovy</groupId>
+                    <artifactId>groovy-console</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.groovy</groupId>
+            <artifactId>groovy-jsr223</artifactId>
+            <version>${groovy.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.groovy</groupId>
+            <artifactId>groovy-json</artifactId>
             <version>${groovy.version}</version>
         </dependency>
         <dependency>
@@ -185,31 +230,6 @@
             <groupId>org.apache.tinkerpop</groupId>
             <artifactId>gremlin-groovy</artifactId>
             <version>${gremlin.version}</version>
-            <exclusions>
-                <exclusion>
-                    <groupId>jline</groupId>
-                    <artifactId>jline</artifactId>
-                </exclusion>
-            </exclusions>
-        </dependency>
-
-
-        <!-- ARCADEDB DOES NOT USE THIS LIBRARY BUT GREMLIN DOES. REPLACING IT WITH THE LAST RELEASE BECAUSE OF THE SECURITY ISSUE
-         https://nvd.nist.gov/vuln/detail/CVE-2022-1471 -->
-        <dependency>
-            <groupId>org.yaml</groupId>
-            <artifactId>snakeyaml</artifactId>
-            <version>${snakeyaml.version}</version>
-        </dependency>
-
-        <!-- ARCADEDB DOES NOT USE THIS LIBRARY BUT GREMLIN DOES: gremlin-groovy pulls Ivy in to
-             back Groovy's Grape dependency loader. TinkerPop 3.8.1 resolves 2.5.3, which is
-             affected by the PackagerResolver path traversal
-             https://nvd.nist.gov/vuln/detail/CVE-2026-26032 -->
-        <dependency>
-            <groupId>org.apache.ivy</groupId>
-            <artifactId>ivy</artifactId>
-            <version>${ivy.version}</version>
         </dependency>
 
         <dependency>
@@ -267,15 +287,126 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
                 <configuration>
-                    <!-- Relocate ANTLR 4.9.1 (TinkerPop's precompiled parser needs the v3 ATN
-                         format) into a private package so it never collides with the engine's
-                         org.antlr 4.13.2 on a shared classpath. -->
+                    <!-- Every third-party library bundled here is relocated into a private package, so a
+                         consumer can pin their own version of it without the uber-jar's copy silently
+                         outvoting theirs (issue #6793). ShadedJarLayoutTest enforces that; its
+                         ALLOWED_UNRELOCATED list carries the reason for each deliberate exception.
+
+                         Two of those exceptions are worth repeating here, because both were learnt the
+                         hard way and both look like omissions:
+
+                         - GROOVY CANNOT BE RELOCATED. maven-shade rewrites string constants without
+                           respecting package boundaries, so a "groovy" pattern also rewrites ".groovy"
+                           (the script extension), "groovy.target.indy" (a system property) and
+                           "groovydoc". The Groovy compiler then dies on its own script class name with
+                           "ASM reporting processing error ... Script1.com.arcadedb.gremlin.shaded.groovy",
+                           which reaches the user as
+                           "MissingPropertyException: No such property: metaClass for class: java.util.Map"
+                           while TinkerPop's ObjectLoader.groovy initialises the engine. Its META-INF
+                           descriptors compound this: they name classes in plain text that shade does not
+                           rewrite. GremlinGroovyEngineTest is the guard.
+                         - commons-configuration2 must keep its coordinates because TinkerPop's PUBLIC API
+                           takes those types, e.g. GraphFactory.open(Configuration). Relocating it turns
+                           every such call into a NoSuchMethodError. Same for org.javatuples, which
+                           TraversalExplanation returns. -->
                     <relocations>
+                        <!-- ANTLR 4.9.1: TinkerPop's precompiled parser needs the v3 ATN format, so it must
+                             never collide with the engine's org.antlr 4.13.2 on a shared classpath. -->
                         <relocation>
                             <pattern>org.antlr</pattern>
                             <shadedPattern>com.arcadedb.gremlin.shaded.org.antlr</shadedPattern>
                         </relocation>
+                        <relocation>
+                            <pattern>io.netty</pattern>
+                            <shadedPattern>com.arcadedb.gremlin.shaded.io.netty</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.jctools</pattern>
+                            <shadedPattern>com.arcadedb.gremlin.shaded.org.jctools</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.apache.commons</pattern>
+                            <shadedPattern>com.arcadedb.gremlin.shaded.org.apache.commons</shadedPattern>
+                            <excludes>
+                                <exclude>org.apache.commons.configuration2.**</exclude>
+                            </excludes>
+                        </relocation>
+                        <relocation>
+                            <pattern>com.github</pattern>
+                            <shadedPattern>com.arcadedb.gremlin.shaded.com.github</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.objectweb</pattern>
+                            <shadedPattern>com.arcadedb.gremlin.shaded.org.objectweb</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>com.carrotsearch</pattern>
+                            <shadedPattern>com.arcadedb.gremlin.shaded.com.carrotsearch</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>com.codahale</pattern>
+                            <shadedPattern>com.arcadedb.gremlin.shaded.com.codahale</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.yaml</pattern>
+                            <shadedPattern>com.arcadedb.gremlin.shaded.org.yaml</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.apache.ivy</pattern>
+                            <shadedPattern>com.arcadedb.gremlin.shaded.org.apache.ivy</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.abego</pattern>
+                            <shadedPattern>com.arcadedb.gremlin.shaded.org.abego</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>nl.altindag</pattern>
+                            <shadedPattern>com.arcadedb.gremlin.shaded.nl.altindag</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>net.objecthunter</pattern>
+                            <shadedPattern>com.arcadedb.gremlin.shaded.net.objecthunter</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.mindrot</pattern>
+                            <shadedPattern>com.arcadedb.gremlin.shaded.org.mindrot</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>com.squareup.javapoet</pattern>
+                            <shadedPattern>com.arcadedb.gremlin.shaded.com.squareup.javapoet</shadedPattern>
+                        </relocation>
+
                     </relocations>
+                    <!-- Groovy's extension-module descriptor is a SINGLE-module properties file at a
+                         fixed path, so it cannot be merged: of the modules bundled here only one
+                         copy survives the shade, and the survivor then advertises its own
+                         moduleVersion to every classpath the uber-jar lands on. A consumer that
+                         also resolves that module normally (gremlin-groovy 3.8.1 pulls groovy 4.0.25)
+                         gets two descriptors for the same moduleName at different versions and Groovy
+                         aborts at startup with "Conflicting module versions" (issue #6771). Nothing
+                         Gremlin does needs the extension methods these descriptors register
+                         (XmlExtensions, ScriptExtensions), so the uber-jar publishes none of them
+                         and the conflict cannot arise. -->
+                    <filters>
+                        <filter>
+                            <artifact>*:*</artifact>
+                            <excludes>
+                                <exclude>META-INF/groovy/org.codehaus.groovy.runtime.ExtensionModule</exclude>
+                                <exclude>META-INF/services/org.codehaus.groovy.runtime.ExtensionModule</exclude>
+                                <!-- The shade plugin does not relocate the multi-release overlay, so
+                                     snakeyaml's Java 9 copy of org.yaml.snakeyaml.internal.Logger
+                                     survives under its ORIGINAL name while the base copy is
+                                     relocated. On Java 9+ that orphan shadows a consumer's own
+                                     snakeyaml (issue #6793); nothing in the uber-jar can reach it,
+                                     because every reference was rewritten. Same for the bundled
+                                     module-info descriptors, which still export the pre-relocation
+                                     packages. -->
+                                <exclude>META-INF/versions/*/org/yaml/**</exclude>
+                                <exclude>META-INF/versions/*/module-info.class</exclude>
+                                <exclude>module-info.class</exclude>
+                            </excludes>
+                        </filter>
+                    </filters>
                     <artifactSet>
                         <excludes>
                             <!-- Do NOT bundle the engine: its SQL/Cypher parsers are v4-ATN (antlr 4.13.2) and the
@@ -284,12 +415,46 @@
                                  the arcadedb-gremlin-it module both provide it), so the relocation must touch only
                                  TinkerPop's own 4.9.1 parser. -->
                             <exclude>com.arcadedb:arcadedb-engine</exclude>
-                            <!-- Do NOT bundle network either: it is now a real compile-scope dependency (#5879),
+                            <!-- Do NOT bundle network either: it is a real compile-scope dependency (#5879),
                                  so Maven resolves it transitively for every consumer of either the plain or the
                                  shaded jar. Bundling it here as well would duplicate its classes on the classpath
                                  of any consumer who, like arcadedb-server or arcadedb-gremlin-it, also pulls the
                                  plain arcadedb-network jar directly. -->
                             <exclude>com.arcadedb:arcadedb-network</exclude>
+                            <!-- Same for integration, which the GraphML/GraphSON format handlers in
+                                 src/main/java compile against and which is therefore compile-scope too. -->
+                            <exclude>com.arcadedb:arcadedb-integration</exclude>
+                            <!-- The server is provided-scope, so shade drops it anyway; the exclude states the
+                                 intent, because the server is the assembly point that loads this jar. -->
+                            <exclude>com.arcadedb:arcadedb-server</exclude>
+                            <!-- ...and neither the engine's own dependency tree. Excluding an artifact does NOT
+                                 exclude what it drags in, so before this list the uber-jar carried a full unrelocated
+                                 copy of Lucene, GraalJS/Truffle, gson and friends: ~50MB that nothing inside the jar
+                                 can even reach, because the engine that uses them is not here. For a consumer they
+                                 are worse than dead weight - a bundled Lucene silently outvotes their own newer one
+                                 and the first mismatched call dies with NoSuchMethodError, which is exactly what
+                                 issue #6793 reports. Every artifact below travels with arcadedb-engine, so the
+                                 consumer already has it, at the version the engine asked for.
+                                 ShadedJarLayoutTest fails if a new one appears and is not listed here. -->
+                            <exclude>at.yawk.lz4:*</exclude>
+                            <exclude>com.conversantmedia:*</exclude>
+                            <exclude>com.google.code.gson:*</exclude>
+                            <exclude>com.google.errorprone:*</exclude>
+                            <exclude>io.github.jbellis:*</exclude>
+                            <exclude>io.sgr:*</exclude>
+                            <exclude>org.agrona:*</exclude>
+                            <exclude>org.apache.commons:commons-math3</exclude>
+                            <exclude>org.apache.lucene:*</exclude>
+                            <exclude>org.graalvm.js:*</exclude>
+                            <exclude>org.graalvm.polyglot:*</exclude>
+                            <exclude>org.graalvm.regex:*</exclude>
+                            <exclude>org.graalvm.sdk:*</exclude>
+                            <exclude>org.graalvm.shadowed:*</exclude>
+                            <exclude>org.graalvm.truffle:*</exclude>
+                            <exclude>org.locationtech.jts:*</exclude>
+                            <exclude>org.locationtech.spatial4j:*</exclude>
+                            <!-- ...and the same for arcadedb-integration's tree. -->
+                            <exclude>com.sonofab1rd:univocity-parsers</exclude>
                         </excludes>
                     </artifactSet>
                 </configuration>
