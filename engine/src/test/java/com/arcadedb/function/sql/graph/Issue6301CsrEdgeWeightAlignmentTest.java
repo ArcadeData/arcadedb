@@ -41,7 +41,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Analytical View: {@code astar()} and {@code bellmanFord()}.
  * <p>
  * Both paired {@link com.arcadedb.graph.GraphTraversalProvider#getNeighborIds} with
- * {@link com.arcadedb.graph.GraphTraversalProvider#getEdgeProperty} by hand, which is wrong in two independent
+ * {@link com.arcadedb.graph.GraphTraversalProvider#edgeWeightsForSlice} by hand, which was wrong in two independent
  * ways and silently so - a wrong weight produces a wrong path, never an exception:
  * <ul>
  *   <li><b>a multi-type neighbour list is merged and sorted across types</b>, while the property columns are per
@@ -136,7 +136,7 @@ class Issue6301CsrEdgeWeightAlignmentTest {
   @Test
   void aViewMaterialisingAnotherPropertyDoesNotUnweightTheGraph() {
     // The other half of the same question: the view holds `other`, the call asks for `weight`. Every
-    // getEdgeProperty then answers null, which is indistinguishable from "this edge has no value", so the only
+    // the view then has no value to answer with, which is indistinguishable from "this edge has no value", so the only
     // safe reading is that the provider cannot serve the request at all.
     database.getSchema().getType("road").createProperty("other", Type.DOUBLE);
     database.transaction(() -> {

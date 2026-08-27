@@ -278,7 +278,7 @@ class Issue6301AlgoSteinerTreeWeightAlignmentTest {
   @Test
   void aViewThatMaterialisedADifferentPropertyDoesNotMakeTheGraphUnweighted() {
     // The narrower half of the same defect, and the one a coarse "does this view have edge properties?" gate
-    // walks straight into: the view materialises `other`, the query asks for `w`, so every getEdgeProperty
+    // walks straight into: the view materialises `other`, the query asks for `w`, so every weight lookup
     // returns null and every edge silently weighs 1.0 - which inverts the answer here, since X-Y-Z costs 2.0
     // and the direct X-Z hop costs 50.0. A null property value is also how "this edge has no value" is
     // reported, so the caller cannot tell the two apart and has to ask the sharper question up front.
@@ -310,11 +310,13 @@ class Issue6301AlgoSteinerTreeWeightAlignmentTest {
 
   @Test
   void anActiveOverlayDoesNotLendItsWeightsToTheWrongEdges() {
-    // The overlay case, exercised through algo.bellmanford so the narrowing is pinned for a caller outside the
+    // The overlay case, exercised through algo.bellmanford so the alignment is pinned for a caller outside the
     // procedures rewritten here. Edge property columns are aligned with the base CSR's forward slots, while
     // getNeighborIds serves the overlay's view of the node - deletions dropped, additions merged, the list
-    // re-sorted - so the n-th neighbour is no longer the n-th edge of the column store. The provider now says
-    // it cannot serve edge properties in that state, and the weights come from the records instead.
+    // re-sorted - so the n-th neighbour is not the n-th edge of the column store. This test was written when
+    // the answer to that was for the provider to report no edge properties at all while an overlay was active;
+    // since issue #6315 it resolves the two against each other instead and keeps answering exactly, which is
+    // what the weight assertion below has always been about.
     database.transaction(() -> {
       final MutableVertex x = database.newVertex("N").set("name", "X").save();
       final MutableVertex y = database.newVertex("N").set("name", "Y").save();
@@ -341,10 +343,10 @@ class Issue6301AlgoSteinerTreeWeightAlignmentTest {
       });
 
       assertThat(view.hasEdgeProperties())
-          .as("with an overlay active the positional mapping no longer holds, so the honest answer is no")
-          .isFalse();
-      assertThat(view.hasEdgeProperty("ROAD", "w")).isFalse();
-      assertThat(bellmanFordWeight()).as("X-Y-Z at 2.0, read from the edge records").isEqualTo(2.0);
+          .as("an overlay is resolved against the columns rather than disqualifying them (issue #6315)")
+          .isTrue();
+      assertThat(view.hasEdgeProperty("ROAD", "w")).isTrue();
+      assertThat(bellmanFordWeight()).as("X-Y-Z at 2.0, each weight on its own edge").isEqualTo(2.0);
     } finally {
       view.drop();
     }

@@ -268,10 +268,10 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
     if (provider != null) {
       final int nodeId = provider.getNodeId(node.getIdentity());
       // edgeWeightsOf() answers null unless the provider can serve THIS property for EVERY type in play, and it
-      // is the only thing that pairs a CSR edge with its own weight correctly. Reading getNeighborIds and
-      // getEdgeProperty side by side here got it wrong twice over (issue #6301): the neighbour list is merged and
-      // sorted across types while the property column is per type, and a BOTH lookup has no column at all, so it
-      // answered null for every edge and quietly priced the whole neighbourhood at MIN - free.
+      // is the only thing that pairs a CSR edge with its own weight correctly. Assembling the neighbourhood here
+      // got it wrong twice over (issue #6301): the neighbour list is merged and sorted across types while the
+      // values are served per type, and a BOTH lookup has no adjacency slice at all, so it found no value for
+      // any edge and quietly priced the whole neighbourhood at MIN - free.
       final NodeEdgeWeights edges = nodeId >= 0 ?
           provider.edgeWeightsOf(nodeId, paramDirection, paramWeightFieldName, MIN, paramEdgeTypeNames) : null;
       if (edges != null) {

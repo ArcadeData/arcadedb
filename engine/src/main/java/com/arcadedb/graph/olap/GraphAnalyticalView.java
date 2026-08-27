@@ -31,6 +31,7 @@ import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.NeighborView;
+import com.arcadedb.graph.NodeEdgeWeights;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
@@ -48,6 +49,7 @@ import java.util.Set;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.IntConsumer;
 import java.util.logging.Level;
 
 /**
@@ -109,6 +111,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   /** Semaphore bounding concurrent CPU-intensive build operations. */
   private static final Semaphore BUILD_PERMITS = new Semaphore(MAX_CONCURRENT_BUILDS);
+
+  /** The answer for a node with no edges of the type and direction asked for. */
+  private static final int[]            EMPTY_INT          = new int[0];
+  private static final NodeEdgeWeights  EMPTY_EDGE_WEIGHTS = new NodeEdgeWeights(EMPTY_INT, new double[0]);
 
   /** Shared executor for all GAV async builds and compactions. Uses virtual threads for lightweight scheduling. */
   private static volatile ExecutorService EXECUTOR;
@@ -758,7 +764,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     final Snapshot snap = checkBuilt();
 
     // Cannot provide zero-copy view when overlay is active (delta edges modify topology)
-    if (snap.overlay != null)
+    if (hasActiveOverlay(snap))
       return null;
 
     final int n = snap.nodeMapping.size();
@@ -1179,6 +1185,41 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   // --- Metadata ---
 
   /**
+   * True while pending committed changes are being served from the delta overlay rather than from the base CSR.
+   * <p>
+   * The predicate a kernel that reads the CSR arrays directly - {@link GraphAlgorithms#dijkstraSingleSource},
+   * and {@link #getNeighborView} for the same reason - has to consult before it may believe them: the overlay
+   * is where the additions, the deletions and the new vertices are until the next compaction, and the arrays
+   * alone are the graph as it stood at the last build. Every method on this class that goes through
+   * {@link #getVertices} applies the overlay itself and needs no such check.
+   */
+  boolean hasActiveOverlay() {
+    return hasActiveOverlay(this.snapshot);
+  }
+
+  /**
+   * The snapshot this view is currently serving, for a caller that has to read several of its parts and needs
+   * them to be parts of the same one.
+   * <p>
+   * Every accessor on this class re-reads the field, which is right for a caller asking one question and wrong
+   * for a kernel reading a CSR's offsets, its neighbours and its weight columns in turn: a commit landing
+   * between two of those reads would hand it halves of two different graphs, and it would compute a plausible
+   * wrong answer out of them rather than fail. Capture once, read everything through it.
+   */
+  Snapshot captureSnapshot() {
+    return checkBuilt();
+  }
+
+  /**
+   * The same question asked of a snapshot a caller has already captured, which is how every method that goes
+   * on to read that snapshot must ask it: re-reading the field would let a commit land between the check and
+   * the read and hand back base arrays belonging to a snapshot that does have an overlay.
+   */
+  private static boolean hasActiveOverlay(final Snapshot snap) {
+    return snap != null && snap.overlay != null;
+  }
+
+  /**
    * Returns the CSR index for a specific edge type, or null if not present.
    */
   public CSRAdjacencyIndex getCSRIndex(final String edgeType) {
@@ -1359,56 +1400,259 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   /**
    * {@inheritDoc}
    * <p>
-   * An active delta overlay makes the answer no rather than yes. The edge property columns are aligned with the
-   * base CSR's forward edge slots, while {@link #getNeighborIds} serves the overlay's view of the node: deleted
-   * edges dropped, added ones merged in, the whole list re-sorted. The n-th neighbour of that list is then not
-   * the n-th edge of the column store, and {@link #getEdgeProperty}'s positional contract - the reason a caller
-   * may ask by index at all - no longer holds. Reporting "no edge properties" sends the caller to the edge
-   * records, which are exact; reporting "yes" would hand it a weight belonging to some other edge. Same reading
-   * as {@link #getMeanEdgesPerConnectedPair}, which answers unknown for the same overlay.
+   * An active delta overlay no longer makes the answer no. It used to: the columns are aligned with the base
+   * CSR's forward edge slots, while {@link #getNeighborIds} serves the overlay's view of the node - deleted
+   * edges dropped, added ones merged in, the whole list re-sorted - so the n-th neighbour of that list is not
+   * the n-th edge of the column store, and the SPI's old positional accessor answered against the wrong one of
+   * the two. That accessor is gone (issue #6315): {@link #edgeWeightsForSlice} resolves the alignment here,
+   * where the overlay is applied, and pairs every neighbour with its own edge's value before handing the two
+   * back together. An added edge, which has no column slot at all, is served from the value the overlay
+   * captured for it at commit time.
+   * <p>
+   * What the answer still turns on is {@link DeltaOverlay#isEdgePropertiesDirty(String)}: a committed change to
+   * a base edge's own properties leaves that type's columns holding a value the database no longer has, and
+   * unlike an addition or a deletion it has nothing in the overlay to correct it with - an edge already in the
+   * base CSR is addressed by a column slot, and nothing maps that slot back from its RID. The rebuild
+   * {@link #applyDelta} forces for it is what repairs the columns; until it lands the honest answer is no, the
+   * same reading {@link #getMeanEdgesPerConnectedPair} gives when it cannot answer exactly. This method asks
+   * the coarse form of that question - is ANY type out of date - because it is itself the coarse question;
+   * {@link #hasEdgeProperty} and {@link #edgeWeightsForSlice}, which are asked about one type, ask about that
+   * type alone.
    */
   @Override
   public boolean hasEdgeProperties() {
     final Snapshot snap = this.snapshot;
-    return snap != null && snap.edgeColumnStores != null && !snap.edgeColumnStores.isEmpty() && snap.overlay == null;
+    return snap != null && snap.edgeColumnStores != null && !snap.edgeColumnStores.isEmpty()
+        && !hasStaleEdgeColumns(snap);
   }
 
   @Override
   public boolean hasEdgeProperty(final String edgeType, final String propertyName) {
     final Snapshot snap = this.snapshot;
-    if (snap == null || snap.edgeColumnStores == null || snap.overlay != null)
+    if (snap == null || snap.edgeColumnStores == null || hasStaleEdgeColumns(snap, edgeType))
       return false;
     final ColumnStore edgeColStore = snap.edgeColumnStores.get(edgeType);
     return edgeColStore != null && edgeColStore.getColumn(propertyName) != null;
   }
 
+  /**
+   * True when a committed transaction changed one of {@code edgeType}'s edges' properties and the rebuild that
+   * repairs its columns has not landed yet. See {@link #hasEdgeProperties()}.
+   */
+  private static boolean hasStaleEdgeColumns(final Snapshot snap, final String edgeType) {
+    return snap.overlay != null && snap.overlay.isEdgePropertiesDirty(edgeType);
+  }
+
+  /** True when any edge type's columns are out of date - the coarser question {@link #hasEdgeProperties()} asks. */
+  private static boolean hasStaleEdgeColumns(final Snapshot snap) {
+    return snap.overlay != null && snap.overlay.isEdgePropertiesDirty();
+  }
+
+  /**
+   * {@inheritDoc}
+   * <p>
+   * The neighbours are the ones {@link #getNeighborIds} reports for this type and direction - the same
+   * arithmetic, run once here so that each of them can carry its own edge's weight out with it:
+   * <ul>
+   *   <li>a base edge the overlay has not deleted takes the value of its own forward column slot, which the
+   *       walk knows because it is the walk that decided to keep it;</li>
+   *   <li>an edge the overlay added takes the value {@link DeltaCollector} captured for it at commit time - it
+   *       has no column slot, the columns having been built with the base CSR.</li>
+   * </ul>
+   * The two are merged and sorted together, exactly as {@link #getNeighborsFromCSR} merges them, with each
+   * entry's provenance riding in the low half of the sort key so that no weight can be left behind by the
+   * re-sort. That re-sort is what the SPI's old positional accessor was addressing across (issue #6315).
+   */
   @Override
-  public Object getEdgeProperty(final int nodeId, final int neighborIndex,
-      final Vertex.DIRECTION direction, final String edgeType, final String propertyName) {
+  public NodeEdgeWeights edgeWeightsForSlice(final int nodeId, final Vertex.DIRECTION direction,
+      final String edgeType, final String propertyName, final double defaultWeight,
+      final IntConsumer edgeCheckpoint) {
+    // BOTH has no adjacency slice of its own to be aligned with; edgeWeightsOf() splits it before calling here.
+    if (direction != Vertex.DIRECTION.OUT && direction != Vertex.DIRECTION.IN)
+      return null;
+
     final Snapshot snap = checkBuilt();
-    if (snap.edgeColumnStores == null)
+    if (snap.edgeColumnStores == null || hasStaleEdgeColumns(snap, edgeType))
       return null;
     final ColumnStore edgeColStore = snap.edgeColumnStores.get(edgeType);
     if (edgeColStore == null)
       return null;
-    final CSRAdjacencyIndex csr = snap.csrPerType.get(edgeType);
-    if (csr == null)
+    final Column column = edgeColStore.getColumn(propertyName);
+    if (column == null)
       return null;
 
-    final int fwdIdx;
-    if (direction == Vertex.DIRECTION.OUT) {
-      fwdIdx = csr.outOffset(nodeId) + neighborIndex;
-    } else if (direction == Vertex.DIRECTION.IN) {
-      final int[] bwdToFwd = snap.bwdToFwd != null ? snap.bwdToFwd.get(edgeType) : null;
-      if (bwdToFwd == null)
-        return null;
-      final int bwdIdx = csr.inOffset(nodeId) + neighborIndex;
-      fwdIdx = bwdToFwd[bwdIdx];
-    } else {
-      return null;
+    final boolean outgoing = direction == Vertex.DIRECTION.OUT;
+    final DeltaOverlay ov = snap.overlay;
+    final CSRAdjacencyIndex csr = snap.csrPerType.get(edgeType);
+
+    // The base slice this node's edges of this type occupy, as offsets into the CSR's own neighbour array.
+    //
+    // A missing CSR is not a reason to refuse, unlike in the positional accessor this replaced - that one had
+    // to compute an index into the slice and had none without it. Here the base slice is simply empty, which
+    // for a node with no base edges of this type is the truth, and the overlay's own additions below are
+    // answerable regardless: they carry their values rather than being addressed by a column slot. A type with
+    // a column store but no CSR is not a state a build produces (Snapshot builds the two together), and if it
+    // ever were, an edge type whose edges all arrived after the build would answer for them exactly rather
+    // than sending the caller to the records for nothing.
+    int[] baseNeighbors = null;
+    int baseStart = 0;
+    int baseEnd = 0;
+    if (csr != null && nodeId < snap.nodeMapping.size()) {
+      baseStart = outgoing ? csr.outOffset(nodeId) : csr.inOffset(nodeId);
+      baseEnd = outgoing ? csr.outOffsetEnd(nodeId) : csr.inOffsetEnd(nodeId);
+      baseNeighbors = outgoing ? csr.getForwardNeighbors() : csr.getBackwardNeighbors();
     }
 
-    return edgeColStore.getValue(fwdIdx, propertyName);
+    // Incoming edges are listed in backward order while the columns are aligned with the forward one, so
+    // without the mapping between the two there is no honest answer for a node that has any.
+    final int[] bwdToFwd = outgoing || snap.bwdToFwd == null ? null : snap.bwdToFwd.get(edgeType);
+    if (!outgoing && baseEnd > baseStart && bwdToFwd == null)
+      return null;
+
+    if (ov == null)
+      return baseSliceWeights(column, baseNeighbors, baseStart, baseEnd, outgoing, bwdToFwd, defaultWeight,
+          edgeCheckpoint);
+
+    final boolean[] deleted = baseEnd > baseStart
+        ? deletedSliceMask(baseNeighbors, baseStart, baseEnd, ov, edgeType, nodeId, outgoing) : null;
+    // The one thing the overlay cannot resolve. Its deletions are counted per PAIR, which is all the neighbour
+    // list needs - drop any one of a pair's parallel edges and the remaining neighbours are the same either way
+    // - but not enough to say WHICH of them died, and parallel edges need not weigh the same. The surviving
+    // weights would then be a plausible wrong multiset, so the slice is refused and the caller reads the edge
+    // records, which know. A pair whose parallel edges were deleted outright is not ambiguous, and neither is
+    // the ordinary pair joined by a single edge.
+    if (deleted != null && isPartialDeletionOfParallelEdges(baseNeighbors, baseStart, baseEnd, deleted))
+      return null;
+    // One lookup for both halves: the neighbours and their weights come out of the same index entry.
+    final DeltaOverlay.AddedNeighbors added = ov.getAdded(nodeId, edgeType, outgoing);
+    final int[] addedNeighbors = added != null ? added.nodeIds() : EMPTY_INT;
+
+    // An overlay somewhere in the graph is not an overlay on THIS node. One unrelated edit keeps an overlay
+    // alive until the next compaction, and a full-graph walk would otherwise pay the merge below for every
+    // node in it; a node the overlay has neither deleted from nor added to has the base slice for its answer,
+    // arrived at by the same arithmetic and byte for byte the same.
+    if (deleted == null && addedNeighbors.length == 0)
+      return baseSliceWeights(column, baseNeighbors, baseStart, baseEnd, outgoing, bwdToFwd, defaultWeight,
+          edgeCheckpoint);
+
+    int keptBase = baseEnd - baseStart;
+    if (deleted != null)
+      for (final boolean d : deleted)
+        if (d)
+          keptBase--;
+
+    final int degree = keptBase + addedNeighbors.length;
+    if (degree == 0)
+      return EMPTY_EDGE_WEIGHTS;
+
+    // Deletions but nothing added: the survivors are a subsequence of a sorted slice, so they are already in
+    // the order the merge below would have sorted them into. One linear pass, the same one
+    // copyBaseExcludingDeleted makes for the neighbour list, with each survivor's column slot read as it goes.
+    if (addedNeighbors.length == 0) {
+      final int[] keptNeighbors = new int[degree];
+      final double[] keptWeights = new double[degree];
+      int kept = 0;
+      for (int i = baseStart; i < baseEnd; i++) {
+        if (deleted[i - baseStart])
+          continue;
+        if (edgeCheckpoint != null)
+          edgeCheckpoint.accept(kept);
+        keptNeighbors[kept] = baseNeighbors[i];
+        keptWeights[kept] = columnWeight(column, outgoing ? i : bwdToFwd[i], defaultWeight);
+        kept++;
+      }
+      return new NodeEdgeWeights(keptNeighbors, keptWeights);
+    }
+
+    // The neighbours as getNeighborsFromCSR would list them - base survivors then overlay additions, sorted -
+    // with each entry's provenance carried through the sort beside it, so no weight can be left behind by the
+    // re-sort. CSRBuilder.parallelSort is that exact permutation-carrying sort, already written and already
+    // relied upon by the build; a second copy of it here would be one more place for a future fix to miss.
+    final int[] neighbors = new int[degree];
+    final int[] provenance = new int[degree];
+    final int[] baseSlots = keptBase > 0 ? new int[keptBase] : EMPTY_INT;
+    int pos = 0;
+    for (int i = baseStart; i < baseEnd; i++) {
+      if (deleted != null && deleted[i - baseStart])
+        continue;
+      baseSlots[pos] = outgoing ? i : bwdToFwd[i];
+      neighbors[pos] = baseNeighbors[i];
+      provenance[pos] = pos;
+      pos++;
+    }
+    for (final int addedNeighbor : addedNeighbors) {
+      neighbors[pos] = addedNeighbor;
+      provenance[pos] = pos;
+      pos++;
+    }
+    CSRBuilder.parallelSort(neighbors, provenance, 0, degree);
+
+    // The property's position in the filter, resolved once for the whole slice rather than per added edge:
+    // the overlay stores an added edge's values by that position, in the filter's own order.
+    final Object[][] addedProperties = added != null ? added.properties() : null;
+    final int propertyIndex = addedProperties == null ? -1 : indexOfMaterialisedProperty(propertyName);
+
+    final double[] weights = new double[degree];
+    for (int i = 0; i < degree; i++) {
+      if (edgeCheckpoint != null)
+        edgeCheckpoint.accept(i);
+      final int origin = provenance[i];
+      weights[i] = origin < keptBase ? columnWeight(column, baseSlots[origin], defaultWeight)
+          : overlayWeight(addedProperties, origin - keptBase, propertyIndex, defaultWeight);
+    }
+    return new NodeEdgeWeights(neighbors, weights);
+  }
+
+  /**
+   * The answer for a node whose edges of this type and direction are all in the base CSR: the slice verbatim,
+   * each neighbour beside the value of its own forward column slot.
+   */
+  private static NodeEdgeWeights baseSliceWeights(final Column column, final int[] baseNeighbors,
+      final int baseStart, final int baseEnd, final boolean outgoing, final int[] bwdToFwd,
+      final double defaultWeight, final IntConsumer edgeCheckpoint) {
+    final int degree = baseEnd - baseStart;
+    if (degree == 0)
+      return EMPTY_EDGE_WEIGHTS;
+    final double[] weights = new double[degree];
+    for (int i = 0; i < degree; i++) {
+      if (edgeCheckpoint != null)
+        edgeCheckpoint.accept(i);
+      weights[i] = columnWeight(column, outgoing ? baseStart + i : bwdToFwd[baseStart + i], defaultWeight);
+    }
+    return new NodeEdgeWeights(Arrays.copyOfRange(baseNeighbors, baseStart, baseEnd), weights);
+  }
+
+  /** The position of {@code propertyName} in this view's edge property filter, or -1 if it holds no such name. */
+  private int indexOfMaterialisedProperty(final String propertyName) {
+    if (edgePropertyFilter == null)
+      return -1;
+    for (int i = 0; i < edgePropertyFilter.length; i++)
+      if (edgePropertyFilter[i].equals(propertyName))
+        return i;
+    return -1;
+  }
+
+  /**
+   * Reads one edge's weight out of its column slot, without boxing it on the way.
+   * A slot the column has no value for weighs {@code defaultWeight}, the same as an edge that has no value.
+   */
+  private static double columnWeight(final Column column, final int slot, final double defaultWeight) {
+    if (column.isNull(slot))
+      return defaultWeight;
+    return switch (column.getType()) {
+      case DOUBLE -> column.getDouble(slot);
+      case INT -> column.getInt(slot);
+      case LONG -> column.getLong(slot);
+      default -> defaultWeight;
+    };
+  }
+
+  /** Reads an overlay-added edge's weight out of the values captured for it at commit time. */
+  private static double overlayWeight(final Object[][] addedProperties, final int index,
+      final int propertyIndex, final double defaultWeight) {
+    if (addedProperties == null || propertyIndex < 0 || addedProperties[index] == null)
+      return defaultWeight;
+    return addedProperties[index][propertyIndex] instanceof Number number ? number.doubleValue() : defaultWeight;
   }
 
   /**
@@ -2077,10 +2321,15 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         pendingDeltas.add(delta);
     }
 
-    // An edge property change (e.g. weight) has no overlay representation, so it can only be made
-    // visible by rebuilding the base columns. Force a rebuild regardless of the edge-count
-    // threshold; otherwise the change would be silently dropped until the next compaction (#4513).
-    final boolean forceRebuild = delta.edgePropertiesUpdated;
+    // A change to a base edge's own properties can only be made visible by rebuilding the base columns: the
+    // edge is addressed there by a column slot, and nothing maps that slot back from its RID. Force a rebuild
+    // regardless of the edge-count threshold; otherwise the change would be silently dropped until the next
+    // compaction (#4513). Asked of the merged overlay rather than of the delta because the two are not the
+    // same question: an update to an edge the overlay itself holds is applied there and dirties nothing, and
+    // that is the ordinary `newEdge(...).save()` (issue #6315). Sticky while the columns are still out of
+    // date, so that a rebuild discarded as superseded is retried by the next commit rather than leaving the
+    // view unable to serve edge properties until the compaction threshold happens to be crossed.
+    final boolean forceRebuild = merged.isEdgePropertiesDirty();
 
     if (forceRebuild || (compactionThreshold > 0 && Math.abs(merged.getDeltaEdgeCount()) > compactionThreshold)) {
       // Guard: only one compaction thread at a time
@@ -2140,12 +2389,16 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
                       // crossed its bucket is already in the new base, so re-merging it blindly would
                       // create duplicate neighbours. See issue #4588.
                       overlay = overlay.merge(d, result.getMapping(), result.getCsrPerType());
-                      // Edge property updates have no overlay representation, so a delta buffered
-                      // during this rebuild may not be reflected in the fresh CSR (if it committed
-                      // after the relevant bucket was scanned). Flag a follow-up rebuild (#4513).
-                      if (d.edgePropertiesUpdated)
-                        edgePropRebuildNeeded = true;
                     }
+                    // A change to a base edge's properties has no overlay representation, so a delta buffered
+                    // during this rebuild may not be reflected in the fresh CSR (if it committed after the
+                    // relevant bucket was scanned): flag a follow-up rebuild (#4513). Asked of the overlay the
+                    // merges arrived at rather than of the deltas that went into them - an update to an edge
+                    // the overlay itself holds is applied there and leaves nothing stale, so asking the deltas
+                    // would force a rebuild for the ordinary insert, which reports one create and one update
+                    // of the same edge (issue #6315).
+                    if (overlay.isEdgePropertiesDirty())
+                      edgePropRebuildNeeded = true;
                     if (overlay.hasChanges())
                       fresh = fresh.withOverlay(overlay);
                   }
@@ -2177,7 +2430,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
             if (edgePropRebuildNeeded) {
               edgePropRebuildNeeded = false;
               final TxDelta forced = new TxDelta();
-              forced.edgePropertiesUpdated = true;
+              forced.forceEdgePropertyRebuild = true;
               applyDelta(forced);
             }
             // #4956: drop this worker's DatabaseContext entry (see buildAsync). Last statement because
@@ -2471,12 +2724,66 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   private static int[] copyBaseExcludingDeleted(final int[] neighbors, final int start, final int end,
       final DeltaOverlay ov, final String edgeType, final int nodeId, final boolean outgoing) {
-    // Single pass over the slice. One countDeletedEdges() lookup per distinct neighbour value (cached for the
-    // run), not per slot. The mask is allocated lazily, only once the first deleted edge is found, so the
-    // common no-deletion case stays allocation-free.
+    final boolean[] deletedMask = deletedSliceMask(neighbors, start, end, ov, edgeType, nodeId, outgoing);
+    if (deletedMask == null)
+      return Arrays.copyOfRange(neighbors, start, end);
+
+    int kept = 0;
+    for (final boolean deleted : deletedMask)
+      if (!deleted)
+        kept++;
+    if (kept == 0)
+      return EMPTY_INT;
+
+    final int[] result = new int[kept];
+    int pos = 0;
+    for (int i = 0; i < deletedMask.length; i++)
+      if (!deletedMask[i])
+        result[pos++] = neighbors[start + i];
+    return result;
+  }
+
+  /**
+   * True when the overlay deleted some but not all of a run of parallel edges between the same pair, which
+   * leaves no way to tell which of that run's column slots the surviving edges hold. See the call site.
+   */
+  private static boolean isPartialDeletionOfParallelEdges(final int[] neighbors, final int start, final int end,
+      final boolean[] deleted) {
+    // The slice is sorted, so a pair's parallel edges are one contiguous run.
+    final int len = end - start;
+    int runStart = 0;
+    while (runStart < len) {
+      int runEnd = runStart + 1;
+      while (runEnd < len && neighbors[start + runEnd] == neighbors[start + runStart])
+        runEnd++;
+      int deletedInRun = 0;
+      for (int i = runStart; i < runEnd; i++)
+        if (deleted[i])
+          deletedInRun++;
+      if (deletedInRun > 0 && deletedInRun < runEnd - runStart)
+        return true;
+      runStart = runEnd;
+    }
+    return false;
+  }
+
+  /**
+   * Marks which slots of the base slice {@code [start, end)} the overlay has deleted, or returns {@code null}
+   * when it has deleted none of them.
+   * <p>
+   * Shared by {@link #copyBaseExcludingDeleted} and {@link #edgeWeightsForSlice} rather than written out twice:
+   * both have to reach the same set of surviving edges, and the second one then reads a column slot per
+   * survivor - two spellings of this budget would put those weights on the wrong edges the first time they
+   * disagreed, which is the failure mode issue #6315 exists to remove.
+   * <p>
+   * Single pass over the slice. One {@link DeltaOverlay#countDeletedEdges} lookup per distinct neighbour value
+   * (cached for the run), not per slot. The mask is allocated lazily, only once the first deleted edge is
+   * found, so the common no-deletion case stays allocation-free.
+   */
+  private static boolean[] deletedSliceMask(final int[] neighbors, final int start, final int end,
+      final DeltaOverlay ov, final String edgeType, final int nodeId, final boolean outgoing) {
     final int len = end - start;
     boolean[] deletedMask = null;
-    int kept = 0;
     int runValue = 0;
     int runIndex = 0;
     int runDeletedBudget = 0;
@@ -2490,29 +2797,13 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       final boolean deleted = runIndex < runDeletedBudget;
       runIndex++;
       if (deleted) {
-        if (deletedMask == null) {
+        if (deletedMask == null)
           deletedMask = new boolean[len];
-          kept = i; // every neighbour seen so far was kept
-        }
         deletedMask[i] = true;
-      } else if (deletedMask != null) {
-        kept++;
       }
     }
-    if (deletedMask == null)
-      return Arrays.copyOfRange(neighbors, start, end);
-    if (kept == 0)
-      return EMPTY_INT;
-
-    final int[] result = new int[kept];
-    int pos = 0;
-    for (int i = 0; i < len; i++)
-      if (!deletedMask[i])
-        result[pos++] = neighbors[start + i];
-    return result;
+    return deletedMask;
   }
-
-  private static final int[] EMPTY_INT = new int[0];
 
   /**
    * Checks the view is built and returns a consistent snapshot for the caller to use.

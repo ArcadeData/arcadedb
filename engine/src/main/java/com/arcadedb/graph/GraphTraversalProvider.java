@@ -161,8 +161,8 @@ public interface GraphTraversalProvider {
   /**
    * Returns the edge types this provider actually holds, or {@code null} when it cannot enumerate them.
    * <p>
-   * {@link #getEdgeProperty} is addressed per edge type, so a caller that was given no type filter but needs
-   * edge properties has to ask which types exist rather than pass "all types" down. A provider that answers
+   * {@link #edgeWeightsForSlice} is addressed per edge type, so a caller that was given no type filter but
+   * needs edge properties has to ask which types exist rather than pass "all types" down. A provider that answers
    * {@code null} simply cannot serve such a caller, which then falls back to reading the edge records.
    */
   default String[] getMaterializedEdgeTypes() {
@@ -170,17 +170,14 @@ public interface GraphTraversalProvider {
   }
 
   /**
-   * Returns true if this provider has edge property columns materialized <em>and</em> the positional mapping
-   * {@link #getEdgeProperty} relies on is exact.
+   * Returns true if this provider has edge property values it can serve at all, through
+   * {@link #edgeWeightsOf}.
    * <p>
-   * The second half is what makes the answer usable. {@code getEdgeProperty} addresses an edge by its position
-   * in the node's neighbour list for a direction, so it means something only while that position identifies the
-   * same edge {@link #getNeighborIds} reports there. A provider whose neighbour lists no longer line up with its
-   * property columns - because pending changes are served from a side structure, say - must answer {@code false}
-   * rather than hand back a weight belonging to another edge. The caller holds the edge records and can always
-   * read the property itself; a plausible wrong number is the one outcome it cannot recover from. Same
-   * "say unknown rather than guess" convention as {@link #countEdgesBetween} and
-   * {@link #getMeanEdgesPerConnectedPair}.
+   * A provider that cannot pair every edge it reports in {@link #getNeighborIds} with that edge's own property
+   * value - because its columns have gone out of step with its adjacency, say - must answer {@code false} rather
+   * than hand back a value belonging to another edge. The caller holds the edge records and can always read the
+   * property itself; a plausible wrong number is the one outcome it cannot recover from. Same "say unknown rather
+   * than guess" convention as {@link #countEdgesBetween} and {@link #getMeanEdgesPerConnectedPair}.
    */
   default boolean hasEdgeProperties() {
     return false;
@@ -188,13 +185,13 @@ public interface GraphTraversalProvider {
 
   /**
    * Returns true if this provider can serve {@code propertyName} for {@code edgeType} through
-   * {@link #getEdgeProperty}.
+   * {@link #edgeWeightsOf}.
    * <p>
    * {@link #hasEdgeProperties()} answers the coarser question - are there edge property columns at all - and a
-   * caller that asks only that one gets {@code null} back from every {@link #getEdgeProperty} call when the view
-   * happens to materialise a <em>different</em> property than the one requested. Since a {@code null} property
-   * value is also the ordinary way of saying "this edge has no value", the caller cannot tell the two apart and
-   * silently treats the whole graph as unweighted. That is the same failure as reading a weight that belongs to
+   * caller that asks only that one gets the default weight back for every edge when the view happens to
+   * materialise a <em>different</em> property than the one requested. Since that default is also the ordinary
+   * way of saying "this edge has no value for the property", the caller cannot tell the two apart and silently
+   * treats the whole graph as unweighted. That is the same failure as reading a weight that belongs to
    * another edge, arrived at from the other direction, so the question a weighted algorithm has to ask is this
    * one: can you serve <em>this</em> property?
    *
@@ -229,40 +226,70 @@ public interface GraphTraversalProvider {
   }
 
   /**
-   * Returns an edge property value from columnar storage, or null if not materialized.
+   * Returns one node's neighbours of a single edge type and direction, together with the weight of the edge
+   * reaching each of them - or {@code null} when this provider cannot answer exactly.
    * <p>
-   * The {@code neighborIndex} is the position within the node's adjacency list for the given direction
-   * (0-based, matching the order returned by {@link #getNeighborIds}).
+   * <b>This is the provider's only edge-property primitive, and it deliberately hands back no index.</b> It used
+   * to be {@code getEdgeProperty(nodeId, neighborIndex, direction, edgeType, propertyName)}, addressing an edge
+   * by its position in the node's neighbour list, which meant something only while that position identified the
+   * same edge {@link #getNeighborIds} reported there. It stopped identifying it as soon as a provider served
+   * pending changes from a side structure - a deleted edge dropped from the neighbour list shifts every entry
+   * after it, so the n-th neighbour is no longer the n-th column slot - and the method had no way to notice:
+   * it returned a weight belonging to a different edge, which is a wrong shortest path, a wrong MST, a wrong
+   * Steiner tree, and never an exception (issues #6301 and #6315). The rule that kept it correct lived in its
+   * callers, where the next one written against this SPI could not discover it.
+   * <p>
+   * Returning the two arrays together removes the rule instead of restating it: the pairing is made where the
+   * provider's own adjacency is walked, by whoever knows how that adjacency is put together, and nothing
+   * downstream can re-derive it wrongly. Answering "I cannot" costs the caller a read of the edge records,
+   * which are exact; answering with a plausible wrong number costs it the result.
    *
-   * @param nodeId         the source node's dense ID
-   * @param neighborIndex  the index within the node's neighbor list for the given direction
-   * @param direction      OUT or IN
-   * @param edgeType       the edge type name
-   * @param propertyName   the property to retrieve
+   * {@code edgeCheckpoint}, when not {@code null}, must be called once per edge as the slice is built, with a
+   * counter that restarts at zero for every call. That is what keeps a supernode from being one unabortable
+   * unit of work: this method returns a fully-built row, so a caller walking every node of the graph has no
+   * other place to notice that it should stop (issue #6715). Restarting the counter rather than threading a
+   * running total through is the same choice {@link com.arcadedb.query.sql.executor.WorkGuard#checkPeriodically}
+   * documents for a loop whose counter restarts - it bounds the worst case to about one checkpoint stride into
+   * the largest slice, whatever the slice before it looked like.
    *
-   * @return the property value, or null if not available
+   * @param nodeId         the node whose edges to read
+   * @param direction      {@link Vertex.DIRECTION#OUT} or {@link Vertex.DIRECTION#IN}, never
+   *                       {@link Vertex.DIRECTION#BOTH} - a direction has an adjacency slice, {@code BOTH} does
+   *                       not, and {@link #edgeWeightsOf} splits it before calling here
+   * @param edgeType       a single materialised edge type, never "all types"
+   * @param propertyName   the edge property to read
+   * @param defaultWeight  value for an edge carrying no numeric value for that property
+   * @param edgeCheckpoint called with the edge index within this slice (0-based), or {@code null} to skip it
+   *
+   * @return the neighbours - the same ones, in the same order, {@code getNeighborIds(nodeId, direction,
+   * edgeType)} reports - each beside its own edge's weight, or {@code null} if this provider cannot serve the
+   * property for this type
    */
-  default Object getEdgeProperty(final int nodeId, final int neighborIndex,
-      final Vertex.DIRECTION direction, final String edgeType, final String propertyName) {
+  default NodeEdgeWeights edgeWeightsForSlice(final int nodeId, final Vertex.DIRECTION direction,
+      final String edgeType, final String propertyName, final double defaultWeight,
+      final IntConsumer edgeCheckpoint) {
     return null;
   }
 
   /**
    * Returns one node's neighbours together with the edge-property value of each edge reaching them, or
-   * {@code null} when this provider cannot serve {@code propertyName} for every type in play.
+   * {@code null} when this provider cannot serve {@code propertyName} for every type in play - or cannot
+   * answer exactly for this particular node, which a caller reaching this method across a long walk has to
+   * handle too: a provider that absorbs committed changes as it goes can lose the ability to answer partway
+   * through one.
    * <p>
-   * <b>This is the only correct way to read an edge property positionally, and the reason it lives here rather
-   * than in each caller.</b> {@link #getEdgeProperty} is addressed by (type, direction, position), and two things
-   * break a caller that pairs it with {@link #getNeighborIds} by hand:
+   * <b>This is the only way in, and the reason the composition lives here rather than in each caller.</b>
+   * {@link #edgeWeightsForSlice} answers for one (type, direction) pair, and two things break a caller that
+   * tries to assemble the whole neighbourhood itself:
    * <ul>
-   *   <li>a multi-type neighbour list is <em>merged and sorted</em> across types, so position {@code j} in it is
-   *       not position {@code j} in any one type's column - the weight lands on another edge, or on none;</li>
-   *   <li>{@link Vertex.DIRECTION#BOTH} has no column of its own at all. A provider resolves {@code OUT} and
-   *       {@code IN}, so a {@code BOTH} lookup answers {@code null} for every edge and the caller silently reads
-   *       the whole neighbourhood at its default weight.</li>
+   *   <li>a multi-type neighbour list is <em>merged and sorted</em> across types, so entry {@code j} of it is
+   *       not entry {@code j} of any one type's slice - the weight lands on another edge, or on none;</li>
+   *   <li>{@link Vertex.DIRECTION#BOTH} has no adjacency slice of its own at all. A provider resolves
+   *       {@code OUT} and {@code IN}, so a {@code BOTH} lookup would answer for neither and the caller would
+   *       silently read the whole neighbourhood at its default weight.</li>
    * </ul>
-   * Both are handled here once: the walk takes one slice per (type, direction) pair, each of which <em>is</em>
-   * positional, and concatenates them.
+   * Both are handled here once: the walk takes one slice per (type, direction) pair, each of which arrives with
+   * its weights already paired, and concatenates them.
    *
    * @param nodeId        the node whose edges to read
    * @param direction     traversal direction; {@code BOTH} walks the outgoing and incoming slices in turn
@@ -277,8 +304,9 @@ public interface GraphTraversalProvider {
 
   /**
    * Same as {@link #edgeWeightsOf(int, Vertex.DIRECTION, String, double, String...)}, with one addition:
-   * {@code edgeCheckpoint}, if not {@code null}, is called once per edge as the per-(type, direction) slices are
-   * copied into the returned arrays, with a counter that restarts at zero for every call to this method.
+   * {@code edgeCheckpoint}, if not {@code null}, is handed to {@link #edgeWeightsForSlice} for each
+   * (type, direction) slice, which calls it once per edge as that slice is built, with a counter that restarts
+   * at zero for every slice.
    * <p>
    * A caller that visits every node of the graph in turn - {@code AbstractAlgoProcedure}'s columnar adjacency
    * build does, once per node - has no other way to stay abortable mid-node: this method already returns one
@@ -314,33 +342,35 @@ public interface GraphTraversalProvider {
         new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN } :
         new Vertex.DIRECTION[] { direction };
 
-    final int[][] slices = new int[types.length * directions.length][];
+    final NodeEdgeWeights[] slices = new NodeEdgeWeights[types.length * directions.length];
     int degree = 0;
     int s = 0;
     for (final String type : types)
       for (final Vertex.DIRECTION d : directions) {
-        final int[] slice = getNeighborIds(nodeId, d, type);
+        final NodeEdgeWeights slice = edgeWeightsForSlice(nodeId, d, type, propertyName, defaultWeight, edgeCheckpoint);
+        // One slice this provider cannot answer makes the whole node unanswerable: a partial row would be a
+        // neighbourhood with edges missing from it, which reads as a graph that is simply shaped differently -
+        // the one failure the caller cannot detect. Same convention as this method's own contract.
+        if (slice == null)
+          return null;
         slices[s++] = slice;
-        degree += slice.length;
+        degree += slice.neighbors().length;
       }
+
+    // A single slice is already exactly what this method returns, and it was built for this call alone - and
+    // its edges were checkpointed as it was built - so it can be handed straight back.
+    if (slices.length == 1)
+      return slices[0];
 
     final int[] neighbors = new int[degree];
     final double[] weights = new double[degree];
     int pos = 0;
-    int edgeCount = 0;
-    s = 0;
-    for (final String type : types)
-      for (final Vertex.DIRECTION d : directions) {
-        final int[] slice = slices[s++];
-        for (int j = 0; j < slice.length; j++) {
-          if (edgeCheckpoint != null)
-            edgeCheckpoint.accept(edgeCount++);
-          neighbors[pos] = slice[j];
-          final Object value = getEdgeProperty(nodeId, j, d, type, propertyName);
-          weights[pos] = value instanceof Number num ? num.doubleValue() : defaultWeight;
-          pos++;
-        }
-      }
+    for (final NodeEdgeWeights slice : slices) {
+      final int[] sliceNeighbors = slice.neighbors();
+      System.arraycopy(sliceNeighbors, 0, neighbors, pos, sliceNeighbors.length);
+      System.arraycopy(slice.weights(), 0, weights, pos, sliceNeighbors.length);
+      pos += sliceNeighbors.length;
+    }
     return new NodeEdgeWeights(neighbors, weights);
   }
 

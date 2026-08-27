@@ -36,16 +36,41 @@ class TxDelta {
   final List<EdgeDelta>            deletedEdges     = new ArrayList<>();
   final Map<RID, Map<String, Object>> updatedProperties = new HashMap<>();
 
-  // Set when a covered edge had a property change. Edge property overrides cannot be represented
-  // in the overlay (the columnar edge stores are read directly by the array-based algorithms,
-  // bypassing the overlay), so this flag forces a rebuild on commit instead of silently dropping
-  // the update. See issue #4513.
-  boolean edgePropertiesUpdated = false;
+  // Covered edges whose properties changed, with the values they changed to. An edge THIS overlay window
+  // added carries its values in its own overlay entry, so such an update is applied there and costs nothing
+  // (which is the ordinary `newEdge(...).save()`, an insert that reports one create and one update). An edge
+  // already in the base CSR is addressed by a column slot instead, and nothing maps that slot back from its
+  // RID, so an update to one leaves the columns holding a value the database no longer has and only a rebuild
+  // can repair them - which DeltaOverlay.merge() decides, being the one place that knows which of the two this
+  // is. See issues #4513 and #6315.
+  // Keyed by the edge's own identity so that a transaction updating one edge's weight repeatedly - an
+  // accumulator, say - holds one entry rather than one per call. Last write wins, which is what
+  // DeltaOverlay.merge() would have arrived at anyway by overwriting as it walked the list, and it keeps the
+  // cap below a count of the edges actually touched instead of of the calls made. Insertion-ordered, so the
+  // merge walks them in the order the transaction made them.
+  final Map<RID, EdgeDelta>        updatedEdges     = new LinkedHashMap<>();
+
+  // Set only by the synthetic delta GraphAnalyticalView uses to schedule the follow-up rebuild an edge
+  // property update buffered during a compaction needs (#4513). It stands for no edge in particular, so it
+  // marks the columns out of date outright rather than being resolved against the overlay's own additions.
+  boolean                          forceEdgePropertyRebuild = false;
+
+  /**
+   * True when this transaction changed a covered edge's properties, however the change is spelled: the
+   * individual edges while there were few enough of them to track, or the bare flag {@link DeltaCollector}
+   * falls back to past its cap. Asked through one method rather than open-coded, because a caller that
+   * remembers only the first spelling silently skips exactly the deltas that need the rebuild most - a bulk
+   * rewrite - and the view is then left unable to serve edge properties until some later commit happens to
+   * re-trigger it.
+   */
+  boolean hasEdgePropertyChanges() {
+    return !updatedEdges.isEmpty() || forceEdgePropertyRebuild;
+  }
 
   boolean isEmpty() {
     return addedVertices.isEmpty() && deletedVertices.isEmpty()
         && addedEdges.isEmpty() && deletedEdges.isEmpty()
-        && updatedProperties.isEmpty() && !edgePropertiesUpdated;
+        && updatedProperties.isEmpty() && !hasEdgePropertyChanges();
   }
 
   void clear() {
@@ -54,7 +79,8 @@ class TxDelta {
     addedEdges.clear();
     deletedEdges.clear();
     updatedProperties.clear();
-    edgePropertiesUpdated = false;
+    updatedEdges.clear();
+    forceEdgePropertyRebuild = false;
   }
 
   static class VertexDelta {
@@ -76,12 +102,29 @@ class TxDelta {
     // must not double-count) apart from "two distinct parallel edges between the same pair" (must each
     // count, see issue #6769).
     final RID    rid;
+    // For addedEdges and updatedEdges, the values of the edge properties the view materialises columns for -
+    // one slot per name of the view's edge property filter, in its order - or null when it materialises none.
+    // An added edge has no column slot of its own, the columns having been built with the base CSR, so this is
+    // the only place its weight can be read from while the overlay is the view's representation of it (issue
+    // #6315). Null for deletedEdges, which are never asked for a value.
+    //
+    // An array rather than a map because there is one of these per added edge and a bulk insert makes as many
+    // of them as it inserts edges: the names are a small fixed list known before the first edge arrives, so
+    // carrying them again per edge would be paying for a hash table per edge to look up a position the caller
+    // can compute once for a whole slice.
+    final Object[] properties;
 
     EdgeDelta(final String edgeType, final RID source, final RID target, final RID rid) {
+      this(edgeType, source, target, rid, null);
+    }
+
+    EdgeDelta(final String edgeType, final RID source, final RID target, final RID rid,
+        final Object[] properties) {
       this.edgeType = edgeType;
       this.source = source;
       this.target = target;
       this.rid = rid;
+      this.properties = properties;
     }
   }
 }
