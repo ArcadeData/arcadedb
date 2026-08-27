@@ -115,6 +115,19 @@ class ConsoleCredentialsTest {
   }
 
   /**
+   * The command list mirrors the console's own dispatch and will drift as commands are added, so it matches whole words
+   * rather than prefixes: a future `connect-cluster` must not be routed to the `connect` rule and have its third
+   * argument masked as if it were a password.
+   */
+  @Test
+  void aCommandThatMerelySharesAPrefixIsNotTreatedAsThatCommand() {
+    assertThat(ConsoleCredentials.mask("connect-cluster somehost alpha beta"))
+        .isEqualTo("connect-cluster somehost alpha beta");
+    assertThat(ConsoleCredentials.mask("create username bob identified by x"))
+        .isEqualTo("create username bob identified by x");
+  }
+
+  /**
    * Masking twice must not produce `***` for the mask itself: the history file is loaded and re-added on every session.
    */
   @Test

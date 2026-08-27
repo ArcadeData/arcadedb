@@ -85,12 +85,15 @@ test("a missing name yields an empty segment rather than the string 'null'", () 
 });
 
 test("every api/v1 URL in the Studio builds its database segment with encodeDatabaseName", () => {
+  // Match the endpoint prefix in ANY form - string concatenation, a template literal, a parenthesized
+  // expression - and require the helper on the same line, rather than matching only the `"..." + identifier`
+  // shape that happens to be written today. The point of this test is the call sites nobody has written yet.
   const offenders = [];
   for (const file of fs.readdirSync(JS_DIR).filter((f) => f.endsWith(".js"))) {
     const src = fs.readFileSync(path.join(JS_DIR, file), "utf8");
     src.split("\n").forEach((line, i) => {
-      const match = line.match(/"api\/v1\/(?:command|query|progress)\/"\s*\+\s*([A-Za-z_$][\w$]*)/);
-      if (match && match[1] !== "encodeDatabaseName") offenders.push(file + ":" + (i + 1) + " -> " + line.trim());
+      if (/api\/v1\/(?:command|query|progress)\//.test(line) && !line.includes("encodeDatabaseName"))
+        offenders.push(file + ":" + (i + 1) + " -> " + line.trim());
     });
   }
   assert.deepEqual(offenders, [], "these call sites build the URL path segment without encodeDatabaseName");
