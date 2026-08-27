@@ -70,7 +70,7 @@ function tsLoadTypes() {
 
   jQuery.ajax({
     type: "POST",
-    url: "api/v1/command/" + db,
+    url: "api/v1/command/" + encodeDatabaseName(db),
     data: JSON.stringify({ language: "sql", command: "SELECT FROM schema:types" }),
     contentType: "application/json",
     beforeSend: function (xhr) {
@@ -109,7 +109,7 @@ function tsTypeChanged() {
 
   jQuery.ajax({
     type: "POST",
-    url: "api/v1/command/" + db,
+    url: "api/v1/command/" + encodeDatabaseName(db),
     data: JSON.stringify({ language: "sql", command: "SELECT FROM schema:types WHERE name = '" + typeName + "'" }),
     contentType: "application/json",
     beforeSend: function (xhr) {
@@ -658,7 +658,7 @@ function tsDropType() {
     function () {
       jQuery.ajax({
         type: "POST",
-        url: "api/v1/command/" + db,
+        url: "api/v1/command/" + encodeDatabaseName(db),
         data: JSON.stringify({ language: "sql", command: "DROP TYPE " + quoteSqlName(typeName) + " IF EXISTS" }),
         contentType: "application/json",
         beforeSend: function (xhr) {
@@ -709,7 +709,7 @@ function tsAddDownsamplingPolicy(typeName) {
     var db = getCurrentDatabase();
     jQuery.ajax({
       type: "POST",
-      url: "api/v1/command/" + db,
+      url: "api/v1/command/" + encodeDatabaseName(db),
       data: JSON.stringify({ language: "sql", command: command }),
       contentType: "application/json",
       beforeSend: function (xhr) {
@@ -750,7 +750,7 @@ function tsDropDownsamplingPolicy(typeName) {
       var db = getCurrentDatabase();
       jQuery.ajax({
         type: "POST",
-        url: "api/v1/command/" + db,
+        url: "api/v1/command/" + encodeDatabaseName(db),
         data: JSON.stringify({ language: "sql", command: "ALTER TIMESERIES TYPE " + quoteSqlName(typeName) + " DROP DOWNSAMPLING POLICY" }),
         contentType: "application/json",
         beforeSend: function (xhr) {
@@ -820,7 +820,7 @@ function tsLoadSchema() {
 
   jQuery.ajax({
     type: "POST",
-    url: "api/v1/command/" + db,
+    url: "api/v1/command/" + encodeDatabaseName(db),
     data: JSON.stringify({ language: "sql", command: "SELECT FROM schema:types" }),
     contentType: "application/json",
     beforeSend: function (xhr) {

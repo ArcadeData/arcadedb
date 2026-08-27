@@ -58,6 +58,11 @@ public interface ServerPlugin {
    * demand or re-registered by the HA snapshot installer. A plugin that keeps per-database state (a schedule, a
    * cache, a listener) uses this to pick up a database that did not exist when the plugin started.
    * <p>
+   * Delivered only between {@link #configure} and {@link #stopService}: outside that window a plugin does not hold the
+   * server it would have to reconcile against, and a plugin of the {@code AFTER_DATABASES_OPEN} priority is installed
+   * long before the databases it will manage are opened (issue #6852). Everything that existed at
+   * {@link #startService} time is the plugin's own job to pick up there.
+   * <p>
    * Called on the thread that performed the registration, which may still hold the server's database lock, so the
    * implementation has to be short and non-blocking. The callback is dispatched after the registry mutation rather
    * than under its lock, so two concurrent mutations of the same name can deliver their callbacks in either order:

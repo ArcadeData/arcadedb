@@ -28,6 +28,7 @@ import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.server.TestServerHelper;
@@ -978,5 +979,117 @@ class ConsoleTest {
 
     assertThat(console.getDatabase().query("sql", "SELECT count(*) AS count FROM index:`doc[num]`").next()
         .<Long>getProperty("count")).isEqualTo(3);
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/6827: a backslash could not be typed from the console at all.
+   * The parser consumed one level of escaping before the statement reached the engine, and the engine's own string
+   * literals require `\\` for a literal backslash - so the correctly escaped `'C:\\\\Users\\\\bob'` arrived at the engine as
+   * `'C:\\Users\\bob'` and failed to even tokenize, while the under-escaped `'C:\\Users\\bob'` arrived as `'C:Usersbob'` and
+   * was stored, wrong, with no warning at all.
+   */
+  @Test
+  void aBackslashSurvivesTheConsoleAndReachesTheEngine() throws Exception {
+    assertThat(console.parse("connect " + DB_NAME)).isTrue();
+    assertThat(console.parse("create document type Doc")).isTrue();
+    assertThat(console.parse("insert into Doc set winPath = 'C:\\\\Users\\\\bob', re = '\\\\d+'")).isTrue();
+
+    final Result record = console.getDatabase().query("sql", "select winPath, re from Doc").next();
+    assertThat(record.<String>getProperty("winPath")).isEqualTo("C:\\Users\\bob");
+    assertThat(record.<String>getProperty("re")).isEqualTo("\\d+");
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/6828: `close()` ran four steps under one
+   * `catch (Throwable) { // IGNORE }` and the first one committed on a batch counter that nothing reset. Once the
+   * transaction is gone - here through an explicit `commit` - that first step threw and took the terminal flush, the
+   * database close and the factory close down with it.
+   */
+  @Test
+  void closeStillReleasesTheDatabaseAfterAnExplicitCommitEndedTheBatch() throws Exception {
+    assertThat(console.parse("connect " + DB_NAME)).isTrue();
+    assertThat(console.parse("create document type Doc")).isTrue();
+    assertThat(console.parse("set transactionBatchSize = 100")).isTrue();
+    assertThat(console.parse("insert into Doc set n = 1")).isTrue();
+    assertThat(console.parse("commit")).isTrue();
+
+    assertThat(console.currentOperationsInBatch).as("the committed batch must not be committed a second time").isZero();
+
+    console.close();
+
+    assertThat(console.getDatabase()).as("close() must release the database even when the first step fails").isNull();
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/6828: the same defect on the default batch path, where `exit`
+   * closes the database and nulls the proxy before the `finally console.close()` runs, so the stale counter made the
+   * first step throw a NullPointerException.
+   */
+  @Test
+  void closeAfterExitIsANoOpRatherThanANullPointer() throws Exception {
+    assertThat(console.parse("connect " + DB_NAME)).isTrue();
+    assertThat(console.parse("create document type Doc")).isTrue();
+    assertThat(console.parse("set transactionBatchSize = 100")).isTrue();
+    assertThat(console.parse("insert into Doc set n = 1")).isTrue();
+    assertThat(console.parse("exit")).isFalse();
+
+    assertThat(console.getDatabase()).isNull();
+    assertThat(console.currentOperationsInBatch).isZero();
+    assertThatCode(() -> console.close()).doesNotThrowAnyException();
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/6830: `connect remote:` split the credentials on a single space
+   * and demanded exactly three tokens, so a run of blanks and a password containing a space - both of which the server
+   * accepts - failed with "URL username and password are missing", pointing the user at the wrong problem.
+   */
+  @Test
+  void connectAcceptsExtraBlanksAndReportsWhichHalfIsMissing() throws Exception {
+    // NOTHING IS CONTACTED HERE: RemoteDatabase RESOLVES THE SERVER LAZILY, SO THIS EXERCISES THE PARSING ALONE. BOTH
+    // FORMS USED TO FAIL WITH "URL username and password are missing" ALTHOUGH BOTH VALUES ARE PRESENT
+    assertThatCode(() -> console.parse("connect remote:localhost:1/mydb  root   secret")).doesNotThrowAnyException();
+    assertThat(console.getDatabase().getName()).isEqualTo("mydb");
+    assertThat(console.parse("close")).isTrue();
+
+    assertThatCode(() -> console.parse("connect remote:localhost:1/mydb root my pass phrase")).doesNotThrowAnyException();
+    assertThat(console.getDatabase().getName()).isEqualTo("mydb");
+    assertThat(console.parse("close")).isTrue();
+
+    assertThatThrownBy(() -> console.parse("connect remote:localhost:1/mydb"))
+        .hasMessageContaining("User name is missing");
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/6827: a script replayed with `load` lost its backslashes too.
+   * The reader compensated for the parser by doubling every `\\` it read, which cancelled out only for an EVEN number of
+   * them - a lone backslash was still swallowed - and did nothing about the level the parser consumed from the rest.
+   */
+  @Test
+  void aLoadedScriptKeepsItsBackslashes() throws Exception {
+    final File script = new File("./target/issue6827-load.sql");
+    Files.writeString(script.toPath(), """
+        CREATE DOCUMENT TYPE Loaded;
+        INSERT INTO Loaded SET winPath = 'C:\\\\Users\\\\bob', re = '\\\\d+';
+        """);
+    try {
+      assertThat(console.parse("connect " + DB_NAME)).isTrue();
+      assertThat(console.parse("load " + script.getAbsolutePath().replace('\\', '/'))).isTrue();
+
+      final Result record = console.getDatabase().query("sql", "select winPath, re from Loaded").next();
+      assertThat(record.<String>getProperty("winPath")).isEqualTo("C:\\Users\\bob");
+      assertThat(record.<String>getProperty("re")).isEqualTo("\\d+");
+    } finally {
+      script.delete();
+    }
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/6829: without a terminal to type into, an omitted password is
+   * still an error - but it names what is missing instead of claiming the user name is missing too.
+   */
+  @Test
+  void connectWithoutAPasswordAndWithoutATerminalSaysSo() {
+    assertThatThrownBy(() -> console.parse("connect remote:localhost:1/mydb root"))
+        .hasMessageContaining("Password for user 'root' is missing");
   }
 }

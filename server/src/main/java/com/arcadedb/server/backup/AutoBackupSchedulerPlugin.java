@@ -235,6 +235,12 @@ public class AutoBackupSchedulerPlugin implements ServerPlugin {
     // that interleave their read and their write can otherwise let the stale one land last, which is exactly the
     // outcome reconciling was meant to rule out.
     synchronized (lifecycleLock) {
+      // NOTHING TO RECONCILE BEFORE startService() HAS PUBLISHED A SCHEDULER: scheduleAllDatabases() COVERS EVERY
+      // DATABASE THAT EXISTS BY THEN. THE CHECK COMES FIRST BECAUSE IT IS ALSO THE ONE THAT DOES NOT NEED `server`,
+      // WHICH IS ONLY SET BY configure() (ISSUE #6852)
+      if (!enabled || scheduler == null)
+        return;
+
       if (server.existsDatabase(databaseName))
         scheduleDatabase(databaseName);
       else

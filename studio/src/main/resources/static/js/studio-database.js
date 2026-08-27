@@ -768,20 +768,22 @@ function showImportDatasetModal() {
 }
 
 function dropDatabase() {
-  let database = escapeHtml(getCurrentDatabase());
-  if (database == "") {
+  // HOLD THE RAW NAME AND ESCAPE AT THE HTML SINKS: HTML-ESCAPING AT THE SOURCE MADE THE TYPED-NAME CONFIRMATION BELOW
+  // COMPARE AGAINST `a&amp;b` AND SENT THAT NAME TO THE SERVER AS THE ONE TO DROP (ISSUE #6830)
+  let database = getCurrentDatabase();
+  if (database == null || database == "") {
     globalNotify("Error", "Database not selected", "danger");
     return;
   }
 
   globalConfirm(
     "Drop database",
-    "Are you sure you want to drop the database<br><b>" + database + "</b>?<br>WARNING: The operation cannot be undone.",
+    "Are you sure you want to drop the database<br><b>" + escapeHtml(database) + "</b>?<br>WARNING: The operation cannot be undone.",
     "warning",
     function () {
       globalPrompt(
         "Confirm drop database",
-        "Type the database name to confirm:<br><b>" + database + "</b>" +
+        "Type the database name to confirm:<br><b>" + escapeHtml(database) + "</b>" +
         "<input type='text' id='dropDatabaseConfirmInput' class='form-control mt-2' placeholder='Database name'>",
         "Drop",
         function (values) {
@@ -812,15 +814,15 @@ function dropDatabase() {
 }
 
 function resetDatabase() {
-  let database = escapeHtml(getCurrentDatabase());
-  if (database == "") {
+  let database = getCurrentDatabase();
+  if (database == null || database == "") {
     globalNotify("Error", "Database not selected", "danger");
     return;
   }
 
   globalConfirm(
     "Reset database",
-    "Are you sure you want to reset the database '" + database + "' (All data will be deleted)?<br>WARNING: The operation cannot be undone.",
+    "Are you sure you want to reset the database '" + escapeHtml(database) + "' (All data will be deleted)?<br>WARNING: The operation cannot be undone.",
     "warning",
     function () {
       jQuery
@@ -857,21 +859,21 @@ function resetDatabase() {
 }
 
 function backupDatabase() {
-  let database = escapeHtml(getCurrentDatabase());
-  if (database == "") {
+  let database = getCurrentDatabase();
+  if (database == null || database == "") {
     globalNotify("Error", "Database not selected", "danger");
     return;
   }
 
   globalConfirm(
     "Backup database",
-    "Are you sure you want to backup the database '" + database + "'?<br>The database archive will be created under the 'backup' directory of the server.",
+    "Are you sure you want to backup the database '" + escapeHtml(database) + "'?<br>The database archive will be created under the 'backup' directory of the server.",
     "info",
     function () {
       jQuery
         .ajax({
           type: "POST",
-          url: "api/v1/command/" + database,
+          url: "api/v1/command/" + encodeDatabaseName(database),
           data: JSON.stringify({
             language: "sql",
             command: "backup database",
@@ -906,7 +908,7 @@ function dropProperty(type, property) {
       jQuery
         .ajax({
           type: "POST",
-          url: "api/v1/command/" + database,
+          url: "api/v1/command/" + encodeDatabaseName(database),
           data: JSON.stringify({
             language: "sql",
             command: "drop property " + quoteSqlName(type) + "." + quoteSqlName(property),
@@ -943,7 +945,7 @@ function dropIndex(indexName, type) {
       jQuery
         .ajax({
           type: "POST",
-          url: "api/v1/command/" + database,
+          url: "api/v1/command/" + encodeDatabaseName(database),
           data: JSON.stringify({
             language: "sql",
             command: "drop index " + quoteSqlName(indexName),
@@ -999,7 +1001,7 @@ function runRepartition(typeName) {
       jQuery
         .ajax({
           type: "POST",
-          url: "api/v1/command/" + database,
+          url: "api/v1/command/" + encodeDatabaseName(database),
           data: JSON.stringify({
             language: "sql",
             command: "REBUILD TYPE " + quoteSqlName(typeName) + " WITH repartition = true",
@@ -1056,7 +1058,7 @@ function dropType(typeName) {
           jQuery
             .ajax({
               type: "POST",
-              url: "api/v1/command/" + database,
+              url: "api/v1/command/" + encodeDatabaseName(database),
               data: JSON.stringify({
                 language: "sql",
                 command: "drop type " + quoteSqlName(typeName) + " unsafe",
@@ -1253,7 +1255,7 @@ function createProperty(typeName) {
 
     jQuery.ajax({
       type: "POST",
-      url: "api/v1/command/" + database,
+      url: "api/v1/command/" + encodeDatabaseName(database),
       data: JSON.stringify({ language: "sql", command: command, serializer: "record" }),
       beforeSend: function (xhr) { xhr.setRequestHeader("Authorization", globalCredentials); }
     }).done(function (data) {
@@ -1603,7 +1605,7 @@ function createIndex(typeName) {
 
     jQuery.ajax({
       type: "POST",
-      url: "api/v1/command/" + database,
+      url: "api/v1/command/" + encodeDatabaseName(database),
       data: JSON.stringify({ language: "sql", command: command, serializer: "record" }),
       beforeSend: function (xhr) { xhr.setRequestHeader("Authorization", globalCredentials); }
     }).done(function (data) {
@@ -1766,7 +1768,7 @@ function createType(category) {
     jQuery
       .ajax({
         type: "POST",
-        url: "api/v1/command/" + database,
+        url: "api/v1/command/" + encodeDatabaseName(database),
         data: JSON.stringify({
           language: "sql",
           command: command,
@@ -1938,7 +1940,7 @@ function createTimeSeriesType() {
 
     jQuery.ajax({
       type: "POST",
-      url: "api/v1/command/" + database,
+      url: "api/v1/command/" + encodeDatabaseName(database),
       data: JSON.stringify({ language: "sql", command: command, serializer: "record" }),
       beforeSend: function (xhr) {
         xhr.setRequestHeader("Authorization", globalCredentials);
@@ -2208,7 +2210,8 @@ function deleteSavedQuery(index) {
 function populateHistoryPanel() {
   let container = $("#sidebarPanelHistory");
   let queryHistory = getQueryHistory();
-  let database = escapeHtml(getCurrentDatabase());
+  // THE STORED ENTRIES CARRY THE RAW NAME, SO THE FILTER BELOW HAS TO COMPARE AGAINST THE RAW NAME TOO (ISSUE #6830)
+  let database = getCurrentDatabase();
 
   // Filter for current database
   let filtered = [];
@@ -3068,7 +3071,7 @@ function browseType(typeName) {
 
   jQuery.ajax({
     type: "POST",
-    url: "api/v1/command/" + database,
+    url: "api/v1/command/" + encodeDatabaseName(database),
     data: JSON.stringify({ language: "sql", command: query, limit: limit, serializer: "studio" }),
     beforeSend: function(xhr) { xhr.setRequestHeader("Authorization", globalCredentials); }
   }).done(function(data) {
@@ -3169,7 +3172,7 @@ function startCommandProgressMonitor(database, command) {
     jQuery
       .ajax({
         type: "GET",
-        url: "api/v1/progress/" + database,
+        url: "api/v1/progress/" + encodeDatabaseName(database),
         beforeSend: function (xhr) {
           xhr.setRequestHeader("Authorization", globalCredentials);
         },
@@ -3221,7 +3224,7 @@ function executeCommandTable() {
   jQuery
     .ajax({
       type: "POST",
-      url: "api/v1/command/" + database,
+      url: "api/v1/command/" + encodeDatabaseName(database),
       data: JSON.stringify({
         language: language,
         command: command,
@@ -3276,7 +3279,7 @@ function executeCommandGraph() {
   jQuery
     .ajax({
       type: "POST",
-      url: "api/v1/command/" + database,
+      url: "api/v1/command/" + encodeDatabaseName(database),
       data: JSON.stringify({
         language: language,
         command: command,
@@ -3331,7 +3334,7 @@ function fetchSchemaTypes(callback) {
   jQuery
     .ajax({
       type: "POST",
-      url: "api/v1/query/" + database,
+      url: "api/v1/query/" + encodeDatabaseName(database),
       data: JSON.stringify({
         language: "sql",
         command: "select from schema:types",
@@ -3968,7 +3971,7 @@ function displayDatabaseSettings() {
   jQuery
     .ajax({
       type: "POST",
-      url: "api/v1/query/" + database,
+      url: "api/v1/query/" + encodeDatabaseName(database),
       data: JSON.stringify({
         language: "sql",
         command: "select expand( settings ) from schema:database",
@@ -4393,7 +4396,7 @@ function fetchMaterializedViews(callback) {
   jQuery
     .ajax({
       type: "POST",
-      url: "api/v1/query/" + database,
+      url: "api/v1/query/" + encodeDatabaseName(database),
       data: JSON.stringify({
         language: "sql",
         command: "select from schema:materializedViews",
@@ -4488,7 +4491,7 @@ function fetchGraphAnalyticalViews(callback) {
   jQuery
     .ajax({
       type: "POST",
-      url: "api/v1/query/" + database,
+      url: "api/v1/query/" + encodeDatabaseName(database),
       data: JSON.stringify({
         language: "sql",
         command: "select from schema:graphAnalyticalViews",
@@ -4777,7 +4780,7 @@ function createGraphAnalyticalView() {
 
     jQuery.ajax({
       type: "POST",
-      url: "api/v1/command/" + database,
+      url: "api/v1/command/" + encodeDatabaseName(database),
       data: JSON.stringify({
         language: "sql",
         command: command,
@@ -4994,7 +4997,7 @@ function dropGav(gavName) {
       let database = getCurrentDatabase();
       jQuery.ajax({
         type: "POST",
-        url: "api/v1/command/" + database,
+        url: "api/v1/command/" + encodeDatabaseName(database),
         data: JSON.stringify({
           language: "sql",
           command: "DROP GRAPH ANALYTICAL VIEW " + quoteSqlName(gavName)
@@ -5019,7 +5022,7 @@ function alterGavUpdateMode(gavName, newMode) {
   let database = getCurrentDatabase();
   jQuery.ajax({
     type: "POST",
-    url: "api/v1/command/" + database,
+    url: "api/v1/command/" + encodeDatabaseName(database),
     data: JSON.stringify({
       language: "sql",
       command: "ALTER GRAPH ANALYTICAL VIEW " + quoteSqlName(gavName) + " UPDATE MODE " + newMode
@@ -5041,7 +5044,7 @@ function rebuildGav(gavName) {
   let database = getCurrentDatabase();
   jQuery.ajax({
     type: "POST",
-    url: "api/v1/command/" + database,
+    url: "api/v1/command/" + encodeDatabaseName(database),
     data: JSON.stringify({
       language: "sql",
       command: "REBUILD GRAPH ANALYTICAL VIEW " + quoteSqlName(gavName)
@@ -5344,7 +5347,7 @@ function createMaterializedView() {
     jQuery
       .ajax({
         type: "POST",
-        url: "api/v1/command/" + database,
+        url: "api/v1/command/" + encodeDatabaseName(database),
         data: JSON.stringify({
           language: "sql",
           command: command,
@@ -5401,7 +5404,7 @@ function refreshMaterializedView(name) {
       jQuery
         .ajax({
           type: "POST",
-          url: "api/v1/command/" + database,
+          url: "api/v1/command/" + encodeDatabaseName(database),
           data: JSON.stringify({
             language: "sql",
             command: "REFRESH MATERIALIZED VIEW " + quoteSqlName(name),
@@ -5449,7 +5452,7 @@ function alterMaterializedView(name) {
     jQuery
       .ajax({
         type: "POST",
-        url: "api/v1/command/" + database,
+        url: "api/v1/command/" + encodeDatabaseName(database),
         data: JSON.stringify({
           language: "sql",
           command: command,
@@ -5489,7 +5492,7 @@ function dropMaterializedView(name) {
       jQuery
         .ajax({
           type: "POST",
-          url: "api/v1/command/" + database,
+          url: "api/v1/command/" + encodeDatabaseName(database),
           data: JSON.stringify({
             language: "sql",
             command: "DROP MATERIALIZED VIEW " + quoteSqlName(name),
@@ -5715,7 +5718,7 @@ function loadDatabaseMetrics() {
 
   jQuery.ajax({
     type: "POST",
-    url: "api/v1/query/" + database,
+    url: "api/v1/query/" + encodeDatabaseName(database),
     data: JSON.stringify({ language: "sql", command: "SELECT FROM schema:stats" }),
     beforeSend: function (xhr) { xhr.setRequestHeader("Authorization", globalCredentials); },
   }).done(function (data) {
@@ -5727,7 +5730,7 @@ function loadDatabaseMetrics() {
 
   jQuery.ajax({
     type: "POST",
-    url: "api/v1/query/" + database,
+    url: "api/v1/query/" + encodeDatabaseName(database),
     data: JSON.stringify({ language: "sql", command: "SELECT FROM schema:materializedViews" }),
     beforeSend: function (xhr) { xhr.setRequestHeader("Authorization", globalCredentials); },
   }).done(function (data) {
@@ -5838,7 +5841,7 @@ function refreshMvFromMetrics(name) {
 
   jQuery.ajax({
     type: "POST",
-    url: "api/v1/command/" + database,
+    url: "api/v1/command/" + encodeDatabaseName(database),
     data: JSON.stringify({ language: "sql", command: "REFRESH MATERIALIZED VIEW " + quoteSqlName(name) }),
     beforeSend: function (xhr) { xhr.setRequestHeader("Authorization", globalCredentials); },
   }).done(function () {
@@ -5865,7 +5868,7 @@ function loadStorageBuckets() {
 
   jQuery.ajax({
     type: "POST",
-    url: "api/v1/query/" + database,
+    url: "api/v1/query/" + encodeDatabaseName(database),
     // Hide non-PRIMARY buckets (e.g. paired EXTERNAL_PROPERTY buckets that hold externalised property values).
     // Power users can still see them by running SELECT FROM schema:buckets directly in the Query tab.
     data: JSON.stringify({ language: "sql", command: "SELECT FROM schema:buckets WHERE purpose = 'PRIMARY' OR purpose IS NULL" }),
@@ -5887,7 +5890,7 @@ function loadStorageBuckets() {
       (function (bucket) {
         jQuery.ajax({
           type: "POST",
-          url: "api/v1/query/" + database,
+          url: "api/v1/query/" + encodeDatabaseName(database),
           data: JSON.stringify({ language: "sql", command: "SELECT FROM schema:bucket:" + quoteSqlName(bucket.name) }),
           beforeSend: function (xhr) { xhr.setRequestHeader("Authorization", globalCredentials); },
         }).done(function (detailData) {
@@ -5970,7 +5973,7 @@ function loadStorageIndexes() {
   // includes the index internal statistics, is fetched lazily only for the row the user selects.
   jQuery.ajax({
     type: "POST",
-    url: "api/v1/query/" + database,
+    url: "api/v1/query/" + encodeDatabaseName(database),
     data: JSON.stringify({ language: "sql", command: "SELECT FROM schema:indexes" }),
     beforeSend: function (xhr) { xhr.setRequestHeader("Authorization", globalCredentials); },
   }).done(function (data) {
@@ -6045,7 +6048,7 @@ function renderIndexesDataTable(indexes) {
 
     jQuery.ajax({
       type: "POST",
-      url: "api/v1/query/" + database,
+      url: "api/v1/query/" + encodeDatabaseName(database),
       // The name is back-tick quoted: auto-derived compound-index names carry a comma, e.g. `MyType[propA,propB]`.
       data: JSON.stringify({ language: "sql", command: "SELECT FROM schema:index:" + quoteSqlName(name) }),
       beforeSend: function (xhr) { xhr.setRequestHeader("Authorization", globalCredentials); },
@@ -6106,7 +6109,7 @@ function loadStorageDictionary() {
 
   jQuery.ajax({
     type: "POST",
-    url: "api/v1/query/" + database,
+    url: "api/v1/query/" + encodeDatabaseName(database),
     data: JSON.stringify({ language: "sql", command: "SELECT FROM schema:dictionary" }),
     beforeSend: function (xhr) { xhr.setRequestHeader("Authorization", globalCredentials); },
   }).done(function (data) {

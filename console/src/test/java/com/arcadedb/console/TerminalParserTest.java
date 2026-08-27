@@ -195,4 +195,53 @@ class TerminalParserTest {
     split("SELECT '{' ; SELECT 1");
     assertThat(parser.getUnbalancedBraceOffset()).isEqualTo(-1);
   }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/6827: the parser used to consume one level of backslash escaping
+   * from every word before handing it to the query engine, so `'C:\Users\bob'` arrived as `'C:Usersbob'` and was stored
+   * that way - silently, with no warning and no error. The engine, not the console, owns string-literal escaping, so the
+   * backslash has to reach it as typed.
+   */
+  @Test
+  void aBackslashInsideAStringReachesTheEngineAsTyped() {
+    assertThat(split("insert into Doc set winPath = 'C:\\Users\\bob'"))
+        .containsExactly("insert into Doc set winPath = 'C:\\Users\\bob'");
+  }
+
+  /**
+   * Not only inside string literals: `load` takes a file path, and a Windows one is nothing but backslashes.
+   */
+  @Test
+  void aBackslashOutsideAStringIsKeptToo() {
+    assertThat(split("load C:\\scripts\\init.sql")).containsExactly("load C:\\scripts\\init.sql");
+  }
+
+  /**
+   * The escape character keeps doing its structural job: an escaped quote must not close the string, otherwise the rest
+   * of the statement would be parsed as if it were outside one.
+   */
+  @Test
+  void anEscapedQuoteStillDoesNotCloseTheStringAndKeepsItsBackslash() {
+    assertThat(split("select from V where name = 'it\\'s'; select 1"))
+        .containsExactly("select from V where name = 'it\\'s'", " select 1");
+  }
+
+  @Test
+  void anEscapedSemicolonStillDoesNotSplitTheCommand() {
+    assertThat(split("select 'a' \\; select 'b'")).containsExactly("select 'a' \\; select 'b'");
+  }
+
+  /**
+   * A doubled backslash is a single escaped backslash: it used to collapse to one, which turned the literal
+   * `'\\'` a user typed for a single backslash into an unterminated-looking oddity for the engine.
+   */
+  @Test
+  void aDoubledBackslashIsNotCollapsed() {
+    assertThat(split("insert into Doc set sep = '\\\\'")).containsExactly("insert into Doc set sep = '\\\\'");
+  }
+
+  @Test
+  void aTrailingBackslashIsKept() {
+    assertThat(split("select from V where p = 'a\\")).containsExactly("select from V where p = 'a\\");
+  }
 }

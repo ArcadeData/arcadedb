@@ -468,7 +468,7 @@ function loadTypesForTokenDatabase() {
   jQuery
     .ajax({
       type: "GET",
-      url: "api/v1/query/" + encodeURIComponent(db) + "/sql/SELECT%20name%20FROM%20schema%3Atypes",
+      url: "api/v1/query/" + encodeDatabaseName(db) + "/sql/SELECT%20name%20FROM%20schema%3Atypes",
       beforeSend: function (xhr) {
         xhr.setRequestHeader("Authorization", globalCredentials);
       },
@@ -824,7 +824,7 @@ function loadTypesForGroupDatabase() {
   jQuery
     .ajax({
       type: "GET",
-      url: "api/v1/query/" + encodeURIComponent(db) + "/sql/SELECT%20name%20FROM%20schema%3Atypes",
+      url: "api/v1/query/" + encodeDatabaseName(db) + "/sql/SELECT%20name%20FROM%20schema%3Atypes",
       beforeSend: function (xhr) {
         xhr.setRequestHeader("Authorization", globalCredentials);
       },
