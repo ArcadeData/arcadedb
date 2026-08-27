@@ -46,7 +46,8 @@ import java.util.logging.Level;
 public abstract class BaseRaftHATest extends BaseGraphServerTest {
 
   private static final int  BASE_RAFT_PORT          = 2434;
-  // 30s, down from 120s, and set from a measurement rather than from a suspicion (issue #6267).
+  // 15s, down from 30s and originally from 120s, and set from a measurement rather than from a suspicion
+  // (issues #6267 and #6343).
   //
   // The 120s was a reaction to two CI runs (31578870619, 31587763511) in which
   // Issue5410AbandonedTicketReleaseIT stalled for the ENTIRE poll budget - once at 30s, once at 60s -
@@ -65,23 +66,65 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
   // of them took 53s WALL CLOCK for the whole class, cluster startup and teardown included, so no single
   // wait inside it can have approached even half the old budget.
   //
-  // 30s is what the rest of this class already treats as "long enough for the cluster to do anything it is
+  // 30s was what the rest of this class already treated as "long enough for the cluster to do anything it is
   // going to do": waitForReplicationIsCompleted, waitAllReplicasAreConnected and LEADER_ELECTION_TIMEOUT_MS
-  // all use it. The budget that had no measurement behind it was also the only one four times larger than
-  // its siblings; it is now one of them. It stays generous - three times the largest wait the instrument can
-  // prove any of those runs needed - while a genuine hang costs 90s less before it is reported.
+  // all use it, and matching them was the right first cut for a budget that had never been measured at all.
   //
-  // Whether it can come down again, and what to do about the fork adjacency described above, are tracked by
-  // issue #6343: a comment here is not a tracker, which is what issue #6297 was filed to establish and issue
-  // #6323 found had been lost.
-  private static final long RESYNC_RETRY_TIMEOUT_MS = 30_000;
+  // The second measurement, asked for by issue #6343, is FORTY full ha-integration-tests runs on main between
+  // 2026-08-18 and 2026-08-26 - every one of them after #6267's merge, 238 tests each, all 123 IT classes in
+  // every run - and again NOT ONE wait reached the report threshold, now 5s rather than 10s. Sampled every
+  // fifth run of the 200 the API still had logs for, so the sample spans the whole window rather than one
+  // quiet stretch of it. The corroboration is sharper than last time: Issue5410AbandonedTicketReleaseIT, the
+  // class whose stalls bought the original 120s, now takes 13.2-17.0s WALL CLOCK for the ENTIRE class over
+  // those 40 runs - cluster startup, three-node replication and teardown included - so the wait that once
+  // consumed 60s of budget cannot now be consuming even a fifth of 15s.
+  //
+  // 15s keeps the rule the 30s cut used, applied at the resolution the instrument now has: three times the
+  // largest wait the evidence can prove any run needed (< 5s). It is no longer tied to its siblings above,
+  // and should not be - those three wait for an election or for a whole cluster to converge, this one waits
+  // out a single snapshot-reinstall window, and the measurement says that window is a different size. A
+  // genuine hang now costs 15s instead of 30s, and 105s less than it did before any of this was measured.
+  //
+  // Cutting further is deliberately NOT the plan: the ratchet stops here. Below ~10s the budget stops being
+  // three times a measured wait and starts being the wait itself, which converts a busy runner into a red
+  // lane - the trade the instrument exists to avoid. From here the instrument's job is to catch a regression
+  // rather than to propose the next cut.
+  //
+  // Both of those measurements are indirect - they say no wait CROSSED a threshold. A later experiment for
+  // issue #6343 measured the wait itself, by running the lane with the report threshold at 1ms so every wait
+  // printed its duration: Issue5410AbandonedTicketReleaseIT's awaitValue satisfied in 252 ms and then 1 ms
+  // (run 33074663154). The budget here is sixty times the wait it exists for, which is the number that should
+  // be reassuring rather than the absence of report lines.
+  //
+  // That experiment also found something this comment must not be read as covering: the same wait NEVER
+  // completes - 120s was not enough - if the heavy ITs are moved into a failsafe fork of their own, because
+  // this class turns out to pass only when RaftHAComprehensiveIT has run before it in the same JVM. That is
+  // issue #6848, and it is a property of the suite and probably of the abandoned-ticket path, not of this
+  // budget. Nothing here is safe to reason about under a different fork arrangement without re-measuring.
+  //
+  // Which means reading its lines correctly, and 2.5s is low enough that they will appear: a local run of the
+  // eleven helper-calling IT classes reported a wait satisfied at 3013 ms, a perfectly ordinary one that the
+  // old 5s threshold simply could not see. A line is EVIDENCE ABOUT THAT WAIT, not an alarm - what would be a
+  // finding is the number in it climbing toward the budget, or a GAVE UP appearing at all. That is the whole
+  // reason the elapsed and the budget are both printed: the line is only worth as much as the comparison
+  // between them.
+  private static final long RESYNC_RETRY_TIMEOUT_MS = 15_000;
   /**
-   * Above this, a wait is worth a line in the log: it is evidence about the budget above, not noise. Lowered
-   * to 5s with the budget (issue #6267) to keep the same resolution: at the old 10s a wait could consume a
-   * third of the new budget and still say nothing, which is the blindness that let the 120s stand unmeasured
-   * for as long as it did. The next decision this feeds is issue #6343.
+   * Above this, a wait is worth a line in the log: it is evidence about the budget above, not noise. What
+   * matters is the ratio between the two, because that is the fraction of the budget a wait can consume while
+   * still saying nothing - the blindness that let the 120s stand unmeasured for years - and it is not an
+   * absolute: leaving this at 5s under a 15s budget would let a wait burn a THIRD of it in silence.
+   *
+   * <p>The history, stated accurately because it is cited as evidence: 10s of 120s (issue #6221) was a
+   * twelfth; 5s of 30s (issue #6267) was a sixth, so that cut halved the resolution even as it improved the
+   * budget; 2.5s of 15s (issue #6343) is a sixth again. So the rule is not "it has always been a sixth" - it
+   * has been a sixth since #6267, and this cut holds it there rather than letting it slip to a third. A sixth
+   * is the floor the equality in {@code SlowWaitInstrumentTest} now pins, and the twelfth is worth knowing
+   * only as the reminder that a budget can be so large that even a generous threshold sees nothing.
+   *
+   * @see #slowWaitReport(String, long, boolean)
    */
-  private static final long SLOW_WAIT_REPORT_MS     = 5_000;
+  private static final long SLOW_WAIT_REPORT_MS     = 2_500;
   /**
    * How long {@link #findLeaderIndex()} waits for an election before answering "no leader". An election in these
    * in-process clusters settles in a second or two; the budget is for the loaded CI runner where the question
@@ -510,22 +553,60 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
   }
 
   /**
-   * Records how much of {@link #RESYNC_RETRY_TIMEOUT_MS} a wait actually consumed, when it consumed enough to be
-   * worth knowing. A budget that is never exhausted leaves no evidence of how much of it was needed, which is
-   * exactly why the old 120 s stood on a suspicion rather than on a measurement (issue #6221): a wait that
-   * satisfies in 300 ms and one that satisfies at 95 s are indistinguishable in a green run. Nine runs of
-   * silence are what let it come down to 30 s (issue #6267), and the instrument stays for the same reason it
-   * was added - the next cut, or the case for putting it back, has to come from evidence too.
+   * The one fixed token every slow-wait report carries, so that collecting this instrument's evidence out of a
+   * CI log is a grep for a literal string rather than for a sentence somebody may since have reworded.
+   * <p>
+   * It is here because the absence of it cost issue #6343 a false reading. That issue asked, in as many words,
+   * for "the {@code SLOW WAIT} lines" from the runs on main - and there were none, in forty full runs. The
+   * conclusion that no wait had been slow happened to be the true one, but the grep could not have said
+   * otherwise: no line this instrument has ever emitted contained the string {@code SLOW WAIT}. A report
+   * nobody can search for by name is a report that reads as silence, and silence is exactly the answer the
+   * evidence-gathering step is trying to distinguish a finding from. The marker makes the two distinguishable
+   * again, and {@code SlowWaitInstrumentTest} is what keeps them that way.
+   */
+  static final String SLOW_WAIT_MARKER = "TEST SLOW WAIT:";
+
+  /**
+   * Builds the line {@link #logSlowWait} emits, or returns {@code null} when the wait was not slow enough to
+   * be worth one. Split out from the logging so the threshold decision and the wording of the report can be
+   * asserted by a plain unit test without standing a three-node cluster up to provoke a slow wait - which is
+   * what a test would otherwise have to do, and could not do reliably.
+   * <p>
+   * A budget that is never exhausted leaves no evidence of how much of it was needed, which is exactly why the
+   * old 120 s stood on a suspicion rather than on a measurement (issue #6221): a wait that satisfies in 300 ms
+   * and one that satisfies at 95 s are indistinguishable in a green run. Nine runs of silence took it to 30 s
+   * (issue #6267) and forty more took it to 15 s (issue #6343). From here the instrument's job changes from
+   * proposing cuts to catching regressions: see {@link #RESYNC_RETRY_TIMEOUT_MS}.
    * <p>
    * Logged, not asserted: a slow wait is not a failure, and a test that failed the moment a CI runner was busy
    * would be a worse trade than the timeout it was meant to justify.
    */
+  static String slowWaitReport(final String what, final long elapsedMs, final boolean satisfied) {
+    if (elapsedMs < SLOW_WAIT_REPORT_MS)
+      return null;
+    // The issue number, and nothing else editorial: what a line means belongs in the javadoc on
+    // RESYNC_RETRY_TIMEOUT_MS, which is where somebody reading one will end up anyway, and not repeated in every
+    // occurrence of it in a CI log. Everything here is load-bearing for a grep or for the reader of a single
+    // line - the marker, which wait, how long, and out of how much.
+    return "%s %s %s after %d ms of the %d ms budget (issue #6343)".formatted(
+        SLOW_WAIT_MARKER, what, satisfied ? "satisfied" : "GAVE UP", elapsedMs, RESYNC_RETRY_TIMEOUT_MS);
+  }
+
   private void reportSlowWait(final String what, final long startMs, final boolean satisfied) {
-    final long elapsed = System.currentTimeMillis() - startMs;
-    if (elapsed < SLOW_WAIT_REPORT_MS)
-      return;
-    LogManager.instance().log(this, Level.WARNING,
-        "TEST: %s %s after %d ms of the %d ms budget (issue #6267: evidence for whether that budget can come down further)",
-        what, satisfied ? "satisfied" : "GAVE UP", elapsed, RESYNC_RETRY_TIMEOUT_MS);
+    logSlowWait(this, what, System.currentTimeMillis() - startMs, satisfied);
+  }
+
+  /**
+   * Emits the report, if there is one to emit. Takes the requester rather than reading {@code this} so that
+   * {@code SlowWaitInstrumentTest} can drive the real logging path - the one that decides whether the marker
+   * survives into a CI log - without standing up the three-node cluster it would otherwise take to provoke a
+   * slow wait.
+   */
+  static void logSlowWait(final Object requester, final String what, final long elapsedMs, final boolean satisfied) {
+    final String report = slowWaitReport(what, elapsedMs, satisfied);
+    if (report != null)
+      // "%s" with the report as the argument, not the report as the format string: `what` is caller-supplied
+      // and a stray % in it would turn the instrument into a formatting error instead of a report.
+      LogManager.instance().log(requester, Level.WARNING, "%s", report);
   }
 }
