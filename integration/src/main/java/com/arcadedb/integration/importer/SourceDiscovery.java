@@ -33,6 +33,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.BufferedInputStream;
+import java.io.Closeable;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
@@ -138,31 +139,42 @@ public class SourceDiscovery {
 
     final HttpURLConnection connection = ImportSecurityValidator.openRemoteConnection(urlPath, blockLocalNetworks);
 
-    return getSourceFromContent(new BufferedInputStream(connection.getInputStream()), connection.getContentLengthLong(), resource,
-        source -> {
-          try {
-            source.inputStream.close();
+    try {
+      return getSourceFromContent(new BufferedInputStream(connection.getInputStream()), connection.getContentLengthLong(), resource,
+          source -> {
+            try {
+              source.inputStream.close();
+              connection.disconnect();
+
+              final HttpURLConnection connection1 = ImportSecurityValidator.openRemoteConnection(urlPath, blockLocalNetworks);
+              try {
+                if (source.inputStream instanceof GZIPInputStream)
+                  source.inputStream = new GZIPInputStream(connection1.getInputStream(), 2048);
+                else if (source.inputStream instanceof ZipInputStream)
+                  // THE NEW STREAM MUST BE POSITIONED ON THE ENTRY TO READ, THE OLD ONE IS GONE (issue #6810)
+                  source.inputStream = reopenZip(new BufferedInputStream(connection1.getInputStream()), resource);
+                else
+                  source.inputStream = new BufferedInputStream(connection1.getInputStream());
+              } catch (final IOException | RuntimeException e) {
+                // THE REPLACEMENT STREAM WAS NEVER INSTALLED ON THE SOURCE, SO NOTHING ELSE WOULD EVER DISCONNECT IT
+                connection1.disconnect();
+                throw e;
+              }
+            } catch (final ImportException e) {
+              throw e;
+            } catch (final Exception e) {
+              throw new ImportException("Error on reset remote resource", e);
+            }
+            return null;
+          }, () -> {
             connection.disconnect();
-
-            final HttpURLConnection connection1 = ImportSecurityValidator.openRemoteConnection(urlPath, blockLocalNetworks);
-
-            if (source.inputStream instanceof GZIPInputStream)
-              source.inputStream = new GZIPInputStream(connection1.getInputStream(), 2048);
-            else if (source.inputStream instanceof ZipInputStream)
-              // THE NEW STREAM MUST BE POSITIONED ON THE ENTRY TO READ, THE OLD ONE IS GONE (issue #6810)
-              source.inputStream = reopenZip(new BufferedInputStream(connection1.getInputStream()), resource);
-            else
-              source.inputStream = new BufferedInputStream(connection1.getInputStream());
-          } catch (final ImportException e) {
-            throw e;
-          } catch (final Exception e) {
-            throw new ImportException("Error on reset remote resource", e);
-          }
-          return null;
-        }, () -> {
-          connection.disconnect();
-          return null;
-        });
+            return null;
+          });
+    } catch (final IOException | RuntimeException e) {
+      // THE SOURCE THAT WOULD HAVE OWNED (AND EVENTUALLY DISCONNECTED) THE CONNECTION WAS NEVER BUILT
+      connection.disconnect();
+      throw e;
+    }
   }
 
   private Source getSourceFromFile(final String path) throws IOException {
@@ -188,24 +200,33 @@ public class SourceDiscovery {
         throw new FileNotFoundException(filePath);
     }
 
-    return getSourceFromContent(fis, file.length(), resource, source -> {
-      try {
-        source.inputStream.close();
-        if (source.inputStream instanceof GZIPInputStream)
-          source.inputStream = new GZIPInputStream(new FileInputStream(file), 2048);
-        else if (source.inputStream instanceof ZipInputStream)
-          // THE NEW STREAM MUST BE POSITIONED ON THE ENTRY TO READ, THE OLD ONE IS CLOSED (issue #6810)
-          source.inputStream = reopenZip(new BufferedInputStream(new FileInputStream(file)), resource);
-        else
-          source.inputStream = new BufferedInputStream(new FileInputStream(file));
-      } catch (final IOException e) {
-        throw new ImportException("Error on reset local resource", e);
-      }
-      return null;
-    }, () -> {
-      fis.close();
-      return null;
-    });
+    try {
+      return getSourceFromContent(fis, file.length(), resource, source -> {
+        try {
+          source.inputStream.close();
+          if (source.inputStream instanceof GZIPInputStream)
+            source.inputStream = new GZIPInputStream(new FileInputStream(file), 2048);
+          else if (source.inputStream instanceof ZipInputStream)
+            // THE NEW STREAM MUST BE POSITIONED ON THE ENTRY TO READ, THE OLD ONE IS CLOSED (issue #6810)
+            source.inputStream = reopenZip(new BufferedInputStream(new FileInputStream(file)), resource);
+          else
+            source.inputStream = new BufferedInputStream(new FileInputStream(file));
+        } catch (final ImportException e) {
+          throw e;
+        } catch (final Exception e) {
+          // SAME SHAPE AS THE REMOTE CALLBACK ABOVE, SO THE TWO STAY EASY TO KEEP IN SYNC
+          throw new ImportException("Error on reset local resource", e);
+        }
+        return null;
+      }, () -> {
+        fis.close();
+        return null;
+      });
+    } catch (final IOException | RuntimeException e) {
+      // THE SOURCE THAT WOULD HAVE OWNED (AND EVENTUALLY CLOSED) THE STREAM WAS NEVER BUILT
+      closeSuppressing(fis, e);
+      throw e;
+    }
   }
 
   private FormatImporter analyzeSourceContent(final Parser parser, final AnalyzedEntity.EntityType entityType,
@@ -546,10 +567,22 @@ public class SourceDiscovery {
       if (positionOnZipEntry(zip, resource) == null)
         throw new ImportException("Error on resetting source '" + url + "': no entry found in the zip archive");
     } catch (final IOException | RuntimeException e) {
-      zip.close();
+      closeSuppressing(zip, e);
       throw e;
     }
     return zip;
+  }
+
+  /**
+   * Closes {@code closeable} while unwinding on {@code pending}, so a failure to close cannot replace - and hide - the
+   * exception that actually caused the unwind.
+   */
+  private static void closeSuppressing(final Closeable closeable, final Throwable pending) {
+    try {
+      closeable.close();
+    } catch (final IOException e) {
+      pending.addSuppressed(e);
+    }
   }
 
   private String getFormatFromExtension(String fileName) {

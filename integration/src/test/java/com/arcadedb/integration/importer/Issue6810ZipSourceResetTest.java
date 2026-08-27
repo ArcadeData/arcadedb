@@ -36,6 +36,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.GZIPOutputStream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -130,6 +131,26 @@ class Issue6810ZipSourceResetTest {
   }
 
   @Test
+  void remoteZipResetFailsLoudlyWhenTheArchiveNoLongerHoldsTheEntry() throws IOException {
+    final byte[] zipped = Files.readAllBytes(writeZip("remote.zip", "wanted.csv", CSV_CONTENT).toPath());
+    // The re-fetch that the reset performs gets a body that is not a zip at all, the way a remote file replaced
+    // between the two requests would behave. That must surface as an error, never as an empty import.
+    final HttpServer server = startHttpServer(zipped, "not a zip any more".getBytes(StandardCharsets.UTF_8));
+    try {
+      final String url = "http://127.0.0.1:" + server.getAddress().getPort() + "/remote.zip:::wanted.csv";
+      final Source source = new SourceDiscovery(url, true).getSource();
+      try {
+        assertThatThrownBy(() -> readAfterReset(source)).isInstanceOf(ImportException.class)
+            .hasMessageContaining("no entry found in the zip archive");
+      } finally {
+        source.close();
+      }
+    } finally {
+      server.stop(0);
+    }
+  }
+
+  @Test
   void localGzipSourceStillResetsToTheStartOfTheStream() throws IOException {
     final File gz = new File(tempDir, "importer-vertices.csv.gz");
     try (final OutputStream out = new GZIPOutputStream(new FileOutputStream(gz))) {
@@ -212,9 +233,15 @@ class Issue6810ZipSourceResetTest {
     return zip;
   }
 
-  private static HttpServer startHttpServer(final byte[] payload) throws IOException {
+  /**
+   * Serves {@code payloads} one per request, repeating the last one once they run out. More than one payload lets a
+   * test change what the reset's re-fetch gets back.
+   */
+  private static HttpServer startHttpServer(final byte[]... payloads) throws IOException {
     final HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+    final AtomicInteger requests = new AtomicInteger();
     server.createContext("/", exchange -> {
+      final byte[] payload = payloads[Math.min(requests.getAndIncrement(), payloads.length - 1)];
       exchange.sendResponseHeaders(200, payload.length);
       try (final OutputStream out = exchange.getResponseBody()) {
         out.write(payload);
