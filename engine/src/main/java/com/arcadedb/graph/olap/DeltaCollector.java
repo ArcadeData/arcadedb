@@ -20,6 +20,7 @@ package com.arcadedb.graph.olap;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.event.AfterRecordCreateListener;
 import com.arcadedb.event.AfterRecordDeleteListener;
@@ -53,9 +54,10 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
 
   private static final AtomicInteger ANONYMOUS_COUNTER = new AtomicInteger();
 
-  // Past this many edge property changes in one transaction, they stop being tracked individually. See
-  // trackEdgeUpdate().
-  private static final int          MAX_TRACKED_EDGE_UPDATES = 1024;
+  // Past this many DISTINCT edges' property changes in one transaction, they stop being tracked individually.
+  // See trackEdgeUpdate(). Package-private so a test can reach the boundary without writing the number down
+  // itself: the contract is "a repeat update never trips it", and retuning the number must not break that.
+  static final int                  MAX_TRACKED_EDGE_UPDATES = 1024;
 
   private final GraphAnalyticalView view;
   private final String              callbackKey;
@@ -237,13 +239,17 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
       return;
     if (delta.forceEdgePropertyRebuild)
       return;
-    if (delta.updatedEdges.size() >= MAX_TRACKED_EDGE_UPDATES) {
+    final RID rid = edge.getIdentity();
+    // Asked before the cap, not after: an edge already tracked does not grow the map, so a repeat update of
+    // one - the accumulator this cap counts distinct edges precisely to tolerate - must not trip it merely
+    // because the transaction has touched enough OTHER edges to fill it.
+    if (!delta.updatedEdges.containsKey(rid) && delta.updatedEdges.size() >= MAX_TRACKED_EDGE_UPDATES) {
       delta.forceEdgePropertyRebuild = true;
       delta.updatedEdges.clear();
       return;
     }
-    delta.updatedEdges.put(edge.getIdentity(), new TxDelta.EdgeDelta(edge.getTypeName(), edge.getOut(),
-        edge.getIn(), edge.getIdentity(), extractMaterialisedEdgeProperties(edge)));
+    delta.updatedEdges.put(rid, new TxDelta.EdgeDelta(edge.getTypeName(), edge.getOut(),
+        edge.getIn(), rid, extractMaterialisedEdgeProperties(edge)));
   }
 
   /**

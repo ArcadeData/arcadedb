@@ -1545,6 +1545,25 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     if (degree == 0)
       return EMPTY_EDGE_WEIGHTS;
 
+    // Deletions but nothing added: the survivors are a subsequence of a sorted slice, so they are already in
+    // the order the merge below would have sorted them into. One linear pass, the same one
+    // copyBaseExcludingDeleted makes for the neighbour list, with each survivor's column slot read as it goes.
+    if (addedNeighbors.length == 0) {
+      final int[] keptNeighbors = new int[degree];
+      final double[] keptWeights = new double[degree];
+      int kept = 0;
+      for (int i = baseStart; i < baseEnd; i++) {
+        if (deleted[i - baseStart])
+          continue;
+        if (edgeCheckpoint != null)
+          edgeCheckpoint.accept(kept);
+        keptNeighbors[kept] = baseNeighbors[i];
+        keptWeights[kept] = columnWeight(column, outgoing ? i : bwdToFwd[i], defaultWeight);
+        kept++;
+      }
+      return new NodeEdgeWeights(keptNeighbors, keptWeights);
+    }
+
     // The neighbours as getNeighborsFromCSR would list them - base survivors then overlay additions, sorted -
     // with each entry's provenance carried through the sort beside it, so no weight can be left behind by the
     // re-sort. CSRBuilder.parallelSort is that exact permutation-carrying sort, already written and already
