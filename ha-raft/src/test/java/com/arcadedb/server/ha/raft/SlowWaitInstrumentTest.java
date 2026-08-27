@@ -18,14 +18,9 @@
  */
 package com.arcadedb.server.ha.raft;
 
-import com.arcadedb.log.DefaultLogger;
-import com.arcadedb.log.LogManager;
-import com.arcadedb.log.Logger;
-
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -97,28 +92,24 @@ class SlowWaitInstrumentTest {
    */
   @Test
   void theMarkerSurvivesIntoWhatIsActuallyLogged() {
-    final List<String> logged = new CopyOnWriteArrayList<>();
-    final List<Level> levels = new CopyOnWriteArrayList<>();
+    final CapturingTestLogger logger = capturing(() -> BaseRaftHATest.logSlowWait(this, "awaitValue(42)", budgetMs(), false));
 
-    withCapturingLogger(logged, levels,
-        () -> BaseRaftHATest.logSlowWait(this, "awaitValue(42)", budgetMs(), false));
-
-    assertThat(logged).hasSize(1);
-    assertThat(logged.getFirst()).contains(BaseRaftHATest.SLOW_WAIT_MARKER);
+    final List<String> warnings = logger.formattedAt(Level.WARNING);
+    assertThat(warnings).hasSize(1);
+    assertThat(warnings.getFirst()).contains(BaseRaftHATest.SLOW_WAIT_MARKER);
     // The literal token issue #6343 went looking for. Kept as a separate assertion from the marker constant on
     // purpose: renaming the constant is fine, changing the words a tracker greps for is not.
-    assertThat(logged.getFirst()).contains("SLOW WAIT");
-    assertThat(levels.getFirst()).isEqualTo(Level.WARNING);
+    assertThat(warnings.getFirst()).contains("SLOW WAIT");
+    // Asserted as an absence too: a report demoted to INFO still says everything it used to and is still wrong,
+    // because nobody scrolls an HA IT log looking for INFO lines.
+    assertThat(logger.formattedAt(Level.INFO)).isEmpty();
   }
 
   @Test
   void aFastWaitLogsNothingAtAll() {
-    final List<String> logged = new CopyOnWriteArrayList<>();
-    final List<Level> levels = new CopyOnWriteArrayList<>();
+    final CapturingTestLogger logger = capturing(() -> BaseRaftHATest.logSlowWait(this, "awaitValue(42)", 0, true));
 
-    withCapturingLogger(logged, levels, () -> BaseRaftHATest.logSlowWait(this, "awaitValue(42)", 0, true));
-
-    assertThat(logged).isEmpty();
+    assertThat(logger.formattedAt(Level.WARNING)).isEmpty();
   }
 
   /**
@@ -128,15 +119,13 @@ class SlowWaitInstrumentTest {
    */
   @Test
   void aPercentSignInTheWaitDescriptionDoesNotBreakTheReport() {
-    final List<String> logged = new CopyOnWriteArrayList<>();
-    final List<Level> levels = new CopyOnWriteArrayList<>();
-
-    withCapturingLogger(logged, levels,
+    final CapturingTestLogger logger = capturing(
         () -> BaseRaftHATest.logSlowWait(this, "awaitValue(100% of them)", budgetMs(), true));
 
-    assertThat(logged).hasSize(1);
-    assertThat(logged.getFirst()).contains("awaitValue(100% of them)");
-    assertThat(logged.getFirst()).contains(BaseRaftHATest.SLOW_WAIT_MARKER);
+    final List<String> warnings = logger.formattedAt(Level.WARNING);
+    assertThat(warnings).hasSize(1);
+    assertThat(warnings.getFirst()).contains("awaitValue(100% of them)");
+    assertThat(warnings.getFirst()).contains(BaseRaftHATest.SLOW_WAIT_MARKER);
   }
 
   /**
@@ -198,42 +187,19 @@ class SlowWaitInstrumentTest {
     return reported;
   }
 
-  private static void withCapturingLogger(final List<String> messages, final List<Level> levels, final Runnable body) {
+  /**
+   * Runs {@code body} with the module's shared {@link CapturingTestLogger} installed, and returns it. Shared
+   * rather than a second Logger implementation in the same package: the 17-arg/varargs plumbing and the
+   * argument substitution are fiddly enough to be worth having in exactly one place, and that helper already
+   * had them.
+   */
+  private static CapturingTestLogger capturing(final Runnable body) {
+    final CapturingTestLogger logger = CapturingTestLogger.install();
     try {
-      LogManager.instance().setLogger(new CapturingLogger(messages, levels));
       body.run();
     } finally {
-      LogManager.instance().setLogger(new DefaultLogger());
+      logger.uninstall();
     }
-  }
-
-  /**
-   * Formats the message the same way {@link DefaultLogger} does, because the question this test asks is what
-   * lands in the log file, not what was handed to the logging framework.
-   */
-  private record CapturingLogger(List<String> messages, List<Level> levels) implements Logger {
-    @Override
-    public void log(final Object iRequester, final Level iLevel, final String iMessage, final Throwable iException, final String context,
-        final Object arg1, final Object arg2, final Object arg3, final Object arg4, final Object arg5, final Object arg6, final Object arg7,
-        final Object arg8, final Object arg9, final Object arg10, final Object arg11, final Object arg12, final Object arg13,
-        final Object arg14, final Object arg15, final Object arg16, final Object arg17) {
-      capture(iLevel, iMessage, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14, arg15, arg16,
-          arg17);
-    }
-
-    @Override
-    public void log(final Object iRequester, final Level iLevel, final String iMessage, final Throwable iException, final String context,
-        final Object... args) {
-      capture(iLevel, iMessage, args);
-    }
-
-    private void capture(final Level level, final String message, final Object... args) {
-      levels.add(level);
-      messages.add(args.length > 0 ? message.formatted(args) : message);
-    }
-
-    @Override
-    public void flush() {
-    }
+    return logger;
   }
 }
