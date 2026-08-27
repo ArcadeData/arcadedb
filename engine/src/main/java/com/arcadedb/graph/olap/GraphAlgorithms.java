@@ -1173,14 +1173,16 @@ public final class GraphAlgorithms {
    */
   public static double[] dijkstraSingleSource(final GraphAnalyticalView view, final int source,
       final String weightProperty, final Vertex.DIRECTION direction, final String... edgeTypes) {
-    // Point-in-time, not a pin: the CSR arrays and weight columns below are each fetched by their own
-    // accessor, so a commit landing between here and them is not caught. That is this whole class's existing
-    // shape - every algorithm in it reads the view through several independent accessor calls rather than one
-    // captured snapshot - and the window this narrows was wide open before.
-    if (view.hasActiveOverlay())
+    // One snapshot for the whole kernel, not one accessor call per part of it. Checking for an overlay and
+    // then fetching the offsets, the neighbours and the weight columns through four more reads of the field
+    // would let a commit land between any two of them, and the arrays either side of it are halves of two
+    // different graphs - out of which this would compute a plausible wrong distance rather than fail, which is
+    // the failure class issue #6315 exists to close, not to move.
+    final GraphAnalyticalView.Snapshot snap = view.captureSnapshot();
+    if (snap.overlay != null)
       return null;
 
-    final int n = view.getNodeMapping().size();
+    final int n = snap.nodeMapping.size();
     final double[] dist = new double[n];
     Arrays.fill(dist, Double.POSITIVE_INFINITY);
 
@@ -1188,7 +1190,8 @@ public final class GraphAlgorithms {
       return dist;
 
     dist[source] = 0.0;
-    final String[] types = resolveEdgeTypes(view, edgeTypes);
+    final String[] types = edgeTypes != null && edgeTypes.length > 0 ? edgeTypes
+        : snap.csrPerType.keySet().toArray(new String[0]);
 
     // Pre-load CSR arrays and weight columns for each edge type (avoid map lookups in hot loop)
     final int typeCount = types.length;
@@ -1200,10 +1203,10 @@ public final class GraphAlgorithms {
     final int[][] bwdToFwds = new int[typeCount][];
 
     for (int t = 0; t < typeCount; t++) {
-      csrs[t] = view.getCSRIndex(types[t]);
+      csrs[t] = snap.csrPerType.get(types[t]);
       if (csrs[t] == null)
         continue;
-      final ColumnStore edgeStore = view.getEdgeColumnStore(types[t]);
+      final ColumnStore edgeStore = snap.edgeColumnStores != null ? snap.edgeColumnStores.get(types[t]) : null;
       if (edgeStore != null) {
         final Column wCol = edgeStore.getColumn(weightProperty);
         if (wCol != null) {
@@ -1224,7 +1227,7 @@ public final class GraphAlgorithms {
         }
       }
       if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH)
-        bwdToFwds[t] = view.getBwdToFwdMapping(types[t]);
+        bwdToFwds[t] = snap.bwdToFwd != null ? snap.bwdToFwd.get(types[t]) : null;
     }
 
     // Dijkstra with binary min-heap (PriorityQueue)

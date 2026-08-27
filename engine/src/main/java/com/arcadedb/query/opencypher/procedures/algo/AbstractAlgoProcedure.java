@@ -964,9 +964,9 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
       // columnar path can be used at all. A provider that cannot enumerate its
       // types, or cannot serve THIS property for every one of them, sends us to the edge records - which are
       // exact. Asking only whether the provider has edge properties at all is not enough: a view built over
-      // `distance` answers yes to a call asking for `cost`, and then every getEdgeProperty returns null and the
-      // whole graph is silently unweighted - the same wrong answer as a misaligned weight, reached from the
-      // other direction.
+      // `distance` answers yes to a call asking for `cost`, and then every edge comes back at its default
+      // weight and the whole graph is silently unweighted - the same wrong answer as a misaligned weight,
+      // reached from the other direction.
       if (provider != null && provider.servesEdgeProperty(weightProperty, relTypes)) {
         final String[] types = relTypes != null && relTypes.length > 0 ? relTypes
             : provider.getMaterializedEdgeTypes();

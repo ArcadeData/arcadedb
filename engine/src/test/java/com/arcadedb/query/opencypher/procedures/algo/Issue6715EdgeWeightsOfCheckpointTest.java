@@ -178,8 +178,8 @@ class Issue6715EdgeWeightsOfCheckpointTest {
   /**
    * A minimal {@link GraphTraversalProvider} test double serving one weighted edge type/property: every node is
    * empty except {@code supernodeIndex}, whose row has {@code supernodeDegree} edges all reachable through
-   * {@code getEdgeProperty}. Self-interrupts the current thread once {@code getEdgeProperty} on the supernode has
-   * been called {@code selfInterruptAfterCalls} times ({@code -1} disables this).
+   * {@code edgeWeightsForSlice}. Self-interrupts the current thread once the supernode's slice build has
+   * priced {@code selfInterruptAfterCalls} of its edges ({@code -1} disables this).
    */
   private static final class WeightedSupernodeProvider implements GraphTraversalProvider {
     private final int    nodeCount;

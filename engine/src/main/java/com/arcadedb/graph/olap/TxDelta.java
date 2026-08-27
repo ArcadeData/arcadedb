@@ -102,18 +102,24 @@ class TxDelta {
     // must not double-count) apart from "two distinct parallel edges between the same pair" (must each
     // count, see issue #6769).
     final RID    rid;
-    // For addedEdges and updatedEdges, the values of the edge properties the view materialises columns for, or
-    // null when it materialises none. An added edge has no column slot of its own - the columns were built with
-    // the base CSR - so this is the only place its weight can be read from while the overlay is the view's
-    // representation of it (issue #6315). Null for deletedEdges, which are never asked for a value.
-    final Map<String, Object> properties;
+    // For addedEdges and updatedEdges, the values of the edge properties the view materialises columns for -
+    // one slot per name of the view's edge property filter, in its order - or null when it materialises none.
+    // An added edge has no column slot of its own, the columns having been built with the base CSR, so this is
+    // the only place its weight can be read from while the overlay is the view's representation of it (issue
+    // #6315). Null for deletedEdges, which are never asked for a value.
+    //
+    // An array rather than a map because there is one of these per added edge and a bulk insert makes as many
+    // of them as it inserts edges: the names are a small fixed list known before the first edge arrives, so
+    // carrying them again per edge would be paying for a hash table per edge to look up a position the caller
+    // can compute once for a whole slice.
+    final Object[] properties;
 
     EdgeDelta(final String edgeType, final RID source, final RID target, final RID rid) {
       this(edgeType, source, target, rid, null);
     }
 
     EdgeDelta(final String edgeType, final RID source, final RID target, final RID rid,
-        final Map<String, Object> properties) {
+        final Object[] properties) {
       this.edgeType = edgeType;
       this.source = source;
       this.target = target;

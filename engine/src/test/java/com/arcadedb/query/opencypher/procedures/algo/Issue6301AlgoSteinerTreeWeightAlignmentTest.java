@@ -278,7 +278,7 @@ class Issue6301AlgoSteinerTreeWeightAlignmentTest {
   @Test
   void aViewThatMaterialisedADifferentPropertyDoesNotMakeTheGraphUnweighted() {
     // The narrower half of the same defect, and the one a coarse "does this view have edge properties?" gate
-    // walks straight into: the view materialises `other`, the query asks for `w`, so every getEdgeProperty
+    // walks straight into: the view materialises `other`, the query asks for `w`, so every weight lookup
     // returns null and every edge silently weighs 1.0 - which inverts the answer here, since X-Y-Z costs 2.0
     // and the direct X-Z hop costs 50.0. A null property value is also how "this edge has no value" is
     // reported, so the caller cannot tell the two apart and has to ask the sharper question up front.
