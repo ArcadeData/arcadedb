@@ -21,6 +21,7 @@ package com.arcadedb.gremlin;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import org.apache.tinkerpop.gremlin.structure.T;
+import org.apache.tinkerpop.gremlin.structure.Transaction;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -95,6 +96,28 @@ class ArcadeGraphFactoryPoolTransactionTest {
     reader.close();
 
     assertThat(names).as("the second borrower must persist only what it wrote itself").containsExactly("mine");
+  }
+
+  @Test
+  void aBorrowersCloseBehaviourDoesNotFollowTheInstanceToTheNextBorrower() {
+    final ArcadeGraph first = factory.get();
+    // A LEGITIMATE, DOCUMENTED TINKERPOP CALL - BUT IT MUST NOT OUTLIVE THIS BORROW
+    first.tx().onClose(Transaction.CLOSE_BEHAVIOR.COMMIT);
+    first.close();
+
+    final ArcadeGraph second = factory.get();
+    assertThat(second).isSameAs(first);
+    second.addVertex(T.label, "Person", "name", "abandoned");
+    second.close();
+
+    final List<String> names = new ArrayList<>();
+    final ArcadeGraph reader = factory.get();
+    reader.traversal().V().hasLabel("Person").values("name").forEachRemaining(n -> names.add((String) n));
+    reader.close();
+
+    assertThat(names)
+        .as("the close behaviour a previous borrower configured must not commit the next borrower's abandoned writes")
+        .isEmpty();
   }
 
   @Test
