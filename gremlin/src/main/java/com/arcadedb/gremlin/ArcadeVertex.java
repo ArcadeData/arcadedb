@@ -41,14 +41,39 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Created by Enrico Risa on 30/07/2018.
  */
 public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> implements Vertex {
 
+  private static final AtomicLong TRANSIENT_IDS = new AtomicLong();
+
+  /**
+   * Assigned lazily, and only for a vertex that has no RID yet, so a saved vertex never pays for it.
+   */
+  private volatile String transientId;
+
   protected ArcadeVertex(final ArcadeGraph graph, final com.arcadedb.graph.Vertex baseElement, final Object... keyValues) {
     super(graph, baseElement, keyValues);
+  }
+
+  /**
+   * Returns an identifier unique to this instance, for the window in which the vertex has no RID yet. Unlike
+   * {@link System#identityHashCode}, which the JDK never promises to be collision-free, a counter cannot hand the same
+   * value to two vertices, so the ids of their properties cannot collide either (see {@link ArcadeVertexProperty#id()}).
+   */
+  String transientId() {
+    String id = transientId;
+    if (id == null) {
+      synchronized (this) {
+        id = transientId;
+        if (id == null)
+          transientId = id = "?" + TRANSIENT_IDS.incrementAndGet();
+      }
+    }
+    return id;
   }
 
   @Override

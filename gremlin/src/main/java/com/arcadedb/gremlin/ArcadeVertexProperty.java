@@ -91,8 +91,8 @@ public class ArcadeVertexProperty<T> implements VertexProperty<T> {
   @Override
   public Object id() {
     final Object vertexId = this.vertex.id();
-    // AN UNSAVED VERTEX HAS NO RID YET: FALL BACK TO ITS INSTANCE IDENTITY SO id() NEITHER THROWS NOR COLLIDES.
-    return (vertexId != null ? vertexId : "?" + System.identityHashCode(this.vertex)) + ID_SEPARATOR + this.key;
+    // AN UNSAVED VERTEX HAS NO RID YET: FALL BACK TO ITS TRANSIENT ID SO id() NEITHER THROWS NOR COLLIDES.
+    return (vertexId != null ? vertexId : this.vertex.transientId()) + ID_SEPARATOR + this.key;
   }
 
   @Override

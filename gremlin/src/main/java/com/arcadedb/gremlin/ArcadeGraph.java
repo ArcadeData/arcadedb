@@ -94,8 +94,8 @@ public class ArcadeGraph implements Graph, Closeable {
   private              GremlinLangScriptEngine     gremlinJavaAnalysisEngine;
   private              GremlinGroovyScriptEngine   gremlinGroovyEngine;
   private              ServiceRegistry             serviceRegistry;
-  private              GraphTraversalSource        traversal;
-  private              Cluster                     cluster;
+  private volatile     GraphTraversalSource        traversal;
+  private volatile     Cluster                     cluster;
   private              ImportGremlinPlugin.Builder importPlugin;
 
   static {
@@ -184,49 +184,63 @@ public class ArcadeGraph implements Graph, Closeable {
    * {@code ArcadeGraph} instance.
    */
   public GraphTraversalSource traversal() {
-    if (traversal != null)
-      return traversal;
-
-    if (database instanceof RemoteDatabase remoteDatabase) {
-      try {
-        final List<String> remoteAddresses = new ArrayList<>();
-
-        final String leaderAddress = remoteDatabase.getLeaderAddress();
-        if (leaderAddress != null)
-          remoteAddresses.add(leaderAddress);
-        remoteAddresses.addAll(remoteDatabase.getReplicaAddresses());
-
-        if (remoteAddresses.isEmpty()) {
-          // No leader and no replicas are known (e.g. non-HA server or mid-failover): fall back to the
-          // slower remote implementation rather than building a cluster with no contact points.
-          traversal = Graph.super.traversal();
-          return traversal;
-        }
-
-        final String[] hosts = new String[remoteAddresses.size()];
-        for (int i = 0; i < remoteAddresses.size(); i++)
-          hosts[i] = HostUtil.parseHostAddress(remoteAddresses.get(i), "" + GREMLIN_SERVER_PORT)[0];
-
-        final GraphBinaryMessageSerializerV1 serializer = new GraphBinaryMessageSerializerV1(
-            new TypeSerializerRegistry.Builder().addRegistry(new ArcadeIoRegistry()));
-
-        // KEEP THE CLUSTER IN A FIELD: IT OWNS A NETTY EVENT-LOOP GROUP, A SCHEDULED EXECUTOR AND A CONNECTION POOL,
-        // AND DriverRemoteConnection.using(Cluster, String) DOES NOT TAKE OWNERSHIP OF IT, SO ONLY close() CAN
-        // RELEASE THOSE RESOURCES (ISSUE #6822).
-        cluster = Cluster.build().enableSsl(false).addContactPoints(hosts).port(GREMLIN_SERVER_PORT)
-            .credentials(remoteDatabase.getUserName(), remoteDatabase.getUserPassword()).serializer(serializer).create();
-
-        // Use database name as the traversal source alias (dynamically registered by ArcadeGraphManager)
-        traversal = AnonymousTraversalSource.traversal().withRemote(DriverRemoteConnection.using(cluster, database.getName()));
-      } catch (Exception e) {
-        LogManager.instance().log(this, Level.WARNING,
-            "GremlinServer plugin not available on ArcadeDB server(s). Using slower remote implementation.");
-        traversal = Graph.super.traversal();
+    GraphTraversalSource result = traversal;
+    if (result == null) {
+      // DOUBLE-CHECKED LOCKING, AS FOR THE SCRIPT ENGINES BELOW: TWO THREADS RACING HERE WOULD EACH BUILD THEIR OWN
+      // DRIVER Cluster, AND THE LOSER'S WOULD BE ORPHANED WITH NOTHING LEFT HOLDING A REFERENCE TO CLOSE IT (#6822).
+      synchronized (this) {
+        result = traversal;
+        if (result == null)
+          traversal = result = buildTraversal();
       }
-    } else
-      traversal = Graph.super.traversal();
+    }
+    return result;
+  }
 
-    return traversal;
+  /**
+   * Resolves the traversal source, going through the TinkerPop driver when the remote cluster topology is known and
+   * falling back to the embedded implementation otherwise. Always called under the lock held by {@link #traversal()}.
+   */
+  private GraphTraversalSource buildTraversal() {
+    if (!(database instanceof RemoteDatabase remoteDatabase))
+      return Graph.super.traversal();
+
+    try {
+      final List<String> remoteAddresses = new ArrayList<>();
+
+      final String leaderAddress = remoteDatabase.getLeaderAddress();
+      if (leaderAddress != null)
+        remoteAddresses.add(leaderAddress);
+      remoteAddresses.addAll(remoteDatabase.getReplicaAddresses());
+
+      if (remoteAddresses.isEmpty())
+        // No leader and no replicas are known (e.g. non-HA server or mid-failover): fall back to the
+        // slower remote implementation rather than building a cluster with no contact points.
+        return Graph.super.traversal();
+
+      final String[] hosts = new String[remoteAddresses.size()];
+      for (int i = 0; i < remoteAddresses.size(); i++)
+        hosts[i] = HostUtil.parseHostAddress(remoteAddresses.get(i), "" + GREMLIN_SERVER_PORT)[0];
+
+      final GraphBinaryMessageSerializerV1 serializer = new GraphBinaryMessageSerializerV1(
+          new TypeSerializerRegistry.Builder().addRegistry(new ArcadeIoRegistry()));
+
+      // KEEP THE CLUSTER IN A FIELD: IT OWNS A NETTY EVENT-LOOP GROUP, A SCHEDULED EXECUTOR AND A CONNECTION POOL,
+      // AND DriverRemoteConnection.using(Cluster, String) DOES NOT TAKE OWNERSHIP OF IT, SO ONLY close() CAN
+      // RELEASE THOSE RESOURCES (ISSUE #6822).
+      cluster = Cluster.build().enableSsl(false).addContactPoints(hosts).port(GREMLIN_SERVER_PORT)
+          .credentials(remoteDatabase.getUserName(), remoteDatabase.getUserPassword()).serializer(serializer).create();
+
+      // Use database name as the traversal source alias (dynamically registered by ArcadeGraphManager)
+      return AnonymousTraversalSource.traversal().withRemote(DriverRemoteConnection.using(cluster, database.getName()));
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "GremlinServer plugin not available on ArcadeDB server(s). Using slower remote implementation.");
+      // THE EMBEDDED FALLBACK HAS NO USE FOR A CLUSTER BUILT BEFORE THE FAILURE: RELEASE IT INSTEAD OF LEAVING DEAD
+      // STATE BEHIND UNTIL close().
+      closeCluster();
+      return Graph.super.traversal();
+    }
   }
 
   public ArcadeSQL sql(final String query) {
@@ -483,6 +497,10 @@ public class ArcadeGraph implements Graph, Closeable {
       traversal = null;
     }
 
+    closeCluster();
+  }
+
+  private void closeCluster() {
     if (cluster != null) {
       try {
         cluster.close();
