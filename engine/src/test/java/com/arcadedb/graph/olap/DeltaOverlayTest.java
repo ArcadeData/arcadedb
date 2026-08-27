@@ -19,6 +19,8 @@
 package com.arcadedb.graph.olap;
 
 import com.arcadedb.database.RID;
+
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -385,5 +387,35 @@ class DeltaOverlayTest {
     assertThat(overlay.getAdded(0, EDGE_TYPE, true).properties()[0])
         .as("the added edge's own entry carries the value the update set")
         .isEqualTo(new Object[] { 2.0 });
+  }
+
+  /**
+   * Issue #6315: on the post-compaction re-application path, an add the freshly built base CSR already carries
+   * is skipped (#4588) - and a property change to that same edge in the same delta is then already in the
+   * fresh columns, so it must not mark the type out of date. Missing this forced a second full rebuild after
+   * every compaction that happened to buffer an ordinary insert, which reports one create and one update of
+   * the same edge.
+   */
+  @Test
+  void anUpdateToAnEdgeTheFreshBaseCsrAlreadyCarriesDirtiesNothing() {
+    final NodeIdMapping mapping = baseMappingWith(2);
+    final RID edgeRid = rid(10);
+
+    // A fresh base CSR that already contains the edge 0 -> 1, as a compaction scan crossing its bucket after
+    // the transaction committed would have produced.
+    final CSRAdjacencyIndex csr = new CSRAdjacencyIndex(new int[] { 0, 1, 1 }, new int[] { 1 },
+        new int[] { 0, 0, 1 }, new int[] { 0 }, 2, 1);
+
+    final TxDelta delta = new TxDelta();
+    delta.addedEdges.add(new TxDelta.EdgeDelta(EDGE_TYPE, rid(0), rid(1), edgeRid, new Object[] { 1.0 }));
+    delta.updatedEdges.put(edgeRid, new TxDelta.EdgeDelta(EDGE_TYPE, rid(0), rid(1), edgeRid, new Object[] { 2.0 }));
+
+    final DeltaOverlay overlay = new DeltaOverlay(mapping.size())
+        .merge(delta, mapping, Map.of(EDGE_TYPE, csr));
+
+    assertThat(overlay.isEdgePropertiesDirty(EDGE_TYPE))
+        .as("the fresh base CSR scanned this edge after the whole transaction committed, values and all")
+        .isFalse();
+    assertThat(overlay.getDeltaEdgeCount()).as("and the add itself stays deduped against that base").isZero();
   }
 }

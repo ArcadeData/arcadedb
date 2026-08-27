@@ -245,6 +245,7 @@ class DeltaOverlay {
     }
 
     // Process added edges
+    Set<RID> alreadyInFreshBase = null;
     for (final TxDelta.EdgeDelta ed : delta.addedEdges) {
       final int srcId = resolveNodeId(ed.source, baseMapping, newOverflowIds);
       final int tgtId = resolveNodeId(ed.target, baseMapping, newOverflowIds);
@@ -262,6 +263,13 @@ class DeltaOverlay {
           final boolean masked = (prevDel != null && prevDel.containsKey(packed))
               || (sameDeltaDeleted != null && sameDeltaDeleted.contains(packed));
           if (!masked) {
+            // Remembered for the update loop below: the fresh base CSR already carries this edge, scan and
+            // all, so a property change to it in this same delta is already in the columns and dirties
+            // nothing. Without this the ordinary insert - one create and one update of the same edge - would
+            // force a second full rebuild after every compaction that happened to buffer one.
+            if (alreadyInFreshBase == null)
+              alreadyInFreshBase = new HashSet<>();
+            alreadyInFreshBase.add(ed.rid);
             // The fresh base CSR already represents this edge, so it is not tracked by identity here
             // (issue #4588) - which means a LATER deletion of this exact RID cannot be withdrawn by
             // identity either. Drop any stale reservation of this RID from the identity-dedup Set: RIDs
@@ -301,7 +309,10 @@ class DeltaOverlay {
       final AddedEdge added = addedForType != null ? addedForType.get(ed.rid) : null;
       if (added != null)
         addedForType.put(ed.rid, new AddedEdge(added.src(), added.tgt(), ed.properties));
-      else if (!newDirtyTypes.contains(ed.edgeType)) {
+      else if (alreadyInFreshBase != null && alreadyInFreshBase.contains(ed.rid)) {
+        // Nothing to do: the freshly built base CSR scanned this edge after the transaction that made both
+        // the add and this update committed, so its columns already hold the value this update set.
+      } else if (!newDirtyTypes.contains(ed.edgeType)) {
         if (!dirtyTypesCopied) {
           newDirtyTypes = new HashSet<>(dirtyEdgeTypes);
           dirtyTypesCopied = true;
