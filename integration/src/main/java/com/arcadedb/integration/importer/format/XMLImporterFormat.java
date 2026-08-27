@@ -98,6 +98,10 @@ public class XMLImporterFormat implements FormatImporter {
               object.put(lastName, lastContent);
 
             lastName = getQualifiedName(xmlReader.getName());
+            // START OF A NEW SUB-ELEMENT: THE PREVIOUS SIBLING'S TEXT MUST NOT LEAK INTO IT (ISSUE #6813).
+            // THIS DOES NOT REGRESS ISSUE #2759: THE WHITESPACE BETWEEN TWO ELEMENTS IS SKIPPED BY THE CHARACTERS
+            // HANDLER, SO THE TEXT OF THE ELEMENT CURRENTLY BEING READ IS STILL SAFE FROM PRETTY-PRINTING
+            lastContent = null;
           }
 
           ++nestLevel;
@@ -241,18 +245,22 @@ public class XMLImporterFormat implements FormatImporter {
               entityName = "v_" + qualifiedName;  // v_ prefix for vertices (including DATABASE for backward compatibility)
             }
 
+            // START OF A NEW RECORD: RESET THE PENDING SUB-ELEMENT, AS load() DOES
+            lastName = null;
+            lastContent = null;
+
             // GET ELEMENT'S ATTRIBUTES AS PROPERTIES (with namespace prefix if present)
-            for (int i = 0; i < xmlReader.getAttributeCount(); ++i) {
+            for (int i = 0; i < xmlReader.getAttributeCount(); ++i)
               analyzedSchema.getOrCreateEntity(entityName, entityType)
                   .getOrCreateProperty(getQualifiedName(xmlReader.getAttributeName(i)), xmlReader.getAttributeValue(i));
-              lastName = null;
-            }
           } else if (nestLevel == objectNestLevel + 1) {
             // GET ELEMENT'S SUB-NODES AS PROPERTIES
             if (lastName != null)
               analyzedSchema.getOrCreateEntity(entityName, entityType).getOrCreateProperty(lastName, lastContent);
 
             lastName = getQualifiedName(xmlReader.getName());
+            // START OF A NEW SUB-ELEMENT: THE PREVIOUS SIBLING'S TEXT MUST NOT BE SAMPLED AS THIS ONE'S (ISSUE #6813)
+            lastContent = null;
           }
 
           ++nestLevel;

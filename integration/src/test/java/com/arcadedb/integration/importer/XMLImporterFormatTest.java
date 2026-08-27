@@ -19,13 +19,17 @@
 package com.arcadedb.integration.importer;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.integration.importer.format.XMLImporterFormat;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -147,6 +151,139 @@ class XMLImporterFormatTest extends TestHelper {
       }
     } finally {
       xmlFile.delete();
+    }
+  }
+
+  /**
+   * Regression test for issue #6813: an empty or self-closing sub-element must not inherit the text value of the
+   * previous sibling.
+   * <p>
+   * {@code lastContent} used to be cleared only when a new record started, never when a new sub-element started, so
+   * {@code <city></city>} following {@code <name>Bob</name>} was imported as {@code city="Bob"}.
+   * <p>
+   * The file is deliberately pretty-printed: the whitespace CHARACTERS events between the elements are what issue
+   * #2759 taught the CHARACTERS handler to ignore, and that behaviour must survive this fix.
+   */
+  @Test
+  void noContentCarryoverBetweenSubElements() throws Exception {
+    final File xmlFile = createTempXMLFile("test-subelement-carryover.xml",
+        """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <users>
+          <user>
+            <id>u1</id>
+            <name>Alice</name>
+            <city>Rome</city>
+          </user>
+          <user>
+            <id>u2</id>
+            <name>Bob</name>
+            <city></city>
+          </user>
+          <user>
+            <id>u3</id>
+            <name>Charlie</name>
+            <city/>
+          </user>
+          <user>
+            <id>u4</id>
+            <city></city>
+            <name>Diana</name>
+          </user>
+        </users>""");
+
+    try {
+      database.command("sql",
+          "IMPORT DATABASE file://" + xmlFile.getAbsolutePath() + " WITH objectNestLevel=1, entityType='VERTEX'");
+
+      assertThat(database.countType("v_user", true)).isEqualTo(4);
+
+      // A POPULATED SUB-ELEMENT STILL KEEPS ITS OWN TEXT, DESPITE THE FORMATTING WHITESPACE AROUND IT (ISSUE #2759)
+      final Result user1 = selectUser("u1");
+      assertThat(user1.<String>getProperty("name")).isEqualTo("Alice");
+      assertThat(user1.<String>getProperty("city")).isEqualTo("Rome");
+
+      // AN EMPTY SUB-ELEMENT MUST NOT INHERIT THE PREVIOUS SIBLING'S TEXT
+      final Result user2 = selectUser("u2");
+      assertThat(user2.<String>getProperty("name")).isEqualTo("Bob");
+      assertThat(user2.<String>getProperty("city")).isNull();
+
+      // SAME FOR A SELF-CLOSING SUB-ELEMENT
+      final Result user3 = selectUser("u3");
+      assertThat(user3.<String>getProperty("name")).isEqualTo("Charlie");
+      assertThat(user3.<String>getProperty("city")).isNull();
+
+      // AN EMPTY SUB-ELEMENT MUST NOT SWALLOW THE TEXT OF THE SIBLING THAT FOLLOWS IT EITHER
+      final Result user4 = selectUser("u4");
+      assertThat(user4.<String>getProperty("name")).isEqualTo("Diana");
+      assertThat(user4.<String>getProperty("city")).isNull();
+
+    } finally {
+      xmlFile.delete();
+    }
+  }
+
+  /**
+   * Regression test for issue #6813, schema-analysis half: {@code analyze()} carried the same stale
+   * {@code lastContent} across sibling sub-elements, so an empty {@code <score/>} sampled the value of the
+   * {@code <name>} that preceded it and demoted the inferred type from LONG to STRING.
+   */
+  @Test
+  void analyzeDoesNotCarryContentBetweenSubElements() throws Exception {
+    final String xml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <rows>
+          <row>
+            <name>Alice</name>
+            <score>10</score>
+          </row>
+          <row>
+            <name>Bob</name>
+            <score/>
+          </row>
+        </rows>""";
+
+    final AnalyzedSchema analyzedSchema = new AnalyzedSchema(100);
+    final SourceSchema sourceSchema = new XMLImporterFormat().analyze(AnalyzedEntity.EntityType.VERTEX,
+        newParser(xml), new ImporterSettings(), analyzedSchema);
+
+    assertThat(sourceSchema).isNotNull();
+
+    final AnalyzedEntity entity = analyzedSchema.getEntity("v_row");
+    assertThat(entity).isNotNull();
+
+    final AnalyzedProperty score = entity.getProperty("score");
+    assertThat(score).isNotNull();
+    // "Bob" MUST NEVER BE SAMPLED AS A VALUE OF score
+    assertThat(score.getContents()).containsExactly("10");
+    assertThat(score.getType()).isEqualTo(Type.LONG);
+
+    final AnalyzedProperty name = entity.getProperty("name");
+    assertThat(name).isNotNull();
+    assertThat(name.getContents()).containsExactlyInAnyOrder("Alice", "Bob");
+  }
+
+  /**
+   * Builds a {@link Parser} over an in-memory XML document, re-openable so {@code analyze()} can reset it.
+   */
+  private static Parser newParser(final String xml) throws IOException {
+    final byte[] bytes = xml.getBytes(StandardCharsets.UTF_8);
+    final Source source = new Source("memory", new ByteArrayInputStream(bytes), bytes.length, false, s -> {
+      s.inputStream = new ByteArrayInputStream(bytes);
+      return null;
+    }, null);
+    return new Parser(source, 0);
+  }
+
+  /**
+   * Returns the single v_user vertex with the given id, failing if there is not exactly one.
+   */
+  private Result selectUser(final String id) {
+    try (final ResultSet rs = database.query("sql", "SELECT FROM v_user WHERE id = ?", id)) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result user = rs.next();
+      assertThat(rs.hasNext()).isFalse();
+      return user;
     }
   }
 
