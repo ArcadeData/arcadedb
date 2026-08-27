@@ -182,7 +182,8 @@ public class GraphQLSchema {
       final ResultSet resultSet =
           boundParameters.isEmpty() ? database.query("sql", query) : database.query("sql", query, boundParameters);
 
-      return new GraphQLResultSet(this, resultSet, projection != null ? projection.getSelections() : null, returnType);
+      return new GraphQLResultSet(this, resultSet, projection != null ? projection.getSelections() : null, returnType,
+          variables);
 
     } catch (final CommandParsingException | CommandExecutionException e) {
       // An execution failure raised by the statement this query delegates to keeps the classification the engine
@@ -350,7 +351,7 @@ public class GraphQLSchema {
   /**
    * Resolves an argument value, substituting the operation's variable values for a {@code $variable} reference.
    */
-  private static Object resolveValue(final ValueWithVariable valueWithVariable, final Map<String, Object> variables) {
+  static Object resolveValue(final ValueWithVariable valueWithVariable, final Map<String, Object> variables) {
     final AbstractValue value = valueWithVariable != null ? valueWithVariable.getValue() : null;
     if (value instanceof VariableLiteral variable) {
       final String name = variable.getName();
@@ -394,7 +395,7 @@ public class GraphQLSchema {
 
     final ResultSet resultSet = arguments != null ? database.query(language, statement, arguments) : database.query(language, statement);
 
-    return new GraphQLResultSet(this, resultSet, projection != null ? projection.getSelections() : null, returnType);
+    return new GraphQLResultSet(this, resultSet, projection != null ? projection.getSelections() : null, returnType, variables);
   }
 
   private static Map<String, Object> getArguments(final Arguments queryArguments, final Map<String, Object> variables) {

@@ -24,6 +24,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -318,6 +319,45 @@ class Issue6834GraphQLVariablesTest extends AbstractGraphQLTest {
         assertThat(resultSet.next().<String>getProperty("id")).isEqualTo("book-2");
         assertThat(resultSet.hasNext()).isFalse();
       }
+
+      return null;
+    });
+  }
+
+  @Test
+  void inlineRelationshipDirectiveResolvesVariables() {
+    executeTest(database -> {
+      defineTypes(database);
+
+      // An inline directive is written in the query document, so its arguments are in the operation's scope and a
+      // variable belongs there as much as in an ordinary argument.
+      // No comma between the two variable definitions: this grammar makes the comma a real token and only the
+      // argument list accepts one, so `query($t: String, $d: String)` does not parse. Reported separately - fixing
+      // it means regenerating the parser, which drags in unrelated differences from a newer generator version.
+      try (final ResultSet resultSet = database.query("graphql", """
+          query($t: String $d: String) { bookByName(name: "Mr. brain") {
+              authors @relationship(type: $t, direction: $d) { lastName }
+          } }""", "t", "IS_AUTHOR_OF", "d", "IN")) {
+        assertThat(resultSet.hasNext()).isTrue();
+
+        final List<Result> authors = resultSet.next().getProperty("authors");
+        assertThat(authors).hasSize(1);
+        assertThat(authors.getFirst().<String>getProperty("lastName")).isEqualTo("Rowling");
+
+        assertThat(resultSet.hasNext()).isFalse();
+      }
+
+      // A variable no operation declares is reported here too, rather than resolving to null and quietly walking no
+      // edge at all. The directives are evaluated while mapping a record, so the result set has to be consumed.
+      assertThatThrownBy(() -> {
+        try (final ResultSet resultSet = database.query("graphql",
+            "{ bookByName(name: \"Mr. brain\") { authors @relationship(type: $t) { lastName } } }")) {
+          while (resultSet.hasNext())
+            resultSet.next();
+        }
+      })
+          .isInstanceOf(CommandParsingException.class)
+          .hasMessageContaining("$t");
 
       return null;
     });
