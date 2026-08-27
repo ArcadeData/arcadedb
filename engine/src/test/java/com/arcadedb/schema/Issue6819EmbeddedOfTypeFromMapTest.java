@@ -1,0 +1,108 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.schema;
+
+import com.arcadedb.TestHelper;
+import com.arcadedb.database.EmbeddedDocument;
+import com.arcadedb.database.MutableDocument;
+import org.junit.jupiter.api.Test;
+
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/**
+ * Reproduces issue #6819: an {@code EMBEDDED} property that declares an {@code ofType} still rejected a plain
+ * {@link Map}, because the embedded type name was taken exclusively from the map's own {@code "@type"} entry even
+ * though the schema already pinned it. The failure surfaced as {@code "Type with name 'null' was not found"} wrapped
+ * in a generic convert error that named neither the missing key nor the declared {@code ofType}.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+class Issue6819EmbeddedOfTypeFromMapTest extends TestHelper {
+
+  @Test
+  void plainMapUsesTheDeclaredOfType() {
+    database.getSchema().createDocumentType("Address6819").createProperty("city", Type.STRING);
+    database.getSchema().createDocumentType("Person6819").createProperty("address", Type.EMBEDDED).setOfType("Address6819");
+
+    database.transaction(() -> {
+      final MutableDocument person = database.newDocument("Person6819").set("address", Map.of("city", "Rome"));
+      person.save();
+
+      final EmbeddedDocument address = person.getEmbedded("address");
+      assertThat(address).isNotNull();
+      assertThat(address.getTypeName()).isEqualTo("Address6819");
+      assertThat(address.getString("city")).isEqualTo("Rome");
+    });
+
+    final EmbeddedDocument reloaded = database.query("sql", "select from Person6819").next().getElement().get()
+        .getEmbedded("address");
+    assertThat(reloaded.getTypeName()).isEqualTo("Address6819");
+    assertThat(reloaded.getString("city")).isEqualTo("Rome");
+  }
+
+  @Test
+  void explicitTypeStillWinsOverTheDeclaredOfTypeWhenCompatible() {
+    database.getSchema().createDocumentType("Address6819b").createProperty("city", Type.STRING);
+    database.getSchema().createDocumentType("HomeAddress6819b").addSuperType("Address6819b").createProperty("floor", Type.INTEGER);
+    database.getSchema().createDocumentType("Person6819b").createProperty("address", Type.EMBEDDED).setOfType("Address6819b");
+
+    database.transaction(() -> {
+      final Map<String, Object> map = new LinkedHashMap<>();
+      map.put("@type", "HomeAddress6819b");
+      map.put("city", "Rome");
+      map.put("floor", 3);
+
+      final MutableDocument person = database.newDocument("Person6819b").set("address", map);
+      person.save();
+
+      final EmbeddedDocument address = person.getEmbedded("address");
+      assertThat(address.getTypeName()).isEqualTo("HomeAddress6819b");
+      assertThat(address.getString("city")).isEqualTo("Rome");
+      assertThat(address.getInteger("floor")).isEqualTo(3);
+    });
+  }
+
+  @Test
+  void incompatibleExplicitTypeIsStillRejected() {
+    database.getSchema().createDocumentType("Address6819c").createProperty("city", Type.STRING);
+    database.getSchema().createDocumentType("Other6819c").createProperty("city", Type.STRING);
+    database.getSchema().createDocumentType("Person6819c").createProperty("address", Type.EMBEDDED).setOfType("Address6819c");
+
+    assertThatThrownBy(() -> database.transaction(() -> {
+      final Map<String, Object> map = new LinkedHashMap<>();
+      map.put("@type", "Other6819c");
+      map.put("city", "Rome");
+      database.newDocument("Person6819c").set("address", map).save();
+    })).hasMessageContaining("Address6819c");
+  }
+
+  @Test
+  void missingTypeAndMissingOfTypeReportsTheMissingKey() {
+    database.getSchema().createDocumentType("Person6819d").createProperty("address", Type.EMBEDDED);
+
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.newDocument("Person6819d").set("address", Map.of("city", "Rome")).save()))
+        .hasMessageContaining("@type")
+        .hasMessageContaining("address");
+  }
+}

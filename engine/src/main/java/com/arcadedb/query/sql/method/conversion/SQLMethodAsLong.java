@@ -48,8 +48,10 @@ public class SQLMethodAsLong extends AbstractSQLMethod {
       value = date.getTime();
     else if (DateUtils.isDate(value))
       value = DateUtils.dateTimeToTimestamp(value, ChronoUnit.MILLIS);
-    else
-      value = value != null ? Long.valueOf(value.toString().trim()) : null;
+    else {
+      final String text = numericTextOrNull(value);
+      value = text != null ? Long.valueOf(text) : null;
+    }
 
     return value;
   }

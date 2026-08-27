@@ -124,6 +124,31 @@ public abstract class AbstractSQLMethod implements SQLMethod {
             param));
   }
 
+  /**
+   * Reads the receiver of a numeric conversion method ({@code asInteger()}, {@code asLong()}, ...) as the text to
+   * parse, answering {@code null} when there is nothing to parse: a {@code null} value, an empty string, or a string
+   * of nothing but whitespace.
+   * <p>
+   * The seven conversion methods each did their own triage and only {@code asInteger()} had a blank guard at all, so
+   * {@code ''.asInteger()} answered {@code null} while {@code ''.asLong()} threw a NumberFormatException and failed
+   * the whole query - and an empty string is the ordinary representation of a blank field in imported CSV/JSON, so a
+   * cast that worked at one width broke at every other one. {@code asInteger()}'s guard also tested the untrimmed
+   * string and parsed the trimmed one, which let {@code ' '.asInteger()} through to {@code Integer.valueOf("")}
+   * (issue #6825). Trimming before the blank test is what closes that gap, and having one helper is what keeps the
+   * next hardening from reaching only one of the seven - the same move {@code SQLAggregatedFunction} made for the
+   * aggregates in #6390.
+   *
+   * @param value the value the method was invoked on
+   *
+   * @return the trimmed text to parse, or {@code null} when the value is null or blank
+   */
+  protected String numericTextOrNull(final Object value) {
+    if (value == null)
+      return null;
+    final String text = value.toString().trim();
+    return text.isEmpty() ? null : text;
+  }
+
   protected Object getParameterValue(final Identifiable iRecord, final String iValue) {
     if (iValue == null) {
       return null;

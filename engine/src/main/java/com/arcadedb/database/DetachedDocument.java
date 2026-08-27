@@ -22,7 +22,9 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -163,9 +165,16 @@ public class DetachedDocument extends BaseDocument {
     return result.toString();
   }
 
+  /**
+   * {@inheritDoc}
+   * <p>
+   * A copy, for the same reason as {@link MutableDocument#getPropertyNames()}: this is the one {@link Document}
+   * accessor whose two implementations disagreed on whether the caller was holding a snapshot or a live view of the
+   * record's own key set (issue #6818).
+   */
   @Override
   public synchronized Set<String> getPropertyNames() {
-    return map.keySet();
+    return Collections.unmodifiableSet(new LinkedHashSet<>(map.keySet()));
   }
 
   @Override

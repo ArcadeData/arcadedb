@@ -39,6 +39,7 @@ public class SQLMethodAsFloat extends AbstractSQLMethod {
       final Object[] params) {
     if (value instanceof Number number)
       return number.floatValue();
-    return value != null ? Float.valueOf(value.toString().trim()) : null;
+    final String text = numericTextOrNull(value);
+    return text != null ? Float.valueOf(text) : null;
   }
 }
