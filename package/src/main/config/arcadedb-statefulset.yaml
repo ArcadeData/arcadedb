@@ -162,7 +162,9 @@ spec:
             - "-Darcadedb.ha.raftPersistStorage=true"
           # Sized for a real three-node cluster, which is more than a resource-constrained kind or
           # docker-desktop cluster may be able to schedule: for a local trial, lower these (the heap
-          # follows the limit automatically) or drop `replicas` to 1.
+          # follows the limit automatically) or drop `replicas` to 1. Request and limit differ on
+          # purpose - the pod is Burstable, reserving 1Gi while the heap is free to grow to 75% of the
+          # 2Gi ceiling. Set them equal for Guaranteed QoS if the node must never overcommit.
           resources:
             requests:
               cpu: "500m"
