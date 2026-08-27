@@ -1351,7 +1351,12 @@ public class Console {
 
     final String[] serverParts = serverUserPassword[0].split("/");
     if ((needsDatabase && serverParts.length != 2) || (!needsDatabase && serverParts.length != 1))
-      throw new ConsoleException("Remote URL '" + url + "' not valid");
+      // REPORT ONLY THE ADDRESS, NEVER THE WHOLE ARGUMENT: `url` STILL CARRIES THE INLINE PASSWORD, AND THIS MESSAGE
+      // GOES TO THE INTERACTIVE OUTPUT AND TO THE BATCH LOG. IT IS ALSO THE MORE PRECISE HALF - THE ADDRESS IS WHAT
+      // FAILED TO SPLIT (ISSUE #6829)
+      throw new ConsoleException(
+          "Remote URL '" + REMOTE_PREFIX + serverUserPassword[0] + "' is not valid, expected " + REMOTE_PREFIX
+              + "<host>[:<port>]" + (needsDatabase ? "/<database>" : ""));
 
     final String remoteServer;
     final int remotePort;
