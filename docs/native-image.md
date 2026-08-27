@@ -170,17 +170,17 @@ reach "no shared libraries needed" by different build modes (see
 
 Both Dockerfiles `COPY` in the binary, `config/` (staged from `package/src/main/config`), and expose
 the same port/volume surface as the JVM image's Dockerfile, scoped to the modules the native build
-actually bundles - notably **no port 8182** (Gremlin is excluded): `2480` (HTTP/Studio), `2424`
-(binary protocol/replication), `5432` (Postgres), `6379` (Redis), `27017` (MongoDB), `7687` (Bolt),
+actually bundles - notably **no port 8182** (Gremlin is excluded): `2480` (HTTP/Studio), `2434`
+(Raft gRPC/replication), `5432` (Postgres), `6379` (Redis), `27017` (MongoDB), `7687` (Bolt),
 and `50051` (gRPC). Volumes: `config`, `databases`, `backups`, `replication`, `log`.
 
 A few things differ from the JVM Docker image because neither base has a shell:
 
-- **No `JAVA_OPTS`-reading wrapper script.** The JVM image's `bin/server.sh` reads `$JAVA_OPTS`;
-  these images have no shell to run such a script, so both `ENTRYPOINT`s are exec-form arrays that
-  invoke the binary directly. Extra `-D` flags must be passed as trailing arguments to
-  `docker run` instead of via `-e JAVA_OPTS=...` - see [Running the container](#running-the-container)
-  below.
+- **No settings-reading wrapper script.** The JVM image's `bin/server.sh` expands `$ARCADEDB_SETTINGS`
+  (and `$JAVA_OPTS`) onto the java command line; these images have no shell to run such a script, so
+  both `ENTRYPOINT`s are exec-form arrays that invoke the binary directly. Extra `-D` flags must be
+  passed as trailing arguments to `docker run` instead of via `-e ARCADEDB_SETTINGS=...` - see
+  [Running the container](#running-the-container) below.
 - **User model differs per base.** `scratch` has no `/etc/passwd` and no `adduser`, so that image
   runs as UID 0 unless the caller overrides it with `docker run --user <uid>:<gid>`. The distroless
   `:nonroot` tag bakes in a `nonroot:nonroot` (65532:65532) user, so the arm64 image already runs
@@ -230,8 +230,8 @@ docker run --rm -p 2480:2480 -p 5432:5432 \
   `-Djava.util.logging.config.file=/home/arcadedb/config/arcadedb-log.properties` (JUL logging
   configuration, matching the JVM image's setup).
 - **Setting the root password:** because neither base image has a shell, the JVM image's
-  `-e JAVA_OPTS="-Darcadedb.server.rootPassword=..."` pattern does not work here - there is no shell
-  to expand `$JAVA_OPTS` into the command line. Instead, pass `-Darcadedb.server.rootPassword=...`
+  `-e ARCADEDB_SETTINGS="-Darcadedb.server.rootPassword=..."` pattern does not work here - there is no
+  shell to expand `$ARCADEDB_SETTINGS` into the command line. Instead, pass `-Darcadedb.server.rootPassword=...`
   (and any other `-D` flags) as **trailing arguments** to `docker run`, as in the example above;
   Docker appends them after the `ENTRYPOINT` array, and the binary parses them exactly like JVM
   system properties.

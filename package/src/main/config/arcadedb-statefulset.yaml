@@ -3,16 +3,25 @@
 # > kubectl config use-context docker-for-desktop
 #
 # Overall Design:
+# - a dedicated namespace, so the example never lands in `default`
 # - a headless service to expose a DNS entry for discovery
 # - a service to expose end-points to the outside world
 # - the stateful set itself
 # - a load-balancer service to balance the requests among the available nodes
 #
 # Using ArcadeDB with k8s
-# - Create cluster    : kubectl apply -f arcadedb-statefulset.yaml
-# - List the pods     : kubectl get pods
-# - Run console       : kubectl exec -it arcadedb-0 -- bin/console.sh
-# - Destroy cluster   : kubectl delete -f arcadedb-replica.yaml
+# - Create the secret  : kubectl create secret generic arcadedb-credentials \
+#                          --namespace arcadedb --from-literal=rootPassword='<choose-a-strong-password>'
+# - Create cluster     : kubectl apply -f arcadedb-statefulset.yaml
+# - List the pods      : kubectl get pods --namespace arcadedb
+# - Run console        : kubectl exec -it arcadedb-0 --namespace arcadedb -- bin/console.sh
+# - Destroy cluster    : kubectl delete -f arcadedb-statefulset.yaml
+#
+# NOTE ON VARIABLE EXPANSION: Kubernetes expands only the `$(VAR)` form in `command`/`args`, and only
+# for variables declared in this container's `env`. The `${VAR}` form is NOT expanded, and since the
+# arguments are not run through a shell there is no POSIX expansion either: a `${VAR}` written below
+# would reach the JVM verbatim. `HOSTNAME` is set by the container runtime and is therefore NOT
+# expandable here even as `$(HOSTNAME)`: the pod name is injected explicitly as POD_NAME instead.
 
 apiVersion: v1
 kind: Namespace
@@ -23,6 +32,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: arcadedb-http
+  namespace: arcadedb
   labels:
     app: arcadedb
 spec:
@@ -42,17 +52,22 @@ metadata:
   # is Running and Ready). Read more in the Kubernetes docs:
   # https://kubernetes.io/docs/tutorials/stateful-application/basic-stateful-set/
   name: arcadedb
+  namespace: arcadedb
   labels:
     app: arcadedb
 spec:
   clusterIP: None
+  # A pod is Ready only once it has joined the Raft group, and it can only join by dialling its peers
+  # first. Without this flag the headless service would publish no DNS record for a not-yet-Ready pod,
+  # so a starting or restarting node could never be reached and would never become Ready.
+  publishNotReadyAddresses: true
   ports:
     - name: http
       port: 2480
       targetPort: 2480
-    - name: rpc
-      port: 2424
-      targetPort: 2424
+    - name: raft
+      port: 2434
+      targetPort: 2434
   selector:
     app: arcadedb
 ---
@@ -60,6 +75,7 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: arcadedb
+  namespace: arcadedb
   labels:
     app: arcadedb
 spec:
@@ -87,33 +103,47 @@ spec:
                       values:
                         - arcadedb
                 topologyKey: kubernetes.io/hostname
+      volumes:
+        # The root password is mounted as a file instead of being passed on the command line: an
+        # argument is world-readable through /proc inside the pod, a mounted secret is not. ArcadeDB
+        # reads it through `arcadedb.server.rootPasswordPath`.
+        - name: root-password
+          secret:
+            secretName: arcadedb-credentials
+            # World-readable inside the pod: a secret volume is owned by root:root, so a stricter
+            # mode would be unreadable by the unprivileged `arcadedb` user the image runs as.
+            defaultMode: 0444
+            items:
+              - key: rootPassword
+                path: rootPassword
       containers:
         - name: arcadedb
           image: arcadedata/arcadedb:latest
           imagePullPolicy: IfNotPresent
           env:
-            - name: POD_IP
+            - name: POD_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: status.podIP
-            - name: rootPassword
-              valueFrom:
-                secretKeyRef:
-                  key: rootPassword
-                  name: arcadedb-credentials
-                  optional: false
+                  fieldPath: metadata.name
           command:
             - "bin/server.sh"
+          args:
             - "-Darcadedb.dumpConfigAtStartup=true"
-            - "-Darcadedb.server.name=${HOSTNAME}"
-            - "-Darcadedb.server.rootPassword=${rootPassword}"
+            - "-Darcadedb.server.name=$(POD_NAME)"
+            - "-Darcadedb.server.rootPasswordPath=/etc/arcadedb/secrets/rootPassword"
             - "-Darcadedb.server.databaseDirectory=/mnt/data0/databases"
             - "-Darcadedb.server.defaultDatabases=Universe[albert:einstein]"
+            # Report Ready only once the node has joined the Raft group and caught up, so a rolling
+            # restart never drops the write quorum.
+            - "-Darcadedb.server.readinessRequiresHA=true"
             - "-Darcadedb.ha.enabled=true"
-            - "-Darcadedb.ha.replicationIncomingHost=0.0.0.0"
-            - "-Darcadedb.ha.serverList=arcadedb-0.arcadedb.default.svc.cluster.local:2424"
+            # Only the first pod is listed: the remaining pods synthesize their own peer entry from
+            # the pod name plus the DNS suffix below and auto-join the running cluster. Short pod
+            # names are expanded with that suffix, so this entry stays namespace-agnostic. The second
+            # port is the HTTP port, required for replica-to-leader command forwarding.
+            - "-Darcadedb.ha.serverList=arcadedb-0:2434:2480"
             - "-Darcadedb.ha.k8s=true"
-            - "-Darcadedb.ha.k8sSuffix=.arcadedb.default.svc.cluster.local"
+            - "-Darcadedb.ha.k8sSuffix=.arcadedb.arcadedb.svc.cluster.local"
             # Keep the Raft log on the PersistentVolume (mounted at /mnt/data0) so it survives pod
             # restarts instead of being re-created on the ephemeral container layer. Without this the
             # Raft storage defaults to the server root and is lost on every restart, forcing a full
@@ -123,18 +153,42 @@ spec:
             - "-Darcadedb.ha.raftPersistStorage=true"
           resources:
             requests:
-              memory: "512Mi"
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              # The image sizes the heap as a percentage of this limit, so it must be set: leaving it
+              # unbounded lets the JVM size the heap against the whole node.
+              memory: "2Gi"
           ports:
             - containerPort: 2480
               name: http
-            - containerPort: 2424
-              name: rpc
+            - containerPort: 2434
+              name: raft
+          # Readiness gates traffic on Raft membership (see readinessRequiresHA above). Liveness only
+          # checks that the HTTP listener is still accepting connections: pointing it at /api/v1/ready
+          # would restart a follower that is merely catching up.
+          readinessProbe:
+            httpGet:
+              path: /api/v1/ready
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 30
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            failureThreshold: 6
           # These volume mounts are persistent. They are like inline claims,
           # but not exactly because the names need to match exactly one of
           # the stateful pod volumes.
           volumeMounts:
             - name: datadir
               mountPath: /mnt/data0
+            - name: root-password
+              mountPath: /etc/arcadedb/secrets
+              readOnly: true
   updateStrategy:
     type: RollingUpdate
   # These are converted to volume claims by the controller

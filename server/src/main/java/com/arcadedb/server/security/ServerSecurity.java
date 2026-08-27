@@ -641,6 +641,23 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     return true;
   }
 
+  /**
+   * Drops one trailing line terminator from a password read out of a file. Every ordinary way of
+   * producing such a file - a here-doc, an editor, {@code echo}, {@code kubectl create secret
+   * --from-file} - appends a newline that is not part of the password, and keeping it would silently
+   * store a root password nobody can type. Only the final CR/LF is removed: interior characters and
+   * trailing spaces are left alone, since those can legitimately belong to the password.
+   */
+  static String stripTrailingNewline(final String password) {
+    if (password == null)
+      return null;
+    if (password.endsWith("\r\n"))
+      return password.substring(0, password.length() - 2);
+    if (password.endsWith("\n") || password.endsWith("\r"))
+      return password.substring(0, password.length() - 1);
+    return password;
+  }
+
   protected void askForRootPassword() throws IOException {
     String rootPassword = server != null ?
         server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD) :
@@ -653,9 +670,12 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
 
       if (rootPasswordPath != null) {
         if (Files.isReadable(Path.of(rootPasswordPath)))
-          rootPassword = Files.readString(Path.of(rootPasswordPath));
+          rootPassword = stripTrailingNewline(Files.readString(Path.of(rootPasswordPath)));
         else
           throw new ServerSecurityException("Error reading password file at path '" + rootPasswordPath + "'");
+
+        if (rootPassword.isEmpty())
+          throw new ServerSecurityException("Password file at path '" + rootPasswordPath + "' is empty");
       }
     }
 

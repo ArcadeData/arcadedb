@@ -85,8 +85,8 @@ VOLUME [ "/home/arcadedb/log" ]
 
 # ArcadeDB HTTP API & Studio
 EXPOSE 2480
-# ArcadeDB binary protocol (replication)
-EXPOSE 2424
+# Raft gRPC (replication)
+EXPOSE 2434
 # PostgreSQL wire protocol
 EXPOSE 5432
 # Redis wire protocol
