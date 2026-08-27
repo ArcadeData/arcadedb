@@ -1092,4 +1092,22 @@ class ConsoleTest {
     assertThatThrownBy(() -> console.parse("connect remote:localhost:1/mydb root"))
         .hasMessageContaining("Password for user 'root' is missing");
   }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/6829: a malformed remote URL used to be reported by echoing the
+   * whole argument back, password and all - into the interactive output, and into the build log in batch mode, where it
+   * outlives the session just like the history file does. The message must name the address and nothing else.
+   */
+  @Test
+  void aMalformedRemoteUrlIsReportedWithoutTheInlinePassword() throws Exception {
+    final StringBuilder buffer = new StringBuilder();
+    console.setOutput(buffer::append);
+
+    // NO DATABASE IN THE URL, WHICH `connect` REQUIRES: THE ADDRESS FAILS TO SPLIT
+    assertThatThrownBy(() -> console.parse("connect remote:localhost:1 root MySecret1!"))
+        .hasMessageContaining("localhost:1")
+        .hasMessageNotContaining("MySecret1!");
+
+    assertThat(buffer.toString()).as("the reported error reaches the output too").doesNotContain("MySecret1!");
+  }
 }
