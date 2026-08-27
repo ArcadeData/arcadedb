@@ -185,6 +185,11 @@ class Issue6798InactivityTimerUnloadedGraphTest {
   /**
    * The other half of the same gate: reaching the floor on a large-but-unloaded index must still rebuild, or the
    * fix would trade a wasteful rebuild for a delta buffer that never drains.
+   * <p>
+   * Written as one transaction per vector rather than one transaction for all of them, deliberately: that drives
+   * the mutation through {@code put()} - and so through {@code scheduleInactivityRebuild()}, and so through the
+   * gate - once per vector instead of once per batch. It is the shape a loader process actually has, and the one
+   * that makes what the gate costs per insert matter (PR #6857 review).
    */
   @Test
   void reachingTheFloorOnALargeUnloadedIndexStillRebuilds() {
@@ -196,7 +201,9 @@ class Issue6798InactivityTimerUnloadedGraphTest {
         configure(db);
         final LSMVectorIndex index = vectorIndex(db);
 
-        insert(db, LARGE_COUNT, LARGE_COUNT + FLOOR);
+        for (int i = LARGE_COUNT; i < LARGE_COUNT + FLOOR; i++)
+          insert(db, i, i + 1);
+
         assertThat(index.getStats().get("mutationsSinceRebuild")).isEqualTo((long) FLOOR);
 
         Awaitility.await("the inactivity timer rebuilds once pending mutations reach the floor")
