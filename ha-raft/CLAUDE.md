@@ -66,3 +66,42 @@ Two things about how it hid, both worth generalizing:
 Since #6220 `TRUNCATE` only batches when **it** owns the transaction - when none was active as it started. Inside a caller's transaction it commits nothing at all, because committing through a caller silently breaks that caller's `ROLLBACK`. So the shape that reproduces #5492 is now `command("sql", "TRUNCATE ...")` with **no** enclosing transaction; wrapping it in one, which `Issue5492TruncateBatchNotReplicatedIT` used to do, leaves nothing mid-execution to commit and the test passes for the wrong reason. `REBUILD INDEX` and `BatchStep` still commit unconditionally.
 
 When adding any code path that commits, ask which instance it holds. `Issue5492TruncateBatchNotReplicatedIT` guards the statement path; it asserts the WAL gap counter *before* querying the follower, because the resync reinstalls the follower's database and a stale handle then throws `DatabaseIsClosed`, which reads like infrastructure noise rather than divergence.
+
+## Re-verifying the IT fork split
+
+This module's ITs run in two failsafe executions, not one: `@Tag("ha-heavy")` routes the five heaviest classes
+to `heavy-its-in-their-own-fork`, which runs with `reuseForks=false` so each gets a JVM of its own instead of
+leaving what it churned for the next 118 classes to inherit. Why, and what each expression in there is for, is
+in `ha-raft/pom.xml` next to the configuration. This is the part you need *before* editing it.
+
+Six things need re-checking after any edit to that block - and after any surefire/failsafe version bump, since
+two of the expressions rest on JUnit Platform's tag-expression grammar behaving as measured on 3.5.6 (`any()`
+meaning "at least one tag" rather than "every class", `any() & none()` being satisfiable by nothing). **Not one
+of the six fails loudly on its own**, and a grammar change would not error: it would run zero tests and pass.
+
+Each is one command against a handful of classes, not the full hour.
+
+1. **The partition still runs each class exactly once.**
+   ```
+   ./mvnw -o -pl ha-raft verify -Pintegration -DskipTests -DfailIfNoSpecifiedTests=false \
+     -Dit.test=RaftMigrationCompactionRaceIT,RaftVerifyDatabaseIT
+   ```
+   `RaftVerifyDatabaseIT` must appear under `(default)` and `RaftMigrationCompactionRaceIT` under
+   `(heavy-its-in-their-own-fork)`, each once, and both `failsafe-summary` files must be written.
+2. **Each heavy class still gets its own JVM.** Add two throwaway tagged ITs that write
+   `ProcessHandle.current().pid()` to a file, run them, check the pids differ.
+3. **A failing heavy IT still fails the build AND names this execution.** Add a throwaway tagged IT that
+   asserts false; the error must read `verify (heavy-its-in-their-own-fork)`.
+4. **`HeavyForkWiringIT` and `HeavyItForkIsolationTest` are green.** These two are the standing guards - one
+   catches the wiring silently reverting, the other catches the tag set drifting.
+5. **No command-line tag filter can narrow either execution.** Re-run step 1 with
+   `-Dgroups=bogus-tag -DexcludedGroups=bogus-tag` and expect the same two classes in the same two forks.
+   **This is the one step with no automated guard behind it** (issue #6794): it needs a real Maven subprocess
+   with command-line properties, which no unit test can do. It is also the step whose failure is quietest - the
+   default execution runs 0 tests and the build passes - so it is the one actually worth running by hand.
+6. **`-Dfailsafe.excludedGroups=ha-heavy` still ends in `BUILD SUCCESS`** with both executions empty, rather
+   than in a `failIfNoTests` failure. The two settings look like they contradict each other and do not;
+   `ha-raft/pom.xml` explains why at the parameter. If you are about to "fix" either one because the other
+   seems to rule it out, run this first.
+
+Steps 1-3 are how the split was verified in the first place; step 4 is what watches it now.
