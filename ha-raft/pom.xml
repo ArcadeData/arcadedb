@@ -161,11 +161,18 @@
                  fresh JVM per class would settle the question outright, but it buys 122 extra JVM starts plus
                  the loss of all cross-class JIT warm-up, against twenty minutes of headroom - and it would be
                  paying that on every run forever to defend against an adjacency that is one `ls` away from
-                 rearranging itself again. Isolating the classes that generate the pressure costs four extra
-                 JVM starts and removes the hazard at its source: whatever a heavy IT leaves behind - heap it
-                 churned, threads it did not join, page cache it dirtied - dies with its fork instead of being
-                 inherited by whatever ran next. It works in either execution order, so it does not quietly
-                 depend on Maven running the inherited execution first.
+                 rearranging itself again. Isolating the classes that generate the pressure removes the hazard
+                 at its source instead: whatever a heavy IT leaves behind - heap it churned, threads it did not
+                 join, page cache it dirtied - dies with its fork rather than being inherited by whatever ran
+                 next. It works in either execution order, so it does not quietly depend on Maven running the
+                 inherited execution first.
+
+                 The bill for that, against the 122 above: one JVM start per tagged class rather than one for
+                 all of them, so five extra today - four for the heavy classes, since the first of them would
+                 have started a fork anyway, plus one for HeavyForkWiringIT, which is tagged in order to check
+                 the routing from inside it and does nothing else. One more for each class added to the set,
+                 which is the cost HeavyItForkIsolationTest exists to make somebody decide on rather than drift
+                 into.
 
                  Deliberately NOT changed: runOrder. With the heavy classes hoisted out, reordering the other
                  118 would be a behaviour change to a lane that is currently stable, made without evidence -
