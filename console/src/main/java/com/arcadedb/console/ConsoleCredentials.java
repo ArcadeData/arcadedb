@@ -77,13 +77,26 @@ public class ConsoleCredentials {
     final String lowerCase = statement.trim().toLowerCase(Locale.ENGLISH);
 
     for (final String command : REMOTE_COMMANDS)
-      if (lowerCase.startsWith(command))
+      if (startsWithCommand(lowerCase, command))
         return maskRemoteCredentials(statement);
 
-    if (lowerCase.startsWith(CREATE_USER))
+    if (startsWithCommand(lowerCase, CREATE_USER))
       return maskIdentifiedBy(statement);
 
     return statement;
+  }
+
+  /**
+   * Whether the statement's first word(s) ARE this command, rather than merely starting with its letters. The boundary
+   * matters because this list is a mirror of the console's own dispatch and will drift as commands are added: without
+   * it, a future `connect-cluster` would be routed here by the `connect` entry and have its arguments masked as if the
+   * third one were a password.
+   */
+  private static boolean startsWithCommand(final String lowerCaseStatement, final String command) {
+    if (!lowerCaseStatement.startsWith(command))
+      return false;
+    return lowerCaseStatement.length() == command.length()
+        || Character.isWhitespace(lowerCaseStatement.charAt(command.length()));
   }
 
   /**

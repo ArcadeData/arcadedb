@@ -270,10 +270,8 @@ public class Console {
         // THREAD'S CACHED TRANSACTION AND RAISES InvalidDatabaseInstanceException WHEN IT BELONGS TO A DIFFERENT
         // LocalDatabase INSTANCE FOR THE SAME PATH - RECONNECTING TO THE SAME DATABASE IN ONE SESSION DOES THAT. A
         // THROW HERE WOULD SKIP THE FLUSH AND THE TWO CLOSES ALL OVER AGAIN, JUST FROM ANOTHER TRIGGER (ISSUE #6828)
-        if (databaseProxy.isTransactionActive()) {
-          currentOperationsInBatch = 0;
+        if (databaseProxy.isTransactionActive())
           databaseProxy.commit();
-        }
       } catch (Throwable t) {
         errored = true;
         outputError(t);
@@ -457,8 +455,9 @@ public class Console {
    * This is the one place in the console where shell-like unescaping is wanted, and since {@link TerminalParser#parse} now
    * keeps the escape characters it sees (issue #6827) it is also the one place that can do it unambiguously: the closing
    * quote is the first UNESCAPED occurrence of the opening one, so {@code 'it\'s a test'} yields {@code it's a test} and
-   * {@code 'a' b'} is still rejected as trailing garbage. Only {@code \'}, {@code \"} and {@code \\} are unescaped - any
-   * other backslash is data and is kept as typed, which is what makes {@code set foo = 'C:\Users'} store the path.
+   * {@code 'a' b'} is still rejected as trailing garbage. Only the quote character that DELIMITS this value and the
+   * backslash itself are unescaped: the other quote character never needed escaping in here, so a backslash in front of
+   * it is data, and so is every other backslash - which is what makes {@code set foo = 'C:\Users'} store the path.
    */
   private static String stripMatchingQuotes(final String value) {
     if (value.isEmpty())
@@ -474,7 +473,7 @@ public class Console {
 
       if (c == '\\' && i + 1 < value.length()) {
         final char next = value.charAt(i + 1);
-        if (next == '\'' || next == '"' || next == '\\') {
+        if (next == quote || next == '\\') {
           content.append(next);
           ++i;
           continue;
