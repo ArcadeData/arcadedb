@@ -391,11 +391,11 @@ function saveRecordEditor() {
   if (removeParts.length > 0)
     sql += " REMOVE " + removeParts.join(", ");
 
-  var database = escapeHtml(getCurrentDatabase());
+  var database = getCurrentDatabase();
 
   $.ajax({
     type: "POST",
-    url: "api/v1/command/" + database,
+    url: "api/v1/command/" + encodeDatabaseName(database),
     data: JSON.stringify({ language: "sql", command: sql }),
     beforeSend: function (xhr) {
       xhr.setRequestHeader("Authorization", globalCredentials);
@@ -412,11 +412,11 @@ function saveRecordEditor() {
 
 function refreshRecordAfterSave() {
   var rid = globalRecordEditorState.rid;
-  var database = escapeHtml(getCurrentDatabase());
+  var database = getCurrentDatabase();
 
   $.ajax({
     type: "POST",
-    url: "api/v1/command/" + database,
+    url: "api/v1/command/" + encodeDatabaseName(database),
     data: JSON.stringify({ language: "sql", command: "SELECT FROM " + rid, serializer: "record" }),
     beforeSend: function (xhr) {
       xhr.setRequestHeader("Authorization", globalCredentials);
@@ -462,11 +462,11 @@ function deleteRecord() {
 
   globalConfirm("Delete Record", "Are you sure you want to delete record " + rid + "? This action cannot be undone.", "warning",
     function () {
-      var database = escapeHtml(getCurrentDatabase());
+      var database = getCurrentDatabase();
 
       $.ajax({
         type: "POST",
-        url: "api/v1/command/" + database,
+        url: "api/v1/command/" + encodeDatabaseName(database),
         data: JSON.stringify({ language: "sql", command: "DELETE FROM " + rid }),
         beforeSend: function (xhr) {
           xhr.setRequestHeader("Authorization", globalCredentials);
@@ -542,11 +542,11 @@ function showRecordInGraph() {
 }
 
 function openRecordEditorFromTable(rid) {
-  var database = escapeHtml(getCurrentDatabase());
+  var database = getCurrentDatabase();
 
   $.ajax({
     type: "POST",
-    url: "api/v1/command/" + database,
+    url: "api/v1/command/" + encodeDatabaseName(database),
     data: JSON.stringify({ language: "sql", command: "SELECT FROM " + rid, serializer: "record" }),
     beforeSend: function (xhr) {
       xhr.setRequestHeader("Authorization", globalCredentials);

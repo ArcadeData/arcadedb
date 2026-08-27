@@ -161,6 +161,20 @@ function escapeHtml(unsafe) {
 }
 
 /**
+ * Encodes a database name so it can be used as a path segment of the `api/v1/...` endpoints.
+ *
+ * A database name is free-form: it may contain `/`, `#`, `?`, `&`, a space or a quote, all of which change the meaning of a
+ * URL when concatenated raw. This is the only correct encoder for that position - `escapeHtml()` is an HTML-entity encoder
+ * and turns `a&b` into the different database name `a&amp;b`, which the server answers with a 404 (issue #6830).
+ *
+ * A missing name encodes to the empty string rather than to the literal "null", so the request fails as a malformed URL
+ * instead of quietly addressing a database called `null`.
+ */
+function encodeDatabaseName(database) {
+  return encodeURIComponent(database == null ? "" : database);
+}
+
+/**
  * Wraps a schema object name (bucket, index, type) in back-ticks so it can be embedded in a SQL command even when it carries
  * characters that are not valid in a bare identifier - e.g. the comma in the auto-derived compound-index name `Type[propA,propB]`.
  *

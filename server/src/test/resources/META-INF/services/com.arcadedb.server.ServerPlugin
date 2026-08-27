@@ -1,1 +1,2 @@
 com.arcadedb.server.http.ArrayPayloadTestPlugin
+com.arcadedb.server.plugin.DatabaseLifecycleTestPlugin

@@ -72,6 +72,7 @@ function extractFn(src, name) {
 
 eval(extractFn(utilsSrc, "quoteSqlName"));
 eval(extractFn(utilsSrc, "escapeHtml"));
+eval(extractFn(utilsSrc, "encodeDatabaseName"));
 eval(extractFn(dbSrc, "buildCreateIndexCommand"));
 eval(extractFn(dbSrc, "validateCreateIndexOptions"));
 

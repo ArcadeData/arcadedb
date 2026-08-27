@@ -910,12 +910,16 @@ public class ArcadeDBServer {
    * callbacks in either order. Plugins are therefore told to reconcile against the registry as it is now instead of
    * replaying the event, which is what {@code AutoBackupSchedulerPlugin} does. A plugin that throws is logged and
    * skipped: the mutation has already happened and cannot be undone by a failing listener.
+   * <p>
+   * Only the plugins that have been configured are notified. Discovery installs every plugin instance up front, but
+   * {@link #loadDatabases()} runs before {@code startPlugins(AFTER_DATABASES_OPEN)}, so a plugin of that priority was
+   * being handed a registration per pre-existing database before it had even been given this server (issue #6852).
    */
   private void notifyPlugins(final String databaseName, final boolean registered) {
     if (pluginManager == null)
       return;
 
-    for (final ServerPlugin plugin : pluginManager.getPlugins()) {
+    for (final ServerPlugin plugin : pluginManager.getInitializedPlugins()) {
       try {
         if (registered)
           plugin.onDatabaseRegistered(databaseName);

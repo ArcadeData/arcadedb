@@ -33,11 +33,16 @@ public class PluginDescriptor {
   private final ClassLoader  classLoader;
   private       ServerPlugin pluginInstance;
   private       boolean      started;
+  // WHETHER configure() HAS RETURNED, I.E. WHETHER THE PLUGIN HOLDS ITS SERVER REFERENCE YET. `started` CANNOT ANSWER
+  // THAT QUESTION: IT IS ONLY SET AFTER startService() RETURNS AND ONLY WHEN THE PLUGIN REPORTS ITSELF ACTIVE, SO A
+  // PLUGIN REGISTERING ITS OWN DATABASES FROM startService() WOULD BE HIDDEN FROM ITS OWN CALLBACKS (ISSUE #6852)
+  private       boolean      initialized;
 
   public PluginDescriptor(final String pluginName, final ClassLoader classLoader) {
     this.pluginName = Objects.requireNonNull(pluginName, "Plugin name cannot be null");
     this.classLoader = Objects.requireNonNull(classLoader, "Class loader cannot be null");
     this.started = false;
+    this.initialized = false;
   }
 
   public String getPluginName() {
@@ -64,10 +69,23 @@ public class PluginDescriptor {
     this.started = started;
   }
 
+  /**
+   * Returns true once {@link ServerPlugin#configure} has returned for this plugin, i.e. once it may be handed the
+   * server's lifecycle callbacks.
+   */
+  public boolean isInitialized() {
+    return initialized;
+  }
+
+  public void setInitialized(final boolean initialized) {
+    this.initialized = initialized;
+  }
+
   @Override
   public String toString() {
     return "PluginDescriptor{" +
         "pluginName='" + pluginName + '\'' +
+        ", initialized=" + initialized +
         ", started=" + started +
         '}';
   }
