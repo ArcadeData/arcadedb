@@ -203,7 +203,10 @@ class Issue6814AnalyzedPropertyTypeRefutationTest {
         assertThat(descriptions).containsExactlyInAnyOrder("42", LONG_TEXT, "99");
       }
     } finally {
-      databaseFactory.open().drop();
+      // Guarded: if the import throws before the database is on disk, an unconditional open() here would raise a
+      // second exception and mask the assertion failure that actually matters.
+      if (databaseFactory.exists())
+        databaseFactory.open().drop();
     }
   }
 }

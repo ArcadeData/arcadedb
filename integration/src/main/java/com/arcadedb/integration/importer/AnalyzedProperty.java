@@ -77,8 +77,7 @@ public class AnalyzedProperty {
     this.lastContent = lastContent;
 
     if (!lastContent.isEmpty()) {
-      // EVERY VALUE IS PROBED, NO MATTER ITS LENGTH OR HOW MANY CAME BEFORE IT. THE PROBES COST NOTHING ONCE THE
-      // CANDIDATE HAS ALREADY BEEN REFUTED, WHICH IS THE COMMON CASE FOR A TEXT COLUMN.
+      // A REFUTED CANDIDATE IS NEVER PROBED AGAIN, SO A TEXT COLUMN PAYS FOR ONE FAILED PARSE EACH AND NOTHING MORE
       if (candidateForInteger) {
         try {
           Long.parseLong(lastContent);
