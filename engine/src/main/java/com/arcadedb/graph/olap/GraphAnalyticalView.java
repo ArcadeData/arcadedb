@@ -112,6 +112,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   /** Semaphore bounding concurrent CPU-intensive build operations. */
   private static final Semaphore BUILD_PERMITS = new Semaphore(MAX_CONCURRENT_BUILDS);
 
+  /** The answer for a node with no edges of the type and direction asked for. */
+  private static final int[]            EMPTY_INT          = new int[0];
+  private static final NodeEdgeWeights  EMPTY_EDGE_WEIGHTS = new NodeEdgeWeights(EMPTY_INT, new double[0]);
+
   /** Shared executor for all GAV async builds and compactions. Uses virtual threads for lightweight scheduling. */
   private static volatile ExecutorService EXECUTOR;
 
@@ -2715,9 +2719,6 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     }
     return deletedMask;
   }
-
-  private static final int[] EMPTY_INT = new int[0];
-  private static final NodeEdgeWeights EMPTY_EDGE_WEIGHTS = new NodeEdgeWeights(EMPTY_INT, new double[0]);
 
   /**
    * Checks the view is built and returns a consistent snapshot for the caller to use.
