@@ -209,6 +209,87 @@ class Issue6834GraphQLVariablesTest extends AbstractGraphQLTest {
   }
 
   @Test
+  void valueThatTheDeclaredTypeCannotHoldIsRejected() {
+    executeTest(database -> {
+      final String types = """
+          type Query {
+            bookByPageCount(pageCount: Int): Book
+            bookByName(name: String): Book
+          }
+
+          type Book {
+            id: String
+            name: String
+            pageCount: Int
+          }""";
+      database.command("graphql", types);
+
+      assertThatThrownBy(
+          () -> database.query("graphql", "query($p: Int) { bookByPageCount(pageCount: $p) { id } }", "p", "422").close())
+          .isInstanceOf(CommandParsingException.class)
+          .hasMessageContaining("$p")
+          .hasMessageContaining("Int");
+
+      assertThatThrownBy(
+          () -> database.query("graphql", "query($n: String) { bookByName(name: $n) { id } }", "n", 42).close())
+          .isInstanceOf(CommandParsingException.class)
+          .hasMessageContaining("$n")
+          .hasMessageContaining("String");
+
+      // An integer input value is a valid Float by the specification, so this one must go through.
+      try (final ResultSet resultSet = database.query("graphql",
+          "query($p: Int) { bookByPageCount(pageCount: $p) { id } }", "p", 422)) {
+        assertThat(resultSet.hasNext()).isTrue();
+        assertThat(resultSet.next().<String>getProperty("id")).isEqualTo("book-2");
+      }
+
+      return null;
+    });
+  }
+
+  @Test
+  void defaultLiteralThatTheDeclaredTypeCannotHoldIsRejected() {
+    executeTest(database -> {
+      defineTypes(database);
+
+      assertThatThrownBy(
+          () -> database.query("graphql", "query($n: Int = \"Mr. brain\") { bookByName(name: $n) { id } }").close())
+          .isInstanceOf(CommandParsingException.class)
+          .hasMessageContaining("$n")
+          .hasMessageContaining("Int");
+
+      return null;
+    });
+  }
+
+  @Test
+  void customScalarTypeIsNotChecked() {
+    executeTest(database -> {
+      final String types = """
+          type Query {
+            books(where: WHERE): [Book!]!
+          }
+
+          type Book {
+            id: String
+            name: String
+          }""";
+      database.command("graphql", types);
+
+      // WHERE is not a type this module models: rejecting what it cannot describe would be worse than passing it
+      // through, so the free-form predicate argument keeps working through a variable.
+      try (final ResultSet resultSet = database.query("graphql",
+          "query($w: WHERE) { books(where: $w) { id } }", "w", "name = 'Mr. brain'")) {
+        assertThat(resultSet.hasNext()).isTrue();
+        assertThat(resultSet.next().<String>getProperty("id")).isEqualTo("book-2");
+        assertThat(resultSet.hasNext()).isFalse();
+      }
+
+      return null;
+    });
+  }
+
+  @Test
   void nullableVariableWithoutValueResolvesToNull() {
     executeTest(database -> {
       defineTypes(database);

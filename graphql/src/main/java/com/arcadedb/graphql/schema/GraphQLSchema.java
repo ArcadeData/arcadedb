@@ -39,6 +39,7 @@ import com.arcadedb.graphql.parser.ParseException;
 import com.arcadedb.graphql.parser.Selection;
 import com.arcadedb.graphql.parser.SelectionSet;
 import com.arcadedb.graphql.parser.TypeDefinition;
+import com.arcadedb.graphql.parser.TypeName;
 import com.arcadedb.graphql.parser.TypeSystemDefinition;
 import com.arcadedb.graphql.parser.ValueWithVariable;
 import com.arcadedb.graphql.parser.VariableDefinition;
@@ -265,6 +266,7 @@ public class GraphQLSchema {
         // A NON-NULL VARIABLE IS NOT SATISFIED BY A KEY THAT IS PRESENT WITH A NULL VALUE
         if (parameterValue == null && nonNull)
           throw new CommandParsingException("GraphQL variable '$" + name + "' is declared as non-null but null was passed");
+        checkDeclaredType(name, definition, parameterValue, "passed");
         variables.put(name, parameterValue);
         continue;
       }
@@ -274,7 +276,9 @@ public class GraphQLSchema {
         if (defaultValue == null)
           throw new CommandParsingException(
               "Default value of GraphQL variable '$" + name + "' is not a scalar: list and object default values are not supported");
-        variables.put(name, defaultValue.getValue());
+        final Object value = defaultValue.getValue();
+        checkDeclaredType(name, definition, value, "declared as its default");
+        variables.put(name, value);
         continue;
       }
 
@@ -285,6 +289,52 @@ public class GraphQLSchema {
     }
 
     return variables;
+  }
+
+  /**
+   * Rejects a variable value that the declared type cannot hold, so a mismatch is reported against the schema the
+   * caller wrote rather than left to the SQL comparator to coerce - which it does today for a numeric string, but
+   * not for every pairing, and a pairing it cannot coerce matches nothing without saying why.
+   * <p>
+   * Only the five built-in scalars are checked, with the coercion rules of the specification: {@code Int} takes
+   * integral values in 32-bit range, {@code Float} takes any number (an integer input value is a valid float),
+   * {@code ID} takes a string or an integral value. Every other declared type name - a custom scalar such as the
+   * {@code WHERE} used for the free-form predicate argument, an enum, an input object - is deliberately left
+   * unchecked: this module does not model them, and rejecting what it cannot describe would be worse than passing
+   * it through. A list type is skipped for the same reason.
+   */
+  private static void checkDeclaredType(final String name, final VariableDefinition definition, final Object value,
+      final String origin) {
+    if (value == null)
+      return;
+
+    final TypeName typeName = definition.getType() != null ? definition.getType().getTypeName() : null;
+    if (typeName == null)
+      return;
+
+    final String declared = typeName.getName();
+    final boolean valid = switch (declared) {
+      case "Int" -> isInteger(value);
+      case "Float" -> value instanceof Number;
+      case "Boolean" -> value instanceof Boolean;
+      case "String" -> value instanceof String;
+      case "ID" -> value instanceof String || isInteger(value);
+      default -> true;
+    };
+
+    if (!valid)
+      throw new CommandParsingException(
+          "GraphQL variable '$" + name + "' is declared as " + declared + " but a " + value.getClass().getSimpleName()
+              + " value was " + origin);
+  }
+
+  /**
+   * Whether the value is an integral number the 32-bit {@code Int} scalar can hold.
+   */
+  private static boolean isInteger(final Object value) {
+    if (value instanceof Integer || value instanceof Short || value instanceof Byte)
+      return true;
+    return value instanceof Long l && l == l.intValue();
   }
 
   /**
