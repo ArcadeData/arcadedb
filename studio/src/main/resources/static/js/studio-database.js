@@ -544,7 +544,9 @@ function createDatabase() {
     "<input class='form-control mt-2' id='inputCreateDatabaseName' onkeydown='if (event.which === 13) document.getElementById(\"globalModalConfirmBtn\").click()'>";
 
   globalPrompt("Create a new database", html, "Create", function() {
-    let database = encodeURI($("#inputCreateDatabaseName").val().trim());
+    // encodeURI() is the wrong encoder for a command payload, the same mistake as escapeHtml() into a URL: a name
+    // typed as `my db` used to CREATE the database under the name `my%20db` (issue #6830)
+    let database = $("#inputCreateDatabaseName").val().trim();
     if (database == "") {
       globalNotify("Error", "Database name empty", "danger");
       return;
@@ -554,7 +556,7 @@ function createDatabase() {
       .ajax({
         type: "POST",
         url: "api/v1/server",
-        data: "{ 'command': 'create database " + database + "' }",
+        data: JSON.stringify({ command: "create database " + database }),
         beforeSend: function (xhr) {
           xhr.setRequestHeader("Authorization", globalCredentials);
         },
@@ -796,7 +798,7 @@ function dropDatabase() {
             .ajax({
               type: "POST",
               url: "api/v1/server",
-              data: "{ 'command': 'drop database " + database + "' }",
+              data: JSON.stringify({ command: "drop database " + database }),
               beforeSend: function (xhr) {
                 xhr.setRequestHeader("Authorization", globalCredentials);
               },
@@ -829,7 +831,7 @@ function resetDatabase() {
         .ajax({
           type: "POST",
           url: "api/v1/server",
-          data: "{ 'command': 'drop database " + database + "' }",
+          data: JSON.stringify({ command: "drop database " + database }),
           beforeSend: function (xhr) {
             xhr.setRequestHeader("Authorization", globalCredentials);
           },
@@ -839,7 +841,7 @@ function resetDatabase() {
             .ajax({
               type: "POST",
               url: "api/v1/server",
-              data: "{ 'command': 'create database " + database + "' }",
+              data: JSON.stringify({ command: "create database " + database }),
               beforeSend: function (xhr) {
                 xhr.setRequestHeader("Authorization", globalCredentials);
               },

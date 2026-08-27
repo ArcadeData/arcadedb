@@ -321,6 +321,58 @@ class PluginManagerTest {
     assertThat(LeakyFailingPlugin.stopped.get()).isFalse();
   }
 
+  /**
+   * Issue #6852: the lifecycle callbacks go only to the plugins whose {@code configure()} has returned, so a plugin
+   * whose start FAILED must have that flag cleared again - otherwise the callbacks keep arriving at a plugin whose
+   * {@code stopService()} has already released its state. {@code startService()} rethrows both {@code Exception} and
+   * {@code Error}, and a plugin jar missing a class fails with the second one, so both paths have to clear it.
+   */
+  @Test
+  void aPluginThatFailsToStartStopsReceivingLifecycleCallbacks() {
+    LeakyFailingPlugin.stopped.set(false);
+    pluginManager.registerPlugin("leaky-failing-plugin", new LeakyFailingPlugin());
+
+    assertThatExceptionOfType(ServerException.class).isThrownBy(
+        () -> pluginManager.startPlugins(ServerPlugin.PluginInstallationPriority.BEFORE_HTTP_ON));
+
+    assertThat(pluginManager.getPluginDescriptor("leaky-failing-plugin").isInitialized()).isFalse();
+    assertThat(pluginManager.getInitializedPlugins()).isEmpty();
+  }
+
+  @Test
+  void aPluginThatFailsToStartWithAnErrorAlsoStopsReceivingLifecycleCallbacks() {
+    ErroringPlugin.stopped.set(false);
+    pluginManager.registerPlugin("erroring-plugin", new ErroringPlugin());
+
+    // THE Error REACHES THE CALLER UNWRAPPED: IT IS NOT THIS LAYER'S TO REINTERPRET
+    assertThatExceptionOfType(AssertionError.class).isThrownBy(
+        () -> pluginManager.startPlugins(ServerPlugin.PluginInstallationPriority.BEFORE_HTTP_ON))
+        .withMessageContaining("Plugin failed to start with an Error");
+
+    assertThat(ErroringPlugin.stopped.get()).as("issue #6762: the resources are released either way").isTrue();
+    assertThat(pluginManager.getPluginDescriptor("erroring-plugin").isInitialized()).isFalse();
+    assertThat(pluginManager.getInitializedPlugins()).isEmpty();
+  }
+
+  /**
+   * Issue #6852: a plugin that started normally IS in the lifecycle audience, and one that has been stopped is not.
+   */
+  @Test
+  void onlyTheConfiguredPluginsAreInTheLifecycleAudience() {
+    final TestPlugin1 plugin = new TestPlugin1();
+    pluginManager.registerPlugin("manual-plugin", plugin);
+
+    // DISCOVERED BUT NOT CONFIGURED YET: THIS IS THE WINDOW IN WHICH loadDatabases() RUNS
+    assertThat(pluginManager.getPlugins()).contains(plugin);
+    assertThat(pluginManager.getInitializedPlugins()).isEmpty();
+
+    pluginManager.startPlugins(ServerPlugin.PluginInstallationPriority.BEFORE_HTTP_ON);
+    assertThat(pluginManager.getInitializedPlugins()).containsExactly(plugin);
+
+    pluginManager.stopPlugins();
+    assertThat(pluginManager.getInitializedPlugins()).isEmpty();
+  }
+
   @Test
   void classLoaderIsolation() throws Exception {
     final Path pluginsDir = tempDir.resolve("lib/plugins");
@@ -445,6 +497,23 @@ class PluginManagerTest {
     @Override
     public void startService() {
       throw new RuntimeException("Plugin failed to start after acquiring its resources");
+    }
+
+    @Override
+    public void stopService() {
+      stopped.set(true);
+    }
+  }
+
+  /**
+   * Fails the way a plugin jar with a missing class does: with an {@link Error}, not an {@link Exception}.
+   */
+  public static class ErroringPlugin implements ServerPlugin {
+    public static final AtomicBoolean stopped = new AtomicBoolean(false);
+
+    @Override
+    public void startService() {
+      throw new AssertionError("Plugin failed to start with an Error");
     }
 
     @Override

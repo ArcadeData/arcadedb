@@ -35,8 +35,12 @@ public class PluginDescriptor {
   private       boolean      started;
   // WHETHER configure() HAS RETURNED, I.E. WHETHER THE PLUGIN HOLDS ITS SERVER REFERENCE YET. `started` CANNOT ANSWER
   // THAT QUESTION: IT IS ONLY SET AFTER startService() RETURNS AND ONLY WHEN THE PLUGIN REPORTS ITSELF ACTIVE, SO A
-  // PLUGIN REGISTERING ITS OWN DATABASES FROM startService() WOULD BE HIDDEN FROM ITS OWN CALLBACKS (ISSUE #6852)
-  private       boolean      initialized;
+  // PLUGIN REGISTERING ITS OWN DATABASES FROM startService() WOULD BE HIDDEN FROM ITS OWN CALLBACKS (ISSUE #6852).
+  // VOLATILE, UNLIKE `started`: THIS ONE IS WRITTEN BY THE STARTING THREAD AND READ BY WHICHEVER THREAD REGISTERS A
+  // DATABASE, WHICH IS ANY HTTP OR HA THREAD. startPlugins() DELIBERATELY DOES NOT HOLD THE `plugins` MONITOR ACROSS
+  // THE PLUGIN LIFECYCLE CALLS (THEY CAN BLOCK), SO THE MONITOR getInitializedPlugins() TAKES ORDERS NOTHING AGAINST
+  // THIS WRITE, AND A READER SEEING A STALE false WOULD SILENTLY DROP THE CALLBACK ISSUE #6752 EXISTS TO DELIVER
+  private volatile boolean   initialized;
 
   public PluginDescriptor(final String pluginName, final ClassLoader classLoader) {
     this.pluginName = Objects.requireNonNull(pluginName, "Plugin name cannot be null");
