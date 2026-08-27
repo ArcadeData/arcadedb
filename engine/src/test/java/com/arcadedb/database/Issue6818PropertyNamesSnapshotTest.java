@@ -95,6 +95,31 @@ class Issue6818PropertyNamesSnapshotTest extends TestHelper {
     });
   }
 
+  /**
+   * The most common path of the three: a plain {@code select} result is an {@link ImmutableDocument} until
+   * {@code modify()} or {@code detach()} is called. It was already a snapshot - the names are decoded out of the
+   * serialized buffer - but the serializer hands back a plain {@code LinkedHashSet}, so without the wrapper a
+   * {@code remove()} silently succeeded against a copy the caller could believe was the record.
+   */
+  @Test
+  void immutableDocumentPropertyNamesCannotBeMutatedEither() {
+    database.getSchema().createDocumentType("Doc6818f");
+
+    database.transaction(() -> database.newDocument("Doc6818f").set("a", 1).set("b", 2).save());
+
+    database.transaction(() -> {
+      final Document immutable = database.query("sql", "select from Doc6818f").next().getElement().get();
+      assertThat(immutable).isInstanceOf(ImmutableDocument.class);
+
+      final Set<String> names = immutable.getPropertyNames();
+      assertThat(names).containsExactly("a", "b");
+      assertThatThrownBy(names::clear).isInstanceOf(UnsupportedOperationException.class);
+      assertThatThrownBy(() -> names.remove("a")).isInstanceOf(UnsupportedOperationException.class);
+
+      assertThat(immutable.getPropertyNames()).containsExactly("a", "b");
+    });
+  }
+
   @Test
   void detachedDocumentPropertyNamesCannotBeMutatedEither() {
     database.getSchema().createDocumentType("Doc6818e");
