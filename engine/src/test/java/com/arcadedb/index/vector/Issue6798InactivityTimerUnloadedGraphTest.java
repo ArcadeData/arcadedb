@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.StallAwareStopwatch;
 
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
@@ -104,6 +105,11 @@ class Issue6798InactivityTimerUnloadedGraphTest {
    * pending mutation against a threshold of {@value #THRESHOLD}, which is precisely what issue #6496 established
    * must not happen on a large index. Nothing about that changes because the graph happens to be on disk rather
    * than in this session's heap.
+   * <p>
+   * The idle window is measured with {@link StallAwareStopwatch} rather than slept through, and is followed by a
+   * positive control: the same timer on the same index must still rebuild once the pending mutations reach the
+   * floor. A negative assertion after a wait is otherwise vacuous - it would hold just as well on a build where
+   * the timer never ran at all.
    */
   @Test
   void oneInsertIntoALargeUnloadedIndexMustNotRebuildAnything() throws Exception {
@@ -136,8 +142,14 @@ class Issue6798InactivityTimerUnloadedGraphTest {
                 + "exercising the already-fixed resident-graph path instead")
             .isZero();
 
-        // Idle, comfortably past the inactivity timeout.
-        Thread.sleep(TIMEOUT_MS * 6L);
+        // Idle, comfortably past the inactivity timeout. Measured with StallAwareStopwatch rather than slept
+        // through: a plain sleep returns on wall clock, and a stop-the-world pause covering most of it would
+        // leave the timer no CPU to fire on - the assertions below would then hold because nothing ran at all,
+        // not because the gate declined. effectiveMs() discounts the JVM-wide stall, so the window really did
+        // contain that much running time.
+        final StallAwareStopwatch idle = StallAwareStopwatch.start();
+        while (idle.effectiveMs() < TIMEOUT_MS * 6L)
+          Thread.sleep(50);
 
         assertThat(index.getStats().get("graphRebuildCount"))
             .as("a single pending mutation must not rebuild a large index just because this session has not "
@@ -149,6 +161,21 @@ class Issue6798InactivityTimerUnloadedGraphTest {
         assertThat(index.getStats().get("asyncRebuildInProgress"))
             .as("no rebuild of either kind - the async arm must not have been taken either")
             .isZero();
+
+        // The positive control, and the real answer to "did anything actually run in that window": top the
+        // pending mutations up to the floor and the very same timer, on the very same index, must now rebuild.
+        // Without this the three assertions above would still hold on a build where the inactivity timer were
+        // broken outright, which is not what this test is about.
+        insert(db, LARGE_COUNT + 1, LARGE_COUNT + FLOOR);
+        Awaitility.await("the same timer still fires once the pending mutations reach the floor")
+            .atMost(REBUILD_SETTLE_TIMEOUT)
+            .pollInterval(Duration.ofMillis(100))
+            .untilAsserted(() -> assertThat(index.getStats().get("graphRebuildCount")).isPositive());
+
+        Awaitility.await("the rebuild settles before the drop")
+            .atMost(REBUILD_SETTLE_TIMEOUT)
+            .pollInterval(Duration.ofMillis(100))
+            .untilAsserted(() -> assertThat(index.getStats().get("asyncRebuildInProgress")).isZero());
       } finally {
         db.drop();
       }
