@@ -50,10 +50,22 @@ class TxDelta {
   // marks the columns out of date outright rather than being resolved against the overlay's own additions.
   boolean                          forceEdgePropertyRebuild = false;
 
+  /**
+   * True when this transaction changed a covered edge's properties, however the change is spelled: the
+   * individual edges while there were few enough of them to track, or the bare flag {@link DeltaCollector}
+   * falls back to past its cap. Asked through one method rather than open-coded, because a caller that
+   * remembers only the first spelling silently skips exactly the deltas that need the rebuild most - a bulk
+   * rewrite - and the view is then left unable to serve edge properties until some later commit happens to
+   * re-trigger it.
+   */
+  boolean hasEdgePropertyChanges() {
+    return !updatedEdges.isEmpty() || forceEdgePropertyRebuild;
+  }
+
   boolean isEmpty() {
     return addedVertices.isEmpty() && deletedVertices.isEmpty()
         && addedEdges.isEmpty() && deletedEdges.isEmpty()
-        && updatedProperties.isEmpty() && updatedEdges.isEmpty() && !forceEdgePropertyRebuild;
+        && updatedProperties.isEmpty() && !hasEdgePropertyChanges();
   }
 
   void clear() {

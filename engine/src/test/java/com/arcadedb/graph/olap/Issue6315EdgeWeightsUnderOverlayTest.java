@@ -453,6 +453,50 @@ class Issue6315EdgeWeightsUnderOverlayTest {
     }
   }
 
+  /**
+   * Past a cap, one transaction's edge property changes stop being tracked individually and the delta says only
+   * that the columns are out of date - a bulk rewrite would otherwise hold one entry per edge where the old
+   * boolean flag held nothing. The view must come back on its own afterwards: the flag has to reach the same
+   * rebuild an individually-tracked update reaches, including the follow-up one scheduled for a delta buffered
+   * during a rebuild already in flight, or a bulk rewrite that is the last write to the graph leaves the view
+   * serving no edge properties for good.
+   */
+  @Test
+  void aBulkEdgePropertyRewriteStopsTrackingIndividuallyAndStillRepairsItself() {
+    final int edgeCount = 1100; // over DeltaCollector's 1024 cap, so the individual tracking is given up on
+    database.transaction(() -> {
+      final MutableVertex a = database.newVertex("N").set("name", "A").save();
+      for (int i = 0; i < edgeCount; i++) {
+        final MutableVertex target = database.newVertex("N").set("name", "T" + i).save();
+        a.newEdge("ROAD", target, true, new Object[] { "w", 1.0 }).save();
+      }
+    });
+
+    final GraphAnalyticalView view = syncView("overlay-bulk-edge-property-rewrite");
+    try {
+      final int a = view.getNodeId(vertex("A").getIdentity());
+      assertThat(weightsByName(view, a)).hasSize(edgeCount);
+
+      database.transaction(() -> {
+        for (final Edge edge : vertex("A").getEdges(Vertex.DIRECTION.OUT, "ROAD"))
+          edge.modify().set("w", 2.0).save();
+      });
+
+      // Nothing is served from the columns while they hold the old weights, whether or not the rebuild that
+      // repairs them has landed yet.
+      if (!view.hasEdgeProperty("ROAD", "w"))
+        assertThat(view.edgeWeightsForSlice(a, Vertex.DIRECTION.OUT, "ROAD", "w", -1.0, null)).isNull();
+
+      // And it lands without any further commit to prompt it.
+      waitUntilServed(view);
+      assertThat(weightsByName(view, view.getNodeId(vertex("A").getIdentity())).values())
+          .as("every edge weighs what the bulk rewrite set it to")
+          .containsOnly(2.0);
+    } finally {
+      view.drop();
+    }
+  }
+
   // ── Helpers ──────────────────────────────────────────────────────────────
 
   /** The {@code algo.dijkstra.singleSource} cost from A to B over the {@code w} property. */

@@ -1463,7 +1463,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
     // The base slice this node's edges of this type occupy, as offsets into the CSR's own neighbour array.
     int[] baseNeighbors = null;
-    int baseStart = 0, baseEnd = 0;
+    int baseStart = 0;
+    int baseEnd = 0;
     if (csr != null && nodeId < snap.nodeMapping.size()) {
       baseStart = outgoing ? csr.outOffset(nodeId) : csr.inOffset(nodeId);
       baseEnd = outgoing ? csr.outOffsetEnd(nodeId) : csr.inOffsetEnd(nodeId);
@@ -2306,7 +2307,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
                       // Edge property updates have no overlay representation, so a delta buffered
                       // during this rebuild may not be reflected in the fresh CSR (if it committed
                       // after the relevant bucket was scanned). Flag a follow-up rebuild (#4513).
-                      if (!d.updatedEdges.isEmpty())
+                      if (d.hasEdgePropertyChanges())
                         edgePropRebuildNeeded = true;
                     }
                     if (overlay.hasChanges())
