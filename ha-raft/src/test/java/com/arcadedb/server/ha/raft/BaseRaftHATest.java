@@ -567,7 +567,7 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
   static final String SLOW_WAIT_MARKER = "TEST SLOW WAIT:";
 
   /**
-   * Builds the line {@link #reportSlowWait} logs, or returns {@code null} when the wait was not slow enough to
+   * Builds the line {@link #logSlowWait} emits, or returns {@code null} when the wait was not slow enough to
    * be worth one. Split out from the logging so the threshold decision and the wording of the report can be
    * asserted by a plain unit test without standing a three-node cluster up to provoke a slow wait - which is
    * what a test would otherwise have to do, and could not do reliably.
