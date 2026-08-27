@@ -192,6 +192,9 @@
                    3. a failing heavy IT still fails the build AND names this execution - add a throwaway tagged
                       IT that asserts false; the error must read "verify (heavy-its-in-their-own-fork)".
                    4. HeavyForkWiringIT and HeavyItForkIsolationTest are both green.
+                   5. no command-line tag filter can narrow either execution - re-run step 1 with
+                      -Dgroups=bogus-tag -DexcludedGroups=bogus-tag -Dfailsafe.excludedGroups=ha-heavy and
+                      expect the same two classes in the same two forks.
 
                  Steps 1-3 are how the split was verified in the first place; step 4 is what now watches it. -->
             <plugin>
@@ -211,6 +214,15 @@
                              execution exists to run, which fails by running nothing and reporting success. -->
                         <id>default</id>
                         <configuration>
+                            <!-- "any tag, or no tag" - every class there is. A tautology written out on purpose,
+                                 because a parameter left unset is NOT the same as one set to everything: unset,
+                                 it resolves through the mojo's ${groups} default and a stray -Dgroups=... on the
+                                 command line selects this execution down to whatever that names. Measured on
+                                 3.5.6 with -Dgroups=bogus-tag: without this line the execution ran 0 tests and
+                                 the build passed, so the ~118 ITs it owns had simply vanished; with it, the same
+                                 command runs them all. Explicit configuration wins over a user property, so the
+                                 only way to write "everything" such that nothing can narrow it is to say so. -->
+                            <groups>any() | none()</groups>
                             <excludedGroups>ha-heavy</excludedGroups>
                             <systemPropertyVariables>
                                 <arcadedb.it.fork>default</arcadedb.it.fork>
@@ -233,6 +245,15 @@
                         </goals>
                         <configuration>
                             <groups>ha-heavy</groups>
+                            <!-- "tagged and untagged at once" - a contradiction, so it excludes nothing, and the
+                                 same reasoning as above in the other direction. Left unset, this resolves through
+                                 the parent's ${failsafe.excludedGroups}, and -Dfailsafe.excludedGroups=ha-heavy
+                                 would then exclude precisely the five classes this execution exists to run. That
+                                 is the worst failure this split has: they are excluded from the default execution
+                                 too, so they would not run AT ALL, and failIfNoTests cannot see it (below).
+                                 Verified with all three hostile properties at once - -Dgroups, -DexcludedGroups
+                                 and -Dfailsafe.excludedGroups - the partition is unchanged. -->
+                            <excludedGroups>any() &amp; none()</excludedGroups>
                             <!-- An execution that matches nothing must not pass. Measured rather than assumed,
                                  because this parameter sees less than its name suggests: surefire evaluates it
                                  against the CLASS SCAN, before the provider applies the tag filter. Confirmed
