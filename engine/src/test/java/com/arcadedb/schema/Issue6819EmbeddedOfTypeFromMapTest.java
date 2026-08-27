@@ -19,8 +19,10 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
 import java.util.LinkedHashMap;
@@ -112,11 +114,28 @@ class Issue6819EmbeddedOfTypeFromMapTest extends TestHelper {
       map.put("@type", "Address6819e");
       map.put("city", "Rome");
 
-      final MutableDocument person = database.newDocument("Person6819e").set("address", map);
-      person.save();
+      database.newDocument("Person6819e").set("address", map).save();
+    });
 
-      assertThat(person.getEmbedded("address").getTypeName()).isEqualTo("Address6819e");
-      assertThat(person.getEmbedded("address").getString("city")).isEqualTo("Rome");
+    // Round-trip through the boundary the behaviour exists for: reload, write the record back out with toJSON()
+    // (which re-emits the "@type"), and feed that JSON to a fresh document. A regression that dropped the "@type"
+    // on the way out, or ignored it on the way back in, would leave a plain map here.
+    final Document reloaded = database.query("sql", "select from Person6819e").next().getElement().get();
+    assertThat(reloaded.getEmbedded("address").getTypeName()).isEqualTo("Address6819e");
+    assertThat(reloaded.getEmbedded("address").getString("city")).isEqualTo("Rome");
+
+    final JSONObject json = reloaded.toJSON(false);
+    assertThat(json.getJSONObject("address").getString("@type")).isEqualTo("Address6819e");
+
+    database.transaction(() -> {
+      final MutableDocument rebuilt = database.newDocument("Person6819e");
+      rebuilt.fromJSON(json);
+      rebuilt.save();
+
+      final EmbeddedDocument address = rebuilt.getEmbedded("address");
+      assertThat(address).as("the \"@type\" survived the JSON round-trip").isNotNull();
+      assertThat(address.getTypeName()).isEqualTo("Address6819e");
+      assertThat(address.getString("city")).isEqualTo("Rome");
     });
   }
 
