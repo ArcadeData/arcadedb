@@ -210,7 +210,9 @@ public class PageManager extends LockContext {
    * the write path. Nothing is allocated and nothing is looked up.
    * <p>
    * Static because a test installs it before it has a {@link PageManager} reference to hand, and JVM-wide because
-   * this class is. Tests MUST clear it in a {@code finally}.
+   * this class is. Tests MUST clear it in a {@code finally}. That also makes it the one piece of state here that
+   * would not survive PARALLEL test execution: the engine module runs its tests sequentially today, and a move to
+   * parallel execution needs this scoped per-test (or those tests kept off the parallel lane) before it happens.
    */
   @ExcludeFromJacocoGeneratedReport
   @FunctionalInterface
