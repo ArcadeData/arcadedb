@@ -454,15 +454,18 @@ public class ArcadeGraph implements Graph, Closeable {
     releaseTraversal();
 
     if (this.database != null) {
-      // END AN IN-FLIGHT UNIT OF WORK THROUGH THE TRANSACTION'S CONFIGURED CLOSE BEHAVIOUR, WHOSE DEFAULT IS
-      // ROLLBACK: CLOSING A GRAPH IS NOT A COMMIT, SO WORK THAT NEVER REACHED commit() MUST NOT BECOME DURABLE
-      // (ISSUE #6820). tx().close() ALSO CLEARS THE THREAD-LOCAL STATE OF AbstractThreadLocalTransaction.
-      if (this.database.isTransactionActive())
-        this.transaction.close();
-
-      // WHEN THE DATABASE LIFECYCLE IS MANAGED EXTERNALLY (e.g. BY ArcadeDBServer) DO NOT CLOSE IT.
-      if (!sharedDatabase)
-        this.database.close();
+      try {
+        // END AN IN-FLIGHT UNIT OF WORK THROUGH THE TRANSACTION'S CONFIGURED CLOSE BEHAVIOUR, WHOSE DEFAULT IS
+        // ROLLBACK: CLOSING A GRAPH IS NOT A COMMIT, SO WORK THAT NEVER REACHED commit() MUST NOT BECOME DURABLE
+        // (ISSUE #6820). tx().close() ALSO CLEARS THE THREAD-LOCAL STATE OF AbstractThreadLocalTransaction.
+        if (this.database.isTransactionActive())
+          this.transaction.close();
+      } finally {
+        // THE CALLER STILL HEARS ABOUT A FAILED COMMIT-ON-CLOSE, BUT IT MUST NOT COST THEM THE DATABASE HANDLE.
+        // WHEN THE DATABASE LIFECYCLE IS MANAGED EXTERNALLY (e.g. BY ArcadeDBServer) DO NOT CLOSE IT.
+        if (!sharedDatabase)
+          this.database.close();
+      }
     }
   }
 

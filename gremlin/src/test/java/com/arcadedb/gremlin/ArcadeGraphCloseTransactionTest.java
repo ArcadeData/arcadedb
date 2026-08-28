@@ -110,6 +110,22 @@ class ArcadeGraphCloseTransactionTest {
     assertThat(countPersons()).isEqualTo(1L);
   }
 
+  @Test
+  void aFailingCloseBehaviourStillReleasesTheDatabase() {
+    final ArcadeGraph graph = ArcadeGraph.open(DB_PATH);
+    graph.tx().onClose(tx -> {
+      throw new IllegalStateException("boom");
+    });
+    graph.tx().begin();
+    graph.addVertex(T.label, "Person", "name", "half-written");
+
+    assertThatThrownBy(graph::close).isInstanceOf(IllegalStateException.class).hasMessage("boom");
+
+    assertThat(graph.getDatabase().isOpen())
+        .as("a close behaviour that blows up must not cost the caller the database handle")
+        .isFalse();
+  }
+
   private long countPersons() {
     try (final ArcadeGraph graph = ArcadeGraph.open(DB_PATH)) {
       return graph.traversal().V().hasLabel("Person").count().next();
