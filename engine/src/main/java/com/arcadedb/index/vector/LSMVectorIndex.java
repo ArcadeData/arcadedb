@@ -8487,6 +8487,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * untouched; a query-heavy workload trades rebuild CPU it has to spare for the latency it is actually losing.
    * The absolute {@code mutationsBeforeRebuild} floor is applied on top, so this can never rebuild more eagerly
    * than that setting already permits.
+   * <p>
+   * <b>One workload it cannot see.</b> The issue #6502 and #6514 pre-filter plans answer a narrow allow-list by
+   * scanning it directly and return without walking the graph at all, so they produce no {@code visitedCount} to
+   * feed {@link #recordGraphWalkCost(int)}. An index queried <em>only</em> that way therefore keeps a
+   * {@link Integer#MAX_VALUE} budget and this policy stays inert for it, however long its delta buffer gets. That
+   * is deliberate rather than an oversight: the budget's whole claim is that the scan is measured against a walk
+   * this index actually performs, and there is no walk on that path to measure it against. Inventing a
+   * denominator from {@code efSearch} and the corpus size is exactly the assumed-not-measured estimate this
+   * design rejects. Such a workload still has the count thresholds, and its pre-filter scan is bounded by the
+   * allow-list rather than by the corpus.
    *
    * @return buffered-vector count at which the scan is judged to have outgrown the walk
    */
@@ -8519,9 +8529,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * machine idle, to decline.
    */
   private boolean deltaScanOverBudget() {
-    final float ratio = maxDeltaScanRatio();
+    // Buffer size first, before the setting is read: this runs on the search path of every query whose pending
+    // mutations have not reached the count threshold, and an empty buffer - the state an index spends most of its
+    // life in - can be answered with one field read and no configuration lookup at all.
     final int buffered = deltaVectors.size();
-    if (buffered <= 0 || buffered < deltaScanBudget(ratio))
+    if (buffered <= 0)
+      return false;
+
+    final float ratio = maxDeltaScanRatio();
+    if (buffered < deltaScanBudget(ratio))
       return false;
 
     final ImmutableGraphIndex graph = this.graphIndex;
