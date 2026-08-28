@@ -174,29 +174,42 @@ class Issue6655StaleGraphPrefixReuseTest {
         final int gapDocId = NUM_VECTORS; // first record written after the persisted build
         final RID gapDocRid = ridOf(db, gapDocId);
 
-        final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
-        final List<Pair<RID, Float>> results = index.findNeighborsFromVector(embedding(gapDocId), 5, 64);
-        // Measured on this fixture: a prefix reuse returns in well under a second; a full synchronous rebuild of
-        // 20,200 vectors at these build parameters takes several real seconds (see Issue6067DeferredCloseRebuildTest
-        // for the same measurement on an equivalent fixture). The bound is a tripwire between the two, wide on
-        // both sides.
-        stopwatch.assertGaveUpWithin(2_000,
-            "a search that reuses a stale prefix graph from one that ran a full synchronous rebuild to completion");
+        // The async rebuild the reuse dispatches resets the very gauges asserted below - deltaVectorsCount,
+        // mutationsSinceRebuild, graphState, graphRebuildCount - so the permits are saturated for the whole
+        // observation window. Without that, whether these assertions see the state the reuse LEFT or the state the
+        // rebuild ALREADY CONSUMED is decided by how quickly this JVM hands out the sole vector-rebuild permit; the
+        // block used to pass only because a preceding test's rebuild happened to be starving it. Both acquire sites
+        // are tryAcquire on background threads and no search path takes a permit, so this cannot stall the queries.
+        LSMVectorIndex.acquireAllRebuildPermitsForTest();
+        try {
+          final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
+          final List<Pair<RID, Float>> results = index.findNeighborsFromVector(embedding(gapDocId), 5, 64);
+          // Measured on this fixture: a prefix reuse returns in well under a second; a full synchronous rebuild of
+          // 20,200 vectors at these build parameters takes several real seconds (see Issue6067DeferredCloseRebuildTest
+          // for the same measurement on an equivalent fixture). The bound is a tripwire between the two, wide on
+          // both sides.
+          stopwatch.assertGaveUpWithin(2_000,
+              "a search that reuses a stale prefix graph from one that ran a full synchronous rebuild to completion");
 
-        assertThat(results.stream().map(Pair::getFirst))
-            .as("the gap record must be found by its own embedding on the very first query, proving the queued "
-                + "delta entries - not only the reused graph - are already searchable")
-            .contains(gapDocRid);
+          assertThat(results.stream().map(Pair::getFirst))
+              .as("the gap record must be found by its own embedding on the very first query, proving the queued "
+                  + "delta entries - not only the reused graph - are already searchable")
+              .contains(gapDocRid);
 
-        assertThat(index.getStats().get("graphState"))
-            .as("the reuse must leave the index MUTABLE (graph + queued delta), not a synchronously-rebuilt "
-                + "IMMUTABLE graph")
-            .isEqualTo(2L); // GraphState.MUTABLE
-        assertThat(index.getStats().get("stalePrefixGraphReuses"))
-            .as("the reuse path introduced by this fix must be the one that actually ran").isEqualTo(1L);
-        assertThat(index.getStats().get("graphRebuildCount"))
-            .as("no synchronous rebuild may have run on the calling thread for this search to have returned "
-                + "already").isZero();
+          assertThat(index.getStats().get("graphState"))
+              .as("the reuse must leave the index MUTABLE (graph + queued delta), not a synchronously-rebuilt "
+                  + "IMMUTABLE graph")
+              .isEqualTo(2L); // GraphState.MUTABLE
+          assertThat(index.getStats().get("stalePrefixGraphReuses"))
+              .as("the reuse path introduced by this fix must be the one that actually ran").isEqualTo(1L);
+          assertThat(index.getStats().get("graphRebuildCount"))
+              .as("no synchronous rebuild may have run on the calling thread for this search to have returned "
+                  + "already").isZero();
+        } finally {
+          // Released before the convergence wait below: that wait is precisely for the rebuild these permits park.
+          LSMVectorIndex.releaseAllRebuildPermitsForTest();
+        }
+
 
         // The async rebuild kicked off by the reuse eventually folds the gap into the graph proper.
         Awaitility.await("the async rebuild kicked off by the stale-prefix reuse completes")
