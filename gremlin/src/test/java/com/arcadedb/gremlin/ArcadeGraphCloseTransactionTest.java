@@ -205,6 +205,29 @@ class ArcadeGraphCloseTransactionTest {
     }
   }
 
+  @Test
+  void aSharedGraphRollsBackOnCloseWhateverCloseBehaviourWasConfigured() {
+    // ArcadeGraphManager KEEPS ONE openShared() GRAPH PER DATABASE FOR EVERY GREMLIN SERVER SESSION, WITH NO BORROW
+    // BOUNDARY TO RESET ITS TRANSACTION. CLOSING IT IS A SERVER TEARDOWN, NOT THE END OF A UNIT OF WORK, AND LETTING
+    // A COMMIT RUN THERE IS WHAT LEFT THE WAL INCONSISTENT AT SHUTDOWN (SEE ArcadeGraphSharedDatabaseIT).
+    final Database database = new DatabaseFactory(DB_PATH).open();
+    try {
+      final ArcadeGraph shared = ArcadeGraph.openShared(database);
+      shared.tx().onClose(Transaction.CLOSE_BEHAVIOR.COMMIT);
+      shared.tx().begin();
+      shared.addVertex(T.label, "Person", "name", "must-not-survive");
+      shared.close();
+
+      assertThat(database.isTransactionActive()).as("the teardown must have ended the transaction").isFalse();
+      assertThat(database.countType("Person", false))
+          .as("a server-managed graph must roll back on close even when a session armed commit-on-close")
+          .isEqualTo(0L);
+    } finally {
+      if (database.isOpen())
+        database.close();
+    }
+  }
+
   private long countPersons() {
     try (final ArcadeGraph graph = ArcadeGraph.open(DB_PATH)) {
       return graph.traversal().V().hasLabel("Person").count().next();

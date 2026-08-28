@@ -36,7 +36,7 @@ import java.util.NoSuchElementException;
  */
 public class ArcadeVertexProperty<T> implements VertexProperty<T> {
 
-  private static final String ID_SEPARATOR = "-";
+  private static final char ID_SEPARATOR = '-';
 
   protected final String       key;
   protected final T            value;
@@ -105,7 +105,18 @@ public class ArcadeVertexProperty<T> implements VertexProperty<T> {
     if (result == null) {
       final Object vertexId = this.vertex.id();
       // AN UNSAVED VERTEX HAS NO RID YET: FALL BACK TO ITS TRANSIENT ID SO id() NEITHER THROWS NOR COLLIDES.
-      result = (vertexId != null ? vertexId : this.vertex.transientId()) + ID_SEPARATOR + this.key;
+      final String prefix = vertexId != null ? vertexId.toString() : this.vertex.transientId();
+
+      if (prefix.indexOf(ID_SEPARATOR) < 0)
+        result = prefix + ID_SEPARATOR + this.key;
+      else
+        // A VERTEX RID (#bucket:offset, BOTH NON-NEGATIVE) AND A TRANSIENT ID (?counter) CANNOT CONTAIN THE
+        // SEPARATOR, SO THE BRANCH ABOVE IS WHAT EVERY REAL VERTEX TAKES. RID CAN STILL RENDER NEGATIVE COMPONENTS
+        // FOR THE SENTINELS THE INDEX AND EDGE-SEGMENT INTERNALS USE, AND THOSE WOULD MAKE THE SPLIT AMBIGUOUS:
+        // LENGTH-PREFIX THEM INSTEAD OF TRUSTING THEY CAN NEVER REACH A VERTEX. THE TWO FORMS CANNOT COLLIDE WITH
+        // EACH OTHER EITHER, SINCE ONE STARTS WITH A DIGIT AND THE OTHER WITH '#' OR '?'.
+        result = prefix.length() + ID_SEPARATOR + prefix + this.key;
+
       if (vertexId != null)
         // ONLY A RID IS FINAL: AN UNSAVED VERTEX WILL GET ONE LATER AND THE ID HAS TO FOLLOW IT.
         id = result;
