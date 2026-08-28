@@ -109,9 +109,11 @@ class Issue6833NestedSchemaDirectivesTest extends AbstractGraphQLTest {
     executeTest(database -> {
       defineTypes(database);
 
-      // `authors` has no sub-selection: it is expanded from the Author type declared in the schema. The expansion
-      // stops at Author.wrote because Book is already being expanded, otherwise the cyclic schema would recurse
-      // until the stack overflows.
+      // `authors` has no sub-selection, so it is expanded from the Author type declared in the schema. The guard
+      // tracks only the types the automatic expansion is walking, and an explicit selection set does not push onto
+      // it - so the path is [Author] here, Book is not on it yet, and Author.wrote IS expanded. The cut comes one
+      // level deeper: expanding those Books finds Author already on the path and drops their `authors`. Without
+      // that, the cycle Book -> Author -> Book would recurse until the stack overflows.
       try (final ResultSet resultSet = database.query("graphql",
           "{ bookByName(name: \"Mr. brain\") { name authors } }")) {
         assertThat(resultSet.hasNext()).isTrue();
@@ -119,8 +121,15 @@ class Issue6833NestedSchemaDirectivesTest extends AbstractGraphQLTest {
 
         final List<Result> authors = book.getProperty("authors");
         assertThat(authors).hasSize(1);
-        assertThat(authors.getFirst().<String>getProperty("firstName")).isEqualTo("Joanne");
-        assertThat(authors.getFirst().<String>getProperty("lastName")).isEqualTo("Rowling");
+
+        final Result author = authors.getFirst();
+        assertThat(author.<String>getProperty("firstName")).isEqualTo("Joanne");
+        assertThat(author.<String>getProperty("lastName")).isEqualTo("Rowling");
+
+        final List<Result> wrote = author.getProperty("wrote");
+        assertThat(wrote).hasSize(2);
+        for (final Result written : wrote)
+          assertThat(written.getPropertyNames()).doesNotContain("authors");
 
         assertThat(resultSet.hasNext()).isFalse();
       }

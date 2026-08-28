@@ -52,6 +52,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 
+import java.math.BigInteger;
 import java.util.*;
 
 public class GraphQLSchema {
@@ -309,7 +310,8 @@ public class GraphQLSchema {
    * <p>
    * Only the five built-in scalars are checked, with the coercion rules of the specification: {@code Int} takes
    * integral values in 32-bit range, {@code Float} takes any number (an integer input value is a valid float),
-   * {@code ID} takes a string or an integral value. Every other declared type name - a custom scalar such as the
+   * {@code ID} takes a string or an integral value of any width - it is serialised as a string and carries no range
+   * of its own, which is exactly why a schema uses it for a key too large for {@code Int}. Every other declared type name - a custom scalar such as the
    * {@code WHERE} used for the free-form predicate argument, an enum, an input object - is deliberately left
    * unchecked: this module does not model them, and rejecting what it cannot describe would be worse than passing
    * it through. A list type is skipped for the same reason.
@@ -329,7 +331,7 @@ public class GraphQLSchema {
       case "Float" -> value instanceof Number;
       case "Boolean" -> value instanceof Boolean;
       case "String" -> value instanceof String;
-      case "ID" -> value instanceof String || isInteger(value);
+      case "ID" -> value instanceof String || isIntegral(value);
       default -> true;
     };
 
@@ -343,9 +345,16 @@ public class GraphQLSchema {
    * Whether the value is an integral number the 32-bit {@code Int} scalar can hold.
    */
   private static boolean isInteger(final Object value) {
-    if (value instanceof Integer || value instanceof Short || value instanceof Byte)
-      return true;
-    return value instanceof Long l && l == l.intValue();
+    return isIntegral(value) && (!(value instanceof Long l) || l == l.intValue());
+  }
+
+  /**
+   * Whether the value is an integral number of any width. A floating-point value is not one even when it happens to
+   * have no fractional part: the caller is checking what was passed, not what it could be rounded to.
+   */
+  private static boolean isIntegral(final Object value) {
+    return value instanceof Integer || value instanceof Long || value instanceof Short || value instanceof Byte
+        || value instanceof BigInteger;
   }
 
   /**
