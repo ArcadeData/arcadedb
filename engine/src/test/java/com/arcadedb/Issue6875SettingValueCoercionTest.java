@@ -161,6 +161,33 @@ class Issue6875SettingValueCoercionTest {
     assertThat(GlobalConfiguration.COMMIT_LOCK_TIMEOUT.coerce("64GB")).isEqualTo(64L * 1024 * 1024 * 1024);
   }
 
+  /**
+   * The bound has to hold for a boxed {@link Number} too, and not only for text parsed by
+   * {@code FileUtils.getSizeAsNumber}: {@code Number.intValue()} keeps the low 32 bits, so an out-of-range
+   * {@code Long} would be stored silently truncated - where the {@code Integer.parseInt} this replaced threw.
+   */
+  @Test
+  void coerceRejectsAnOutOfRangeNumberAsWellAsAnOutOfRangeString() {
+    assertThatThrownBy(() -> GlobalConfiguration.ASYNC_WORKER_THREADS.coerce(5_000_000_000L))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("arcadedb.asyncWorkerThreads");
+    assertThat(GlobalConfiguration.ASYNC_WORKER_THREADS.isAssignable(5_000_000_000L)).isFalse();
+
+    // and the setter built on it refuses the same input rather than storing the truncated low 32 bits
+    final Object previous = GlobalConfiguration.ASYNC_WORKER_THREADS.getValue();
+    try {
+      assertThatThrownBy(() -> GlobalConfiguration.ASYNC_WORKER_THREADS.setValue(5_000_000_000L))
+          .isInstanceOf(IllegalArgumentException.class);
+      assertThat(GlobalConfiguration.ASYNC_WORKER_THREADS.getValueAsInteger()).isNotEqualTo((int) 5_000_000_000L);
+    } finally {
+      GlobalConfiguration.ASYNC_WORKER_THREADS.setValue(previous);
+    }
+
+    // a value inside the range still goes through untouched, from either form
+    assertThat(GlobalConfiguration.ASYNC_WORKER_THREADS.coerce(12L)).isEqualTo(12);
+    assertThat(GlobalConfiguration.ASYNC_WORKER_THREADS.coerce(12)).isEqualTo(12);
+  }
+
   /** {@code coerce} returns the DECLARED type, not merely something numeric: a Long setting must not yield an Integer. */
   @Test
   void coerceReturnsTheDeclaredType() {

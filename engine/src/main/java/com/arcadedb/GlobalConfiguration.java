@@ -2529,9 +2529,10 @@ public enum GlobalConfiguration {
         return iValue instanceof Boolean b ? b : Boolean.parseBoolean(iValue.toString().trim());
 
       if (type == Integer.class) {
-        if (iValue instanceof Number n)
-          return n.intValue();
-        final long parsed = FileUtils.getSizeAsNumber(iValue.toString().trim());
+        // the range check has to cover a boxed Number too, not just the parsed-from-text path: Number.intValue()
+        // keeps the low 32 bits, so a Long outside the int range would be stored silently truncated - where the
+        // Integer.parseInt this method replaced threw. Every input reaches the same bound.
+        final long parsed = iValue instanceof Number n ? n.longValue() : FileUtils.getSizeAsNumber(iValue.toString().trim());
         if (parsed < Integer.MIN_VALUE || parsed > Integer.MAX_VALUE)
           throw new IllegalArgumentException("outside the range of an Integer");
         return (int) parsed;
