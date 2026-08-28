@@ -48,6 +48,12 @@ public class ArcadeGraphFactory implements Closeable {
   private       int                                      maxInstances          = 32;
   private final AtomicInteger                            totalInstancesCreated = new AtomicInteger(0);
 
+  /**
+   * A borrowed {@link ArcadeGraph}, where {@code close()} means "give it back" rather than "tear it down". A caller
+   * must not touch the instance after calling {@code close()}: it is handed straight to the next borrower, possibly
+   * on another thread, and unlike a non-pooled graph it is not marked closed - so continuing to use it interleaves
+   * with whoever holds it now instead of failing loudly.
+   */
   public class PooledArcadeGraph extends ArcadeGraph {
     private final ArcadeGraphFactory factory;
 

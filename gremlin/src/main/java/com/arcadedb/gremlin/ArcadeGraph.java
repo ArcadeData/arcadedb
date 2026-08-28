@@ -464,6 +464,17 @@ public class ArcadeGraph implements Graph, Closeable {
     releaseTraversal();
 
     if (this.database != null) {
+      if (sharedDatabase) {
+        // THE DATABASE LIFECYCLE IS MANAGED EXTERNALLY, SO DO NOT CLOSE IT - AND ROLL BACK RATHER THAN GO THROUGH THE
+        // CONFIGURED CLOSE BEHAVIOUR. CLOSING A SERVER-MANAGED GRAPH IS A TEARDOWN, NOT THE END OF A UNIT OF WORK:
+        // SESSIONS COMMIT THROUGH ArcadeGraphManager, AND THIS GRAPH IS ONE LONG-LIVED INSTANCE SHARED BY ALL OF THEM
+        // WITH NO BORROW BOUNDARY TO RESET ITS TRANSACTION. LETTING A COMMIT RUN HERE IS WHAT LEFT THE WAL
+        // INCONSISTENT WHEN THE GREMLIN STOP THREAD RACED THE HA STATE MACHINE AT SHUTDOWN (ArcadeGraphSharedDatabaseIT).
+        if (this.database.isTransactionActive())
+          this.database.rollback();
+        return;
+      }
+
       RuntimeException failure = null;
       try {
         // END AN IN-FLIGHT UNIT OF WORK THROUGH THE TRANSACTION'S CONFIGURED CLOSE BEHAVIOUR, WHOSE DEFAULT IS
@@ -477,9 +488,7 @@ public class ArcadeGraph implements Graph, Closeable {
       }
 
       try {
-        // WHEN THE DATABASE LIFECYCLE IS MANAGED EXTERNALLY (e.g. BY ArcadeDBServer) DO NOT CLOSE IT.
-        if (!sharedDatabase)
-          this.database.close();
+        this.database.close();
       } catch (final RuntimeException e) {
         if (failure == null)
           throw e;
