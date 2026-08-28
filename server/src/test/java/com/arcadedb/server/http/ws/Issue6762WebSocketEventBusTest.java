@@ -113,19 +113,40 @@ class Issue6762WebSocketEventBusTest {
    * {@code shutdown()} used to return early when {@code running} was already false, so once {@code signalStop()}
    * exists the join it is there to perform would be skipped - and the caller would carry on while the watcher's
    * listeners were still registered.
+   * <p>
+   * Repeated rather than checked once, because the second half of the same contract is a narrow race and a single
+   * shot is not a regression test for it: {@code shutdown()} used to wait on a latch that {@code run()} counts down
+   * from INSIDE itself, so it returned during the JVM's own thread teardown with the watcher still alive. That lost
+   * roughly one call in 300 - often enough to redden CI (run 33201895826), far too rarely for one attempt to catch
+   * it.
+   * <p>
+   * The {@code interrupt()} is what keeps the loop cheap under load. A watcher that reads {@code running} before
+   * {@link DatabaseEventWatcherThread#signalStop()} stores {@code false} parks in the 500ms queue poll, and
+   * {@code shutdown()} then waits it out - measured at 446ms per occurrence, which 5,000 iterations could turn into
+   * minutes on a loaded runner. Interrupting releases the poll, and it costs the assertion nothing: either exit path
+   * runs the same {@code finally} and leaves the same window between {@code run()} returning and the thread dying
+   * (PR #6885 review).
    */
   @Test
   void shutdownStillJoinsAfterASeparateStopSignal() throws Exception {
     final WebSocketEventBus bus = new WebSocketEventBus(null);
-    final DatabaseEventWatcherThread watcher = new DatabaseEventWatcherThread(bus, database, 16);
-    watcher.start();
 
-    watcher.signalStop();
-    watcher.shutdown();
+    int stillAlive = 0;
+    for (int i = 0; i < 5_000; i++) {
+      final DatabaseEventWatcherThread watcher = new DatabaseEventWatcherThread(bus, database, 16);
+      watcher.start();
 
-    assertThat(watcher.isAlive())
-        .as("shutdown() must have waited for run() to unwind and unregister its listeners")
-        .isFalse();
+      watcher.signalStop();
+      watcher.interrupt();
+      watcher.shutdown();
+
+      if (watcher.isAlive())
+        ++stillAlive;
+    }
+
+    assertThat(stillAlive)
+        .as("shutdown() must have waited for run() to unwind, unregister its listeners AND the thread to die")
+        .isZero();
   }
 
   /**

@@ -25,7 +25,6 @@ import com.arcadedb.event.AfterRecordUpdateListener;
 import com.arcadedb.log.LogManager;
 
 import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
@@ -34,7 +33,6 @@ final public class DatabaseEventWatcherThread extends Thread {
   private final    ArrayBlockingQueue<ChangeEvent> eventQueue;
   private final    Database                        database;
   private volatile boolean                         running = true;
-  private final    CountDownLatch                  runningLock;
   private final    WebSocketEventListener          listener;
 
   public DatabaseEventWatcherThread(final WebSocketEventBus eventBus, final Database database, final int queueSize) {
@@ -43,7 +41,6 @@ final public class DatabaseEventWatcherThread extends Thread {
     this.eventQueue = new ArrayBlockingQueue<>(queueSize);
     this.database = database;
     this.listener = new WebSocketEventListener(this);
-    this.runningLock = new CountDownLatch(1);
 
     this.database.getEvents()
         .registerListener((AfterRecordCreateListener) listener)
@@ -85,8 +82,14 @@ final public class DatabaseEventWatcherThread extends Thread {
    * that only its own {@code run()} finally-block can count down, deadlocking it forever.
    * <p>
    * Deliberately no "already stopped, nothing to do" shortcut: {@link #signalStop()} may have run first, and returning
-   * on that would skip the join this method exists for. Once {@code run()} has finished the latch is already down, so
-   * a repeated call still returns immediately.
+   * on that would skip the join this method exists for. Once the thread has died {@link #join()} returns immediately,
+   * so a repeated call still costs nothing.
+   * <p>
+   * The wait is a {@link #join()} and not a latch counted down by {@code run()}: such a latch opens from INSIDE
+   * {@code run()}, which leaves the thread still alive for the JVM's own teardown after {@code run()} returns, so
+   * {@code shutdown()} could return on a watcher that was not yet terminated - roughly once in 300 calls, which is how
+   * it reached CI as a flake. {@code join()} is the barrier this method's contract claims, and it also cannot hang on a
+   * watcher that was constructed but never started, where a latch would have waited forever.
    */
   public void shutdown() {
     signalStop();
@@ -95,7 +98,7 @@ final public class DatabaseEventWatcherThread extends Thread {
       return;
 
     try {
-      runningLock.await();
+      join();
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
     }
@@ -113,15 +116,11 @@ final public class DatabaseEventWatcherThread extends Thread {
 
     } catch (final InterruptedException ignored) {
     } finally {
-      try {
-        this.database.getEvents().unregisterListener((AfterRecordCreateListener) listener)
-            .unregisterListener((AfterRecordUpdateListener) listener)
-            .unregisterListener((AfterRecordDeleteListener) listener);
+      this.database.getEvents().unregisterListener((AfterRecordCreateListener) listener)
+          .unregisterListener((AfterRecordUpdateListener) listener)
+          .unregisterListener((AfterRecordDeleteListener) listener);
 
-        eventQueue.clear();
-      } finally {
-        runningLock.countDown();
-      }
+      eventQueue.clear();
     }
   }
 }
