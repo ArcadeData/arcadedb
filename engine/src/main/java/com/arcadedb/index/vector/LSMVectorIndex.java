@@ -7526,6 +7526,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final LSMVectorIndexGraphManifest.Content manifestContent =
         statsGraphFile != null ? statsGraphFile.getManifest().read() : null;
     stats.put("closeTimeRebuildPending", manifestContent != null && manifestContent.closeDeferredRebuild() ? 1L : 0L);
+    // How large the graph ON DISK is, as opposed to graphNodeCount just above, which reports how much of it this
+    // session has loaded - 0 until something searches, however many vectors are persisted (issue #6798). Read
+    // from the same manifest content: the two are the only stats here that survive a reopen before a first
+    // search, and telling "no graph exists" apart from "no graph is loaded" needs both of them.
+    stats.put("persistedGraphNodeCount",
+        manifestContent != null && manifestContent.vectorCount() > 0
+            && statsGraphFile.hasPersistedGraph() ? (long) manifestContent.vectorCount() : 0L);
 
     // Calculate mutations threshold (use configured value or default)
     final int defaultMutationsThreshold = getDatabase().getConfiguration()
@@ -8344,6 +8351,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * away the guarantee that a handful of buffered vectors get flushed out of the linear-scan delta
    * buffer promptly - but to apply the same threshold the search path uses, and only where the search
    * path would also apply it: once the graph is large enough that a rebuild is no longer free.
+   * <p>
+   * "How large is the graph" is asked through {@link #inactivityRebuildScopeSize()} rather than off
+   * {@link #graphIndex} directly, because on this path a null graph does not mean what it means on the search
+   * path (issue #6798).
    *
    * @return {@code true} when pending mutations justify (or exceed) a rebuild
    */
@@ -8352,8 +8363,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (pending <= 0)
       return false;
 
-    final ImmutableGraphIndex graph = this.graphIndex;
-    if (graph == null || graph.size() < ASYNC_REBUILD_MIN_GRAPH_SIZE)
+    if (inactivityRebuildScopeSize() < ASYNC_REBUILD_MIN_GRAPH_SIZE)
       // Small graph (or none yet): a rebuild is cheap regardless of how many mutations are
       // pending, same as rebuildGraphBeforeSearch()'s unconditional synchronous rebuild for this
       // case. Any pending mutation is worth flushing promptly.
@@ -8369,6 +8379,68 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // on every quiet period while still eventually absorbing a trickle of writes.
     final int floor = Math.max(threshold / 10, 1);
     return pending >= floor;
+  }
+
+  /**
+   * How many vectors a rebuild triggered by the inactivity timer would actually have to cover - which is the
+   * question both {@link #inactivityRebuildIsWorthIt()} and the timer task's sync/async arm choice are really
+   * asking when they compare against {@link #ASYNC_REBUILD_MIN_GRAPH_SIZE}.
+   * <p>
+   * They used to ask it of {@link #graphIndex} alone, and {@code graphIndex == null} counted as "small". Null
+   * carries three meanings, though, and only two of them are small (issue #6798):
+   * <ol>
+   *   <li>no graph has ever been built for this index - a first build, which must run whatever it costs, since
+   *       nothing else will ever produce a graph;</li>
+   *   <li>a graph was built and is genuinely tiny (or emptied out by deletions) - cheap by definition;</li>
+   *   <li><b>a large graph is fully persisted and this session has simply never loaded it</b>, because the load
+   *       is lazy on the first search and this session has not searched.</li>
+   * </ol>
+   * The third is the ordinary shape of a loader process - open, write, go quiet - and it was being read as the
+   * first two: the mutation threshold was skipped entirely and one insert rebuilt every vector in the index,
+   * synchronously, on the timer thread. It is the same conflation issue #6772 fixed for a session that searches;
+   * that fix works by loading the persisted graph inside {@link #ensureGraphAvailable()}, which the timer never
+   * calls, so it does not reach here.
+   * <p>
+   * The answer for that third case is the <b>live</b> vector count rather than the persisted graph's node count,
+   * because {@link #buildGraphFromScratch()} covers the live set, not the graph it replaces - so the live count
+   * is the direct measure of the cost being gated, where a graph size is only ever a proxy for it. It also gives
+   * the right answer where the two diverge: a large persisted graph whose vectors have since been deleted really
+   * is cheap to rebuild, and gets flushed promptly like any other small index.
+   * <p>
+   * Deliberately confined to the case {@link #graphNotYetMaterialised()} identifies - this session has not yet
+   * resolved what is on disk - so that everything downstream of a resolution keeps answering exactly as before,
+   * including the window inside {@code buildGraphFromScratchExclusively()} where a rebuild nulls the resident
+   * graph before publishing its replacement. {@link #rebuildGraphBeforeSearch()} is left reading
+   * {@link #graphIndex} directly for a related reason: {@link #ensureGraphAvailable()} always runs immediately
+   * before it, so a null there really is case 1 or 2, and routing a search down the large-graph arm would hand
+   * it the async rebuild and an empty result set instead of a slow but correct one.
+   *
+   * @return the number of vectors a rebuild would build over, or 0 when that is a first build
+   */
+  private int inactivityRebuildScopeSize() {
+    final ImmutableGraphIndex resident = this.graphIndex;
+    if (resident != null)
+      return resident.size();
+
+    if (!graphNotYetMaterialised())
+      // Already resolved: nothing is on disk that this session has not accounted for, so a null graph here is a
+      // first build or an emptied index, and both are cheap.
+      return 0;
+
+    final LSMVectorIndexGraphFile gf = graphFile;
+    if (gf == null || !gf.hasPersistedGraph())
+      return 0; // Case 1: no graph anywhere. A first build must not be gated - see the javadoc above.
+
+    // Case 3. size(), not getActiveCount(): the two agree on this backend - markDeleted() drops the location and
+    // keeps only the id in the tombstone set, so a resident location IS a live vector, the same equivalence
+    // estimatePagesForLiveSet() relies on - but size() is O(1) where getActiveCount() popcounts every allocated
+    // chunk. That matters here specifically: inactivityRebuildIsWorthIt() runs from scheduleInactivityRebuild(),
+    // which put() calls after EVERY single insert, and graphNotYetMaterialised() stays true for a whole
+    // ingest-then-idle load - so a per-chunk scan here would make an O(N) load O(N^2), on exactly the workload
+    // this fix exists to protect, and would do it inside the instance monitor every other insert serializes on.
+    // The location index is already materialised: this is only reached with pending mutations, and recording
+    // those materialised it.
+    return vectorIndex().size();
   }
 
   /**
@@ -8413,8 +8485,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
             timeoutMs, mutationsSinceSerialize.get(), indexName);
 
         try {
-          if (graphIndex != null && graphIndex.size() >= ASYNC_REBUILD_MIN_GRAPH_SIZE) {
-            // Large graph: async rebuild (semaphore acquired inside the async thread)
+          // Asked again rather than reusing what inactivityRebuildIsWorthIt() just computed: the two questions
+          // are "is a rebuild worth it" and "which arm", and answering the second from a value read before the
+          // first would pin the arm to a graph size that a concurrent rebuild may already have moved on from.
+          // O(1) either way - see inactivityRebuildScopeSize() on why it does not walk anything.
+          if (inactivityRebuildScopeSize() >= ASYNC_REBUILD_MIN_GRAPH_SIZE) {
+            // Large graph: async rebuild (semaphore acquired inside the async thread).
+            // Asked through inactivityRebuildScopeSize() so a large graph this session has never loaded takes
+            // this arm rather than the synchronous one below (issue #6798) - the timer thread is shared with
+            // every other index's inactivity task, and a full O(N) build on it stalls all of them.
             startAsyncGraphRebuild();
           } else {
             // Small graph: synchronous rebuild on the timer thread.
