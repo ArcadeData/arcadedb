@@ -1878,10 +1878,12 @@ public class GraphDatabaseChecker {
    */
   private static VertexInternal loadEndpointVertex(final Edge edge, final RID edgeRID, final Vertex.DIRECTION direction,
       final CheckReport report, final Map<RID, Long> missingReferences, final Map<RID, String> missingReferenceErrors) {
+    // Every constant spelled out and NO default: the switch is visibly exhaustive, and a constant added to
+    // DIRECTION one day fails to compile here instead of being swallowed into a catch-all arm.
     final boolean incoming = switch (direction) {
       case IN -> true;
       case OUT -> false;
-      default -> throw new IllegalArgumentException(
+      case BOTH -> throw new IllegalArgumentException(
           "Cannot load a single endpoint of edge " + edgeRID + " for direction " + direction);
     };
     final RID endpoint = incoming ? edge.getIn() : edge.getOut();
