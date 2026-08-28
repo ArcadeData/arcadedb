@@ -119,7 +119,11 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
 
           // Auto-create type if needed
           final LocalTimeSeriesType tsType = getOrCreateType(database, typeName, ts.getLabels());
-          final TimeSeriesEngine engine = tsType.getEngine();
+          // requireEngine(), not getEngine(): getOrCreateType() now returns an existing TimeSeries type whatever
+          // state its storage is in, so this is where a missing engine is reported - naming the type and why the
+          // engine never started, rather than letting a null reach an NPE (issue #6356) or, as before, a phantom
+          // "already exists" from the auto-create branch (issue #6839).
+          final TimeSeriesEngine engine = tsType.requireEngine();
           final List<ColumnDefinition> columns = tsType.getTsColumns();
 
           // Append this series' samples as ONE batch. All samples of a remote-write TimeSeries share the
@@ -173,7 +177,13 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
       final List<Label> labels) {
     if (database.getSchema().existsType(typeName)) {
       final DocumentType docType = database.getSchema().getType(typeName);
-      if (docType instanceof LocalTimeSeriesType tsType && tsType.getEngine() != null)
+      // The two halves are separate questions and were one condition, which is what made this the only TimeSeries
+      // call site PR #6779 left reporting the wrong error (issue #6839). "Is it a TimeSeries type" decides whether
+      // to auto-create; "does it have an engine" decides whether the write can proceed, and that is the caller's
+      // requireEngine() to answer. Folding them together sent a registered-but-engine-unavailable type (#6356)
+      // into the auto-create branch below, where create() throws SchemaException("Type 'X' already exists") - a
+      // name collision that does not exist, instead of the reason the engine is missing and the file it names.
+      if (docType instanceof LocalTimeSeriesType tsType)
         return tsType;
     }
 

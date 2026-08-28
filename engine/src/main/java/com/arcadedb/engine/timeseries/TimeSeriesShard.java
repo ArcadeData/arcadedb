@@ -178,15 +178,17 @@ public class TimeSeriesShard implements AutoCloseable {
       }
     }
 
-    // If sealedStore construction fails, close mutableBucket to avoid a resource leak
-    final TimeSeriesSealedStore tempSealedStore;
-    try {
-      tempSealedStore = new TimeSeriesSealedStore(shardPath, columns);
-    } catch (final IOException e) {
-      try { this.mutableBucket.close(); } catch (final Exception ignored) {}
-      throw e;
-    }
-    this.sealedStore = tempSealedStore;
+    // The mutable bucket is deliberately NOT closed when the sealed store fails to open. By the time control
+    // reaches here it is registered with the schema on BOTH branches above - the component factory registered it
+    // on a cold open, and the creation branch calls registerFile() itself - so the schema owns its lifecycle and
+    // will close it with the database. Closing it here never prevented a leak; it only made the file unusable,
+    // because PaginatedComponentFile.close() sets open=false and its own lazy reopen then refuses ("was closed on
+    // purpose"), for the life of the process. That was harmless while a failed initEngine() meant the type
+    // vanished from the schema, and became the thing standing in the way of recovery once #6356 made the type stay
+    // registered: retrying initEngine() after the sealed file is repaired reuses this very component and produced
+    // a type reporting isEngineAvailable() == true whose every read threw FileNotFoundException (issue #6839).
+    // The failure at initHeaderPage() a few lines above already propagates without closing, for the same reason.
+    this.sealedStore = new TimeSeriesSealedStore(shardPath, columns);
 
     // Crash recovery: if a compaction was interrupted, truncate any partial sealed blocks
     database.begin();

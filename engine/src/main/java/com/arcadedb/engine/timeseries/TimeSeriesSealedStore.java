@@ -2249,6 +2249,20 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /**
+   * The same name as {@link #getSealedFileName()}, derived from the type and shard alone so a caller that has no
+   * store to ask can still address the file - which is the whole point: the HA apply path needs it precisely when
+   * the store could not be opened and there is no instance to ask (issue #6839). Deriving it locally is also why
+   * that path never uses the file name carried in the replicated blob: a name is a name until it is used to open a
+   * file, and one arriving over the wire has no business selecting a path on this node.
+   * <p>
+   * The {@code <type>_shard_<index>} half must stay in step with the shard name {@code TimeSeriesShard}'s
+   * constructor builds; the suffix is this class's own.
+   */
+  public static String sealedFileNameFor(final String typeName, final int shardIndex) {
+    return typeName + "_shard_" + shardIndex + ".ts.sealed";
+  }
+
+  /**
    * Reads the entire sealed-store file into a byte array. Used on the HA leader to capture the
    * post-compaction (or post-retention/downsampling) sealed bytes so they can be shipped to followers.
    * The header is flushed first so the on-disk image is current.
