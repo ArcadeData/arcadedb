@@ -333,8 +333,12 @@ public final class Labels {
         if (i == j)
           continue;
         final DocumentType other = schema.getTypeOrNull(candidates.get(j));
-        // A type that implies `label` while `label` also implies it is the same type reached twice (or a schema
-        // cycle): the index comparison breaks the tie so exactly one of the pair survives.
+        // The second half of the condition is unreachable on any schema the engine can build: two DISTINCT
+        // candidate names (the set comes from a TreeSet, so there are no repeats) that are each other's instance
+        // require a cycle in the type hierarchy, which the schema refuses to create. It is kept as a guard rather
+        // than as live logic - without it a cycle would mark both members implied and drop them BOTH, silently
+        // costing the vertex a label it still answers to, which is the exact failure this method exists to stop.
+        // The index comparison breaks such a tie so that exactly one of the pair survives.
         if (other != null && other.instanceOf(label) && (!isImpliedBy(schema, label, candidates.get(j)) || j < i))
           implied = true;
       }

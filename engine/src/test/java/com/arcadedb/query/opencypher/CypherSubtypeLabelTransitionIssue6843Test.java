@@ -153,6 +153,42 @@ class CypherSubtypeLabelTransitionIssue6843Test {
   }
 
   @Test
+  void aTypeWithSeveralDirectSupertypesKeepsBothBranches() {
+    // A diamond declared with EXTENDS rather than with a ~ composite: Bottom IS-A both Left and Right, and both of
+    // those IS-A Entity. Removing Bottom has to keep BOTH branches - reducing to one of them, or collapsing to the
+    // shared Entity, would cost the vertex a label the clause never named, which is the whole point of the fix.
+    database.command("sql", "CREATE VERTEX TYPE Left EXTENDS Entity");
+    database.command("sql", "CREATE VERTEX TYPE Right EXTENDS Entity");
+    database.command("sql", "CREATE VERTEX TYPE Bottom EXTENDS Left, Right");
+    database.transaction(() -> database.command("sql", "INSERT INTO Bottom SET name = 'd1'"));
+
+    database.transaction(() -> database.command("opencypher", "MATCH (n:Bottom) REMOVE n:Bottom"));
+
+    // Entity is implied by both survivors and must not be named alongside them.
+    assertThat(typeOf("d1")).isEqualTo("Left~Right");
+    assertThat(labels("MATCH (n {name:'d1'}) RETURN labels(n) AS l")).containsExactly("Entity", "Left", "Right");
+    assertThat(count("MATCH (n:Entity {name:'d1'}) RETURN count(n) AS c")).isEqualTo(1);
+  }
+
+  @Test
+  void twoIndependentInheritanceChainsBothSurviveTheRemoval() {
+    // Same shape, but the two branches share no ancestor: the reduction has to keep the two most specific labels
+    // and drop the two roots they each already imply.
+    database.command("sql", "CREATE VERTEX TYPE RootA");
+    database.command("sql", "CREATE VERTEX TYPE RootB");
+    database.command("sql", "CREATE VERTEX TYPE MidA EXTENDS RootA");
+    database.command("sql", "CREATE VERTEX TYPE MidB EXTENDS RootB");
+    database.command("sql", "CREATE VERTEX TYPE Both EXTENDS MidA, MidB");
+    database.transaction(() -> database.command("sql", "INSERT INTO Both SET name = 'i1'"));
+
+    database.transaction(() -> database.command("opencypher", "MATCH (n:Both) REMOVE n:Both"));
+
+    assertThat(typeOf("i1")).isEqualTo("MidA~MidB");
+    assertThat(labels("MATCH (n {name:'i1'}) RETURN labels(n) AS l"))
+        .containsExactly("MidA", "MidB", "RootA", "RootB");
+  }
+
+  @Test
   void removingEveryLabelOfTheChainStillLeavesTheNodeUnlabelled() {
     database.transaction(
         () -> database.command("opencypher", "MATCH (n:Cust_Agent) REMOVE n:Cust_Agent:Entity"));
