@@ -253,6 +253,33 @@ public class HttpAuthSessionManager extends RWLockContext {
   }
 
   /**
+   * Invalidates every live authentication session owned by the named principal. Called when a user is
+   * dropped or its password is changed, so a token minted before that keeps no authority - mirroring what
+   * {@link HttpSessionManager#removeSessionsForUser} already does for transaction sessions.
+   * <p>
+   * Unlike its transaction-session counterpart this does no blocking work at all: an authentication session
+   * owns no transaction and has nothing to cancel, so it is safe to call from anywhere, including the Raft
+   * state-machine apply thread that installs a replicated user list on a peer.
+   *
+   * @return the number of sessions removed
+   */
+  public int removeSessionsForUser(final String userName) {
+    if (userName == null)
+      return 0;
+
+    return executeInWriteLock(() -> {
+      final LinkedHashSet<String> userTokens = sessionsByUser.remove(userName);
+      if (userTokens == null)
+        return 0;
+      for (final String token : userTokens)
+        sessions.remove(token);
+      LogManager.instance().log(this, Level.FINE, "Removed %d authentication session(s) of user %s",
+          userTokens.size(), userName);
+      return userTokens.size();
+    });
+  }
+
+  /**
    * Drops a session from the per-principal index, and the principal's (now empty) index entry with it, so
    * {@link #sessionsByUser} can never retain a key for a user with no live session. Must be called under the
    * write lock, right after the session has been removed from {@link #sessions}.

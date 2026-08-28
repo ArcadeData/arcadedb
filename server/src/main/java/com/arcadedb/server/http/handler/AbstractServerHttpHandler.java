@@ -397,7 +397,21 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
                   sendErrorResponse(exchange, 401, "Invalid or expired authentication token", null, null);
                   return;
                 }
-                user = authSession.getUser();
+                // Re-resolved from the live users map rather than taken from the session, which captured a
+                // ServerSecurityUser at login time. Without this a token kept BOTH the principal and the
+                // grants it had when it was minted: a dropped user went on authenticating, and a narrowed
+                // grant went on being honoured, until the token idle-expired. Eager invalidation covers the
+                // node that served the mutation, but a peer learns of it through a replicated user list, so
+                // this lookup - one ConcurrentHashMap read - is what makes revocation immediate everywhere.
+                final ServerSecurityUser sessionUser = httpServer.getServer().getSecurity()
+                    .getUser(authSession.getUser().getName());
+                if (sessionUser == null) {
+                  httpServer.getAuthSessionManager().removeSession(token);
+                  exchange.setStatusCode(401);
+                  sendErrorResponse(exchange, 401, "Invalid or expired authentication token", null, null);
+                  return;
+                }
+                user = sessionUser;
               }
 
             } else if (auth.startsWith(AUTHORIZATION_BASIC)) {

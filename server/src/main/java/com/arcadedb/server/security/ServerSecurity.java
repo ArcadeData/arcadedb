@@ -426,14 +426,46 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   }
 
   /**
-   * Invalidates every live HTTP transaction session owned by the named principal (rolling back its open
-   * transaction). No-op when the HTTP server is not running (e.g. embedded use). Must be called OUTSIDE the
-   * {@code ServerSecurity} monitor: it can block on a session's in-flight command via {@code cancel()}.
+   * Invalidates every live HTTP session owned by the named principal: the transaction sessions (rolling back
+   * their open transaction) <b>and</b> the {@code AU-} authentication sessions minted by
+   * {@code POST /api/v1/login}. No-op when the HTTP server is not running (e.g. embedded use). Must be called
+   * OUTSIDE the {@code ServerSecurity} monitor: it can block on a transaction session's in-flight command via
+   * {@code cancel()}.
+   * <p>
+   * The authentication half matters because a login token carries its own authority: the bearer branch of
+   * {@code AbstractServerHttpHandler} resolves the principal from the session, so a token minted before a
+   * drop or a password change would otherwise keep authenticating until it idle-expired - up to 30 minutes
+   * of credentials that the operator believes were revoked.
    */
   private void invalidateHttpSessions(final String userName) {
     final HttpServer httpServer = server != null ? server.getHttpServer() : null;
-    if (httpServer != null)
+    if (httpServer != null) {
       httpServer.getSessionManager().removeSessionsForUser(userName);
+      httpServer.getAuthSessionManager().removeSessionsForUser(userName);
+    }
+  }
+
+  /**
+   * Drops the authentication sessions of every principal that the replicated user list removed or whose
+   * password it changed. Called on each peer after {@link #applyReplicatedUsers} has installed the new list,
+   * so a cluster-wide drop or password change revokes the login tokens a peer had already issued rather than
+   * leaving them valid until they idle-expire.
+   * <p>
+   * Only the authentication sessions are touched here: unlike {@code HttpSessionManager.removeSessionsForUser},
+   * {@code HttpAuthSessionManager.removeSessionsForUser} does no blocking work, so it is safe on the Raft
+   * state-machine apply thread, which must never wait on a session lock.
+   */
+  private void invalidateAuthSessionsOfRevokedPrincipals(final Map<String, ServerSecurityUser> previousUsers,
+      final Map<String, ServerSecurityUser> currentUsers) {
+    final HttpServer httpServer = server != null ? server.getHttpServer() : null;
+    if (httpServer == null)
+      return;
+
+    for (final Map.Entry<String, ServerSecurityUser> entry : previousUsers.entrySet()) {
+      final ServerSecurityUser current = currentUsers.get(entry.getKey());
+      if (current == null || !Objects.equals(current.getPassword(), entry.getValue().getPassword()))
+        httpServer.getAuthSessionManager().removeSessionsForUser(entry.getKey());
+    }
   }
 
   @Override
@@ -686,10 +718,16 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
 
     // Build in-memory map from the authoritative Raft payload, not from the file, and publish it in a
     // single atomic reference swap so concurrent readers never observe an empty/torn window.
+    final Map<String, ServerSecurityUser> previousUsers = this.users;
     final Map<String, ServerSecurityUser> newUsers = new ConcurrentHashMap<>();
     for (final JSONObject userJson : list)
       newUsers.put(userJson.getString("name"), new ServerSecurityUser(server, userJson));
     this.users = newUsers;
+
+    // A peer applying a replicated drop or password change must also revoke the login tokens it had already
+    // issued to that principal, or the credentials the operator revoked keep working on this node until the
+    // token idle-expires. Non-blocking, so it is safe on the state-machine apply thread.
+    invalidateAuthSessionsOfRevokedPrincipals(previousUsers, newUsers);
   }
 
   public void saveGroups() {
