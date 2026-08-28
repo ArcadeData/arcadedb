@@ -83,6 +83,9 @@ public class LocalProperty extends AbstractProperty {
       // and leave the cache naming a property that no longer exists - the very state issue #6799 is about. Only the
       // publication is serialized: conversion and validation stay outside, so a rejected default touches no state and
       // its SchemaException reaches the caller unwrapped, and the write lock is held for two field assignments.
+      // This is why this setter takes the heavier path while setReadonly, setMandatory, setNotNull and the rest of
+      // them below just assign and save: a default is the only property attribute with a second reader-visible home,
+      // the per-type cache, and the two have to move together. Do not "harmonise" it back to a bare assignment.
       ownerType.recordFileChanges(() -> {
         // Re-checked here because this is the check that counts: holding the same lock as dropProperty() settles the
         // order of the two, so whoever arrives second sees the other's result rather than a snapshot taken before it.
