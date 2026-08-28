@@ -192,6 +192,62 @@ class Issue6797DeltaScanScalingTest extends TestHelper {
   }
 
   /**
+   * The other half of the claim the fix makes: the inactivity timer honours the same condition, because it would
+   * be odd for a search to judge the scan too expensive and the timer, looking at the same buffer with the
+   * machine idle, to decline.
+   * <p>
+   * The timer's decision is asked directly rather than driven through a real timer. Not for speed: the search
+   * path evaluates the identical condition on every query and would usually act on it first, so a test that
+   * waited for a timeout would be racing the thing it is trying to isolate, and would pass or fail on which one
+   * won. Arranging the state under {@code maxDeltaScanRatio = 0} - where the scan work still accumulates but
+   * nothing can trigger on it - and only then turning the policy on isolates the question completely.
+   */
+  @Test
+  void theInactivityTimerHonoursTheSameScanBudget() {
+    disableEveryCountBasedTrigger();
+    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MAX_DELTA_SCAN_RATIO, 1.0f);
+
+    final Random random = new Random(6797);
+    final LSMVectorIndex index = createSettledIndex(random);
+    index.findNeighborsFromVector(randomUnitVector(random), 10);
+
+    final long budget = index.getStats().get("deltaScanBudget");
+    final long rebuildWork = index.getStats().get("estimatedRebuildWork");
+    assertThat(budget).isLessThan(Long.MAX_VALUE);
+    assertThat(rebuildWork).isPositive();
+
+    // Policy off while the state is arranged: the scan is charged to the amortization counter regardless of the
+    // ratio, but with the ratio at 0 nothing - search path or timer - can act on what accumulates.
+    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MAX_DELTA_SCAN_RATIO, 0f);
+
+    insertVectors(random, (int) Math.min(budget + 50, 5_000));
+    for (int i = 0; i < 100_000 && index.deltaScanWorkForTest() < rebuildWork; i++)
+      index.findNeighborsFromVector(randomUnitVector(random), 10);
+
+    assertThat(index.deltaScanWorkForTest())
+        .as("the scans must have paid for a rebuild, or there is nothing for the timer to decide")
+        .isGreaterThanOrEqualTo(rebuildWork);
+    assertThat(index.getStats().get("deltaVectorsCount"))
+        .as("with the policy off nothing may have drained the buffer").isGreaterThanOrEqualTo(budget);
+
+    final long pending = index.getStats().get("mutationsSinceRebuild");
+    final long countThreshold = index.getStats().get("effectiveMutationsThreshold");
+    assertThat(pending)
+        .as("the count-based reasons the timer rebuilds must all be out of reach, so only the scan budget is "
+            + "left to explain a true answer")
+        .isLessThan(Math.max(countThreshold / 10, 1));
+
+    assertThat(index.inactivityRebuildIsWorthIt())
+        .as("policy off: the timer sees the pre-#6797 picture and declines, exactly as before").isFalse();
+
+    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MAX_DELTA_SCAN_RATIO, 1.0f);
+
+    assertThat(index.inactivityRebuildIsWorthIt())
+        .as("policy on: the same buffer, on an idle machine, is worth the rebuild the search path would also "
+            + "have asked for (issue #6797)").isTrue();
+  }
+
+  /**
    * The control, and the opt-out: with {@code maxDeltaScanRatio} at 0 the engine behaves exactly as it did before
    * this issue - the count thresholds are the only trigger, and a buffer well past any measured walk cost is
    * scanned query after query without anything draining it.
