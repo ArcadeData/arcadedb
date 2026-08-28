@@ -43,20 +43,10 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
   }
 
   protected BucketLSMVectorIndexBuilder(final BucketIndexBuilder copyFrom) {
-    super(copyFrom.database, copyFrom.typeName, copyFrom.bucketName, copyFrom.propertyNames);
-
-    this.indexType = Schema.INDEX_TYPE.LSM_VECTOR;
-    this.unique = copyFrom.unique;
-    this.pageSize = copyFrom.pageSize;
-    this.nullStrategy = copyFrom.nullStrategy;
-    this.callback = copyFrom.callback;
-    this.ignoreIfExists = copyFrom.ignoreIfExists;
-    this.indexName = copyFrom.indexName;
-    this.filePath = copyFrom.filePath;
-    this.keyTypes = copyFrom.keyTypes;
-    this.batchSize = copyFrom.batchSize;
-    this.maxAttempts = copyFrom.maxAttempts;
-    this.metadata = new LSMVectorIndexMetadata(copyFrom.typeName, copyFrom.propertyNames, -1);
+    // Every common setting is carried over by the shared copy constructor, which is the ONE place a new builder field
+    // has to be added - see BucketIndexBuilder(BucketIndexBuilder, INDEX_TYPE, IndexMetadata) and issue #5606.
+    super(copyFrom, Schema.INDEX_TYPE.LSM_VECTOR,
+        new LSMVectorIndexMetadata(copyFrom.typeName, copyFrom.propertyNames, -1));
   }
 
   /**
