@@ -23,6 +23,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigInteger;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -237,12 +238,114 @@ class Issue6834GraphQLVariablesTest extends AbstractGraphQLTest {
           .hasMessageContaining("$n")
           .hasMessageContaining("String");
 
-      // An integer input value is a valid Float by the specification, so this one must go through.
+      // A value the type CAN hold still goes through.
       try (final ResultSet resultSet = database.query("graphql",
           "query($p: Int) { bookByPageCount(pageCount: $p) { id } }", "p", 422)) {
         assertThat(resultSet.hasNext()).isTrue();
         assertThat(resultSet.next().<String>getProperty("id")).isEqualTo("book-2");
       }
+
+      return null;
+    });
+  }
+
+  @Test
+  void intIsBoundedToThirtyTwoBitsWhateverTheWidthOfTheValue() {
+    executeTest(database -> {
+      final String types = """
+          type Query {
+            bookByPageCount(pageCount: Int): Book
+          }
+
+          type Book {
+            id: String
+            pageCount: Int
+          }""";
+      database.command("graphql", types);
+
+      // The bound has to hold for every type wide enough to exceed it, not only for Long: a BigInteger carries no
+      // bound of its own, so checking only Long would let it straight through.
+      for (final Object tooWide : new Object[] { 2_147_483_648L, new BigInteger("2147483648"),
+          new BigInteger("99999999999999999999") })
+        assertThatThrownBy(
+            () -> database.query("graphql", "query($p: Int) { bookByPageCount(pageCount: $p) { id } }", "p", tooWide)
+                .close())
+            .as("%s", tooWide)
+            .isInstanceOf(CommandParsingException.class)
+            .hasMessageContaining("Int");
+
+      // Both boundaries of the signed 32-bit range are inside it, whatever type carries them.
+      for (final Object atTheEdge : new Object[] { Integer.MAX_VALUE, Integer.MIN_VALUE,
+          BigInteger.valueOf(Integer.MAX_VALUE), BigInteger.valueOf(Integer.MIN_VALUE), (long) Integer.MAX_VALUE })
+        try (final ResultSet resultSet = database.query("graphql",
+            "query($p: Int) { bookByPageCount(pageCount: $p) { id } }", "p", atTheEdge)) {
+          assertThat(resultSet.hasNext()).as("%s", atTheEdge).isFalse();
+        }
+
+      return null;
+    });
+  }
+
+  @Test
+  void floatTakesAnyFiniteNumberAndNothingElse() {
+    executeTest(database -> {
+      final String types = """
+          type Query {
+            bookByRating(rating: Float): Book
+          }
+
+          type Book {
+            id: String
+            rating: Float
+          }""";
+      database.command("graphql", types);
+
+      database.newVertex("Book").set("id", "book-4").set("rating", 4.5d).save();
+
+      // An integer input value is a valid Float by the specification.
+      try (final ResultSet resultSet = database.query("graphql",
+          "query($r: Float) { bookByRating(rating: $r) { id } }", "r", 4.5d)) {
+        assertThat(resultSet.hasNext()).isTrue();
+        assertThat(resultSet.next().<String>getProperty("id")).isEqualTo("book-4");
+      }
+
+      try (final ResultSet resultSet = database.query("graphql",
+          "query($r: Float) { bookByRating(rating: $r) { id } }", "r", 5)) {
+        assertThat(resultSet.hasNext()).isFalse();
+      }
+
+      // NaN and the infinities are representable in Java but are not values a Float can carry.
+      for (final Object notFinite : new Object[] { Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY,
+          Float.NaN, Float.POSITIVE_INFINITY })
+        assertThatThrownBy(
+            () -> database.query("graphql", "query($r: Float) { bookByRating(rating: $r) { id } }", "r", notFinite)
+                .close())
+            .as("%s", notFinite)
+            .isInstanceOf(CommandParsingException.class)
+            .hasMessageContaining("Float");
+
+      assertThatThrownBy(
+          () -> database.query("graphql", "query($r: Float) { bookByRating(rating: $r) { id } }", "r", "4.5").close())
+          .isInstanceOf(CommandParsingException.class)
+          .hasMessageContaining("Float");
+
+      return null;
+    });
+  }
+
+  @Test
+  void listDefaultValueIsReportedRatherThanResolvingToNull() {
+    executeTest(database -> {
+      defineTypes(database);
+
+      // Value.getValue() has nothing to hand back for the list and object productions - unlike their WithVariable
+      // counterparts they do not extend AbstractValue - so the caller reports the unsupported literal instead of
+      // quietly binding null.
+      assertThatThrownBy(
+          () -> database.query("graphql", "query($n: [String] = [\"Mr. brain\"]) { bookByName(name: $n) { id } }").close())
+          .isInstanceOf(CommandParsingException.class)
+          .hasMessageContaining("$n")
+          .hasMessageContaining("not a scalar");
 
       return null;
     });
