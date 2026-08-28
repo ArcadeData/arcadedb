@@ -118,8 +118,14 @@ class Issue6762WebSocketEventBusTest {
    * shot is not a regression test for it: {@code shutdown()} used to wait on a latch that {@code run()} counts down
    * from INSIDE itself, so it returned during the JVM's own thread teardown with the watcher still alive. That lost
    * roughly one call in 300 - often enough to redden CI (run 33201895826), far too rarely for one attempt to catch
-   * it. The loop is cheap: each watcher observes {@code running == false} on its first pass and unwinds without ever
-   * polling the queue.
+   * it.
+   * <p>
+   * The {@code interrupt()} is what keeps the loop cheap under load. A watcher that reads {@code running} before
+   * {@link DatabaseEventWatcherThread#signalStop()} stores {@code false} parks in the 500ms queue poll, and
+   * {@code shutdown()} then waits it out - measured at 446ms per occurrence, which 5,000 iterations could turn into
+   * minutes on a loaded runner. Interrupting releases the poll, and it costs the assertion nothing: either exit path
+   * runs the same {@code finally} and leaves the same window between {@code run()} returning and the thread dying
+   * (PR #6885 review).
    */
   @Test
   void shutdownStillJoinsAfterASeparateStopSignal() throws Exception {
@@ -131,6 +137,7 @@ class Issue6762WebSocketEventBusTest {
       watcher.start();
 
       watcher.signalStop();
+      watcher.interrupt();
       watcher.shutdown();
 
       if (watcher.isAlive())
