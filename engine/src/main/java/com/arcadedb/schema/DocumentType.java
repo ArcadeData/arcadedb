@@ -82,10 +82,11 @@ public interface DocumentType {
   default void applyDefaultValues(final MutableDocument document) {
     for (final String propertyName : getPolymorphicPropertiesWithDefaultDefined()) {
       if (document.get(propertyName) == null) {
-        // Issue #6799: the name set is read lock-free and the lookup that follows is a separate step, so a DROP
-        // PROPERTY committing in between leaves a name here with nothing behind it. getPolymorphicProperty() would
-        // raise "Cannot find property" and fail the record create over a property the schema no longer has - which is
-        // exactly the outcome the drop asked us to avoid - so a name that has already gone is skipped instead.
+        // Issue #6799: on the plan-step path (ApplyDefaultsStep), which holds no database lock, the name set is read
+        // and the lookup that follows is a separate step, so a DROP PROPERTY committing in between leaves a name here
+        // with nothing behind it. getPolymorphicProperty() would raise "Cannot find property" and fail the record
+        // create over a property the schema no longer has - exactly the outcome the drop asked us to avoid - so a
+        // name that has already gone is skipped instead.
         final Property property = getPolymorphicPropertyIfExists(propertyName);
         if (property == null)
           continue;

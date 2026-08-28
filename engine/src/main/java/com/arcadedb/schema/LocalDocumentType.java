@@ -61,11 +61,11 @@ public class LocalDocumentType implements DocumentType {
   protected final List<LocalDocumentType>           superTypes                   = new ArrayList<>();
   protected final List<LocalDocumentType>           subTypes                     = new ArrayList<>();
   private         Set<String>                       aliases                      = Collections.emptySet();
-  // Mutated by CREATE/DROP PROPERTY under the schema write lock, but read without it: by every record create
-  // (applyDefaultValues, getPolymorphicProperty), by query planning, and by toJSON() - which
-  // LocalSchema.recordFileChanges calls to save schema.json AFTER the write lock is released, so a save running
-  // alongside another thread's DDL threw ConcurrentModificationException out of a plain HashMap. Concurrent, so a
-  // reader crossing an in-flight mutation sees a weakly consistent view of it rather than a corrupt one (#6799).
+  // Mutated by CREATE/DROP PROPERTY under the schema write lock. Record creation reads it under the read lock and is
+  // therefore excluded, but two readers are not: query planning, and toJSON() - which LocalSchema.recordFileChanges
+  // calls to save schema.json AFTER the write lock is released, so a save running alongside another thread's DDL threw
+  // ConcurrentModificationException straight out of a plain HashMap. Concurrent, so a reader crossing an in-flight
+  // mutation sees a weakly consistent view of it rather than a corrupt one (#6799).
   protected final Map<String, Property>             properties                   = new ConcurrentHashMap<>();
   protected final Map<Integer, List<IndexInternal>> bucketIndexesByBucket        = new HashMap<>();
   protected final Map<List<String>, TypeIndex>      indexesByProperties          = new HashMap<>();
@@ -81,11 +81,16 @@ public class LocalDocumentType implements DocumentType {
   protected       BucketSelectionStrategy           bucketSelectionStrategy      = new RoundRobinBucketSelectionStrategy();
   // Names of the OWN properties that declare a DEFAULT. A cache: the authority is the per-property default value, but
   // record creation would otherwise pay an O(properties) scan to find the (usually empty) subset that has one.
-  // Copy-on-write and read lock-free by every record create through getPolymorphicPropertiesWithDefaultDefined(), so
-  // the replacement has to be published atomically or a creating thread could observe a half-built set - the same
-  // publication requirement documented on cachedPolymorphicBuckets above. An AtomicReference rather than a volatile
-  // field because the update is a read-copy-write: two ALTER PROPERTY ... DEFAULT statements on two properties of the
-  // same type would otherwise copy the same snapshot and the second publication would drop the first one's name.
+  // Copy-on-write, and read through getPolymorphicPropertiesWithDefaultDefined() by ApplyDefaultsStep (the SQL insert
+  // and UPDATE ... APPLY DEFAULTS plans), which holds no database lock - LocalDatabase.createRecord does take the read
+  // lock, so that path is already excluded against DDL. The replacement therefore has to be published atomically or a
+  // lock-free reader could observe a half-built set, the same publication requirement documented on
+  // cachedPolymorphicBuckets above.
+  // An AtomicReference rather than a plain volatile field, unlike those siblings, because the update is a
+  // read-copy-write and it must stay correct where its writers are NOT serialized: setDefaultValue publishes inside
+  // recordFileChanges, but that bypasses the write lock entirely while the schema is being read from file, and the
+  // CAS is what makes setPropertyHasDefault safe on its own terms rather than only as long as every future caller
+  // remembers to hold the lock. Without it, two writers copying the same snapshot would lose one of the two names.
   // Maintained in exactly one place, {@link #setPropertyHasDefault}, so it cannot drift from the properties map
   // again (issue #6799).
   private final AtomicReference<Set<String>>        propertiesWithDefaultDefined = new AtomicReference<>(
