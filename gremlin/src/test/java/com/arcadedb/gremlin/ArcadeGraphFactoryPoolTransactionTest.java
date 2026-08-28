@@ -166,6 +166,19 @@ class ArcadeGraphFactoryPoolTransactionTest {
   }
 
   @Test
+  void aBorrowedRemoteInstanceCannotDropTheServerSideDatabase() {
+    // NO SERVER IS NEEDED, AND THAT IS THE POINT: RemoteDatabase CONNECTS LAZILY, SO drop() MUST BE REFUSED BEFORE
+    // ANYTHING REACHES THE WIRE. LEFT UNGUARDED IT WOULD SEND "drop database" AND DELETE IT FOR EVERY OTHER CLIENT
+    // OF THAT SERVER, NOT ONLY FOR THE REST OF THE POOL.
+    try (final ArcadeGraphFactory remotePool = ArcadeGraphFactory.withRemote("127.0.0.1", 1, "never-reached", "root", "root")) {
+      final ArcadeGraph borrowed = remotePool.get();
+      assertThatThrownBy(borrowed::drop)
+          .as("a borrowed remote instance must not drop the database the whole server shares")
+          .isInstanceOf(UnsupportedOperationException.class);
+    }
+  }
+
+  @Test
   void theFactoryDoesNotMakeAbandonedWritesDurableOnClose() {
     final ArcadeGraph graph = factory.get();
     graph.addVertex(T.label, "Person", "name", "abandoned");
