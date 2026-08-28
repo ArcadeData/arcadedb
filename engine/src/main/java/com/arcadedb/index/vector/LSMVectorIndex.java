@@ -8519,6 +8519,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (visited <= 0)
       return;
     final int previous = graphWalkVisited;
+    // Integer division, deliberately: a sample within three visits of the current average truncates to no change
+    // at all. That is a feature at this resolution - the average is a denominator for a rebuild decision, not a
+    // measurement anyone reads - and it keeps the whole update to one add, one subtract and one shift on a path
+    // every query takes. A float would track those last three visits and buy nothing with them.
     graphWalkVisited = previous <= 0 ? visited : previous + (visited - previous) / 4;
   }
 
