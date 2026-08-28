@@ -176,7 +176,7 @@ class Issue6797DeltaScanScalingTest extends TestHelper {
     // the trigger. This is what stops the policy asking for a rebuild the instant the buffer refills.
     assertThat(index.getStats().get("deltaScanWorkSinceRebuild"))
         .as("no query has scanned the new buffer yet")
-        .isLessThan(index.getStats().get("estimatedRebuildWork"));
+        .isLessThan(index.getStats().get("deltaScanWorkTarget"));
 
     // The trigger lives on the search path, so searches are what must notice - and enough of them that the scan
     // they have collectively paid for exceeds what the rebuild will cost.
@@ -212,9 +212,15 @@ class Issue6797DeltaScanScalingTest extends TestHelper {
     index.findNeighborsFromVector(randomUnitVector(random), 10);
 
     final long budget = index.getStats().get("deltaScanBudget");
-    final long rebuildWork = index.getStats().get("estimatedRebuildWork");
+    // deltaScanWorkTarget, not estimatedRebuildWork: the latter is the graph-only cost estimate, the former is
+    // that estimate scaled by the ratio and is what the trigger actually compares against.
+    final long rebuildWork = index.getStats().get("deltaScanWorkTarget");
     assertThat(budget).isLessThan(Long.MAX_VALUE);
     assertThat(rebuildWork).isPositive();
+    assertThat(index.getStats().get("estimatedRebuildWork"))
+        .as("the cost estimate must answer for the graph alone - at ratio 1.0 the target equals it, and it must "
+            + "not have been scaled twice")
+        .isEqualTo(rebuildWork);
 
     // Policy off while the state is arranged: the scan is charged to the amortization counter regardless of the
     // ratio, but with the ratio at 0 nothing - search path or timer - can act on what accumulates.
@@ -245,6 +251,43 @@ class Issue6797DeltaScanScalingTest extends TestHelper {
     assertThat(index.inactivityRebuildIsWorthIt())
         .as("policy on: the same buffer, on an idle machine, is worth the rebuild the search path would also "
             + "have asked for (issue #6797)").isTrue();
+  }
+
+  /**
+   * The approximate search path scans the delta buffer too - {@code mergeWithDeltaScanApproximate} delegates the
+   * scan itself to {@code mergeWithDeltaScan} - but it is the one search path that never called
+   * {@code rebuildGraphBeforeSearch()}, so no query on it has ever triggered a rebuild of any kind. Leaving it
+   * out would have made the mode sold on microsecond latency the one mode where the linear scan still grows
+   * without limit.
+   */
+  @Test
+  void theApproximateSearchPathIsBoundedToo() {
+    disableEveryCountBasedTrigger();
+    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MAX_DELTA_SCAN_RATIO, 1.0f);
+
+    final Random random = new Random(6797);
+    final LSMVectorIndex index = createSettledIndex(random, true);
+
+    // Every query below goes through the PQ path, never the exact one - if PQ were unavailable the method falls
+    // back to findNeighborsFromVector and this test would silently be re-testing the path already covered.
+    assertThat(index.isPQSearchAvailable())
+        .as("this fixture must exercise the approximate path, not fall back to the exact one").isTrue();
+
+    index.findNeighborsFromVectorApproximate(randomUnitVector(random), 10);
+    final long budget = index.getStats().get("deltaScanBudget");
+    assertThat(budget).as("the approximate path must feed the walk measurement as well")
+        .isLessThan(Long.MAX_VALUE);
+
+    insertVectors(random, (int) Math.min(budget + 50, 5_000));
+    assertThat(index.getStats().get("deltaVectorsCount")).isGreaterThanOrEqualTo(budget);
+
+    Awaitility.await("approximate queries alone must be able to drain a buffer they are paying to scan")
+        .atMost(REBUILD_SETTLE_TIMEOUT)
+        .pollInterval(Duration.ofMillis(50))
+        .untilAsserted(() -> {
+          index.findNeighborsFromVectorApproximate(randomUnitVector(random), 10);
+          assertThat(index.getStats().get("deltaVectorsCount")).isZero();
+        });
   }
 
   /**
@@ -369,10 +412,21 @@ class Issue6797DeltaScanScalingTest extends TestHelper {
   }
 
   private LSMVectorIndex createSettledIndex(final Random random) {
+    return createSettledIndex(random, false);
+  }
+
+  private LSMVectorIndex createSettledIndex(final Random random, final boolean productQuantization) {
     database.transaction(() -> {
       database.getSchema().createVertexType("Embedding");
       database.getSchema().getType("Embedding").createProperty("vector", Type.ARRAY_OF_FLOATS);
-      database.command("sql", """
+      database.command("sql", productQuantization ? """
+          CREATE INDEX ON Embedding (vector) LSM_VECTOR
+          METADATA {
+              "dimensions": %d,
+              "similarity": "EUCLIDEAN",
+              "quantization": "PRODUCT",
+              "pqClusters": 32
+          }""".formatted(EMBEDDING_DIM) : """
           CREATE INDEX ON Embedding (vector) LSM_VECTOR
           METADATA {
               "dimensions": %d,

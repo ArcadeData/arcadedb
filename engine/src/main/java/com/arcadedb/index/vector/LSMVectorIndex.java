@@ -2273,6 +2273,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // again (issue #6797). Reset for a FAILED build too, deliberately: the buffer it did not drain is still
       // there and still being scanned, so the counter refills on its own, and making the retry wait out another
       // full window is what stops a build that keeps failing from being retried in a tight loop.
+      //
+      // Racy by design, in one direction only: a query that started before this line can land its addAndGet()
+      // after it, crediting the new window with a scan performed against the buffer this build just drained. The
+      // effect is bounded by the queries in flight at this instant and biases the next rebuild marginally early -
+      // never late - which is the same tolerance graphWalkVisited is documented to have. Closing it would mean
+      // holding a lock across the whole build to bracket a counter that only feeds a heuristic.
       deltaScanWorkSinceRebuild.set(0L);
       graphBuildLock.unlock();
     }
@@ -3692,6 +3698,36 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // or the linear delta scan those mutations left behind has outgrown the graph walk it supplements
       // (issue #6797). Search uses the current graph (valid, just missing newest vectors) while rebuild runs in
       // background.
+      startAsyncGraphRebuild();
+  }
+
+  /**
+   * The delta-scan half of {@link #rebuildGraphBeforeSearch()}, for the approximate search path (issue #6797).
+   * <p>
+   * {@link #findNeighborsFromVectorApproximate} has never called {@code rebuildGraphBeforeSearch()} - only the
+   * exact, grouped and {@code get()} paths do - so no search on it has ever triggered a rebuild of any kind. That
+   * is survivable for the mutation-count thresholds, which the other paths and the inactivity timer reach anyway
+   * on any index that sees more than one kind of query. It is not survivable for a bound whose entire subject is
+   * the cost of a delta scan this path performs on every query: leaving it out would mean the one search mode
+   * sold on microsecond latency is the one mode where the scan still grows without limit.
+   * <p>
+   * Only the new trigger is evaluated here, deliberately, and not by calling {@code rebuildGraphBeforeSearch()}
+   * outright. That method's small-graph arm rebuilds <em>synchronously, on the calling thread</em>, and putting a
+   * synchronous full rebuild into a path whose contract is zero disk I/O and microsecond latency is a change of
+   * a different kind from the one this issue is about. Whether the count thresholds should reach this path too
+   * is a real question, and a separate one.
+   */
+  private void boundDeltaScanBeforeApproximateSearch() {
+    if (graphState != GraphState.MUTABLE || asyncRebuildInProgress)
+      return;
+
+    final ImmutableGraphIndex graph = this.graphIndex;
+    if (graph == null || graph.size() < ASYNC_REBUILD_MIN_GRAPH_SIZE)
+      // Same gate the search path applies: below this size a rebuild is cheap, and the only thing that rebuilds
+      // a small graph here is the synchronous arm this method exists to stay out of.
+      return;
+
+    if (deltaScanOverBudget())
       startAsyncGraphRebuild();
   }
 
@@ -6108,6 +6144,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Ensure graph is available (lazy-load from disk if needed)
       ensureGraphAvailable();
 
+      // This path scans the delta buffer too - mergeWithDeltaScanApproximate delegates the scan itself to
+      // mergeWithDeltaScan - so the bound on that scan has to apply here as well, or the one search mode sold on
+      // microsecond latency is the one mode where the linear scan still grows without limit (issue #6797).
+      boundDeltaScanBeforeApproximateSearch();
+
       // Issue #5924: see findNeighborsFromVector's matching clamp - k drives the same eager
       // ArrayList/PriorityQueue allocation sizes below, so it needs the same bound.
       k = Math.min(k, Math.max(vectorIndex().size(), 0) + deltaVectors.size());
@@ -7633,8 +7674,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // exceeded and the first of these to have reached the second.
     stats.put("deltaScanWorkSinceRebuild", deltaScanWorkSinceRebuild.get());
     final ImmutableGraphIndex statsGraph = graphIndex;
-    stats.put("estimatedRebuildWork",
-        statsGraph != null ? estimateRebuildWork(statsGraph.size(), maxDeltaScanRatio()) : 0L);
+    stats.put("estimatedRebuildWork", statsGraph != null ? estimateRebuildWork(statsGraph.size()) : 0L);
+    stats.put("deltaScanWorkTarget",
+        statsGraph != null ? deltaScanWorkTarget(statsGraph.size(), maxDeltaScanRatio()) : 0L);
 
     // On-heap cache size of the live incremental builder (bounded, issue #3144)
     stats.put("liveVectorCacheSize", liveVectorValues != null ? (long) liveVectorValues.vectorCount() : 0L);
@@ -8542,7 +8584,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     final ImmutableGraphIndex graph = this.graphIndex;
     return graph != null
-        && deltaScanPaysForARebuild(deltaScanWorkSinceRebuild.get(), estimateRebuildWork(graph.size(), ratio));
+        && deltaScanPaysForARebuild(deltaScanWorkSinceRebuild.get(), deltaScanWorkTarget(graph.size(), ratio));
   }
 
   /**
@@ -8585,9 +8627,23 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * both halves of the trigger: raising it makes the engine more tolerant of the scan and rebuild less often,
    * lowering it does the opposite.
    */
-  private long estimateRebuildWork(final int graphSize, final float ratio) {
-    final double work = (double) Math.max(0, graphSize) * Math.max(1, metadata.beamWidth) * Math.max(0f, ratio);
-    return (long) Math.min(Long.MAX_VALUE, work);
+  private long estimateRebuildWork(final int graphSize) {
+    return (long) Math.max(0, graphSize) * Math.max(1, metadata.beamWidth);
+  }
+
+  /**
+   * {@link #estimateRebuildWork(int)} scaled by {@code maxDeltaScanRatio}: the number the accumulated scan work is
+   * actually compared against, so the setting reads the same way on both halves of the trigger - raising it makes
+   * the engine more tolerant of the scan and rebuild less often, lowering it does the opposite.
+   * <p>
+   * Kept apart from the estimate rather than folded into it so that neither number lies. {@code getStats()}
+   * reports both, and an operator reading {@code estimatedRebuildWork} to answer "how expensive is my next
+   * rebuild" gets an answer that depends on the graph alone - not one that moves when a latency-tuning knob does,
+   * which would make two databases differing only in {@code maxDeltaScanRatio} appear to have differently
+   * expensive rebuilds.
+   */
+  private long deltaScanWorkTarget(final int graphSize, final float ratio) {
+    return (long) Math.min(Long.MAX_VALUE, (double) estimateRebuildWork(graphSize) * Math.max(0f, ratio));
   }
 
   /**
