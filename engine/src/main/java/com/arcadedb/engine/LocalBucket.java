@@ -359,6 +359,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
      * delete path meets a break in the transaction's view and asks the newest committed image whether the same hop,
      * to the same target, still fails. A committed image that breaks somewhere else is a record that MOVED under the
      * delete, which is contention and must keep its retry - not the permanent corruption verdict.
+     * <p>
+     * Set exactly when {@link #findBrokenChunkChain} returns a reason, and back to {@code -1}/{@code 0} on every exit
+     * that proves nothing - the clean walk included.
      */
     private int  brokenAtChunk = -1;
     private long brokenAtPointer;
@@ -640,6 +643,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     } catch (final BrokenChunkChainException e) {
       // NO PROBE NEEDED: the delete's own walk confirmed the break against the newest committed image before saying
       // so (#6282). This is the case force exists for, and the one this method escalates for.
+      LogManager.instance().log(this, Level.FINE, "Force-deleting record %s: %s", e, rid, e.getMessage());
       deleteRecord(rid, true);
     } catch (final ConcurrentModificationException e) {
       // CONTENTION, or a break the confirmation could not prove. The probe is what tells them apart, and since #6282
@@ -3561,9 +3565,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       for (int chunkId = 0; ; ++chunkId) {
         final long nextChunkPointer = chunkPage.readLong(
                 (int) (chunkPositionInPage + chunkHeader[1] + INT_SERIALIZED_SIZE));
-        if (nextChunkPointer == 0)
-          // REACHED THE LAST CHUNK CLEANLY
+        if (nextChunkPointer == 0) {
+          // REACHED THE LAST CHUNK CLEANLY. The break location is cleared rather than left pointing at the last
+          // SUCCESSFUL hop: both current consumers read it only after a reason came back, but a documented invariant
+          // that the code does not keep is a trap for the next one (PR review).
+          walk.brokenAtChunk = -1;
+          walk.brokenAtPointer = 0;
           return null;
+        }
 
         // FROM HERE UNTIL THE NEXT LAP, ANY FAILURE - RETURNED OR THROWN - HAPPENED FOLLOWING THIS HOP. Recorded up
         // front rather than at each exit because a corrupt slot offset leaves through an exception, and the catch
