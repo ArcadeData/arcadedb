@@ -43,13 +43,24 @@ public class Source {
     this.closeCallback = closeCallback;
   }
 
+  /**
+   * Re-opens the underlying stream from the beginning. A failure here leaves the source unreadable, so it is
+   * propagated rather than only logged: swallowing it turned a broken re-open into an empty stream, and the import
+   * then reported a successful run with zero records instead of an error (issue #6810).
+   */
   public void reset() throws IOException {
-    if (resetCallback != null)
-      try {
-        resetCallback.call(this);
-      } catch (final Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error on resetting source %s", e, this);
-      }
+    if (resetCallback == null)
+      return;
+
+    try {
+      resetCallback.call(this);
+    } catch (final RuntimeException e) {
+      // com.arcadedb.utility.Callable.call() declares no checked exception, so both reset callbacks in
+      // SourceDiscovery already wrap their IOException into an ImportException: a RuntimeException is the only thing
+      // that can arrive here
+      LogManager.instance().log(this, Level.SEVERE, "Error on resetting source %s", e, this);
+      throw e;
+    }
   }
 
   public void close() {

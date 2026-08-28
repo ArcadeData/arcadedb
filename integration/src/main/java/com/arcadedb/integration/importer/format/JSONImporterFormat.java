@@ -217,7 +217,11 @@ public class JSONImporterFormat implements FormatImporter {
         if (recordFailed.get())
           throw new ImportException("A nested object/array failed to import, skipping the whole record", null);
 
-        if (record instanceof Map)
+        // ONLY A RECORD WITH NO MAPPING AT ALL IS AN ANONYMOUS DOCUMENT. WITH A MAPPING OBJECT, a Map COMING BACK
+        // MEANS createRecord() REFUSED THE RECORD (MISSING @cat/@type, UNRESOLVABLE @type, OR AN EDGE DEFERRED TO
+        // THE MAPPING PHASE) - MATERIALIZING IT INTO settings.documentTypeName SAVED EXACTLY WHAT THE IMPORTER HAD
+        // JUST LOGGED AS SKIPPED (ISSUE #6812)
+        if (record instanceof Map && mappingObject == null)
           saveAnonymousRecord(database, settings, (Map<String, Object>) record);
 
         database.commit();
@@ -350,6 +354,11 @@ public class JSONImporterFormat implements FormatImporter {
       document.save();
       return record;
     }
+
+    if (record != null)
+      // A DUPLICATE @id WITHOUT "@strategy": "merge": createRecord() RETURNED THE EXISTING, IMMUTABLE RECORD.
+      // HAND IT BACK SO THE CALLER LINKS TO IT INSTEAD OF RE-MATERIALIZING THE SKIPPED ATTRIBUTES (ISSUE #6812)
+      return record;
 
     return attributes.map;
   }
@@ -669,17 +678,20 @@ public class JSONImporterFormat implements FormatImporter {
         }
 
         final MutableVertex destVertex;
-        if (destVertexItem instanceof Document)
-          destVertex = (MutableVertex) destVertexItem;
+        // modify() IS A NO-OP ON A MutableVertex AND THE ONLY WAY TO GET ONE OUT OF AN EXISTING (IMMUTABLE) RECORD,
+        // WHICH IS WHAT createRecord() HANDS BACK FOR A DEDUPLICATED @id
+        if (destVertexItem instanceof Vertex vertex)
+          destVertex = vertex.modify();
         else if (destVertexItem instanceof Map) {
-          destVertex = (MutableVertex) createRecord(record.getDatabase(), context,
+          final Document destRecord = createRecord(record.getDatabase(), context,
               new CascadingProperties(attributes, (Map<String, Object>) destVertexItem),
               destVertexMappingObject, settings);
-          if (destVertex == null) {
+          if (!(destRecord instanceof Vertex destVertexRecord)) {
             LogManager.instance().log(this, Level.WARNING, "Cannot convert inner map into destination vertex: %s", destVertexItem);
             context.errors.incrementAndGet();
             return null;
           }
+          destVertex = destVertexRecord.modify();
         } else {
           LogManager.instance().log(this, Level.WARNING, "Cannot convert object " + destVertexItem + " into a record");
           context.errors.incrementAndGet();
