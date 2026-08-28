@@ -19,6 +19,7 @@
 package com.arcadedb.gremlin.shading;
 
 import com.arcadedb.gremlin.ArcadeGraph;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
@@ -90,6 +91,12 @@ class ShadedJarLayoutTest {
         .as("arcadedb-gremlin must be on the test classpath as the shaded uber-jar, not as target/classes")
         .endsWith("-shaded.jar");
     shadedJar = new JarFile(file);
+  }
+
+  @AfterAll
+  static void closeShadedJar() throws Exception {
+    if (shadedJar != null)
+      shadedJar.close();
   }
 
   @Test

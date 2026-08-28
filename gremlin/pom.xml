@@ -156,6 +156,17 @@
             <version>${ivy.version}</version>
         </dependency>
 
+        <!-- Groovy core is declared directly so its version is pinned at depth 1. It also arrives
+             transitively from groovy-groovysh (4.0.33) and from gremlin-groovy (4.0.25), both at
+             depth 2, so without this declaration Maven picks the winner by DECLARATION ORDER:
+             moving the gremlin-groovy block above groovy-groovysh silently drops the whole
+             uber-jar back to Groovy 4.0.25. A silent version divergence of exactly that kind is
+             what issue #6771 was, so the pin is explicit rather than positional. -->
+        <dependency>
+            <groupId>org.apache.groovy</groupId>
+            <artifactId>groovy</artifactId>
+            <version>${groovy.version}</version>
+        </dependency>
         <dependency>
             <groupId>org.apache.groovy</groupId>
             <artifactId>groovy-groovysh</artifactId>
@@ -336,10 +347,6 @@
                             <shadedPattern>com.arcadedb.gremlin.shaded.com.github</shadedPattern>
                         </relocation>
                         <relocation>
-                            <pattern>org.objectweb</pattern>
-                            <shadedPattern>com.arcadedb.gremlin.shaded.org.objectweb</shadedPattern>
-                        </relocation>
-                        <relocation>
                             <pattern>com.carrotsearch</pattern>
                             <shadedPattern>com.arcadedb.gremlin.shaded.com.carrotsearch</shadedPattern>
                         </relocation>
@@ -354,10 +361,6 @@
                         <relocation>
                             <pattern>org.apache.ivy</pattern>
                             <shadedPattern>com.arcadedb.gremlin.shaded.org.apache.ivy</shadedPattern>
-                        </relocation>
-                        <relocation>
-                            <pattern>org.abego</pattern>
-                            <shadedPattern>com.arcadedb.gremlin.shaded.org.abego</shadedPattern>
                         </relocation>
                         <relocation>
                             <pattern>nl.altindag</pattern>

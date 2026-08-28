@@ -50,7 +50,8 @@
 
     <!-- NOTE: because the shaded/tests arcadedb-gremlin artifacts below use a wildcard (*:*)
          exclusion, this module must re-declare by hand every dependency the migrated gremlin
-         tests need (engine, network, server + test-jar, gremlin-test, junit-vintage). If a new
+         tests need (engine, network, server + test-jar, integration, gremlin-test, junit-vintage).
+         If a new
          test dependency is added to the gremlin module, mirror it here or the migrated tests
          will fail to resolve it. -->
     <dependencies>
@@ -102,7 +103,6 @@
             <version>${assertj-core.version}</version>
             <scope>test</scope>
         </dependency>
-
 
         <!-- Server module used by the com.arcadedb.server.gremlin.* tests, which start an
              embedded ArcadeDBServer. It is provided-scope in gremlin/pom.xml (assembled by the
