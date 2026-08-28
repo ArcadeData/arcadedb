@@ -391,14 +391,19 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   public void updateUserClusterWide(final JSONObject userConfiguration) {
     final HAServerPlugin ha = server != null ? server.getHA() : null;
     if (ha == null) {
+      // updateUser() itself revokes the principal's sessions when the password changed.
       updateUser(userConfiguration);
       return;
     }
 
     final String name = userConfiguration.getString("name");
+    final boolean passwordChanged;
     synchronized (this) {
-      if (!users.containsKey(name))
+      final ServerSecurityUser previous = users.get(name);
+      if (previous == null)
         throw new ServerSecurityException("User '" + name + "' not found");
+
+      passwordChanged = !Objects.equals(previous.getPassword(), userConfiguration.getString("password", null));
 
       final JSONArray currentUsers = new JSONArray(getUsersJsonPayload());
       final JSONArray replaced = new JSONArray();
@@ -408,6 +413,15 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       }
       ha.replicateSecurityUsers(replaced.toString());
     }
+
+    // Applying the replicated list already dropped this principal's LOGIN sessions on every node, this one
+    // included. What that path cannot do is touch the transaction sessions: it runs on the Raft
+    // state-machine apply thread, and cancelling a transaction session waits on the session lock for any
+    // in-flight command. So the serving node closes that half here, outside the monitor - the same shape
+    // dropUserClusterWide() uses, and with the same limitation: a peer's open transaction sessions for the
+    // principal are left to their own idle timeout.
+    if (passwordChanged)
+      invalidateHttpSessions(name);
   }
 
   /**
