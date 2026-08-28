@@ -154,8 +154,14 @@ public class ServerSecurityUser implements SecurityUser {
     if (databaseGroups == null)
       return;
 
-    dbu.updateDatabaseConfiguration(databaseGroups);
-    dbu.updateFileAccess(database, databaseGroups);
+    // Both halves under ONE critical section (the two methods are themselves synchronized on dbu, and the
+    // monitor is reentrant). Called separately, a concurrent request could observe the new database-level
+    // grants together with the old per-type map, or the reverse - a window of microseconds, but a refresh
+    // that exists to make a revocation take effect should not have a state in which it is half taken.
+    synchronized (dbu) {
+      dbu.updateDatabaseConfiguration(databaseGroups);
+      dbu.updateFileAccess(database, databaseGroups);
+    }
   }
 
   public void refreshDatabaseNames() {

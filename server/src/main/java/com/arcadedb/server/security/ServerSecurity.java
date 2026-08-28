@@ -349,7 +349,22 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     return user;
   }
 
+  /**
+   * The {@link SecurityManager} entry point, and therefore what the openCypher {@code DROP USER} admin
+   * command reaches through {@code database.getSecurity()}. Cluster-aware, so that door cannot reopen the
+   * divergence #6808 closed on the REST one: a Cypher drop over Bolt or {@code /api/v1/command} used to
+   * mutate the user store on the serving node only.
+   */
+  @Override
   public boolean dropUser(final String userName) {
+    return dropUserClusterWide(userName);
+  }
+
+  /**
+   * Drops the user on THIS node only, with no replication. The local half of {@link #dropUserClusterWide};
+   * every caller that is not that method wants the cluster-aware {@link #dropUser} instead.
+   */
+  public boolean dropUserLocally(final String userName) {
     synchronized (this) {
       if (!users.containsKey(userName))
         return false;
@@ -440,7 +455,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   public boolean dropUserClusterWide(final String userName) {
     final HAServerPlugin ha = server != null ? server.getHA() : null;
     if (ha == null)
-      return dropUser(userName);
+      return dropUserLocally(userName);
 
     synchronized (this) {
       if (!users.containsKey(userName))
@@ -510,6 +525,10 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     return info;
   }
 
+  /**
+   * The {@link SecurityManager} entry point reached by the openCypher {@code CREATE USER} admin command.
+   * Cluster-aware for the same reason {@link #dropUser} is (issue #6808).
+   */
   @Override
   public void createUser(final String name, final String password) {
     final String encodedPassword = encodePassword(password);
@@ -517,18 +536,25 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     config.put("name", name);
     config.put("password", encodedPassword);
     config.put("databases", new JSONObject().put("*", new JSONArray().put("admin")));
-    createUser(config);
+    createUserClusterWide(config);
   }
 
+  /**
+   * The {@link SecurityManager} entry point reached by the openCypher {@code ALTER USER ... SET PASSWORD}
+   * admin command. Routed through {@link #updateUserClusterWide} so the rotation reaches every peer (issue
+   * #6808) and so a single place decides that a changed hash revokes the principal's live sessions.
+   */
   @Override
   public void setUserPassword(final String userName, final String password) {
     final ServerSecurityUser user = users.get(userName);
     if (user == null)
       throw new ServerSecurityException("User '" + userName + "' not found");
-    user.setPassword(encodePassword(password));
-    saveUsers();
-    // A password change re-authenticates the principal: drop its live HTTP transaction sessions.
-    invalidateHttpSessions(userName);
+
+    // A copy: updateUser() compares the previous user's stored hash against the new configuration's, so
+    // mutating the live configuration in place would hide the very change it has to detect.
+    final JSONObject updated = user.toJSON().copy();
+    updated.put("password", encodePassword(password));
+    updateUserClusterWide(updated);
   }
 
   /**

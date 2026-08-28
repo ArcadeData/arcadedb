@@ -50,6 +50,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class RaftUserManagement3NodesIT extends BaseRaftHATest {
 
+  /** Created on demand by the Cypher test: the openCypher engine is per-database, so a server-wide admin
+   *  statement still has to be addressed to one. */
+  private static final String CYPHER_DATABASE = "cypheradmin";
+
   RaftUserManagement3NodesIT() {
     // Each server gets its own root path so they don't share config files.
     // In production, servers run in separate processes; in tests, all servers
@@ -255,6 +259,85 @@ class RaftUserManagement3NodesIT extends BaseRaftHATest {
     for (int i = 0; i < getServerCount(); i++)
       assertThat(postServerCommandReturnStatus(i, "list databases", "bob", "bobpassword2"))
           .as("server %d login as bob after DELETE /api/v1/server/users", i).isEqualTo(403);
+  }
+
+  /**
+   * The openCypher admin commands are a third door onto the user store, next to the REST endpoints and the
+   * {@code POST /api/v1/server} commands: {@code CREATE USER} / {@code ALTER USER ... SET PASSWORD} /
+   * {@code DROP USER} reach {@code ServerSecurity} through the {@code SecurityManager} interface. They used
+   * to mutate the serving node only - the same divergence issue #6808 is about, reached through Cypher
+   * instead of REST.
+   */
+  @Test
+  void cypherUserCommandsReplicateAcrossCluster() throws Exception {
+    assertThat(findLeaderIndex()).isGreaterThanOrEqualTo(0);
+
+    // The Cypher engine is per-database, so a server-wide admin statement still has to be addressed to one.
+    postServerCommandRetryOn503(0, "create database " + CYPHER_DATABASE);
+    Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(200, TimeUnit.MILLISECONDS)
+        .until(() -> getServer(0).existsDatabase(CYPHER_DATABASE));
+
+    retryOn503(() -> cypher(0, "CREATE USER carol SET PASSWORD 'carolpassword1'"));
+
+    Awaitility.await().atMost(15, TimeUnit.SECONDS).pollInterval(200, TimeUnit.MILLISECONDS)
+        .until(() -> {
+          for (int i = 0; i < getServerCount(); i++)
+            if (getServer(i).getSecurity().getUser("carol") == null)
+              return false;
+          return true;
+        });
+
+    for (int i = 0; i < getServerCount(); i++)
+      assertThat(postServerCommandReturnStatus(i, "list databases", "carol", "carolpassword1"))
+          .as("server %d login as carol created through Cypher", i).isEqualTo(200);
+
+    // ALTER USER ... SET PASSWORD must reach every peer too, or the old password keeps working elsewhere.
+    retryOn503(() -> cypher(0, "ALTER USER carol SET PASSWORD 'carolpassword2'"));
+
+    Awaitility.await().atMost(15, TimeUnit.SECONDS).pollInterval(200, TimeUnit.MILLISECONDS)
+        .until(() -> {
+          for (int i = 0; i < getServerCount(); i++)
+            if (postServerCommandReturnStatus(i, "list databases", "carol", "carolpassword2") != 200)
+              return false;
+          return true;
+        });
+
+    for (int i = 0; i < getServerCount(); i++)
+      assertThat(postServerCommandReturnStatus(i, "list databases", "carol", "carolpassword1"))
+          .as("server %d must reject carol's rotated-away password", i).isEqualTo(403);
+
+    retryOn503(() -> cypher(0, "DROP USER carol"));
+
+    Awaitility.await().atMost(15, TimeUnit.SECONDS).pollInterval(200, TimeUnit.MILLISECONDS)
+        .until(() -> {
+          for (int i = 0; i < getServerCount(); i++)
+            if (getServer(i).getSecurity().getUser("carol") != null)
+              return false;
+          return true;
+        });
+
+    for (int i = 0; i < getServerCount(); i++)
+      assertThat(postServerCommandReturnStatus(i, "list databases", "carol", "carolpassword2"))
+          .as("server %d login as carol after a Cypher DROP USER", i).isEqualTo(403);
+  }
+
+  /**
+   * Runs a Cypher admin statement against the given server. The statement needs a database to be addressed
+   * to even though it mutates server-wide state, so it goes to the one this suite creates on demand.
+   */
+  private int cypher(final int serverIndex, final String statement) throws Exception {
+    final HttpURLConnection connection = (HttpURLConnection) new URI(
+        "http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + CYPHER_DATABASE).toURL().openConnection();
+    connection.setRequestMethod("POST");
+    connection.setRequestProperty("Authorization", "Basic " + Base64.getEncoder()
+        .encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+    try {
+      formatPayload(connection, new JSONObject().put("language", "cypher").put("command", statement));
+      connection.connect();
+      return connection.getResponseCode();
+    } finally {
+      connection.disconnect();
+    }
   }
 
   /**
