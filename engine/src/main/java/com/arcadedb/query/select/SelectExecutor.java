@@ -89,8 +89,15 @@ public class SelectExecutor {
    * exactly the work the caller asked to bound - index lookup included, since that is part of answering the query.
    */
   private void startTimeout() {
-    if (select.timeoutInMs > 0)
-      timeoutDeadline = System.currentTimeMillis() + select.timeoutInMs;
+    if (select.timeoutInMs > 0) {
+      // SATURATE INSTEAD OF WRAPPING: TimeUnit.toMillis() CLAMPS AN OUT-OF-RANGE CONVERSION TO Long.MAX_VALUE RATHER
+      // THAN REJECTING IT, SO timeout(Long.MAX_VALUE, DAYS, ...) REACHES US AS Long.MAX_VALUE AND A PLAIN
+      // now + timeoutInMs WOULD OVERFLOW INTO A NEGATIVE DEADLINE - TURNING AN EFFECTIVELY INFINITE BUDGET INTO ONE
+      // THAT HAS ALREADY EXPIRED, SO THE FIRST RECORD WOULD THROW. CLAMPING TO Long.MAX_VALUE LANDS ON THE
+      // "NO TIMEOUT" SENTINEL, WHICH IS EXACTLY WHAT A BUDGET THAT LARGE MEANS
+      final long now = System.currentTimeMillis();
+      timeoutDeadline = select.timeoutInMs > Long.MAX_VALUE - now ? Long.MAX_VALUE : now + select.timeoutInMs;
+    }
   }
 
   /**

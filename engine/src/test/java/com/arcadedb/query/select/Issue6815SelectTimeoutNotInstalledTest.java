@@ -192,6 +192,39 @@ public class Issue6815SelectTimeoutNotInstalledTest extends TestHelper {
         .where().property("id").ge().value(0).count()).isEqualTo(SCAN_ROWS);
   }
 
+  /**
+   * A deadline so far away it can never expire must behave like no deadline at all. Computing it as
+   * {@code now + timeoutInMs} overflows into a negative value once {@code timeoutInMs} approaches {@code Long.MAX_VALUE}
+   * - which {@link TimeUnit#toMillis} saturates to rather than rejecting - turning an effectively infinite budget into
+   * one that has already expired, so the very first record throws. Deterministic: no clock reading decides the outcome.
+   */
+  @Test
+  void anEffectivelyInfiniteTimeoutNeverExpires() {
+    assertThat(database.select().fromType("V")//
+        .where().property("id").ge().value(0)//
+        .timeout(Long.MAX_VALUE, TimeUnit.MILLISECONDS, true).vertices().toList()).hasSize(ROWS);
+
+    assertThat(database.select().fromType("Scan")//
+        .where().property("id").ge().value(0)//
+        .timeout(Long.MAX_VALUE, TimeUnit.DAYS, true).count()).isEqualTo(SCAN_ROWS);
+
+    assertThat(database.select().fromType("Scan")//
+        .where().property("name").eq().value("John")//
+        .timeout(Long.MAX_VALUE, TimeUnit.DAYS, true).exists()).isTrue();
+  }
+
+  /**
+   * The single-bucket source shape has to survive the same saturation.
+   */
+  @Test
+  void anEffectivelyInfiniteTimeoutNeverExpiresOnASingleBucket() {
+    final String bucket = database.getSchema().getType("V").getBuckets(false).getFirst().getName();
+
+    assertThat(database.select().fromBuckets(bucket)//
+        .where().property("name").eq().value("John")//
+        .timeout(Long.MAX_VALUE, TimeUnit.DAYS, true).vertices().toList()).hasSize(ROWS);
+  }
+
   private static List<Vertex> drainSlowly(final SelectIterator<Vertex> iter) {
     final List<Vertex> got = new ArrayList<>();
     while (iter.hasNext()) {
