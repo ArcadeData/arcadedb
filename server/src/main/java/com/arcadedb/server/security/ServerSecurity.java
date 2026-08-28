@@ -152,7 +152,14 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
 
       // Publish the freshly-built map in a single atomic reference swap: concurrent readers see either the
       // previous complete map or this one, never an empty intermediate state.
+      final Map<String, ServerSecurityUser> previousUsers = this.users;
       this.users = newUsers;
+
+      // A reload of server-users.jsonl is a third way for a principal to be dropped or to have its password
+      // rotated - an operator editing the file directly, or a peer's file being re-read - and the bearer
+      // path only requires the name to still resolve. Same comparison the replicated path makes. A no-op at
+      // startup, when no session exists yet.
+      invalidateAuthSessionsOfRevokedPrincipals(previousUsers, newUsers);
 
       if (newUsers.isEmpty() || (newUsers.containsKey("root") && newUsers.get("root").getPassword() == null))
         askForRootPassword();
