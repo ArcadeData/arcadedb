@@ -1100,6 +1100,7 @@ public class BoltNetworkExecutor extends Thread {
         database.commit();
       }
       explicitTransaction = false;
+      nextQid = 0; // the numbering is per transaction; BEGIN re-zeroes it too, this just keeps it uniform
 
       final Map<String, Object> metadata = new LinkedHashMap<>();
       metadata.put("bookmark", generateBookmark());

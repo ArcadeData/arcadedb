@@ -325,6 +325,31 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
   }
 
   /**
+   * A ceiling of 0 would reject every query outright rather than lock anything down, so the setting is floored at
+   * one open stream: the query runs, and only a second concurrent one is refused.
+   */
+  @Test
+  void anOpenStreamLimitBelowOneStillAllowsASingleStream() throws Exception {
+    final int previousLimit = GlobalConfiguration.BOLT_MAX_OPEN_STREAMS.getValueAsInteger();
+    GlobalConfiguration.BOLT_MAX_OPEN_STREAMS.setValue(0);
+    try (final BoltConnection bolt = new BoltConnection(getDatabaseName())) {
+      bolt.begin(getDatabaseName());
+
+      bolt.run("UNWIND [1, 2, 3] AS x RETURN x");
+      assertThat(bolt.readSummary().signature()).as("one stream must always be allowed").isEqualTo(BoltMessage.SUCCESS);
+      bolt.pull(1, -1);
+      assertThat(bolt.readSummary().metadata()).containsEntry("has_more", true);
+
+      bolt.run("RETURN 1 AS one");
+      final Summary rejected = bolt.readSummary();
+      assertThat(rejected.signature()).isEqualTo(BoltMessage.FAILURE);
+      assertThat(String.valueOf(rejected.metadata().get("message"))).contains("max 1");
+    } finally {
+      GlobalConfiguration.BOLT_MAX_OPEN_STREAMS.setValue(previousLimit);
+    }
+  }
+
+  /**
    * Outside an explicit transaction there is exactly one stream and no qid is ever published for it, so a PULL
    * that names one anyway has to reach that stream rather than be told the qid does not exist.
    */
