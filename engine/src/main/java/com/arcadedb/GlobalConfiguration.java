@@ -2566,11 +2566,16 @@ public enum GlobalConfiguration {
    * fractional one rather than truncating it.
    * <p>
    * Issue #6875: the {@code Integer.parseInt}/{@code Long.parseLong} this replaced threw on {@code "6.7"}, and
-   * both routes into here can carry a fraction - {@code FileUtils.getSizeAsNumber} reads a plain {@code "6.7"} as
-   * a double and keeps its integral part, and {@code ALTER DATABASE ... SETTING} hands over whatever an arbitrary
-   * SQL expression evaluated to, so an unquoted {@code 6.7} arrives already boxed as a {@code Double}. A
-   * size-suffixed {@code "1.5MB"} is a different thing - a fraction OF A UNIT whose byte count is a whole number -
-   * and stays accepted.
+   * both routes into here can carry a fraction - {@code FileUtils.getSizeAsNumber} reads a decimal mantissa as a
+   * {@code float} and keeps only the integral part of the result, and {@code ALTER DATABASE ... SETTING} hands
+   * over whatever an arbitrary SQL expression evaluated to, so an unquoted {@code 6.7} arrives already boxed as a
+   * {@code Double}.
+   * <p>
+   * A decimal mantissa is refused outright rather than accepted when the product happens to land on a whole
+   * number. {@code "1.5MB"} would, {@code "6.7KB"} (6860.8 bytes) would not, and a rule that turns on which
+   * decimal fraction happens to be a power of two is not one an operator can predict; refusing every decimal is
+   * also exactly what the parsers this replaced did. A size SUFFIX on a whole mantissa - {@code "64MB"} - stays
+   * accepted, which is the widening this issue argued for.
    */
   private long coerceToIntegral(final Object iValue) {
     try {
@@ -2585,10 +2590,9 @@ public enum GlobalConfiguration {
       }
 
       final String text = iValue.toString().trim();
-      final long parsed = FileUtils.getSizeAsNumber(text);
-      if (!text.isEmpty() && text.indexOf('.') > -1 && Character.isDigit(text.charAt(text.length() - 1)))
+      if (text.indexOf('.') > -1)
         throw new IllegalArgumentException("not a whole number");
-      return parsed;
+      return FileUtils.getSizeAsNumber(text);
     } catch (final RuntimeException e) {
       throw invalidValue(iValue, e);
     }

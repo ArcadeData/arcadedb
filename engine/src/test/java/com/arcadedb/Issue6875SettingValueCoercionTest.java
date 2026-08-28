@@ -228,9 +228,18 @@ class Issue6875SettingValueCoercionTest {
     assertThatThrownBy(() -> GlobalConfiguration.COMMIT_LOCK_TIMEOUT.coerce("6.7"))
         .isInstanceOf(IllegalArgumentException.class);
 
-    // a Double that IS a whole number is fine, and so is a fraction OF A UNIT whose byte count is whole
+    // a decimal mantissa is refused with a size suffix too, whether or not the product lands on a whole number:
+    // 6.7KB is 6860.8 bytes, and 1.5MB is whole only because 0.5 is a power of two. A rule that turns on which
+    // fraction happens to be binary-exact is not one an operator can predict, so neither is accepted.
+    assertThatThrownBy(() -> GlobalConfiguration.COMMIT_LOCK_TIMEOUT.coerce("6.7KB"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("arcadedb.commitLockTimeout");
+    assertThatThrownBy(() -> GlobalConfiguration.COMMIT_LOCK_TIMEOUT.coerce("1.5MB"))
+        .isInstanceOf(IllegalArgumentException.class);
+
+    // a Double that IS a whole number is fine, and so is a size suffix on a whole mantissa
     assertThat(GlobalConfiguration.ASYNC_WORKER_THREADS.coerce(6.0d)).isEqualTo(6);
-    assertThat(GlobalConfiguration.COMMIT_LOCK_TIMEOUT.coerce("1.5MB")).isEqualTo(1024L * 1024 * 3 / 2);
+    assertThat(GlobalConfiguration.COMMIT_LOCK_TIMEOUT.coerce("2MB")).isEqualTo(2L * 1024 * 1024);
 
     // a Float setting is unaffected: a fraction is exactly what it holds
     assertThat(GlobalConfiguration.SERVER_METRICS_TRACING_SAMPLING_RATE.coerce(0.25d)).isEqualTo(0.25f);
