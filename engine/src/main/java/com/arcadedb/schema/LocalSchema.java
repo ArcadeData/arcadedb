@@ -677,6 +677,15 @@ public class LocalSchema implements Schema {
    * either side of it is the {@code catch} below: it drops {@code newTypeName}, and with it the buckets and records
    * already committed, so a failed copy leaves the schema as it found it rather than a half-built type. The SOURCE type
    * is only ever read, so it is unaffected either way.
+   * <p>
+   * What the safety net cannot cover is a hard CRASH inside that same window - after the records commit, before or
+   * during the index build - because nothing runs to drop the copy. What survives is a populated type whose indexes are
+   * empty or partial, which reads as a working type that silently answers nothing to an indexed query, and
+   * {@code CHECK DATABASE} does not report it: index checking here is STRUCTURAL ({@code IndexInternal.checkIntegrity}
+   * walks the key order of the index's own pages), so an index that is merely missing entries looks healthy. The repair
+   * is {@code REBUILD INDEX <name>} on the copy's indexes, or simply dropping the copy and running {@code copyType()}
+   * again; both are cheap next to making the operation atomic, which would mean holding every copied record in one
+   * transaction (issue #5742).
    *
    * @param typeName             type to copy from, left untouched
    * @param newTypeName          type to create, which must not exist yet
@@ -2030,6 +2039,12 @@ public class LocalSchema implements Schema {
                     // its getAssociatedBucketId(); this metadata only carries the full-text/BM25 configuration, not the binding.
                     final FullTextIndexMetadata ftMeta = new FullTextIndexMetadata(typeName, properties, -1);
                     ftMeta.fromJSON(indexJSON);
+                    // The bucket-level index JSON carries no "typeName" key, so fromJSON() above skipped the base-field
+                    // read: take the collations and the manual TypeIndex name from the underlying definition, which
+                    // setMetadata(indexJSON) has just populated. Without this the full-text metadata comes back from a
+                    // restart missing both, and every site that carries the definition into a new index file through
+                    // getMetadataForNewFile() loses them (issue #5742).
+                    ftMeta.inheritCommonSettingsFrom(index.getMetadata());
                     // Same reserved-name guard as the creation path, in case a hand-edited/restored schema reintroduced a property
                     // colliding with the query parser's default-field sentinel.
                     LSMTreeFullTextIndex.checkReservedPropertyNames(ftMeta.propertyNames);
@@ -2044,6 +2059,8 @@ public class LocalSchema implements Schema {
                   } else if (configuredIndexType.equalsIgnoreCase(Schema.INDEX_TYPE.LSM_SPARSE_VECTOR.toString())) {
                     final LSMSparseVectorIndexMetadata sparseMeta = new LSMSparseVectorIndexMetadata(typeName, properties, -1);
                     sparseMeta.fromJSON(indexJSON);
+                    // Same reason as the full-text branch above (issue #5742).
+                    sparseMeta.inheritCommonSettingsFrom(index.getMetadata());
                     index = new LSMSparseVectorIndex((LSMTreeIndex) index, sparseMeta);
                     indexMap.put(indexName, index);
                   } else {

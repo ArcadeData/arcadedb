@@ -31,10 +31,8 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.IndexMetadata;
-import com.arcadedb.schema.LSMVectorIndexMetadata;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.TypeIndexBuilder;
-import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 
 import java.util.*;
 
@@ -233,14 +231,17 @@ public class TruncateTypeStatement extends DDLStatement {
     builder.withPageSize(def.pageSize);
     builder.withNullStrategy(def.nullStrategy);
 
-    // Type-specific metadata (e.g. LSM_VECTOR dimensions/similarity) must be carried over,
-    // otherwise the recreated index loses its configuration and inserts fail with "index
-    // dimension 0" (issue #4359). The type-specific builder's withMetadata(IndexMetadata)
-    // override reinstates the vector-specific fields.
-    if (def.indexType == Schema.INDEX_TYPE.LSM_VECTOR && def.metadata instanceof LSMVectorIndexMetadata vectorMeta)
-      // A copy - rather than the original reference - keeps the dropped index's per-index runtime state (notably
-      // buildState) off the rebuilt one and resets associatedBucketId so the per-bucket builder sets it during create().
-      ((TypeLSMVectorIndexBuilder) builder).withMetadata(vectorMeta.copy(def.typeName, def.propertyNames, -1));
+    // Type-specific metadata must be carried over, otherwise the recreated index loses its configuration: a vector
+    // index comes back with dimensions 0 and rejects every insert (issue #4359), a full-text one with a different
+    // analyzer and a different ranking, a geospatial one with a different cell size (issue #5742). withType() above
+    // has already swapped in the builder subclass that owns those settings, so the polymorphic withMetadata() call
+    // lands on the override that reinstates them - no per-index-type branch here to forget one.
+    //
+    // A copy - rather than the original reference - keeps the dropped index's per-index runtime state (notably the
+    // vector index's buildState and the full-text corpus counters, which describe records that are about to be gone)
+    // off the rebuilt one, and resets associatedBucketId so the per-bucket builder sets it during create().
+    if (def.metadata != null)
+      builder.withMetadata(def.metadata.copy(def.typeName, def.propertyNames, -1));
 
     builder.create();
   }
@@ -284,10 +285,13 @@ public class TruncateTypeStatement extends DDLStatement {
 
     static IndexDefinition from(final TypeIndex index) {
       final List<String> props = index.getPropertyNames();
-      // getPageSizeForNewFile(), not getPageSize(): this definition is replayed through the creation path after the
-      // index has been dropped, so a page size creation refuses would leave the type without the index it had (#5713).
+      // getPageSizeForNewFile()/getMetadataForNewFile(), not getPageSize()/getMetadata(): this definition is replayed
+      // through the creation path after the index has been dropped, so the page size carried over has to be one that
+      // path accepts (#5713), and the configuration has to be the one the WRAPPER index types keep outside the
+      // underlying LSM-Tree - analyzers, geohash resolution, sparse dimensionality (#5742).
       return new IndexDefinition(index.getName(), index.getTypeName(), props.toArray(new String[0]),
-          index.getType(), index.isUnique(), index.getPageSizeForNewFile(), index.getNullStrategy(), index.getMetadata());
+          index.getType(), index.isUnique(), index.getPageSizeForNewFile(), index.getNullStrategy(),
+          index.getMetadataForNewFile());
     }
   }
 

@@ -269,7 +269,9 @@ class Issue5723CopyTypeIndexConfigurationTest extends TestHelper {
 
     assertThat(database.getSchema().existsIndex("myVectorIndex")).isTrue();
 
-    database.transaction(() -> database.command("sql", "TRUNCATE TYPE Doc"));
+    // NOT inside a transaction: with one active TRUNCATE TYPE joins it and deletes record by record, which never
+    // drops the index at all - so the carry-over this test is about would not run (issue #6220).
+    database.command("sql", "TRUNCATE TYPE Doc UNSAFE").close();
 
     assertThat(database.getSchema().existsIndex("myVectorIndex")).as("the truncated index must keep its manual name")//
         .isTrue();
