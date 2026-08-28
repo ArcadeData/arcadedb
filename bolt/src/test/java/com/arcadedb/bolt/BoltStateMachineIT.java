@@ -303,16 +303,12 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
   @Test
   void pullWithAQidInAutoCommitStillReachesTheOnlyStream() throws Exception {
     try (final BoltConnection bolt = new BoltConnection(getDatabaseName())) {
-      // Run and fully consume one auto-commit query first, so a per-connection qid counter would have moved on.
       bolt.run("RETURN 1 AS one");
-      assertThat(bolt.readSummary().metadata()).doesNotContainKey("qid");
-      bolt.pull(-1, -1);
-      assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
+      assertThat(bolt.readSummary().metadata()).as("an auto-commit RUN publishes no qid").doesNotContainKey("qid");
 
-      bolt.run("RETURN 2 AS two");
-      assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
-
-      bolt.pull(-1, 0);
+      // A qid that matches nothing: honouring it would answer "No active result set for qid 99" for the one
+      // stream this connection plainly has open.
+      bolt.pull(-1, 99);
       final Summary summary = bolt.readSummary();
       assertThat(summary.signature()).isEqualTo(BoltMessage.SUCCESS);
       assertThat(summary.records()).hasSize(1);
