@@ -40,7 +40,6 @@ import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.LeaderForwardContext;
 import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.IPAddressBlocklist;
@@ -812,25 +811,9 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
     Metrics.counter("http.create-user").increment();
 
-    final HAServerPlugin ha = server.getHA();
-    if (ha == null) {
-      // Non-HA mode: direct local mutation.
-      server.getSecurity().createUser(json);
-      return;
-    }
-
-    // HA mode: compute the new users payload and submit a Raft entry.
-    // The `synchronized` block serialises the read-compute-submit sequence with
-    // any other user mutation running on this leader, so two concurrent createUser
-    // calls cannot overwrite each other's in-flight changes.
-    synchronized (server.getSecurity()) {
-      if (server.getSecurity().getUser(json.getString("name")) != null)
-        throw new ServerSecurityException("User '" + json.getString("name") + "' already exists");
-
-      final JSONArray currentUsers = new JSONArray(server.getSecurity().getUsersJsonPayload());
-      currentUsers.put(json);
-      ha.replicateSecurityUsers(currentUsers.toString());
-    }
+    // The HA-vs-local decision, and the read-compute-submit serialisation it needs, live in ServerSecurity
+    // so the REST /api/v1/server/users handlers replicate through exactly the same path (issue #6808).
+    server.getSecurity().createUserClusterWide(json);
   }
 
   private void dropUser(final String userName) {
@@ -839,33 +822,8 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
     Metrics.counter("http.drop-user").increment();
 
-    final ArcadeDBServer server = httpServer.getServer();
-    final HAServerPlugin ha = server.getHA();
-
-    if (ha == null) {
-      // Non-HA mode: direct local mutation.
-      final boolean result = server.getSecurity().dropUser(userName);
-      if (!result)
-        throw new IllegalArgumentException("User '" + userName + "' not found on server");
-      return;
-    }
-
-    // HA mode: compute the new users payload and submit a Raft entry.
-    // Serialises read-compute-submit with other user mutations on this leader so
-    // two concurrent drops (or a concurrent createUser) cannot lose each other's changes.
-    synchronized (server.getSecurity()) {
-      if (server.getSecurity().getUser(userName) == null)
-        throw new IllegalArgumentException("User '" + userName + "' not found on server");
-
-      final JSONArray currentUsers = new JSONArray(server.getSecurity().getUsersJsonPayload());
-      final JSONArray filtered = new JSONArray();
-      for (int i = 0; i < currentUsers.length(); i++) {
-        final JSONObject user = currentUsers.getJSONObject(i);
-        if (!userName.equals(user.getString("name", "")))
-          filtered.put(user);
-      }
-      ha.replicateSecurityUsers(filtered.toString());
-    }
+    if (!httpServer.getServer().getSecurity().dropUserClusterWide(userName))
+      throw new IllegalArgumentException("User '" + userName + "' not found on server");
   }
 
   private boolean connectCluster(final String serverAddress, final HttpServerExchange exchange) {

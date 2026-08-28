@@ -34,6 +34,7 @@ import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.Base64;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -48,6 +49,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * of the server-users.jsonl files after concurrent mutations.
  */
 class RaftUserManagement3NodesIT extends BaseRaftHATest {
+
+  /** Created on demand by the Cypher test: the openCypher engine is per-database, so a server-wide admin
+   *  statement still has to be addressed to one. */
+  private static final String CYPHER_DATABASE = "cypheradmin";
 
   RaftUserManagement3NodesIT() {
     // Each server gets its own root path so they don't share config files.
@@ -199,6 +204,174 @@ class RaftUserManagement3NodesIT extends BaseRaftHATest {
   }
 
   /**
+   * Regression test for issue #6808: {@code POST}/{@code PUT}/{@code DELETE /api/v1/server/users} - the
+   * documented REST surface, and what Studio's user management calls - mutated the user store only on the
+   * node that served the request, while the equivalent {@code POST /api/v1/server} commands replicated
+   * through Raft. A create returned 201 while the new principal got 401 on the other two nodes, and (worse)
+   * a delete returned 200 while the revoked credentials kept working everywhere else.
+   */
+  @Test
+  void restUserEndpointsReplicateAcrossCluster() throws Exception {
+    assertThat(findLeaderIndex()).isGreaterThanOrEqualTo(0);
+
+    // CREATE via the REST endpoint (not the server command).
+    final JSONObject bob = new JSONObject()
+        .put("name", "bob")
+        .put("password", "bobpassword1")
+        .put("databases", new JSONObject().put("*", new JSONArray().put("admin")));
+    retryOn503(() -> restUsers(0, "POST", "/api/v1/server/users", bob));
+
+    Awaitility.await().atMost(15, TimeUnit.SECONDS).pollInterval(200, TimeUnit.MILLISECONDS)
+        .until(() -> {
+          for (int i = 0; i < getServerCount(); i++)
+            if (getServer(i).getSecurity().getUser("bob") == null)
+              return false;
+          return true;
+        });
+
+    for (int i = 0; i < getServerCount(); i++)
+      assertThat(postServerCommandReturnStatus(i, "list databases", "bob", "bobpassword1"))
+          .as("server %d login as bob created through POST /api/v1/server/users", i).isEqualTo(200);
+
+    // UPDATE via the REST endpoint: the new password must be honoured on every node.
+    retryOn503(() -> restUsers(0, "PUT", "/api/v1/server/users?name=bob",
+        new JSONObject().put("password", "bobpassword2")));
+
+    Awaitility.await().atMost(15, TimeUnit.SECONDS).pollInterval(200, TimeUnit.MILLISECONDS)
+        .until(() -> {
+          for (int i = 0; i < getServerCount(); i++)
+            if (postServerCommandReturnStatus(i, "list databases", "bob", "bobpassword2") != 200)
+              return false;
+          return true;
+        });
+
+    // DELETE via the REST endpoint: the revocation must reach every node, not just the one that answered 200.
+    retryOn503(() -> restUsers(0, "DELETE", "/api/v1/server/users?name=bob", null));
+
+    Awaitility.await().atMost(15, TimeUnit.SECONDS).pollInterval(200, TimeUnit.MILLISECONDS)
+        .until(() -> {
+          for (int i = 0; i < getServerCount(); i++)
+            if (getServer(i).getSecurity().getUser("bob") != null)
+              return false;
+          return true;
+        });
+
+    for (int i = 0; i < getServerCount(); i++)
+      assertThat(postServerCommandReturnStatus(i, "list databases", "bob", "bobpassword2"))
+          .as("server %d login as bob after DELETE /api/v1/server/users", i).isEqualTo(403);
+  }
+
+  /**
+   * The openCypher admin commands are a third door onto the user store, next to the REST endpoints and the
+   * {@code POST /api/v1/server} commands: {@code CREATE USER} / {@code ALTER USER ... SET PASSWORD} /
+   * {@code DROP USER} reach {@code ServerSecurity} through the {@code SecurityManager} interface. They used
+   * to mutate the serving node only - the same divergence issue #6808 is about, reached through Cypher
+   * instead of REST.
+   */
+  @Test
+  void cypherUserCommandsReplicateAcrossCluster() throws Exception {
+    assertThat(findLeaderIndex()).isGreaterThanOrEqualTo(0);
+
+    // The Cypher engine is per-database, so a server-wide admin statement still has to be addressed to one.
+    postServerCommandRetryOn503(0, "create database " + CYPHER_DATABASE);
+    Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(200, TimeUnit.MILLISECONDS)
+        .until(() -> getServer(0).existsDatabase(CYPHER_DATABASE));
+
+    retryOn503(() -> cypher(0, "CREATE USER carol SET PASSWORD 'carolpassword1'"));
+
+    Awaitility.await().atMost(15, TimeUnit.SECONDS).pollInterval(200, TimeUnit.MILLISECONDS)
+        .until(() -> {
+          for (int i = 0; i < getServerCount(); i++)
+            if (getServer(i).getSecurity().getUser("carol") == null)
+              return false;
+          return true;
+        });
+
+    for (int i = 0; i < getServerCount(); i++)
+      assertThat(postServerCommandReturnStatus(i, "list databases", "carol", "carolpassword1"))
+          .as("server %d login as carol created through Cypher", i).isEqualTo(200);
+
+    // ALTER USER ... SET PASSWORD must reach every peer too, or the old password keeps working elsewhere.
+    retryOn503(() -> cypher(0, "ALTER USER carol SET PASSWORD 'carolpassword2'"));
+
+    Awaitility.await().atMost(15, TimeUnit.SECONDS).pollInterval(200, TimeUnit.MILLISECONDS)
+        .until(() -> {
+          for (int i = 0; i < getServerCount(); i++)
+            if (postServerCommandReturnStatus(i, "list databases", "carol", "carolpassword2") != 200)
+              return false;
+          return true;
+        });
+
+    for (int i = 0; i < getServerCount(); i++)
+      assertThat(postServerCommandReturnStatus(i, "list databases", "carol", "carolpassword1"))
+          .as("server %d must reject carol's rotated-away password", i).isEqualTo(403);
+
+    retryOn503(() -> cypher(0, "DROP USER carol"));
+
+    Awaitility.await().atMost(15, TimeUnit.SECONDS).pollInterval(200, TimeUnit.MILLISECONDS)
+        .until(() -> {
+          for (int i = 0; i < getServerCount(); i++)
+            if (getServer(i).getSecurity().getUser("carol") != null)
+              return false;
+          return true;
+        });
+
+    for (int i = 0; i < getServerCount(); i++)
+      assertThat(postServerCommandReturnStatus(i, "list databases", "carol", "carolpassword2"))
+          .as("server %d login as carol after a Cypher DROP USER", i).isEqualTo(403);
+  }
+
+  /**
+   * Runs a Cypher admin statement against the given server. The statement needs a database to be addressed
+   * to even though it mutates server-wide state, so it goes to the one this suite creates on demand.
+   */
+  private int cypher(final int serverIndex, final String statement) throws Exception {
+    final HttpURLConnection connection = (HttpURLConnection) new URI(
+        "http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + CYPHER_DATABASE).toURL().openConnection();
+    connection.setRequestMethod("POST");
+    connection.setRequestProperty("Authorization", "Basic " + Base64.getEncoder()
+        .encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+    try {
+      formatPayload(connection, new JSONObject().put("language", "cypher").put("command", statement));
+      connection.connect();
+      return connection.getResponseCode();
+    } finally {
+      connection.disconnect();
+    }
+  }
+
+  /**
+   * Same rationale as {@link #postServerCommandRetryOn503}: right after leader election a Raft commit can be
+   * acknowledged after the client-side timeout, so a 503 means "possibly committed" and the callers verify
+   * the actual cluster state with Awaitility rather than trusting a status code.
+   */
+  private void retryOn503(final Callable<Integer> request) throws Exception {
+    int status = 503;
+    for (int attempt = 0; attempt < 8 && status == 503; attempt++) {
+      if (attempt > 0)
+        Thread.sleep(2_000);
+      status = request.call();
+    }
+  }
+
+  private int restUsers(final int serverIndex, final String method, final String path, final JSONObject payload)
+      throws Exception {
+    final HttpURLConnection connection = (HttpURLConnection) new URI(
+        "http://127.0.0.1:248" + serverIndex + path).toURL().openConnection();
+    connection.setRequestMethod(method);
+    connection.setRequestProperty("Authorization", "Basic " + Base64.getEncoder()
+        .encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+    try {
+      if (payload != null)
+        formatPayload(connection, payload);
+      connection.connect();
+      return connection.getResponseCode();
+    } finally {
+      connection.disconnect();
+    }
+  }
+
+  /**
    * POSTs a server command using root credentials, retrying up to 8 times on 503.
    * A 503 can occur transiently right after leader election while the Raft gRPC channel
    * is warming up: the entry IS committed on the cluster but the gRPC acknowledgment
@@ -208,13 +381,8 @@ class RaftUserManagement3NodesIT extends BaseRaftHATest {
    * callers use {@code Awaitility} to verify the actual cluster state.
    */
   private void postServerCommandRetryOn503(final int serverIndex, final String command) throws Exception {
-    int status = 503;
-    for (int attempt = 0; attempt < 8 && status == 503; attempt++) {
-      if (attempt > 0)
-        Thread.sleep(2_000);
-      status = postServerCommandReturnStatus(serverIndex, command, "root",
-          BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
-    }
+    retryOn503(() -> postServerCommandReturnStatus(serverIndex, command, "root",
+        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS));
   }
 
   /**

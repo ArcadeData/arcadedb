@@ -129,6 +129,42 @@ public class ServerSecurityUser implements SecurityUser {
     return this;
   }
 
+  /**
+   * Re-applies the group configuration to this user's already-cached {@link ServerSecurityDatabaseUser} for
+   * {@code database}, so a grant edited (or revoked) after the user first touched that database takes effect
+   * without a restart. No-op when the pair is not cached: the next {@code getDatabaseUser()} builds it from
+   * the current configuration anyway.
+   * <p>
+   * Refreshes BOTH halves of the permission state: {@code updateDatabaseConfiguration()} rebuilds the
+   * database-level {@code DATABASE_ACCESS} map ({@code updateSchema}/{@code updateSecurity}/
+   * {@code updateDatabaseSettings}) plus the {@code resultSetLimit}/{@code readTimeout} quotas, and
+   * {@code updateFileAccess()} rebuilds the per-type/per-bucket maps. Refreshing only the second half left a
+   * revoked database-level grant in effect until restart (issue #6806).
+   * <p>
+   * Which configuration governs the user is decided here, exactly as in {@link #registerDatabaseUser}: a
+   * synthetic (API-token) principal carries its own group definition and must never be widened by the groups
+   * of the {@code server-groups.json} file. That branch is not reachable from {@code ServerSecurity.updateSchema}
+   * today - an API-token principal is built per request by {@code authenticateByApiToken} and never enters the
+   * {@code users} map that sweep iterates - but the rule belongs to this method rather than to its callers,
+   * so it holds for any future one.
+   */
+  public void refreshDatabaseConfiguration(final DatabaseInternal database, final JSONObject fileGroupConfiguration) {
+    final ServerSecurityDatabaseUser dbu = databaseCache.get(database.getName());
+    if (dbu == null)
+      return;
+
+    final JSONObject databaseGroups = syntheticGroupConfig != null ? syntheticGroupConfig : fileGroupConfiguration;
+    if (databaseGroups == null)
+      return;
+
+    // ONE published value for both halves. Calling the two updaters in sequence let a concurrent request
+    // observe the new database-level grants together with the old per-type map, or the reverse - a window of
+    // microseconds, but a refresh that exists to make a revocation take effect should not have a state in
+    // which it is half taken. The authorization checks are unsynchronized by design, so only an atomic
+    // publish closes it.
+    dbu.refresh(database, databaseGroups);
+  }
+
   public void refreshDatabaseNames() {
     if (userConfiguration.has("databases"))
       databasesNames = Collections.unmodifiableSet(userConfiguration.getJSONObject("databases").keySet());
@@ -177,8 +213,7 @@ public class ServerSecurityUser implements SecurityUser {
       final JSONObject databaseGroups = syntheticGroupConfig != null ?
           syntheticGroupConfig :
           server.getSecurity().getDatabaseGroupsConfiguration(database.getName());
-      dbu.updateDatabaseConfiguration(databaseGroups);
-      dbu.updateFileAccess((DatabaseInternal) database, databaseGroups);
+      dbu.refresh((DatabaseInternal) database, databaseGroups);
     }
 
     final ServerSecurityDatabaseUser prev = databaseCache.putIfAbsent(database.getName(), dbu);

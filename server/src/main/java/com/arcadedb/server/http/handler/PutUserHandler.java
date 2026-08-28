@@ -66,7 +66,10 @@ public class PutUserHandler extends AbstractServerHttpHandler {
     if (payload.has("databases"))
       updatedConfig.put("databases", payload.getJSONObject("databases"));
 
-    security.updateUser(updatedConfig);
+    // Cluster-aware: on an HA cluster this replicates as a Raft entry so every peer applies the change.
+    // Calling security.updateUser() directly applied it only on the node that served the request, silently
+    // diverging the cluster's security state (issue #6808).
+    security.updateUserClusterWide(updatedConfig);
 
     final JSONObject response = new JSONObject();
     response.put("result", "User '" + name + "' updated");

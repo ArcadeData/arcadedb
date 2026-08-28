@@ -48,7 +48,8 @@ public class SecurityAdminApiSpec implements OpenApiContributor {
 
     final Operation postOp = new Operation();
     postOp.setSummary("Create user");
-    postOp.setDescription("Creates a new server user (root only). Requires name (string) and password (min 8 chars).");
+    postOp.setDescription("Creates a new server user (root only). Requires name (string) and password "
+        + "(min 8 chars). On an HA cluster the change is replicated to every node as a Raft entry.");
     postOp.setOperationId("createUser");
     postOp.addTagsItem("Security");
     postOp.setRequestBody(SpecBuilders.jsonBody("User creation request with name, password, and optional databases", null, true));
@@ -57,7 +58,8 @@ public class SecurityAdminApiSpec implements OpenApiContributor {
 
     final Operation putOp = new Operation();
     putOp.setSummary("Update user");
-    putOp.setDescription("Updates an existing user's password and/or database assignments (root only)");
+    putOp.setDescription("Updates an existing user's password and/or database assignments (root only). "
+        + "On an HA cluster the change is replicated to every node as a Raft entry.");
     putOp.setOperationId("updateUser");
     putOp.addTagsItem("Security");
     putOp.addParametersItem(SpecBuilders.queryParam("name", "User name", true));
@@ -67,7 +69,8 @@ public class SecurityAdminApiSpec implements OpenApiContributor {
 
     final Operation deleteOp = new Operation();
     deleteOp.setSummary("Delete user");
-    deleteOp.setDescription("Deletes a server user (root only)");
+    deleteOp.setDescription("Deletes a server user (root only). On an HA cluster the removal is "
+        + "replicated to every node as a Raft entry.");
     deleteOp.setOperationId("deleteUser");
     deleteOp.addTagsItem("Security");
     deleteOp.addParametersItem(SpecBuilders.queryParam("name", "User name to delete", true));

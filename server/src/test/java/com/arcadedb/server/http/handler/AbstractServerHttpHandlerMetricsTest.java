@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.server.ArcadeDBServer;
 import io.micrometer.core.instrument.Timer;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.PathTemplateMatch;
@@ -26,6 +27,8 @@ import org.junit.jupiter.api.Test;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * Unit tests for the bounded HTTP RED-metric plumbing in {@link AbstractServerHttpHandler} (issue #5025):
@@ -66,5 +69,44 @@ class AbstractServerHttpHandlerMetricsTest {
     // A different tuple resolves to a distinct timer.
     final Timer differentStatus = AbstractServerHttpHandler.httpRequestTimer("GET", "unmatched", "500", "none");
     assertThat(differentStatus).isNotSameAs(first);
+  }
+
+  @Test
+  void databaseTagKeepsTheNameOfADatabaseThatExists() {
+    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    when(server.existsDatabase("graph")).thenReturn(true);
+
+    final HttpServerExchange exchange = new HttpServerExchange(null);
+    exchange.putAttachment(PathTemplateMatch.ATTACHMENT_KEY,
+        new PathTemplateMatch("/query/{database}", Map.of("database", "graph")));
+
+    assertThat(AbstractServerHttpHandler.databaseTag(exchange, server)).isEqualTo("graph");
+  }
+
+  @Test
+  void databaseTagCollapsesAnUnknownDatabaseToBoundedConstant() {
+    // Issue #6805: {database} matches any path segment and the RED timer is recorded in a finally block that
+    // also runs for the 401 an unauthenticated caller gets, so echoing the raw parameter registered one
+    // permanent percentile-histogram Timer per invented name - the #5025 leak on the other half of the tuple.
+    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    when(server.existsDatabase("db12345")).thenReturn(false);
+
+    final HttpServerExchange exchange = new HttpServerExchange(null);
+    exchange.putAttachment(PathTemplateMatch.ATTACHMENT_KEY,
+        new PathTemplateMatch("/query/{database}", Map.of("database", "db12345")));
+
+    assertThat(AbstractServerHttpHandler.databaseTag(exchange, server)).isEqualTo("unknown");
+  }
+
+  @Test
+  void databaseTagIsNoneForRoutesThatAreNotDatabaseScoped() {
+    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+
+    final HttpServerExchange withoutParameter = new HttpServerExchange(null);
+    withoutParameter.putAttachment(PathTemplateMatch.ATTACHMENT_KEY, new PathTemplateMatch("/ready", Map.of()));
+    assertThat(AbstractServerHttpHandler.databaseTag(withoutParameter, server)).isEqualTo("none");
+
+    // No route matched at all (Studio "/" fallback, 404 probe).
+    assertThat(AbstractServerHttpHandler.databaseTag(new HttpServerExchange(null), server)).isEqualTo("none");
   }
 }

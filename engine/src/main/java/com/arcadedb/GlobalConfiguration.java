@@ -1425,6 +1425,25 @@ public enum GlobalConfiguration {
       "Absolute timeout in seconds for a HTTP authentication session to expire from its creation time, regardless of activity. Set to 0 to disable (unlimited). Default is 0 (disabled)",
       Long.class, 0), // 0 = DISABLED/UNLIMITED BY DEFAULT
 
+  SERVER_HTTP_AUTH_SESSION_MAX("arcadedb.server.httpAuthSessionMax", SCOPE.SERVER,
+      """
+      Maximum number of concurrent HTTP authentication sessions the server keeps in memory. Reached, a \
+      further POST /api/v1/login is refused with 503 rather than growing the session map without bound: \
+      each session is retained for the whole idle timeout \
+      ('arcadedb.server.httpAuthSessionExpireTimeout', 30 minutes by default) and carries client-supplied \
+      metadata, so an unbounded map is a heap-growth vector for any principal holding one valid \
+      credential (issue #6809). Set to 0 or a negative value for unlimited (WARNING: removes the \
+      protection). Default is 10000""",
+      Integer.class, 10_000),
+
+  SERVER_HTTP_AUTH_SESSION_MAX_PER_USER("arcadedb.server.httpAuthSessionMaxPerUser", SCOPE.SERVER,
+      """
+      Maximum number of concurrent HTTP authentication sessions a single principal may hold. Beyond it the \
+      principal's oldest session is evicted to make room for the new one, so a login loop churns only its \
+      own sessions and can neither grow the map nor evict another principal's sessions. \
+      Set to 0 or a negative value for unlimited (WARNING: removes the protection). Default is 100""",
+      Integer.class, 100),
+
   SERVER_HTTP_BODY_CONTENT_MAX_SIZE("arcadedb.server.httpBodyContentMaxSize", SCOPE.SERVER,
       "Maximum size in bytes for HTTP request body content. Set to -1 for unlimited size (WARNING: removes DoS protection). Default is 100MB",
       Long.class, 100L * 1024 * 1024), // 100MB DEFAULT

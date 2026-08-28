@@ -29,6 +29,7 @@ import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.DefaultConsoleReader;
+import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.http.HttpServer;
@@ -151,7 +152,14 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
 
       // Publish the freshly-built map in a single atomic reference swap: concurrent readers see either the
       // previous complete map or this one, never an empty intermediate state.
+      final Map<String, ServerSecurityUser> previousUsers = this.users;
       this.users = newUsers;
+
+      // A reload of server-users.jsonl is a third way for a principal to be dropped or to have its password
+      // rotated - an operator editing the file directly, or a peer's file being re-read - and the bearer
+      // path only requires the name to still resolve. Same comparison the replicated path makes. A no-op at
+      // startup, when no session exists yet.
+      invalidateAuthSessionsOfRevokedPrincipals(previousUsers, newUsers);
 
       if (newUsers.isEmpty() || (newUsers.containsKey("root") && newUsers.get("root").getPassword() == null))
         askForRootPassword();
@@ -293,33 +301,82 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   public synchronized ServerSecurityUser createUser(final JSONObject userConfiguration) {
     final String name = userConfiguration.getString("name");
     if (users.containsKey(name))
-      throw new SecurityException("User '" + name + "' already exists");
+      // ServerSecurityException, not java.lang.SecurityException: identical semantics must not be reported
+      // with two different exception types depending on whether the server happens to be in a cluster
+      // (createUserClusterWide's HA branch raises the same condition). Both already map to the same HTTP
+      // status through AbstractServerHttpHandler.isSecurityFailure().
+      throw new ServerSecurityException("User '" + name + "' already exists");
 
     final ServerSecurityUser user = new ServerSecurityUser(server, userConfiguration);
+    // Persist BEFORE publishing: saveUsers() propagates an I/O failure so the request fails, and publishing
+    // first would leave the new user live in memory while nothing reached the disk - authoritative until the
+    // next restart silently took it away again.
+    saveUsers(snapshotWith(name, userConfiguration));
     users.put(name, user);
-    saveUsers();
     return user;
   }
 
-  public synchronized ServerSecurityUser updateUser(final JSONObject userConfiguration) {
+  public ServerSecurityUser updateUser(final JSONObject userConfiguration) {
     final String name = userConfiguration.getString("name");
-    if (!users.containsKey(name))
-      throw new ServerSecurityException("User '" + name + "' not found");
+    final ServerSecurityUser user;
+    final boolean passwordChanged;
 
-    final ServerSecurityUser user = new ServerSecurityUser(server, userConfiguration);
-    users.put(name, user);
-    saveUsers();
+    synchronized (this) {
+      final ServerSecurityUser previous = users.get(name);
+      if (previous == null)
+        throw new ServerSecurityException("User '" + name + "' not found");
+
+      user = new ServerSecurityUser(server, userConfiguration);
+      passwordChanged = !Objects.equals(previous.getPassword(), user.getPassword());
+      // Persist before publishing, as in createUser(): a failed save must leave the previous password in
+      // force rather than activate a new one that no longer exists after a restart - and the throw would
+      // also skip the session invalidation below, so the rotation would be half-applied.
+      saveUsers(snapshotWith(name, userConfiguration));
+      users.put(name, user);
+    }
+
     // Note: a metadata update does NOT force-rollback the principal's open transactions - per-request
     // authorization is still re-checked on every command, so a narrowed grant is enforced without tearing
-    // down unrelated in-flight work. Only drop and password change (below) invalidate live sessions.
+    // down unrelated in-flight work. A PASSWORD change is different: it re-authenticates the principal, so
+    // the credentials minted under the old password must stop working. PUT /api/v1/server/users routes a
+    // password rotation through here rather than through setUserPassword(), so without this an AU- login
+    // token issued before the rotation stayed valid until it idle-expired - the bearer path only checks that
+    // the principal still resolves by name, and it does. Done OUTSIDE the monitor, like every other call to
+    // invalidateHttpSessions(): it can block on a transaction session's in-flight command via cancel().
+    //
+    // What is compared is the stored hash, and encodePassword() salts randomly, so resubmitting the SAME
+    // plaintext also reads as changed and also revokes. That is the safe direction to be imprecise in - it
+    // over-revokes, never under-revokes - but do not read this as "resubmitting the same password is a
+    // no-op", because it is not.
+    if (passwordChanged)
+      invalidateHttpSessions(name);
+
     return user;
   }
 
+  /**
+   * The {@link SecurityManager} entry point, and therefore what the openCypher {@code DROP USER} admin
+   * command reaches through {@code database.getSecurity()}. Cluster-aware, so that door cannot reopen the
+   * divergence #6808 closed on the REST one: a Cypher drop over Bolt or {@code /api/v1/command} used to
+   * mutate the user store on the serving node only.
+   */
+  @Override
   public boolean dropUser(final String userName) {
+    return dropUserClusterWide(userName);
+  }
+
+  /**
+   * Drops the user on THIS node only, with no replication. The local half of {@link #dropUserClusterWide};
+   * every caller that is not that method wants the cluster-aware {@link #dropUser} instead.
+   */
+  public boolean dropUserLocally(final String userName) {
     synchronized (this) {
-      if (users.remove(userName) == null)
+      if (!users.containsKey(userName))
         return false;
-      saveUsers();
+      // Persist before publishing, as in createUser()/updateUser(): a failed save must not leave a user
+      // removed in memory and still present on disk, which a restart would resurrect.
+      saveUsers(snapshotWith(userName, null));
+      users.remove(userName);
     }
     // Invalidate the dropped principal's live HTTP transaction sessions so a recreated same-name principal
     // cannot adopt (and commit) the prior principal's still-open session. Done OUTSIDE the security monitor:
@@ -330,14 +387,142 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   }
 
   /**
-   * Invalidates every live HTTP transaction session owned by the named principal (rolling back its open
-   * transaction). No-op when the HTTP server is not running (e.g. embedded use). Must be called OUTSIDE the
-   * {@code ServerSecurity} monitor: it can block on a session's in-flight command via {@code cancel()}.
+   * Cluster-aware {@link #createUser}: submits the new user list as a Raft entry when the server is part of
+   * an HA cluster, so every peer applies it, and falls back to the local mutation when it is not.
+   * <p>
+   * Every path that mutates the user store from the outside must go through this (or its {@code update}/
+   * {@code drop} siblings). {@code POST}/{@code PUT}/{@code DELETE /api/v1/server/users} used to call the
+   * local mutators directly while the equivalent {@code POST /api/v1/server} commands replicated, so a
+   * cluster silently diverged its security state - and the next replicated user command latched the
+   * divergence in by overwriting every peer with the serving node's whole list (issue #6808).
+   * <p>
+   * The {@code synchronized} block serialises the read-compute-submit sequence against any other user
+   * mutation on this node, so two concurrent calls cannot overwrite each other's in-flight change. It must
+   * NOT be held across anything that can block on the Raft apply thread; {@link #applyReplicatedUsers}, which
+   * unblocks the submit, deliberately does not take this monitor.
+   * <p>
+   * Note what that costs, for whoever adds a fourth cluster-wide mutator here by symmetry: the monitor IS
+   * held across the Raft round trip, so every user create/update/drop on this node serialises for the
+   * duration of consensus. That is deliberate - the payload is the whole user list, so two concurrent
+   * submits would otherwise each overwrite the other's change - and it is affordable only because user
+   * administration is rare. Nothing on a request hot path may be put inside this monitor.
+   */
+  public void createUserClusterWide(final JSONObject userConfiguration) {
+    final HAServerPlugin ha = server != null ? server.getHA() : null;
+    if (ha == null) {
+      createUser(userConfiguration);
+      return;
+    }
+
+    final String name = userConfiguration.getString("name");
+    synchronized (this) {
+      if (users.containsKey(name))
+        throw new ServerSecurityException("User '" + name + "' already exists");
+
+      ha.replicateSecurityUsers(replicationPayloadWith(name, userConfiguration));
+    }
+  }
+
+  /**
+   * Cluster-aware {@link #updateUser}. See {@link #createUserClusterWide} for why this exists; the payload is
+   * built by replacing the named user in the current list rather than appending, so the replicated snapshot
+   * carries exactly one entry per user.
+   */
+  public void updateUserClusterWide(final JSONObject userConfiguration) {
+    final HAServerPlugin ha = server != null ? server.getHA() : null;
+    if (ha == null) {
+      // updateUser() itself revokes the principal's sessions when the password changed.
+      updateUser(userConfiguration);
+      return;
+    }
+
+    final String name = userConfiguration.getString("name");
+    final boolean passwordChanged;
+    synchronized (this) {
+      final ServerSecurityUser previous = users.get(name);
+      if (previous == null)
+        throw new ServerSecurityException("User '" + name + "' not found");
+
+      passwordChanged = !Objects.equals(previous.getPassword(), userConfiguration.getString("password", null));
+
+      ha.replicateSecurityUsers(replicationPayloadWith(name, userConfiguration));
+    }
+
+    // Applying the replicated list already dropped this principal's LOGIN sessions on every node, this one
+    // included. What that path cannot do is touch the transaction sessions: it runs on the Raft
+    // state-machine apply thread, and cancelling a transaction session waits on the session lock for any
+    // in-flight command. So the serving node closes that half here, outside the monitor - the same shape
+    // dropUserClusterWide() uses, and with the same limitation: a peer's open transaction sessions for the
+    // principal are left to their own idle timeout.
+    if (passwordChanged)
+      invalidateHttpSessions(name);
+  }
+
+  /**
+   * Cluster-aware {@link #dropUser}. See {@link #createUserClusterWide}.
+   *
+   * @return true if the user existed and the removal was applied/replicated, false if there was no such user
+   */
+  public boolean dropUserClusterWide(final String userName) {
+    final HAServerPlugin ha = server != null ? server.getHA() : null;
+    if (ha == null)
+      return dropUserLocally(userName);
+
+    synchronized (this) {
+      if (!users.containsKey(userName))
+        return false;
+
+      ha.replicateSecurityUsers(replicationPayloadWith(userName, null));
+    }
+
+    // Same rationale (and the same OUTSIDE-the-monitor placement) as dropUser(): a recreated same-name
+    // principal must not adopt the prior principal's still-open transaction session. Local only - the peers
+    // apply the replicated user list on their state machine thread, which must never block on a session lock.
+    invalidateHttpSessions(userName);
+    return true;
+  }
+
+  /**
+   * Invalidates every live HTTP session owned by the named principal: the transaction sessions (rolling back
+   * their open transaction) <b>and</b> the {@code AU-} authentication sessions minted by
+   * {@code POST /api/v1/login}. No-op when the HTTP server is not running (e.g. embedded use). Must be called
+   * OUTSIDE the {@code ServerSecurity} monitor: it can block on a transaction session's in-flight command via
+   * {@code cancel()}.
+   * <p>
+   * The authentication half matters because a login token carries its own authority: the bearer branch of
+   * {@code AbstractServerHttpHandler} resolves the principal from the session, so a token minted before a
+   * drop or a password change would otherwise keep authenticating until it idle-expired - up to 30 minutes
+   * of credentials that the operator believes were revoked.
    */
   private void invalidateHttpSessions(final String userName) {
     final HttpServer httpServer = server != null ? server.getHttpServer() : null;
-    if (httpServer != null)
+    if (httpServer != null) {
       httpServer.getSessionManager().removeSessionsForUser(userName);
+      httpServer.getAuthSessionManager().removeSessionsForUser(userName);
+    }
+  }
+
+  /**
+   * Drops the authentication sessions of every principal that the replicated user list removed or whose
+   * password it changed. Called on each peer after {@link #applyReplicatedUsers} has installed the new list,
+   * so a cluster-wide drop or password change revokes the login tokens a peer had already issued rather than
+   * leaving them valid until they idle-expire.
+   * <p>
+   * Only the authentication sessions are touched here: unlike {@code HttpSessionManager.removeSessionsForUser},
+   * {@code HttpAuthSessionManager.removeSessionsForUser} does no blocking work, so it is safe on the Raft
+   * state-machine apply thread, which must never wait on a session lock.
+   */
+  private void invalidateAuthSessionsOfRevokedPrincipals(final Map<String, ServerSecurityUser> previousUsers,
+      final Map<String, ServerSecurityUser> currentUsers) {
+    final HttpServer httpServer = server != null ? server.getHttpServer() : null;
+    if (httpServer == null)
+      return;
+
+    for (final Map.Entry<String, ServerSecurityUser> entry : previousUsers.entrySet()) {
+      final ServerSecurityUser current = currentUsers.get(entry.getKey());
+      if (current == null || !Objects.equals(current.getPassword(), entry.getValue().getPassword()))
+        httpServer.getAuthSessionManager().removeSessionsForUser(entry.getKey());
+    }
   }
 
   @Override
@@ -351,6 +536,10 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     return info;
   }
 
+  /**
+   * The {@link SecurityManager} entry point reached by the openCypher {@code CREATE USER} admin command.
+   * Cluster-aware for the same reason {@link #dropUser} is (issue #6808).
+   */
   @Override
   public void createUser(final String name, final String password) {
     final String encodedPassword = encodePassword(password);
@@ -358,35 +547,53 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     config.put("name", name);
     config.put("password", encodedPassword);
     config.put("databases", new JSONObject().put("*", new JSONArray().put("admin")));
-    createUser(config);
+    createUserClusterWide(config);
   }
 
+  /**
+   * The {@link SecurityManager} entry point reached by the openCypher {@code ALTER USER ... SET PASSWORD}
+   * admin command. Routed through {@link #updateUserClusterWide} so the rotation reaches every peer (issue
+   * #6808) and so a single place decides that a changed hash revokes the principal's live sessions.
+   */
   @Override
   public void setUserPassword(final String userName, final String password) {
     final ServerSecurityUser user = users.get(userName);
     if (user == null)
       throw new ServerSecurityException("User '" + userName + "' not found");
-    user.setPassword(encodePassword(password));
-    saveUsers();
-    // A password change re-authenticates the principal: drop its live HTTP transaction sessions.
-    invalidateHttpSessions(userName);
+
+    // A copy: updateUser() compares the previous user's stored hash against the new configuration's, so
+    // mutating the live configuration in place would hide the very change it has to detect.
+    final JSONObject updated = user.toJSON().copy();
+    updated.put("password", encodePassword(password));
+    updateUserClusterWide(updated);
   }
 
+  /**
+   * Re-applies the current group configuration of {@code database} to every user that has already cached a
+   * {@link ServerSecurityDatabaseUser} for it. Called after a schema change and after any group edit (REST
+   * {@code POST}/{@code DELETE /api/v1/server/groups} and the {@code server-groups.json} reload watcher).
+   * <p>
+   * Delegates to {@link ServerSecurityUser#refreshDatabaseConfiguration} so BOTH permission maps are rebuilt:
+   * refreshing only the per-type/per-bucket half left the database-level grants ({@code updateSchema},
+   * {@code updateSecurity}, {@code updateDatabaseSettings}) and the {@code resultSetLimit}/{@code readTimeout}
+   * quotas frozen at the values they had when the user first touched the database, so a revoked grant kept
+   * working until restart (issue #6806).
+   * <p>
+   * It no longer calls {@code getDatabaseUser()}, which would <i>create</i> a cached entry for every user on
+   * the server as a side effect. A user that has never touched this database has nothing to refresh: its
+   * entry is built from the current configuration the first time it does.
+   */
   @Override
   public void updateSchema(final DatabaseInternal database) {
     if (database == null)
       return;
 
-    for (final ServerSecurityUser user : users.values()) {
-      final ServerSecurityDatabaseUser databaseUser = user.getDatabaseUser(database);
-      if (databaseUser != null) {
-        final JSONObject groupConfiguration = getDatabaseGroupsConfiguration(database.getName());
-        if (groupConfiguration == null)
-          continue;
+    // Resolved once for the whole sweep instead of once per user: the lookup merges the wildcard and the
+    // per-database group objects, and the configuration cannot change under a single refresh.
+    final JSONObject groupConfiguration = getDatabaseGroupsConfiguration(database.getName());
 
-        databaseUser.updateFileAccess(database, groupConfiguration);
-      }
-    }
+    for (final ServerSecurityUser user : users.values())
+      user.refreshDatabaseConfiguration(database, groupConfiguration);
   }
 
   public String getEncodedHash(final String password, final String salt, final int iterations) {
@@ -516,8 +723,19 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   }
 
   public void saveUsers() {
+    saveUsers(usersToJSON());
+  }
+
+  /**
+   * Writes an explicit user list to {@code server-users.jsonl}, so a mutation can be persisted <i>before</i>
+   * it is published to the in-memory map. Publishing first and saving after leaves the change authoritative
+   * in memory while nothing reached the disk when the write fails - and the propagated failure then also
+   * skips whatever the caller does afterwards (session invalidation, most importantly), so the mutation ends
+   * up half-applied instead of not applied at all.
+   */
+  private void saveUsers(final List<JSONObject> snapshot) {
     try {
-      usersRepository.save(usersToJSON());
+      usersRepository.save(snapshot);
     } catch (final IOException e) {
       LogManager.instance()
           .log(this, Level.SEVERE, "Error on saving security configuration to file '%s'", e, SecurityUserFileRepository.FILE_NAME);
@@ -526,6 +744,43 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       throw new ServerSecurityException(
           "Error on saving security configuration to file '" + SecurityUserFileRepository.FILE_NAME + "'", e);
     }
+  }
+
+  /**
+   * Returns the current user list with {@code name}'s entry replaced by {@code replacement}, appended when
+   * the name is not present yet, or removed when {@code replacement} is {@code null}. Must be called while
+   * holding this monitor.
+   * <p>
+   * The single place the create/update/drop shape is expressed, on both the local and the replicated path:
+   * three hand-written copies of this loop is exactly how two of them ended up invalidating sessions and the
+   * third not.
+   */
+  private List<JSONObject> snapshotWith(final String name, final JSONObject replacement) {
+    final List<JSONObject> snapshot = new ArrayList<>(users.size() + 1);
+    boolean found = false;
+    for (final ServerSecurityUser user : users.values()) {
+      if (name.equals(user.getName())) {
+        found = true;
+        if (replacement != null)
+          snapshot.add(replacement);
+      } else
+        snapshot.add(user.toJSON());
+    }
+    if (!found && replacement != null)
+      snapshot.add(replacement);
+    return snapshot;
+  }
+
+  /**
+   * The same list as {@link #snapshotWith}, as the JSON array {@code HAServerPlugin.replicateSecurityUsers}
+   * takes. Must be called while holding this monitor, so the read-compute-submit sequence is serialised
+   * against any other user mutation on this node.
+   */
+  private String replicationPayloadWith(final String name, final JSONObject replacement) {
+    final JSONArray array = new JSONArray();
+    for (final JSONObject entry : snapshotWith(name, replacement))
+      array.put(entry);
+    return array.toString();
   }
 
   /**
@@ -559,11 +814,16 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * state machine threads, causing a server to load another server's (possibly
    * earlier) snapshot and permanently lose users.
    * <p>
-   * Intentionally NOT {@code synchronized} on the ServerSecurity monitor: the
-   * HTTP handler holds that monitor while waiting for {@code submitAndWait} to
-   * complete, and the state machine apply thread needs to call this method to
-   * unblock the wait. Raft state-machine apply is single-threaded per group, so
-   * there is no internal contention here.
+   * <b>INVARIANT: this method must never take the {@code ServerSecurity} monitor, and must never block.</b>
+   * It runs on the Raft state-machine apply thread, and {@link #createUserClusterWide},
+   * {@link #updateUserClusterWide} and {@link #dropUserClusterWide} all hold that monitor while blocked in
+   * {@code ha.replicateSecurityUsers(...)} waiting for the very entry this method applies. Adding
+   * {@code synchronized} here - or calling anything that waits, such as
+   * {@code HttpSessionManager.removeSessionsForUser}, whose {@code cancel()} waits on a session lock for an
+   * in-flight command - deadlocks the cluster's user administration, silently and only under load. Raft
+   * state-machine apply is single-threaded per group, so there is no internal contention to protect against
+   * anyway. {@link #invalidateAuthSessionsOfRevokedPrincipals} is called below precisely because it is the
+   * half of the revocation that does no blocking work.
    */
   public void applyReplicatedUsers(final String usersJsonArray) {
     final JSONArray array = new JSONArray(usersJsonArray);
@@ -579,10 +839,16 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
 
     // Build in-memory map from the authoritative Raft payload, not from the file, and publish it in a
     // single atomic reference swap so concurrent readers never observe an empty/torn window.
+    final Map<String, ServerSecurityUser> previousUsers = this.users;
     final Map<String, ServerSecurityUser> newUsers = new ConcurrentHashMap<>();
     for (final JSONObject userJson : list)
       newUsers.put(userJson.getString("name"), new ServerSecurityUser(server, userJson));
     this.users = newUsers;
+
+    // A peer applying a replicated drop or password change must also revoke the login tokens it had already
+    // issued to that principal, or the credentials the operator revoked keep working on this node until the
+    // token idle-expires. Non-blocking, so it is safe on the state-machine apply thread.
+    invalidateAuthSessionsOfRevokedPrincipals(previousUsers, newUsers);
   }
 
   public void saveGroups() {

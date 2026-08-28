@@ -48,10 +48,14 @@ public class AuthApiSpec implements OpenApiContributor {
             The token is then presented as a bearer token on subsequent requests. This operation \
             takes no request body: the credentials travel on the header, and geolocation metadata is \
             read from the CF-IPCountry, CF-IPCity, CF-Connecting-IP, X-Forwarded-For, and User-Agent \
-            headers when a proxy supplies them.""");
+            headers when a proxy supplies them (each is stored truncated to 256 characters). \
+            Answers 503 when the server already holds 'arcadedb.server.httpAuthSessionMax' concurrent \
+            sessions and none could be reclaimed; a principal that reaches \
+            'arcadedb.server.httpAuthSessionMaxPerUser' instead has its own oldest session evicted and \
+            still receives a token.""");
     post.setResponses(SpecBuilders.standardResponses("200",
         SpecBuilders.jsonResponse("Session created", "LoginResponse"),
-        "401", "403", "500"));
+        "401", "403", "500", "503"));
 
     final PathItem pathItem = new PathItem();
     pathItem.setPost(post);
