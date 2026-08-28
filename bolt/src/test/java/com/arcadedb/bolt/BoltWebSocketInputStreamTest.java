@@ -243,8 +243,10 @@ class BoltWebSocketInputStreamTest {
    */
   @Test
   void anInterleavedPingIsNotChargedAgainstTheFragmentedMessageLimit() throws Exception {
-    final byte[] first = new byte[(int) MAX_FRAME_SIZE - 24];
-    final byte[] last = new byte[24];
+    // Sized so the ping alone would push the OLD accounting past the cap (1023 + 4 > 1024) while the message
+    // itself lands exactly on it, which is what makes this test fail without the fix.
+    final byte[] first = new byte[(int) MAX_FRAME_SIZE - 1];
+    final byte[] last = new byte[1];
 
     final BoltWebSocketInputStream stream = new BoltWebSocketInputStream(
         new ByteArrayInputStream(concat(
