@@ -33,6 +33,7 @@ import com.arcadedb.utility.Pair;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.LongSupplier;
 
 /**
  * Native Query engine is a simple query engine that covers most of the classic use cases, such as the retrieval of records
@@ -57,6 +58,16 @@ public class SelectExecutor {
   // THE COMMONEST QUERY SHAPE OF ALL. Long.MAX_VALUE MEANS "NO TIMEOUT REQUESTED" AND KEEPS THE PER-RECORD CHECK A
   // SINGLE PERFECTLY PREDICTED COMPARE ON THE HOT PATH
   private long timeoutDeadline = Long.MAX_VALUE;
+
+  // #6873: THE TIME SOURCE THE DEADLINE IS ARMED FROM AND CHECKED AGAINST. PRODUCTION ALWAYS USES
+  // System.currentTimeMillis(); THE SEAM EXISTS SO THE REGRESSION TEST CAN DRIVE THE ELAPSED TIME INSTEAD OF RACING
+  // THE WALL CLOCK. executeVector() IS EAGER - IT RETURNS A FULLY MATERIALIZED List - SO NO CONSUMER CAN PACE IT THE
+  // WAY drainSlowly() PACES THE LAZY SelectIterator IN THE #6815 TESTS, AND AN "A 1 ms BUDGET EXPIRED" ASSERTION
+  // WRITTEN AGAINST THE WALL CLOCK WOULD BE A RACE THAT A FASTER MACHINE TURNS RED. DRIVING THE CLOCK KEEPS THE TEST
+  // DETERMINISTIC WHILE STILL EXERCISING THE REAL startTimeout() SATURATION AND THE REAL throw/truncate DECISION.
+  // COSTS NOTHING ON THE HOT PATH: checkForTimeout() RETURNS ON THE Long.MAX_VALUE SENTINEL BEFORE READING IT, SO A
+  // SELECT WITHOUT A TIMEOUT NEVER TOUCHES THE SUPPLIER AT ALL
+  LongSupplier clock = System::currentTimeMillis;
 
   // #6577: THE SINGLE SOURCE OF TRUTH FOR "WHICH OPERATORS CAN filterWithIndexesFinalNode() ACTUALLY TURN INTO AN
   // IndexCursor" - isTheNodeFullyIndexed() MUST TREAT EXACTLY THIS SET, AND NO MORE, AS "THIS LEAF IS INDEXED".
@@ -84,9 +95,10 @@ public class SelectExecutor {
   }
 
   /**
-   * Arms the deadline for one execution. Called from the three entry points ({@link #execute()},
-   * {@link #executeCount()}, {@link #executeExists()}) rather than from the constructor, so the window it covers is
-   * exactly the work the caller asked to bound - index lookup included, since that is part of answering the query.
+   * Arms the deadline for one execution. Called from the four entry points ({@link #execute()},
+   * {@link #executeCount()}, {@link #executeExists()}, {@link #executeVector()}) rather than from the constructor, so
+   * the window it covers is exactly the work the caller asked to bound - index lookup included, since that is part of
+   * answering the query.
    */
   private void startTimeout() {
     if (select.timeoutInMs > 0) {
@@ -95,7 +107,7 @@ public class SelectExecutor {
       // now + timeoutInMs WOULD OVERFLOW INTO A NEGATIVE DEADLINE - TURNING AN EFFECTIVELY INFINITE BUDGET INTO ONE
       // THAT HAS ALREADY EXPIRED, SO THE FIRST RECORD WOULD THROW. CLAMPING TO Long.MAX_VALUE LANDS ON THE
       // "NO TIMEOUT" SENTINEL, WHICH IS EXACTLY WHAT A BUDGET THAT LARGE MEANS
-      final long now = System.currentTimeMillis();
+      final long now = clock.getAsLong();
       timeoutDeadline = select.timeoutInMs > Long.MAX_VALUE - now ? Long.MAX_VALUE : now + select.timeoutInMs;
     }
   }
@@ -108,7 +120,7 @@ public class SelectExecutor {
    * @return {@code true} when the deadline expired and the caller asked NOT to be thrown at
    */
   boolean checkForTimeout() {
-    if (timeoutDeadline == Long.MAX_VALUE || System.currentTimeMillis() <= timeoutDeadline)
+    if (timeoutDeadline == Long.MAX_VALUE || clock.getAsLong() <= timeoutDeadline)
       return false;
     if (select.exceptionOnTimeout)
       throw new TimeoutException("Timeout on iteration");
@@ -209,8 +221,21 @@ public class SelectExecutor {
     }
   }
 
+  /**
+   * #6873: the fifth plan shape. The four sources {@code buildIterator()} can return are all bounded by
+   * {@link #checkForTimeout()} since #6815, but the vector k-NN search never goes through {@code buildIterator()} at
+   * all and used to consult no deadline whatsoever - so {@code select().fromType(..).timeout(..).nearestTo(..)}
+   * compiled and silently dropped the budget.
+   * <p>
+   * Granularity caveat: a single {@code LSMVectorIndex.findNeighborsFromVector()} call is not interruptible from here,
+   * so the deadline is honoured <i>between</i> indexes and <i>per assembled result</i> (each of which loads a record
+   * and may run the post-filter WHERE). That will not cut short one long search inside a single index, but it is the
+   * difference between a no-op and a bound.
+   */
   @SuppressWarnings("unchecked")
   <T extends Document> List<SelectVectorResult<T>> executeVector() {
+    startTimeout();
+
     if (select.fromType == null)
       throw new IllegalArgumentException("FromType must be set for vector search");
     if (select.vectorProperty == null)
@@ -234,6 +259,11 @@ public class SelectExecutor {
 
     final List<Pair<RID, Float>> allNeighbors = new ArrayList<>();
     for (final LSMVectorIndex lsmIndex : vectorIndexes) {
+      // #6873: THE COARSEST OF THE TWO CHECKPOINTS - ONE PER BUCKET INDEX. A NON-THROWING TIMEOUT KEEPS WHATEVER THE
+      // INDEXES SEARCHED SO FAR CONTRIBUTED, WHICH IS THE TRUNCATED ANSWER THE STREAMING PATHS RETURN
+      if (checkForTimeout())
+        break;
+
       final List<Pair<RID, Float>> neighbors;
       if (select.vectorApproximate)
         neighbors = lsmIndex.findNeighborsFromVectorApproximate(select.vectorQuery, select.vectorK);
@@ -248,6 +278,11 @@ public class SelectExecutor {
     final List<SelectVectorResult<T>> results = new ArrayList<>(resultCount);
 
     for (int i = 0; i < resultCount; i++) {
+      // #6873: ASSEMBLY IS NOT FREE - EVERY ITERATION LOADS A RECORD FROM DISK AND MAY RUN THE POST-FILTER WHERE, SO
+      // THE BUDGET HAS TO BE HONOURED HERE TOO AND NOT ONLY AROUND THE NEIGHBOUR SEARCH
+      if (checkForTimeout())
+        break;
+
       final Pair<RID, Float> neighbor = allNeighbors.get(i);
       final T record = (T) neighbor.getFirst().asDocument();
 
