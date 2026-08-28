@@ -297,9 +297,28 @@ public class SelectExecutionTest extends TestHelper {
     }
 
     {
+      // #6815/#6816: THIS BLOCK USED TO BUILD THE ITERATOR AND NEVER ITERATE IT, SO IT ASSERTED NOTHING - WHICH IS
+      // EXACTLY HOW BOTH BUGS STAYED INVISIBLE HERE. THE PLAN IS INDEX-ANSWERED (id IS INDEXED), SO IT ALSO COVERS
+      // THE SOURCE SHAPE THAT USED TO IGNORE timeout() ALTOGETHER
       final SelectIterator<Vertex> iter = database.select().fromType("Vertex")//
           .where().property("id").lt().value(10)//
           .and().property("name").eq().value("John").timeout(1, TimeUnit.MILLISECONDS, false).vertices();
+
+      int browsed = 0;
+      while (iter.hasNext()) {
+        iter.next();
+        ++browsed;
+        try {
+          Thread.sleep(2);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+          break;
+        }
+      }
+
+      // NO EXCEPTION WAS THROWN (exceptionOnTimeout == false) AND THE RESULT SET WAS CUT SHORT. ONLY THE UPPER BOUND
+      // IS ASSERTED: A JVM STALL CAN ONLY MAKE THE DEADLINE EXPIRE SOONER, NEVER LATER
+      assertThat(browsed).isLessThan(10);
     }
   }
 
