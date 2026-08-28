@@ -591,6 +591,12 @@ public class ArcadeDBServer {
         // meter exists as Micrometer requires MeterFilters to precede the meters they govern.
         Metrics.globalRegistry.config().meterFilter(
             MeterFilter.maximumAllowableTags("arcadedb.http.requests", "path", 100, MeterFilter.deny()));
+        // Same backstop for the "db" half of the tuple (issue #6805). The handler already collapses a
+        // {database} path parameter naming no existing database onto a constant, but database name churn -
+        // or a future route exposing another free segment as "db" - must not be able to grow the registry
+        // either. 1000 is far above any realistic per-server database count.
+        Metrics.globalRegistry.config().meterFilter(
+            MeterFilter.maximumAllowableTags("arcadedb.http.requests", "db", 1000, MeterFilter.deny()));
         metricsFiltersInstalled = true;
       }
 

@@ -29,6 +29,7 @@ import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.DefaultConsoleReader;
+import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.http.HttpServer;
@@ -330,6 +331,97 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   }
 
   /**
+   * Cluster-aware {@link #createUser}: submits the new user list as a Raft entry when the server is part of
+   * an HA cluster, so every peer applies it, and falls back to the local mutation when it is not.
+   * <p>
+   * Every path that mutates the user store from the outside must go through this (or its {@code update}/
+   * {@code drop} siblings). {@code POST}/{@code PUT}/{@code DELETE /api/v1/server/users} used to call the
+   * local mutators directly while the equivalent {@code POST /api/v1/server} commands replicated, so a
+   * cluster silently diverged its security state - and the next replicated user command latched the
+   * divergence in by overwriting every peer with the serving node's whole list (issue #6808).
+   * <p>
+   * The {@code synchronized} block serialises the read-compute-submit sequence against any other user
+   * mutation on this node, so two concurrent calls cannot overwrite each other's in-flight change. It must
+   * NOT be held across anything that can block on the Raft apply thread; {@link #applyReplicatedUsers}, which
+   * unblocks the submit, deliberately does not take this monitor.
+   */
+  public void createUserClusterWide(final JSONObject userConfiguration) {
+    final HAServerPlugin ha = server != null ? server.getHA() : null;
+    if (ha == null) {
+      createUser(userConfiguration);
+      return;
+    }
+
+    final String name = userConfiguration.getString("name");
+    synchronized (this) {
+      if (users.containsKey(name))
+        throw new ServerSecurityException("User '" + name + "' already exists");
+
+      final JSONArray currentUsers = new JSONArray(getUsersJsonPayload());
+      currentUsers.put(userConfiguration);
+      ha.replicateSecurityUsers(currentUsers.toString());
+    }
+  }
+
+  /**
+   * Cluster-aware {@link #updateUser}. See {@link #createUserClusterWide} for why this exists; the payload is
+   * built by replacing the named user in the current list rather than appending, so the replicated snapshot
+   * carries exactly one entry per user.
+   */
+  public void updateUserClusterWide(final JSONObject userConfiguration) {
+    final HAServerPlugin ha = server != null ? server.getHA() : null;
+    if (ha == null) {
+      updateUser(userConfiguration);
+      return;
+    }
+
+    final String name = userConfiguration.getString("name");
+    synchronized (this) {
+      if (!users.containsKey(name))
+        throw new ServerSecurityException("User '" + name + "' not found");
+
+      final JSONArray currentUsers = new JSONArray(getUsersJsonPayload());
+      final JSONArray replaced = new JSONArray();
+      for (int i = 0; i < currentUsers.length(); i++) {
+        final JSONObject entry = currentUsers.getJSONObject(i);
+        replaced.put(name.equals(entry.getString("name", "")) ? userConfiguration : entry);
+      }
+      ha.replicateSecurityUsers(replaced.toString());
+    }
+  }
+
+  /**
+   * Cluster-aware {@link #dropUser}. See {@link #createUserClusterWide}.
+   *
+   * @return true if the user existed and the removal was applied/replicated, false if there was no such user
+   */
+  public boolean dropUserClusterWide(final String userName) {
+    final HAServerPlugin ha = server != null ? server.getHA() : null;
+    if (ha == null)
+      return dropUser(userName);
+
+    synchronized (this) {
+      if (!users.containsKey(userName))
+        return false;
+
+      final JSONArray currentUsers = new JSONArray(getUsersJsonPayload());
+      final JSONArray filtered = new JSONArray();
+      for (int i = 0; i < currentUsers.length(); i++) {
+        final JSONObject entry = currentUsers.getJSONObject(i);
+        if (!userName.equals(entry.getString("name", "")))
+          filtered.put(entry);
+      }
+      ha.replicateSecurityUsers(filtered.toString());
+    }
+
+    // Same rationale (and the same OUTSIDE-the-monitor placement) as dropUser(): a recreated same-name
+    // principal must not adopt the prior principal's still-open transaction session. Local only - the peers
+    // apply the replicated user list on their state machine thread, which must never block on a session lock.
+    invalidateHttpSessions(userName);
+    return true;
+  }
+
+  /**
    * Invalidates every live HTTP transaction session owned by the named principal (rolling back its open
    * transaction). No-op when the HTTP server is not running (e.g. embedded use). Must be called OUTSIDE the
    * {@code ServerSecurity} monitor: it can block on a session's in-flight command via {@code cancel()}.
@@ -372,21 +464,32 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     invalidateHttpSessions(userName);
   }
 
+  /**
+   * Re-applies the current group configuration of {@code database} to every user that has already cached a
+   * {@link ServerSecurityDatabaseUser} for it. Called after a schema change and after any group edit (REST
+   * {@code POST}/{@code DELETE /api/v1/server/groups} and the {@code server-groups.json} reload watcher).
+   * <p>
+   * Delegates to {@link ServerSecurityUser#refreshDatabaseConfiguration} so BOTH permission maps are rebuilt:
+   * refreshing only the per-type/per-bucket half left the database-level grants ({@code updateSchema},
+   * {@code updateSecurity}, {@code updateDatabaseSettings}) and the {@code resultSetLimit}/{@code readTimeout}
+   * quotas frozen at the values they had when the user first touched the database, so a revoked grant kept
+   * working until restart (issue #6806).
+   * <p>
+   * It no longer calls {@code getDatabaseUser()}, which would <i>create</i> a cached entry for every user on
+   * the server as a side effect. A user that has never touched this database has nothing to refresh: its
+   * entry is built from the current configuration the first time it does.
+   */
   @Override
   public void updateSchema(final DatabaseInternal database) {
     if (database == null)
       return;
 
-    for (final ServerSecurityUser user : users.values()) {
-      final ServerSecurityDatabaseUser databaseUser = user.getDatabaseUser(database);
-      if (databaseUser != null) {
-        final JSONObject groupConfiguration = getDatabaseGroupsConfiguration(database.getName());
-        if (groupConfiguration == null)
-          continue;
+    // Resolved once for the whole sweep instead of once per user: the lookup merges the wildcard and the
+    // per-database group objects, and the configuration cannot change under a single refresh.
+    final JSONObject groupConfiguration = getDatabaseGroupsConfiguration(database.getName());
 
-        databaseUser.updateFileAccess(database, groupConfiguration);
-      }
-    }
+    for (final ServerSecurityUser user : users.values())
+      user.refreshDatabaseConfiguration(database, groupConfiguration);
   }
 
   public String getEncodedHash(final String password, final String salt, final int iterations) {

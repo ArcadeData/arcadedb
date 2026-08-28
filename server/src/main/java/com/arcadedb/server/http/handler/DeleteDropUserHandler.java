@@ -51,12 +51,18 @@ public class DeleteDropUserHandler extends AbstractServerHttpHandler {
       return new ExecutionResponse(400, "{ \"error\" : \"User name parameter is null\"}");
 
     Metrics.counter("http.drop-user").increment();
-    ;
 
-    final boolean result = httpServer.getServer().getSecurity().dropUser(userName);
+    // Cluster-aware, like the non-deprecated DELETE /api/v1/server/users it stands in for (issue #6808).
+    final boolean result = httpServer.getServer().getSecurity().dropUserClusterWide(userName);
     if (!result)
       throw new RuntimeException("User '" + userName + "' not found on server");
 
     return new ExecutionResponse(204, "");
+  }
+
+  @Override
+  protected boolean mustExecuteOnWorkerThread() {
+    // The HA path blocks until the Raft entry is committed, which must never happen on an Undertow IO thread.
+    return true;
   }
 }

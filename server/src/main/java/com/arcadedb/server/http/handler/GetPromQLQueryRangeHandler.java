@@ -36,6 +36,9 @@ import java.util.Deque;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class GetPromQLQueryRangeHandler extends AbstractServerHttpHandler {
+  // Widest epoch second accepted for start/end. 1e12s is year 33658, ~1600x beyond any real series, and
+  // keeps start/end (and therefore their difference in milliseconds) far inside the 64-bit range.
+  static final double MAX_TIMESTAMP_SECONDS = 1e12;
 
   public GetPromQLQueryRangeHandler(final HttpServer httpServer) {
     super(httpServer);
@@ -65,9 +68,16 @@ public class GetPromQLQueryRangeHandler extends AbstractServerHttpHandler {
       return new ExecutionResponse(400,
           PromQLResponseFormatter.formatError("bad_data", "Missing required parameters: start, end, step"));
 
-    final long startMs = (long) (Double.parseDouble(startStr) * 1000);
-    final long endMs = (long) (Double.parseDouble(endStr) * 1000);
-    final long stepMs = parseStep(stepStr);
+    final long startMs;
+    final long endMs;
+    final long stepMs;
+    try {
+      startMs = parseTimestampMs("start", startStr);
+      endMs = parseTimestampMs("end", endStr);
+      stepMs = parseStep(stepStr);
+    } catch (final IllegalArgumentException e) {
+      return new ExecutionResponse(400, PromQLResponseFormatter.formatError("bad_data", e.getMessage()));
+    }
 
     if (stepMs <= 0)
       return new ExecutionResponse(400, PromQLResponseFormatter.formatError("bad_data", "Step must be positive"));
@@ -85,6 +95,35 @@ public class GetPromQLQueryRangeHandler extends AbstractServerHttpHandler {
     } catch (final IllegalArgumentException e) {
       return new ExecutionResponse(400, PromQLResponseFormatter.formatError("bad_data", e.getMessage()));
     }
+  }
+
+  /**
+   * Parses a Prometheus {@code start}/{@code end} parameter (epoch seconds, possibly fractional) into
+   * milliseconds, rejecting anything that is not a finite value inside {@link #MAX_TIMESTAMP_SECONDS}.
+   * <p>
+   * Without the bound, {@code start=-9e15}/{@code end=9e15} produced a span wider than {@code Long.MAX_VALUE}
+   * milliseconds, which wrapped negative in the evaluator's step-count guard and left the per-step loop
+   * unbounded - one request per worker thread was enough to take the HTTP listener down (issue #6807). The
+   * evaluator rejects the overflow on its own too; this is the earlier, clearer error for the caller.
+   * Package-private for direct unit testing.
+   */
+  static long parseTimestampMs(final String name, final String value) {
+    final double seconds;
+    try {
+      seconds = Double.parseDouble(value);
+    } catch (final NumberFormatException e) {
+      throw new IllegalArgumentException("Invalid " + name + " timestamp: '" + value + "'");
+    }
+
+    if (!Double.isFinite(seconds))
+      throw new IllegalArgumentException("Invalid " + name + " timestamp: '" + value + "' is not finite");
+
+    if (Math.abs(seconds) > MAX_TIMESTAMP_SECONDS)
+      throw new IllegalArgumentException(
+          "Invalid " + name + " timestamp: '" + value + "' is outside the supported epoch range of +/- "
+              + MAX_TIMESTAMP_SECONDS + " seconds");
+
+    return (long) (seconds * 1000);
   }
 
   private long parseStep(final String step) {

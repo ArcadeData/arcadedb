@@ -29,6 +29,7 @@ import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.LeaderForwardContext;
 import com.arcadedb.server.http.HttpAuthSession;
@@ -112,11 +113,23 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   // static fallback, prefix handlers, 404 probes). Never echo the raw client URI as a tag value: it
   // is attacker-controlled and would register an unbounded number of permanent meters (issue #5025).
   private static final String     UNMATCHED_PATH_TAG = "unmatched";
+  // Constant db tag used for any request whose {database} path parameter does not name a database this
+  // server actually has. The parameter is a free path segment, so an unauthenticated caller can invent
+  // one per request; echoing it verbatim registered a permanent percentile-histogram Timer per invented
+  // name, the same unbounded heap growth #5025 fixed for the path tag (issue #6805).
+  private static final String     UNKNOWN_DB_TAG     = "unknown";
+  // Constant db tag substituted once the timer cache is full, so a database name churn (create/drop in a
+  // loop) cannot grow the cache without bound either. The overflow tuple space is itself finite: method,
+  // path template and status are all small enumerations.
+  private static final String     OVERFLOW_DB_TAG    = "other";
+  // Hard ceiling on the number of cached tuples. A MeterFilter can deny the meter but cannot stop
+  // computeIfAbsent from retaining the key, so the cache needs its own bound.
+  private static final int        MAX_HTTP_REQUEST_TIMERS = 2_000;
   // Cache of resolved arcadedb.http.requests timers keyed by the bounded tag tuple
   // (method|path|status|db). Avoids rebuilding the Timer.Builder/Tags/Meter.Id and doing a registry
   // hash lookup on every request. The key space is bounded because every tag is low-cardinality: the
   // path is collapsed to a route template or the constant "unmatched", method and status are small
-  // enumerations, and db is the finite set of database names.
+  // enumerations, and db is either an existing database name or the constant "unknown".
   private static final ConcurrentHashMap<String, Timer> HTTP_REQUEST_TIMERS = new ConcurrentHashMap<>();
   // Tracks the database whose DatabaseContext this request bound the authenticated principal onto in
   // checkAuthorizationOnDatabase, so handleRequest's finally can clear the binding on THIS pooled worker
@@ -880,11 +893,23 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * Resolves (and caches) the {@code arcadedb.http.requests} RED timer for the given bounded tag tuple.
    * Building the timer once per distinct {@code method|path|status|db} tuple and reusing it removes the
    * per-request {@code Timer.Builder}/{@code Tags}/{@code Meter.Id} allocation and registry hash lookup
-   * on the hot path. The cache stays bounded because every tag is low-cardinality (issue #5025).
+   * on the hot path. The cache stays bounded because every tag is low-cardinality (issue #5025), and a
+   * hard {@link #MAX_HTTP_REQUEST_TIMERS} ceiling backs that up: a registry {@code MeterFilter} can deny
+   * the meter but cannot stop {@code computeIfAbsent} from retaining the key, so past the ceiling the
+   * {@code db} half of the tuple collapses onto {@link #OVERFLOW_DB_TAG} (issue #6805).
    * Package-private for direct unit testing.
    */
   static Timer httpRequestTimer(final String method, final String path, final String status, final String db) {
-    return HTTP_REQUEST_TIMERS.computeIfAbsent(method + '|' + path + '|' + status + '|' + db,
+    final String key = method + '|' + path + '|' + status + '|' + db;
+    final Timer cached = HTTP_REQUEST_TIMERS.get(key);
+    if (cached != null)
+      return cached;
+
+    // Recurses at most once: the overflow tuple space is finite, so the collapsed key is always cacheable.
+    if (HTTP_REQUEST_TIMERS.size() >= MAX_HTTP_REQUEST_TIMERS && !OVERFLOW_DB_TAG.equals(db))
+      return httpRequestTimer(method, path, status, OVERFLOW_DB_TAG);
+
+    return HTTP_REQUEST_TIMERS.computeIfAbsent(key,
         k -> Timer.builder("arcadedb.http.requests")
             .description("HTTP request duration")
             .tag("method", method)
@@ -1010,12 +1035,24 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * Returns the database name resolved from the route's {@code {database}} path parameter, or
    * {@code none} for routes that are not database-scoped (e.g. {@code /ready}, {@code /server}).
    */
-  private static String databaseTag(final HttpServerExchange exchange) {
+  private String databaseTag(final HttpServerExchange exchange) {
+    return databaseTag(exchange, httpServer.getServer());
+  }
+
+  /**
+   * Bounded {@code db} tag for the RED timer: the raw {@code {database}} path parameter is echoed only when
+   * it names a database this server actually has, and collapses to the constant {@link #UNKNOWN_DB_TAG}
+   * otherwise. The parameter matches any path segment and the timer is recorded in a {@code finally} that
+   * also runs for the early 401, so without the existence test any unauthenticated caller could register one
+   * permanent percentile-histogram Timer per invented name - the {@code path}-tag leak of #5025, on the other
+   * half of the tuple (issue #6805). Package-private for direct unit testing.
+   */
+  static String databaseTag(final HttpServerExchange exchange, final ArcadeDBServer server) {
     final PathTemplateMatch match = exchange.getAttachment(PathTemplateMatch.ATTACHMENT_KEY);
     if (match != null) {
       final String db = match.getParameters().get("database");
       if (db != null)
-        return db;
+        return server != null && server.existsDatabase(db) ? db : UNKNOWN_DB_TAG;
     }
     return "none";
   }

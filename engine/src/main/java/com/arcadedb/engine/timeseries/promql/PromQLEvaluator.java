@@ -149,17 +149,37 @@ public class PromQLEvaluator {
     if (stepMs <= 0)
       throw new IllegalArgumentException("stepMs must be positive, got: " + stepMs);
 
-    final long maxSteps = (endMs - startMs) / stepMs + 1;
-    if (maxSteps > MAX_RANGE_STEPS)
+    // Math.subtractExact, not a plain subtraction: a span wider than Long.MAX_VALUE milliseconds (start
+    // -9e18, end 9e18 - both accepted by the ordering test above) wrapped negative, so the step-count guard
+    // below passed and the loop ran unbounded, wedging the calling thread for the life of the process
+    // (issue #6807). An overflowing span is rejected as the bad request it is rather than silently wrapping.
+    final long spanMs;
+    try {
+      spanMs = Math.subtractExact(endMs, startMs);
+    } catch (final ArithmeticException e) {
       throw new IllegalArgumentException(
-          "Range query would produce " + maxSteps + " steps, exceeding maximum of " + MAX_RANGE_STEPS
-              + ". Increase stepMs or reduce the time range");
+          "Range [" + startMs + "," + endMs + "] is wider than the representable time span. Reduce the time range");
+    }
+
+    // Tested BEFORE the +1, which would itself overflow to Long.MIN_VALUE for spanMs=Long.MAX_VALUE and
+    // stepMs=1 and turn the rejection into a silently empty result. Same threshold as `span/step + 1 > MAX`.
+    final long stepsAfterFirst = spanMs / stepMs;
+    if (stepsAfterFirst >= MAX_RANGE_STEPS)
+      throw new IllegalArgumentException(
+          "Range query would produce more than the maximum of " + MAX_RANGE_STEPS + " steps (" + stepsAfterFirst
+              + " intervals of " + stepMs + "ms). Increase stepMs or reduce the time range");
+
+    final long maxSteps = stepsAfterFirst + 1;
 
     // For range queries, evaluate at each step point and collect into MatrixResult
     final Map<String, List<double[]>> seriesMap = new LinkedHashMap<>();
     final Map<String, Map<String, String>> labelsMap = new LinkedHashMap<>();
 
-    for (long t = startMs; t <= endMs; t += stepMs) {
+    // Indexed by step rather than accumulated into `t`: `t += stepMs` could itself overflow past
+    // Long.MAX_VALUE and wrap to a value still <= endMs, which is the same unbounded loop by another route.
+    // `i * stepMs <= spanMs` holds for every iteration, so `startMs + i * stepMs` cannot overflow.
+    for (long i = 0; i < maxSteps; i++) {
+      final long t = startMs + i * stepMs;
       final PromQLResult result = evaluate(expr, t, startMs, endMs, stepMs, 0);
       if (result instanceof InstantVector iv) {
         for (final VectorSample sample : iv.samples()) {
