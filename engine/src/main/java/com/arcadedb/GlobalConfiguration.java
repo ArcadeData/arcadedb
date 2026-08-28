@@ -1171,7 +1171,13 @@ public enum GlobalConfiguration {
       must have reached what the next build is estimated to cost, both counted in similarity computations. \
       That bounds the extra rebuild CPU this setting can introduce by the query CPU it removes, at any index \
       size and any ingest rate. Both conditions are reported by the index statistics as deltaScanBudget, \
-      deltaScanWorkSinceRebuild and estimatedRebuildWork.""",
+      deltaScanWorkSinceRebuild and estimatedRebuildWork. \
+      Note that this is on by default, so an existing deployment that is both query-heavy and ingest-heavy will \
+      see more background rebuild activity after upgrading - that being the point, since it is the same \
+      deployment that was losing the query time. Set 0 to keep the previous behaviour exactly. \
+      Note also that a query answered by the narrow-allow-list pre-filter plan never walks the graph, so it \
+      produces nothing to measure and leaves the budget unset; an index queried only that way is not covered by \
+      this setting and falls back on the count thresholds.""",
       Float.class, 1.0f),
 
   VECTOR_INDEX_INACTIVITY_REBUILD_TIMEOUT_MS("arcadedb.vectorIndex.inactivityRebuildTimeoutMs", SCOPE.DATABASE,
