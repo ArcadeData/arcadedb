@@ -1092,13 +1092,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * half of the tuple (issue #6805). Package-private for direct unit testing.
    */
   static String databaseTag(final HttpServerExchange exchange, final ArcadeDBServer server) {
-    final PathTemplateMatch match = exchange.getAttachment(PathTemplateMatch.ATTACHMENT_KEY);
-    if (match != null) {
-      final String db = match.getParameters().get("database");
-      if (db != null)
-        return server != null && server.existsDatabase(db) ? db : UNKNOWN_DB_TAG;
-    }
-    return "none";
+    // Extracted through the same helper the idempotency key uses, so there is exactly one place that
+    // answers "what is this request's database" and the bounded and unbounded forms cannot drift apart.
+    final String db = rawDatabaseParameter(exchange);
+    if (db == null)
+      return "none";
+    return server != null && server.existsDatabase(db) ? db : UNKNOWN_DB_TAG;
   }
 
   /**

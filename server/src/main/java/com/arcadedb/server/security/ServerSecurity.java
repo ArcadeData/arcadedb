@@ -308,8 +308,11 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       throw new ServerSecurityException("User '" + name + "' already exists");
 
     final ServerSecurityUser user = new ServerSecurityUser(server, userConfiguration);
+    // Persist BEFORE publishing: saveUsers() propagates an I/O failure so the request fails, and publishing
+    // first would leave the new user live in memory while nothing reached the disk - authoritative until the
+    // next restart silently took it away again.
+    saveUsers(snapshotWith(name, userConfiguration));
     users.put(name, user);
-    saveUsers();
     return user;
   }
 
@@ -325,8 +328,11 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
 
       user = new ServerSecurityUser(server, userConfiguration);
       passwordChanged = !Objects.equals(previous.getPassword(), user.getPassword());
+      // Persist before publishing, as in createUser(): a failed save must leave the previous password in
+      // force rather than activate a new one that no longer exists after a restart - and the throw would
+      // also skip the session invalidation below, so the rotation would be half-applied.
+      saveUsers(snapshotWith(name, userConfiguration));
       users.put(name, user);
-      saveUsers();
     }
 
     // Note: a metadata update does NOT force-rollback the principal's open transactions - per-request
@@ -345,9 +351,12 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
 
   public boolean dropUser(final String userName) {
     synchronized (this) {
-      if (users.remove(userName) == null)
+      if (!users.containsKey(userName))
         return false;
-      saveUsers();
+      // Persist before publishing, as in createUser()/updateUser(): a failed save must not leave a user
+      // removed in memory and still present on disk, which a restart would resurrect.
+      saveUsers(snapshotWith(userName, null));
+      users.remove(userName);
     }
     // Invalidate the dropped principal's live HTTP transaction sessions so a recreated same-name principal
     // cannot adopt (and commit) the prior principal's still-open session. Done OUTSIDE the security monitor:
@@ -384,9 +393,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       if (users.containsKey(name))
         throw new ServerSecurityException("User '" + name + "' already exists");
 
-      final JSONArray currentUsers = new JSONArray(getUsersJsonPayload());
-      currentUsers.put(userConfiguration);
-      ha.replicateSecurityUsers(currentUsers.toString());
+      ha.replicateSecurityUsers(replicationPayloadWith(name, userConfiguration));
     }
   }
 
@@ -412,13 +419,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
 
       passwordChanged = !Objects.equals(previous.getPassword(), userConfiguration.getString("password", null));
 
-      final JSONArray currentUsers = new JSONArray(getUsersJsonPayload());
-      final JSONArray replaced = new JSONArray();
-      for (int i = 0; i < currentUsers.length(); i++) {
-        final JSONObject entry = currentUsers.getJSONObject(i);
-        replaced.put(name.equals(entry.getString("name", "")) ? userConfiguration : entry);
-      }
-      ha.replicateSecurityUsers(replaced.toString());
+      ha.replicateSecurityUsers(replicationPayloadWith(name, userConfiguration));
     }
 
     // Applying the replicated list already dropped this principal's LOGIN sessions on every node, this one
@@ -445,14 +446,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       if (!users.containsKey(userName))
         return false;
 
-      final JSONArray currentUsers = new JSONArray(getUsersJsonPayload());
-      final JSONArray filtered = new JSONArray();
-      for (int i = 0; i < currentUsers.length(); i++) {
-        final JSONObject entry = currentUsers.getJSONObject(i);
-        if (!userName.equals(entry.getString("name", "")))
-          filtered.put(entry);
-      }
-      ha.replicateSecurityUsers(filtered.toString());
+      ha.replicateSecurityUsers(replicationPayloadWith(userName, null));
     }
 
     // Same rationale (and the same OUTSIDE-the-monitor placement) as dropUser(): a recreated same-name
@@ -692,8 +686,19 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   }
 
   public void saveUsers() {
+    saveUsers(usersToJSON());
+  }
+
+  /**
+   * Writes an explicit user list to {@code server-users.jsonl}, so a mutation can be persisted <i>before</i>
+   * it is published to the in-memory map. Publishing first and saving after leaves the change authoritative
+   * in memory while nothing reached the disk when the write fails - and the propagated failure then also
+   * skips whatever the caller does afterwards (session invalidation, most importantly), so the mutation ends
+   * up half-applied instead of not applied at all.
+   */
+  private void saveUsers(final List<JSONObject> snapshot) {
     try {
-      usersRepository.save(usersToJSON());
+      usersRepository.save(snapshot);
     } catch (final IOException e) {
       LogManager.instance()
           .log(this, Level.SEVERE, "Error on saving security configuration to file '%s'", e, SecurityUserFileRepository.FILE_NAME);
@@ -702,6 +707,43 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       throw new ServerSecurityException(
           "Error on saving security configuration to file '" + SecurityUserFileRepository.FILE_NAME + "'", e);
     }
+  }
+
+  /**
+   * Returns the current user list with {@code name}'s entry replaced by {@code replacement}, appended when
+   * the name is not present yet, or removed when {@code replacement} is {@code null}. Must be called while
+   * holding this monitor.
+   * <p>
+   * The single place the create/update/drop shape is expressed, on both the local and the replicated path:
+   * three hand-written copies of this loop is exactly how two of them ended up invalidating sessions and the
+   * third not.
+   */
+  private List<JSONObject> snapshotWith(final String name, final JSONObject replacement) {
+    final List<JSONObject> snapshot = new ArrayList<>(users.size() + 1);
+    boolean found = false;
+    for (final ServerSecurityUser user : users.values()) {
+      if (name.equals(user.getName())) {
+        found = true;
+        if (replacement != null)
+          snapshot.add(replacement);
+      } else
+        snapshot.add(user.toJSON());
+    }
+    if (!found && replacement != null)
+      snapshot.add(replacement);
+    return snapshot;
+  }
+
+  /**
+   * The same list as {@link #snapshotWith}, as the JSON array {@code HAServerPlugin.replicateSecurityUsers}
+   * takes. Must be called while holding this monitor, so the read-compute-submit sequence is serialised
+   * against any other user mutation on this node.
+   */
+  private String replicationPayloadWith(final String name, final JSONObject replacement) {
+    final JSONArray array = new JSONArray();
+    for (final JSONObject entry : snapshotWith(name, replacement))
+      array.put(entry);
+    return array.toString();
   }
 
   /**
