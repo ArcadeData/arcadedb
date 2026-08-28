@@ -594,9 +594,11 @@ public class ArcadeDBServer {
         // Same backstop for the "db" half of the tuple (issue #6805). The handler already collapses a
         // {database} path parameter naming no existing database onto a constant, but database name churn -
         // or a future route exposing another free segment as "db" - must not be able to grow the registry
-        // either. 1000 is far above any realistic per-server database count.
+        // either. The limit comes from the handler that produces the tag, so the registry-side bound and the
+        // handler's own timer-cache bound stay tied to one number.
         Metrics.globalRegistry.config().meterFilter(
-            MeterFilter.maximumAllowableTags("arcadedb.http.requests", "db", 1000, MeterFilter.deny()));
+            MeterFilter.maximumAllowableTags("arcadedb.http.requests", "db",
+                AbstractServerHttpHandler.MAX_DB_TAG_VALUES, MeterFilter.deny()));
         metricsFiltersInstalled = true;
       }
 

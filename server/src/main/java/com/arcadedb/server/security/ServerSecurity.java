@@ -294,7 +294,11 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   public synchronized ServerSecurityUser createUser(final JSONObject userConfiguration) {
     final String name = userConfiguration.getString("name");
     if (users.containsKey(name))
-      throw new SecurityException("User '" + name + "' already exists");
+      // ServerSecurityException, not java.lang.SecurityException: identical semantics must not be reported
+      // with two different exception types depending on whether the server happens to be in a cluster
+      // (createUserClusterWide's HA branch raises the same condition). Both already map to the same HTTP
+      // status through AbstractServerHttpHandler.isSecurityFailure().
+      throw new ServerSecurityException("User '" + name + "' already exists");
 
     final ServerSecurityUser user = new ServerSecurityUser(server, userConfiguration);
     users.put(name, user);
