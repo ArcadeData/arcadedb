@@ -2812,15 +2812,28 @@ class GraphAnalyticalViewTest extends TestHelper {
     // The query planner's gate must not hand out a provider it hasn't actually verified is usable: this
     // must return false/null synchronously, without waiting for (or triggering, from the caller's point of
     // view) any O(V+E) rebuild - it only kicks that off in the background.
-    assertThat(restored.isReady())
-        .as("issue #6641: a provisionally-READY view with an unresolved deferred restore must not be "
-            + "advertised as ready until it is actually verified - the caller has no way to recover once "
-            + "committed to a provider that turns out to need a synchronous rebuild")
-        .isFalse();
-    assertThat(GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS"))
-        .as("issue #6641: the query planner must route to the ordinary OLTP path instead of a provider "
-            + "that will block the query through a full rebuild")
-        .isNull();
+    //
+    // Permits are saturated FIRST, and for exactly the two assertions below: isReady() dispatches the
+    // deferred restore and only then reads `status` (deliberately - see its javadoc), so on a fixture this
+    // small the whole background chain can resolve inside that window and hand back a legitimately READY
+    // view. Parking the dispatched task on BUILD_PERMITS - which it acquires before it reads anything -
+    // pins the observation to the instant the gate is actually being asked about, instead of racing it.
+    GraphAnalyticalView.acquireAllBuildPermitsForTest();
+    try {
+      assertThat(restored.isReady())
+          .as("issue #6641: a provisionally-READY view with an unresolved deferred restore must not be "
+              + "advertised as ready until it is actually verified - the caller has no way to recover once "
+              + "committed to a provider that turns out to need a synchronous rebuild")
+          .isFalse();
+      assertThat(GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS"))
+          .as("issue #6641: the query planner must route to the ordinary OLTP path instead of a provider "
+              + "that will block the query through a full rebuild")
+          .isNull();
+    } finally {
+      // Releases exactly the permits acquired above, regardless of whether an assertion failed: they are
+      // JVM-wide, and a leaked acquisition would starve every later test in this JVM.
+      GraphAnalyticalView.releaseAllBuildPermitsForTest();
+    }
 
     // "Never serve stale data" still holds: the background resolution (triggered above) eventually
     // produces the correct, up-to-date snapshot for whichever query asks next.
@@ -2876,10 +2889,17 @@ class GraphAnalyticalViewTest extends TestHelper {
     assertThat(restored).isNotNull();
     assertThat(restored.isBuilt()).isFalse();
 
-    assertThat(restored.isReady())
-        .as("issue #6641: a corrupted persisted CSR must not be advertised as ready before it is verified")
-        .isFalse();
-    assertThat(GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS")).isNull();
+    // Permits are saturated for exactly these two assertions - see the sibling commit-variant test above
+    // for why isReady() would otherwise race the background chain it dispatches itself.
+    GraphAnalyticalView.acquireAllBuildPermitsForTest();
+    try {
+      assertThat(restored.isReady())
+          .as("issue #6641: a corrupted persisted CSR must not be advertised as ready before it is verified")
+          .isFalse();
+      assertThat(GraphTraversalProviderRegistry.findProvider(database, "FOLLOWS")).isNull();
+    } finally {
+      GraphAnalyticalView.releaseAllBuildPermitsForTest();
+    }
 
     assertThat(restored.awaitReady(10, TimeUnit.SECONDS)).isTrue();
     assertThat(restored.isRestoredFromPersistedCsr()).isFalse();

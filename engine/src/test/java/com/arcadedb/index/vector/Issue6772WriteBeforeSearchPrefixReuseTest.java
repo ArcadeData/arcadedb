@@ -90,6 +90,16 @@ class Issue6772WriteBeforeSearchPrefixReuseTest {
   private static final int    MAX_CONNECTIONS = 64;
   private static final int    BEAM_WIDTH      = 400;
 
+  // How long to let the async rebuild of 20,201 x 128 vectors converge. Sized for the worst case rather
+  // than for a developer machine, which is what the @Tag("vector") note in CLAUDE.md asks for: the rebuild
+  // has to wait out whatever else in this JVM holds the sole LSMVectorIndex.REBUILD_SEMAPHORE permit before
+  // it can even start, and then runs on however many cores the runner has. At 60s a green local run
+  // (~20s for this whole class) still went red on a 4-vCPU CI runner with the rebuild reporting itself
+  // still in flight (run 33161892670). This is a convergence wait, not a latency bound - it asserts that
+  // the rebuild happens, not that it is fast - so a generous value cannot turn a passing run red, and the
+  // assertions below distinguish "still working" from "never ran" for whoever reads the next timeout.
+  private static final Duration ASYNC_REBUILD_TIMEOUT = Duration.ofMinutes(4);
+
   /** The single record the searching session writes before it searches - the whole point of this test. */
   private static final int IN_SESSION_DOC_ID = NUM_VECTORS + GAP_VECTORS;
 
@@ -149,57 +159,75 @@ class Issue6772WriteBeforeSearchPrefixReuseTest {
         final RID crashedSessionDocRid = ridOf(db, NUM_VECTORS); // first record written after the persisted build
         final RID inSessionDocRid = ridOf(db, IN_SESSION_DOC_ID);
 
-        final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
-        final List<Pair<RID, Float>> results = index.findNeighborsFromVector(embedding(IN_SESSION_DOC_ID), 5, 64);
-        // The stopwatch keeps running across the cheap getStats() assertions below and is asserted on after
-        // them - see the comment there.
-        // The state facts are asserted before the wall clock, deliberately: the issue reports the elapsed time
-        // moving between runs (7.5x to 15.9x) while these two counters do not, so they are what should name the
-        // regression when this test goes red, with the timing tripwire below as the corroborating - not the
-        // leading - signal.
-        assertThat(index.getStats().get("stalePrefixGraphReuses"))
-            .as("the reuse path must run for a session that wrote before it searched, exactly as it does for one "
-                + "that did not (issue #6772)")
-            .isEqualTo(1L);
-        assertThat(index.getStats().get("graphRebuildCount"))
-            .as("no synchronous rebuild may have run on the calling thread for this search to have returned "
-                + "already").isZero();
-        assertThat(index.getStats().get("graphNodeCount"))
-            .as("the graph in memory must be the persisted PREFIX, not a graph rebuilt over the whole live set")
-            .isEqualTo((long) NUM_VECTORS);
+        // The async rebuild the reuse dispatches resets the very gauges asserted below - deltaVectorsCount,
+        // mutationsSinceRebuild, graphState, graphRebuildCount - so the permits are saturated for the whole
+        // observation window. Without that, whether these assertions see the state the reuse LEFT or the state the
+        // rebuild ALREADY CONSUMED is decided by how quickly this JVM hands out the sole vector-rebuild permit; the
+        // block used to pass only because a preceding test's rebuild happened to be starving it. Both acquire sites
+        // are tryAcquire on background threads and no search path takes a permit, so this cannot stall the queries.
+        LSMVectorIndex.acquireAllRebuildPermitsForTest();
+        try {
+          final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
+          final List<Pair<RID, Float>> results = index.findNeighborsFromVector(embedding(IN_SESSION_DOC_ID), 5, 64);
+          // The stopwatch keeps running across the cheap getStats() assertions below and is asserted on after
+          // them - see the comment there.
+          // The state facts are asserted before the wall clock, deliberately: the issue reports the elapsed time
+          // moving between runs (7.5x to 15.9x) while these two counters do not, so they are what should name the
+          // regression when this test goes red, with the timing tripwire below as the corroborating - not the
+          // leading - signal.
+          assertThat(index.getStats().get("stalePrefixGraphReuses"))
+              .as("the reuse path must run for a session that wrote before it searched, exactly as it does for one "
+                  + "that did not (issue #6772)")
+              .isEqualTo(1L);
+          assertThat(index.getStats().get("graphRebuildCount"))
+              .as("no synchronous rebuild may have run on the calling thread for this search to have returned "
+                  + "already").isZero();
+          assertThat(index.getStats().get("graphNodeCount"))
+              .as("the graph in memory must be the persisted PREFIX, not a graph rebuilt over the whole live set")
+              .isEqualTo((long) NUM_VECTORS);
 
-        // The duplicate check. This session's own write is already in the delta buffer AND inside the gap past
-        // the persisted prefix, so a reuse that queued the gap wholesale would buffer it twice - and count it
-        // twice in mutationsSinceRebuild.
-        assertThat(index.getStats().get("deltaVectorsCount"))
-            .as("every vector missing from the persisted prefix must be buffered exactly once: the %d written by "
-                + "the crashed session plus the 1 written by this one, with no duplicate of this session's own "
-                + "write", GAP_VECTORS)
-            .isEqualTo((long) (GAP_VECTORS + 1));
-        assertThat(index.getStats().get("mutationsSinceRebuild"))
-            .as("and counted exactly once each, for the same reason")
-            .isEqualTo((long) (GAP_VECTORS + 1));
+          // The duplicate check. This session's own write is already in the delta buffer AND inside the gap past
+          // the persisted prefix, so a reuse that queued the gap wholesale would buffer it twice - and count it
+          // twice in mutationsSinceRebuild.
+          assertThat(index.getStats().get("deltaVectorsCount"))
+              .as("every vector missing from the persisted prefix must be buffered exactly once: the %d written by "
+                  + "the crashed session plus the 1 written by this one, with no duplicate of this session's own "
+                  + "write", GAP_VECTORS)
+              .isEqualTo((long) (GAP_VECTORS + 1));
+          assertThat(index.getStats().get("mutationsSinceRebuild"))
+              .as("and counted exactly once each, for the same reason")
+              .isEqualTo((long) (GAP_VECTORS + 1));
 
-        // Measured on this fixture: a prefix reuse returns in well under a second; a full synchronous rebuild of
-        // 20,201 vectors at these build parameters takes several real seconds. The bound is a tripwire between
-        // the two, wide on both sides.
-        stopwatch.assertGaveUpWithin(2_000,
-            "a search that reuses a stale prefix graph from one that ran a full synchronous rebuild to completion");
+          // Measured on this fixture: a prefix reuse returns in well under a second; a full synchronous rebuild of
+          // 20,201 vectors at these build parameters takes several real seconds. The bound is a tripwire between
+          // the two, wide on both sides.
+          stopwatch.assertGaveUpWithin(2_000,
+              "a search that reuses a stale prefix graph from one that ran a full synchronous rebuild to completion");
 
-        // Both kinds of pending vector must already be findable by their own embedding - a record is always its
-        // own nearest neighbour - proving the reuse did not trade correctness for the latency win.
-        assertThat(results.stream().map(Pair::getFirst))
-            .as("the vector this session wrote before searching must be found by the very first query")
-            .contains(inSessionDocRid);
-        assertThat(index.findNeighborsFromVector(embedding(NUM_VECTORS), 5, 64).stream().map(Pair::getFirst))
-            .as("so must a vector written by the crashed session, which only the queued gap makes searchable")
-            .contains(crashedSessionDocRid);
+          // Both kinds of pending vector must already be findable by their own embedding - a record is always its
+          // own nearest neighbour - proving the reuse did not trade correctness for the latency win.
+          assertThat(results.stream().map(Pair::getFirst))
+              .as("the vector this session wrote before searching must be found by the very first query")
+              .contains(inSessionDocRid);
+          assertThat(index.findNeighborsFromVector(embedding(NUM_VECTORS), 5, 64).stream().map(Pair::getFirst))
+              .as("so must a vector written by the crashed session, which only the queued gap makes searchable")
+              .contains(crashedSessionDocRid);
+        } finally {
+          // Released before the convergence wait below: that wait is precisely for the rebuild these permits park.
+          LSMVectorIndex.releaseAllRebuildPermitsForTest();
+        }
+
 
         // The async rebuild kicked off by the reuse eventually folds everything into the graph proper.
         Awaitility.await("the async rebuild kicked off by the stale-prefix reuse completes")
-            .atMost(Duration.ofSeconds(60))
+            .atMost(ASYNC_REBUILD_TIMEOUT)
             .pollInterval(Duration.ofMillis(200))
-            .untilAsserted(() -> assertThat(index.getStats().get("graphRebuildCount")).isEqualTo(1L));
+            .untilAsserted(() -> assertThat(index.getStats().get("graphRebuildCount"))
+                .as("graphRebuildCount, with asyncRebuildInProgress=%s: a 1 there means the rebuild is still "
+                        + "running or still parked on the JVM-wide REBUILD_SEMAPHORE and this wait is simply "
+                        + "too short; a 0 means it was never started or was skipped, which is a real defect",
+                    index.getStats().get("asyncRebuildInProgress"))
+                .isEqualTo(1L));
 
         assertThat(index.getStats().get("graphNodeCount"))
             .as("once the deferred rebuild completes the graph covers every live vector")
@@ -244,44 +272,62 @@ class Issue6772WriteBeforeSearchPrefixReuseTest {
         populate(db, IN_SESSION_DOC_ID, IN_SESSION_DOC_ID + 1);
         final RID inSessionDocRid = ridOf(db, IN_SESSION_DOC_ID);
 
-        final int searchers = 8;
-        final CyclicBarrier startTogether = new CyclicBarrier(searchers);
-        final List<Callable<List<Pair<RID, Float>>>> tasks = new ArrayList<>(searchers);
-        for (int i = 0; i < searchers; i++)
-          tasks.add(() -> {
-            startTogether.await(30, TimeUnit.SECONDS);
-            return index.findNeighborsFromVector(embedding(IN_SESSION_DOC_ID), 5, 64);
-          });
-
-        final ExecutorService pool = Executors.newFixedThreadPool(searchers);
+        // The async rebuild the reuse dispatches resets the very gauges asserted below - deltaVectorsCount,
+        // mutationsSinceRebuild, graphState, graphRebuildCount - so the permits are saturated for the whole
+        // observation window. Without that, whether these assertions see the state the reuse LEFT or the state the
+        // rebuild ALREADY CONSUMED is decided by how quickly this JVM hands out the sole vector-rebuild permit; the
+        // block used to pass only because a preceding test's rebuild happened to be starving it. Both acquire sites
+        // are tryAcquire on background threads and no search path takes a permit, so this cannot stall the queries.
+        LSMVectorIndex.acquireAllRebuildPermitsForTest();
         try {
-          for (final Future<List<Pair<RID, Float>>> future : pool.invokeAll(tasks))
-            assertThat(future.get(60, TimeUnit.SECONDS).stream().map(Pair::getFirst))
-                .as("every concurrent searcher must find the vector this session wrote before searching, whether "
-                    + "it published the reuse, waited for it, or was served from the delta buffer alone")
-                .contains(inSessionDocRid);
+          final int searchers = 8;
+          final CyclicBarrier startTogether = new CyclicBarrier(searchers);
+          final List<Callable<List<Pair<RID, Float>>>> tasks = new ArrayList<>(searchers);
+          for (int i = 0; i < searchers; i++)
+            tasks.add(() -> {
+              startTogether.await(30, TimeUnit.SECONDS);
+              return index.findNeighborsFromVector(embedding(IN_SESSION_DOC_ID), 5, 64);
+            });
+
+          final ExecutorService pool = Executors.newFixedThreadPool(searchers);
+          try {
+            for (final Future<List<Pair<RID, Float>>> future : pool.invokeAll(tasks))
+              assertThat(future.get(60, TimeUnit.SECONDS).stream().map(Pair::getFirst))
+                  .as("every concurrent searcher must find the vector this session wrote before searching, whether "
+                      + "it published the reuse, waited for it, or was served from the delta buffer alone")
+                  .contains(inSessionDocRid);
+          } finally {
+            pool.shutdownNow();
+          }
+
+          assertThat(index.getStats().get("stalePrefixGraphReuses"))
+              .as("exactly one reuse must be published however many threads reached the decision - the losers must "
+                  + "discard their work on the graphIndex double-check, not publish a second time")
+              .isEqualTo(1L);
+          assertThat(index.getStats().get("deltaVectorsCount"))
+              .as("and the gap must still be buffered exactly once under contention: %d from the crashed session "
+                  + "plus the 1 this session wrote", GAP_VECTORS)
+              .isEqualTo((long) (GAP_VECTORS + 1));
+          assertThat(index.getStats().get("mutationsSinceRebuild"))
+              .as("counted exactly once each, for the same reason")
+              .isEqualTo((long) (GAP_VECTORS + 1));
         } finally {
-          pool.shutdownNow();
+          // Released before the convergence wait below: that wait is precisely for the rebuild these permits park.
+          LSMVectorIndex.releaseAllRebuildPermitsForTest();
         }
 
-        assertThat(index.getStats().get("stalePrefixGraphReuses"))
-            .as("exactly one reuse must be published however many threads reached the decision - the losers must "
-                + "discard their work on the graphIndex double-check, not publish a second time")
-            .isEqualTo(1L);
-        assertThat(index.getStats().get("deltaVectorsCount"))
-            .as("and the gap must still be buffered exactly once under contention: %d from the crashed session "
-                + "plus the 1 this session wrote", GAP_VECTORS)
-            .isEqualTo((long) (GAP_VECTORS + 1));
-        assertThat(index.getStats().get("mutationsSinceRebuild"))
-            .as("counted exactly once each, for the same reason")
-            .isEqualTo((long) (GAP_VECTORS + 1));
 
         // Teardown hygiene, not an assertion about the fix: the reuse kicks off an async rebuild, and dropping the
         // database out from under it leaves it persisting a graph into files that are going away.
         Awaitility.await("the async rebuild kicked off by the stale-prefix reuse settles before the drop")
-            .atMost(Duration.ofSeconds(60))
+            .atMost(ASYNC_REBUILD_TIMEOUT)
             .pollInterval(Duration.ofMillis(200))
-            .untilAsserted(() -> assertThat(index.getStats().get("asyncRebuildInProgress")).isZero());
+            .untilAsserted(() -> assertThat(index.getStats().get("asyncRebuildInProgress"))
+                .as("asyncRebuildInProgress, with graphRebuildCount=%s: this stays 1 for as long as the rebuild "
+                        + "is running OR parked on the JVM-wide REBUILD_SEMAPHORE (whose own permit wait is "
+                        + "10 minutes by default), so a timeout here means the wait was too short, not that "
+                        + "anything hung", index.getStats().get("graphRebuildCount"))
+                .isZero());
       } finally {
         db.drop();
       }

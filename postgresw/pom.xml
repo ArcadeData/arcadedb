@@ -81,6 +81,18 @@
             <version>${tomcat-jdbc.version}</version>
             <scope>test</scope>
         </dependency>
+        <!-- PostgresWJdbcIT runs BACKUP DATABASE, which the engine resolves reflectively against
+             com.arcadedb.integration.backup.Backup. Declared explicitly because nothing else on this
+             module's test classpath supplies it: arcadedb-server has it at test scope (not transitive),
+             and the gremlin uber-jar above used to carry a copy only as a side effect of shading its own
+             compile-scope dependency - PR #6876 excluded it from the jar, which is what turned that
+             accident into a "backup libs not found in classpath" failure. -->
+        <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-integration</artifactId>
+            <version>${project.parent.version}</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
     <build>
         <plugins>

@@ -144,8 +144,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // JVM-wide semaphore limiting the number of concurrent async graph rebuilds across all indexes
   // and databases.  Multiple concurrent rebuilds are extremely memory-intensive and can cause OOM
   // kills (issue #3868).  The permit count is read once at class-load time from the configuration.
-  private static final Semaphore REBUILD_SEMAPHORE = new Semaphore(
-      GlobalConfiguration.VECTOR_INDEX_MAX_CONCURRENT_REBUILDS.getValueAsInteger());
+  private static final int       MAX_CONCURRENT_REBUILDS = GlobalConfiguration.VECTOR_INDEX_MAX_CONCURRENT_REBUILDS
+      .getValueAsInteger();
+  private static final Semaphore REBUILD_SEMAPHORE       = new Semaphore(MAX_CONCURRENT_REBUILDS);
 
   // Page header layout constants
   public static final int OFFSET_FREE_CONTENT = 0;  // 4 bytes
@@ -8674,6 +8675,33 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   long deltaScanWorkForTest() {
     return deltaScanWorkSinceRebuild.get();
+  }
+
+  /**
+   * Test-only hook: saturates the JVM-wide {@link #REBUILD_SEMAPHORE} so that any async graph rebuild dispatched
+   * afterwards parks in {@link #startAsyncGraphRebuild()} before it touches anything, letting a test assert on the
+   * state a search left behind - {@code deltaVectorsCount}, {@code mutationsSinceRebuild}, {@code graphState},
+   * {@code graphRebuildCount} - instead of racing the rebuild that consumes it. Both acquire sites are
+   * {@code tryAcquire} on background threads and no search path takes a permit, so holding them all cannot stall a
+   * query.
+   * <p>
+   * Must be paired with {@link #releaseAllRebuildPermitsForTest()} in a {@code finally} block: the permits are
+   * JVM-wide, so a leaked acquisition starves every later vector rebuild in the same JVM. Blocks until the permits
+   * are free, which is deliberate - an earlier test's rebuild still holding one is exactly the convoy the caller
+   * needs to be out of before it can observe anything stable.
+   * <p>
+   * Assumes the sequential, single-JVM run this module's tests get today ({@code forkCount=1}, no parallel
+   * classes), same as {@code GraphAnalyticalView.acquireAllBuildPermitsForTest()}. Two callers under a parallel
+   * Surefire would serialize on the semaphore rather than deadlock, but the second would then be observing a
+   * window the first had already let a rebuild run in, so the guarantee this hook exists to give would be gone.
+   */
+  static void acquireAllRebuildPermitsForTest() {
+    REBUILD_SEMAPHORE.acquireUninterruptibly(MAX_CONCURRENT_REBUILDS);
+  }
+
+  /** Test-only hook: releases the permits taken by {@link #acquireAllRebuildPermitsForTest()}. */
+  static void releaseAllRebuildPermitsForTest() {
+    REBUILD_SEMAPHORE.release(MAX_CONCURRENT_REBUILDS);
   }
 
   /** Charges one query's brute-force scan of {@code scanned} buffered vectors to the amortization window. */
