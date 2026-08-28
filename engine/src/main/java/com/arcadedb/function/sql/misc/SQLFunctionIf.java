@@ -19,11 +19,8 @@
 package com.arcadedb.function.sql.misc;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
-
-import java.util.logging.Level;
 
 /**
  * Returns different values based on the condition. If it's true the first value is returned, otherwise the second one.
@@ -56,30 +53,40 @@ public class SQLFunctionIf extends SQLFunctionAbstract {
     super(NAME);
   }
 
+  /**
+   * Two, as {@link #getSyntax()} has always said: the false branch is optional.
+   */
+  @Override
+  public int getMinArgs() {
+    return 2;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 3;
+  }
+
   @Override
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
-
     final boolean result;
 
-    try {
-      final Object condition = params[0];
-      switch (condition) {
-      case Boolean boolean1 -> result = boolean1;
-      case String s -> result = Boolean.parseBoolean(condition.toString());
-      case Number number -> result = number.intValue() > 0;
-      case null, default -> {
-        return null;
-      }
-      }
-
-      return result ? params[1] : params[2];
-
-    } catch (final Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error during if execution", e);
-
+    final Object condition = params[0];
+    switch (condition) {
+    case Boolean boolean1 -> result = boolean1;
+    case String s -> result = Boolean.parseBoolean(s);
+    case Number number -> result = number.intValue() > 0;
+    case null, default -> {
       return null;
     }
+    }
+
+    // AN OMITTED FALSE BRANCH IS A null, WHICH IS WHAT THE DOCUMENTED TWO-ARGUMENT FORM MEANS. THE BODY USED TO READ
+    // params[2] UNCONDITIONALLY AND HAND THE RESULTING ArrayIndexOutOfBoundsException TO A catch (Exception) THAT
+    // LOGGED IT AT SEVERE AND ANSWERED null: ONE FULL STACK TRACE PER EVALUATED ROW (issue #6826). THAT catch IS GONE
+    // WITH THE OVER-READ - A GENUINE ERROR RAISED WHILE PRODUCING THE CHOSEN BRANCH IS THE CALLER'S TO SEE - AND THE
+    // WRONG ARGUMENT COUNTS IT ALSO HID ARE NOW A CLEAN 400 FROM checkArity()
+    return result ? params[1] : params.length > 2 ? params[2] : null;
   }
 
   @Override

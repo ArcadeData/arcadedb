@@ -113,6 +113,20 @@ public interface Document extends Record {
 
   EmbeddedDocument getEmbedded(String propertyName);
 
+  /**
+   * Returns the names of the properties set on this document, in the order they were set.
+   * <p>
+   * The returned set is an unmodifiable <b>snapshot</b>: it neither reflects later changes to the document nor
+   * allows changing the document through it, and it stays valid while the caller mutates the record - so the
+   * natural {@code for (name : getPropertyNames()) remove(name)} prune loop works. That contract is the only one
+   * every implementation can honour: {@link ImmutableDocument} reads its names out of the serialized buffer and has
+   * no live view to hand back, so a caller holding a {@code Document} could not tell whether the set it got was a
+   * snapshot or a window onto the record's own key set. {@link MutableDocument} used to return the latter, which let
+   * a {@code remove()} on the returned set strip properties while bypassing {@link MutableDocument#remove(String)}
+   * entirely - no dirty flag, no validation (issue #6818).
+   *
+   * @return the property names, as an unmodifiable snapshot
+   */
   Set<String> getPropertyNames();
 
   DocumentType getType();

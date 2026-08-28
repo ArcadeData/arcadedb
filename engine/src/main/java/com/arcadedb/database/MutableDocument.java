@@ -31,6 +31,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -437,10 +438,18 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     return result.toString();
   }
 
+  /**
+   * {@inheritDoc}
+   * <p>
+   * A copy, not {@code map.keySet()}: see {@link Document#getPropertyNames()} for why the contract has to be a
+   * snapshot. {@link LinkedHashSet} rather than {@code Set.copyOf} because the insertion order is part of the
+   * contract - {@link #toMap(boolean)} and the SQL {@code keys()}/{@code values()} methods stay index-aligned with
+   * it.
+   */
   @Override
   public Set<String> getPropertyNames() {
     checkForLazyLoadingProperties();
-    return map.keySet();
+    return Collections.unmodifiableSet(new LinkedHashSet<>(map.keySet()));
   }
 
   public MutableDocument modify() {
@@ -489,30 +498,9 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
         // hashed the stored one (issue #5595), hence the shared helper rather than an inline switch.
         final Class javaImplementation = propType.getJavaImplementation(database);
 
-        if (javaImplementation.equals(Document.class)) {
-          // EMBEDDED DOCUMENT
-          if (value instanceof Map) {
-            final Map<String, Object> map = (Map<String, Object>) value;
-            final String embType = (String) map.get("@type");
-
-            final String ofType = property.getOfType();
-            if (ofType != null) {
-              // VALIDATE CONSTRAINT
-              if (!ofType.equals(embType)) {
-                // CHECK INHERITANCE
-                final DocumentType schemaType = database.getSchema().getType(embType);
-                if (!schemaType.instanceOf(ofType))
-                  throw new ValidationException(
-                      "Embedded type '" + embType + "' is not compatible with the type defined in the schema " +
-                          "constraint '"
-                          + ofType + "'");
-              }
-            }
-
-            return newEmbeddedDocument(embType, name);
-          }
-        }
-
+        // A MAP DESTINED FOR AN EMBEDDED PROPERTY NEVER REACHES HERE: setTransformValue(), WHICH EVERY CALLER RUNS
+        // FIRST, HAS ALREADY MATERIALISED IT INTO A MutableEmbeddedDocument (OR REFUSED IT), SO THE TYPE RESOLUTION
+        // AND THE "ofType" CONSTRAINT LIVE IN ONE PLACE RATHER THAN IN TWO THAT COULD ONLY EVER DISAGREE (#6819).
         return Type.convert(database, value, javaImplementation, property);
       } catch (final Exception e) {
         throw new IllegalArgumentException(
@@ -573,13 +561,75 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
         }
       }
 
-      final String embType = (String) map.get("@type");
-      if (embType != null) {
-        final MutableEmbeddedDocument embedded = newEmbeddedDocument(embType, propertyName);
-        embedded.fromMap(map);
-        return embedded;
-      }
+      return transformMapToEmbedded(map, propertyName);
     }
     return value;
+  }
+
+  /**
+   * Materialises a plain {@link Map} assigned to a property into a {@link MutableEmbeddedDocument}, resolving the
+   * embedded type name from the map's own {@code "@type"} entry or, failing that, from the {@code ofType} the schema
+   * declares for the property.
+   * <p>
+   * The {@code ofType} fallback is issue #6819: the type name used to come from {@code "@type"} exclusively, so
+   * {@code set("address", Map.of("city", "Rome"))} on a property declared {@code EMBEDDED OF Address} failed with
+   * {@code "Type with name 'null' was not found"} wrapped in a convert error that named neither the missing key nor
+   * the declared type - a requirement both undiscoverable and, since the schema already pins the type, redundant.
+   * <p>
+   * The two sources are <em>not</em> symmetric, and deliberately so:
+   * <ul>
+   * <li>An explicit {@code "@type"} materialises an embedded document <b>whatever the property is declared as</b>,
+   * including a property the schema says nothing about. That is long-standing behaviour and the idiom by which a
+   * nested typed object survives a JSON round-trip onto a schemaless type - {@code toMap()}/{@code toJSON()} write
+   * the {@code "@type"} back out, and this is what reads it. Narrowing it to declared {@code EMBEDDED} properties
+   * would silently store those nested objects as plain maps.</li>
+   * <li>The {@code ofType} fallback applies only to a property declared {@code EMBEDDED}, because that is the only
+   * declaration that says a map <em>is</em> an embedded document. On a {@code MAP} property {@code ofType} names the
+   * type of the values, not of the map, so a map there stays a map.</li>
+   * </ul>
+   *
+   * @param map          the map to convert; also the source of the embedded document's properties
+   * @param propertyName the property the map is being assigned to
+   *
+   * @return the embedded document, or {@code map} itself when neither source names an embedded type
+   */
+  private Object transformMapToEmbedded(final Map<String, Object> map, final String propertyName) {
+    if (database == null)
+      // A REMOTE DOCUMENT HAS NO LOCAL DATABASE TO MATERIALISE AN EMBEDDED RECORD IN, AND WANTS NONE: the remote
+      // client ships the map as JSON and lets the server do the schema conversion, which is why the three Remote*
+      // subclasses override convertValueToSchemaType() to a pass-through
+      return map;
+
+    final Object explicitType = map.get("@type");
+
+    final Property property = type != null ? type.getPolymorphicPropertyIfExists(propertyName) : null;
+    final boolean embeddedProperty = property != null && property.getType() == Type.EMBEDDED;
+    final String ofType = embeddedProperty ? property.getOfType() : null;
+
+    final String embType;
+    if (explicitType != null) {
+      embType = explicitType.toString();
+      if (ofType != null && !ofType.equals(embType)) {
+        // VALIDATE THE SCHEMA CONSTRAINT HERE, WHERE THE PROPERTY NAME IS STILL IN HAND, RATHER THAN LEAVING IT ALL
+        // TO DocumentValidator AT SAVE TIME
+        final DocumentType embSchemaType = database.getSchema().getType(embType);
+        if (!embSchemaType.instanceOf(ofType))
+          throw new ValidationException(
+              "Embedded type '" + embType + "' is not compatible with the type defined in the schema constraint '"
+                  + ofType + "' for property '" + propertyName + "'");
+      }
+    } else if (ofType != null)
+      embType = ofType;
+    else if (embeddedProperty)
+      throw new ValidationException("Cannot determine the type of the embedded document to store in property '"
+          + propertyName + "': the map carries no '@type' entry and the property declares no 'ofType'. Either add "
+          + "an \"@type\" entry to the map, or declare the embedded type on the property with `ofType`");
+    else
+      // NEITHER SOURCE NAMES AN EMBEDDED TYPE: THE MAP IS THE VALUE
+      return map;
+
+    final MutableEmbeddedDocument embedded = newEmbeddedDocument(embType, propertyName);
+    embedded.fromMap(map);
+    return embedded;
   }
 }

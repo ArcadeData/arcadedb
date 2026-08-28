@@ -232,10 +232,21 @@ public class ImmutableDocument extends BaseDocument {
     return output.toString();
   }
 
+  /**
+   * {@inheritDoc}
+   * <p>
+   * Already a snapshot - it is decoded out of the serialized buffer, so there is no live view to leak - but the
+   * serializer hands back a plain {@link java.util.LinkedHashSet}, so the wrapper is what makes the second half of
+   * {@link Document#getPropertyNames()}'s contract true here as well: a {@code remove()}/{@code clear()} on it fails
+   * loudly instead of silently succeeding against a copy the caller may believe is the record. This is the most
+   * common path of the three - a plain {@code select} result is an {@code ImmutableDocument} until {@code modify()}
+   * or {@code detach()} is called (issue #6818).
+   */
   @Override
   public Set<String> getPropertyNames() {
     checkForLazyLoading();
-    return database.getSerializer().getPropertyNames(database, requireBuffer("read the property names of"), rid);
+    return Collections.unmodifiableSet(
+        database.getSerializer().getPropertyNames(database, requireBuffer("read the property names of"), rid));
   }
 
   /**

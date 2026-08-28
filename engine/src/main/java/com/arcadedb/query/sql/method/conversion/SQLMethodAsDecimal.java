@@ -50,6 +50,7 @@ public class SQLMethodAsDecimal extends AbstractSQLMethod {
     if (value instanceof Date date)
       return new BigDecimal(date.getTime());
 
-    return value != null ? new BigDecimal(value.toString().trim()) : null;
+    final String text = numericTextOrNull(value);
+    return text != null ? new BigDecimal(text) : null;
   }
 }

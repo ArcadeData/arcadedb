@@ -139,14 +139,11 @@ public class SQLMethodExclude extends AbstractSQLMethod {
         final String fieldName = iFieldName.toString();
         if (fieldName.endsWith("*")) {
           final String fieldPart = fieldName.substring(0, fieldName.length() - 1);
-          final List<String> toExclude = new ArrayList<>();
-          for (final String f : doc.getPropertyNames()) {
+          // getPropertyNames() is a snapshot (issue #6818), so pruning while iterating it is safe: the separate
+          // "collect the names first" list this used to need was a workaround for the live key set it returned
+          for (final String f : doc.getPropertyNames())
             if (f.startsWith(fieldPart))
-              toExclude.add(f);
-          }
-
-          for (final String f : toExclude)
-            doc.remove(f);
+              doc.remove(f);
 
         } else
           doc.remove(fieldName);
