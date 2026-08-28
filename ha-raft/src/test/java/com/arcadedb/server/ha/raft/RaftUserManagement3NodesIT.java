@@ -381,13 +381,8 @@ class RaftUserManagement3NodesIT extends BaseRaftHATest {
    * callers use {@code Awaitility} to verify the actual cluster state.
    */
   private void postServerCommandRetryOn503(final int serverIndex, final String command) throws Exception {
-    int status = 503;
-    for (int attempt = 0; attempt < 8 && status == 503; attempt++) {
-      if (attempt > 0)
-        Thread.sleep(2_000);
-      status = postServerCommandReturnStatus(serverIndex, command, "root",
-          BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
-    }
+    retryOn503(() -> postServerCommandReturnStatus(serverIndex, command, "root",
+        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS));
   }
 
   /**
