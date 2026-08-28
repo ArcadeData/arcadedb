@@ -357,6 +357,22 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   private volatile List<DeltaVectorEntry> deltaVectors = new ArrayList<>();
 
+  /**
+   * Exponential moving average of the nodes a graph walk scores per query, from JVector's own
+   * {@code visitedCount}. The denominator of {@link #deltaScanBudget()} (issue #6797); 0 until a search has
+   * actually walked this index's graph. See {@link #recordGraphWalkCost(int)} for why it is measured rather than
+   * derived, and why a plain volatile is enough.
+   */
+  private volatile int graphWalkVisited;
+
+  /**
+   * Similarity computations the brute-force delta scan has performed since the last graph build, summed across
+   * every query. The amortization half of {@link #deltaScanOverBudget()} (issue #6797): a rebuild is only worth
+   * triggering once the scans it would have removed have already cost more than the rebuild itself will, which
+   * is what keeps the extra rebuild CPU this policy introduces bounded by the query CPU it saves.
+   */
+  private final AtomicLong deltaScanWorkSinceRebuild = new AtomicLong();
+
   // Inactivity rebuild timer (issue #3737): when mutations exist but haven't reached the threshold,
   // a timer triggers an async rebuild after a period of inactivity.
   private volatile TimerTask inactivityRebuildTask;
@@ -2253,6 +2269,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
       persistedGraphUnresolved = false;
       buildGraphFromScratchExclusively(graphCallback, compactDataFile, releaseResidentGraphFirst);
     } finally {
+      // The scan work this build was meant to make unnecessary has been paid for; start the amortization window
+      // again (issue #6797). Reset for a FAILED build too, deliberately: the buffer it did not drain is still
+      // there and still being scanned, so the counter refills on its own, and making the retry wait out another
+      // full window is what stops a build that keeps failing from being retried in a tight loop.
+      //
+      // Racy by design, in one direction only: a query that started before this line can land its addAndGet()
+      // after it, crediting the new window with a scan performed against the buffer this build just drained. The
+      // effect is bounded by the queries in flight at this instant and biases the next rebuild marginally early -
+      // never late - which is the same tolerance graphWalkVisited is documented to have. Closing it would mean
+      // holding a lock across the whole build to bracket a counter that only feeds a heuristic.
+      deltaScanWorkSinceRebuild.set(0L);
       graphBuildLock.unlock();
     }
   }
@@ -3666,9 +3693,48 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (graphState == GraphState.MUTABLE && mutationsSinceSerialize.get() > 0
           && (graphIndex == null || graphIndex.size() < ASYNC_REBUILD_MIN_GRAPH_SIZE))
         buildGraphFromScratch();
-    } else if (mutations >= threshold && !asyncRebuildInProgress)
-      // Large graph (>= 1000 vectors): async rebuild only when threshold reached.
-      // Search uses the current graph (valid, just missing newest vectors) while rebuild runs in background.
+    } else if (!asyncRebuildInProgress && (mutations >= threshold || deltaScanOverBudget()))
+      // Large graph (>= 1000 vectors): async rebuild once either trigger fires - enough mutations have piled up,
+      // or the linear delta scan those mutations left behind has outgrown the graph walk it supplements
+      // (issue #6797). Search uses the current graph (valid, just missing newest vectors) while rebuild runs in
+      // background.
+      startAsyncGraphRebuild();
+  }
+
+  /**
+   * The delta-scan half of {@link #rebuildGraphBeforeSearch()}, for the approximate search path (issue #6797).
+   * <p>
+   * {@link #findNeighborsFromVectorApproximate} has never called {@code rebuildGraphBeforeSearch()} - only the
+   * exact, grouped and {@code get()} paths do - so no search on it has ever triggered a rebuild of any kind. That
+   * is survivable for the mutation-count thresholds, which the other paths and the inactivity timer reach anyway
+   * on any index that sees more than one kind of query. It is not survivable for a bound whose entire subject is
+   * the cost of a delta scan this path performs on every query: leaving it out would mean the one search mode
+   * sold on microsecond latency is the one mode where the scan still grows without limit.
+   * <p>
+   * Only the new trigger is evaluated here, deliberately, and not by calling {@code rebuildGraphBeforeSearch()}
+   * outright. That method's small-graph arm rebuilds <em>synchronously, on the calling thread</em>, and putting a
+   * synchronous full rebuild into a path whose contract is zero disk I/O and microsecond latency is a change of
+   * a different kind from the one this issue is about. Whether the count thresholds should reach this path too
+   * is a real question, and a separate one.
+   * <p>
+   * <b>What the calling query can wait on, and what it cannot.</b> Not {@code graphBuildLock}: that is taken by
+   * the spawned daemon thread, never by the thread that spawned it, so no query here ever waits on a build. The
+   * only lock this can reach is the instance monitor {@link #startAsyncGraphRebuild()} holds while it starts that
+   * thread, briefly, and only on the rare query that actually fires the trigger - the {@code asyncRebuildInProgress}
+   * check above turns the common case away before it. That is the identical exposure the exact search path has
+   * carried through {@code rebuildGraphBeforeSearch()} since issue #3679; it is new to this path, not to the class.
+   */
+  private void boundDeltaScanBeforeApproximateSearch() {
+    if (graphState != GraphState.MUTABLE || asyncRebuildInProgress)
+      return;
+
+    final ImmutableGraphIndex graph = this.graphIndex;
+    if (graph == null || graph.size() < ASYNC_REBUILD_MIN_GRAPH_SIZE)
+      // Same gate the search path applies: below this size a rebuild is cheap, and the only thing that rebuilds
+      // a small graph here is the synchronous arm this method exists to stay out of.
+      return;
+
+    if (deltaScanOverBudget())
       startAsyncGraphRebuild();
   }
 
@@ -3771,6 +3837,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // instead. Only a rebuild that ran to completion chains, so a failing one cannot spin, and each chained
       // rebuild subtracts the mutations it snapshotted, so the counter cannot be re-served indefinitely without
       // new writes actually arriving.
+      //
+      // Deliberately NOT also chained on deltaScanOverBudget() (issue #6797): the build that just completed reset
+      // the scan-work counter its amortization half reads, so the condition could only be true here in the race
+      // window between that reset and this line - and it SHOULD be false, because a rebuild whose residue nobody
+      // has queried yet has not been paid for. The next search picks it up once it has been.
       if (completed && !Thread.currentThread().isInterrupted() && isValid()
           && mutationsSinceSerialize.get() >= getEffectiveMutationsBeforeRebuild())
         startAsyncGraphRebuild();
@@ -4684,12 +4755,47 @@ public class LSMVectorIndex implements Index, IndexInternal {
     while (best.size() > k)
       best.poll();
 
+    // Hoisted out of the loop, all three of them, because this loop runs once per buffered vector per query and
+    // the buffer reaches tens of thousands of entries (issue #6797):
+    //  - vectorIndex() is a volatile read behind a materialization check, and one snapshot is also more correct
+    //    than one read per entry - the tombstone question has to be asked of a single generation;
+    //  - an index with no tombstones at all cannot answer isDeleted() true for anything, so the per-entry hash
+    //    lookup can be skipped outright rather than performed and discarded;
+    //  - the allow-list test is two branches when there is no allow-list, which is the common case.
+    final VectorLocationIndex locations = vectorIndex();
+    final boolean anyDeleted = locations.getDeletedCount() > 0;
+    final boolean filtered = allowedRIDs != null && !allowedRIDs.isEmpty();
+    final VectorSimilarityFunction similarity = metadata.similarityFunction;
+
+    // The k-th best distance, kept unboxed. Reading it off the heap head per entry costs a pointer chase into a
+    // Pair plus a Float unbox, which on a scan this long is not free.
+    boolean heapFull = best.size() >= k;
+    float worst = heapFull ? best.peek().getSecond() : Float.POSITIVE_INFINITY;
+
     boolean added = false;
+    int compared = 0;
     for (final DeltaVectorEntry delta : currentDelta) {
+      if (filtered && !allowedRIDs.contains(delta.rid))
+        continue;
+
+      compared++;
+      final float score = similarity.compare(queryVectorFloat, delta.vector);
+      final float distance = scoreToDistance(similarity, score);
+
+      // Prune before allocating: a candidate no better than the current k-th best cannot make the result set.
+      // This is also why the two hash lookups below sit AFTER the prune rather than before it, where they used to
+      // be: they are per-entry random memory accesses that only matter for a candidate that is actually going to
+      // be admitted, and the prune rejects all but a handful of entries. The admitted set is identical either way
+      // - the heap only advances when an entry is added, and neither check can make an entry admissible.
+      if (heapFull && distance >= worst)
+        continue;
+
+      // Already returned by the graph walk. Reachable: a rebuild that leaves a node unreachable re-queues its
+      // vector into the buffer while the node itself stays in the graph (see buildGraphFromScratch), so the same
+      // RID can be offered by both sides of this merge.
       if (seenRIDs.contains(delta.rid))
         continue;
-      if (allowedRIDs != null && !allowedRIDs.isEmpty() && !allowedRIDs.contains(delta.rid))
-        continue;
+
       // Check if deleted after being added to delta.
       //
       // Asked of the tombstone set, because a resident location cannot answer it: since issue #5516 a tombstoned
@@ -4701,21 +4807,23 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // tombstone in behind the buffer only makes the next rebuild republish the live entry the pages still
       // carry. It stays anyway, at the price of one bit, because it is what the line above says it does and
       // because the buffer and the tombstone set are maintained by different code paths.
-      if (vectorIndex().isDeleted(delta.vectorId))
-        continue;
-
-      final float score = metadata.similarityFunction.compare(queryVectorFloat, delta.vector);
-      final float distance = scoreToDistance(metadata.similarityFunction, score);
-
-      // Prune before allocating: a candidate no better than the current k-th best cannot make the result set.
-      if (best.size() >= k && distance >= best.peek().getSecond())
+      if (anyDeleted && locations.isDeleted(delta.vectorId))
         continue;
 
       best.add(new Pair<>(bindRid(delta.rid), distance));
       if (best.size() > k)
         best.poll();
+      heapFull = best.size() >= k;
+      if (heapFull)
+        worst = best.peek().getSecond();
       added = true;
     }
+
+    // Counted, not assumed to be the buffer size: an allow-list rejects entries before they are ever compared,
+    // and charging the amortization guard for work no core performed would make it rebuild sooner than the CPU
+    // it is trading against justifies. The prune above is not subtracted - it skips the allocation, not the
+    // comparison, which is the expensive half.
+    recordDeltaScanWork(compared);
 
     if (added) {
       results.clear();
@@ -5243,6 +5351,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
           pool.release(searcher, pooledGraph, poolEpoch);
         }
 
+        recordGraphWalkCost(searchResult.getVisitedCount());
+
         LogManager.instance()
             .log(this, Level.FINE, "GraphSearcher returned %d nodes, graphSize=%d, vectorsSize=%d, ordinalToVectorIdLength=%d",
                 searchResult.getNodes().length, graphIndex.size(), vectors.size(), ordinalMap.length);
@@ -5532,6 +5642,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         //    happens to be an exact multiple of the beam width - so a short final pass is not reliable on its own.
         boolean walkRanDry = false;
         int examined = 0;
+        int visited = 0;
         try {
           final ScoreFunction.ExactScoreFunction exactScoreFunction = liveOnlyScoreFunction(queryVectorFloat, vectors);
           final DefaultSearchScoreProvider ssp = new DefaultSearchScoreProvider(exactScoreFunction, exactScoreFunction);
@@ -5561,6 +5672,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
           while (true) {
             final int returned = searchResult.getNodes().length;
             examined += returned;
+            // Summed over the passes, not read off the last one: resume() continues the same walk, and it is the
+            // whole walk this query paid for that the delta budget is measured against (issue #6797).
+            visited += searchResult.getVisitedCount();
             admitGroupedCandidates(searchResult, ordinalMap, state);
 
             if (state.isFull())
@@ -5583,6 +5697,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         } finally {
           pool.release(searcher, pooledGraph, poolEpoch);
         }
+        recordGraphWalkCost(visited);
         // examined can never exceed graphSize - every pass contributes only nodes resume() had not already visited -
         // so reaching it here means every reachable node was walked, whichever break fired.
         final boolean graphExhausted = walkRanDry || examined >= graphSize;
@@ -5934,20 +6049,29 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     final float[] distances = new float[buffered];
     final int[] positions = new int[buffered];
+    // Hoisted for the same reason mergeWithDeltaScan hoists them (issue #6797): this loop runs once per buffered
+    // vector per grouped query, and vectorIndex() is a volatile read behind a materialization check while
+    // isDeleted() is a hash lookup that an index carrying no tombstones can never answer true.
+    final VectorLocationIndex locations = vectorIndex();
+    final boolean anyDeleted = locations.getDeletedCount() > 0;
+    final boolean filtered = allowedRIDs != null && !allowedRIDs.isEmpty();
+    final VectorSimilarityFunction similarity = metadata.similarityFunction;
     int kept = 0;
     for (int i = 0; i < buffered; i++) {
       final DeltaVectorEntry entry = deltaSnapshot.get(i);
-      if (allowedRIDs != null && !allowedRIDs.isEmpty() && !allowedRIDs.contains(entry.rid))
+      if (filtered && !allowedRIDs.contains(entry.rid))
         continue;
       // The same tombstone check mergeWithDeltaScan applies, asked of the tombstone set for the same reason - see
       // its javadoc for why a resident location cannot answer it and why it stays despite being unreachable today.
-      if (vectorIndex().isDeleted(entry.vectorId))
+      if (anyDeleted && locations.isDeleted(entry.vectorId))
         continue;
-      distances[kept] = scoreToDistance(metadata.similarityFunction,
-          metadata.similarityFunction.compare(queryVectorFloat, entry.vector));
+      distances[kept] = scoreToDistance(similarity, similarity.compare(queryVectorFloat, entry.vector));
       positions[kept] = i;
       kept++;
     }
+    // `kept`, not `buffered`: the entries an allow-list or a tombstone rejected were never compared, and the
+    // amortization guard has to be charged for comparisons actually performed - see mergeWithDeltaScan.
+    recordDeltaScanWork(kept);
     return kept == 0 ? null : new ScoredCandidateCursor(distances, positions, kept);
   }
 
@@ -6027,6 +6151,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Ensure graph is available (lazy-load from disk if needed)
       ensureGraphAvailable();
 
+      // This path scans the delta buffer too - mergeWithDeltaScanApproximate delegates the scan itself to
+      // mergeWithDeltaScan - so the bound on that scan has to apply here as well, or the one search mode sold on
+      // microsecond latency is the one mode where the linear scan still grows without limit (issue #6797).
+      boundDeltaScanBeforeApproximateSearch();
+
       // Issue #5924: see findNeighborsFromVector's matching clamp - k drives the same eager
       // ArrayList/PriorityQueue allocation sizes below, so it needs the same bound.
       k = Math.min(k, Math.max(vectorIndex().size(), 0) + deltaVectors.size());
@@ -6104,6 +6233,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
         } finally {
           pool.release(searcher, pooledGraph, poolEpoch);
         }
+
+        recordGraphWalkCost(searchResult.getVisitedCount());
 
         // Extract RIDs and scores from search results
         final List<Pair<RID, Float>> results = new ArrayList<>(k);
@@ -7546,6 +7677,21 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // Delta vectors cached in RAM for brute-force scan between rebuilds
     stats.put("deltaVectorsCount", (long) deltaVectors.size());
 
+    // The size-independent bound on that scan and the measured walk cost it is derived from (issue #6797).
+    // deltaScanBudget is Long.MAX_VALUE when the policy is off or no search has walked this graph yet, which is
+    // the same thing the engine means by it: nothing here will trigger a rebuild.
+    stats.put("graphWalkVisitedAvg", (long) graphWalkVisited);
+    final int scanBudget = deltaScanBudget();
+    stats.put("deltaScanBudget", scanBudget == Integer.MAX_VALUE ? Long.MAX_VALUE : (long) scanBudget);
+    // The amortization half of the same trigger: how much brute-force work the scans have cost since the last
+    // build, and what the next build is estimated to cost. The trigger needs BOTH the budget above to be
+    // exceeded and the first of these to have reached the second.
+    stats.put("deltaScanWorkSinceRebuild", deltaScanWorkSinceRebuild.get());
+    final ImmutableGraphIndex statsGraph = graphIndex;
+    stats.put("estimatedRebuildWork", statsGraph != null ? estimateRebuildWork(statsGraph.size()) : 0L);
+    stats.put("deltaScanWorkTarget",
+        statsGraph != null ? deltaScanWorkTarget(statsGraph.size(), maxDeltaScanRatio()) : 0L);
+
     // On-heap cache size of the live incremental builder (bounded, issue #3144)
     stats.put("liveVectorCacheSize", liveVectorValues != null ? (long) liveVectorValues.vectorCount() : 0L);
 
@@ -8310,20 +8456,230 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @return Number of pending mutations that trigger a graph rebuild
    */
   private int getEffectiveMutationsBeforeRebuild() {
-    final int absolute = getMutationsBeforeRebuild();
     final ImmutableGraphIndex graph = this.graphIndex;
+    final int absolute = getMutationsBeforeRebuild();
     if (graph == null)
       return absolute;
 
     final ContextConfiguration configuration = mutable.getDatabase().getConfiguration();
-    final float ratio = configuration.getValueAsFloat(GlobalConfiguration.VECTOR_INDEX_REBUILD_GRAPH_RATIO);
+    return computeRebuildThreshold(absolute, graph.size(),
+        configuration.getValueAsFloat(GlobalConfiguration.VECTOR_INDEX_REBUILD_GRAPH_RATIO),
+        configuration.getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_MAX_PENDING_MUTATIONS));
+  }
+
+  /**
+   * The arithmetic of {@link #getEffectiveMutationsBeforeRebuild()}, as a pure function of its four inputs.
+   * <p>
+   * Extracted so the shape of the threshold across graph sizes no engine test can build - a million vectors, ten
+   * million - can be asserted directly instead of inferred (issue #6797). The behaviour is unchanged: the
+   * ratio-derived term is capped by {@code maxPending} and the absolute floor is applied last, so an explicit
+   * {@code mutationsBeforeRebuild} above the ceiling still wins.
+   *
+   * @param absolute   the absolute {@code mutationsBeforeRebuild} floor
+   * @param graphSize  number of nodes in the graph the rebuild would re-index
+   * @param ratio      fraction of {@code graphSize} that may accumulate as pending mutations, 0 to disable scaling
+   * @param maxPending ceiling on the ratio-derived term, 0 for no ceiling
+   *
+   * @return number of pending mutations that trigger a graph rebuild
+   */
+  static int computeRebuildThreshold(final int absolute, final long graphSize, final float ratio, final int maxPending) {
     if (ratio <= 0f)
       return absolute;
 
-    final long scaled = (long) (graph.size() * (double) ratio);
-    final int maxPending = configuration.getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_MAX_PENDING_MUTATIONS);
+    final long scaled = (long) (graphSize * (double) ratio);
     final long capped = maxPending > 0 ? Math.min(scaled, maxPending) : scaled;
     return (int) Math.max(absolute, capped);
+  }
+
+  /**
+   * Records what one graph walk actually cost, in nodes whose similarity it computed.
+   * <p>
+   * This is the denominator {@link #deltaScanBudget()} measures the brute-force delta scan against, and it is
+   * taken from JVector's own {@code visitedCount} rather than estimated from {@code efSearch}, {@code
+   * maxConnections} and the graph size: the beam is chosen adaptively per query, a {@code Bits} filter can make a
+   * walk visit far more nodes than the beam suggests, and a degraded graph can make it visit far fewer. Only the
+   * measurement knows.
+   * <p>
+   * Smoothed as an exponential moving average with a weight of 1/4 on the new sample, so a single unusually wide
+   * or narrow query cannot move the rebuild policy on its own, and kept in a plain volatile int rather than an
+   * atomic: this is on the hot path of every search, samples are all of the same order, and a lost update under
+   * concurrency costs nothing but a slightly staler average.
+   *
+   * The unit is node visits, not nanoseconds, and it is compared against a buffered-vector count that is also a
+   * node visit - which is what makes the two comparable at all. It is not a perfect exchange rate: a visit on the
+   * PQ-scored approximate path is cheaper than the exact compare a buffered vector costs, so a query mix that
+   * includes that path raises this average relative to the wall-clock it stands for and leaves the budget more
+   * generous than the ratio literally asks for. That is the side to err on - a too-generous budget only leaves
+   * the engine nearer the behaviour it had before this policy existed, whereas a too-tight one would spend
+   * rebuild CPU nobody asked for - and {@code maxDeltaScanRatio} is there to move it either way.
+   *
+   * @param visited number of nodes the walk scored, from {@link SearchResult#getVisitedCount()}
+   */
+  private void recordGraphWalkCost(final int visited) {
+    if (visited <= 0)
+      return;
+    final int previous = graphWalkVisited;
+    // Integer division, deliberately: a sample within three visits of the current average truncates to no change
+    // at all. That is a feature at this resolution - the average is a denominator for a rebuild decision, not a
+    // measurement anyone reads - and it keeps the whole update to one add, one subtract and one shift on a path
+    // every query takes. A float would track those last three visits and buy nothing with them.
+    graphWalkVisited = previous <= 0 ? visited : previous + (visited - previous) / 4;
+  }
+
+  /**
+   * The largest delta buffer a query is willing to scan before a rebuild is triggered to drain it, or
+   * {@link Integer#MAX_VALUE} when the policy is disabled or has nothing measured to work from (issue #6797).
+   * <p>
+   * <b>Why a second trigger at all.</b> Every other rebuild trigger is denominated in mutations, and no number of
+   * mutations bounds what a query pays. The delta buffer is answered by a linear scan, so its cost is
+   * {@code O(buffer)}; the graph walk it supplements is {@code O(log corpus)}. {@code rebuildGraphRatio} makes the
+   * buffer a fixed <em>fraction of the corpus</em>, which is asymptotically the wrong shape - 20% of the corpus
+   * scanned linearly dominates a logarithmic walk at every scale - and {@code maxPendingMutations} caps it at a
+   * fixed count, which stops scaling entirely (at the defaults, from 250,000 vectors upward the same absolute scan
+   * cost lands on an index of any size). Measured at that cap on a 200,000-vector index, the scan was roughly four
+   * fifths of query time.
+   * <p>
+   * <b>Why it does not simply cost bulk ingest more rebuilds.</b> The two goals genuinely conflict - a full rebuild
+   * is {@code O(corpus)}, so bounding the buffer by a constant makes ingestion quadratic, which is exactly what
+   * {@code rebuildGraphRatio} exists to prevent - and no single threshold can serve both. What breaks the tie is
+   * that only one of the two workloads is paying: this budget is evaluated on the search path, against a walk cost
+   * that only searches produce. An ingest-only workload never reaches it and keeps the geometric amortization
+   * untouched; a query-heavy workload trades rebuild CPU it has to spare for the latency it is actually losing.
+   * The floor applied on top is the <em>absolute</em> {@code mutationsBeforeRebuild}, deliberately, and not the
+   * ratio-scaled {@link #getEffectiveMutationsBeforeRebuild()} the count trigger uses. Flooring at the effective
+   * threshold would make this policy inert by construction: the count trigger already fires there, so a budget
+   * that could never bind below it could never fire first, and firing below it is the entire point. What the
+   * absolute floor buys is the guarantee that no configuration of this setting rebuilds more eagerly than
+   * {@code mutationsBeforeRebuild} already permits, which is the promise an operator tuning that knob is owed.
+   * <p>
+   * <b>One workload it cannot see.</b> The issue #6502 and #6514 pre-filter plans answer a narrow allow-list by
+   * scanning it directly and return without walking the graph at all, so they produce no {@code visitedCount} to
+   * feed {@link #recordGraphWalkCost(int)}. An index queried <em>only</em> that way therefore keeps a
+   * {@link Integer#MAX_VALUE} budget and this policy stays inert for it, however long its delta buffer gets. That
+   * is deliberate rather than an oversight: the budget's whole claim is that the scan is measured against a walk
+   * this index actually performs, and there is no walk on that path to measure it against. Inventing a
+   * denominator from {@code efSearch} and the corpus size is exactly the assumed-not-measured estimate this
+   * design rejects. Such a workload still has the count thresholds, and its pre-filter scan is bounded by the
+   * allow-list rather than by the corpus.
+   *
+   * @return buffered-vector count at which the scan is judged to have outgrown the walk
+   */
+  private int deltaScanBudget() {
+    return deltaScanBudget(maxDeltaScanRatio());
+  }
+
+  private int deltaScanBudget(final float ratio) {
+    if (ratio <= 0f)
+      return Integer.MAX_VALUE;
+
+    final int walkCost = graphWalkVisited;
+    if (walkCost <= 0)
+      // Nothing measured yet: no search has walked this graph, so there is no query latency to protect.
+      return Integer.MAX_VALUE;
+
+    final long budget = (long) Math.max(1.0d, walkCost * (double) ratio);
+    return (int) Math.min(Integer.MAX_VALUE, Math.max(getMutationsBeforeRebuild(), budget));
+  }
+
+  private float maxDeltaScanRatio() {
+    return mutable.getDatabase().getConfiguration()
+        .getValueAsFloat(GlobalConfiguration.VECTOR_INDEX_MAX_DELTA_SCAN_RATIO);
+  }
+
+  /**
+   * Whether the delta buffer has outgrown {@link #deltaScanBudget()} <em>and</em> the scans have paid for the
+   * rebuild that would drain it. Split out so the search path and the inactivity timer decide it identically: it
+   * would be odd for a search to judge the scan too expensive and the timer, looking at the same buffer with the
+   * machine idle, to decline.
+   */
+  private boolean deltaScanOverBudget() {
+    // Buffer size first, before the setting is read: this runs on the search path of every query whose pending
+    // mutations have not reached the count threshold, and an empty buffer - the state an index spends most of its
+    // life in - can be answered with one field read and no configuration lookup at all.
+    final int buffered = deltaVectors.size();
+    if (buffered <= 0)
+      return false;
+
+    final float ratio = maxDeltaScanRatio();
+    if (buffered < deltaScanBudget(ratio))
+      return false;
+
+    final ImmutableGraphIndex graph = this.graphIndex;
+    return graph != null
+        && deltaScanPaysForARebuild(deltaScanWorkSinceRebuild.get(), deltaScanWorkTarget(graph.size(), ratio));
+  }
+
+  /**
+   * The second half of the trigger, and the one that keeps it honest.
+   * <p>
+   * {@link #deltaScanBudget()} says the scan has outgrown the walk. It is denominated in the cost of ONE query
+   * and knows nothing about what draining the buffer costs, so on its own it would ask for a rebuild the moment
+   * the buffer refilled - seconds after a rebuild that took minutes on a large index, and again after that,
+   * turning a background thread into a permanently busy one. That would be a worse problem than the one being
+   * fixed.
+   * <p>
+   * What decides it instead is the amortized argument, in the one currency both sides can be counted in:
+   * similarity computations. The scan work already spent since the last rebuild is measured
+   * ({@code deltaScanWorkSinceRebuild}); what a rebuild will cost is estimated from the graph. A rebuild is
+   * triggered only once the first has reached the second - so the extra rebuild CPU this policy can introduce is
+   * bounded by the query CPU it removes, whatever the budget or the ingest rate. It also needs no clock and no
+   * arbitrary duty-cycle constant, and self-tunes in both directions at once: a bigger index makes the rebuild
+   * side larger, and a busier query load makes the scan side fill faster.
+   * <p>
+   * The two conditions are complementary, and each blocks a case the other admits: a 50-entry buffer scanned a
+   * million times satisfies this one and buys nothing, which the budget rejects; a buffer far over the budget on
+   * an index nobody is querying satisfies that one and is not worth a rebuild, which this rejects.
+   *
+   * @param scanWorkSinceRebuild similarity computations the delta scan has performed since the last build
+   * @param rebuildWork          similarity computations the next build is expected to perform
+   */
+  static boolean deltaScanPaysForARebuild(final long scanWorkSinceRebuild, final long rebuildWork) {
+    return scanWorkSinceRebuild >= rebuildWork;
+  }
+
+  /**
+   * Order-of-magnitude estimate of the similarity computations a from-scratch build of a graph this size will
+   * perform: one beam search per node, at the construction beam width. The real figure is a few times higher -
+   * JVector's diversity pruning compares each node's candidate neighbours against each other on top of the
+   * search - and deliberately not modelled, because this feeds a policy rather than a report and the factor it
+   * is off by is exactly what {@code ratio} is there to absorb. Erring low makes the amortization guard slightly
+   * more willing to rebuild than a perfect estimate would.
+   * <p>
+   * {@code maxDeltaScanRatio} scales this as well as the per-query budget, so the setting reads the same way on
+   * both halves of the trigger: raising it makes the engine more tolerant of the scan and rebuild less often,
+   * lowering it does the opposite.
+   */
+  private long estimateRebuildWork(final int graphSize) {
+    return (long) Math.max(0, graphSize) * Math.max(1, metadata.beamWidth);
+  }
+
+  /**
+   * {@link #estimateRebuildWork(int)} scaled by {@code maxDeltaScanRatio}: the number the accumulated scan work is
+   * actually compared against, so the setting reads the same way on both halves of the trigger - raising it makes
+   * the engine more tolerant of the scan and rebuild less often, lowering it does the opposite.
+   * <p>
+   * Kept apart from the estimate rather than folded into it so that neither number lies. {@code getStats()}
+   * reports both, and an operator reading {@code estimatedRebuildWork} to answer "how expensive is my next
+   * rebuild" gets an answer that depends on the graph alone - not one that moves when a latency-tuning knob does,
+   * which would make two databases differing only in {@code maxDeltaScanRatio} appear to have differently
+   * expensive rebuilds.
+   */
+  private long deltaScanWorkTarget(final int graphSize, final float ratio) {
+    return (long) Math.min(Long.MAX_VALUE, (double) estimateRebuildWork(graphSize) * Math.max(0f, ratio));
+  }
+
+  /**
+   * Visible for tests: the amortization counter, without the manifest read {@link #getStats()} performs. A test
+   * that has to poll this after every query in a loop cannot afford the full snapshot.
+   */
+  long deltaScanWorkForTest() {
+    return deltaScanWorkSinceRebuild.get();
+  }
+
+  /** Charges one query's brute-force scan of {@code scanned} buffered vectors to the amortization window. */
+  private void recordDeltaScanWork(final int scanned) {
+    if (scanned > 0)
+      deltaScanWorkSinceRebuild.addAndGet(scanned);
   }
 
   /**
@@ -8356,9 +8712,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * {@link #graphIndex} directly, because on this path a null graph does not mean what it means on the search
    * path (issue #6798).
    *
+   * Package-private so a test can put the index into a given state and ask the timer's question directly. Driving
+   * it through a real timer instead would have to race the search path, which evaluates the same condition on
+   * every query and would usually get there first (issue #6797).
+   *
    * @return {@code true} when pending mutations justify (or exceed) a rebuild
    */
-  private boolean inactivityRebuildIsWorthIt() {
+  boolean inactivityRebuildIsWorthIt() {
     final int pending = mutationsSinceSerialize.get();
     if (pending <= 0)
       return false;
@@ -8372,6 +8732,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final int threshold = getEffectiveMutationsBeforeRebuild();
     // Rebuild once the mutation-driven threshold is reached...
     if (pending >= threshold)
+      return true;
+
+    // ...or when the buffer those mutations left behind has outgrown what a query can afford to scan
+    // (issue #6797). A quiet period is the best possible moment to pay for that rebuild, and the two policies
+    // have to agree: it would be odd for the search path to judge the scan too expensive and the timer, looking
+    // at the same buffer with the machine idle, to decline.
+    if (deltaScanOverBudget())
       return true;
 
     // ...or when enough of it has accumulated to justify a full rebuild.

@@ -1142,8 +1142,43 @@ public enum GlobalConfiguration {
       reached 45,000 entries, and 42,504 even with the rebuild trigger firing continuously. Note also that \
       mutationsBeforeRebuild is applied as a floor afterwards, so an explicit value above this ceiling wins. \
       Nothing here bounds the buffer. mutationsBeforeRebuild and rebuildGraphRatio only change how OFTEN a \
-      rebuild drains it, so its peak follows from how much is written between rebuilds.""",
+      rebuild drains it, so its peak follows from how much is written between rebuilds. \
+      This ceiling is also a fixed count, so it stops scaling once rebuildGraphRatio x graph size reaches it \
+      (at the defaults, 250,000 vectors), from which point the same absolute scan cost lands on an index of any \
+      size (issue #6797). maxDeltaScanRatio is the size-independent bound on that cost and is the knob to reach \
+      for when query latency, rather than rebuild frequency, is what needs protecting.""",
       Integer.class, 50_000),
+
+  VECTOR_INDEX_MAX_DELTA_SCAN_RATIO("arcadedb.vectorIndex.maxDeltaScanRatio", SCOPE.DATABASE,
+      """
+      How much brute-force work a query may spend on the in-memory delta buffer, expressed as a multiple of the \
+      work its HNSW graph walk already does, before a rebuild is triggered to drain the buffer. Vectors ingested \
+      since the last rebuild are answered by a linear scan of that buffer, so this term of a query grows with the \
+      buffer while the graph walk it supplements grows only logarithmically with the corpus: at the default \
+      maxPendingMutations the scan has been measured at four fifths of query time (issue #6797). The count-based \
+      thresholds cannot bound it - mutationsBeforeRebuild and rebuildGraphRatio are denominated in mutations and \
+      maxPendingMutations is a fixed number that stops scaling - so this one is denominated in the quantity that \
+      actually matters and is measured, not assumed: the engine records how many nodes its graph walks actually \
+      visit and compares the buffer against that. 1.0 (the default) lets the scan cost about as much as the walk. \
+      Lower it for latency-sensitive read-heavy workloads, raise it to defer rebuilds further, set 0 to disable \
+      and leave the count thresholds as the only trigger. \
+      Because it is evaluated on the search path against a measured walk cost, a pure-ingest workload never \
+      triggers it and keeps the geometric rebuild amortization of rebuildGraphRatio intact; only a workload that \
+      is actually paying the scan pays for the extra rebuilds that remove it. The absolute mutationsBeforeRebuild \
+      floor still applies, so this can never rebuild more eagerly than that setting allows. \
+      A second condition guards it, so that a buffer refilling immediately after a rebuild cannot ask for \
+      another one straight away: the brute-force work the scans have actually performed since the last build \
+      must have reached what the next build is estimated to cost, both counted in similarity computations. \
+      That bounds the extra rebuild CPU this setting can introduce by the query CPU it removes, at any index \
+      size and any ingest rate. Both conditions are reported by the index statistics as deltaScanBudget, \
+      deltaScanWorkSinceRebuild and estimatedRebuildWork. \
+      Note that this is on by default, so an existing deployment that is both query-heavy and ingest-heavy will \
+      see more background rebuild activity after upgrading - that being the point, since it is the same \
+      deployment that was losing the query time. Set 0 to keep the previous behaviour exactly. \
+      Note also that a query answered by the narrow-allow-list pre-filter plan never walks the graph, so it \
+      produces nothing to measure and leaves the budget unset; an index queried only that way is not covered by \
+      this setting and falls back on the count thresholds.""",
+      Float.class, 1.0f),
 
   VECTOR_INDEX_INACTIVITY_REBUILD_TIMEOUT_MS("arcadedb.vectorIndex.inactivityRebuildTimeoutMs", SCOPE.DATABASE,
       """
