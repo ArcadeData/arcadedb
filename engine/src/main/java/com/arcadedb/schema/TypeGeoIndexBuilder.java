@@ -31,26 +31,11 @@ import com.arcadedb.serializer.json.JSONObject;
  */
 public class TypeGeoIndexBuilder extends TypeIndexBuilder {
   protected TypeGeoIndexBuilder(final TypeIndexBuilder copyFrom) {
-    super(copyFrom.database, copyFrom.metadata.typeName, copyFrom.metadata.propertyNames.toArray(new String[0]));
-
-    this.metadata = new GeoIndexMetadata(
-        copyFrom.metadata.typeName,
-        copyFrom.metadata.propertyNames.toArray(new String[0]),
-        copyFrom.metadata.associatedBucketId);
-    this.metadata.collations = copyFrom.metadata.collations;
-    this.metadata.typeIndexName = copyFrom.metadata.typeIndexName;
-
-    this.indexType = Schema.INDEX_TYPE.GEOSPATIAL;
-    this.unique = copyFrom.unique;
-    this.pageSize = copyFrom.pageSize;
-    this.nullStrategy = copyFrom.nullStrategy;
-    this.callback = copyFrom.callback;
-    this.ignoreIfExists = copyFrom.ignoreIfExists;
-    this.indexName = copyFrom.indexName;
-    this.filePath = copyFrom.filePath;
-    this.keyTypes = copyFrom.keyTypes;
-    this.batchSize = copyFrom.batchSize;
-    this.maxAttempts = copyFrom.maxAttempts;
+    // Every common setting is carried over by the shared copy constructor, which is the ONE place a new builder field
+    // has to be added - see TypeIndexBuilder(TypeIndexBuilder, INDEX_TYPE, IndexMetadata) and issue #5606.
+    super(copyFrom, Schema.INDEX_TYPE.GEOSPATIAL,
+        new GeoIndexMetadata(copyFrom.metadata.typeName, copyFrom.metadata.propertyNames.toArray(new String[0]),
+            copyFrom.metadata.associatedBucketId));
   }
 
   /**

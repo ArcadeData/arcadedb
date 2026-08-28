@@ -48,6 +48,36 @@ public class BucketIndexBuilder extends IndexBuilder<Index> {
     this.propertyNames = propertyNames;
   }
 
+  /**
+   * The copy constructor of the bucket-level swap, the mirror of
+   * {@link TypeIndexBuilder#TypeIndexBuilder(TypeIndexBuilder, Schema.INDEX_TYPE, IndexMetadata)}: {@link #withType}
+   * hands back a specialised subclass once the index type is known, and everything configured before that call has to
+   * survive being carried onto it.
+   * <p>
+   * {@link BucketLSMVectorIndexBuilder} used to copy the common state itself, field by field, which is the same
+   * footgun issue #5606 removed from the type-level hierarchy - and it was already missing the same two fields,
+   * {@code replaceIfIncompatible} (#5675) and {@code userMetadata} (#5723). One hierarchy fixed and the other left
+   * exposed is not a fix: the next field added to {@link IndexBuilder} would simply go missing here instead.
+   *
+   * @param copyFrom  the builder being replaced, whose configuration must survive the swap
+   * @param indexType the index type this specialised builder stands for
+   * @param metadata  a freshly built metadata of the subclass the specialised builder writes its settings into
+   */
+  protected BucketIndexBuilder(final BucketIndexBuilder copyFrom, final Schema.INDEX_TYPE indexType,
+      final IndexMetadata metadata) {
+    super(copyFrom.database, Index.class);
+    this.typeName = copyFrom.typeName;
+    this.bucketName = copyFrom.bucketName;
+    this.propertyNames = copyFrom.propertyNames;
+
+    // Null-guarded, unlike the type-level twin: a plain BucketIndexBuilder does not necessarily carry a metadata at
+    // all - only a specialised subclass installs one - so there may be no common definition to carry over.
+    this.metadata = copyFrom.metadata == null ? metadata : copyFrom.metadata.copyCommonTo(metadata);
+    this.indexType = indexType;
+
+    copyBaseFieldsFrom(copyFrom);
+  }
+
   @Override
   public IndexBuilder<Index> withType(Schema.INDEX_TYPE indexType) {
     if (indexType == Schema.INDEX_TYPE.LSM_VECTOR && !(this instanceof BucketLSMVectorIndexBuilder))
