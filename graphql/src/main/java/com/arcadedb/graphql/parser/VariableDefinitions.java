@@ -29,5 +29,8 @@ public class VariableDefinitions extends SimpleNode {
     super(id);
   }
 
+  public List<VariableDefinition> getVariableDefinitions() {
+    return variableDefinitions;
+  }
 }
 /* ParserGeneratorCC - OriginalChecksum=67363ba7b163703fd2b2ad5392ae12ee (do not edit this line) */
