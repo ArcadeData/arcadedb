@@ -124,9 +124,8 @@ class Issue6873VectorSelectTimeoutTest extends TestHelper {
     createSchemaAndData();
 
     final int assembled = 2;
-    // ONE READING FOR startTimeout(), ONE PER BUCKET INDEX, THEN ONE PER ASSEMBLED RESULT. COUNTING THE INDEXES
-    // RATHER THAN ASSUMING THEM KEEPS THIS EXACT WHATEVER THE DEFAULT BUCKET COUNT OF THE MACHINE IS
-    final StepClock clock = new StepClock(1 + countVectorBucketIndexes() + assembled);
+    // EVERY CHECKPOINT BEFORE ASSEMBLY STAYS INSIDE THE BUDGET, THEN ONE READING PER ASSEMBLED RESULT
+    final StepClock clock = new StepClock(readingsBeforeAssembly("Product") + assembled);
 
     final List<SelectVectorResult<Vertex>> results = searchWithClock(clock, false, false);
 
@@ -141,9 +140,29 @@ class Issue6873VectorSelectTimeoutTest extends TestHelper {
   void vectorSearchThrowsWhenTheDeadlineExpiresDuringAssembly() {
     createSchemaAndData();
 
-    final StepClock clock = new StepClock(1 + countVectorBucketIndexes() + 2);
+    final StepClock clock = new StepClock(readingsBeforeAssembly("Product") + 2);
 
     assertThatThrownBy(() -> searchWithClock(clock, true, false))//
+        .isInstanceOf(TimeoutException.class).hasMessageContaining("Timeout on iteration");
+  }
+
+  /**
+   * The checkpoint between the last index search and the merge sort. A search that expires inside the
+   * <i>last</i> index's own (uninterruptible) call leaves the loop on its bound, never on the per-index checkpoint, so
+   * without this third check the sort of up to {@code indexes * k} pairs would still run on an expired budget.
+   * <p>
+   * An index with nothing in it is what makes the checkpoint observable: with no neighbour to assemble, the loop that
+   * follows the sort never runs a single iteration, so the assembly checkpoint can never fire and only this one can
+   * report the expiry.
+   */
+  @Test
+  void vectorSearchStopsBeforeSortingWhenTheLastIndexSearchExhaustedTheBudget() {
+    createSchemaAndData();
+
+    // EVERY PER-INDEX CHECKPOINT IS STILL INSIDE THE BUDGET; THE PRE-SORT ONE IS THE FIRST READING PAST IT
+    final StepClock clock = new StepClock(readingsBeforeAssembly("Empty") - 1);
+
+    assertThatThrownBy(() -> searchWithClock("Empty", clock, true, false))//
         .isInstanceOf(TimeoutException.class).hasMessageContaining("Timeout on iteration");
   }
 
@@ -156,7 +175,7 @@ class Issue6873VectorSelectTimeoutTest extends TestHelper {
     createSchemaAndData();
 
     final int assembled = 2;
-    final StepClock clock = new StepClock(1 + countVectorBucketIndexes() + assembled);
+    final StepClock clock = new StepClock(readingsBeforeAssembly("Product") + assembled);
 
     final List<SelectVectorResult<Vertex>> results = searchWithClock(clock, false, true);
 
@@ -215,7 +234,12 @@ class Issue6873VectorSelectTimeoutTest extends TestHelper {
    */
   private List<SelectVectorResult<Vertex>> searchWithClock(final StepClock clock, final boolean exceptionOnTimeout,
       final boolean withPostFilter) {
-    final Select select = database.select().fromType("Product").timeout(BUDGET_MS, TimeUnit.MILLISECONDS, exceptionOnTimeout);
+    return searchWithClock("Product", clock, exceptionOnTimeout, withPostFilter);
+  }
+
+  private List<SelectVectorResult<Vertex>> searchWithClock(final String typeName, final StepClock clock,
+      final boolean exceptionOnTimeout, final boolean withPostFilter) {
+    final Select select = database.select().fromType(typeName).timeout(BUDGET_MS, TimeUnit.MILLISECONDS, exceptionOnTimeout);
     final SelectVectorBuilder builder = select.nearestTo("embedding", queryVector(), K);
     if (withPostFilter)
       builder.where().property("category").eq().value("electronics");
@@ -239,13 +263,22 @@ class Issue6873VectorSelectTimeoutTest extends TestHelper {
    * Mirrors the index selection {@link SelectExecutor#executeVector()} performs, so the expected number of per-index
    * deadline checks is derived from the schema instead of assumed.
    */
-  private int countVectorBucketIndexes() {
-    final TypeIndex typeIndex = database.getSchema().getType("Product").getPolymorphicIndexByProperties("embedding");
+  private int countVectorBucketIndexes(final String typeName) {
+    final TypeIndex typeIndex = database.getSchema().getType(typeName).getPolymorphicIndexByProperties("embedding");
     int count = 0;
     for (final IndexInternal bucketIndex : typeIndex.getIndexesOnBuckets())
       if (bucketIndex instanceof LSMVectorIndex)
         count++;
     return count;
+  }
+
+  /**
+   * How many times {@code executeVector()} reads the clock before it starts assembling results: once to arm the
+   * deadline, once per bucket index, and once between the last index search and the merge sort. Derived from the
+   * schema rather than assumed, so it stays exact whatever the machine's default bucket count is.
+   */
+  private int readingsBeforeAssembly(final String typeName) {
+    return 1 + countVectorBucketIndexes(typeName) + 1;
   }
 
   private static float[] queryVector() {
@@ -263,6 +296,19 @@ class Issue6873VectorSelectTimeoutTest extends TestHelper {
 
       database.command("sql", """
           CREATE INDEX IF NOT EXISTS ON Product (embedding) LSM_VECTOR
+          METADATA {
+            "dimensions" : 8,
+            "similarity" : "EUCLIDEAN",
+            "maxConnections" : 16,
+            "beamWidth" : 100
+          }""");
+
+      // SAME SHAPE, NO ROWS: A VECTOR SEARCH OVER IT RETURNS NO NEIGHBOUR AT ALL, WHICH IS WHAT MAKES THE PRE-SORT
+      // CHECKPOINT DISTINGUISHABLE FROM THE ASSEMBLY ONE
+      database.command("sql", "CREATE VERTEX TYPE Empty IF NOT EXISTS");
+      database.command("sql", "CREATE PROPERTY Empty.embedding IF NOT EXISTS ARRAY_OF_FLOATS");
+      database.command("sql", """
+          CREATE INDEX IF NOT EXISTS ON Empty (embedding) LSM_VECTOR
           METADATA {
             "dimensions" : 8,
             "similarity" : "EUCLIDEAN",

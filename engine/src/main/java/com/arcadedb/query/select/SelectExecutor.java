@@ -228,9 +228,9 @@ public class SelectExecutor {
    * compiled and silently dropped the budget.
    * <p>
    * Granularity caveat: a single {@code LSMVectorIndex.findNeighborsFromVector()} call is not interruptible from here,
-   * so the deadline is honoured <i>between</i> indexes and <i>per assembled result</i> (each of which loads a record
-   * and may run the post-filter WHERE). That will not cut short one long search inside a single index, but it is the
-   * difference between a no-op and a bound.
+   * so the deadline is honoured <i>between</i> indexes, <i>before the merge sort of what they returned</i> and
+   * <i>per assembled result</i> (each of which loads a record and may run the post-filter WHERE). That will not cut
+   * short one long search inside a single index, but it is the difference between a no-op and a bound.
    */
   @SuppressWarnings("unchecked")
   <T extends Document> List<SelectVectorResult<T>> executeVector() {
@@ -271,6 +271,14 @@ public class SelectExecutor {
         neighbors = lsmIndex.findNeighborsFromVector(select.vectorQuery, select.vectorK);
       allNeighbors.addAll(neighbors);
     }
+
+    // #6873: THE DEADLINE CAN ONLY EXPIRE INSIDE AN INDEX'S OWN (UNINTERRUPTIBLE) SEARCH, AND WHEN THAT IS THE *LAST*
+    // INDEX THE LOOP ENDS ON ITS BOUND RATHER THAN ON THE CHECKPOINT ABOVE - SO WITHOUT A CHECKPOINT HERE THE SORT OF
+    // UP TO indexes * k PAIRS AND THE RESULT-LIST ALLOCATION WOULD STILL RUN AFTER THE BUDGET IS GONE. IT ALSO MAKES
+    // exceptionOnTimeout RAISE THE EXPIRY EVEN WHEN THE SEARCH FOUND NO NEIGHBOUR AT ALL, WHICH LEAVES THE ASSEMBLY
+    // LOOP BELOW WITH NO ITERATION TO CHECK ON
+    if (checkForTimeout())
+      return new ArrayList<>();
 
     allNeighbors.sort(Comparator.comparing(Pair::getSecond));
 
