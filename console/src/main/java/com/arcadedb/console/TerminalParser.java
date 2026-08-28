@@ -38,6 +38,13 @@ import java.util.Locale;
  * split (issue #6392). The opposite typo, a `{` that is never closed, cannot be clamped the same way: the parser genuinely
  * cannot know it is unbalanced until the input ends, so it instead records the offset of that brace for the caller to report
  * once parsing is done (issue #6439).
+ * <p>
+ * The backslash is an escape character for the purpose of tracking quotes and delimiters - an escaped quote does not close a
+ * string and an escaped semicolon does not split a command - but it is <b>kept</b> in the emitted word rather than consumed.
+ * The words this parser produces are handed to the query engine, and the engine, not the console, owns string-literal
+ * escaping: consuming one level here made `insert into Doc set p = 'C:\Users\bob'` store `C:Usersbob`, and made any `.sql`
+ * script using backslash escaping impossible to replay with `load` (issue #6827). The one place where shell-like unescaping
+ * is genuinely wanted is the value of the console's own {@code SET} command, which unescapes it there.
  */
 public class TerminalParser extends DefaultParser {
   private static final String SQL_LINE_COMMENT   = "--";
@@ -150,7 +157,9 @@ public class TerminalParser extends DefaultParser {
           if (rawWordCursor >= 0 && rawWordLength < 0) {
             rawWordLength = i - rawWordStart + 1;
           }
-        } else if (!this.isEscapeChar(line, i)) {
+        } else {
+          // THE ESCAPE CHARACTER IS KEPT: IT IS PART OF THE TEXT HANDED TO THE QUERY ENGINE, WHICH OWNS STRING-LITERAL
+          // ESCAPING. isEscaped() ABOVE ALREADY STOPPED THE ESCAPED QUOTE FROM CLOSING THE STRING (ISSUE #6827)
           current.append(c);
         }
       } else if (this.isDelimiter(line, i) && braceDepth == 0) {
@@ -163,7 +172,7 @@ public class TerminalParser extends DefaultParser {
         }
 
         rawWordStart = i + 1;
-      } else if (!this.isEscapeChar(line, i)) {
+      } else {
         if (c == '{') {
           if (braceDepth == 0)
             openBraceOffset = i;

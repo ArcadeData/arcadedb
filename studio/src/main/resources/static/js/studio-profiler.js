@@ -620,7 +620,7 @@ function profilerAiExecuteCommand(button, blockId) {
 
   jQuery.ajax({
     type: "POST",
-    url: "api/v1/command/" + encodeURIComponent(db),
+    url: "api/v1/command/" + encodeDatabaseName(db),
     data: JSON.stringify({ language: language, command: command }),
     contentType: "application/json",
     headers: { Authorization: globalCredentials }
@@ -689,7 +689,7 @@ function profilerAiRunSequential(commands, index, allBtn) {
 
   jQuery.ajax({
     type: "POST",
-    url: "api/v1/command/" + encodeURIComponent(db),
+    url: "api/v1/command/" + encodeDatabaseName(db),
     data: JSON.stringify({ language: language, command: command }),
     contentType: "application/json",
     headers: { Authorization: globalCredentials }

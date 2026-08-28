@@ -43,7 +43,6 @@ import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.remote.RemoteServer;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.AnsiCode;
-import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.RecordTableFormatter;
 import com.arcadedb.utility.StringUtils;
 import com.arcadedb.utility.TableFormatter;
@@ -64,6 +63,7 @@ import java.io.File;
 import java.io.FileReader;
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -76,6 +76,7 @@ public class Console {
   private static final String               REMOTE_PREFIX            = "remote:";
   private static final String               LOCAL_PREFIX             = "local:";
   private static final String               SQL_LANGUAGE             = "SQL";
+  private static final String               HISTORY_FILE             = ".history";
   private final        Terminal             terminal;
   private final        TerminalParser       parser                   = new TerminalParser();
   private              ConsoleOutput        output;
@@ -95,6 +96,11 @@ public class Console {
   private              boolean              batchMode                = false;
   private              boolean              failAtEnd                = false;
   private static       boolean              errored                  = false;
+  // BUILT LAZILY AND SHARED BY interactiveMode() AND BY THE MASKED PASSWORD PROMPT, SO A PASSWORD CAN BE ASKED FOR
+  // WITHOUT EVER APPEARING ON A LINE THAT GOES TO THE HISTORY FILE (ISSUE #6829)
+  private              LineReader           lineReader;
+  // WHETHER THE PROCESS OWNS A REAL TERMINAL: A MASKED PROMPT IS ONLY POSSIBLE WHEN SOMEBODY IS THERE TO TYPE INTO IT
+  private final        boolean              systemTerminal;
 
   public Console(final DatabaseInternal database) throws IOException {
     this();
@@ -116,20 +122,39 @@ public class Console {
 
     GlobalConfiguration.PROFILE.setValue("low-cpu");
 
-    boolean system = System.console() != null;
-    terminal = TerminalBuilder.builder().system(system).streams(System.in, System.out).jni(true).build();
+    systemTerminal = System.console() != null;
+    terminal = TerminalBuilder.builder().system(systemTerminal).streams(System.in, System.out).jni(true).build();
 
     output(3, "%s Console v%s - %s (%s)", Constants.PRODUCT, Constants.getRawVersion(), Constants.COPYRIGHT, Constants.URL);
     output(3, "%s", Constants.SPONSOR_MSG);
   }
 
-  public void interactiveMode() throws IOException {
-    final Completer completer = new StringsCompleter("align database", "begin", "rollback", "commit", "check database", "close",
-        "connect", "create database", "create user", "drop database", "drop user", "export", "import", "help", "info types",
-        "list databases", "load", "exit", "quit", "set", "match", "select", "insert into", "update", "delete", "pwd");
+  /**
+   * Returns the line reader, building it on first use.
+   * <p>
+   * The history it is given masks the passwords that the `connect` and `create user` syntaxes carry inline before they are
+   * recorded, so they never reach the `.history` file - which is written after every command, in the working directory,
+   * with the process umask, and survives the session indefinitely (issue #6829).
+   */
+  private LineReader getLineReader() {
+    if (lineReader == null) {
+      final Completer completer = new StringsCompleter("align database", "begin", "rollback", "commit", "check database", "close",
+          "connect", "create database", "create user", "drop database", "drop user", "export", "import", "help", "info types",
+          "list databases", "load", "exit", "quit", "set", "match", "select", "insert into", "update", "delete", "pwd");
 
-    final LineReader lineReader = LineReaderBuilder.builder().terminal(terminal).parser(parser).variable("history-file", ".history")
-        .history(new DefaultHistory()).completer(completer).build();
+      lineReader = LineReaderBuilder.builder().terminal(terminal).parser(parser)
+          .variable(LineReader.HISTORY_FILE, HISTORY_FILE).history(new DefaultHistory() {
+            @Override
+            public void add(final Instant time, final String line) {
+              super.add(time, ConsoleCredentials.mask(line));
+            }
+          }).completer(completer).build();
+    }
+    return lineReader;
+  }
+
+  public void interactiveMode() throws IOException {
+    final LineReader lineReader = getLineReader();
 
     Runtime.getRuntime().addShutdownHook(new Thread(this::close));
 
@@ -223,27 +248,63 @@ public class Console {
     }
   }
 
+  /**
+   * Releases everything the console holds: the pending batch, the terminal buffer, the database and the factory.
+   * <p>
+   * Each step gets its own try/catch rather than sharing one. With a single catch the first step decided the fate of the
+   * other three, and the first step is the only one that can realistically fail: in the default batch flow `exit` had
+   * already nulled the database proxy, so committing threw a NullPointerException here and the terminal was never flushed,
+   * losing whatever jline still had buffered when {@code main()} called {@code System.exit} (issue #6828).
+   * <p>
+   * A failed exit-time commit is also reported and marks the process as errored. Swallowing it silently is the worse half
+   * of the same bug: on the interactive Ctrl-D path up to {@code transactionBatchSize} statements are committed right here,
+   * and the process used to exit 0 while that data was never written. The three release steps stay quiet, since at exit
+   * time there is nothing left for the user to do about them.
+   */
   public void close() {
-    try {
-      if (transactionBatchSize > 0 && currentOperationsInBatch > 0) {
-        currentOperationsInBatch = 0;
-        databaseProxy.commit();
+    if (transactionBatchSize > 0 && currentOperationsInBatch > 0 && databaseProxy != null) {
+      try {
+        // COMMITTING NEEDS AN ACTIVE TRANSACTION, NOT JUST A NON-ZERO COUNTER: commit() ON AN INACTIVE TRANSACTION IS
+        // NOT A NO-OP, WHICH IS WHY executeCommit()/executeClose() GUARD ON isTransactionActive() TOO. THE GUARD IS
+        // INSIDE THE TRY BECAUSE IT CAN THROW ON ITS OWN: ON THE EMBEDDED PATH isTransactionActive() RESOLVES THE
+        // THREAD'S CACHED TRANSACTION AND RAISES InvalidDatabaseInstanceException WHEN IT BELONGS TO A DIFFERENT
+        // LocalDatabase INSTANCE FOR THE SAME PATH - RECONNECTING TO THE SAME DATABASE IN ONE SESSION DOES THAT. A
+        // THROW HERE WOULD SKIP THE FLUSH AND THE TWO CLOSES ALL OVER AGAIN, JUST FROM ANOTHER TRIGGER (ISSUE #6828)
+        if (databaseProxy.isTransactionActive())
+          databaseProxy.commit();
+      } catch (Throwable t) {
+        errored = true;
+        outputError(t);
       }
+    }
+    currentOperationsInBatch = 0;
 
-      if (terminal != null)
+    if (terminal != null) {
+      try {
         flushOutput();
+      } catch (Throwable t) {
+        // IGNORE: THERE IS NOWHERE LEFT TO REPORT IT TO
+      }
+    }
 
-      if (databaseProxy != null) {
+    if (databaseProxy != null) {
+      try {
         databaseProxy.close();
+      } catch (Throwable t) {
+        // IGNORE ANY EXCEPTION AT CLOSING
+      } finally {
         databaseProxy = null;
       }
+    }
 
-      if (databaseFactory != null) {
+    if (databaseFactory != null) {
+      try {
         databaseFactory.close();
+      } catch (Throwable t) {
+        // IGNORE ANY EXCEPTION AT CLOSING
+      } finally {
         databaseFactory = null;
       }
-    } catch (Throwable t) {
-      // IGNORE ANY EXCEPTION AT CLOSING
     }
   }
 
@@ -386,32 +447,51 @@ public class Console {
 
   /**
    * Strips one matching pair of surrounding quotes (' or ") from a {@code SET} value, so {@code set language = 'sql'} stores
-   * {@code sql} rather than the literal quotes. A value that does not start with a quote character is returned unchanged. A
-   * value that opens with a quote character but never closes it, or ends in something other than that character, is always a
-   * typo, so it is rejected rather than stored half-quoted (issue #6439).
+   * {@code sql} rather than the literal quotes, and unescapes the backslash escapes inside that pair. A value that does not
+   * start with a quote character is returned unchanged. A value that opens with a quote character but never closes it, or
+   * ends in something other than that character, is always a typo, so it is rejected rather than stored half-quoted
+   * (issue #6439).
    * <p>
-   * A value whose first and last characters are the SAME quote character is always accepted as that pair, even if the quote
-   * character also occurs in between - for example {@code 'it\'s a test'}. That inner quote reaches this method already
-   * stripped of its escaping backslash by {@link TerminalParser#parse}, indistinguishable here from a real closing quote
-   * followed by unrelated trailing text that happens to also end in a quote character. Between silently accepting that rare,
-   * contrived input and rejecting the far more plausible escaped-quote value, this favors the value the parser's own escape
-   * handling was built to support.
+   * This is the one place in the console where shell-like unescaping is wanted, and since {@link TerminalParser#parse} now
+   * keeps the escape characters it sees (issue #6827) it is also the one place that can do it unambiguously: the closing
+   * quote is the first UNESCAPED occurrence of the opening one, so {@code 'it\'s a test'} yields {@code it's a test} and
+   * {@code 'a' b'} is still rejected as trailing garbage. Only the quote character that DELIMITS this value and the
+   * backslash itself are unescaped: the other quote character never needed escaping in here, so a backslash in front of
+   * it is data, and so is every other backslash - which is what makes {@code set foo = 'C:\Users'} store the path.
    */
   private static String stripMatchingQuotes(final String value) {
     if (value.isEmpty())
       return value;
 
-    final char first = value.charAt(0);
-    if (first != '\'' && first != '"')
+    final char quote = value.charAt(0);
+    if (quote != '\'' && quote != '"')
       return value;
 
-    if (value.length() >= 2 && value.charAt(value.length() - 1) == first)
-      return value.substring(1, value.length() - 1);
+    final StringBuilder content = new StringBuilder(value.length());
+    for (int i = 1; i < value.length(); ++i) {
+      final char c = value.charAt(i);
 
-    if (value.indexOf(first, 1) < 0)
-      throw new ConsoleException("Invalid value for SET: missing closing quote in " + value);
+      if (c == '\\' && i + 1 < value.length()) {
+        final char next = value.charAt(i + 1);
+        if (next == quote || next == '\\') {
+          content.append(next);
+          ++i;
+          continue;
+        }
+        content.append(c);
+        continue;
+      }
 
-    throw new ConsoleException("Invalid value for SET: unexpected content after the closing quote in " + value);
+      if (c == quote) {
+        if (i == value.length() - 1)
+          return content.toString();
+        throw new ConsoleException("Invalid value for SET: unexpected content after the closing quote in " + value);
+      }
+
+      content.append(c);
+    }
+
+    throw new ConsoleException("Invalid value for SET: missing closing quote in " + value);
   }
 
   private void executeTransactionStatus() {
@@ -439,11 +519,15 @@ public class Console {
   private void executeCommit() {
     checkDatabaseIsOpen();
     databaseProxy.commit();
+    // THE PENDING BATCH IS GONE WITH THE TRANSACTION: LEAVING THE COUNTER SET MADE close() TRY TO COMMIT IT AGAIN
+    // (ISSUE #6828)
+    currentOperationsInBatch = 0;
   }
 
   private void executeRollback() {
     checkDatabaseIsOpen();
     databaseProxy.rollback();
+    currentOperationsInBatch = 0;
   }
 
   private void executeClose() {
@@ -453,6 +537,7 @@ public class Console {
       databaseProxy.close();
       databaseProxy = null;
     }
+    currentOperationsInBatch = 0;
   }
 
   private void executeListDatabases(final String url) {
@@ -492,7 +577,9 @@ public class Console {
       databaseName = databaseProxy.getName();
 
     } else {
-      final String[] urlParts = url.split(" ");
+      // SPLIT ON RUNS OF WHITESPACE, LIKE THE REMOTE BRANCH: WITH `split(" ")` A SECOND BLANK BEFORE THE MODE PRODUCED
+      // AN EMPTY TOKEN AND `MODE.valueOf("")` FAILED WITH AN ERROR THAT NAMES NEITHER THE MODE NOR THE BLANK (#6830)
+      final String[] urlParts = url.split("\\s+");
 
       final String localUrl = parseLocalUrl(urlParts[0]);
 
@@ -557,7 +644,7 @@ public class Console {
     Map<String, String> databases = new HashMap<String, String>();
 
     if (databasesByPos > -1) {
-      password = params.substring(identifiedByPos + "IDENTIFIED BY".length() + 1, databasesByPos).trim();
+      password = params.substring(identifiedByPos + "IDENTIFIED BY".length(), databasesByPos).trim();
       final String databasesList = params.substring(databasesByPos + " GRANT CONNECT TO ".length()).trim();
       final String[] databasesArray = databasesList.split(",");
       final List<String> databasesName = List.of(databasesArray);
@@ -572,13 +659,14 @@ public class Console {
         }
       }
     } else {
-      password = params.substring(identifiedByPos + "IDENTIFIED BY".length() + 1).trim();
+      password = params.substring(identifiedByPos + "IDENTIFIED BY".length()).trim();
     }
 
-    checkIsEmpty("User password", password);
-    checkHasSpaces("User password", password);
-
-    getRemoteServer().createUser(userName, password, databases);
+    // AN OMITTED PASSWORD IS ASKED FOR WITH THE ECHO MASKED INSTEAD OF BEING REJECTED, SO `create user bob identified by`
+    // IS THE FORM THAT NEVER WRITES THE PASSWORD TO `.history` OR TO A BUILD LOG (ISSUE #6829). SPACES ARE NO LONGER
+    // REJECTED EITHER: `IDENTIFIED BY` AND `GRANT CONNECT TO` DELIMIT THE PASSWORD POSITIONALLY, THE SERVER AND STUDIO
+    // BOTH ACCEPT IT, AND REJECTING IT ONLY HERE MADE AN ACCOUNT THE CONSOLE COULD NOT CREATE (ISSUE #6830)
+    getRemoteServer().createUser(userName, password.isEmpty() ? askPassword(userName) : password, databases);
 
     outputLine(3, "User '%s' created (on the server)", userName);
     flushOutput();
@@ -800,7 +888,11 @@ public class Console {
 
     try (final BufferedReader bufferedReader = new BufferedReader(new FileReader(file, DatabaseFactory.getDefaultCharset()))) {
       while (bufferedReader.ready()) {
-        final String line = FileUtils.decodeFromFile(bufferedReader.readLine());
+        // READ AS TYPED. THE LINE USED TO GO THROUGH FileUtils.decodeFromFile(), WHOSE ONLY JOB WAS TO DOUBLE EVERY `\\`
+        // SO THAT THE LEVEL OF ESCAPING TerminalParser THEN CONSUMED CAME BACK OUT EVEN. THAT PAIR CANCELLED OUT ONLY
+        // FOR AN EVEN NUMBER OF BACKSLASHES: A LONE `\` IN A SCRIPT WAS STILL SWALLOWED. NOW THAT THE PARSER KEEPS WHAT
+        // IT READS (ISSUE #6827), NEITHER HALF IS NEEDED AND A SCRIPT MEANS WHAT IT SAYS
+        final String line = bufferedReader.readLine();
         ++fileLineNumber;
 
         if (pending.isEmpty())
@@ -893,8 +985,9 @@ public class Console {
 
       if (printCommand)
         // USE THE TRIMMED WORD: AN UNTERMINATED LAST COMMAND CARRIES ITS TRAILING NEWLINE AS PART OF THE WORD, WHICH
-        // WOULD OTHERWISE PUSH THE RESULT DOWN BY AN EXTRA BLANK LINE (issue #6372)
-        output(3, getPrompt() + trimmedWord);
+        // WOULD OTHERWISE PUSH THE RESULT DOWN BY AN EXTRA BLANK LINE (issue #6372). MASK ANY INLINE PASSWORD: THIS
+        // ECHO IS WHAT BATCH MODE WRITES TO STDOUT, I.E. STRAIGHT INTO A CI LOG (issue #6829)
+        output(3, getPrompt() + ConsoleCredentials.mask(trimmedWord));
 
       // THE UNCLOSED BRACE, IF ANY, IS ALWAYS SOMEWHERE INSIDE THE LAST WORD: EVERY SEMICOLON FROM THE BRACE ONWARD FAILED
       // TO SEPARATE ANYTHING, SO THE REST OF THE INPUT WAS NEVER SPLIT
@@ -1237,13 +1330,32 @@ public class Console {
         url.substring((REMOTE_PREFIX + "//").length()) :
         url.substring(REMOTE_PREFIX.length());
 
-    final String[] serverUserPassword = conn.trim().split(" ");
-    if (serverUserPassword.length != 3)
-      throw new ConsoleException("URL username and password are missing");
+    // SPLIT ON RUNS OF WHITESPACE AND STOP AT THE PASSWORD. `split(" ")` PRODUCED AN EMPTY TOKEN FOR EVERY EXTRA BLANK,
+    // AND THE LIMIT KEEPS THE PASSWORD IN ONE PIECE: A PASSWORD CONTAINING A SPACE IS ACCEPTED BY THE SERVER AND BY
+    // STUDIO, SO SUCH AN ACCOUNT MUST NOT BE UNUSABLE FROM THE CONSOLE (ISSUE #6830)
+    final String[] serverUserPassword = conn.trim().split("\\s+", 3);
+    if (serverUserPassword.length < 2)
+      // SAY WHICH HALF IS MISSING RATHER THAN SENDING THE USER LOOKING FOR THE WRONG PROBLEM
+      throw new ConsoleException(
+          "User name is missing, use `" + REMOTE_PREFIX + "<host>[:<port>]" + (needsDatabase ? "/<database>" : "")
+              + " <user> [<password>]`");
+
+    final String userName = serverUserPassword[1];
+    if (userName.isEmpty())
+      throw new ConsoleException("User name is empty");
+
+    // AN OMITTED PASSWORD IS ASKED FOR WITH THE ECHO MASKED, SO IT NEVER APPEARS ON A LINE THAT IS SAVED TO THE HISTORY
+    // FILE OR ECHOED INTO A BUILD LOG (ISSUE #6829)
+    final String password = serverUserPassword.length == 3 ? serverUserPassword[2] : askPassword(userName);
 
     final String[] serverParts = serverUserPassword[0].split("/");
     if ((needsDatabase && serverParts.length != 2) || (!needsDatabase && serverParts.length != 1))
-      throw new ConsoleException("Remote URL '" + url + "' not valid");
+      // REPORT ONLY THE ADDRESS, NEVER THE WHOLE ARGUMENT: `url` STILL CARRIES THE INLINE PASSWORD, AND THIS MESSAGE
+      // GOES TO THE INTERACTIVE OUTPUT AND TO THE BATCH LOG. IT IS ALSO THE MORE PRECISE HALF - THE ADDRESS IS WHAT
+      // FAILED TO SPLIT (ISSUE #6829)
+      throw new ConsoleException(
+          "Remote URL '" + REMOTE_PREFIX + serverUserPassword[0] + "' is not valid, expected " + REMOTE_PREFIX
+              + "<host>[:<port>]" + (needsDatabase ? "/<database>" : ""));
 
     final String remoteServer;
     final int remotePort;
@@ -1257,9 +1369,44 @@ public class Console {
       remotePort = Integer.parseInt(serverParts[0].substring(portPos + 1));
     }
 
-    databaseProxy = new RemoteDatabase(remoteServer, remotePort, needsDatabase ? serverParts[1] : "", serverUserPassword[1],
-        serverUserPassword[2]);
-    this.remoteServer = new RemoteServer(remoteServer, remotePort, serverUserPassword[1], serverUserPassword[2]);
+    databaseProxy = new RemoteDatabase(remoteServer, remotePort, needsDatabase ? serverParts[1] : "", userName, password);
+    this.remoteServer = new RemoteServer(remoteServer, remotePort, userName, password);
+  }
+
+  /**
+   * Reads a password from the terminal with the echo masked.
+   * <p>
+   * This is the only way to authenticate without writing the password down somewhere that outlives the command: the
+   * `connect` syntax carries it inline, the line reader saves every line to `.history`, and batch mode echoes the same
+   * line to stdout (issue #6829). Without a real terminal there is nobody to type it, so the caller gets the same
+   * "password is missing" it would have got before.
+   */
+  private String askPassword(final String userName) {
+    if (batchMode || !systemTerminal)
+      throw new ConsoleException("Password for user '" + userName + "' is missing");
+
+    final LineReader reader = getLineReader();
+
+    // BELT AND BRACES ON THE ONE LINE THAT IS A BARE PASSWORD. jline ALREADY DROPS A MASKED LINE - ITS
+    // SimpleMaskingCallback.history() RETURNS null AND LineReaderImpl.finish() SKIPS A null - BUT THAT IS A LIBRARY
+    // INTERNAL, AND ConsoleCredentials CANNOT BE THE SAFETY NET HERE: IT RECOGNISES A PASSWORD BY THE COMMAND KEYWORD
+    // IN FRONT OF IT, AND THIS LINE HAS NONE. SAYING IT OUT LOUD KEEPS THE GUARANTEE LOCAL TO THE CODE THAT NEEDS IT
+    final Object previousSetting = reader.getVariable(LineReader.DISABLE_HISTORY);
+    reader.setVariable(LineReader.DISABLE_HISTORY, true);
+    final String password;
+    try {
+      password = reader.readLine("Password for '" + userName + "': ", '*');
+    } catch (final UserInterruptException | EndOfFileException e) {
+      // CTRL-C / CTRL-D AT THE PROMPT IS A DECISION, NOT A FAILURE: SAY SO INSTEAD OF LETTING A jline EXCEPTION
+      // SURFACE AS AN OPAQUE ERROR FROM connect / create user
+      throw new ConsoleException("Password entry cancelled");
+    } finally {
+      reader.setVariable(LineReader.DISABLE_HISTORY, previousSetting);
+    }
+
+    if (password == null || password.isEmpty())
+      throw new ConsoleException("Password for user '" + userName + "' is empty");
+    return password;
   }
 
   private void flushOutput() {

@@ -247,6 +247,10 @@ public class PluginManager {
 
           // Configure and start the plugin
           plugin.configure(server, configuration);
+          // FROM HERE ON THE PLUGIN HOLDS ITS SERVER REFERENCE, SO IT CAN TAKE THE DATABASE LIFECYCLE CALLBACKS. MARKING
+          // IT BEFORE startService() IS DELIBERATE: A PLUGIN THAT OPENS OR REGISTERS DATABASES WHILE STARTING MUST SEE
+          // ITS OWN REGISTRATIONS (ISSUE #6852)
+          descriptor.setInitialized(true);
           try {
             plugin.startService();
           } catch (final Exception | Error e) {
@@ -268,7 +272,17 @@ public class PluginManager {
         } finally {
           currentThread.setContextClassLoader(originalClassLoader);
         }
+      } catch (final Error e) {
+        // THE INNER HANDLER RETHROWS `Exception | Error`, AND A PLUGIN JAR MISSING A CLASS FAILS WITH THE SECOND ONE.
+        // CATCHING ONLY Exception HERE WOULD LEAVE THE DESCRIPTOR INITIALIZED AFTER stopService() HAS ALREADY RELEASED
+        // THE PLUGIN'S STATE, SO LIFECYCLE CALLBACKS WOULD KEEP ARRIVING AT IT. RETHROWN UNWRAPPED: AN Error IS NOT
+        // THIS LAYER'S TO REINTERPRET
+        descriptor.setInitialized(false);
+        throw e;
       } catch (final Exception e) {
+        // THE PLUGIN NEVER CAME UP: STOP DELIVERING LIFECYCLE CALLBACKS TO IT, ITS STATE IS WHATEVER THE FAILED START
+        // LEFT BEHIND
+        descriptor.setInitialized(false);
         throw new ServerException("Error starting plugin: " + pluginName + " (priority: " + priority + ")", e);
       }
     }
@@ -302,6 +316,7 @@ public class PluginManager {
         CodeUtils.executeIgnoringExceptions(plugin::stopService,
             "Error stopping plugin: " + pluginName, false);
         descriptor.setStarted(false);
+        descriptor.setInitialized(false);
       } finally {
         currentThread.setContextClassLoader(originalClassLoader);
       }
@@ -338,6 +353,26 @@ public class PluginManager {
           result.add(descriptor.getPluginInstance());
         }
       }
+    }
+    return Collections.unmodifiableCollection(result);
+  }
+
+  /**
+   * Returns the plugins whose {@link ServerPlugin#configure} has already returned, in registration order.
+   * <p>
+   * This is the audience for the database lifecycle callbacks, and it is deliberately narrower than
+   * {@link #getPlugins()}: discovery installs every plugin instance long before the first one is configured, and
+   * databases are opened in between. A plugin that runs {@code AFTER_DATABASES_OPEN} therefore used to be handed a
+   * registration for every pre-existing database while its own {@code server} field was still null - ten databases, ten
+   * NullPointerException stack traces at every single startup (issue #6852). It also stops after a plugin is stopped,
+   * so a callback from a late shutdown step cannot reach a plugin that has already released its state.
+   */
+  public Collection<ServerPlugin> getInitializedPlugins() {
+    final List<ServerPlugin> result = new ArrayList<>();
+    synchronized (plugins) {
+      for (final PluginDescriptor descriptor : plugins.values())
+        if (descriptor.isInitialized() && descriptor.getPluginInstance() != null)
+          result.add(descriptor.getPluginInstance());
     }
     return Collections.unmodifiableCollection(result);
   }
