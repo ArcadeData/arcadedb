@@ -362,6 +362,23 @@ class HttpAuthSessionManagerTest {
   }
 
   @Test
+  void truncationNeverSplitsASurrogatePair() {
+    // A supplementary-plane character straddling the cut must be dropped whole, not left as an unpaired
+    // half that renders as a replacement character wherever the metadata is displayed.
+    final String emoji = "😀"; // U+1F600, two chars
+    final String straddling = "x".repeat(HttpAuthSession.MAX_METADATA_LENGTH - 1) + emoji.repeat(10);
+    assertThat(HttpAuthSession.truncate(straddling))
+        .hasSize(HttpAuthSession.MAX_METADATA_LENGTH - 1)
+        .doesNotContain("\uD83D");
+
+    // An emoji that ends exactly on the boundary is kept whole.
+    final String aligned = "x".repeat(HttpAuthSession.MAX_METADATA_LENGTH - 2) + emoji.repeat(10);
+    assertThat(HttpAuthSession.truncate(aligned))
+        .hasSize(HttpAuthSession.MAX_METADATA_LENGTH)
+        .endsWith(emoji);
+  }
+
+  @Test
   void metadataThatFitsIsKeptVerbatimAndNullStaysNull() {
     manager = new HttpAuthSessionManager(30_000L);
 

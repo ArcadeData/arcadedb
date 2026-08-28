@@ -81,11 +81,20 @@ public class HttpAuthSession {
   }
 
   /**
-   * Caps a client-supplied metadata string at {@link #MAX_METADATA_LENGTH}. Returns the original reference
-   * when it already fits, so the common case allocates nothing.
+   * Caps a client-supplied metadata string at {@link #MAX_METADATA_LENGTH} chars. Returns the original
+   * reference when it already fits, so the common case allocates nothing. The cut never splits a surrogate
+   * pair: a supplementary-plane character landing exactly on the boundary is dropped whole rather than left
+   * as an unpaired half, which would render as a replacement character wherever the value is displayed.
    */
   static String truncate(final String value) {
-    return value == null || value.length() <= MAX_METADATA_LENGTH ? value : value.substring(0, MAX_METADATA_LENGTH);
+    if (value == null || value.length() <= MAX_METADATA_LENGTH)
+      return value;
+
+    final int end = Character.isHighSurrogate(value.charAt(MAX_METADATA_LENGTH - 1))
+        && Character.isLowSurrogate(value.charAt(MAX_METADATA_LENGTH))
+        ? MAX_METADATA_LENGTH - 1
+        : MAX_METADATA_LENGTH;
+    return value.substring(0, end);
   }
 
   public long elapsedFromLastUpdate() {
