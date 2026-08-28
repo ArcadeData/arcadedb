@@ -19,6 +19,7 @@
 package com.arcadedb;
 
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.SystemVariableResolver;
 
 import java.io.Serializable;
@@ -188,25 +189,33 @@ public class ContextConfiguration implements Serializable {
     return getVariable(v.toString(), "");
   }
 
+  /**
+   * Issue #6875: this reads through {@link FileUtils#getSizeAsNumber(Object)}, not {@code Integer.parseInt}, so that
+   * it and {@link GlobalConfiguration#getValueAsInteger()} are one parse rather than two that disagree. The context
+   * map can hold a raw string that never passed through {@link GlobalConfiguration#coerce(Object)} - {@link #fromJSON}
+   * and the {@link Map} constructor both put one straight in - and such a value used to read as 1048576 through the
+   * global accessor and throw {@code NumberFormatException} through this one. {@code getSizeAsNumber} is a strict
+   * superset of {@code Integer.parseInt}, so nothing that read before stops reading.
+   */
   public int getValueAsInteger(final GlobalConfiguration iConfig) {
     final Object v = getValue(iConfig);
     if (v == null)
       return 0;
-    return v instanceof Integer i ? i : Integer.parseInt(v.toString().trim());
+    return iConfig.narrowToInteger(v instanceof Number n ? n.longValue() : FileUtils.getSizeAsNumber(v.toString().trim()));
   }
 
   public long getValueAsLong(final GlobalConfiguration iConfig) {
     final Object v = getValue(iConfig);
     if (v == null)
       return 0;
-    return v instanceof Long l ? l : Long.parseLong(v.toString().trim());
+    return v instanceof Number n ? n.longValue() : FileUtils.getSizeAsNumber(v.toString().trim());
   }
 
   public float getValueAsFloat(final GlobalConfiguration iConfig) {
     final Object v = getValue(iConfig);
     if (v == null)
       return 0;
-    return v instanceof Float f ? f : Float.parseFloat(v.toString().trim());
+    return v instanceof Number n ? n.floatValue() : Float.parseFloat(v.toString().trim());
   }
 
   public Set<String> getContextKeys() {
