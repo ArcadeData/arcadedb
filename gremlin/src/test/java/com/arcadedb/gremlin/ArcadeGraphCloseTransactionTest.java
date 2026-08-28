@@ -24,7 +24,16 @@ import org.apache.tinkerpop.gremlin.structure.T;
 import org.apache.tinkerpop.gremlin.structure.Transaction;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
 import org.junit.jupiter.api.Test;
+
+import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -136,6 +145,42 @@ class ArcadeGraphCloseTransactionTest {
         .as("building a traversal after close() would resurrect the very resources close() released")
         .isInstanceOf(IllegalStateException.class)
         .hasMessage("Graph is closed");
+  }
+
+  @Test
+  void concurrentCallersAllGetTheOneTraversalSource() throws Exception {
+    final int threads = 16;
+    final Set<GraphTraversalSource> distinct = Collections.newSetFromMap(new IdentityHashMap<>());
+    final CountDownLatch startLine = new CountDownLatch(1);
+    final CountDownLatch done = new CountDownLatch(threads);
+    final ExecutorService executor = Executors.newFixedThreadPool(threads);
+
+    try (final ArcadeGraph graph = ArcadeGraph.open(DB_PATH)) {
+      for (int i = 0; i < threads; i++)
+        executor.submit(() -> {
+          try {
+            startLine.await();
+            final GraphTraversalSource mine = graph.traversal();
+            synchronized (distinct) {
+              distinct.add(mine);
+            }
+          } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+          } finally {
+            done.countDown();
+          }
+        });
+
+      startLine.countDown();
+      assertThat(done.await(30, TimeUnit.SECONDS)).as("every caller must have finished").isTrue();
+    } finally {
+      executor.shutdownNow();
+    }
+
+    assertThat(distinct)
+        .as("callers racing on traversal() must share one source: a loser's would be orphaned, and for a remote "
+            + "graph that means a driver cluster nothing is left holding to close")
+        .hasSize(1);
   }
 
   private long countPersons() {
