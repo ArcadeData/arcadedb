@@ -40,6 +40,7 @@ import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.SetClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
+import com.arcadedb.query.opencypher.executor.CypherValues;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.LabelReplacements;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
@@ -55,12 +56,10 @@ import com.arcadedb.schema.DocumentType;
 
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
-import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -75,14 +74,16 @@ import java.util.concurrent.atomic.AtomicReference;
  * TODO: Support ON CREATE SET and ON MATCH SET sub-clauses
  */
 public class MergeStep extends AbstractExecutionStep {
-  private final MergeClause mergeClause;
+  private final MergeClause        mergeClause;
   private final ExpressionEvaluator evaluator;
+  private final SetClauseApplier    setApplier;
 
   public MergeStep(final MergeClause mergeClause, final CommandContext context,
                    final CypherFunctionFactory functionFactory) {
     super(context);
     this.mergeClause = mergeClause;
     this.evaluator = new ExpressionEvaluator(functionFactory);
+    this.setApplier = SetClauseApplier.forMergeAction(context, this.evaluator);
   }
 
   @Override
@@ -1159,23 +1160,10 @@ public class MergeStep extends AbstractExecutionStep {
       if (actualValue == null)
         return false;
       // Use numeric-safe comparison (Integer vs Long, etc.)
-      if (!valuesEqual(actualValue, expectedValue))
+      if (!CypherValues.equalValues(actualValue, expectedValue))
         return false;
     }
     return true;
-  }
-
-  private static boolean valuesEqual(final Object a, final Object b) {
-    if (a == null)
-      return b == null;
-    if (a.equals(b))
-      return true;
-    // Numeric type-safe comparison: Integer(1) equals Long(1). Float vs Double may report unequal
-    // after widening (0.1f != 0.1d): conservative on purpose, the only cost is a redundant write.
-    if (a instanceof Number && b instanceof Number)
-      return ((Number) a).longValue() == ((Number) b).longValue()
-          && Double.compare(((Number) a).doubleValue(), ((Number) b).doubleValue()) == 0;
-    return false;
   }
 
   /**
@@ -1332,148 +1320,25 @@ public class MergeStep extends AbstractExecutionStep {
 
   /**
    * Applies a SET clause to the result (used for ON CREATE SET / ON MATCH SET).
+   * <p>
+   * The clause is served by the same {@link SetClauseApplier} the stand-alone SET step uses, so every shape the
+   * shared parser production emits - the dynamic-key form, the expression-target forms, the property-value type
+   * check and the simultaneous-assignment rule - behaves here exactly as it does outside a MERGE (issue #6831).
+   * The applier is configured for a merge action, which is what keeps an unchanged value from being re-written
+   * (issue #4474).
    *
    * @param setClause          the SET clause to apply
    * @param result             the result containing variables to update
    * @param labelReplacements  the vertices a label write earlier in this step replaced, and the machinery to
    *                           perform the next one
    */
-  @SuppressWarnings("unchecked")
   private void applySetClause(final SetClause setClause, final Result result,
       final LabelReplacements labelReplacements) {
     if (setClause == null || setClause.isEmpty())
       return;
-
-    // A node an earlier row of this MERGE relabelled reaches this row as the deleted original: point every alias
-    // of it - the MERGE's own variable and anything the input row bound to the same node - at the replacement.
-    labelReplacements.redirect(result);
-
-    for (final SetClause.SetItem item : setClause.getItems()) {
-      final String variable = item.getVariable();
-      final Object obj = result.getProperty(variable);
-      if (obj == null)
-        continue;
-
-      switch (item.getType()) {
-        case PROPERTY: {
-          if (!(obj instanceof Document doc))
-            break;
-          final String property = item.getProperty();
-          final Object value = evaluator.evaluate(item.getValueExpression(), result, context);
-          if (value == null) {
-            // Removing an absent property is a no-op: skip to avoid bumping the MVCC version.
-            if (doc.has(property)) {
-              final MutableDocument mutableDoc = doc.modify();
-              mutableDoc.remove(property);
-              mutableDoc.save();
-              context.getStatistics().addPropertiesSet(1);
-              ((ResultInternal) result).setProperty(variable, mutableDoc);
-            }
-          } else {
-            final Object coerced = TemporalUtil.toCoreJavaType(value);
-            // Neo4j counts a non-null assignment whether or not the value actually changed.
-            context.getStatistics().addPropertiesSet(1);
-            // Skip the write when the value is unchanged to avoid a needless MVCC version bump
-            // (concurrent readers of this record would otherwise fail with ConcurrentModificationException).
-            if (!valuesEqual(doc.get(property), coerced)) {
-              final MutableDocument mutableDoc = doc.modify();
-              mutableDoc.set(property, coerced);
-              mutableDoc.save();
-              ((ResultInternal) result).setProperty(variable, mutableDoc);
-            }
-          }
-          break;
-        }
-        case REPLACE_MAP: {
-          if (!(obj instanceof Document doc))
-            break;
-          final Object mapValue = evaluator.evaluate(item.getValueExpression(), result, context);
-          final Map<String, Object> map;
-          if (mapValue instanceof Map)
-            map = (Map<String, Object>) mapValue;
-          else if (mapValue instanceof Document srcDoc)
-            map = srcDoc.propertiesAsMap();
-          else
-            break;
-          final MutableDocument mutableDoc = doc.modify();
-          final Set<String> existingProps = new HashSet<>(mutableDoc.getPropertyNames());
-          for (final String prop : existingProps)
-            if (!prop.startsWith("@"))
-              mutableDoc.remove(prop);
-          int propertiesSet = 0;
-          for (final Map.Entry<String, Object> entry : map.entrySet())
-            if (entry.getValue() != null) {
-              mutableDoc.set(entry.getKey(), TemporalUtil.toCoreJavaType(entry.getValue()));
-              propertiesSet++;
-            }
-          // Neo4j counts both the properties written and the pre-existing properties removed by
-          // the replace (i.e. not re-set with a non-null value), matching the PROPERTY/MERGE_MAP
-          // branches above.
-          propertiesSet += CypherStatisticsHelper.countRemovedProperties(existingProps, map);
-          mutableDoc.save();
-          context.getStatistics().addPropertiesSet(propertiesSet);
-          ((ResultInternal) result).setProperty(variable, mutableDoc);
-          break;
-        }
-        case MERGE_MAP: {
-          if (!(obj instanceof Document doc))
-            break;
-          final Object mapValue = evaluator.evaluate(item.getValueExpression(), result, context);
-          final Map<String, Object> map;
-          if (mapValue instanceof Map)
-            map = (Map<String, Object>) mapValue;
-          else if (mapValue instanceof Document srcDoc)
-            map = srcDoc.propertiesAsMap();
-          else
-            break;
-          final MutableDocument mutableDoc = doc.modify();
-          int mergedPropertiesSet = 0;
-          for (final Map.Entry<String, Object> entry : map.entrySet())
-            if (entry.getValue() == null) {
-              if (mutableDoc.has(entry.getKey())) {
-                mutableDoc.remove(entry.getKey());
-                mergedPropertiesSet++;
-              }
-            } else {
-              mutableDoc.set(entry.getKey(), TemporalUtil.toCoreJavaType(entry.getValue()));
-              mergedPropertiesSet++;
-            }
-          mutableDoc.save();
-          // A null value removes a property; removing an absent property is a no-op and is not counted.
-          context.getStatistics().addPropertiesSet(mergedPropertiesSet);
-          ((ResultInternal) result).setProperty(variable, mutableDoc);
-          break;
-        }
-        case LABELS: {
-          if (!(obj instanceof Vertex vertex))
-            break;
-          vertex = labelReplacements.resolve(vertex);
-          // Same rule as SET: the new type is built from the vertex's OWN labels, so an inherited label is not
-          // re-listed in place of the subtype that carries it, and a label the vertex already answers to adds
-          // nothing (issue #6363).
-          final DocumentType currentType = vertex.getType();
-          final List<String> allLabels = new ArrayList<>(Labels.getOwnLabels(vertex));
-          int newLabelsCount = 0;
-          for (final String label : item.getLabels())
-            if (!currentType.instanceOf(label) && !allLabels.contains(label)) {
-              allLabels.add(label);
-              newLabelsCount++;
-            }
-          final String newTypeName = Labels.ensureCompositeType(
-              context.getDatabase().getSchema(), allLabels);
-          if (!vertex.getTypeName().equals(newTypeName)) {
-            // The record moves, so the same shared rewrite SET and REMOVE use: it carries the edges over with
-            // their properties, migrates a self-loop once and onto the replacement rather than onto the record
-            // about to be deleted, and records what moved so every alias can follow it.
-            labelReplacements.replace(vertex, newTypeName);
-            if (newLabelsCount > 0)
-              context.getStatistics().addLabelsAdded(newLabelsCount);
-            labelReplacements.redirect(result);
-          }
-          break;
-        }
-      }
-    }
+    // Each MERGE row runs in its own transaction, so read-your-writes state cannot outlive it: a fresh map per row
+    // is both correct and cheaper than clearing a shared one.
+    setApplier.apply(setClause, result, new HashMap<>(), labelReplacements);
   }
 
   /**
