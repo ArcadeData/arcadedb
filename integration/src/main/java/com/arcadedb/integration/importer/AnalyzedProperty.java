@@ -61,44 +61,48 @@ public class AnalyzedProperty {
     return index;
   }
 
+  /**
+   * Feeds one source value into the analysis. Type refutation (is this column still a candidate for {@code LONG} /
+   * {@code DOUBLE}?) runs on <b>every</b> value, independently of sample collection: stopping the collection of
+   * distinct values - because the value is too long to be worth indexing in the dictionary, or because
+   * {@code maxValueSampling} distinct values were already seen - used to return before the numeric probes, so a
+   * column whose first value happened to look numeric stayed a {@code LONG} candidate forever and was declared
+   * {@code LONG}. The import then died converting the very value that should have disproved it (issue #6814).
+   */
   public void setLastContent(final String lastContent) {
-    if (!collectingSamples)
+    if (lastContent == null)
       return;
 
-    if (lastContent != null) {
-      if (lastContent.length() > 100) {
-        collectingSamples = false;
-        contents.clear();
-        return;
-      }
+    this.lastContent = lastContent;
 
-      this.lastContent = lastContent;
-      if (contents.size() > maxValueSampling) {
-        collectingSamples = false;
-        contents.clear();
-        return;
-      }
-
-      contents.add(lastContent);
-
-      if (!lastContent.isEmpty()) {
-        if (candidateForInteger) {
-          try {
-            Long.parseLong(lastContent);
-          } catch (final NumberFormatException e) {
-            candidateForInteger = false;
-          }
+    if (!lastContent.isEmpty()) {
+      if (candidateForInteger) {
+        try {
+          Long.parseLong(lastContent);
+        } catch (final NumberFormatException e) {
+          candidateForInteger = false;
         }
+      }
 
-        if (candidateForDecimal) {
-          try {
-            Double.parseDouble(lastContent);
-          } catch (final NumberFormatException e) {
-            candidateForDecimal = false;
-          }
+      if (candidateForDecimal) {
+        try {
+          Double.parseDouble(lastContent);
+        } catch (final NumberFormatException e) {
+          candidateForDecimal = false;
         }
       }
     }
+
+    if (!collectingSamples)
+      return;
+
+    if (lastContent.length() > 100 || contents.size() > maxValueSampling) {
+      collectingSamples = false;
+      contents.clear();
+      return;
+    }
+
+    contents.add(lastContent);
   }
 
   public Set<String> getContents() {

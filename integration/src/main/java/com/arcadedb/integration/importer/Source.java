@@ -43,12 +43,24 @@ public class Source {
     this.closeCallback = closeCallback;
   }
 
+  /**
+   * Re-opens the underlying stream from the beginning. A failure here leaves the source unreadable, so it is
+   * propagated rather than only logged: swallowing it turned a broken re-open into an empty stream, and the import
+   * then reported a successful run with zero records instead of an error (issue #6810).
+   */
   public void reset() throws IOException {
     if (resetCallback != null)
       try {
         resetCallback.call(this);
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE, "Error on resetting source %s", e, this);
+
+        if (e instanceof IOException ioException)
+          throw ioException;
+        if (e instanceof RuntimeException runtimeException)
+          throw runtimeException;
+
+        throw new IOException("Error on resetting source " + this, e);
       }
   }
 

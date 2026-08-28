@@ -95,17 +95,28 @@ public class XMLImporterFormat implements FormatImporter {
           } else if (nestLevel == objectNestLevel + 1) {
             // GET ELEMENT'S SUB-NODES AS PROPERTIES
             if (lastName != null)
-              object.put(lastName, lastContent);
+              object.put(lastName, emptyWhenNoContent(lastContent));
 
             lastName = getQualifiedName(xmlReader.getName());
+            // A NEW SUB-ELEMENT STARTS WITH NO TEXT OF ITS OWN: WITHOUT THIS, AN EMPTY OR SELF-CLOSING ELEMENT
+            // INHERITED THE PREVIOUS SIBLING'S VALUE (ISSUE #6813)
+            lastContent = null;
           }
 
           ++nestLevel;
           break;
 
         case XMLStreamReader.END_ELEMENT:
-          if (lastName != null)
-            object.put(lastName, lastContent);
+          if (lastName != null) {
+            object.put(lastName, emptyWhenNoContent(lastContent));
+            if (nestLevel == objectNestLevel + 2) {
+              // THE PROPERTY ELEMENT ITSELF IS CLOSING (DEEPER ENDS ARE ITS OWN DESCENDANTS, WHOSE TEXT STILL FEEDS
+              // THE PROPERTY, SO LEAVE THE STATE ALONE THERE): THE NEXT SIBLING MUST START FROM SCRATCH RATHER THAN
+              // INHERIT THIS VALUE (ISSUE #6813)
+              lastName = null;
+              lastContent = null;
+            }
+          }
 
           LogManager.instance().log(this, Level.FINE, "</%s> (nestLevel=%d)", null, xmlReader.getName(), nestLevel);
 
@@ -241,26 +252,36 @@ public class XMLImporterFormat implements FormatImporter {
               entityName = "v_" + qualifiedName;  // v_ prefix for vertices (including DATABASE for backward compatibility)
             }
 
+            // CLEAR THE PER-RECORD STATE, THE SAME WAY load() DOES
+            lastName = null;
+            lastContent = null;
+
             // GET ELEMENT'S ATTRIBUTES AS PROPERTIES (with namespace prefix if present)
-            for (int i = 0; i < xmlReader.getAttributeCount(); ++i) {
+            for (int i = 0; i < xmlReader.getAttributeCount(); ++i)
               analyzedSchema.getOrCreateEntity(entityName, entityType)
                   .getOrCreateProperty(getQualifiedName(xmlReader.getAttributeName(i)), xmlReader.getAttributeValue(i));
-              lastName = null;
-            }
           } else if (nestLevel == objectNestLevel + 1) {
             // GET ELEMENT'S SUB-NODES AS PROPERTIES
             if (lastName != null)
-              analyzedSchema.getOrCreateEntity(entityName, entityType).getOrCreateProperty(lastName, lastContent);
+              analyzedSchema.getOrCreateEntity(entityName, entityType).getOrCreateProperty(lastName, emptyWhenNoContent(lastContent));
 
             lastName = getQualifiedName(xmlReader.getName());
+            // SEE THE SAME COMMENT IN load(): THE SCHEMA ANALYSIS INHERITED THE SIBLING'S VALUE TOO (ISSUE #6813)
+            lastContent = null;
           }
 
           ++nestLevel;
           break;
 
         case XMLStreamReader.END_ELEMENT:
-          if (lastName != null)
-            analyzedSchema.getOrCreateEntity(entityName, entityType).getOrCreateProperty(lastName, lastContent);
+          if (lastName != null) {
+            analyzedSchema.getOrCreateEntity(entityName, entityType).getOrCreateProperty(lastName, emptyWhenNoContent(lastContent));
+            if (nestLevel == objectNestLevel + 2) {
+              // SEE THE SAME COMMENT IN load() (ISSUE #6813)
+              lastName = null;
+              lastContent = null;
+            }
+          }
 
           LogManager.instance().log(this, Level.FINE, "</%s> (nestLevel=%d)", null, xmlReader.getName(), nestLevel);
 
@@ -330,6 +351,15 @@ public class XMLImporterFormat implements FormatImporter {
   @Override
   public String getFormat() {
     return "XML";
+  }
+
+  /**
+   * An element that was opened and closed without any character content has the empty string as its text content, not
+   * the previous sibling's value (issue #6813) and not {@code null}: {@code <b></b>} and {@code <b/>} both become an
+   * empty property rather than a missing or {@code null} one.
+   */
+  private static String emptyWhenNoContent(final String lastContent) {
+    return lastContent != null ? lastContent : "";
   }
 
   /**

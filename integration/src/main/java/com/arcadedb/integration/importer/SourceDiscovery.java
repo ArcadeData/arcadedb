@@ -141,15 +141,17 @@ public class SourceDiscovery {
     return getSourceFromContent(new BufferedInputStream(connection.getInputStream()), connection.getContentLengthLong(), resource,
         source -> {
           try {
+            source.inputStream.close();
             connection.disconnect();
 
             final HttpURLConnection connection1 = ImportSecurityValidator.openRemoteConnection(urlPath, blockLocalNetworks);
 
             if (source.inputStream instanceof GZIPInputStream)
               source.inputStream = new GZIPInputStream(connection1.getInputStream(), 2048);
-            else if (source.inputStream instanceof ZipInputStream stream) {
-              source.inputStream = new ZipInputStream(connection1.getInputStream());
-              stream.getNextEntry();
+            else if (source.inputStream instanceof ZipInputStream) {
+              final ZipInputStream zip = new ZipInputStream(connection1.getInputStream());
+              positionZipStream(zip, resource);
+              source.inputStream = zip;
             } else
               source.inputStream = new BufferedInputStream(connection1.getInputStream());
           } catch (final Exception e) {
@@ -174,27 +176,22 @@ public class SourceDiscovery {
       filePath = getClass().getClassLoader().getResource(filePath).getFile();
     }
 
-    final File file = new File(filePath);
+    final String resolvedPath = filePath;
+    final File file = new File(resolvedPath);
 
-    final InputStream fis;
-    if (file.exists())
-      fis = new BufferedInputStream(new FileInputStream(file));
-    else {
-      fis = getClass().getClassLoader().getResourceAsStream(filePath);
-      if (fis == null)
-        throw new FileNotFoundException(filePath);
-    }
+    final InputStream fis = openLocalStream(file, resolvedPath);
 
     return getSourceFromContent(fis, file.length(), resource, source -> {
       try {
         source.inputStream.close();
         if (source.inputStream instanceof GZIPInputStream)
-          source.inputStream = new GZIPInputStream(new FileInputStream(file), 2048);
-        else if (source.inputStream instanceof ZipInputStream stream) {
-          source.inputStream = new ZipInputStream(new FileInputStream(file));
-          stream.getNextEntry();
+          source.inputStream = new GZIPInputStream(openLocalStream(file, resolvedPath), 2048);
+        else if (source.inputStream instanceof ZipInputStream) {
+          final ZipInputStream zip = new ZipInputStream(openLocalStream(file, resolvedPath));
+          positionZipStream(zip, resource);
+          source.inputStream = zip;
         } else
-          source.inputStream = new BufferedInputStream(new FileInputStream(file));
+          source.inputStream = openLocalStream(file, resolvedPath);
       } catch (final IOException e) {
         throw new ImportException("Error on reset local resource", e);
       }
@@ -203,6 +200,22 @@ public class SourceDiscovery {
       fis.close();
       return null;
     });
+  }
+
+  /**
+   * Opens the local source the same way for the initial read and for every {@link Source#reset()}: as a file when one
+   * exists at that path, otherwise as a classpath resource. Reset used to unconditionally re-open a
+   * {@link FileInputStream}, which cannot work for the classpath fallback.
+   */
+  private InputStream openLocalStream(final File file, final String filePath) throws IOException {
+    if (file.exists())
+      return new BufferedInputStream(new FileInputStream(file));
+
+    final InputStream stream = getClass().getClassLoader().getResourceAsStream(filePath);
+    if (stream == null)
+      throw new FileNotFoundException(filePath);
+
+    return stream;
   }
 
   private FormatImporter analyzeSourceContent(final Parser parser, final AnalyzedEntity.EntityType entityType,
@@ -233,8 +246,12 @@ public class SourceDiscovery {
       break;
 
     case DATABASE:
-      // NO SPECIAL SETTINGS
+      // NO PER-ENTITY SETTINGS: THE GENERIC `delimiter` OPTION IS THE ONE THE USER CAN SET ON THIS FORM
+      // (-delimiter / IMPORT DATABASE ... WITH delimiter = ';'), SO READ IT BACK FROM THE OPTIONS AND FALL BACK TO
+      // -documentsDelimiter WHEN IT IS ABSENT (ISSUE #6811)
       knownFileType = getFileTypeByExtension(settings.url);
+      final Object genericDelimiter = settings.options.get("delimiter");
+      knownDelimiter = genericDelimiter != null ? genericDelimiter.toString() : settings.documentsDelimiter;
       break;
 
     default:
@@ -243,7 +260,10 @@ public class SourceDiscovery {
 
     if (knownFileType != null) {
       if ("csv".equalsIgnoreCase(knownFileType)) {
-        settings.options.put("delimiter", knownDelimiter);
+        // NEVER OVERWRITE THE USER'S `delimiter` OPTION WITH NULL: THE PER-ENTITY DELIMITER IS AN OVERRIDE, NOT A
+        // MANDATORY VALUE, AND CLOBBERING IT MADE EVERY NON-COMMA CSV UNIMPORTABLE (ISSUE #6811)
+        if (knownDelimiter != null)
+          settings.options.put("delimiter", knownDelimiter);
         return new CSVImporterFormat();
       } else if ("json".equalsIgnoreCase(knownFileType)) {
         return new JSONImporterFormat();
@@ -369,7 +389,10 @@ public class SourceDiscovery {
   }
 
   private boolean isSeparator(final char c) {
-    return c == ' ' || c == '\t' || c == ',' || c == '|' || c == '-' || c == '_';
+    // ';' IS THE OTHER MAINSTREAM CSV DELIMITER (LOCALES WHERE ',' IS THE DECIMAL SEPARATOR). WITHOUT IT, A
+    // SEMICOLON-SEPARATED FILE WHOSE EXTENSION ISN'T ".csv" PRODUCED NO CANDIDATE AT ALL AND THE IMPORT DIED WITH
+    // "Cannot determine the file type" (ISSUE #6811)
+    return c == ' ' || c == '\t' || c == ',' || c == ';' || c == '|' || c == '-' || c == '_';
   }
 
   private String getFileTypeByExtension(final String fileName) {
@@ -480,21 +503,12 @@ public class SourceDiscovery {
     in.mark(0);
 
     final ZipInputStream zip = new ZipInputStream(in);
-    ZipEntry entry = zip.getNextEntry();
+    final ZipEntry entry = zip.getNextEntry();
     if (entry != null) {
       // ZIPPED FILE
-      if (resource != null) {
+      if (resource != null)
         // SEARCH FOR THE RIGHT ENTRY
-        while (entry != null) {
-          if (resource.equals(entry.getName()))
-            return new Source(url, zip, totalSize, true, resetCallback, closeCallback);
-
-          zip.closeEntry();
-          entry = zip.getNextEntry();
-        }
-
-        throw new IllegalArgumentException("Resource '" + resource + "' not found");
-      }
+        seekZipEntry(zip, entry, resource);
 
       return new Source(url, zip, totalSize, true, resetCallback, closeCallback);
     }
@@ -513,6 +527,34 @@ public class SourceDiscovery {
 
     // ANALYZE THE INPUT AS TEXT
     return new Source(url, in, totalSize, false, resetCallback, closeCallback);
+  }
+
+  /**
+   * Positions a freshly opened {@link ZipInputStream} exactly the way {@link #getSourceFromContent} positioned the
+   * original one: on the entry named {@code resource}, or on the first entry when no resource was requested. The
+   * reset callbacks used to call {@code getNextEntry()} on the <b>old</b>, already closed stream instead, so the new
+   * one was left with no current entry - and a {@link ZipInputStream} with no current entry reads as an empty file
+   * rather than failing, which turned every ZIP import into a silent "0 records imported, completed" (issue #6810).
+   */
+  private static void positionZipStream(final ZipInputStream zip, final String resource) throws IOException {
+    final ZipEntry entry = zip.getNextEntry();
+    if (resource != null)
+      seekZipEntry(zip, entry, resource);
+  }
+
+  /**
+   * Advances {@code zip} from {@code entry} until the entry named {@code resource} is the current one.
+   */
+  private static void seekZipEntry(final ZipInputStream zip, ZipEntry entry, final String resource) throws IOException {
+    while (entry != null) {
+      if (resource.equals(entry.getName()))
+        return;
+
+      zip.closeEntry();
+      entry = zip.getNextEntry();
+    }
+
+    throw new IllegalArgumentException("Resource '" + resource + "' not found");
   }
 
   private String getFormatFromExtension(String fileName) {
