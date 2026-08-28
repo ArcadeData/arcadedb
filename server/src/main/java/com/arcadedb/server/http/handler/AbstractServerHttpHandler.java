@@ -122,9 +122,20 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   // loop) cannot grow the cache without bound either. The overflow tuple space is itself finite: method,
   // path template and status are all small enumerations.
   private static final String     OVERFLOW_DB_TAG    = "other";
-  // Hard ceiling on the number of cached tuples. A MeterFilter can deny the meter but cannot stop
-  // computeIfAbsent from retaining the key, so the cache needs its own bound.
-  private static final int        MAX_HTTP_REQUEST_TIMERS = 2_000;
+  // Maximum number of distinct "db" tag values allowed on arcadedb.http.requests. ArcadeDBServer.startMetrics()
+  // installs the matching MeterFilter from this constant, so the registry-side bound and the cache-side bound
+  // below are one number rather than two independently-chosen ones. Far above any realistic per-server
+  // database count.
+  public static final  int        MAX_DB_TAG_VALUES  = 1_000;
+  // Ceiling on the number of cached tuples: a MeterFilter can deny the meter but cannot stop computeIfAbsent
+  // from retaining the key, so the cache needs a bound of its own. Sized as a multiple of MAX_DB_TAG_VALUES
+  // so that a deployment with the maximum admissible number of databases still gets per-database RED
+  // visibility across ten method/path/status combinations each before anything collapses onto
+  // OVERFLOW_DB_TAG - the collapse is a backstop against unbounded growth, not a routine operating mode. At
+  // roughly a hundred bytes per entry the whole cache is about a megabyte at the ceiling. Note this is a soft
+  // ceiling: the size test and the computeIfAbsent are not one atomic step, so concurrent misses right at the
+  // boundary can overshoot it by a bounded handful of entries before the collapse engages.
+  private static final int        MAX_HTTP_REQUEST_TIMERS = MAX_DB_TAG_VALUES * 10;
   // Cache of resolved arcadedb.http.requests timers keyed by the bounded tag tuple
   // (method|path|status|db). Avoids rebuilding the Timer.Builder/Tags/Meter.Id and doing a registry
   // hash lookup on every request. The key space is bounded because every tag is low-cardinality: the
