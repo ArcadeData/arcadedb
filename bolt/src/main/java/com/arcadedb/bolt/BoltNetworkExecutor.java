@@ -134,14 +134,6 @@ public class BoltNetworkExecutor extends Thread {
   private final boolean             debug;
   private final BoltNetworkListener listener; // For notifying when connection closes
 
-  /**
-   * Ceiling on result streams held open at once by one connection. Every one of them pins an engine ResultSet
-   * (cursors, pages) for as long as its transaction lives, and nothing in the protocol obliges a client ever to
-   * consume one, so an unbounded map here is a resource leak a single authenticated session could drive. No real
-   * driver holds more than a handful open.
-   */
-  private static final int MAX_OPEN_STREAMS = 1024;
-
   private State              state = State.DISCONNECTED;
   private int                protocolVersion;
   private ServerSecurityUser user;
@@ -677,7 +669,9 @@ public class BoltNetworkExecutor extends Thread {
 
     if (currentStream == stream) {
       // Fall back to the newest stream still open, so a following qid-less PULL/DISCARD keeps meaning "the last
-      // one opened". The scan is over a map that holds a handful of entries in the worst realistic case.
+      // one opened". This relies on openStreams being a LinkedHashMap: the last value the iteration yields is
+      // the most recently inserted one. The scan is over a map holding a handful of entries in the worst
+      // realistic case.
       currentStream = null;
       for (final BoltQueryStream open : openStreams.values())
         currentStream = open;
@@ -757,9 +751,15 @@ public class BoltNetworkExecutor extends Thread {
       return;
     }
 
-    if (openStreams.size() >= MAX_OPEN_STREAMS) {
+    // Every open stream pins an engine ResultSet (cursors, pages) for as long as its transaction lives, and
+    // nothing in the protocol obliges a client ever to consume one, so an unbounded map here is a resource leak a
+    // single authenticated session could drive. Read per RUN, like the other BOLT protocol limits, so a runtime
+    // change to the setting takes effect on the next message; floored at 1 since a ceiling of 0 would reject
+    // every query outright rather than lock anything down.
+    final int maxOpenStreams = Math.max(1, GlobalConfiguration.BOLT_MAX_OPEN_STREAMS.getValueAsInteger());
+    if (openStreams.size() >= maxOpenStreams) {
       sendFailure(BoltException.PROTOCOL_ERROR,
-          "Too many result streams open at once (max " + MAX_OPEN_STREAMS + "): consume or discard one first");
+          "Too many result streams open at once (max " + maxOpenStreams + "): consume or discard one first");
       state = State.FAILED;
       return;
     }
