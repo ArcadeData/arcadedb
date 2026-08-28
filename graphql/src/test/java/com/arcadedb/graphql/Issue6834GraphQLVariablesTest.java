@@ -369,8 +369,8 @@ class Issue6834GraphQLVariablesTest extends AbstractGraphQLTest {
       // An inline directive is written in the query document, so its arguments are in the operation's scope and a
       // variable belongs there as much as in an ordinary argument.
       // No comma between the two variable definitions: this grammar makes the comma a real token and only the
-      // argument list accepts one, so `query($t: String, $d: String)` does not parse. Reported separately - fixing
-      // it means regenerating the parser, which drags in unrelated differences from a newer generator version.
+      // argument list accepts one, so `query($t: String, $d: String)` does not parse. Tracked as issue #6860 -
+      // fixing it means regenerating the parser, which drags in unrelated differences from a newer generator.
       try (final ResultSet resultSet = database.query("graphql", """
           query($t: String $d: String) { bookByName(name: "Mr. brain") {
               authors @relationship(type: $t, direction: $d) { lastName }

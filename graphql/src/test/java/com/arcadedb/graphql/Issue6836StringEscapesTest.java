@@ -19,6 +19,7 @@
 package com.arcadedb.graphql;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -32,6 +33,7 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for issue #6836: the lexer accepts the whole GraphQL escape set but {@code StringValue.getValue()}
@@ -115,6 +117,25 @@ class Issue6836StringEscapesTest {
     });
   }
 
+  @Test
+  void freeFormPredicateCannotClaimTheReservedParameterPrefix() {
+    executeTest(database -> {
+      defineTypes(database);
+
+      // The `where` argument is interpolated verbatim, so it could name a parameter that collides with the ones
+      // bound for the other arguments. The prefix is reserved by rejecting any predicate that uses it, rather than
+      // by assuming nobody would pick it.
+      assertThatThrownBy(() -> database.query("graphql", "{ notesWhere( where: \"text = :__gqlArg0\" ) { id } }").close())
+          .isInstanceOf(CommandParsingException.class)
+          .hasMessageContaining("__gqlArg");
+
+      // An ordinary predicate is untouched.
+      assertSingleMatch(database, "{ notesWhere( where: \"id = 'note-plain'\" ) { id } }", "note-plain");
+
+      return null;
+    });
+  }
+
   private static void assertSingleMatch(final Database database, final String query, final String expectedId) {
     try (final ResultSet resultSet = database.query("graphql", query)) {
       assertThat(resultSet.hasNext()).as(query).isTrue();
@@ -129,6 +150,7 @@ class Issue6836StringEscapesTest {
           noteByText(text: String): Note
           noteByRank(rank: Int): Note
           noteBySql(textParameter: String): Note @sql(statement: "select from Note where text = :textParameter")
+          notesWhere(where: WHERE): [Note]
         }
 
         type Note {
