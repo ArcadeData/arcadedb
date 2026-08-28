@@ -803,11 +803,16 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * state machine threads, causing a server to load another server's (possibly
    * earlier) snapshot and permanently lose users.
    * <p>
-   * Intentionally NOT {@code synchronized} on the ServerSecurity monitor: the
-   * HTTP handler holds that monitor while waiting for {@code submitAndWait} to
-   * complete, and the state machine apply thread needs to call this method to
-   * unblock the wait. Raft state-machine apply is single-threaded per group, so
-   * there is no internal contention here.
+   * <b>INVARIANT: this method must never take the {@code ServerSecurity} monitor, and must never block.</b>
+   * It runs on the Raft state-machine apply thread, and {@link #createUserClusterWide},
+   * {@link #updateUserClusterWide} and {@link #dropUserClusterWide} all hold that monitor while blocked in
+   * {@code ha.replicateSecurityUsers(...)} waiting for the very entry this method applies. Adding
+   * {@code synchronized} here - or calling anything that waits, such as
+   * {@code HttpSessionManager.removeSessionsForUser}, whose {@code cancel()} waits on a session lock for an
+   * in-flight command - deadlocks the cluster's user administration, silently and only under load. Raft
+   * state-machine apply is single-threaded per group, so there is no internal contention to protect against
+   * anyway. {@link #invalidateAuthSessionsOfRevokedPrincipals} is called below precisely because it is the
+   * half of the revocation that does no blocking work.
    */
   public void applyReplicatedUsers(final String usersJsonArray) {
     final JSONArray array = new JSONArray(usersJsonArray);
