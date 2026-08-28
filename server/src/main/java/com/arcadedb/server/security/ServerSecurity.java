@@ -308,11 +308,18 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       throw new ServerSecurityException("User '" + name + "' already exists");
 
     final ServerSecurityUser user = new ServerSecurityUser(server, userConfiguration);
-    // Persist BEFORE publishing: saveUsers() propagates an I/O failure so the request fails, and publishing
-    // first would leave the new user live in memory while nothing reached the disk - authoritative until the
-    // next restart silently took it away again.
-    saveUsers(snapshotWith(name, userConfiguration));
+    // Publish, then persist, then UNDO the publish if the write failed. saveUsers() propagates an I/O
+    // failure so the request fails, and a failure must not leave the new user live in memory with nothing on
+    // disk - authoritative until the next restart silently took it away again. Writing a candidate list
+    // before publishing would achieve the same, but it also fixes the order users are written in (the new
+    // one last) rather than taking it from the map, which is a visible change to server-users.jsonl.
     users.put(name, user);
+    try {
+      saveUsers();
+    } catch (final RuntimeException e) {
+      users.remove(name);
+      throw e;
+    }
     return user;
   }
 
@@ -328,11 +335,16 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
 
       user = new ServerSecurityUser(server, userConfiguration);
       passwordChanged = !Objects.equals(previous.getPassword(), user.getPassword());
-      // Persist before publishing, as in createUser(): a failed save must leave the previous password in
-      // force rather than activate a new one that no longer exists after a restart - and the throw would
-      // also skip the session invalidation below, so the rotation would be half-applied.
-      saveUsers(snapshotWith(name, userConfiguration));
+      // Publish-then-persist-then-undo, as in createUser(): a failed save must leave the PREVIOUS password
+      // in force rather than activate one that no longer exists after a restart - and the throw would also
+      // skip the session invalidation below, so the rotation would otherwise be half-applied.
       users.put(name, user);
+      try {
+        saveUsers();
+      } catch (final RuntimeException e) {
+        users.put(name, previous);
+        throw e;
+      }
     }
 
     // Note: a metadata update does NOT force-rollback the principal's open transactions - per-request
@@ -371,12 +383,17 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    */
   public boolean dropUserLocally(final String userName) {
     synchronized (this) {
-      if (!users.containsKey(userName))
+      final ServerSecurityUser removed = users.remove(userName);
+      if (removed == null)
         return false;
-      // Persist before publishing, as in createUser()/updateUser(): a failed save must not leave a user
-      // removed in memory and still present on disk, which a restart would resurrect.
-      saveUsers(snapshotWith(userName, null));
-      users.remove(userName);
+      // Publish-then-persist-then-undo, as in createUser()/updateUser(): a failed save must not leave a user
+      // removed in memory but still present on disk, which a restart would resurrect.
+      try {
+        saveUsers();
+      } catch (final RuntimeException e) {
+        users.put(userName, removed);
+        throw e;
+      }
     }
     // Invalidate the dropped principal's live HTTP transaction sessions so a recreated same-name principal
     // cannot adopt (and commit) the prior principal's still-open session. Done OUTSIDE the security monitor:
@@ -722,20 +739,14 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     return json;
   }
 
-  public void saveUsers() {
-    saveUsers(usersToJSON());
-  }
-
   /**
-   * Writes an explicit user list to {@code server-users.jsonl}, so a mutation can be persisted <i>before</i>
-   * it is published to the in-memory map. Publishing first and saving after leaves the change authoritative
-   * in memory while nothing reached the disk when the write fails - and the propagated failure then also
-   * skips whatever the caller does afterwards (session invalidation, most importantly), so the mutation ends
-   * up half-applied instead of not applied at all.
+   * Writes the in-memory user map to {@code server-users.jsonl}. Propagates an I/O failure, so a mutator
+   * that has already published its change to the map must undo it - see {@link #createUser},
+   * {@link #updateUser} and {@link #dropUserLocally}, which all do.
    */
-  private void saveUsers(final List<JSONObject> snapshot) {
+  public void saveUsers() {
     try {
-      usersRepository.save(snapshot);
+      usersRepository.save(usersToJSON());
     } catch (final IOException e) {
       LogManager.instance()
           .log(this, Level.SEVERE, "Error on saving security configuration to file '%s'", e, SecurityUserFileRepository.FILE_NAME);
@@ -751,9 +762,10 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * the name is not present yet, or removed when {@code replacement} is {@code null}. Must be called while
    * holding this monitor.
    * <p>
-   * The single place the create/update/drop shape is expressed, on both the local and the replicated path:
-   * three hand-written copies of this loop is exactly how two of them ended up invalidating sessions and the
-   * third not.
+   * The single place the create/update/drop shape is expressed for the replicated payload: three
+   * hand-written copies of this loop is exactly how two of them ended up invalidating sessions and the third
+   * not. The local path does not use it - it saves the map itself, so the order users appear in
+   * {@code server-users.jsonl} keeps following the map rather than becoming "the changed one last".
    */
   private List<JSONObject> snapshotWith(final String name, final JSONObject replacement) {
     final List<JSONObject> snapshot = new ArrayList<>(users.size() + 1);
