@@ -184,6 +184,14 @@ public class PageManager extends LockContext {
   private static final int SNAPSHOT_MAX_SIZE_FREE_SPACE_DIVISOR = 2;
 
   /**
+   * The installed test-only page-read fault injector, {@code null} when there is none - which is the steady state.
+   * Declared here with the other fields, ahead of the interface that types it: a field after a nested type is a PMD
+   * FieldDeclarationsShouldBeAtStartOfClass violation, and a forward reference to a type declared later in the same
+   * file is perfectly ordinary Java. See {@link PageReadFaultInjector} for what it is for.
+   */
+  private static volatile PageReadFaultInjector pageReadFaultInjector = null;
+
+  /**
    * TEST-ONLY fault injection on the logical page-read funnel (#6282, item 4).
    * <p>
    * There was no way to make a specific page read fail on demand, and the paths whose WRONG ANSWER is the most
@@ -213,8 +221,6 @@ public class PageManager extends LockContext {
      */
     void onPageRead(PageId pageId) throws IOException;
   }
-
-  private static volatile PageReadFaultInjector pageReadFaultInjector = null;
 
   /** Installs (or, with {@code null}, removes) the test-only page-read fault injector. See {@link PageReadFaultInjector}. */
   public static void setPageReadFaultInjector(final PageReadFaultInjector injector) {
