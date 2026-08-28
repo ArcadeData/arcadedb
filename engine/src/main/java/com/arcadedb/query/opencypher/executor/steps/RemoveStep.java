@@ -263,22 +263,20 @@ public class RemoveStep extends AbstractExecutionStep {
     // have been resolved by the caller - and it costs one map lookup that is skipped until a label write happens.
     vertex = replacements.resolve(vertex);
 
-    // The reduced type is rebuilt from the vertex's OWN labels: an inherited one is carried by the subtype that
-    // remains and must not be listed alongside it, or the vertex would be moved out of that subtype (issue #6363).
+    // The reduced type is rebuilt from every label the vertex still answers to, narrowed back down to its most
+    // specific members: starting from the own labels alone dropped an inherited label the clause never named
+    // (issue #6843 - removing Cust_Agent from a Cust_Agent EXTENDS Entity vertex left it with no label at all
+    // instead of with Entity), while keeping every implied label would flatten the hierarchy (issue #6363).
     final DocumentType currentType = vertex.getType();
-    final List<String> currentLabels = Labels.getOwnLabels(vertex);
+    final Schema schema = context.getDatabase().getSchema();
     final List<String> labelsToRemove = item.getLabels();
-
-    // Compute remaining labels
-    final List<String> remainingLabels = new ArrayList<>(currentLabels);
-    remainingLabels.removeAll(labelsToRemove);
+    final List<String> remainingLabels = Labels.remainingLabels(schema, vertex, labelsToRemove);
 
     // Count the labels the vertex actually carries - a label it does not have is a no-op, exactly as in Neo4j, and
     // a label named twice in one clause is one label, since a label is set membership and not a count. A label the
     // vertex only answers to through a type it keeps is a different matter: no type it could be moved to answers
     // 'no' to that label and 'yes' to the subtype implying it, so the removal is refused rather than reported as
     // done and silently not done.
-    final Schema schema = context.getDatabase().getSchema();
     int removedLabelsCount = 0;
     for (int i = 0; i < labelsToRemove.size(); i++) {
       final String label = labelsToRemove.get(i);

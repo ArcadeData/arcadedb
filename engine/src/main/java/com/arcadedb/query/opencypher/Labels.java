@@ -291,6 +291,69 @@ public final class Labels {
   }
 
   /**
+   * The labels a vertex keeps after a {@code REMOVE n:A:B}, expressed the way {@link #ensureCompositeType} wants
+   * them: the most specific of the labels the vertex still answers to, with every label one of those already
+   * implies left out.
+   * <p>
+   * The set has to be computed from the FULL label set ({@link #getLabels}) and not from the own-label set, which
+   * is what issue #6843 reports: for a vertex of a type declared {@code Cust_Agent EXTENDS Entity}, the own labels
+   * are {@code [Cust_Agent]} alone, so removing {@code Cust_Agent} left nothing behind and the vertex was moved to
+   * {@link #NO_LABEL_TYPE} - losing {@code Entity}, a label the removal never named and one the node kept
+   * answering to a moment earlier. Starting from every label it answers to keeps {@code Entity} in the picture.
+   * <p>
+   * Reducing that set back to its most specific members is what keeps the hierarchy intact, and is the reason the
+   * own-label set was used in the first place (issue #6363): a vertex of type {@code Extra~Manager}, with
+   * {@code Manager EXTENDS Employee}, answers to {@code [Employee, Extra, Manager]}, and rebuilding its type from
+   * all three after {@code REMOVE n:Extra} would build {@code Employee~Manager} - a type extending both, which
+   * flattens the very {@code EXTENDS} it was supposed to preserve. {@code Manager} already implies
+   * {@code Employee}, so {@code Employee} is dropped and the vertex simply becomes a {@code Manager} again.
+   * <p>
+   * With nothing removed, this returns exactly {@link #getOwnLabels}, which is what makes a {@code REMOVE} of a
+   * label the vertex does not carry leave its type untouched.
+   *
+   * @param schema         the database schema
+   * @param vertex         the vertex the labels are being taken from
+   * @param labelsToRemove the labels named by the clause
+   *
+   * @return the minimal label set to rebuild the vertex's type from, sorted alphabetically, possibly empty
+   */
+  public static List<String> remainingLabels(final Schema schema, final Vertex vertex, final List<String> labelsToRemove) {
+    final List<String> candidates = new ArrayList<>(getLabels(vertex));
+    candidates.removeAll(labelsToRemove);
+    if (candidates.size() < 2)
+      return candidates;
+
+    // Keep a label only when no other surviving label already implies it: an implied one is reached through its
+    // subtype and naming it alongside would extend both instead of only the subtype.
+    final List<String> minimal = new ArrayList<>(candidates.size());
+    for (int i = 0; i < candidates.size(); i++) {
+      final String label = candidates.get(i);
+      boolean implied = false;
+      for (int j = 0; j < candidates.size() && !implied; j++) {
+        if (i == j)
+          continue;
+        final DocumentType other = schema.getTypeOrNull(candidates.get(j));
+        // The second half of the condition is unreachable on any schema the engine can build: two DISTINCT
+        // candidate names (the set comes from a TreeSet, so there are no repeats) that are each other's instance
+        // require a cycle in the type hierarchy, which the schema refuses to create. It is kept as a guard rather
+        // than as live logic - without it a cycle would mark both members implied and drop them BOTH, silently
+        // costing the vertex a label it still answers to, which is the exact failure this method exists to stop.
+        // The index comparison breaks such a tie so that exactly one of the pair survives.
+        if (other != null && other.instanceOf(label) && (!isImpliedBy(schema, label, candidates.get(j)) || j < i))
+          implied = true;
+      }
+      if (!implied)
+        minimal.add(label);
+    }
+    return minimal;
+  }
+
+  private static boolean isImpliedBy(final Schema schema, final String label, final String other) {
+    final DocumentType type = schema.getTypeOrNull(label);
+    return type != null && type.instanceOf(other);
+  }
+
+  /**
    * Whether a label is still carried by a set of labels, which is what decides if a {@code REMOVE n:Label} can be
    * honoured: an inherited label cannot be taken away on its own, because every type answering to the subtype that
    * implies it answers to it too (issue #6363).
