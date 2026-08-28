@@ -306,17 +306,33 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     return user;
   }
 
-  public synchronized ServerSecurityUser updateUser(final JSONObject userConfiguration) {
+  public ServerSecurityUser updateUser(final JSONObject userConfiguration) {
     final String name = userConfiguration.getString("name");
-    if (!users.containsKey(name))
-      throw new ServerSecurityException("User '" + name + "' not found");
+    final ServerSecurityUser user;
+    final boolean passwordChanged;
 
-    final ServerSecurityUser user = new ServerSecurityUser(server, userConfiguration);
-    users.put(name, user);
-    saveUsers();
+    synchronized (this) {
+      final ServerSecurityUser previous = users.get(name);
+      if (previous == null)
+        throw new ServerSecurityException("User '" + name + "' not found");
+
+      user = new ServerSecurityUser(server, userConfiguration);
+      passwordChanged = !Objects.equals(previous.getPassword(), user.getPassword());
+      users.put(name, user);
+      saveUsers();
+    }
+
     // Note: a metadata update does NOT force-rollback the principal's open transactions - per-request
     // authorization is still re-checked on every command, so a narrowed grant is enforced without tearing
-    // down unrelated in-flight work. Only drop and password change (below) invalidate live sessions.
+    // down unrelated in-flight work. A PASSWORD change is different: it re-authenticates the principal, so
+    // the credentials minted under the old password must stop working. PUT /api/v1/server/users routes a
+    // password rotation through here rather than through setUserPassword(), so without this an AU- login
+    // token issued before the rotation stayed valid until it idle-expired - the bearer path only checks that
+    // the principal still resolves by name, and it does. Done OUTSIDE the monitor, like every other call to
+    // invalidateHttpSessions(): it can block on a transaction session's in-flight command via cancel().
+    if (passwordChanged)
+      invalidateHttpSessions(name);
+
     return user;
   }
 

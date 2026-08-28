@@ -115,24 +115,45 @@ public class GetPromQLQueryRangeHandler extends AbstractServerHttpHandler {
       throw new IllegalArgumentException("Invalid " + name + " timestamp: '" + value + "'");
     }
 
-    if (!Double.isFinite(seconds))
-      throw new IllegalArgumentException("Invalid " + name + " timestamp: '" + value + "' is not finite");
-
-    if (Math.abs(seconds) > MAX_TIMESTAMP_SECONDS)
-      throw new IllegalArgumentException(
-          "Invalid " + name + " timestamp: '" + value + "' is outside the supported epoch range of +/- "
-              + MAX_TIMESTAMP_SECONDS + " seconds");
-
-    return (long) (seconds * 1000);
+    return secondsToMillis(name + " timestamp", value, seconds);
   }
 
-  private long parseStep(final String step) {
+  /**
+   * Parses the {@code step} parameter, which Prometheus accepts either as a number of seconds ({@code 60})
+   * or as a duration ({@code 1m}). The numeric form goes through the same finite/in-range validation as
+   * {@code start} and {@code end}: {@code Double.parseDouble} accepts {@code Infinity} and {@code 1e300}
+   * without throwing, and the resulting {@code (long)(v * 1000)} saturates to {@code Long.MAX_VALUE}, which
+   * is positive and therefore sailed past the "step must be positive" test. The evaluator then computed one
+   * single step and answered 200 with a one-point series instead of rejecting the request.
+   * Package-private for direct unit testing.
+   */
+  static long parseStep(final String step) {
+    final double seconds;
     try {
       // Try as plain seconds (e.g. "60")
-      return (long) (Double.parseDouble(step) * 1000);
+      seconds = Double.parseDouble(step);
     } catch (final NumberFormatException e) {
       // Try as duration (e.g. "1m")
       return PromQLParser.parseDuration(step);
     }
+
+    return secondsToMillis("step", step, seconds);
+  }
+
+  /**
+   * Converts a seconds value that came off the wire into milliseconds, refusing anything not finite or
+   * outside {@link #MAX_TIMESTAMP_SECONDS}. The bound is what keeps the millisecond value - and, for
+   * {@code start}/{@code end}, the span between two of them - far inside the 64-bit range the evaluator
+   * computes in (issue #6807).
+   */
+  private static long secondsToMillis(final String what, final String raw, final double seconds) {
+    if (!Double.isFinite(seconds))
+      throw new IllegalArgumentException("Invalid " + what + ": '" + raw + "' is not finite");
+
+    if (Math.abs(seconds) > MAX_TIMESTAMP_SECONDS)
+      throw new IllegalArgumentException("Invalid " + what + ": '" + raw
+          + "' is outside the supported epoch range of +/- " + MAX_TIMESTAMP_SECONDS + " seconds");
+
+    return (long) (seconds * 1000);
   }
 }
