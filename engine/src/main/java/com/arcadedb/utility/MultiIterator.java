@@ -41,6 +41,16 @@ public class MultiIterator<T> implements ResettableIterator<T>, IterableGraph<T>
   private       int     skipped            = 0;
   private final long    beginTime          = System.currentTimeMillis();
 
+  // #6880: true WHILE A hasNext() THAT ANSWERED true HAS NOT YET BEEN CONSUMED BY next(). WITHOUT IT next() RE-RAN
+  // hasNext() - AND SO THE DEADLINE CHECK - A SECOND TIME FOR THE SAME ELEMENT, SO A DEADLINE EXPIRING *BETWEEN* THE
+  // CALLER'S hasNext() AND ITS next() SURFACED AS A BARE NoSuchElementException INSTEAD OF THE CLEAN TRUNCATION
+  // Select.timeout(v, unit, false) PROMISES (SelectExecutor.executeExists()/executeCount() AND SelectIterator ALL
+  // DRIVE THAT EXACT hasNext()/next() SHAPE). THE EXPIRY IS NOW DECIDED ONCE PER ELEMENT: ONE ALREADY PROMISED STAYS
+  // DELIVERABLE, AND THE DEADLINE STOPS THE ITERATION ON THE FOLLOWING hasNext().
+  // NOTE THE PROMISE IS ONLY EVER READ BY next(): hasNext() STILL RE-EVALUATES THE DEADLINE ON EVERY CALL, SO
+  // REPEATED hasNext() WITHOUT AN INTERVENING next() REPORTS THE EXPIRY AS BEFORE (#6816)
+  private       boolean promised           = false;
+
   public MultiIterator() {
     sources = new ArrayList<>();
   }
@@ -59,7 +69,8 @@ public class MultiIterator<T> implements ResettableIterator<T>, IterableGraph<T>
       partialIterator.next();
       skipped++;
     }
-    return hasNextInternal();
+    promised = hasNextInternal();
+    return promised;
   }
 
   private boolean hasNextInternal() {
@@ -98,9 +109,10 @@ public class MultiIterator<T> implements ResettableIterator<T>, IterableGraph<T>
 
   @Override
   public T next() {
-    if (!hasNext())
+    if (!promised && !hasNext())
       throw new NoSuchElementException();
 
+    promised = false;
     browsed++;
     return partialIterator.next();
   }
@@ -124,6 +136,7 @@ public class MultiIterator<T> implements ResettableIterator<T>, IterableGraph<T>
     partialIterator = null;
     browsed = 0;
     skipped = 0;
+    promised = false;
   }
 
   public MultiIterator<T> addIterator(final Object iValue) {
