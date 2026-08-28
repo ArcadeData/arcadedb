@@ -135,6 +135,20 @@ public class Issue6880MultiIteratorTimeoutBetweenHasNextAndNextTest {
   }
 
   /**
+   * The skip pre-loop is the one path in {@code hasNext()} that bypasses the promise entirely. An expiry reaching it
+   * must stop the iteration outright and, crucially, leave nothing promised behind for {@code next()} to deliver.
+   */
+  @Test
+  void expiryReachingTheSkipLoopStopsWithoutPromising() {
+    final MultiIterator<Integer> it = new MultiIterator<Integer>().addIterator(List.of(1, 2, 3).iterator());
+    it.setSkip(2);
+    expireDeadline(it, false);
+
+    assertThat(it.hasNext()).isFalse();
+    assertThatThrownBy(it::next).isInstanceOf(NoSuchElementException.class);
+  }
+
+  /**
    * Nothing about the ordinary, un-expired iteration changes - skip and limit included, since both are enforced
    * through the very {@code hasNext()} path that now caches its verdict.
    */

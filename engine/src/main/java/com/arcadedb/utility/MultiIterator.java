@@ -62,6 +62,10 @@ public class MultiIterator<T> implements ResettableIterator<T>, IterableGraph<T>
 
   @Override
   public boolean hasNext() {
+    // #6880: THE SKIP PRE-LOOP IS THE ONE PATH IN hasNext() THAT NEVER TOUCHES promised, AND THAT IS NOT AN OVERSIGHT:
+    // IT CAN ONLY RUN WHILE skipped < skip, AND A PROMISE CAN ONLY EXIST ONCE THE LOOP HAS ALREADY COMPLETED
+    // (skipped == skip), SO IT NEVER LEAVES A PROMISED ELEMENT ON THE TABLE AND ITS EARLY EXIT NEVER STRANDS ONE.
+    // setSkip() HAS NO PRODUCTION CALLER, SO skip CANNOT BE WIDENED MID-ITERATION EITHER
     while (skipped < skip) {
       if (!hasNextInternal()) {
         return false;
