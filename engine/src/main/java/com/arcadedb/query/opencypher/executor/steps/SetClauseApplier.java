@@ -196,7 +196,7 @@ public final class SetClauseApplier {
       // here too.
       DeletedEntityMarker.checkNotDeleted(obj);
       if (obj == null)
-        return; // CASE returned null — no-op (conditional SET pattern)
+        return; // CASE returned null, no-op (conditional SET pattern)
       variableToUpdate = null;
     } else {
       variableToUpdate = item.getVariable();
