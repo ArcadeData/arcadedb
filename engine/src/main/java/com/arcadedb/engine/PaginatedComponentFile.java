@@ -34,6 +34,7 @@ import java.nio.channels.FileChannel;
 import java.nio.channels.spi.AbstractInterruptibleChannel;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
+import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.logging.Level;
 import java.util.zip.CRC32;
@@ -52,6 +53,35 @@ public class PaginatedComponentFile extends ComponentFile {
    * channel can never be closed or replaced from under an in-flight operation.
    */
   private final ReentrantReadWriteLock channelLock = new ReentrantReadWriteLock();
+
+  /**
+   * How many whole pages this file holds, maintained in memory instead of asked of the filesystem (#6132, item 1).
+   * <p>
+   * It is EXACT rather than an estimate, and the argument is short: a paginated component file is extended by
+   * exactly one operation, {@link #write(MutablePage)}, which always writes one whole page at
+   * {@code pageNumber * pageSize}; nothing truncates it, and nothing else writes to the channel. Seeded from the
+   * real length at {@link #open}, advanced past every successful write, and re-seeded whenever the channel is
+   * reopened or renamed, it therefore says exactly what {@code channel.size() / pageSize} says. The monotonic
+   * {@code max} is not an approximation either: the value it maxes against is the file's own length, which only
+   * grows.
+   * <p>
+   * Why it is worth having: {@link PageManager}'s t0 snapshot barrier reads it once per page file while holding the
+   * JVM-wide page-manager lock, behind which every committer of every database in the process queues. On a database
+   * with many buckets, indexes and compacted sub-indexes that was dozens to hundreds of {@code fstat} calls plus a
+   * {@code channelLock} acquisition each, none of them bounded by the barrier's deadline on a stalled filesystem -
+   * the last unbounded filesystem I/O left under those locks. The second reader is {@link PageManager}'s
+   * new-page test on every read-cache miss, which is as hot as the engine gets.
+   */
+  private volatile int totalPages;
+
+  /**
+   * Updates {@link #totalPages} atomically WITHOUT an {@code AtomicInteger}: {@link #open} runs from the superclass
+   * constructor, before this class's field initializers, so an object field would still be null when it has to be
+   * seeded. A {@code volatile int} declared without an initializer keeps the value {@code open()} writes, and the
+   * updater - a static, created once at class initialization - gives the same compare-and-set the counter was for.
+   */
+  private static final AtomicIntegerFieldUpdater<PaginatedComponentFile> TOTAL_PAGES_UPDATER =
+      AtomicIntegerFieldUpdater.newUpdater(PaginatedComponentFile.class, "totalPages");
 
   public static class InterruptibleInvocationHandler implements InvocationHandler {
     @Override
@@ -209,7 +239,20 @@ public class PaginatedComponentFile extends ComponentFile {
     }
   }
 
-  public long getTotalPages() throws IOException {
+  /**
+   * Whole pages this file holds. A field read, not a syscall - see {@link #totalPages} for why the two are the same
+   * number and why the difference matters (#6132).
+   */
+  public long getTotalPages() {
+    return totalPages;
+  }
+
+  /**
+   * The same number, read from the filesystem. Nothing in the engine calls this: it exists so a test can assert that
+   * the in-memory counter and the file agree, which is the whole warrant for {@link #getTotalPages()} not being a
+   * syscall.
+   */
+  public long getTotalPagesFromChannel() throws IOException {
     channelLock.readLock().lock();
     try {
       return channel.size() / pageSize;
@@ -288,6 +331,14 @@ public class PaginatedComponentFile extends ComponentFile {
             Thread.currentThread().interrupt();
         }
       }
+
+      // AFTER THE WRITE RETURNED, NOT BEFORE: the counter then never claims a page the file does not hold yet, which
+      // is the direction that matters - a reader told a page exists goes on to read it. The write above is the ONLY
+      // operation that extends this file, so this is where the length changes and the only place the counter has to
+      // follow it (#6132).
+      final int pagesAfterThisWrite = pageNumber + 1;
+      if (pagesAfterThisWrite > totalPages)
+        TOTAL_PAGES_UPDATER.accumulateAndGet(this, pagesAfterThisWrite, Math::max);
     } finally {
       channelLock.readLock().unlock();
     }
@@ -463,6 +514,11 @@ public class PaginatedComponentFile extends ComponentFile {
     this.file = new RandomAccessFile(osFile, mode == MODE.READ_WRITE ? "rw" : "r");
     this.channel = this.file.getChannel();
     doNotCloseOnInterrupt(this.channel);
+    // (RE)SEED THE IN-MEMORY PAGE COUNT FROM THE REAL LENGTH: this is the only place the file's size can change
+    // without this class having written it - a fresh open, a reopen after an interrupt closed the channel, or a
+    // rename. set() and not max(), so a file whose content was replaced under a rename cannot leave a stale higher
+    // count behind. A partial tail left by a kill is floored away exactly as PaginatedComponent does it.
+    this.totalPages = (int) (osFile.length() / pageSize);
     this.open = true;
   }
 

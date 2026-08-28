@@ -25,6 +25,7 @@ import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponentFile;
+import com.arcadedb.exception.BrokenChunkChainException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -136,14 +137,16 @@ class BrokenMultiPageRecordDeleteTest extends TestHelper {
       assertThat(bucket.isChunkChainBroken(intact)).isFalse();
     });
 
-    // The default (non-force) physical delete must still raise the #4932 retry signal on the broken chunk chain, so
-    // transient conflicts keep retrying instead of silently orphaning chunks.
+    // The default (non-force) physical delete must refuse. Since #6282 it refuses by NAME: the walk confirms the
+    // break against the newest committed image and raises BrokenChunkChainException, which is deliberately not a
+    // NeedRetryException - where it used to raise the #4932 retry signal, sending the caller round a retry loop that
+    // could not possibly succeed. Either way nothing is silently orphaned.
     database.begin();
     try {
       bucket.deleteRecord(broken);
-      fail("Expected ConcurrentModificationException on deleting a record with a broken chunk chain");
-    } catch (final ConcurrentModificationException expected) {
-      // EXPECTED: broken chain surfaces as the retry signal without force.
+      fail("Expected BrokenChunkChainException on deleting a record with a broken chunk chain");
+    } catch (final BrokenChunkChainException expected) {
+      // EXPECTED: a confirmed broken chain is corruption, not contention.
     } finally {
       database.rollback();
     }

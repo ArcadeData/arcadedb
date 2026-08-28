@@ -32,6 +32,7 @@ import com.arcadedb.exception.BrokenChunkChainException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.exception.PageCorruptionException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.EdgeSegment;
 import com.arcadedb.log.LogManager;
@@ -350,10 +351,23 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
      * unreachable, so a caller reasoning about reachability has to fail closed on it.
      */
     private boolean incomplete;
+    /**
+     * Where the walk broke: the index of the chunk whose continuation pointer could not be resolved, and the value
+     * of that pointer. {@code -1}/{@code 0} while the walk has proved nothing.
+     * <p>
+     * This is what lets a SECOND walk be compared against a first one rather than merely agreed with (#6282): the
+     * delete path meets a break in the transaction's view and asks the newest committed image whether the same hop,
+     * to the same target, still fails. A committed image that breaks somewhere else is a record that MOVED under the
+     * delete, which is contention and must keep its retry - not the permanent corruption verdict.
+     */
+    private int  brokenAtChunk = -1;
+    private long brokenAtPointer;
 
     private void reset() {
       chunks.clear();
       incomplete = false;
+      brokenAtChunk = -1;
+      brokenAtPointer = 0;
     }
   }
 
@@ -602,13 +616,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * Deletes a record an integrity check has already judged beyond repair, escalating to {@link #deleteRecord(RID,
    * boolean) force} only for the one failure that force exists to clear: a structurally broken chunk chain.
    * <p>
-   * The escalation is GATED on {@link #isChunkChainBroken}, not unconditional, and that is the whole point of this
-   * method. A {@link ConcurrentModificationException} from a plain delete does not prove corruption - the same
-   * page-version validation fails when concurrent writes touch OTHER records sharing the chain's pages, so on a
-   * busy bucket it is ordinary contention, and forcing through it would orphan chunks and skip index cleanup for a
-   * healthy record. The version-blind structural probe is what tells the two apart; it is the same discriminator
-   * {@code LocalDatabase.deleteRecord} uses for the tolerant path, and a transient conflict still propagates as
-   * the retry signal it is.
+   * The escalation is GATED, not unconditional, and that is the whole point of this method. Since #6282 the delete
+   * itself names a break it has confirmed against the newest committed image, so the common case needs no second
+   * question at all. What is left under {@link ConcurrentModificationException} does: it does not prove corruption -
+   * the same page-version validation fails when concurrent writes touch OTHER records sharing the chain's pages, so
+   * on a busy bucket it is ordinary contention, and forcing through it would orphan chunks and skip index cleanup
+   * for a healthy record. The version-blind structural probe is what tells the two apart; it is the same
+   * discriminator {@code LocalDatabase.deleteRecord} uses for the tolerant path, and a transient conflict still
+   * propagates as the retry signal it is.
    * <p>
    * Deliberately does NOT consult {@code DELETE_TOLERATE_BROKEN_CHAIN}: that setting governs whether an ORDINARY
    * delete may force through, and its own documentation states that CHECK DATABASE FIX is unaffected by it either
@@ -622,7 +637,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   public void deleteCorruptedRecord(final RID rid) {
     try {
       deleteRecord(rid);
+    } catch (final BrokenChunkChainException e) {
+      // NO PROBE NEEDED: the delete's own walk confirmed the break against the newest committed image before saying
+      // so (#6282). This is the case force exists for, and the one this method escalates for.
+      deleteRecord(rid, true);
     } catch (final ConcurrentModificationException e) {
+      // CONTENTION, or a break the confirmation could not prove. The probe is what tells them apart, and since #6282
+      // it too reads the newest committed image rather than this transaction's pinned view - which matters here more
+      // than anywhere, because a false positive escalates to a FORCE delete of a healthy record.
       if (!isChunkChainBroken(rid))
         // CONTENTION, not corruption: preserve the NeedRetryException semantics so the caller can retry.
         throw e;
@@ -3494,10 +3516,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * on-page size and would never notice a broken chain. Never throws.
    * <p>
    * Returns a short human-readable reason when the chain is broken, and {@code null} when it could not be PROVED
-   * broken - which covers both a chain that walks cleanly and one whose walk could not load a page at all. Every
-   * caller reads the two the same way (leave the record alone), and conflating them is deliberate: an I/O fault is
-   * not evidence of anything about the record, and since #6258 a confirmed break costs the record its retries and
-   * sends the operator to {@code CHECK DATABASE FIX}, which deletes it.
+   * broken - which covers both a chain that walks cleanly and one whose walk hit an I/O fault. Every caller reads
+   * the two the same way (leave the record alone), and conflating them is deliberate: an I/O fault is not evidence
+   * of anything about the record, and since #6258 a confirmed break costs the record its retries and sends the
+   * operator to {@code CHECK DATABASE FIX}, which deletes it.
+   * <p>
+   * The line between the two is drawn by TYPE and not by where a {@code try} sits (#6282): a page that cannot be
+   * loaded, or any other {@link IOException}, proves nothing; a {@link PageCorruptionException} - a page that read
+   * fine and whose bytes are nonsense - is a break, exactly like the marker and range checks in the walk itself.
    *
    * @param fromNewestCommitted reads the continuation pages straight from the {@link PageManager} instead of through
    *                            the transaction, so the walk sees the newest committed image rather than whatever this
@@ -3539,6 +3565,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           // REACHED THE LAST CHUNK CLEANLY
           return null;
 
+        // FROM HERE UNTIL THE NEXT LAP, ANY FAILURE - RETURNED OR THROWN - HAPPENED FOLLOWING THIS HOP. Recorded up
+        // front rather than at each exit because a corrupt slot offset leaves through an exception, and the catch
+        // that answers for it is outside the loop and cannot see these (#6282).
+        walk.brokenAtChunk = chunkId;
+        walk.brokenAtPointer = nextChunkPointer;
+
         if (!visitedPointers.add(nextChunkPointer))
           return "chain loop detected at chunk " + chunkId;
 
@@ -3562,6 +3594,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           LogManager.instance().log(this, Level.FINE,
                   "Unable to load page %s while walking the chunk chain of %s", e, nextPageIdentity, rid);
           walk.incomplete = true;
+          walk.brokenAtChunk = -1;
           return null;
         }
 
@@ -3569,6 +3602,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           // Defensive: neither page source answers null while it is allowed to materialise a missing page. A null
           // here would still not be proof of a broken chain, so it must not be reported as one.
           walk.incomplete = true;
+          walk.brokenAtChunk = -1;
           return null;
         }
 
@@ -3580,13 +3614,28 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         if (chunkHeader[0] != NEXT_CHUNK)
           return "unexpected marker at chunk " + chunkId;
       }
+    } catch (final PageCorruptionException e) {
+      // THE PAGE WAS READ, ITS CONTENTS ARE NONSENSE: a proven break, and the only shape of IOException that is one.
+      // Caught BEFORE the IOException arm below - and the compiler enforces that ordering, which is precisely the
+      // point of giving this condition a type of its own (#6282, item 3).
+      walk.incomplete = true;
+      return "corrupt page content walking the chain: " + e.getMessage();
+    } catch (final IOException e) {
+      // THE OPPOSITE MEANING, a few lines from the one above: the disk failed, so nothing whatsoever is proved about
+      // the record. Answering a break here is what #6258's third review round caught at the page LOAD, and until the
+      // corrupt-offset case above got its own type this arm could not be written without swallowing it too.
+      LogManager.instance().log(this, Level.FINE, "I/O error while walking the chunk chain of %s", e, rid);
+      walk.incomplete = true;
+      walk.brokenAtChunk = -1;
+      return null;
     } catch (final Exception e) {
-      // Reported as a break, which is what this has always answered and what {@code check(fix)} deletes the record on.
-      // But NOT as a walk that reached a conclusion: unlike the marker and range checks above, which prove a break
-      // from the bytes, an exception here is only as trustworthy as its cause - a corrupt offset says the chain is
-      // broken, anything else says the walk failed. The caller that reasons about REACHABILITY must not be made to
-      // choose, so it is told the walk is incomplete and fails closed; the chunks past this point are not proof of
-      // an orphan, and freeing them on this evidence would be unrecoverable (PR review).
+      // What is left is the unchecked family the page accessors raise for an offset that leaves the page
+      // (IndexOutOfBounds / IllegalArgument / BufferUnderflow, depending on which one caught it first), which is the
+      // same "provably bad bytes" signal BucketIterator reads them as. Reported as a break, which is what this has
+      // always answered and what {@code check(fix)} deletes the record on. But NOT as a walk that reached a
+      // conclusion: the caller that reasons about REACHABILITY is told the walk is incomplete and fails closed - the
+      // chunks past this point are not proof of an orphan, and freeing them on this evidence would be unrecoverable
+      // (PR review). The two shapes that are NOT bad bytes now leave through their own arms above.
       walk.incomplete = true;
       return "error walking chain: " + e.getMessage();
     }
@@ -3595,32 +3644,33 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   /**
    * Structural probe for the tolerant delete path: tells whether the record at {@code rid} is a multi-page record
    * whose chunk chain is structurally broken. Unlike {@link #loadMultiPageRecord} this walk ignores page versions,
-   * so a transient concurrent modification never reports {@code true} - only a genuinely broken chain does. Any
-   * failure to probe (including a record that is not multi-page, or is already gone) conservatively returns
-   * {@code false}, keeping the caller on the strict retry behaviour.
+   * so a version race on a chain that still walks is not reported as a break. Any failure to probe (including a
+   * record that is not multi-page, or is already gone) conservatively returns {@code false}, keeping the caller on
+   * the strict retry behaviour.
+   * <p>
+   * It is the WEAKER of the two questions #6258 asks. {@link #confirmBrokenChunkChain} follows a broken walk of the
+   * committed image with a second one - are the chunks the read consumed still, byte for byte, the ones the
+   * committed image holds - which is what rules out a chain caught half-published. This has no read to compare
+   * against, so it cannot; callers that DO hold the loader's verdict must take that instead, and since #6282 the
+   * read path no longer consults this at all.
+   * <p>
+   * It judges from the NEWEST COMMITTED image of every page and not from the caller's transaction (#6282, item 2).
+   * The distinction is invisible under {@code READ_COMMITTED}, which pins nothing, and load-bearing under
+   * {@code REPEATABLE_READ}: a transaction that has already walked these pages holds them pinned, so a chain a
+   * concurrent commit has since REWRITTEN still presents as broken in the pinned image while walking cleanly in the
+   * committed one. What the answer is used for is what makes that unacceptable rather than merely imprecise - every
+   * caller escalates a {@code true} to a FORCE delete, and {@code check(fix)} deletes the record it flags, so a
+   * false positive here removes a healthy record. The walk it delegates to is the one #6258 already built to confirm
+   * a break authoritatively on the read path.
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   public boolean isChunkChainBroken(final RID rid) {
     try {
-      final int pageId = (int) (rid.getPosition() / maxRecordsInPage);
-      final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
-      if (pageId >= getTotalPages())
-        return false;
-
-      final BasePage page = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageId), pageSize);
-      final int recordPositionInPage = getRecordPositionInPage(page, positionInPage);
-      if (recordPositionInPage == 0)
-        // DELETED
-        return false;
-
-      final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
-      if (!isChunkHead(recordSize[0]))
-        // NOT A MULTI-PAGE RECORD: A CME ON IT CANNOT COME FROM A BROKEN CHAIN
-        return false;
-
-      return findBrokenChunkChain(rid, page, recordPositionInPage, false) != null;
+      return findBrokenChunkChainInNewestCommitted(rid) != null;
     } catch (final Exception e) {
+      // CANNOT PROVE ANYTHING - INCLUDING AN I/O FAULT, WHICH MUST NEVER BECOME A LICENCE TO FORCE-DELETE
+      LogManager.instance().log(this, Level.FINE, "Unable to probe the chunk chain of %s", e, rid);
       return false;
     }
   }
@@ -3718,12 +3768,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             final int chunkPositionInPage = (int) (nextChunkPointer % maxRecordsInPage);
 
             // Resolve the next chunk. A broken link (out-of-range pointer, a slot that was cleaned, or a marker that
-            // is no longer NEXT_CHUNK) means the chain cannot be walked. Without force this is treated as a concurrent
-            // modification and rethrown as the #4932 retry signal, so a half-freed chain is never left behind. With
-            // force (admin repair) the walk stops here instead: the head slot is still freed below, and the chunks
-            // past this break are orphaned - a bounded space leak that the orphaned-chunk sweep of check(fix)
-            // reclaims (#6294), which is the only thing that does: compaction re-flows LIVE slots, and an orphaned
-            // chunk still has one.
+            // is no longer NEXT_CHUNK) means the chain cannot be walked. Without force the record is left alone, so a
+            // half-freed chain is never left behind - as WHICH exception, see the confirmation below. With force
+            // (admin repair) the walk stops here instead: the head slot is still freed below, and the chunks past
+            // this break are orphaned - a bounded space leak that the orphaned-chunk sweep of check(fix) reclaims
+            // (#6294), which is the only thing that does: compaction re-flows LIVE slots, and an orphaned chunk
+            // still has one.
             String chainProblem = null;
             try {
               if (chunkPageId >= getTotalPages())
@@ -3740,6 +3790,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                     chainProblem = "chunk marker is not NEXT_CHUNK";
                 }
               }
+            } catch (final PageCorruptionException e) {
+              // The page read fine and its bytes are nonsense: a STRUCTURAL problem exactly like the three above,
+              // and one no retry can resolve. It used to leave here as a plain IOException, which the arm below
+              // rethrew to a caller with no way to tell it from a disk that had just failed (#6282, item 3).
+              chainProblem = "corrupt chunk slot: " + e.getMessage();
             } catch (final IOException e) {
               if (!force)
                 throw e;
@@ -3747,10 +3802,26 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             }
 
             if (chainProblem != null) {
-              if (!force)
-                // Chunk was modified/removed by a concurrent operation — signal retry (#4932)
+              if (!force) {
+                // CORRUPTION IS NOT CONTENTION (#6258), and until #6282 this path said otherwise: it raised the
+                // #4932 retry signal for a chain it had just positively identified as structurally broken, costing
+                // the caller a full round of transactions before it gave up and forcing five call sites to walk the
+                // chain a SECOND time just to find out which of the two they were holding.
+                final String confirmed = confirmBrokenChunkChainOnDelete(rid, chunkId, nextChunkPointer);
+                if (confirmed != null)
+                  throw new BrokenChunkChainException(
+                          "Multi-page record " + rid + " has a broken chunk chain at chunk " + chunkId + " ("
+                                  + chainProblem + (confirmed.equals(chainProblem) ?
+                                  "" :
+                                  "; the committed image reports: " + confirmed)
+                                  + "): the record is corrupted and cannot be deleted. Run CHECK DATABASE FIX to "
+                                  + "repair it, or enable " + GlobalConfiguration.DELETE_TOLERATE_BROKEN_CHAIN.getKey()
+                                  + " to force the delete through");
+
+                // Chunk was modified/removed by a concurrent operation - signal retry (#4932)
                 throw new ConcurrentModificationException(
                         "Multi-page record " + rid + " chunk " + chunkId + " was modified concurrently. Please retry");
+              }
 
               LogManager.instance().log(this, Level.WARNING,
                       "Force-deleting multi-page record %s with a broken chunk chain at chunk %d (%s); orphaned chunks (if "
@@ -3855,6 +3926,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
               .log(this, Level.FINE, "Deleted record %s (%s threadId=%d)", null, rid, page, Thread.currentThread().getId());
 
     } catch (final RecordNotFoundException e) {
+      throw e;
+    } catch (final BrokenChunkChainException e) {
+      // #6282: the corruption verdict thrown above, and it needs this arm for exactly the reason the #4932 one below
+      // does - the generic catch would swallow it, zero the slot pointer and report success, orphaning every chunk
+      // past the break and telling the caller a corrupted record had been deleted cleanly. Rethrow so the operator
+      // hears it, and so the tolerant path can decide whether to force the delete through.
       throw e;
     } catch (final ConcurrentModificationException e) {
       // #4932: this is the retry signal deliberately thrown above when a multi-page chunk chain was modified
@@ -4619,6 +4696,53 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
+   * The delete path's counterpart of {@link #confirmBrokenChunkChain}: confirms that a chunk chain
+   * {@link #deleteRecordInternal} could not walk is genuinely broken rather than a record that MOVED under the
+   * delete, and returns the reason it is broken, or {@code null} when the break cannot be told apart from
+   * contention - in which case the caller keeps the retryable {@link ConcurrentModificationException} it always
+   * raised (#6282, item 1).
+   * <p>
+   * The read path answers its second question with the bytes it consumed; a delete consumes none, so it asks a
+   * sharper one instead: does the newest committed image fail at the SAME HOP, to the SAME TARGET? Two facts make
+   * that the right question. A commit publishes its pages one at a time and readers take no lock, so a chain caught
+   * mid-publication can look broken while being sound at both ends of it - and a clean walk here rules that out. And
+   * a chain that is broken in the committed image but broken SOMEWHERE ELSE is not the chain this delete walked at
+   * all: the record was rewritten under it, which is contention and must keep its retry rather than earn the
+   * permanent verdict.
+   * <p>
+   * Only when both agree does the delete stop calling corruption contention. Everything else - an I/O fault while
+   * confirming, a record that has since been deleted or rewritten as a single-page one - falls back to the retry
+   * rather than condemn a record, because the verdict is not merely a message: it is non-retryable, and it points
+   * the operator at {@code CHECK DATABASE FIX}, which DELETES the record.
+   *
+   * @param chunkId          index of the chunk whose continuation pointer the delete could not follow
+   * @param nextChunkPointer the pointer it could not follow
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private String confirmBrokenChunkChainOnDelete(final RID rid, final int chunkId, final long nextChunkPointer) {
+    try {
+      final ChunkChainWalk walk = new ChunkChainWalk();
+      final String reason = findBrokenChunkChainInNewestCommitted(rid, walk);
+      if (reason == null)
+        // THE COMMITTED CHAIN WALKS CLEANLY (or the record is no longer a chunked one): contention, which is what
+        // the retry is for.
+        return null;
+
+      if (walk.brokenAtChunk != chunkId || walk.brokenAtPointer != nextChunkPointer)
+        // BROKEN, BUT NOT WHERE THIS DELETE BROKE: a different chain, so a record that moved rather than a corrupt one.
+        return null;
+
+      return reason;
+    } catch (final Exception e) {
+      // Could not prove corruption (an I/O fault, most likely): fall back to the retry rather than condemn a record.
+      LogManager.instance()
+              .log(this, Level.FINE, "Unable to confirm whether the chunk chain of %s is broken", e, rid);
+      return null;
+    }
+  }
+
+  /**
    * {@link #findBrokenChunkChain} against the newest committed image of every page, transaction snapshot and all
    * page versions ignored. Returns {@code null} when the chain walks cleanly, and also when the record is no longer
    * there to walk (deleted, or no longer a chunked record): that is a record that changed, not a broken chain.
@@ -4626,6 +4750,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
   private String findBrokenChunkChainInNewestCommitted(final RID rid) throws IOException {
+    return findBrokenChunkChainInNewestCommitted(rid, new ChunkChainWalk());
+  }
+
+  /**
+   * @param walk collects the chunks the confirmation walk went through and WHERE it broke, so a caller can compare
+   *             the committed image's break against the one it met itself rather than merely agree with it (#6282).
+   */
+  private String findBrokenChunkChainInNewestCommitted(final RID rid, final ChunkChainWalk walk) throws IOException {
     final int pageNumber = (int) (rid.getPosition() / maxRecordsInPage);
     final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
     if (pageNumber >= getTotalPages())
@@ -4648,7 +4780,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // NO LONGER A MULTI-PAGE RECORD: the record was rewritten under the read.
       return null;
 
-    return findBrokenChunkChain(rid, head, recordPositionInPage, true);
+    return findBrokenChunkChain(rid, head, recordPositionInPage, true, walk);
   }
 
   /**
@@ -4694,10 +4826,17 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
   }
 
+  /**
+   * @throws PageCorruptionException when the slot-table entry points inside the page header, which no writer can
+   *                                 produce: the page was READ fine, its CONTENTS are nonsense. A distinct type
+   *                                 rather than a plain {@link IOException} because a few lines away in the same
+   *                                 chunk-chain walk an {@code IOException} means the exact opposite - the disk
+   *                                 failed, so nothing at all is proved about the record (#6282).
+   */
   private int getRecordPositionInPage(final BasePage page, final int positionInPage) throws IOException {
     final int recordPositionInPage = (int) page.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE);
     if (recordPositionInPage != 0 && recordPositionInPage < contentHeaderSize)
-      throw new IOException(
+      throw new PageCorruptionException(
           "Invalid record #" + fileId + ":" + recordPosition(page.pageId.getPageNumber(), maxRecordsInPage, positionInPage));
     return recordPositionInPage;
   }
