@@ -143,7 +143,10 @@ public class ServerSecurityUser implements SecurityUser {
    * <p>
    * Which configuration governs the user is decided here, exactly as in {@link #registerDatabaseUser}: a
    * synthetic (API-token) principal carries its own group definition and must never be widened by the groups
-   * of the {@code server-groups.json} file.
+   * of the {@code server-groups.json} file. That branch is not reachable from {@code ServerSecurity.updateSchema}
+   * today - an API-token principal is built per request by {@code authenticateByApiToken} and never enters the
+   * {@code users} map that sweep iterates - but the rule belongs to this method rather than to its callers,
+   * so it holds for any future one.
    */
   public void refreshDatabaseConfiguration(final DatabaseInternal database, final JSONObject fileGroupConfiguration) {
     final ServerSecurityDatabaseUser dbu = databaseCache.get(database.getName());

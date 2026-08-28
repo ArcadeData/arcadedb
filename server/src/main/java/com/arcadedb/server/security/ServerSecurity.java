@@ -343,6 +343,11 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     // token issued before the rotation stayed valid until it idle-expired - the bearer path only checks that
     // the principal still resolves by name, and it does. Done OUTSIDE the monitor, like every other call to
     // invalidateHttpSessions(): it can block on a transaction session's in-flight command via cancel().
+    //
+    // What is compared is the stored hash, and encodePassword() salts randomly, so resubmitting the SAME
+    // plaintext also reads as changed and also revokes. That is the safe direction to be imprecise in - it
+    // over-revokes, never under-revokes - but do not read this as "resubmitting the same password is a
+    // no-op", because it is not.
     if (passwordChanged)
       invalidateHttpSessions(name);
 
