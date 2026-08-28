@@ -113,6 +113,11 @@ class Issue6125SnapshotBarrierAndCapTest extends TestHelper {
     final List<PageSnapshot.SnapshotFile> files = List.of(
         new PageSnapshot.SnapshotFile(0, null, 65_536, 1, "one.bucket"));
 
+    // NO RAM BUDGET AT ALL, SO THE FREE-SPACE TERM IS THE ONLY ONE LEFT AND THE SENTINEL EDGE IS REACHABLE. With the
+    // default 64 MB budget the shadow would live entirely in RAM here and the cap would never consult the disk at
+    // all (#6132), which is a different property, asserted in Issue6132SnapshotBarrierFollowupsTest
+    configuration.setValue(GlobalConfiguration.PAGE_SNAPSHOT_MAX_RAM, 0);
+
     for (final long usable : new long[] { 1L, 2L, 3L })
       assertThat(PageManager.snapshotMaxShadowSize(configuration, files, usable))
           .as("a nearly-full spill volume (%d usable bytes) must still cap the shadow", usable).isPositive();
@@ -121,7 +126,8 @@ class Issue6125SnapshotBarrierAndCapTest extends TestHelper {
     assertThat(PageManager.snapshotMaxShadowSize(configuration, files, Long.MAX_VALUE))
         .as("with room to spare the cap is the provable ceiling").isEqualTo(65_536L);
     assertThat(PageManager.snapshotMaxShadowSize(configuration, files, 40_000L))
-        .as("with less room than the database the cap is half the free space").isEqualTo(20_000L);
+        .as("with less room than the database, and no RAM budget to claim, the cap is half the free space")
+        .isEqualTo(20_000L);
     assertThat(PageManager.snapshotMaxShadowSize(configuration, files, 0L))
         .as("an unreadable free-space figure is not 'no room': fall back to the provable ceiling")
         .isEqualTo(65_536L);

@@ -1537,20 +1537,16 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
             throw e;
           forceBrokenChainDelete = true;
           logBrokenChainForceDelete(record.getIdentity(), e);
-        } catch (final ConcurrentModificationException e) {
-          // The record body could not be assembled for a consistent read, so its indexed keys and EXTERNAL pointers could
-          // not be read for cleanup. loadMultiPageRecord throws this after exhausting TX_RETRIES, but exhausted retries do
-          // NOT prove corruption: its page-version validation also fails when concurrent writes touch OTHER records
-          // sharing the chain's pages, so under a busy bucket this can be pure contention. Deleting anyway in that case
-          // would leak index entries for a healthy record. Disambiguate with a version-blind STRUCTURAL walk of the chunk
-          // chain: only a genuinely broken chain (a bad continuation pointer - the case that would otherwise make the
-          // record undeletable forever) takes the tolerant path below; transient contention rethrows, preserving the
-          // NeedRetryException semantics so the retry machinery re-runs the DELETE with intact index cleanup.
-          if (!tolerateBrokenChain || !bucket.isChunkChainBroken(record.getIdentity()))
-            throw e;
-          forceBrokenChainDelete = true;
-          logBrokenChainForceDelete(record.getIdentity(), e);
         }
+        // NO ConcurrentModificationException ARM, AND ITS REMOVAL IS THE POINT (#6282). It used to re-walk the chain
+        // with isChunkChainBroken and force the delete through when that walk agreed. That probe asks a STRICTLY
+        // WEAKER question than the one the loader has already answered above: it walks the newest committed image
+        // and stops there, where loadMultiPageRecord walks the same image AND proves the chunks this read consumed
+        // are still byte-for-byte the ones it holds - which is what rules out a chain caught half-published. So a
+        // CME arriving here is the loader saying "I could not confirm it", and overruling that with the weaker
+        // walk is how a HEALTHY record whose commit was mid-publication gets force-deleted with its index cleanup
+        // skipped. Propagate instead: the retry machinery re-runs the DELETE, and a record that really is corrupt
+        // comes back as BrokenChunkChainException on an attempt that is not racing a publication.
       }
 
       if (record instanceof Edge edge) {
@@ -1566,30 +1562,27 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
             throw e;
           logBrokenChainForcePhysicalDelete(record.getIdentity(), e);
           graphEngine.deleteVertex((VertexInternal) record, true);
-        } catch (final ConcurrentModificationException e) {
-          // The physical removal can raise the #4932 retry signal even when index cleanup did not (e.g. the type has no
-          // index left to read, so the broken chain is only discovered here). Fall back to force ONLY when the chain is
-          // confirmed structurally broken; a genuine transient conflict (or an already-forced delete) rethrows to retry.
-          if (!tolerateBrokenChain || forceBrokenChainDelete || !bucket.isChunkChainBroken(record.getIdentity()))
-            throw e;
-          logBrokenChainForcePhysicalDelete(record.getIdentity(), e);
-          graphEngine.deleteVertex((VertexInternal) record, true);
         }
+        // NO ConcurrentModificationException ARM: see the index-cleanup branch above (#6282). Both sources of a CME
+        // here have already asked the stronger question and declined to confirm - the loader for the read of the
+        // edge lists, deleteRecordInternal for the physical free - so the answer is a retry, not a force.
       } else {
         try {
           bucket.deleteRecord(record.getIdentity(), forceBrokenChainDelete);
-        } catch (final ConcurrentModificationException e) {
-          // NO BrokenChunkChainException ARM HERE, unlike the vertex branch above, and the asymmetry is real rather
-          // than an omission (code review on #6258): deleteRecordInternal walks the chunk chain itself and never
-          // loads the record, so it reports a break as the #4932 retry signal and the structural probe below is
-          // still what tells the two apart. The vertex branch differs because reaching a vertex's edge lists means
-          // READING it, which is where the loader's own verdict comes from. Add the arm here the day
-          // deleteRecordInternal learns to name a broken chain as one.
-          if (!tolerateBrokenChain || forceBrokenChainDelete || !bucket.isChunkChainBroken(record.getIdentity()))
+        } catch (final BrokenChunkChainException e) {
+          // THE ARM #6258 LEFT OUT AS DEAD CODE, LIVE SINCE #6282: deleteRecordInternal walks the chunk chain itself
+          // and never loads the record, so it used to report a break as the #4932 retry signal and this branch had
+          // to walk the chain a second time to find out which of the two it was holding. It now confirms the break
+          // against the newest committed image and says so, exactly as the loader does for the vertex branch above.
+          if (!tolerateBrokenChain || forceBrokenChainDelete)
             throw e;
           logBrokenChainForcePhysicalDelete(record.getIdentity(), e);
           bucket.deleteRecord(record.getIdentity(), true);
         }
+        // NO ConcurrentModificationException ARM: see the index-cleanup branch above (#6282). deleteRecordInternal
+        // raises this only for a break its own confirmation could NOT prove - a chain caught mid-publication, or one
+        // that broke somewhere else in the committed image - and for the ordinary page conflicts of a busy bucket.
+        // Every one of those is answered by retrying, none of them by deleting.
       }
 
       success = true;

@@ -380,6 +380,11 @@ public class Profiler {
     json.put("snapshotBarrierTime", new JSONObject().put("count", pStats.snapshotBarrierMillis));
     json.put("snapshotBarrierMaxTime", new JSONObject().put("value", pStats.snapshotBarrierMaxMillis));
     json.put("snapshotBarriersInexact", new JSONObject().put("count", pStats.snapshotBarriersInexact));
+    // #6132: a barrier that gave up before publishing a window leaves no other trace - every other snapshot counter
+    // needs a window to exist, and the consumer's fallback still completes the backup, just by throttling the writers
+    json.put("snapshotBarriersFailed", new JSONObject().put("count", pStats.snapshotBarriersFailed));
+    json.put("snapshotBarriersFailedSuspend", new JSONObject().put("count", pStats.snapshotBarriersFailedSuspend));
+    json.put("snapshotBarriersFailedFlush", new JSONObject().put("count", pStats.snapshotBarriersFailedFlush));
     json.put("deferredRAM", new JSONObject().put("space", pStats.deferredRAMBytes));
     json.put("pageFlushQueueWaits", new JSONObject().put("count", pStats.flushQueueWaits));
 
@@ -583,11 +588,13 @@ public class Profiler {
       // #6125: the t0 barrier on its own line. The average is what an operator compares against their write-latency
       // budget; the max is what a single unlucky backup actually cost, and averaging it away hides exactly the
       // outlier worth chasing.
-      buffer.append("%n    barriers=%d avg=%,dms max=%,dms inexact=%d overflowed=%d failed=%d".formatted(
+      buffer.append(
+        "%n    barriers=%d avg=%,dms max=%,dms inexact=%d windowsOverflowed=%d windowsFailed=%d barriersFailed=%d (suspend=%d flush=%d)".formatted(
           pStats.snapshotBarriers,
           pStats.snapshotBarriers > 0 ? pStats.snapshotBarrierMillis / pStats.snapshotBarriers : 0L,
           pStats.snapshotBarrierMaxMillis, pStats.snapshotBarriersInexact, pStats.snapshotWindowsOverflowed,
-          pStats.snapshotWindowsFailed));
+          pStats.snapshotWindowsFailed, pStats.snapshotBarriersFailed, pStats.snapshotBarriersFailedSuspend,
+          pStats.snapshotBarriersFailedFlush));
 
       buffer.append(
         "%n WAL totalFiles=%d pagesWritten=%d bytesWritten=%s".formatted(walTotalFiles, walPagesWritten,

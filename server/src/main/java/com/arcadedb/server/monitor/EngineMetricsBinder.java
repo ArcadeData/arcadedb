@@ -145,6 +145,16 @@ public final class EngineMetricsBinder implements MeterBinder {
         "Total time spent in the snapshot t0 barrier", "snapshotBarrierTime", MILLIS_TO_SECONDS);
     counter(registry, "arcadedb.engine.snapshot.barrier.inexact",
         "Barriers that could not prove the flush pipeline was empty at t0", "snapshotBarriersInexact");
+    // #6132: the barrier failing BEFORE a window exists is the one snapshot outcome nothing else could see -
+    // windows.invalidated and its two halves are all incremented from a window, and the consumer's fallback to
+    // suspend-and-freeze completes the backup anyway, just by throttling every writer on the server. Split by the
+    // step that gave up: suspend is transient and expected under load, flush is a write that never landed.
+    counter(registry, "arcadedb.engine.snapshot.barrier.failed",
+        "Snapshot t0 barriers that gave up before publishing a window", "snapshotBarriersFailed");
+    counter(registry, "arcadedb.engine.snapshot.barrier.failed.suspend",
+        "Snapshot t0 barriers that gave up because the page flush could not be suspended", "snapshotBarriersFailedSuspend");
+    counter(registry, "arcadedb.engine.snapshot.barrier.failed.flush",
+        "Snapshot t0 barriers that gave up because an in-flight page flush never completed", "snapshotBarriersFailedFlush");
     // A HIGH-WATER MARK: MONOTONIC, BUT A rate() OVER IT WOULD BE MEANINGLESS, WHICH IS WHY IT IS THE ONE MONOTONIC
     // READING HERE THAT STAYS A GAUGE
     gauge(registry, "arcadedb.engine.snapshot.barrier.max.seconds",
