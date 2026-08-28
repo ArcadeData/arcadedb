@@ -41,9 +41,29 @@ public class LocalProperty extends AbstractProperty {
         .checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
   }
 
+  /**
+   * A {@link Property} object outlives the DROP PROPERTY that removed it, so a caller can hold one that the type no
+   * longer declares. Writing a default through such a handle would put the dropped name back into the type's
+   * default-property cache and break the next record create - issue #6799 reached from the other side. Identity and
+   * not mere presence, so a namesake recreated in between is not written through the stale handle either.
+   */
+  private void checkStillDeclaredIn(final LocalDocumentType ownerType) {
+    if (ownerType.getPropertyIfExists(name) != this)
+      throw new SchemaException("Cannot set the default value of property '" + ownerType.getName() + "." + name
+          + "' because the property is no longer declared in the type");
+  }
+
   @Override
   public Property setDefaultValue(final Object defaultValue) {
     checkForSchemaMutation();
+    final LocalDocumentType ownerType = (LocalDocumentType) owner;
+
+    // Whether the requested default happens to match the current one is not part of the caller's contract, so the
+    // refusal cannot live only on the path that publishes something: a detached handle is refused first, whatever it
+    // carries. This read is outside the schema write lock, which is all a request that writes nothing needs - the
+    // authoritative check is the one inside the publication below.
+    checkStillDeclaredIn(ownerType);
+
     final Database database = owner.getSchema().getEmbedded().getDatabase();
 
     final Object convertedValue = defaultValue instanceof String ?
@@ -57,9 +77,6 @@ public class LocalProperty extends AbstractProperty {
     final Expression compiled = compileDefaultValue(convertedValue, database);
 
     if (!Objects.equals(this.defaultValue.value(), convertedValue)) {
-      // Not named `type`: that is this property's own Type (STRING, INTEGER, ...) everywhere else in the class.
-      final LocalDocumentType ownerType = (LocalDocumentType) owner;
-
       // The property's own default and the owner type's default-property cache are two views of one fact, and the
       // other statement that changes them, DROP PROPERTY, mutates both under the schema write lock (recordFileChanges).
       // Publishing them outside that lock let a concurrent DROP PROPERTY on the same type interleave between the two
@@ -67,14 +84,9 @@ public class LocalProperty extends AbstractProperty {
       // publication is serialized: conversion and validation stay outside, so a rejected default touches no state and
       // its SchemaException reaches the caller unwrapped, and the write lock is held for two field assignments.
       ownerType.recordFileChanges(() -> {
-        // Holding the same lock as dropProperty() also settles the order of the two: whoever arrives second sees the
-        // other's result. A handle to a property that has since been dropped (or dropped and recreated) is detached,
-        // and writing its default through would leave a name in the cache that resolves to nothing - #6799 reached
-        // from the other side. Identity and not mere presence, so a recreated namesake cannot be written through the
-        // stale handle either.
-        if (ownerType.getPropertyIfExists(name) != this)
-          throw new SchemaException("Cannot set the default value of property '" + ownerType.getName() + "." + name
-              + "' because the property is no longer declared in the type");
+        // Re-checked here because this is the check that counts: holding the same lock as dropProperty() settles the
+        // order of the two, so whoever arrives second sees the other's result rather than a snapshot taken before it.
+        checkStillDeclaredIn(ownerType);
 
         // One publication, so no reader can see the new value with the old (or no) compiled expression.
         this.defaultValue = new DefaultValue(convertedValue, compiled);

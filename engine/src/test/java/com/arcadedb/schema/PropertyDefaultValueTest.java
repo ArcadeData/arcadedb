@@ -639,6 +639,11 @@ class PropertyDefaultValueTest extends TestHelper {
         .hasMessageContaining("Probe.obsolete");
     assertThat(type.getPolymorphicPropertiesWithDefaultDefined()).doesNotContain("obsolete");
 
+    // Including the request that happens to carry the value the property already had: whether the write would have
+    // changed anything is not what makes the handle detached.
+    assertThatThrownBy(() -> stale.setDefaultValue("'legacy'")).isInstanceOf(SchemaException.class)
+        .hasMessageContaining("Probe.obsolete");
+
     // And the same for a namesake recreated in the meantime: the stale handle must not write through to it.
     type.createProperty("obsolete", Type.INTEGER);
     assertThatThrownBy(() -> stale.setDefaultValue("'resurrected'")).isInstanceOf(SchemaException.class);
