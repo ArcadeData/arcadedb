@@ -96,6 +96,7 @@ public class ArcadeGraph implements Graph, Closeable {
   private              ServiceRegistry             serviceRegistry;
   private volatile     GraphTraversalSource        traversal;
   private volatile     Cluster                     cluster;
+  private volatile     boolean                     closed;
   private              ImportGremlinPlugin.Builder importPlugin;
 
   static {
@@ -189,6 +190,11 @@ public class ArcadeGraph implements Graph, Closeable {
       // DOUBLE-CHECKED LOCKING, AS FOR THE SCRIPT ENGINES BELOW: TWO THREADS RACING HERE WOULD EACH BUILD THEIR OWN
       // DRIVER Cluster, AND THE LOSER'S WOULD BE ORPHANED WITH NOTHING LEFT HOLDING A REFERENCE TO CLOSE IT (#6822).
       synchronized (this) {
+        if (closed)
+          // A CALLER THAT REACHED THE MONITOR BEHIND close() WOULD OTHERWISE BUILD A Cluster AFTER THE CLEANUP THAT
+          // WAS SUPPOSED TO RELEASE IT, WHICH IS THE #6822 LEAK AGAIN AND A TRAVERSAL OVER A CLOSED GRAPH.
+          throw new IllegalStateException("Graph is closed");
+
         result = traversal;
         if (result == null)
           traversal = result = buildTraversal();
@@ -450,18 +456,31 @@ public class ArcadeGraph implements Graph, Closeable {
     releaseTraversal();
 
     if (this.database != null) {
+      RuntimeException failure = null;
       try {
         // END AN IN-FLIGHT UNIT OF WORK THROUGH THE TRANSACTION'S CONFIGURED CLOSE BEHAVIOUR, WHOSE DEFAULT IS
         // ROLLBACK: CLOSING A GRAPH IS NOT A COMMIT, SO WORK THAT NEVER REACHED commit() MUST NOT BECOME DURABLE
         // (ISSUE #6820). tx().close() ALSO CLEARS THE THREAD-LOCAL STATE OF AbstractThreadLocalTransaction.
         if (this.database.isTransactionActive())
           this.transaction.close();
-      } finally {
-        // THE CALLER STILL HEARS ABOUT A FAILED COMMIT-ON-CLOSE, BUT IT MUST NOT COST THEM THE DATABASE HANDLE.
+      } catch (final RuntimeException e) {
+        // A FAILED COMMIT-ON-CLOSE MUST NOT COST THE CALLER THE DATABASE HANDLE: HOLD IT UNTIL THE HANDLE IS GONE.
+        failure = e;
+      }
+
+      try {
         // WHEN THE DATABASE LIFECYCLE IS MANAGED EXTERNALLY (e.g. BY ArcadeDBServer) DO NOT CLOSE IT.
         if (!sharedDatabase)
           this.database.close();
+      } catch (final RuntimeException e) {
+        if (failure == null)
+          throw e;
+        // THE COMMIT FAILURE IS THE ONE THE CALLER NEEDS TO SEE, SO CARRY THIS ONE ALONGSIDE RATHER THAN OVER IT.
+        failure.addSuppressed(e);
       }
+
+      if (failure != null)
+        throw failure;
     }
   }
 
@@ -495,6 +514,9 @@ public class ArcadeGraph implements Graph, Closeable {
    * connection and leaving the one built after the close with nothing left to release it.
    */
   private synchronized void releaseTraversal() {
+    // TERMINAL: BOTH CALLERS (close() AND drop()) END THE GRAPH, AND traversal() READS THIS UNDER THE SAME MONITOR.
+    closed = true;
+
     if (traversal != null) {
       try {
         traversal.close();
