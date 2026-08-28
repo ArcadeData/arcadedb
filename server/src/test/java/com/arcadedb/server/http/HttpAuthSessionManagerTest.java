@@ -375,6 +375,32 @@ class HttpAuthSessionManagerTest {
   }
 
   @Test
+  void removeSessionsForUserDropsEveryTokenOfThatPrincipalOnly() {
+    // A dropped user (or one whose password changed) must not keep authenticating with a token minted
+    // before the change. The per-principal index added for the cap is what makes this cheap.
+    manager = new HttpAuthSessionManager(30_000L, 0, 1_000, 0, () -> fakeNow);
+    final ServerSecurityUser revoked = createMockUser("revoked");
+    final ServerSecurityUser other = createMockUser("other");
+
+    final HttpAuthSession first = manager.createSession(revoked);
+    final HttpAuthSession second = manager.createSession(revoked);
+    final HttpAuthSession survivor = manager.createSession(other);
+
+    assertThat(manager.removeSessionsForUser("revoked")).isEqualTo(2);
+
+    assertThat(manager.getSessionByToken(first.getToken())).isNull();
+    assertThat(manager.getSessionByToken(second.getToken())).isNull();
+    assertThat(manager.getSessionByToken(survivor.getToken())).isNotNull();
+    assertThat(manager.getActiveSessionCount()).isEqualTo(1);
+    assertThat(manager.getActiveSessionCount("revoked")).isZero();
+
+    // Idempotent, and null-safe for callers that do not know whether the principal had any session.
+    assertThat(manager.removeSessionsForUser("revoked")).isZero();
+    assertThat(manager.removeSessionsForUser("neverLoggedIn")).isZero();
+    assertThat(manager.removeSessionsForUser(null)).isZero();
+  }
+
+  @Test
   void removedAndExpiredSessionsAreDroppedFromThePerPrincipalIndex() {
     manager = new HttpAuthSessionManager(100L, 0, 1_000, 2, () -> fakeNow);
     final ServerSecurityUser user = createMockUser("testuser");

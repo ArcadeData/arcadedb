@@ -223,6 +223,16 @@ class GrpcAuthInterceptor implements ServerInterceptor {
       return null;
     }
 
+    // The session captured its ServerSecurityUser at login, so a principal dropped afterwards would keep
+    // authenticating here until the token idle-expired. Re-checked against the live users map, exactly as
+    // the HTTP bearer branch does, so a revocation takes effect on this transport too.
+    if (security != null && security.getUser(session.getUser().getName()) == null) {
+      authSessionManager.removeSession(token);
+      LogManager.instance().log(this, Level.FINE,
+          "Token of a principal that no longer exists, rejected for database: %s", database);
+      return null;
+    }
+
     return session;
   }
 
