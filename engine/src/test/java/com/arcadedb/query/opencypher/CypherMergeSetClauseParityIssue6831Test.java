@@ -52,6 +52,10 @@ class CypherMergeSetClauseParityIssue6831Test {
   @AfterEach
   void tearDown() {
     if (database != null) {
+      // A test that fails inside a caller-managed transaction leaves it open, and drop() refuses a database still in
+      // use: without this the failure would be reported as the next test's setUp() error instead of its own.
+      if (database.isTransactionActive())
+        database.rollback();
       database.drop();
       database = null;
     }

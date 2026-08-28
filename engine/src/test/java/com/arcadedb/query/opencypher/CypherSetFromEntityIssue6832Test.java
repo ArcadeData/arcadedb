@@ -52,6 +52,10 @@ class CypherSetFromEntityIssue6832Test {
   @AfterEach
   void tearDown() {
     if (database != null) {
+      // A test that fails inside a caller-managed transaction leaves it open, and drop() refuses a database still in
+      // use: without this the failure would be reported as the next test's setUp() error instead of its own.
+      if (database.isTransactionActive())
+        database.rollback();
       database.drop();
       database = null;
     }
@@ -239,5 +243,45 @@ class CypherSetFromEntityIssue6832Test {
     final var row = rs.next();
     assertThat(row.<Number>getProperty("id").intValue()).isEqualTo(1);
     assertThat(row.<String>getProperty("name")).isEqualTo("keep");
+  }
+
+  /**
+   * A SET clause is rejected as a whole or not at all: an invalid value in a later item must not leave an earlier
+   * item's write behind. The caller's transaction is the one that makes this observable, since the step rolls back
+   * only a transaction it opened itself.
+   */
+  @Test
+  void anInvalidMapEntryRejectsTheClauseBeforeAnyOfItIsWritten() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:A {id: 1})"));
+
+    database.begin();
+    assertThatThrownBy(() -> database.command("opencypher", "MATCH (a:A) SET a.ok = 1, a += {bad: {nested: 1}}"))
+        .rootCause()
+        .hasMessageContaining("TypeError: InvalidPropertyType");
+
+    final ResultSet inTx = database.query("opencypher", "MATCH (a:A) RETURN a.ok AS ok");
+    assertThat(inTx.next().<Object>getProperty("ok")).isNull();
+    database.commit();
+
+    final ResultSet afterCommit = database.query("opencypher", "MATCH (a:A) RETURN a.ok AS ok");
+    assertThat(afterCommit.next().<Object>getProperty("ok")).isNull();
+  }
+
+  /** The same guarantee when the invalid value is on a plain property item rather than inside a map. */
+  @Test
+  void anInvalidPropertyValueRejectsTheClauseBeforeAnyOfItIsWritten() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:A {id: 1})"));
+
+    database.begin();
+    assertThatThrownBy(() -> database.command("opencypher", "MATCH (a:A) SET a.ok = 1, a.bad = {nested: 1}"))
+        .rootCause()
+        .hasMessageContaining("TypeError: InvalidPropertyType");
+
+    final ResultSet inTx = database.query("opencypher", "MATCH (a:A) RETURN a.ok AS ok");
+    assertThat(inTx.next().<Object>getProperty("ok")).isNull();
+    database.commit();
+
+    final ResultSet afterCommit = database.query("opencypher", "MATCH (a:A) RETURN a.ok AS ok");
+    assertThat(afterCommit.next().<Object>getProperty("ok")).isNull();
   }
 }

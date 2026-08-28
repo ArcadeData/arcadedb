@@ -1338,8 +1338,10 @@ public class MergeStep extends AbstractExecutionStep {
       final LabelReplacements labelReplacements) {
     if (setClause == null || setClause.isEmpty())
       return;
-    // Each MERGE row runs in its own transaction, so read-your-writes state cannot outlive it: a fresh map per row
-    // is both correct and cheaper than clearing a shared one.
+    // A fresh map per call, so read-your-writes reaches across the items of this clause and no further. That is the
+    // pre-existing behaviour - the MERGE copy had no such cache at all - and it is narrower than the transaction:
+    // a path pattern matching several existing rows fans out inside ONE executeMerge(), and those rows do not see
+    // each other's writes. They target different records, which is why it has never mattered.
     setApplier.apply(setClause, result, new HashMap<>(), labelReplacements);
   }
 

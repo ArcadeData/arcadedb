@@ -161,7 +161,10 @@ public final class SetClauseApplier {
           else
             keys[i] = keyValue.toString();
         }
-        values[i] = evaluator.evaluate(item.getValueExpression(), result, context);
+        // Coerce and validate HERE so an invalid value rejects the clause before any of it has been written: the
+        // step rolls back only a transaction it opened itself, so a value refused halfway through would otherwise
+        // leave the earlier items behind in the caller's transaction.
+        values[i] = coerceAndValidate(evaluator.evaluate(item.getValueExpression(), result, context));
         break;
       case REPLACE_MAP:
       case MERGE_MAP:
@@ -233,7 +236,7 @@ public final class SetClauseApplier {
     } else
       propertyName = item.getProperty();
 
-    final Object value = precomputedValue != null ? coerceAndValidate(precomputedValue) : null;
+    final Object value = precomputedValue;
 
     // Issue #4474: a MERGE action never re-asserts a value the record already holds, because the write would bump
     // the MVCC version and invalidate the record for every concurrent reader that had matched it. The statistic is
@@ -307,7 +310,7 @@ public final class SetClauseApplier {
     int propertiesSet = 0;
     for (final Map.Entry<String, Object> entry : map.entrySet()) {
       if (entry.getValue() != null) {
-        mutableDoc.set(entry.getKey(), coerceAndValidate(entry.getValue()));
+        mutableDoc.set(entry.getKey(), entry.getValue());
         propertiesSet++;
       }
     }
@@ -349,7 +352,7 @@ public final class SetClauseApplier {
           propertiesSet++;
         }
       } else {
-        mutableDoc.set(entry.getKey(), coerceAndValidate(entry.getValue()));
+        mutableDoc.set(entry.getKey(), entry.getValue());
         propertiesSet++;
       }
     }
@@ -380,15 +383,24 @@ public final class SetClauseApplier {
   private static Map<String, Object> toPropertyMap(final Object value, final String operator) {
     if (value == null)
       return null;
+
+    final Map<String, Object> source;
     if (value instanceof Map)
-      return (Map<String, Object>) value;
-    if (value instanceof Document sourceDoc)
-      // A MutableDocument hands out a live view of its own property map, so the copy is not optional: the replace
-      // form clears the target's properties before reading this map, and "SET a = a" would otherwise read a map it
-      // has just emptied.
-      return new LinkedHashMap<>(sourceDoc.propertiesAsMap());
-    throw new IllegalArgumentException("TypeError: InvalidArgumentType - the right-hand side of '" + operator
-        + "' must be a map, a node or a relationship, but was " + value.getClass().getSimpleName());
+      source = (Map<String, Object>) value;
+    else if (value instanceof Document sourceDoc)
+      source = sourceDoc.propertiesAsMap();
+    else
+      throw new IllegalArgumentException("TypeError: InvalidArgumentType - the right-hand side of '" + operator
+          + "' must be a map, a node or a relationship, but was " + value.getClass().getSimpleName());
+
+    // Always a copy, never the map itself. A MutableDocument hands out a live view of its own properties, and the
+    // replace form clears the target before reading this map, so "SET a = a" would otherwise read a map it has just
+    // emptied. Coercing and validating the entries here rather than at write time is what lets an invalid one reject
+    // the clause before any earlier item has been written.
+    final Map<String, Object> materialised = new LinkedHashMap<>(source.size());
+    for (final Map.Entry<String, Object> entry : source.entrySet())
+      materialised.put(entry.getKey(), coerceAndValidate(entry.getValue()));
+    return materialised;
   }
 
   private Document resolveLatestDoc(final String variable, final Result result,
@@ -493,9 +505,12 @@ public final class SetClauseApplier {
    * Coerces a right-hand-side value to its stored Java type and rejects the ones a property cannot hold. Every write
    * goes through here, so {@code SET n = {x: {y: 1}}} is refused exactly like the {@code SET n.x = {y: 1}} that Neo4j
    * refuses with "Property values can only be of primitive types or arrays thereof" - the map forms used to be the
-   * way around the check.
+   * way around the check. Every call is made in phase 1, so the clause is refused as a whole rather than halfway
+   * through.
    */
   private static Object coerceAndValidate(final Object value) {
+    if (value == null)
+      return null; // a null value is a removal, not a stored value
     final Object coerced = TemporalUtil.toCoreJavaType(value);
     validatePropertyValue(coerced);
     return coerced;
