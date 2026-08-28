@@ -236,6 +236,7 @@ class Issue5777DanglingEndpointScopeTest extends TestHelper {
         .map(Index::getName).collect(Collectors.toSet());
   }
 
+  /** The fixture's RIDs, named so an assertion says which vertex or edge it means rather than which array slot. */
   private record Graph(RID person1, RID person2, RID company1, RID company2, RID edge1, RID edge2) {
   }
 
@@ -306,10 +307,12 @@ class Issue5777DanglingEndpointScopeTest extends TestHelper {
     });
   }
 
+  /** The {@code missingReferences} entry for a vertex exactly one edge pointed at. */
   private static Map.Entry<RID, Long> entryOf(final RID rid) {
     return Map.entry(rid, 1L);
   }
 
+  /** Runs a CHECK DATABASE statement and returns its single result row. */
   private Result check(final String command) {
     try (final ResultSet rs = database.command("sql", command)) {
       assertThat(rs.hasNext()).isTrue();
@@ -317,6 +320,7 @@ class Issue5777DanglingEndpointScopeTest extends TestHelper {
     }
   }
 
+  /** Reads a numeric check-database property, failing loudly when the field does not exist. */
   private static long longProperty(final Result row, final String name) {
     final Object value = row.getProperty(name);
     assertThat(value).as("check database must report '%s': %s", name, row.toJSON()).isNotNull();

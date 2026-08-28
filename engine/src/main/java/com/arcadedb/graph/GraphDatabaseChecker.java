@@ -1913,6 +1913,13 @@ public class GraphDatabaseChecker {
    * count instead of emitting one line per dangling edge. A single missing supernode can be referenced by millions of
    * edges; this collapses that fan-out into "vertex X could not be loaded, referenced by N edge(s)". The distinct-target
    * set is bounded by {@code maxTracked} to keep memory in check (counts for already-tracked targets keep incrementing).
+   * <p>
+   * "MISSING" IS THE COMMON CASE, NOT THE ONLY ONE. {@link #loadEndpointVertex} calls this for BOTH of its failure
+   * arms, so an entry can also be a target that is right there and could not be DECODED. The distinction is not lost -
+   * {@code missingReferenceErrors} carries the exception text per target, and only the absent ones leave the target
+   * unflagged - but a consumer reading {@code missingReferences} alone must not take the key to mean "this record no
+   * longer exists". Longstanding behaviour, spelled out here rather than changed: the map is the operator's
+   * "which far records did edges fail to reach", and both shapes belong in it.
    */
   private static void trackMissingReference(final Map<RID, Long> missingReferences, final Map<RID, String> missingReferenceErrors,
       final int maxTracked, final RID target, final String error) {
