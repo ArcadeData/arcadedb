@@ -400,6 +400,12 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * mutation on this node, so two concurrent calls cannot overwrite each other's in-flight change. It must
    * NOT be held across anything that can block on the Raft apply thread; {@link #applyReplicatedUsers}, which
    * unblocks the submit, deliberately does not take this monitor.
+   * <p>
+   * Note what that costs, for whoever adds a fourth cluster-wide mutator here by symmetry: the monitor IS
+   * held across the Raft round trip, so every user create/update/drop on this node serialises for the
+   * duration of consensus. That is deliberate - the payload is the whole user list, so two concurrent
+   * submits would otherwise each overwrite the other's change - and it is affordable only because user
+   * administration is rare. Nothing on a request hot path may be put inside this monitor.
    */
   public void createUserClusterWide(final JSONObject userConfiguration) {
     final HAServerPlugin ha = server != null ? server.getHA() : null;
