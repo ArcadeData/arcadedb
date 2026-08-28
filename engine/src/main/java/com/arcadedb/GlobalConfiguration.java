@@ -2495,46 +2495,107 @@ public enum GlobalConfiguration {
     }
   }
 
+  /**
+   * Converts {@code iValue} to this setting's declared {@link #getType() type}, or throws
+   * {@link IllegalArgumentException} naming the key, the type and the offending value when it does not parse.
+   * <p>
+   * Issue #6875: this is the single place a value is turned into a setting's type, so that {@link #setValue(Object)}
+   * and the administrative writers that store into a {@link ContextConfiguration} instead
+   * ({@code set_server_setting} and {@code POST /api/v1/server "set server setting"}) accept and refuse exactly
+   * the same strings. Before it existed the writers stored whatever they were handed and the
+   * {@code NumberFormatException} surfaced later, inside whichever component read the setting next.
+   * <p>
+   * The integral parse is {@link FileUtils#getSizeAsNumber(Object)} on the trimmed text, which is what
+   * {@link #getValueAsInteger()} and {@link #getValueAsLong()} have always used to read one back; it is a strict
+   * superset of {@code Integer.parseInt}/{@code Long.parseLong}, so nothing that parsed before stops parsing.
+   * <p>
+   * {@code Boolean} stays as permissive as {@code Boolean.parseBoolean}, deliberately: {@link #readConfiguration()}
+   * feeds every system property and environment variable through here during this class's static initializer, so
+   * turning a boolean typo into a throw would turn it into an {@code ExceptionInInitializerError} that takes the
+   * whole engine down instead of the setting.
+   *
+   * @param iValue the value to convert, or {@code null}
+   *
+   * @return the value as an instance of {@link #getType()}, or {@code null} when {@code iValue} is {@code null}
+   *
+   * @throws IllegalArgumentException if {@code iValue} cannot be represented as this setting's type
+   */
+  public Object coerce(final Object iValue) {
+    if (iValue == null)
+      return null;
+
+    try {
+      if (type == Boolean.class)
+        return iValue instanceof Boolean b ? b : Boolean.parseBoolean(iValue.toString().trim());
+
+      if (type == Integer.class) {
+        if (iValue instanceof Number n)
+          return n.intValue();
+        final long parsed = FileUtils.getSizeAsNumber(iValue.toString().trim());
+        if (parsed < Integer.MIN_VALUE || parsed > Integer.MAX_VALUE)
+          throw new IllegalArgumentException("outside the range of an Integer");
+        return (int) parsed;
+      }
+
+      if (type == Long.class)
+        return iValue instanceof Number n ? n.longValue() : FileUtils.getSizeAsNumber(iValue.toString().trim());
+
+      if (type == Float.class)
+        return iValue instanceof Number n ? n.floatValue() : Float.parseFloat(iValue.toString().trim());
+
+      if (type == String.class)
+        return iValue.toString();
+
+      if (type.isEnum()) {
+        if (type.isInstance(iValue))
+          return iValue;
+
+        if (iValue instanceof String string)
+          for (final Object constant : type.getEnumConstants())
+            if (((Enum<?>) constant).name().equalsIgnoreCase(string))
+              return constant;
+
+        throw new IllegalArgumentException("Invalid value of `" + key + "` option");
+      }
+
+      return iValue;
+    } catch (final RuntimeException e) {
+      final String message =
+          "Value '" + iValue + "' is not valid for setting '" + key + "' of type " + type.getSimpleName();
+
+      // A numeric setting keeps reporting a bad value as a NumberFormatException. It is a subclass of
+      // IllegalArgumentException, so a caller that catches the general form is unaffected either way, while one
+      // that distinguishes a malformed number - GlobalConfigurationTest.typeConversion does - still can. The
+      // message is the enriched one regardless: 'For input string: "A"', which is what FileUtils.getSizeAsNumber
+      // surfaces for "abc", names neither the setting nor what was actually sent.
+      final IllegalArgumentException failure = type == Integer.class || type == Long.class || type == Float.class ?
+          new NumberFormatException(message) :
+          new IllegalArgumentException(message);
+      failure.initCause(e);
+      throw failure;
+    }
+  }
+
+  /**
+   * Returns whether {@link #coerce(Object)} would accept {@code iValue}. Intended for callers that want to reject a
+   * value before storing it rather than handle the exception - see {@link #coerce(Object)} for why the two writers
+   * outside this class have to ask.
+   */
+  public boolean isAssignable(final Object iValue) {
+    try {
+      coerce(iValue);
+      return true;
+    } catch (final IllegalArgumentException e) {
+      return false;
+    }
+  }
+
   public void setValue(final Object iValue) {
     final Object oldValue = value;
     explicitlySet = true;
 
     try {
-      if (iValue == null)
-        value = null;
-      else if (type == Boolean.class)
-        value = Boolean.parseBoolean(iValue.toString());
-      else if (type == Integer.class)
-        value = Integer.parseInt(iValue.toString());
-      else if (type == Long.class)
-        value = Long.parseLong(iValue.toString());
-      else if (type == Float.class)
-        value = Float.parseFloat(iValue.toString());
-      else if (type == String.class)
-        value = iValue.toString();
-      else if (type.isEnum()) {
-        boolean accepted = false;
-
-        if (type.isInstance(iValue)) {
-          value = iValue;
-          accepted = true;
-        } else if (iValue instanceof String string) {
-
-          for (final Object constant : type.getEnumConstants()) {
-            final Enum<?> enumConstant = (Enum<?>) constant;
-
-            if (enumConstant.name().equalsIgnoreCase(string)) {
-              value = enumConstant;
-              accepted = true;
-              break;
-            }
-          }
-        }
-
-        if (!accepted)
-          throw new IllegalArgumentException("Invalid value of `" + key + "` option");
-      } else
-        value = iValue;
+      value = coerce(iValue);
 
       if (callback != null)
         try {
@@ -2570,19 +2631,25 @@ public enum GlobalConfiguration {
         defValue != null ? SystemVariableResolver.INSTANCE.resolveSystemVariables(defValue.toString(), "") : null;
   }
 
+  /**
+   * Issue #6875: the trim, and the {@link Number} test widened from {@code Float}, keep this accessor and
+   * {@link ContextConfiguration#getValueAsInteger(GlobalConfiguration)} on exactly one parse. A value that reaches
+   * either holder without passing through {@link #coerce(Object)} - {@code ContextConfiguration.fromJSON}, the
+   * {@code Map} constructor - used to read back differently depending on which of the two a component happened to call.
+   */
   public int getValueAsInteger() {
     final Object v = value != nullValue && value != null ? value : defValue;
-    return (int) (v instanceof Number n ? n.intValue() : FileUtils.getSizeAsNumber(v.toString()));
+    return v instanceof Number n ? n.intValue() : (int) FileUtils.getSizeAsNumber(v.toString().trim());
   }
 
   public long getValueAsLong() {
     final Object v = value != nullValue && value != null ? value : defValue;
-    return v instanceof Number n ? n.longValue() : FileUtils.getSizeAsNumber(v.toString());
+    return v instanceof Number n ? n.longValue() : FileUtils.getSizeAsNumber(v.toString().trim());
   }
 
   public float getValueAsFloat() {
     final Object v = value != nullValue && value != null ? value : defValue;
-    return v instanceof Float f ? f : Float.parseFloat(v.toString());
+    return v instanceof Number n ? n.floatValue() : Float.parseFloat(v.toString().trim());
   }
 
   public String getKey() {

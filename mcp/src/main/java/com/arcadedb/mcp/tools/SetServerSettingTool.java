@@ -79,8 +79,16 @@ public class SetServerSettingTool {
       throw new IllegalArgumentException(
           "'value' must not be empty for setting '" + key + "' of type " + cfg.getType().getSimpleName());
 
+    // A non-empty value still has to BE the setting's type (#6875). ContextConfiguration.setValue is a plain map
+    // put, so before this coercion "arcadedb.asyncWorkerThreads"="abc" was answered with isError:false and the
+    // NumberFormatException surfaced later, inside whichever component read the setting next. Coercing here also
+    // means the map holds a typed value, which both GlobalConfiguration's and ContextConfiguration's accessors
+    // return without re-parsing. GlobalConfiguration.coerce is the same parse the global setter uses, so this tool
+    // and its HTTP twin refuse exactly what setValue refuses.
+    final Object coerced = cfg.coerce(value);
+
     final Object oldValue = server.getConfiguration().getValue(cfg);
-    server.getConfiguration().setValue(key, value);
+    server.getConfiguration().setValue(cfg.getKey(), coerced);
 
     final JSONObject result = new JSONObject();
     result.put("key", key);
@@ -90,7 +98,8 @@ public class SetServerSettingTool {
     // so an unset secret cannot be distinguished from a set one either.
     result.put("previousValue",
         cfg.isHidden() ? "*****" : oldValue != null ? oldValue.toString() : JSONObject.NULL);
-    result.put("newValue", value);
+    // the value as STORED, which for a typed setting is the coerced form rather than the text the caller sent
+    result.put("newValue", coerced != null ? coerced.toString() : JSONObject.NULL);
     result.put("message", "Setting '" + key + "' updated successfully.");
     return result;
   }
