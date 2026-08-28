@@ -66,7 +66,10 @@ public class PostUserHandler extends AbstractServerHttpHandler {
     else
       userConfig.put("databases", new JSONObject());
 
-    security.createUser(userConfig);
+    // Cluster-aware: on an HA cluster this replicates as a Raft entry so every peer applies the new user.
+    // Calling security.createUser() directly created it only on the node that served the request, silently
+    // diverging the cluster's security state (issue #6808).
+    security.createUserClusterWide(userConfig);
 
     final JSONObject response = new JSONObject();
     response.put("result", "User '" + name + "' created");

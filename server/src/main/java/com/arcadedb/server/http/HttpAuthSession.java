@@ -32,6 +32,16 @@ import java.util.function.LongSupplier;
  * @see <a href="https://github.com/ArcadeData/arcadedb/issues/1691">GitHub Issue #1691</a>
  */
 public class HttpAuthSession {
+  /**
+   * Upper bound on every client-supplied metadata field retained by a session. {@code sourceIp},
+   * {@code userAgent}, {@code country} and {@code city} all come from request headers the caller chooses
+   * ({@code User-Agent}, {@code CF-Connecting-IP}, {@code X-Forwarded-For}, {@code CF-IPCountry},
+   * {@code CF-IPCity}), and Undertow accepts a header up to 1 MB. Stored untruncated, each login retained
+   * megabytes for the whole idle timeout (issue #6809). 256 chars is well beyond any legitimate value of
+   * these four fields.
+   */
+  static final  int                MAX_METADATA_LENGTH = 256;
+
   public final  String             token;
   public final  ServerSecurityUser user;
   private final LongSupplier       clock;
@@ -62,10 +72,20 @@ public class HttpAuthSession {
     this.clock = clock;
     this.createdAt = clock.getAsLong();
     this.lastUpdate = this.createdAt;
-    this.sourceIp = sourceIp;
-    this.userAgent = userAgent;
-    this.country = country;
-    this.city = city;
+    // Truncated here rather than at each call site so no future caller can reintroduce the unbounded
+    // retention: this constructor is the only way a client-supplied string enters a session (issue #6809).
+    this.sourceIp = truncate(sourceIp);
+    this.userAgent = truncate(userAgent);
+    this.country = truncate(country);
+    this.city = truncate(city);
+  }
+
+  /**
+   * Caps a client-supplied metadata string at {@link #MAX_METADATA_LENGTH}. Returns the original reference
+   * when it already fits, so the common case allocates nothing.
+   */
+  static String truncate(final String value) {
+    return value == null || value.length() <= MAX_METADATA_LENGTH ? value : value.substring(0, MAX_METADATA_LENGTH);
   }
 
   public long elapsedFromLastUpdate() {

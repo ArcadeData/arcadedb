@@ -235,4 +235,161 @@ class HttpAuthSessionManagerTest {
     assertThat(manager.getSessionByToken(session1.getToken())).isNull();
     assertThat(manager.getSessionByToken(session2.getToken())).isNotNull();
   }
+
+  // ---------------------------------------------------------------------------------------------------
+  // Issue #6809: the session map was an unbounded HashMap with no global and no per-principal cap, and it
+  // stored four untruncated client-controlled header values per entry, each retained for the whole idle
+  // timeout (30 minutes by default).
+  // ---------------------------------------------------------------------------------------------------
+
+  @Test
+  void perPrincipalCapEvictsThatPrincipalsOldestSession() {
+    manager = new HttpAuthSessionManager(30_000L, 0, 1_000, 3, () -> fakeNow);
+    final ServerSecurityUser user = createMockUser("looper");
+
+    final HttpAuthSession first = manager.createSession(user);
+    final HttpAuthSession second = manager.createSession(user);
+    final HttpAuthSession third = manager.createSession(user);
+    assertThat(manager.getActiveSessionCount()).isEqualTo(3);
+
+    // The fourth login evicts the oldest of this principal's sessions instead of growing the map.
+    final HttpAuthSession fourth = manager.createSession(user);
+    assertThat(fourth).isNotNull();
+    assertThat(manager.getActiveSessionCount()).isEqualTo(3);
+    assertThat(manager.getActiveSessionCount("looper")).isEqualTo(3);
+
+    assertThat(manager.getSessionByToken(first.getToken())).isNull();
+    assertThat(manager.getSessionByToken(second.getToken())).isNotNull();
+    assertThat(manager.getSessionByToken(third.getToken())).isNotNull();
+    assertThat(manager.getSessionByToken(fourth.getToken())).isNotNull();
+
+    // 1000 more logins by the same principal must not move the total.
+    for (int i = 0; i < 1_000; i++)
+      manager.createSession(user);
+    assertThat(manager.getActiveSessionCount()).isEqualTo(3);
+  }
+
+  @Test
+  void perPrincipalCapNeverEvictsAnotherPrincipalsSession() {
+    manager = new HttpAuthSessionManager(30_000L, 0, 1_000, 2, () -> fakeNow);
+    final HttpAuthSession victim = manager.createSession(createMockUser("victim"));
+
+    final ServerSecurityUser attacker = createMockUser("attacker");
+    for (int i = 0; i < 100; i++)
+      manager.createSession(attacker);
+
+    assertThat(manager.getActiveSessionCount("attacker")).isEqualTo(2);
+    assertThat(manager.getSessionByToken(victim.getToken())).isNotNull();
+    assertThat(manager.getActiveSessionCount()).isEqualTo(3);
+  }
+
+  @Test
+  void globalCapRefusesInsteadOfGrowingTheMap() {
+    // Per-principal cap disabled so only the global one is under test.
+    manager = new HttpAuthSessionManager(30_000L, 0, 2, 0, () -> fakeNow);
+
+    assertThat(manager.createSession(createMockUser("u1"))).isNotNull();
+    assertThat(manager.createSession(createMockUser("u2"))).isNotNull();
+
+    // Third distinct principal: the map is full, so the login is refused (the handler answers 503).
+    assertThat(manager.createSession(createMockUser("u3"))).isNull();
+    assertThat(manager.getActiveSessionCount()).isEqualTo(2);
+  }
+
+  @Test
+  void globalCapReclaimsIdleExpiredSessionsBeforeRefusing() {
+    manager = new HttpAuthSessionManager(100L, 0, 2, 0, () -> fakeNow);
+
+    manager.createSession(createMockUser("u1"));
+    manager.createSession(createMockUser("u2"));
+    assertThat(manager.getActiveSessionCount()).isEqualTo(2);
+
+    // Both are now idle-expired: a legitimate login must not be refused just because the background sweep
+    // has not fired yet.
+    fakeNow += 300;
+    assertThat(manager.createSession(createMockUser("u3"))).isNotNull();
+    assertThat(manager.getActiveSessionCount()).isEqualTo(1);
+  }
+
+  @Test
+  void aPrincipalAtItsOwnCapIsStillAdmittedWhenTheMapIsGloballyFull() {
+    // Evicting frees exactly one slot, so this login costs the server nothing - and the decision must be
+    // taken BEFORE the eviction, or the refusal would destroy a live session of the principal it refuses.
+    manager = new HttpAuthSessionManager(30_000L, 0, 2, 2, () -> fakeNow);
+    final ServerSecurityUser user = createMockUser("regular");
+
+    final HttpAuthSession first = manager.createSession(user);
+    final HttpAuthSession second = manager.createSession(user);
+    assertThat(manager.getActiveSessionCount()).isEqualTo(2);
+
+    final HttpAuthSession third = manager.createSession(user);
+    assertThat(third).isNotNull();
+    assertThat(manager.getActiveSessionCount()).isEqualTo(2);
+    assertThat(manager.getSessionByToken(first.getToken())).isNull();
+    assertThat(manager.getSessionByToken(second.getToken())).isNotNull();
+    assertThat(manager.getSessionByToken(third.getToken())).isNotNull();
+
+    // A different principal, however, is refused - and the refusal must not disturb anybody's sessions.
+    assertThat(manager.createSession(createMockUser("newcomer"))).isNull();
+    assertThat(manager.getActiveSessionCount()).isEqualTo(2);
+    assertThat(manager.getActiveSessionCount("regular")).isEqualTo(2);
+    assertThat(manager.getActiveSessionCount("newcomer")).isZero();
+  }
+
+  @Test
+  void zeroOrNegativeCapsMeanUnlimited() {
+    manager = new HttpAuthSessionManager(30_000L, 0, 0, 0, () -> fakeNow);
+    final ServerSecurityUser user = createMockUser("testuser");
+
+    for (int i = 0; i < 200; i++)
+      assertThat(manager.createSession(user)).isNotNull();
+
+    assertThat(manager.getActiveSessionCount()).isEqualTo(200);
+  }
+
+  @Test
+  void clientSuppliedMetadataIsTruncated() {
+    manager = new HttpAuthSessionManager(30_000L);
+    final String oversized = "x".repeat(1_000_000);
+
+    final HttpAuthSession session = manager.createSession(createMockUser("testuser"), oversized, oversized,
+        oversized, oversized);
+
+    assertThat(session.getSourceIp()).hasSize(HttpAuthSession.MAX_METADATA_LENGTH);
+    assertThat(session.getUserAgent()).hasSize(HttpAuthSession.MAX_METADATA_LENGTH);
+    assertThat(session.getCountry()).hasSize(HttpAuthSession.MAX_METADATA_LENGTH);
+    assertThat(session.getCity()).hasSize(HttpAuthSession.MAX_METADATA_LENGTH);
+  }
+
+  @Test
+  void metadataThatFitsIsKeptVerbatimAndNullStaysNull() {
+    manager = new HttpAuthSessionManager(30_000L);
+
+    final HttpAuthSession session = manager.createSession(createMockUser("testuser"), "10.0.0.1", "curl/8.4.0",
+        "IT", null);
+
+    assertThat(session.getSourceIp()).isEqualTo("10.0.0.1");
+    assertThat(session.getUserAgent()).isEqualTo("curl/8.4.0");
+    assertThat(session.getCountry()).isEqualTo("IT");
+    assertThat(session.getCity()).isNull();
+  }
+
+  @Test
+  void removedAndExpiredSessionsAreDroppedFromThePerPrincipalIndex() {
+    manager = new HttpAuthSessionManager(100L, 0, 1_000, 2, () -> fakeNow);
+    final ServerSecurityUser user = createMockUser("testuser");
+
+    final HttpAuthSession session = manager.createSession(user);
+    manager.removeSession(session.getToken());
+    assertThat(manager.getActiveSessionCount("testuser")).isZero();
+
+    // A logged-out session must not keep consuming the principal's quota.
+    assertThat(manager.createSession(user)).isNotNull();
+    assertThat(manager.createSession(user)).isNotNull();
+    assertThat(manager.getActiveSessionCount("testuser")).isEqualTo(2);
+
+    fakeNow += 300;
+    assertThat(manager.checkSessionsValidity()).isEqualTo(2);
+    assertThat(manager.getActiveSessionCount("testuser")).isZero();
+  }
 }

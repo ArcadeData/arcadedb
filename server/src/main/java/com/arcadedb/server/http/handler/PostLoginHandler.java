@@ -59,6 +59,12 @@ public class PostLoginHandler extends AbstractServerHttpHandler {
     // User is already authenticated by AbstractServerHttpHandler
     // Create a new authentication session with metadata
     final HttpAuthSession session = httpServer.getAuthSessionManager().createSession(user, sourceIp, userAgent, country, city);
+    if (session == null)
+      // The server-wide session cap is reached and the idle sweep reclaimed nothing: refuse rather than let
+      // the session map grow without bound (issue #6809). 503 - the credentials were valid, the capacity was not.
+      return new ExecutionResponse(503,
+          new JSONObject().put("error", "Server reached the maximum number of concurrent authentication sessions")
+              .toString());
 
     final JSONObject response = new JSONObject();
     response.put("token", session.getToken());

@@ -134,7 +134,9 @@ public class HttpServer implements ServerPlugin {
         server.getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_SESSION_EXPIRE_TIMEOUT) * 1_000L);
     this.authSessionManager = new HttpAuthSessionManager(
         server.getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_EXPIRE_TIMEOUT) * 1_000L,
-        server.getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_ABSOLUTE_TIMEOUT) * 1_000L);
+        server.getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_ABSOLUTE_TIMEOUT) * 1_000L,
+        server.getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_MAX),
+        server.getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_MAX_PER_USER));
     this.webSocketEventBus = new WebSocketEventBus(this.server);
     final long ttlMs = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_IDEMPOTENCY_CACHE_TTL_MS);
     final int maxEntries = server.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_IDEMPOTENCY_CACHE_MAX_ENTRIES);

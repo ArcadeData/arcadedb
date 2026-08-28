@@ -34,6 +34,7 @@ import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.Base64;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -195,6 +196,95 @@ class RaftUserManagement3NodesIT extends BaseRaftHATest {
       final byte[] other = Files.readAllBytes(
           Paths.get(getServer(i).getRootPath(), "config", "server-users.jsonl"));
       assertThat(other).as("server %d users file byte equality", i).isEqualTo(reference);
+    }
+  }
+
+  /**
+   * Regression test for issue #6808: {@code POST}/{@code PUT}/{@code DELETE /api/v1/server/users} - the
+   * documented REST surface, and what Studio's user management calls - mutated the user store only on the
+   * node that served the request, while the equivalent {@code POST /api/v1/server} commands replicated
+   * through Raft. A create returned 201 while the new principal got 401 on the other two nodes, and (worse)
+   * a delete returned 200 while the revoked credentials kept working everywhere else.
+   */
+  @Test
+  void restUserEndpointsReplicateAcrossCluster() throws Exception {
+    assertThat(findLeaderIndex()).isGreaterThanOrEqualTo(0);
+
+    // CREATE via the REST endpoint (not the server command).
+    final JSONObject bob = new JSONObject()
+        .put("name", "bob")
+        .put("password", "bobpassword1")
+        .put("databases", new JSONObject().put("*", new JSONArray().put("admin")));
+    retryOn503(() -> restUsers(0, "POST", "/api/v1/server/users", bob));
+
+    Awaitility.await().atMost(15, TimeUnit.SECONDS).pollInterval(200, TimeUnit.MILLISECONDS)
+        .until(() -> {
+          for (int i = 0; i < getServerCount(); i++)
+            if (getServer(i).getSecurity().getUser("bob") == null)
+              return false;
+          return true;
+        });
+
+    for (int i = 0; i < getServerCount(); i++)
+      assertThat(postServerCommandReturnStatus(i, "list databases", "bob", "bobpassword1"))
+          .as("server %d login as bob created through POST /api/v1/server/users", i).isEqualTo(200);
+
+    // UPDATE via the REST endpoint: the new password must be honoured on every node.
+    retryOn503(() -> restUsers(0, "PUT", "/api/v1/server/users?name=bob",
+        new JSONObject().put("password", "bobpassword2")));
+
+    Awaitility.await().atMost(15, TimeUnit.SECONDS).pollInterval(200, TimeUnit.MILLISECONDS)
+        .until(() -> {
+          for (int i = 0; i < getServerCount(); i++)
+            if (postServerCommandReturnStatus(i, "list databases", "bob", "bobpassword2") != 200)
+              return false;
+          return true;
+        });
+
+    // DELETE via the REST endpoint: the revocation must reach every node, not just the one that answered 200.
+    retryOn503(() -> restUsers(0, "DELETE", "/api/v1/server/users?name=bob", null));
+
+    Awaitility.await().atMost(15, TimeUnit.SECONDS).pollInterval(200, TimeUnit.MILLISECONDS)
+        .until(() -> {
+          for (int i = 0; i < getServerCount(); i++)
+            if (getServer(i).getSecurity().getUser("bob") != null)
+              return false;
+          return true;
+        });
+
+    for (int i = 0; i < getServerCount(); i++)
+      assertThat(postServerCommandReturnStatus(i, "list databases", "bob", "bobpassword2"))
+          .as("server %d login as bob after DELETE /api/v1/server/users", i).isEqualTo(403);
+  }
+
+  /**
+   * Same rationale as {@link #postServerCommandRetryOn503}: right after leader election a Raft commit can be
+   * acknowledged after the client-side timeout, so a 503 means "possibly committed" and the callers verify
+   * the actual cluster state with Awaitility rather than trusting a status code.
+   */
+  private void retryOn503(final Callable<Integer> request) throws Exception {
+    int status = 503;
+    for (int attempt = 0; attempt < 8 && status == 503; attempt++) {
+      if (attempt > 0)
+        Thread.sleep(2_000);
+      status = request.call();
+    }
+  }
+
+  private int restUsers(final int serverIndex, final String method, final String path, final JSONObject payload)
+      throws Exception {
+    final HttpURLConnection connection = (HttpURLConnection) new URI(
+        "http://127.0.0.1:248" + serverIndex + path).toURL().openConnection();
+    connection.setRequestMethod(method);
+    connection.setRequestProperty("Authorization", "Basic " + Base64.getEncoder()
+        .encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+    try {
+      if (payload != null)
+        formatPayload(connection, payload);
+      connection.connect();
+      return connection.getResponseCode();
+    } finally {
+      connection.disconnect();
     }
   }
 

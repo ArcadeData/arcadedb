@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.RWLockContext;
@@ -38,8 +39,16 @@ import java.util.logging.Level;
  */
 public class HttpAuthSessionManager extends RWLockContext {
   private final Map<String, HttpAuthSession> sessions = new HashMap<>();
+  // Per-principal index of the tokens above, in insertion order. A LinkedHashSet (not a Deque) so both the
+  // "which is the oldest session of this user" lookup the per-user cap needs and the arbitrary removal an
+  // expiry/logout needs are O(1). Kept in exact lock-step with `sessions`: an entry here always names a live
+  // session, and an empty set is dropped rather than left behind, so the index cannot outgrow the map.
+  private final Map<String, LinkedHashSet<String>> sessionsByUser = new HashMap<>();
   private final       long                         sessionTimeoutInMs;
   private final       long                         absoluteTimeoutInMs;
+  // <= 0 means unlimited. See SERVER_HTTP_AUTH_SESSION_MAX / SERVER_HTTP_AUTH_SESSION_MAX_PER_USER.
+  private final       int                          maxSessions;
+  private final       int                          maxSessionsPerUser;
   private final       LongSupplier                 clock;
   private final       Timer                        timer;
 
@@ -48,7 +57,14 @@ public class HttpAuthSessionManager extends RWLockContext {
   }
 
   public HttpAuthSessionManager(final long sessionTimeoutInMs, final long absoluteTimeoutInMs) {
-    this(sessionTimeoutInMs, absoluteTimeoutInMs, System::currentTimeMillis);
+    this(sessionTimeoutInMs, absoluteTimeoutInMs,
+        GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_MAX.getValueAsInteger(),
+        GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_MAX_PER_USER.getValueAsInteger(), System::currentTimeMillis);
+  }
+
+  public HttpAuthSessionManager(final long sessionTimeoutInMs, final long absoluteTimeoutInMs, final int maxSessions,
+      final int maxSessionsPerUser) {
+    this(sessionTimeoutInMs, absoluteTimeoutInMs, maxSessions, maxSessionsPerUser, System::currentTimeMillis);
   }
 
   /**
@@ -56,8 +72,16 @@ public class HttpAuthSessionManager extends RWLockContext {
    * wall clock, so idle/absolute timeout behavior can be asserted without sleeping (see #6398).
    */
   HttpAuthSessionManager(final long sessionTimeoutInMs, final long absoluteTimeoutInMs, final LongSupplier clock) {
+    this(sessionTimeoutInMs, absoluteTimeoutInMs, GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_MAX.getValueAsInteger(),
+        GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_MAX_PER_USER.getValueAsInteger(), clock);
+  }
+
+  HttpAuthSessionManager(final long sessionTimeoutInMs, final long absoluteTimeoutInMs, final int maxSessions,
+      final int maxSessionsPerUser, final LongSupplier clock) {
     this.sessionTimeoutInMs = sessionTimeoutInMs;
     this.absoluteTimeoutInMs = absoluteTimeoutInMs;
+    this.maxSessions = maxSessions;
+    this.maxSessionsPerUser = maxSessionsPerUser;
     this.clock = clock;
 
     timer = new Timer("HttpAuthSessionManager-Cleanup", true);
@@ -79,6 +103,7 @@ public class HttpAuthSessionManager extends RWLockContext {
     timer.cancel();
     executeInWriteLock(() -> {
       sessions.clear();
+      sessionsByUser.clear();
       return null;
     });
   }
@@ -99,6 +124,7 @@ public class HttpAuthSessionManager extends RWLockContext {
           LogManager.instance().log(this, Level.FINE, "Removing expired authentication session %s for user %s (idle=%b, absolute=%b)",
               session.token, session.user.getName(), idleExpired, absoluteExpired);
           it.remove();
+          unindex(session);
           expired++;
         }
       }
@@ -140,20 +166,67 @@ public class HttpAuthSessionManager extends RWLockContext {
 
   /**
    * Create a new authenticated session for a user with additional metadata.
+   * <p>
+   * The session map is bounded on both axes (issue #6809). The <b>per-principal</b> cap
+   * ({@code arcadedb.server.httpAuthSessionMaxPerUser}) is enforced by evicting that principal's oldest
+   * session, so a login loop churns only its own sessions - it cannot grow the map and it cannot evict
+   * anybody else's session. The <b>global</b> cap ({@code arcadedb.server.httpAuthSessionMax})
+   * is enforced by refusing, because at that point the only honest answer is that the server is out of
+   * session capacity; evicting globally would let one principal push other principals out. An idle sweep is
+   * attempted first, so a full map made of expired sessions is reclaimed instead of refused.
    *
    * @param user      the authenticated user
    * @param sourceIp  the source IP address of the client
    * @param userAgent the user agent string of the client
    * @param country   the country from Cloudflare headers (if available)
    * @param city      the city from Cloudflare headers (if available)
-   * @return the new session with a unique token
+   *
+   * @return the new session with a unique token, or {@code null} when the global cap is reached and no
+   * session could be reclaimed (the caller answers 503)
    */
   public HttpAuthSession createSession(final ServerSecurityUser user, final String sourceIp,
       final String userAgent, final String country, final String city) {
+    if (maxSessions > 0 && getActiveSessionCount() >= maxSessions)
+      // Reclaim first: a map full of idle-expired sessions must not refuse a legitimate login just because
+      // the background sweep has not fired yet. Done outside the write lock below (it takes its own).
+      checkSessionsValidity();
+
     return executeInWriteLock(() -> {
+      final String userName = user.getName();
+      final LinkedHashSet<String> existingTokens = sessionsByUser.get(userName);
+
+      // A principal already at its own cap will free exactly one slot by evicting, so it is admitted even
+      // when the map is globally full. Decided BEFORE anything is evicted: refusing after the eviction would
+      // destroy a live session of the very principal being refused.
+      final boolean willEvict = maxSessionsPerUser > 0 && existingTokens != null
+          && existingTokens.size() >= maxSessionsPerUser;
+
+      if (maxSessions > 0 && sessions.size() >= maxSessions && !willEvict) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Refused authentication session for user %s: the server reached the maximum of %d concurrent sessions "
+                + "(see '%s')", userName, maxSessions, GlobalConfiguration.SERVER_HTTP_AUTH_SESSION_MAX.getKey());
+        return null;
+      }
+
+      final LinkedHashSet<String> userTokens = existingTokens != null ? existingTokens
+          : sessionsByUser.computeIfAbsent(userName, k -> new LinkedHashSet<>());
+
+      // Per-principal cap: evict this principal's oldest session(s) to make room. `while`, not `if`, so a
+      // lowered configuration takes effect on the next login instead of leaving the surplus in place forever.
+      while (maxSessionsPerUser > 0 && userTokens.size() >= maxSessionsPerUser) {
+        final Iterator<String> oldest = userTokens.iterator();
+        final String evicted = oldest.next();
+        oldest.remove();
+        sessions.remove(evicted);
+        LogManager.instance().log(this, Level.FINE,
+            "Evicted authentication session %s: user %s reached the maximum of %d concurrent sessions", evicted,
+            userName, maxSessionsPerUser);
+      }
+
       final String token = "AU-" + UUID.randomUUID();
       final HttpAuthSession session = new HttpAuthSession(user, token, sourceIp, userAgent, country, city, clock);
       sessions.put(token, session);
+      userTokens.add(token);
       LogManager.instance().log(this, Level.FINE, "Created authentication session %s for user %s from %s", token,
           user.getName(), sourceIp);
       return session;
@@ -170,11 +243,40 @@ public class HttpAuthSessionManager extends RWLockContext {
     return executeInWriteLock(() -> {
       final HttpAuthSession removed = sessions.remove(token);
       if (removed != null) {
+        unindex(removed);
         LogManager.instance().log(this, Level.FINE, "Removed authentication session %s for user %s",
             token, removed.user.getName());
         return true;
       }
       return false;
+    });
+  }
+
+  /**
+   * Drops a session from the per-principal index, and the principal's (now empty) index entry with it, so
+   * {@link #sessionsByUser} can never retain a key for a user with no live session. Must be called under the
+   * write lock, right after the session has been removed from {@link #sessions}.
+   */
+  private void unindex(final HttpAuthSession session) {
+    final String userName = session.user != null ? session.user.getName() : null;
+    if (userName == null)
+      return;
+    final LinkedHashSet<String> userTokens = sessionsByUser.get(userName);
+    if (userTokens != null) {
+      userTokens.remove(session.token);
+      if (userTokens.isEmpty())
+        sessionsByUser.remove(userName);
+    }
+  }
+
+  /**
+   * Returns the number of active sessions held by the named principal. Package-private: used by the tests
+   * that pin the per-principal cap.
+   */
+  int getActiveSessionCount(final String userName) {
+    return executeInReadLock(() -> {
+      final LinkedHashSet<String> userTokens = sessionsByUser.get(userName);
+      return userTokens != null ? userTokens.size() : 0;
     });
   }
 

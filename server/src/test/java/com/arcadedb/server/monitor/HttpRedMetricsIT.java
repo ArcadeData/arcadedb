@@ -132,6 +132,34 @@ class HttpRedMetricsIT extends BaseGraphServerTest {
     assertThat(rawUnmatchedMeters).isZero();
   }
 
+  @Test
+  void unknownDatabaseCollapsesToBoundedDbTag() throws Exception {
+    // The {database} path parameter matches any segment and the RED timer is recorded in a finally block that
+    // also runs for the 401 an unauthenticated caller gets, so echoing the raw parameter registered one
+    // permanent percentile-histogram Timer per invented name: the #5025 path-tag leak on the other half of
+    // the tag tuple, and reachable with no credentials at all (issue #6805).
+    for (int i = 0; i < 50; i++)
+      hitGet("/api/v1/query/nosuchdb" + i + "/sql/select%201");
+
+    // Every probe collapses onto the single bounded "unknown" value. Summed over every meter carrying the
+    // tag (the 50 requests may split across status tags, and earlier test classes in the reused fork leave
+    // their own meters behind), and polled because the timer is recorded after the response was read.
+    await().atMost(SETTLE_TIMEOUT).pollInterval(POLL_INTERVAL).untilAsserted(() -> {
+      final Collection<Timer> collapsed = Metrics.globalRegistry.find("arcadedb.http.requests")
+          .tag("path", "/query/{database}/{language}/{command}").tag("db", "unknown").timers();
+      assertThat(collapsed).isNotEmpty();
+      assertThat(collapsed.stream().mapToLong(Timer::count).sum()).isGreaterThanOrEqualTo(50L);
+    });
+
+    // Cardinality guard: no timer may carry one of the invented database names. Checked after the poll, so
+    // every one of the 50 requests has been recorded by the time the registry is read.
+    final long inventedDbMeters = Metrics.globalRegistry.find("arcadedb.http.requests").timers().stream()
+        .map(t -> t.getId().getTag("db"))
+        .filter(db -> db != null && db.startsWith("nosuchdb"))
+        .count();
+    assertThat(inventedDbMeters).isZero();
+  }
+
   private void hitGet(final String path) throws Exception {
     final HttpURLConnection c = (HttpURLConnection) new URL("http://localhost:2480" + path).openConnection();
     c.setRequestMethod("GET");

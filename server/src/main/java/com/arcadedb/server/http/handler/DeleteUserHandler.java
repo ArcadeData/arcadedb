@@ -44,7 +44,10 @@ public class DeleteUserHandler extends AbstractServerHttpHandler {
     if ("root".equals(name))
       return new ExecutionResponse(400, new JSONObject().put("error", "Cannot delete the root user").toString());
 
-    final boolean deleted = httpServer.getServer().getSecurity().dropUser(name);
+    // Cluster-aware: on an HA cluster this replicates as a Raft entry so every peer drops the user. Calling
+    // security.dropUser() directly returned 200 while the revoked credentials kept working on every other
+    // node - the operator believed the revocation had succeeded (issue #6808).
+    final boolean deleted = httpServer.getServer().getSecurity().dropUserClusterWide(name);
 
     final JSONObject response = new JSONObject();
     if (deleted) {
@@ -54,5 +57,11 @@ public class DeleteUserHandler extends AbstractServerHttpHandler {
 
     response.put("error", "User '" + name + "' not found");
     return new ExecutionResponse(404, response.toString());
+  }
+
+  @Override
+  protected boolean mustExecuteOnWorkerThread() {
+    // The HA path blocks until the Raft entry is committed, which must never happen on an Undertow IO thread.
+    return true;
   }
 }
