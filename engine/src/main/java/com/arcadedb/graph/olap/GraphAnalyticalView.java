@@ -1245,6 +1245,15 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return snap.nodeMapping.size();
   }
 
+  @Override
+  public int getNodeIdUpperBound() {
+    final Snapshot snap = checkBuilt();
+    final DeltaOverlay ov = snap.overlay;
+    if (ov != null)
+      return ov.getNodeIdUpperBound();
+    return snap.nodeMapping.size();
+  }
+
   public int getEdgeCount() {
     final Snapshot snap = checkBuilt();
     int total = 0;
