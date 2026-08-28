@@ -57,7 +57,8 @@ public class LocalProperty extends AbstractProperty {
     final Expression compiled = compileDefaultValue(convertedValue, database);
 
     if (!Objects.equals(this.defaultValue.value(), convertedValue)) {
-      final LocalDocumentType type = (LocalDocumentType) owner;
+      // Not named `type`: that is this property's own Type (STRING, INTEGER, ...) everywhere else in the class.
+      final LocalDocumentType ownerType = (LocalDocumentType) owner;
 
       // The property's own default and the owner type's default-property cache are two views of one fact, and the
       // other statement that changes them, DROP PROPERTY, mutates both under the schema write lock (recordFileChanges).
@@ -65,19 +66,19 @@ public class LocalProperty extends AbstractProperty {
       // and leave the cache naming a property that no longer exists - the very state issue #6799 is about. Only the
       // publication is serialized: conversion and validation stay outside, so a rejected default touches no state and
       // its SchemaException reaches the caller unwrapped, and the write lock is held for two field assignments.
-      type.recordFileChanges(() -> {
+      ownerType.recordFileChanges(() -> {
         // Holding the same lock as dropProperty() also settles the order of the two: whoever arrives second sees the
         // other's result. A handle to a property that has since been dropped (or dropped and recreated) is detached,
         // and writing its default through would leave a name in the cache that resolves to nothing - #6799 reached
         // from the other side. Identity and not mere presence, so a recreated namesake cannot be written through the
         // stale handle either.
-        if (type.getPropertyIfExists(name) != this)
-          throw new SchemaException("Cannot set the default value of property '" + type.getName() + "." + name
+        if (ownerType.getPropertyIfExists(name) != this)
+          throw new SchemaException("Cannot set the default value of property '" + ownerType.getName() + "." + name
               + "' because the property is no longer declared in the type");
 
         // One publication, so no reader can see the new value with the old (or no) compiled expression.
         this.defaultValue = new DefaultValue(convertedValue, compiled);
-        type.setPropertyHasDefault(name, convertedValue != DEFAULT_NOT_SET);
+        ownerType.setPropertyHasDefault(name, convertedValue != DEFAULT_NOT_SET);
         return null;
       });
     }
