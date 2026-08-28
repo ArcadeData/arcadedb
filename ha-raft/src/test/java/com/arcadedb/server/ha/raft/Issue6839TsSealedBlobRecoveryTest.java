@@ -37,6 +37,7 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #6839 (item 1): the "registered but engine-unavailable" TimeSeries state that #6356 made visible had no way
@@ -187,6 +188,46 @@ class Issue6839TsSealedBlobRecoveryTest {
     assertThat(countSamples()).isEqualTo(ROWS);
     appendRows(broken.getEngine(), ROWS, 100);
     assertThat(countSamples()).isEqualTo(ROWS + 100L);
+  }
+
+  /**
+   * The failure arm. A blob that is itself unusable cannot repair anything, and what matters is what the apply
+   * path does about it: log it, leave the type exactly as unavailable as it was, and RETURN - not throw, because
+   * the same entry may carry blobs for other types that are perfectly repairable.
+   * <p>
+   * It also pins the freshened reason. {@code initEngine()} now records why THIS attempt failed, so an operator
+   * reading {@code CHECK DATABASE} after a failed repair sees the new cause rather than the original one - here,
+   * a header the sealed store rejects, not the flipped magic byte that started it.
+   */
+  @Test
+  void aBlobThatCannotBeOpenedLeavesTheTypeUnavailableWithoutThrowing() throws Exception {
+    buildTypeAndCaptureItsSealedFile();
+
+    breakTheSealedFileAndReopen();
+
+    final LocalTimeSeriesType broken = (LocalTimeSeriesType) database.getSchema().getType(TYPE_NAME);
+    assertThat(broken.isEngineAvailable()).isFalse();
+    final String reasonBefore = broken.getEngineUnavailableReason();
+    assertThat(reasonBefore).isNotNull();
+
+    // A blob long enough to be written and read back, and nothing the sealed store can make sense of.
+    final byte[] garbage = new byte[512];
+    new ArcadeStateMachine().applySealedBlobs(database,
+        List.of(new TsSealedBlob(TYPE_NAME, 0, SEALED_FILE, garbage)));
+
+    assertThat(broken.isEngineAvailable()).as("an unusable blob must not appear to have repaired anything")
+        .isFalse();
+    // The reason now describes THIS attempt, not the one that started it: both are "invalid sealed store magic",
+    // but the magic quoted is the zero-filled blob's rather than the flipped byte's. Before initEngine() recorded
+    // its own failures an operator kept reading the original cause after every subsequent failed repair.
+    assertThat(broken.getEngineUnavailableReason())
+        .as("a failed retry must report why IT failed, not why the first attempt did")
+        .isNotNull()
+        .isNotEqualTo(reasonBefore);
+
+    // The type stays loud rather than silently readable, and the second failed attempt is reachable again: the
+    // recovery path is not one-shot, so a later, good blob can still repair it.
+    assertThatThrownBy(broken::requireEngine).hasMessageContaining(TYPE_NAME);
   }
 
   // ---- Helpers ----
