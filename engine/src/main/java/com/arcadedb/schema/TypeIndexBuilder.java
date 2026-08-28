@@ -73,6 +73,47 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
   }
 
   /**
+   * The one copy constructor of the whole builder hierarchy: the specialised builders {@link #withType} swaps in -
+   * {@link TypeFullTextIndexBuilder}, {@link TypeLSMVectorIndexBuilder}, {@link TypeLSMSparseVectorIndexBuilder} and
+   * {@link TypeGeoIndexBuilder} - all delegate here, each supplying only the two things that make it different: the
+   * index type it stands for and the {@link IndexMetadata} subclass its own settings live in.
+   * <p>
+   * Each of the four used to copy the common state itself, field by field, so a field added to {@link IndexBuilder} or
+   * to this class kept working for {@code LSM_TREE} and {@code HASH} - which never swap builders - and was dropped on
+   * the floor for all four specialised types, with no compile error and nothing to notice it (issue #5606). Now a new
+   * field has exactly one place to be added: here if it is declared by this class, {@link #copyBaseFieldsFrom} if it
+   * is declared by the base one.
+   *
+   * @param copyFrom  the builder being replaced, whose configuration must survive the swap
+   * @param indexType the index type this specialised builder stands for
+   * @param metadata  a freshly built metadata of the subclass the specialised builder writes its settings into; the
+   *                  common definition ({@code collations}, {@code typeIndexName}) is carried onto it from
+   *                  {@code copyFrom}
+   */
+  protected TypeIndexBuilder(final TypeIndexBuilder copyFrom, final Schema.INDEX_TYPE indexType,
+      final IndexMetadata metadata) {
+    super(copyFrom.database, TypeIndex.class);
+
+    // The type/properties/bucket identity comes from the metadata the subclass just built out of copyFrom's; what is
+    // left is the rest of the DEFINITION, which used to survive the swap only for GEOSPATIAL.
+    this.metadata = copyFrom.metadata.copyCommonTo(metadata);
+    this.indexType = indexType;
+
+    copyBaseFieldsFrom(copyFrom);
+
+    this.defaultKeyTypesForUndeclaredProperties = copyFrom.defaultKeyTypesForUndeclaredProperties;
+    // Sorted build cannot actually reach a specialised builder today - withType() refuses it for anything but
+    // LSM_TREE - so these five ride along for correctness rather than because something depends on them. That guard is
+    // circumstantial, not a design: the day a second index family learns to build sorted, the settings must already be
+    // here rather than being remembered as a sixth thing to add.
+    this.buildMode = copyFrom.buildMode;
+    this.buildMemoryBudgetBytes = copyFrom.buildMemoryBudgetBytes;
+    this.buildSpillDirectory = copyFrom.buildSpillDirectory;
+    this.buildMergeFanIn = copyFrom.buildMergeFanIn;
+    this.buildParallelism = copyFrom.buildParallelism;
+  }
+
+  /**
    * Tells the builder to fall back to {@code defaultKeyType} (one entry per property) when a
    * property is not yet declared on the document type, instead of throwing
    * {@link SchemaException}. The property remains undeclared on the schema: this avoids the

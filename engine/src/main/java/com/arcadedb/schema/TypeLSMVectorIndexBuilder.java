@@ -31,24 +31,11 @@ import com.arcadedb.serializer.json.JSONObject;
  */
 public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
   protected TypeLSMVectorIndexBuilder(final TypeIndexBuilder copyFrom) {
-    super(copyFrom.database, copyFrom.metadata.typeName, copyFrom.metadata.propertyNames.toArray(new String[0]));
-
-    this.metadata = new LSMVectorIndexMetadata(
-        copyFrom.metadata.typeName,
-        copyFrom.metadata.propertyNames.toArray(new String[0]),
-        copyFrom.metadata.associatedBucketId);
-
-    this.indexType = Schema.INDEX_TYPE.LSM_VECTOR;
-    this.unique = copyFrom.unique;
-    this.pageSize = copyFrom.pageSize;
-    this.nullStrategy = copyFrom.nullStrategy;
-    this.callback = copyFrom.callback;
-    this.ignoreIfExists = copyFrom.ignoreIfExists;
-    this.indexName = copyFrom.indexName;
-    this.filePath = copyFrom.filePath;
-    this.keyTypes = copyFrom.keyTypes;
-    this.batchSize = copyFrom.batchSize;
-    this.maxAttempts = copyFrom.maxAttempts;
+    // Every common setting is carried over by the shared copy constructor, which is the ONE place a new builder field
+    // has to be added - see TypeIndexBuilder(TypeIndexBuilder, INDEX_TYPE, IndexMetadata) and issue #5606.
+    super(copyFrom, Schema.INDEX_TYPE.LSM_VECTOR,
+        new LSMVectorIndexMetadata(copyFrom.metadata.typeName, copyFrom.metadata.propertyNames.toArray(new String[0]),
+            copyFrom.metadata.associatedBucketId));
   }
 
   protected TypeLSMVectorIndexBuilder(final DatabaseInternal database, final String typeName, final String[] propertyNames) {

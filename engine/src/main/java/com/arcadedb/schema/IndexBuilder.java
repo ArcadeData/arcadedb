@@ -89,6 +89,42 @@ public abstract class IndexBuilder<T extends Index> {
   }
 
   /**
+   * Carries every setting THIS class declares over to a builder that replaces {@code this} mid-configuration - the
+   * builder swap of {@link TypeIndexBuilder#withType}, which hands back a specialised subclass once the index type is
+   * known and leaves everything configured so far behind unless it is copied across.
+   * <p>
+   * The point of it being one method is that it is the ONE place a new field of this class has to be added. The four
+   * specialised builders used to hand-copy the same eleven fields each, which is a copy that cannot fail to compile
+   * and cannot be missed by review: {@code replaceIfIncompatible} (#5675) and {@code userMetadata} (#5723) were both
+   * added to this class, wired through a {@code withX()} setter, and silently dropped by every one of them - working
+   * perfectly for {@code LSM_TREE} and {@code HASH}, which never swap builders, and evaporating for FULL_TEXT,
+   * GEOSPATIAL and the two vector types (issue #5606). The shadowed {@code metadata} field of #5478 was the same class
+   * of bug one level down.
+   * <p>
+   * {@link #indexType}, {@link #metadata}, {@link #database} and {@link #indexImplementation} are deliberately NOT
+   * here: they are what the swap is FOR - the target builder is constructed around the new index type and its own
+   * metadata subclass, and gets the database from the source. See
+   * {@link TypeIndexBuilder#TypeIndexBuilder(TypeIndexBuilder, Schema.INDEX_TYPE, IndexMetadata)}, which sets those
+   * three and then calls this.
+   */
+  protected void copyBaseFieldsFrom(final IndexBuilder<?> source) {
+    this.unique = source.unique;
+    this.pageSize = source.pageSize;
+    this.nullStrategy = source.nullStrategy;
+    this.callback = source.callback;
+    this.ignoreIfExists = source.ignoreIfExists;
+    this.replaceIfIncompatible = source.replaceIfIncompatible;
+    this.indexName = source.indexName;
+    this.filePath = source.filePath;
+    this.keyTypes = source.keyTypes;
+    this.batchSize = source.batchSize;
+    this.maxAttempts = source.maxAttempts;
+    // The clause as written: shared rather than re-copied, because withUserMetadata() already deep-copied it on the
+    // way in and neither builder mutates it afterwards.
+    this.userMetadata = source.userMetadata;
+  }
+
+  /**
    * Answers whether {@code existing} already provides everything the caller asked for, which is the only thing that
    * makes an {@code IF NOT EXISTS} / {@link #withIgnoreIfExists(boolean)} request a legitimate no-op.
    * <p>
