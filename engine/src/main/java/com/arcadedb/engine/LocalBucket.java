@@ -3569,9 +3569,19 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // reported as contention. Same bound, in the same words, as offPageContentFingerprint and chunkFootprint.
         final int chunkHeaderPosition = (int) (chunkPositionInPage + chunkHeader[1]);
         if (!chunkImageFitsPage(chunkPage, chunkHeaderPosition, chunkPage.readInt(chunkHeaderPosition))) {
-          // NOT A FAILED HOP: the chunk this walk is STANDING on is malformed, so there is no pointer to name. The
-          // delete path does not read sizes at all, so its confirmation can never match this and falls back to the
-          // retry - which is the conservative answer for a shape it did not itself observe.
+          // NOT A FAILED HOP: the chunk this walk is STANDING on is malformed, so there is no pointer to name.
+          //
+          // The delete path never reads sizes, and deliberately so rather than by omission (PR review round 4 asked
+          // for this scope to be stated rather than left implicit): the size field sits BESIDE the continuation
+          // pointer, not in front of it, so a chain whose only fault is a declared size still walks perfectly - the
+          // delete finds every chunk, frees every slot and simply succeeds. There is nothing there to name and
+          // nothing to retry, which is what Issue6282BrokenChainDeleteAndProbeTest pins from the other side.
+          //
+          // The one shape where the two walks disagree is a bad size AND a bad pointer: this walk stops at the size,
+          // the delete stops at the pointer, the hops do not match and the confirmation declines. That fails SAFE -
+          // the delete keeps its retryable exception, and CHECK DATABASE FIX force-deletes on its own detection,
+          // which does read sizes. Aligning the two indices would buy that shape a permanent verdict at the cost of
+          // more index bookkeeping in the code that has already been the source of most of this issue's mistakes.
           walk.brokenAtChunk = chunkId;
           walk.brokenAtPointer = 0;
           return "invalid chunk size at chunk " + chunkId;

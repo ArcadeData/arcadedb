@@ -289,6 +289,37 @@ class Issue6282BrokenChainDeleteAndProbeTest extends TestHelper {
         .isNotInstanceOf(NeedRetryException.class));
   }
 
+  /**
+   * The delete-side counterpart of the test above, and the reason the size check lives only on the walk that needs
+   * it (PR review round 4 asked for the scope to be explicit rather than implicit).
+   * <p>
+   * {@code deleteRecordInternal} walks the chain by POINTERS and MARKERS and never reads a chunk's declared size -
+   * and it does not need to, because the size field sits beside the continuation pointer rather than in front of it.
+   * A chain whose only corruption is a bad size therefore still walks perfectly: every chunk is found, every slot is
+   * freed, and the delete simply succeeds. There is nothing here to name and nothing to retry.
+   * <p>
+   * The combined shape - a bad size AND a bad pointer - is the one where the two walks disagree about which hop
+   * failed, and there the confirmation deliberately declines to match and the delete keeps its retryable exception.
+   * That fails SAFE: {@code CHECK DATABASE FIX} force-deletes on its own detection (which does read sizes), so no
+   * record is ever left permanently stuck.
+   */
+  @Test
+  void aBadChunkSizeAloneStillDeletesBecauseTheChainItselfIsIntact() {
+    final RID rid = createMultiPageVertex();
+    corruptFirstChunkSize(rid.getBucketId(), Integer.MAX_VALUE);
+
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(rid.getBucketId());
+    assertThat(bucket.isChunkChainBroken(rid))
+        .as("precondition: the READ path does see this as corruption").isTrue();
+
+    // NO force, NO opt-in: the pointers are all sound, so the physical free walks the whole chain and completes
+    database.transaction(() -> bucket.deleteRecord(rid));
+
+    assertThat(bucket.existsRecord(rid))
+        .as("a chain whose only fault is a declared size is still fully walkable, so it deletes like any other")
+        .isFalse();
+  }
+
   /** The hook is absent unless a test installs it, which is what makes it free in production. */
   @Test
   void theFaultInjectorIsAbsentByDefault() {
