@@ -72,8 +72,10 @@ class Issue5024WebSocketEventBusConcurrencyTest {
 
   /**
    * Defect 1: when the watcher thread itself triggers a stop (the last subscriber turns out to be a zombie during
-   * {@code publish}), {@code shutdown()} must not block on its own termination latch. Before the fix the thread parks
-   * in {@code runningLock.await()} inside {@code publish()} inside {@code run()} and never terminates.
+   * {@code publish}), {@code shutdown()} must not block on its own termination. Before the fix the thread waited on
+   * that barrier from inside {@code publish()} inside {@code run()} - so it waited on a termination that only its own
+   * return could produce, and never terminated. The barrier was a latch then and is {@link Thread#join()} now; the
+   * self-shutdown guard is what makes either one safe.
    */
   @Test
   void watcherSelfShutdownDoesNotHang() throws Exception {
