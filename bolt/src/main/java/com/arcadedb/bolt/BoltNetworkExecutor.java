@@ -134,6 +134,14 @@ public class BoltNetworkExecutor extends Thread {
   private final boolean             debug;
   private final BoltNetworkListener listener; // For notifying when connection closes
 
+  /**
+   * Ceiling on result streams held open at once by one connection. Every one of them pins an engine ResultSet
+   * (cursors, pages) for as long as its transaction lives, and nothing in the protocol obliges a client ever to
+   * consume one, so an unbounded map here is a resource leak a single authenticated session could drive. No real
+   * driver holds more than a handful open.
+   */
+  private static final int MAX_OPEN_STREAMS = 1024;
+
   private State              state = State.DISCONNECTED;
   private int                protocolVersion;
   private ServerSecurityUser user;
@@ -147,22 +155,21 @@ public class BoltNetworkExecutor extends Thread {
   private final BoltSession session = new BoltSession();
 
   /**
-   * Current result set for streaming results.
+   * Result streams open on this connection, keyed by qid and iterated in the order they were opened.
+   * <p>
+   * BOLT 4.0+ allows several open streams inside one explicit transaction, told apart by the qid a RUN returns
+   * and a PULL/DISCARD names (issue #6804). Outside a transaction there is at most one entry here.
+   * <p>
    * Thread-safety: This class is designed to handle a single connection in a dedicated thread.
    * All state variables are accessed only by the executor thread and do not require synchronization.
    */
-  private ResultSet          currentResultSet;
-  private List<String>       currentFields;
-  private Result             firstResult; // Buffered first result for field name extraction
-  private List<List<Object>> syntheticResults; // For system queries that return synthetic data
-  private int                recordsStreamed;
-  private long               queryStartTime; // Nanosecond timestamp when query execution started
-  private long               firstRecordTime; // Nanosecond timestamp when first record was retrieved
-  private boolean            isWriteOperation; // Whether the current query performs writes
-  // EXPLAIN / PROFILE state, populated in handleRun, surfaced in handlePull SUCCESS metadata
-  // so Neo4j drivers can read it via ResultSummary#plan() / #profile().
-  private Map<String, Object> currentPlanMetadata;
-  private String              currentPlanMetadataKey; // "plan" for EXPLAIN, "profile" for PROFILE
+  private final Map<Long, BoltQueryStream> openStreams = new LinkedHashMap<>();
+
+  /** Stream a PULL/DISCARD acts on when it carries no qid (or qid -1): the most recently opened one. */
+  private BoltQueryStream currentStream;
+
+  /** Next qid to hand out, numbered from 0 per explicit transaction as a Neo4j server does. */
+  private long nextQid;
 
   public BoltNetworkExecutor(final ArcadeDBServer server, final Socket socket, final BoltNetworkListener listener) {
     this(server, socket, listener, null);
@@ -582,12 +589,109 @@ public class BoltNetworkExecutor extends Thread {
 
   /**
    * Handle LOGOFF message.
+   * <p>
+   * BOLT 5.1 lists LOGOFF as valid only from READY, which is precisely the state where no result stream and no
+   * explicit transaction can be open. This handler used to be the one request handler with neither a state check
+   * nor any cleanup: a LOGOFF sent mid-stream or mid-transaction answered SUCCESS and left the ResultSet and the
+   * ArcadeDB transaction pinned on a connection the server had just stopped counting as authenticated. A
+   * following HELLO/LOGON as a different user came back to READY with that transaction still open, and its
+   * COMMIT then committed writes made before the user changed (issue #6803).
    */
   private void handleLogoff() throws IOException {
+    if (state == State.FAILED) {
+      sendIgnored();
+      return;
+    }
+
+    if (state != State.READY) {
+      sendFailure(BoltException.PROTOCOL_ERROR, "LOGOFF not expected in state: " + state);
+      state = State.FAILED;
+      return;
+    }
+
+    // Belt and braces: READY already implies no open stream and no open transaction, so nothing should be left
+    // to release here. Doing it anyway is what keeps "the server considers this connection unauthenticated" from
+    // ever meaning "and it still holds a transaction".
+    closeAllStreams("LOGOFF");
+    rollbackExplicitTransaction();
+
     user = null;
     markUnauthenticated();
     sendSuccess(Map.of());
     state = State.AUTHENTICATION;
+  }
+
+  /**
+   * Rolls back the explicit transaction, if any, and forgets it. Never throws: it runs on the teardown paths,
+   * where a rollback failure must not stop the rest of the teardown.
+   */
+  private void rollbackExplicitTransaction() {
+    if (explicitTransaction && database != null) {
+      try {
+        database.rollback();
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.FINE, "Failed to roll back the open transaction during teardown", e);
+      }
+    }
+    explicitTransaction = false;
+  }
+
+  /**
+   * Selects the stream a PULL/DISCARD acts on. A qid of -1 - the default a driver sends when it omits the field
+   * - means the most recently opened stream; any other value names one explicitly, which is how a client
+   * interleaves several streams inside one transaction. A qid naming nothing fails the session, exactly as a
+   * PULL with no result set behind it did before.
+   */
+  private BoltQueryStream resolveStream(final long qid) throws IOException {
+    final BoltQueryStream stream = qid < 0 ? currentStream : openStreams.get(qid);
+    if (stream == null) {
+      sendFailure(BoltException.PROTOCOL_ERROR, qid < 0 ? "No active result set" : "No active result set for qid " + qid);
+      state = State.FAILED;
+      return null;
+    }
+    return stream;
+  }
+
+  /**
+   * Registers a freshly executed query as an open stream and makes it the target of a qid-less PULL/DISCARD.
+   */
+  private void openStream(final BoltQueryStream stream) {
+    openStreams.put(stream.qid, stream);
+    currentStream = stream;
+    ++nextQid;
+  }
+
+  /**
+   * Completes one stream: releases it and, once nothing is left open, leaves STREAMING / TX_STREAMING. With
+   * several streams open in one transaction the session stays in TX_STREAMING until the last one is drained or
+   * discarded.
+   */
+  private void closeStream(final BoltQueryStream stream, final String phase) {
+    stream.close(this, phase);
+    openStreams.remove(stream.qid);
+
+    if (currentStream == stream) {
+      // Fall back to the newest stream still open, so a following qid-less PULL/DISCARD keeps meaning "the last
+      // one opened". The scan is over a map that holds a handful of entries in the worst realistic case.
+      currentStream = null;
+      for (final BoltQueryStream open : openStreams.values())
+        currentStream = open;
+    }
+
+    if (openStreams.isEmpty())
+      state = explicitTransaction ? State.TX_READY : State.READY;
+  }
+
+  /**
+   * Releases every open result stream, for the teardown paths (RESET, LOGOFF, ROLLBACK, connection close) where
+   * whatever the client left open has to go regardless of how many streams there were.
+   */
+  private void closeAllStreams(final String phase) {
+    for (final BoltQueryStream stream : openStreams.values())
+      stream.close(this, phase);
+    openStreams.clear();
+    currentStream = null;
+    nextQid = 0;
   }
 
   /**
@@ -601,35 +705,16 @@ public class BoltNetworkExecutor extends Thread {
    * Handle RESET message - reset to initial state.
    */
   private void handleReset() throws IOException {
-    // Close any open result set
-    if (currentResultSet != null) {
-      try {
-        currentResultSet.close();
-      } catch (final Exception e) {
-        LogManager.instance().log(this, Level.WARNING, "Failed to close ResultSet during RESET", e);
-      }
-    }
+    // Close every open result set
+    closeAllStreams("RESET");
 
     // Rollback any open transaction
-    if (explicitTransaction && database != null) {
-      try {
-        database.rollback();
-      } catch (final Exception e) {
-        // Ignore
-      }
-    }
+    rollbackExplicitTransaction();
 
     // NOTE: do not clear the GQL session parameters here. The Bolt RESET message is connection-level
     // housekeeping the driver sends when recycling a pooled connection, not a user request to reset GQL
     // session state; clearing here would drop SESSION SET parameters between auto-commit queries. GQL
     // session parameters are cleared only by an explicit SESSION RESET / SESSION CLOSE statement.
-
-    explicitTransaction = false;
-    currentResultSet = null;
-    currentFields = null;
-    firstResult = null;
-    currentPlanMetadata = null;
-    currentPlanMetadataKey = null;
 
     sendSuccess(Map.of());
 
@@ -652,8 +737,21 @@ public class BoltNetworkExecutor extends Thread {
       return;
     }
 
-    if (state != State.READY && state != State.TX_READY) {
+    // TX_STREAMING accepts RUN: BOLT 4.0+ lets a client hold several result streams open inside one explicit
+    // transaction and tell them apart by qid, which is the entire reason that field exists (issue #6804). Any
+    // driver configured with a fetch size smaller than the first query's row count leaves the first stream open,
+    // so a second query in the same transaction used to be answered with a protocol error that failed the
+    // session and lost the transaction. STREAMING deliberately does NOT accept RUN, matching the BOLT state
+    // machine: outside a transaction there is nothing to multiplex onto.
+    if (state != State.READY && state != State.TX_READY && state != State.TX_STREAMING) {
       sendFailure(BoltException.PROTOCOL_ERROR, "RUN not expected in state: " + state);
+      state = State.FAILED;
+      return;
+    }
+
+    if (openStreams.size() >= MAX_OPEN_STREAMS) {
+      sendFailure(BoltException.PROTOCOL_ERROR,
+          "Too many result streams open at once (max " + MAX_OPEN_STREAMS + "): consume or discard one first");
       state = State.FAILED;
       return;
     }
@@ -670,10 +768,10 @@ public class BoltNetworkExecutor extends Thread {
     if (debug)
       LogManager.instance().log(this, Level.FINE, "BOLT executing: %s with params %s (db=%s)", query, params, databaseName);
 
+    final BoltQueryStream stream = new BoltQueryStream(nextQid);
+
     // Start timing for performance metrics
-    queryStartTime = System.nanoTime();
-    firstRecordTime = 0;
-    syntheticResults = null;
+    stream.queryStartTime = System.nanoTime();
 
     // Ensure database is open (maps "system"/"neo4j" to default database). This also attaches the
     // connection's GQL session to the thread context, which the engine reads for SESSION statements.
@@ -681,15 +779,13 @@ public class BoltNetworkExecutor extends Thread {
       return;
 
     // Intercept known system queries (CALL dbms.components(), SHOW DATABASES, etc.)
-    if (handleSystemQuery(query)) {
-      currentResultSet = null;
-      firstResult = null;
-      recordsStreamed = 0;
-      isWriteOperation = false;
+    if (handleSystemQuery(query, stream)) {
+      openStream(stream);
 
       final Map<String, Object> metadata = new LinkedHashMap<>();
-      metadata.put("fields", currentFields);
+      metadata.put("fields", stream.fields);
       metadata.put("t_first", 0L);
+      addQidMetadata(metadata, stream);
       sendSuccess(metadata);
       state = explicitTransaction ? State.TX_STREAMING : State.STREAMING;
       return;
@@ -697,74 +793,91 @@ public class BoltNetworkExecutor extends Thread {
 
     try {
       // Determine if this is a write query using the query analyzer
-      isWriteOperation = isWriteQuery(query);
+      stream.writeOperation = isWriteQuery(query);
 
       // Detect EXPLAIN / PROFILE prefix so we can later surface the execution plan
       // in PULL SUCCESS metadata (consumed by Neo4j drivers as ResultSummary#plan / #profile).
       // The OpenCypher engine itself also strips the prefix, but we need to know which one
       // was present here to choose between record-streaming (PROFILE) and plan-only (EXPLAIN)
       // and to pick the correct metadata key.
-      currentPlanMetadata = null;
-      currentPlanMetadataKey = null;
       final String trimmedQuery = query == null ? "" : query.trim();
       final String upperQuery = trimmedQuery.toUpperCase();
       final boolean explainMode = upperQuery.startsWith("EXPLAIN ");
       final boolean profileMode = !explainMode && upperQuery.startsWith("PROFILE ");
 
       // Use command() for writes, query() for reads
-      if (isWriteOperation) {
-        currentResultSet = database.command("opencypher", query, params);
+      if (stream.writeOperation) {
+        stream.resultSet = database.command("opencypher", query, params);
       } else {
-        currentResultSet = database.query("opencypher", query, params);
+        stream.resultSet = database.query("opencypher", query, params);
       }
 
       // Capture the plan from the engine. EXPLAIN returns ExplainResultSet (one synthetic row
       // exposing getExecutionPlan()); PROFILE returns InternalResultSet with setPlan() set.
       if (explainMode || profileMode) {
-        currentPlanMetadataKey = explainMode ? "plan" : "profile";
-        currentPlanMetadata = buildPlanMetadata(currentResultSet, profileMode);
+        stream.planMetadataKey = explainMode ? "plan" : "profile";
+        stream.planMetadata = buildPlanMetadata(stream.resultSet, profileMode);
         if (explainMode) {
           // For EXPLAIN, the only "row" in the result set is the plan itself: drain it so that
           // the client sees zero records, matching Neo4j's EXPLAIN semantics.
-          drainResultSet(currentResultSet);
+          drainResultSet(stream.resultSet);
         }
       }
 
-      currentFields = extractFieldNames(currentResultSet);
-      recordsStreamed = 0;
+      stream.fields = extractFieldNames(stream.resultSet, stream);
+
+      // The plan above is necessarily built before this query's column list is known (for EXPLAIN the rows have
+      // to be drained first), so its identifiers are filled in here. Reading them from a connection-wide field
+      // at build time, as this used to, meant the plan carried whatever the PREVIOUS query returned.
+      if (stream.planMetadata != null)
+        stream.planMetadata.put("identifiers", stream.fields);
 
       if (debug) {
-        LogManager.instance().log(this, Level.FINE, "BOLT query fields=%s firstResult=%s", currentFields,
-            firstResult != null ? firstResult.toJSON() : "null");
+        LogManager.instance().log(this, Level.FINE, "BOLT query fields=%s firstResult=%s", stream.fields,
+            stream.firstResult != null ? stream.firstResult.toJSON() : "null");
       }
+
+      openStream(stream);
 
       // Build success response with query metadata
       final Map<String, Object> metadata = new LinkedHashMap<>();
-      metadata.put("fields", currentFields);
+      metadata.put("fields", stream.fields);
 
       // Calculate time to first record if we already have one buffered
-      if (firstResult != null && firstRecordTime > 0) {
-        final long tFirstMs = (firstRecordTime - queryStartTime) / 1_000_000;
+      if (stream.firstResult != null && stream.firstRecordTime > 0) {
+        final long tFirstMs = (stream.firstRecordTime - stream.queryStartTime) / 1_000_000;
         metadata.put("t_first", tFirstMs);
       } else {
         metadata.put("t_first", 0L);
       }
+      addQidMetadata(metadata, stream);
 
       sendSuccess(metadata);
       state = explicitTransaction ? State.TX_STREAMING : State.STREAMING;
 
     } catch (final CommandParsingException e) {
+      stream.close(this, "RUN failure");
       final String parseMsg = e.getMessage() != null ? e.getMessage() : "Query parsing error";
       sendFailure(classifyParsingError(e), parseMsg);
       state = State.FAILED;
     } catch (final Exception e) {
       // MVCC conflicts (NeedRetryException) are expected under contention and auto-retried by the driver,
       // so log them at FINE to avoid flooding WARNING with normal, recoverable flow; genuine errors stay WARNING.
+      stream.close(this, "RUN failure");
       LogManager.instance().log(this, isRetryableConflict(e) ? Level.FINE : Level.WARNING, "BOLT query error", e);
       final String errorMsg = e.getMessage() != null ? e.getMessage() : "Database error";
       sendFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), errorMsg);
       state = State.FAILED;
     }
+  }
+
+  /**
+   * Adds the stream's qid to a RUN SUCCESS, but only inside an explicit transaction: that is where a client may
+   * open more than one stream and therefore needs to name them, and it matches what a Neo4j server sends.
+   */
+  private void addQidMetadata(final Map<String, Object> metadata, final BoltQueryStream stream) {
+    if (explicitTransaction)
+      metadata.put("qid", stream.qid);
   }
 
   /**
@@ -782,81 +895,61 @@ public class BoltNetworkExecutor extends Thread {
       return;
     }
 
-    if (currentResultSet == null && syntheticResults == null) {
-      sendFailure(BoltException.PROTOCOL_ERROR, "No active result set");
-      state = State.FAILED;
+    final BoltQueryStream stream = resolveStream(message.getQid());
+    if (stream == null)
       return;
-    }
 
     try {
       final long n = message.getN();
       long count = 0;
 
       // Handle synthetic results (from system queries)
-      if (syntheticResults != null) {
-        while (!syntheticResults.isEmpty() && (n < 0 || count < n)) {
-          sendRecord(syntheticResults.remove(0));
+      if (stream.syntheticResults != null) {
+        while (!stream.syntheticResults.isEmpty() && (n < 0 || count < n)) {
+          sendRecord(stream.syntheticResults.remove(0));
           count++;
-          recordsStreamed++;
         }
       } else {
         // First, return the buffered first result if present
-        if (firstResult != null && (n < 0 || count < n)) {
-          final List<Object> values = extractRecordValues(firstResult);
-          sendRecord(values);
+        if (stream.firstResult != null && (n < 0 || count < n)) {
+          sendRecord(extractRecordValues(stream.firstResult, stream.fields));
           count++;
-          recordsStreamed++;
-          firstResult = null;
+          stream.firstResult = null;
         }
 
         // Then continue with the rest of the result set
-        while (currentResultSet.hasNext() && (n < 0 || count < n)) {
-          final Result record = currentResultSet.next();
-          final List<Object> values = extractRecordValues(record);
-
-          sendRecord(values);
+        while (stream.resultSet.hasNext() && (n < 0 || count < n)) {
+          sendRecord(extractRecordValues(stream.resultSet.next(), stream.fields));
           count++;
-          recordsStreamed++;
         }
       }
 
-      final boolean hasMore = syntheticResults != null ? !syntheticResults.isEmpty()
-          : (firstResult != null || currentResultSet.hasNext());
+      final boolean hasMore = stream.hasMore();
 
       // Build success metadata
       final Map<String, Object> metadata = new LinkedHashMap<>();
       if (!hasMore) {
         // Determine query type based on whether it performed writes
         // r=read, w=write (for simplicity, we use binary classification)
-        metadata.put("type", isWriteOperation ? "w" : "r");
+        metadata.put("type", stream.writeOperation ? "w" : "r");
 
         // Calculate time to last record
-        final long tLastMs = (System.nanoTime() - queryStartTime) / 1_000_000;
+        final long tLastMs = (System.nanoTime() - stream.queryStartTime) / 1_000_000;
         metadata.put("t_last", tLastMs);
 
         // Surface execution plan from EXPLAIN / PROFILE (PME) so neo4j drivers populate
         // ResultSummary#plan() / #profile() instead of returning null.
-        if (currentPlanMetadata != null && currentPlanMetadataKey != null)
-          metadata.put(currentPlanMetadataKey, currentPlanMetadata);
+        if (stream.planMetadata != null && stream.planMetadataKey != null)
+          metadata.put(stream.planMetadataKey, stream.planMetadata);
 
-        if (currentResultSet != null) {
-          final Optional<QueryStatistics> stats = currentResultSet.getStatistics();
+        if (stream.resultSet != null) {
+          final Optional<QueryStatistics> stats = stream.resultSet.getStatistics();
           if (stats.isPresent() && stats.get().containsUpdates())
             metadata.put("stats", BoltResultStats.toStatsMap(stats.get()));
-
-          try {
-            currentResultSet.close();
-          } catch (final Exception e) {
-            LogManager.instance().log(this, Level.WARNING, "Failed to close ResultSet during PULL completion", e);
-          }
         }
-        currentResultSet = null;
-        currentFields = null;
-        firstResult = null;
-        syntheticResults = null;
-        currentPlanMetadata = null;
-        currentPlanMetadataKey = null;
-        state = explicitTransaction ? State.TX_READY : State.READY;
+
+        // Leaves TX_STREAMING only once this connection has no other stream still open.
+        closeStream(stream, "PULL completion");
       }
       metadata.put("has_more", hasMore);
 
@@ -887,40 +980,35 @@ public class BoltNetworkExecutor extends Thread {
       return;
     }
 
+    final BoltQueryStream stream = resolveStream(discardMessage.getQid());
+    if (stream == null)
+      return;
+
     // Discard all remaining records
     Optional<QueryStatistics> stats = Optional.empty();
-    if (currentResultSet != null) {
+    if (stream.resultSet != null) {
       // Statistics are computed eagerly when the write is materialized in the query plan, so they
       // are valid to read before draining/closing the result set.
-      stats = currentResultSet.getStatistics();
-      while (currentResultSet.hasNext()) {
-        currentResultSet.next();
-      }
-      try {
-        currentResultSet.close();
-      } catch (final Exception e) {
-        LogManager.instance().log(this, Level.WARNING, "Failed to close ResultSet during DISCARD", e);
+      stats = stream.resultSet.getStatistics();
+      while (stream.resultSet.hasNext()) {
+        stream.resultSet.next();
       }
     }
 
-    currentResultSet = null;
-    currentFields = null;
-    firstResult = null;
-    syntheticResults = null;
-
     final Map<String, Object> metadata = new LinkedHashMap<>();
     // Even on DISCARD we still surface the plan so EXPLAIN clients that DISCARD instead
-    // of PULL still get ResultSummary#plan / #profile populated.
-    if (currentPlanMetadata != null && currentPlanMetadataKey != null)
-      metadata.put(currentPlanMetadataKey, currentPlanMetadata);
-    currentPlanMetadata = null;
-    currentPlanMetadataKey = null;
+    // of PULL still get ResultSummary#plan / #profile populated. Read before the stream is released,
+    // which clears it.
+    if (stream.planMetadata != null && stream.planMetadataKey != null)
+      metadata.put(stream.planMetadataKey, stream.planMetadata);
     if (stats.isPresent() && stats.get().containsUpdates())
       metadata.put("stats", BoltResultStats.toStatsMap(stats.get()));
     metadata.put("has_more", false);
 
+    // Leaves TX_STREAMING only once this connection has no other stream still open.
+    closeStream(stream, "DISCARD");
+
     sendSuccess(metadata);
-    state = explicitTransaction ? State.TX_READY : State.READY;
   }
 
   /**
@@ -951,6 +1039,7 @@ public class BoltNetworkExecutor extends Thread {
     try {
       database.begin();
       explicitTransaction = true;
+      nextQid = 0; // qids are numbered per explicit transaction
 
       sendSuccess(Map.of());
       state = State.TX_READY;
@@ -1020,20 +1109,11 @@ public class BoltNetworkExecutor extends Thread {
     }
 
     try {
-      if (currentResultSet != null) {
-        try {
-          currentResultSet.close();
-        } catch (final Exception e) {
-          LogManager.instance().log(this, Level.WARNING, "Failed to close ResultSet during ROLLBACK", e);
-        }
-      }
+      closeAllStreams("ROLLBACK");
       if (database != null) {
         database.rollback();
       }
       explicitTransaction = false;
-      currentResultSet = null;
-      currentFields = null;
-      firstResult = null;
 
       sendSuccess(Map.of());
       state = State.READY;
@@ -1193,82 +1273,83 @@ public class BoltNetworkExecutor extends Thread {
 
   /**
    * Handles known Neo4j system queries (e.g., dbms.components, SHOW DATABASES).
-   * Returns true if the query was handled as a system query, false if it should be executed normally.
+   * Returns true if the query was handled as a system query - populating {@code stream} with the synthetic
+   * fields and rows to serve - false if it should be executed normally.
    */
-  private boolean handleSystemQuery(final String query) throws IOException {
+  private boolean handleSystemQuery(final String query, final BoltQueryStream stream) throws IOException {
     final String normalized = BoltSystemProcedures.normalize(query);
 
     if (normalized.contains("dbms.components")) {
       // CALL dbms.components() - returns server version info
-      currentFields = List.of("name", "versions", "edition");
-      syntheticResults = new ArrayList<>();
-      syntheticResults.add(List.of("Neo4j Kernel", List.of("5.26.0"), "community"));
+      stream.fields = List.of("name", "versions", "edition");
+      stream.syntheticResults = new ArrayList<>();
+      stream.syntheticResults.add(List.of("Neo4j Kernel", List.of("5.26.0"), "community"));
       return true;
 
     } else if (normalized.startsWith("show database") || normalized.contains("dbms.showdatabase")
         || normalized.contains("dbms.listdatabases")) {
       // SHOW DATABASES or CALL dbms.listDatabases()
-      currentFields = List.of("name", "type", "aliases", "access", "address", "role",
+      stream.fields = List.of("name", "type", "aliases", "access", "address", "role",
           "writer", "requestedStatus", "currentStatus", "statusMessage", "default", "home",
           "constituents");
-      syntheticResults = new ArrayList<>();
+      stream.syntheticResults = new ArrayList<>();
       for (final String dbName : server.getDatabaseNames()) {
-        syntheticResults.add(List.of(dbName, "standard", List.of(), "read-write",
+        stream.syntheticResults.add(List.of(dbName, "standard", List.of(), "read-write",
             getBoltAddress(GlobalConfiguration.BOLT_PORT.getValueAsInteger()), "primary",
             true, "online", "online", "", dbName.equals(database != null ? database.getName() : ""), false,
             List.of()));
       }
       // Also add the virtual "system" database entry
-      syntheticResults.add(List.of("system", "system", List.of(), "read-write",
+      stream.syntheticResults.add(List.of("system", "system", List.of(), "read-write",
           getBoltAddress(GlobalConfiguration.BOLT_PORT.getValueAsInteger()), "primary",
           false, "online", "online", "", false, false, List.of()));
       return true;
 
     } else if (normalized.contains("show current user") || normalized.contains("dbms.showcurrentuser")) {
       // SHOW CURRENT USER or CALL dbms.showCurrentUser()
-      currentFields = List.of("user", "roles", "passwordChangeRequired", "suspended", "home");
-      syntheticResults = new ArrayList<>();
+      stream.fields = List.of("user", "roles", "passwordChangeRequired", "suspended", "home");
+      stream.syntheticResults = new ArrayList<>();
       final List<Object> userRecord = new ArrayList<>();
       userRecord.add(user != null ? user.getName() : "anonymous");
       userRecord.add(List.of("admin"));
       userRecord.add(false);
       userRecord.add(false);
       userRecord.add(null); // home database (null = use default)
-      syntheticResults.add(userRecord);
+      stream.syntheticResults.add(userRecord);
       return true;
 
     } else if (normalized.contains("dbms.info")) {
       // CALL dbms.info() - returns basic server info
-      currentFields = List.of("id", "name", "creationDate");
-      syntheticResults = new ArrayList<>();
-      syntheticResults.add(List.of("arcadedb-" + server.getServerName(), server.getServerName(), ""));
+      stream.fields = List.of("id", "name", "creationDate");
+      stream.syntheticResults = new ArrayList<>();
+      stream.syntheticResults.add(List.of("arcadedb-" + server.getServerName(), server.getServerName(), ""));
       return true;
 
     } else if (normalized.contains("db.ping")) {
       // CALL db.ping() - health check
-      currentFields = List.of("success");
-      syntheticResults = new ArrayList<>();
-      syntheticResults.add(List.of(true));
+      stream.fields = List.of("success");
+      stream.syntheticResults = new ArrayList<>();
+      stream.syntheticResults.add(List.of(true));
       return true;
 
     } else if (normalized.contains("dbms.clientconfig")) {
       // CALL dbms.clientConfig() - client configuration
-      currentFields = List.of("name", "value");
-      syntheticResults = new ArrayList<>();
+      stream.fields = List.of("name", "value");
+      stream.syntheticResults = new ArrayList<>();
       return true;
 
     } else if (normalized.startsWith("show procedure")) {
       // SHOW PROCEDURES YIELD * - return empty list
-      currentFields = List.of("name", "description", "mode", "worksOnSystem", "argumentDescription",
+      stream.fields = List.of("name", "description", "mode", "worksOnSystem", "argumentDescription",
           "returnDescription", "admin", "option");
-      syntheticResults = new ArrayList<>();
+      stream.syntheticResults = new ArrayList<>();
       return true;
 
     } else if (normalized.startsWith("show function")) {
       // SHOW FUNCTIONS YIELD * - return empty list
-      currentFields = List.of("name", "category", "description", "isBuiltIn", "argumentDescription",
+      stream.fields = List.of("name", "category", "description", "isBuiltIn", "argumentDescription",
           "returnDescription", "aggregating");
-      syntheticResults = new ArrayList<>();
+      stream.syntheticResults = new ArrayList<>();
       return true;
 
     } else if (BoltSystemProcedures.isSchemaProcedureQuery(normalized)) {
@@ -1280,8 +1361,8 @@ public class BoltNetworkExecutor extends Thread {
       final BoltSystemProcedures.Served served = BoltSystemProcedures.serveSchemaProcedure(database, normalized);
       if (served == null)
         return false;
-      currentFields = served.fields();
-      syntheticResults = served.rows();
+      stream.fields = served.fields();
+      stream.syntheticResults = served.rows();
       return true;
 
     } else if (normalized.startsWith("show index")
@@ -1294,9 +1375,9 @@ public class BoltNetworkExecutor extends Thread {
         || normalized.startsWith("show vector index")
         || normalized.startsWith("show sparse_vector index")) {
       // SHOW INDEXES / SHOW ... INDEXES - list indexes from ArcadeDB schema
-      currentFields = List.of("id", "name", "state", "populationPercent", "type", "entityType",
+      stream.fields = List.of("id", "name", "state", "populationPercent", "type", "entityType",
           "labelsOrTypes", "properties", "indexProvider", "owningConstraint", "lastRead", "readCount");
-      syntheticResults = buildShowIndexesResults(normalized);
+      stream.syntheticResults = buildShowIndexesResults(normalized);
       return true;
 
     } else if (normalized.startsWith("show constraint")
@@ -1318,16 +1399,16 @@ public class BoltNetworkExecutor extends Thread {
         || normalized.startsWith("show node property type constraint")
         || normalized.startsWith("show relationship property type constraint")) {
       // SHOW CONSTRAINTS / SHOW ... CONSTRAINTS - list constraints from ArcadeDB schema
-      currentFields = List.of("id", "name", "type", "entityType", "labelsOrTypes", "properties",
+      stream.fields = List.of("id", "name", "type", "entityType", "labelsOrTypes", "properties",
           "ownedIndex", "propertyType");
-      syntheticResults = buildShowConstraintsResults(normalized);
+      stream.syntheticResults = buildShowConstraintsResults(normalized);
       return true;
 
     } else if (normalized.contains("dbms.licenseagreementdetails")) {
       // CALL dbms.licenseAgreementDetails() - return empty/default
-      currentFields = List.of("name", "status", "version");
-      syntheticResults = new ArrayList<>();
-      syntheticResults.add(List.of("ArcadeDB", "active", "community"));
+      stream.fields = List.of("name", "status", "version");
+      stream.syntheticResults = new ArrayList<>();
+      stream.syntheticResults.add(List.of("ArcadeDB", "active", "community"));
       return true;
     }
 
@@ -1544,27 +1625,27 @@ public class BoltNetworkExecutor extends Thread {
    * For single-element results (e.g., RETURN n), the projection name is stored
    * in metadata by FinalProjectionStep and used here to preserve field names.
    */
-  private List<String> extractFieldNames(final ResultSet resultSet) {
+  private List<String> extractFieldNames(final ResultSet resultSet, final BoltQueryStream stream) {
     if (resultSet == null) {
       return List.of();
     }
 
     // Peek at first result to get field names
     if (resultSet.hasNext()) {
-      firstResult = resultSet.next();
-      firstRecordTime = System.nanoTime(); // Capture time when first record is available
+      stream.firstResult = resultSet.next();
+      stream.firstRecordTime = System.nanoTime(); // Capture time when first record is available
 
       // Check if this is an unwrapped element with a projection name in metadata
       // This happens for queries like "MATCH (n) RETURN n" where the vertex is
       // returned directly but we need to preserve the field name "n" for Bolt protocol
-      if (firstResult.isElement()) {
-        final Object projectionName = firstResult.getMetadata(PROJECTION_NAME_METADATA);
+      if (stream.firstResult.isElement()) {
+        final Object projectionName = stream.firstResult.getMetadata(PROJECTION_NAME_METADATA);
         if (projectionName instanceof String name) {
           return List.of(name);
         }
       }
 
-      final Set<String> propertyNames = firstResult.getPropertyNames();
+      final Set<String> propertyNames = stream.firstResult.getPropertyNames();
       return propertyNames != null ? new ArrayList<>(propertyNames) : List.of();
     }
 
@@ -1578,7 +1659,7 @@ public class BoltNetworkExecutor extends Thread {
    * For element results (e.g., RETURN n where n is a vertex), the whole element
    * is returned as a single value, converted to BoltNode/BoltRelationship.
    */
-  private List<Object> extractRecordValues(final Result result) {
+  private List<Object> extractRecordValues(final Result result, final List<String> fields) {
     final List<Object> values = new ArrayList<>();
 
     // Check if this is an unwrapped element result
@@ -1588,7 +1669,7 @@ public class BoltNetworkExecutor extends Thread {
       values.add(BoltStructureMapper.toPackStreamValue(result.getElement().orElse(null)));
     } else {
       // Standard projection result - extract each field
-      for (final String field : currentFields) {
+      for (final String field : fields) {
         final Object value = result.getProperty(field);
         values.add(BoltStructureMapper.toPackStreamValue(value));
       }
@@ -1662,7 +1743,10 @@ public class BoltNetworkExecutor extends Thread {
 
     final Map<String, Object> root = new LinkedHashMap<>();
     root.put("operatorType", profileMode ? "ArcadeDB.OpenCypher.ProfilePlan" : "ArcadeDB.OpenCypher.Plan");
-    root.put("identifiers", currentFields != null ? currentFields : List.<String>of());
+    // Placeholder: the caller overwrites this with the query's own column list once it is known (the map keeps
+    // the key's position). The plan has to be captured before the EXPLAIN rows are drained, i.e. before the
+    // columns can be read off the result set.
+    root.put("identifiers", List.<String>of());
     root.put("args", args);
     root.put("children", List.<Map<String, Object>>of());
 
@@ -1996,22 +2080,8 @@ public class BoltNetworkExecutor extends Thread {
    * Cleanup resources when connection closes.
    */
   private void cleanup() {
-    try {
-      if (currentResultSet != null) {
-        currentResultSet.close();
-        currentResultSet = null;
-      }
-    } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING, "Failed to close ResultSet during cleanup", e);
-    }
-
-    try {
-      if (explicitTransaction && database != null) {
-        database.rollback();
-      }
-    } catch (final Exception e) {
-      // Ignore
-    }
+    closeAllStreams("connection close");
+    rollbackExplicitTransaction();
 
     // Database is managed by the server - just release our reference
     // DO NOT close the shared database instance

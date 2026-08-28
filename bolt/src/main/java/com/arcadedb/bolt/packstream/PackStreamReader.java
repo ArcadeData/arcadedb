@@ -255,19 +255,19 @@ public class PackStreamReader {
     // TINY_STRING: 0x80 - 0x8F
     if (marker >= 0x80 && marker <= 0x8F) {
       final int length = marker & 0x0F;
-      return readStringBytes(length);
+      return readStringBytes(checkValueLength(length, "TINY_STRING"));
     }
 
     // STRING_8
     if (marker == (STRING_8 & 0xFF)) {
       final int length = in.readUnsignedByte();
-      return readStringBytes(length);
+      return readStringBytes(checkValueLength(length, "STRING_8"));
     }
 
     // STRING_16
     if (marker == (STRING_16 & 0xFF)) {
       final int length = in.readUnsignedShort();
-      return readStringBytes(length);
+      return readStringBytes(checkValueLength(length, "STRING_16"));
     }
 
     // STRING_32
@@ -279,13 +279,13 @@ public class PackStreamReader {
     // BYTES_8
     if (marker == (BYTES_8 & 0xFF)) {
       final int length = in.readUnsignedByte();
-      return readBytes(length);
+      return readBytes(checkValueLength(length, "BYTES_8"));
     }
 
     // BYTES_16
     if (marker == (BYTES_16 & 0xFF)) {
       final int length = in.readUnsignedShort();
-      return readBytes(length);
+      return readBytes(checkValueLength(length, "BYTES_16"));
     }
 
     // BYTES_32
@@ -297,19 +297,19 @@ public class PackStreamReader {
     // TINY_LIST: 0x90 - 0x9F
     if (marker >= 0x90 && marker <= 0x9F) {
       final int size = marker & 0x0F;
-      return openList(size, stack);
+      return openList(checkElementCount(size, "TINY_LIST"), stack);
     }
 
     // LIST_8
     if (marker == (LIST_8 & 0xFF)) {
       final int size = in.readUnsignedByte();
-      return openList(size, stack);
+      return openList(checkElementCount(size, "LIST_8"), stack);
     }
 
     // LIST_16
     if (marker == (LIST_16 & 0xFF)) {
       final int size = in.readUnsignedShort();
-      return openList(size, stack);
+      return openList(checkElementCount(size, "LIST_16"), stack);
     }
 
     // LIST_32
@@ -321,19 +321,19 @@ public class PackStreamReader {
     // TINY_MAP: 0xA0 - 0xAF
     if (marker >= 0xA0 && marker <= 0xAF) {
       final int size = marker & 0x0F;
-      return openMap(size, stack);
+      return openMap(checkElementCount(size, "TINY_MAP"), stack);
     }
 
     // MAP_8
     if (marker == (MAP_8 & 0xFF)) {
       final int size = in.readUnsignedByte();
-      return openMap(size, stack);
+      return openMap(checkElementCount(size, "MAP_8"), stack);
     }
 
     // MAP_16
     if (marker == (MAP_16 & 0xFF)) {
       final int size = in.readUnsignedShort();
-      return openMap(size, stack);
+      return openMap(checkElementCount(size, "MAP_16"), stack);
     }
 
     // MAP_32
@@ -348,7 +348,8 @@ public class PackStreamReader {
       final byte signature = in.readByte();
       if (fieldCount == 0)
         return new StructureValue(signature, new ArrayList<>(0));
-      stack.push(new StructFrame(signature, fieldCount));
+      // The signature byte is already consumed, so the remaining-bytes floor is measured after it.
+      stack.push(new StructFrame(signature, checkElementCount(fieldCount, "TINY_STRUCT")));
       return OPEN_FRAME;
     }
 
@@ -386,9 +387,11 @@ public class PackStreamReader {
   }
 
   /**
-   * Validates a BYTES_32/STRING_32 declared length before it is used to size an allocation (issue #5918): rejects
-   * a negative length, one above the configured ceiling, and - the exact, un-configurable bound - one larger than
+   * Validates a declared BYTES/STRING length before it is used to size an allocation (issue #5918): rejects a
+   * negative length, one above the configured ceiling, and - the exact, un-configurable bound - one larger than
    * the bytes actually remaining in this message, which the declared length can never legitimately exceed.
+   * <p>
+   * Applied to every width, not only the 32-bit markers: the narrower markers were the gap issue #6800 closed.
    */
   private int checkValueLength(final int length, final String what) throws IOException {
     if (length < 0)
@@ -403,10 +406,16 @@ public class PackStreamReader {
   }
 
   /**
-   * Validates a LIST_32/MAP_32 declared size before it is used to size a collection's backing array (issue
-   * #5918): a LIST_32 element needs at least one wire byte to encode and a MAP_32 entry needs at least two (a key
-   * plus a value), so a declared count larger than the bytes remaining in this message is impossible - loosely
-   * for maps, since this check uses the same one-byte-per-count floor for both - and rejected without allocating.
+   * Validates a declared list/map/structure size before any element is read (issue #5918): a list element needs
+   * at least one wire byte to encode and a map entry needs at least two (a key plus a value), so a declared count
+   * larger than the bytes remaining in this message is impossible - loosely for maps, since this check uses the
+   * same one-byte-per-count floor for both - and rejected up front.
+   * <p>
+   * Issue #6800: originally invoked only from LIST_32/MAP_32, which left LIST_16 as a pure amplifier - 1001
+   * repetitions of the three bytes {@code D5 FF FF} declared 1001 lists of 65535 elements each, and every one of
+   * them sized a backing array before a single element was read. Every width is validated now, and
+   * {@link ListFrame}/{@link StructFrame} additionally grow their backing array from the elements actually read
+   * rather than from the declared count, so a declared size can no longer size an allocation on its own.
    */
   private int checkElementCount(final int size, final String what) throws IOException {
     if (size < 0)
@@ -452,8 +461,14 @@ public class PackStreamReader {
     private final List<Object> list;
     private int                remaining;
 
+    /**
+     * The backing list is deliberately NOT pre-sized from {@code size}: that count is client-supplied and read
+     * off the wire before authentication, so pre-sizing turns a declared count into an allocation before any
+     * element behind it has been seen (issue #6800). Growing from the elements actually read costs a few
+     * amortised array copies on a large legitimate list and makes the declared count unable to allocate at all.
+     */
     ListFrame(final int size) {
-      this.list = new ArrayList<>(size);
+      this.list = new ArrayList<>();
       this.remaining = size;
     }
 
@@ -470,8 +485,15 @@ public class PackStreamReader {
     private       boolean             expectingKey = true;
     private       String              pendingKey;
 
+    /**
+     * As {@link ListFrame}, the map is not pre-sized from the client-declared entry count (issue #6800).
+     * {@code new LinkedHashMap<>(n)} does not allocate its table up front, but it does remember {@code n} as the
+     * threshold, so the very first {@code put} allocates a {@code Node[]} sized for the declared count - which
+     * with a 16MB message ceiling is still an order-of-magnitude amplification. Growing from the entries
+     * actually read removes the declared count from the allocation path entirely.
+     */
     MapFrame(final int size) {
-      this.map = new LinkedHashMap<>(size);
+      this.map = new LinkedHashMap<>();
       this.remainingEntries = size;
     }
 
@@ -499,9 +521,14 @@ public class PackStreamReader {
     private final List<Object> fields;
     private       int          remaining;
 
+    /**
+     * As {@link ListFrame}, the field list grows from the fields actually read rather than from the declared
+     * count (issue #6800). A TINY_STRUCT declares at most 15 fields, so the amplification is small here, but
+     * the invariant "no allocation is sized by a client-declared count alone" is worth keeping uniform.
+     */
     StructFrame(final byte signature, final int fieldCount) {
       this.signature = signature;
-      this.fields = new ArrayList<>(fieldCount);
+      this.fields = new ArrayList<>();
       this.remaining = fieldCount;
     }
 
