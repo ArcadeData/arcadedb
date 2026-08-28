@@ -87,6 +87,28 @@ public class IndexMetadata {
     return copy;
   }
 
+  /**
+   * The in-place form of {@link #copyCommonTo}: takes the base-class settings from the definition of the index this one
+   * sits on top of.
+   * <p>
+   * A WRAPPER index type - full-text, geospatial, sparse-vector - splits its definition in two: the base settings
+   * (collations, the user-supplied {@code TypeIndex} name) belong to the underlying LSM-Tree's plain
+   * {@link IndexMetadata}, while the type-specific ones live in a subclass instance the wrapper holds. Creation
+   * populates a single instance carrying both halves, but a schema RELOAD builds the subclass instance from the
+   * bucket-level index JSON, which carries no {@code typeName} key and therefore skips {@link #fromJSON}'s base-field
+   * read entirely. Without this hop, {@link com.arcadedb.index.IndexInternal#getMetadataForNewFile()} would answer with
+   * the type-specific settings and NO collations and NO manual index name after a restart, and every carry-over site
+   * reading it would trade one silent loss for another (issue #5742).
+   *
+   * @param source the underlying index's definition, or {@code null} when there is none to inherit from
+   */
+  public final void inheritCommonSettingsFrom(final IndexMetadata source) {
+    if (source == null || source == this)
+      return;
+    collations = source.collations;
+    typeIndexName = source.typeIndexName;
+  }
+
   public void fromJSON(final JSONObject metadata) {
     typeName = metadata.getString("typeName");
     propertyNames = metadata.getJSONArray("properties").toListOfStrings();
@@ -331,15 +353,21 @@ public class IndexMetadata {
   }
 
   /**
-   * Reconstructs the metadata an index rebuild should carry over, for the two index types whose configuration
-   * {@link com.arcadedb.index.IndexInternal#getMetadata()} does not capture. {@code FULL_TEXT} and {@code GEOSPATIAL}
-   * keep their type-specific settings (analyzer, BM25 parameters, GeoHash precision) in a subtype the generic
-   * {@code IndexMetadata} does not carry, so a rebuild that passed {@code getMetadata()} straight through silently
-   * reset them to defaults (issue #4732). Reconstructing from the index's persisted JSON recovers them. FULL_TEXT's
-   * BM25 corpus counters are reset to zero so the re-index pass recomputes them from scratch instead of doubling the
-   * persisted totals; GEOSPATIAL's tokenization is reset to {@link GeoIndexMetadata#DEFAULT_TOKENIZATION}, which is
-   * also the one safe moment (a full re-read of every record) to publish the compact FRONTIER layout on an index
-   * created before 26.8.1 (#5478).
+   * The metadata an index rebuild has to carry over into the new index file: everything
+   * {@link com.arcadedb.index.IndexInternal#getMetadataForNewFile()} answers, retargeted to the type and properties the
+   * rebuilt index is created against, with the two adjustments a rebuild - and only a rebuild - is entitled to make.
+   * <p>
+   * FULL_TEXT's BM25 corpus counters are left behind (which {@link FullTextIndexMetadata#copy} already does) so the
+   * re-index pass recomputes them from scratch instead of doubling the persisted totals. GEOSPATIAL's tokenization is
+   * reset to {@link GeoIndexMetadata#DEFAULT_TOKENIZATION}: a rebuild is a full re-read of every record, which is the
+   * one safe moment to publish the compact FRONTIER layout on an index created before 26.8.1 (#5478).
+   * <p>
+   * Reads through the accessor rather than round-tripping the index's persisted JSON, which is what it used to do for
+   * FULL_TEXT and GEOSPATIAL and could not do at all for LSM_SPARSE_VECTOR: falling through to {@code getMetadata()}
+   * there answered with the underlying LSM-Tree's plain metadata, and the sparse builder refuses it outright, so
+   * {@code REBUILD INDEX} and {@code CHECK DATABASE FIX} on a sparse-vector index failed with "requires
+   * LSMSparseVectorIndexMetadata but got IndexMetadata" (issue #5742). One accessor answers for every index type, so an
+   * index type added later cannot be forgotten here.
    * <p>
    * Shared by {@code RebuildIndexStatement.buildIndex()} and {@code DatabaseChecker}'s auto-fix rebuild path, which
    * both drop and recreate a corrupted or explicitly-rebuilt index the same way (issue #5934).
@@ -350,18 +378,14 @@ public class IndexMetadata {
    */
   public static IndexMetadata reconstructForRebuild(final IndexInternal idx, final String typeName,
       final String[] propertyNames) {
-    final Schema.INDEX_TYPE type = idx.getType();
-    if (type == Schema.INDEX_TYPE.FULL_TEXT) {
-      final FullTextIndexMetadata ftMeta = new FullTextIndexMetadata(typeName, propertyNames, -1);
-      ftMeta.fromJSON(idx.toJSON());
-      ftMeta.setCounters(0L, 0L);
-      return ftMeta;
-    } else if (type == Schema.INDEX_TYPE.GEOSPATIAL) {
-      final GeoIndexMetadata geoMeta = new GeoIndexMetadata(typeName, propertyNames, -1);
-      geoMeta.fromJSON(idx.toJSON());
-      geoMeta.setTokenization(GeoIndexMetadata.DEFAULT_TOKENIZATION);
-      return geoMeta;
-    }
-    return idx.getMetadata();
+    final IndexMetadata source = idx.getMetadataForNewFile();
+    if (source == null)
+      return null;
+
+    // bucketId -1: the per-bucket builder binds each sub-index during create().
+    final IndexMetadata metadata = source.copy(typeName, propertyNames, -1);
+    if (metadata instanceof GeoIndexMetadata geoMetadata)
+      geoMetadata.setTokenization(GeoIndexMetadata.DEFAULT_TOKENIZATION);
+    return metadata;
   }
 }
