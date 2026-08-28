@@ -78,7 +78,7 @@ class RemoteGremlinTraversalClusterIT extends AbstractGremlinServerIT {
 
       final ArcadeGraph borrowed = pool.get();
       assertThat(borrowed.traversal().V().count().next()).isEqualTo(0L);
-      cluster = ((ArcadeGraph) borrowed).getCluster();
+      cluster = borrowed.getCluster();
       assertThat(cluster).isNotNull();
       borrowed.close();
 
