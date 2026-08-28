@@ -35,6 +35,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 /**
  * Issue #6132, the three gaps left by #6125 - none a correctness bug, all three places where that PR's own stated
@@ -143,7 +144,7 @@ class Issue6132SnapshotBarrierFollowupsTest extends TestHelper {
     try {
       try {
         pageManager.openSnapshot(db).close();
-        assertThat(false).as("the fabricated never-completing flush must fail the barrier").isTrue();
+        fail("the fabricated never-completing flush must fail the barrier");
       } catch (final PageSnapshotException e) {
         reason.set(e.getReason());
       }

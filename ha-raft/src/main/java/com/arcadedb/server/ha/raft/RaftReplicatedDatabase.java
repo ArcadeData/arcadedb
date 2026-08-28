@@ -2463,7 +2463,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     final int pageSize = file.getPageSize();
 
     // #5443: the page COUNT and the page CONTENT must both come from the page manager, never from the
-    // file on disk. PaginatedComponentFile.getTotalPages() counts the pages the file HOLDS, so it only sees
+    // file on disk. The count used below is PaginatedComponent.getTotalPages(), which is bumped synchronously at
+    // commit and so includes pages that are published but not yet written; the FILE's own
+    // PaginatedComponentFile.getTotalPages() advances only once a physical write has landed, so it only sees
     // what the asynchronous writer has already persisted: a compaction that has just published 13 pages
     // can still measure 10 on disk. Serializing from the file then shipped a TRUNCATED index - the
     // follower's compacted sub-index came out three pages short, and every key that lived in them became
@@ -2526,10 +2528,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   /**
    * Serializes {@code pageCount} pages starting at {@code firstPage} as one synthetic WAL transaction.
    * <p>
-   * Both the page count and the content come from the page manager, never from the file:
-   * {@code PaginatedComponentFile.getTotalPages()} counts the pages the file HOLDS, so it only sees what the
-   * asynchronous writer has already persisted, and reading the file directly can serialize a page that has not
-   * been written yet.
+   * Both the page count and the content come from the page manager, never from the file: the count is
+   * {@code PaginatedComponent.getTotalPages()}, which includes pages pending persistence, where the file's own
+   * {@code PaginatedComponentFile.getTotalPages()} advances only once a physical write has landed - and reading the
+   * file directly can serialize a page that has not been written yet.
    */
   private void appendPageRangeAsWal(final int fileId, final int pageSize, final int firstPage,
       final int pageCount, final List<byte[]> walOut, final List<Map<Integer, Integer>> bucketDeltasOut)
