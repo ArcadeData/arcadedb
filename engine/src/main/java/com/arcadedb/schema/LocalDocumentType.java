@@ -61,7 +61,12 @@ public class LocalDocumentType implements DocumentType {
   protected final List<LocalDocumentType>           superTypes                   = new ArrayList<>();
   protected final List<LocalDocumentType>           subTypes                     = new ArrayList<>();
   private         Set<String>                       aliases                      = Collections.emptySet();
-  protected final Map<String, Property>             properties                   = new HashMap<>();
+  // Mutated by CREATE/DROP PROPERTY under the schema write lock, but read without it: by every record create
+  // (applyDefaultValues, getPolymorphicProperty), by query planning, and by toJSON() - which
+  // LocalSchema.recordFileChanges calls to save schema.json AFTER the write lock is released, so a save running
+  // alongside another thread's DDL threw ConcurrentModificationException out of a plain HashMap. Concurrent, so a
+  // reader crossing an in-flight mutation sees a weakly consistent view of it rather than a corrupt one (#6799).
+  protected final Map<String, Property>             properties                   = new ConcurrentHashMap<>();
   protected final Map<Integer, List<IndexInternal>> bucketIndexesByBucket        = new HashMap<>();
   protected final Map<List<String>, TypeIndex>      indexesByProperties          = new HashMap<>();
   protected final RecordEventsRegistry              events                       = new RecordEventsRegistry();
