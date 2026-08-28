@@ -8689,6 +8689,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * JVM-wide, so a leaked acquisition starves every later vector rebuild in the same JVM. Blocks until the permits
    * are free, which is deliberate - an earlier test's rebuild still holding one is exactly the convoy the caller
    * needs to be out of before it can observe anything stable.
+   * <p>
+   * Assumes the sequential, single-JVM run this module's tests get today ({@code forkCount=1}, no parallel
+   * classes), same as {@code GraphAnalyticalView.acquireAllBuildPermitsForTest()}. Two callers under a parallel
+   * Surefire would serialize on the semaphore rather than deadlock, but the second would then be observing a
+   * window the first had already let a rebuild run in, so the guarantee this hook exists to give would be gone.
    */
   static void acquireAllRebuildPermitsForTest() {
     REBUILD_SEMAPHORE.acquireUninterruptibly(MAX_CONCURRENT_REBUILDS);
