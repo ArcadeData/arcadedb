@@ -183,6 +183,10 @@ public class ArcadeGraph implements Graph, Closeable {
    * unknown at the time of the first call (no leader and no replicas, e.g. mid-failover), the slower embedded
    * fallback is cached: callers that need to re-resolve the topology after a failover must recreate the
    * {@code ArcadeGraph} instance.
+   * <p>
+   * A pooled instance is reused rather than recreated, so one that first resolved its traversal during a failover
+   * keeps the embedded fallback for the rest of the pool's life, even once the cluster is back. Recreating the pool
+   * is what re-resolves it.
    */
   public GraphTraversalSource traversal() {
     GraphTraversalSource result = traversal;

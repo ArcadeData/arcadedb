@@ -108,6 +108,19 @@ public class ArcadeGraphFactory implements Closeable {
         throw failure;
     }
 
+    /**
+     * Always refused. A borrowed instance never owns the database: over a local pool it is the factory's, shared with
+     * every other instance, and over a remote pool {@code drop()} would delete it on the server for every other
+     * instance AND every other client connected to it. The per-instance {@code sharedDatabase} flag cannot express
+     * this, because a remote instance does own its own connection object and {@code close()} must still close it
+     * (issue #6821).
+     */
+    @Override
+    public void drop() {
+      throw new UnsupportedOperationException(
+          "Cannot drop a database from a pooled ArcadeGraph instance: the rest of the pool, and for a remote pool every other client of that server, is still using it");
+    }
+
     public void dispose() {
       super.close();
     }
