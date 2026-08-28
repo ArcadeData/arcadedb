@@ -1277,22 +1277,25 @@ public class Console {
     outputLine(1, "begin                                             -> begins a new transaction");
     outputLine(1, "check database                                    -> check database integrity");
     outputLine(1, "commit                                            -> commits current transaction");
-    outputLine(1, "connect <path>|remote:<url> <user> <pw>           -> connects to a database");
+    outputLine(1, "connect <path>|remote:<url> <user> [<pw>]         -> connects to a database");
     outputLine(1, "close                                             -> disconnects a database");
-    outputLine(1, "create database <path>|remote:<url> <user> <pw>   -> creates a new database");
-    outputLine(1, "create user <user> identified by <pw> [grant connect to <db>*] -> creates a user");
-    outputLine(1, "drop database <path>|remote:<url> <user> <pw>     -> deletes a database");
+    outputLine(1, "create database <path>|remote:<url> <user> [<pw>] -> creates a new database");
+    outputLine(1, "create user <user> identified by [<pw>] [grant connect to <db>*] -> creates a user");
+    outputLine(1, "drop database <path>|remote:<url> <user> [<pw>]   -> deletes a database");
     outputLine(1, "drop user <user>                                  -> deletes a user");
     outputLine(1, "help|?                                            -> ask for this help");
     outputLine(1, "info types                                        -> prints available types");
     outputLine(1, "info transaction                                  -> prints current transaction");
-    outputLine(1, "list databases |remote:<url> <user> <pw>          -> prints list of databases");
+    outputLine(1, "list databases |remote:<url> <user> [<pw>]        -> prints list of databases");
     outputLine(1, "load <path>                                       -> runs local script");
     outputLine(1, "pwd                                               -> returns current directory");
     outputLine(1, "rollback                                          -> rolls back current transaction");
     outputLine(1, "set language = sql|sqlscript|cypher|gremlin|mongo -> sets console query language");
     outputLine(1, "-- <comment>                                      -> comment (no operation)");
     outputLine(1, "quit|exit                                         -> exits from the console");
+    outputLine(1, "");
+    outputLine(1, "Omit <pw> to be asked for the password with the echo hidden, so it is never written to");
+    outputLine(1, "the .history file nor echoed to the output in batch mode.");
   }
 
   private void checkDatabaseIsOpen() {
