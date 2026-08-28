@@ -80,14 +80,14 @@ public class ArcadeGraphFactory implements Closeable {
         // POOL AND CLEAN: HOLD THE FAILURE UNTIL THE finally BELOW HAS RUN.
         failure = e;
       } finally {
+        boolean clean = true;
+
         try {
           // WHATEVER THE CLOSE BEHAVIOUR DID, THE INSTANCE MUST NOT GO BACK ON THE QUEUE WITH AN OPEN TRANSACTION.
           if (getDatabase().isTransactionActive())
             getDatabase().rollback();
         } catch (final Exception e) {
-          // RESIDUAL RISK, AND THERE IS NOTHING BETTER TO DO ABOUT IT HERE: IF THE ROLLBACK ITSELF FAILS (AN I/O
-          // ERROR, SAY) THE INSTANCE GOES BACK ON THE QUEUE WITH ITS TRANSACTION STILL OPEN, AND ONLY THIS LOG LINE
-          // SAYS SO. DROPPING THE INSTANCE INSTEAD WOULD SILENTLY SHRINK THE POOL BELOW ITS COUNTER.
+          clean = false;
           LogManager.instance()
               .log(this, Level.WARNING, "Error on rolling back the pending transaction while releasing a pooled ArcadeGraph instance", e);
         }
@@ -97,11 +97,17 @@ public class ArcadeGraphFactory implements Closeable {
           // BORROWER OF THIS SLOT. PUT THE DEFAULTS BACK EXPLICITLY RATHER THAN TRUST doClose() TO HAVE GOT THERE.
           tx().onClose(Transaction.CLOSE_BEHAVIOR.ROLLBACK).onReadWrite(Transaction.READ_WRITE_BEHAVIOR.AUTO);
         } catch (final Exception e) {
+          clean = false;
           LogManager.instance()
               .log(this, Level.WARNING, "Error on resetting the transaction behaviour of a pooled ArcadeGraph instance", e);
         }
 
-        factory.release(this);
+        if (clean)
+          factory.release(this);
+        else
+          // CLEANUP FAILED, SO WHAT THIS INSTANCE STILL CARRIES IS EXACTLY WHAT #6821 IS ABOUT - AN OPEN TRANSACTION,
+          // OR THE PREVIOUS BORROWER'S CALLBACKS. IT MUST NOT REACH ANOTHER BORROWER.
+          factory.quarantine(this);
       }
 
       if (failure != null)
@@ -121,6 +127,11 @@ public class ArcadeGraphFactory implements Closeable {
           "Cannot drop a database from a pooled ArcadeGraph instance: the rest of the pool, and for a remote pool every other client of that server, is still using it");
     }
 
+    /**
+     * Tears the instance down for real, which is what {@link ArcadeGraphFactory#close()} does to the pool. Kept
+     * separate from {@link #close()} because that one means "give it back", and so deliberately keeps the traversal
+     * source and its driver cluster alive for the next borrower.
+     */
     public void dispose() {
       super.close();
     }
@@ -224,5 +235,18 @@ public class ArcadeGraphFactory implements Closeable {
 
   private void release(final PooledArcadeGraph pooledArcadeGraph) {
     pooledInstances.offer(pooledArcadeGraph);
+  }
+
+  /**
+   * Drops an instance that could not be cleaned on release, instead of handing it to the next borrower. The counter
+   * gets its slot back, so a replacement can be created and the pool does not quietly shrink towards zero.
+   */
+  private void quarantine(final PooledArcadeGraph pooledArcadeGraph) {
+    totalInstancesCreated.decrementAndGet();
+    try {
+      pooledArcadeGraph.dispose();
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "Error on disposing a pooled ArcadeGraph instance that failed to clean up", e);
+    }
   }
 }

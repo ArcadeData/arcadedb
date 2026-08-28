@@ -183,6 +183,28 @@ class ArcadeGraphCloseTransactionTest {
         .hasSize(1);
   }
 
+  @Test
+  void aSharedGraphNeitherDropsNorClosesTheDatabaseItDoesNotOwn() {
+    // openShared() IS THE PATH ArcadeGraphManager USES FOR SERVER-MANAGED DATABASES, AND ITS CONTRACT IS THAT THIS
+    // GRAPH DOES NOT OWN THE LIFECYCLE. PooledArcadeGraph OVERRIDES drop() OUTRIGHT, SO ONLY THIS EXERCISES THE
+    // sharedDatabase GUARD IN ArcadeGraph ITSELF.
+    final Database database = new DatabaseFactory(DB_PATH).open();
+    try {
+      final ArcadeGraph shared = ArcadeGraph.openShared(database);
+
+      assertThatThrownBy(shared::drop)
+          .as("a graph that does not own the database must not delete it")
+          .isInstanceOf(UnsupportedOperationException.class);
+      assertThat(database.isOpen()).as("and must not have got as far as touching it").isTrue();
+
+      shared.close();
+      assertThat(database.isOpen()).as("close() must leave an externally managed database open too").isTrue();
+    } finally {
+      if (database.isOpen())
+        database.close();
+    }
+  }
+
   private long countPersons() {
     try (final ArcadeGraph graph = ArcadeGraph.open(DB_PATH)) {
       return graph.traversal().V().hasLabel("Person").count().next();
