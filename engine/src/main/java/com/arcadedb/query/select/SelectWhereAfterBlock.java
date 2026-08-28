@@ -72,12 +72,20 @@ public class SelectWhereAfterBlock {
   }
 
   @SuppressWarnings("unchecked")
+  /**
+   * Runs the k-NN search with this WHERE as a post-filter. See {@link SelectVectorBuilder} for what a
+   * {@link Select#timeout} does to this call.
+   */
   public <T extends Document> List<SelectVectorResult<T>> vectorDocuments() {
     select.compile();
     return new SelectExecutor(select).executeVector();
   }
 
   @SuppressWarnings("unchecked")
+  /**
+   * Runs the k-NN search with this WHERE as a post-filter. See {@link SelectVectorBuilder} for what a
+   * {@link Select#timeout} does to this call.
+   */
   public <T extends Document> List<SelectVectorResult<T>> vectorVertices() {
     select.compile();
     return new SelectExecutor(select).executeVector();

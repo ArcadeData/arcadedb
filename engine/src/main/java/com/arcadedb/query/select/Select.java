@@ -163,6 +163,19 @@ public class Select {
     return this;
   }
 
+  /**
+   * Bounds how long one execution of this select may take. The budget covers the whole answer - index lookup
+   * included - and is enforced by every plan shape, the vector k-NN search of {@link #nearestTo} among them.
+   *
+   * @param exceptionOnTimeout {@code true} to raise a {@link com.arcadedb.exception.TimeoutException} when the budget
+   *                           runs out, {@code false} to stop and hand back whatever was <b>already produced</b>: the
+   *                           records a {@link SelectIterator} had yielded, the tally {@link #count()} had reached.
+   *                           #6873: on the {@code nearestTo()} path "already produced" means the results already
+   *                           assembled, so an expiry before assembly starts answers with an <b>empty</b> list rather
+   *                           than a truncated one - the neighbours the index searches found are RIDs and distances,
+   *                           and turning any of them into a result would mean loading a record past a deadline that
+   *                           has already gone.
+   */
   public Select timeout(final long timeoutValue, final TimeUnit timeoutUnit, final boolean exceptionOnTimeout) {
     checkNotCompiled();
     this.timeoutInMs = timeoutUnit.toMillis(timeoutValue);
