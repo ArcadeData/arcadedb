@@ -135,14 +135,22 @@ public class Console {
    * The history it is given masks the passwords that the `connect` and `create user` syntaxes carry inline before they are
    * recorded, so they never reach the `.history` file - which is written after every command, in the working directory,
    * with the process umask, and survives the session indefinitely (issue #6829).
+   * <p>
+   * Event expansion is turned OFF, which is what makes a typed backslash reach the query engine. jline runs its own
+   * shell-style unescaping in {@code LineReaderImpl.finish()} before the accepted line is ever handed to
+   * {@link TerminalParser}, so teaching the parser to keep the escape character (issue #6827) fixed `-b` and `load` but
+   * left the interactive prompt eating one level exactly as before. The same option also disables `!`-style history
+   * expansion, which a SQL console is better off without: `!` is part of the `!=` operator, and an expansion that finds
+   * a match rewrites the statement rather than failing visibly.
    */
-  private LineReader getLineReader() {
+  LineReader getLineReader() {
     if (lineReader == null) {
       final Completer completer = new StringsCompleter("align database", "begin", "rollback", "commit", "check database", "close",
           "connect", "create database", "create user", "drop database", "drop user", "export", "import", "help", "info types",
           "list databases", "load", "exit", "quit", "set", "match", "select", "insert into", "update", "delete", "pwd");
 
       lineReader = LineReaderBuilder.builder().terminal(terminal).parser(parser)
+          .option(LineReader.Option.DISABLE_EVENT_EXPANSION, true)
           .variable(LineReader.HISTORY_FILE, HISTORY_FILE).history(new DefaultHistory() {
             @Override
             public void add(final Instant time, final String line) {
