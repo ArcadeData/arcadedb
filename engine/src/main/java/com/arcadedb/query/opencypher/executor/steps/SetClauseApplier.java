@@ -132,6 +132,7 @@ public final class SetClauseApplier {
     // lands AFTER this point fail the MVCC version check at commit, surfacing a retryable conflict the auto-retry
     // loop re-runs cleanly.
     final Object[] values = new Object[items.size()];
+    final Object[] targets = new Object[items.size()];
     final String[] keys = new String[items.size()];
     final boolean[] keyIsNull = new boolean[items.size()];
     for (int i = 0; i < items.size(); i++) {
@@ -139,9 +140,20 @@ public final class SetClauseApplier {
       switch (item.getType()) {
       case PROPERTY:
         // Resolve the latest doc first so self-referential reads across row fanout (e.g. via UNWIND) observe
-        // prior-row writes, then snapshot key + value.
+        // prior-row writes, then snapshot target + key + value.
         if (item.getVariable() != null)
           reloadLatestDoc(item.getVariable(), result, writtenDocs);
+        if (item.getTargetExpression() != null) {
+          // WHICH record an expression target names is a read of the graph too, so it is answered from the
+          // pre-clause state like every other read: "SET n.enabled = false, (CASE WHEN n.enabled THEN n END).flag = 1"
+          // writes the flag, because n.enabled was true when the clause began. Phase 2 re-resolves the captured
+          // record through labelReplacements, so a label write earlier in the clause still moves the write with it.
+          targets[i] = evaluator.evaluate(item.getTargetExpression(), result, context);
+          // #5795: the CASE branch (or bracket-syntax base) can itself resolve to a variable that was deleted
+          // earlier in the same query, e.g. SET (CASE WHEN true THEN t END).v = 99 after DELETE t. Unlike the
+          // plain-variable branch, this path never goes through resolveLatestDoc(), so the check happens here.
+          DeletedEntityMarker.checkNotDeleted(targets[i]);
+        }
         if (item.getKeyExpression() != null) {
           final Object keyValue = evaluator.evaluate(item.getKeyExpression(), result, context);
           if (keyValue == null)
@@ -154,7 +166,12 @@ public final class SetClauseApplier {
       case REPLACE_MAP:
       case MERGE_MAP:
         reloadLatestDoc(item.getVariable(), result, writtenDocs);
-        values[i] = evaluator.evaluate(item.getValueExpression(), result, context);
+        // Materialise the properties HERE, not at write time: an entity right-hand side evaluates to the live record,
+        // so deferring the copy to phase 2 would let an earlier item of this same clause be read back through it
+        // ("SET b.name = 'new', a = b" must copy b's PRE-clause name). Resolving the shape now also means a
+        // right-hand side that is neither an entity nor a map fails the clause before any of it has been written.
+        values[i] = toPropertyMap(evaluator.evaluate(item.getValueExpression(), result, context),
+            item.getType() == SetClause.SetType.REPLACE_MAP ? "=" : "+=");
         break;
       case LABELS:
         break;
@@ -166,13 +183,13 @@ public final class SetClauseApplier {
       final SetClause.SetItem item = items.get(i);
       switch (item.getType()) {
       case PROPERTY:
-        applyPropertySet(item, result, writtenDocs, values[i], keys[i], keyIsNull[i]);
+        applyPropertySet(item, result, writtenDocs, labelReplacements, values[i], targets[i], keys[i], keyIsNull[i]);
         break;
       case REPLACE_MAP:
-        applyReplaceMap(item, result, writtenDocs, values[i]);
+        applyReplaceMap(item, result, writtenDocs, asPropertyMap(values[i]));
         break;
       case MERGE_MAP:
-        applyMergeMap(item, result, writtenDocs, values[i]);
+        applyMergeMap(item, result, writtenDocs, asPropertyMap(values[i]));
         break;
       case LABELS:
         applyLabels(item, result, writtenDocs, labelReplacements);
@@ -182,20 +199,17 @@ public final class SetClauseApplier {
   }
 
   private void applyPropertySet(final SetClause.SetItem item, final Result result,
-      final Map<RID, MutableDocument> writtenDocs, final Object precomputedValue, final String precomputedKey,
+      final Map<RID, MutableDocument> writtenDocs, final LabelReplacements labelReplacements,
+      final Object precomputedValue, final Object precomputedTarget, final String precomputedKey,
       final boolean keyIsNull) {
     final Object obj;
     final String variableToUpdate;
 
     if (item.getTargetExpression() != null) {
-      // Expression target: SET (CASE WHEN ... THEN t END).prop = value
-      // Evaluate the target expression to get the document
-      obj = evaluator.evaluate(item.getTargetExpression(), result, context);
-      // #5795: the CASE branch (or bracket-syntax base) can itself resolve to a variable that was deleted earlier in
-      // the same query, e.g. SET (CASE WHEN true THEN t END).v = 99 after DELETE t. Unlike the plain-variable branch
-      // below, this path never goes through resolveLatestDoc(), so the DeletedEntityMarker check has to be applied
-      // here too.
-      DeletedEntityMarker.checkNotDeleted(obj);
+      // Expression target: SET (CASE WHEN ... THEN t END).prop = value, resolved in phase 1 against the pre-clause
+      // state. A label write earlier in this clause replaced the record it named, so follow that move: the captured
+      // vertex is the one the rewrite deleted.
+      obj = precomputedTarget instanceof Vertex vertex ? labelReplacements.resolve(vertex) : precomputedTarget;
       if (obj == null)
         return; // CASE returned null, no-op (conditional SET pattern)
       variableToUpdate = null;
@@ -270,13 +284,12 @@ public final class SetClauseApplier {
   }
 
   private void applyReplaceMap(final SetClause.SetItem item, final Result result,
-      final Map<RID, MutableDocument> writtenDocs, final Object precomputedValue) {
-    final Document doc = resolveLatestDoc(item.getVariable(), result, writtenDocs);
-    if (doc == null)
+      final Map<RID, MutableDocument> writtenDocs, final Map<String, Object> map) {
+    if (map == null)
       return;
 
-    final Map<String, Object> map = toPropertyMap(precomputedValue, "=");
-    if (map == null)
+    final Document doc = resolveLatestDoc(item.getVariable(), result, writtenDocs);
+    if (doc == null)
       return;
 
     final MutableDocument mutableDoc = doc.modify();
@@ -314,13 +327,12 @@ public final class SetClauseApplier {
   }
 
   private void applyMergeMap(final SetClause.SetItem item, final Result result,
-      final Map<RID, MutableDocument> writtenDocs, final Object precomputedValue) {
-    final Document doc = resolveLatestDoc(item.getVariable(), result, writtenDocs);
-    if (doc == null)
+      final Map<RID, MutableDocument> writtenDocs, final Map<String, Object> map) {
+    if (map == null)
       return;
 
-    final Map<String, Object> map = toPropertyMap(precomputedValue, "+=");
-    if (map == null)
+    final Document doc = resolveLatestDoc(item.getVariable(), result, writtenDocs);
+    if (doc == null)
       return;
 
     final MutableDocument mutableDoc = doc.modify();
@@ -350,6 +362,11 @@ public final class SetClauseApplier {
     RowAliases.propagateUpdate(result, doc, mutableDoc);
     if (doc.getIdentity() == null)
       ((ResultInternal) result).setProperty(item.getVariable(), mutableDoc);
+  }
+
+  @SuppressWarnings("unchecked")
+  private static Map<String, Object> asPropertyMap(final Object phase1Value) {
+    return (Map<String, Object>) phase1Value;
   }
 
   /**
