@@ -27,6 +27,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.File;
 import java.io.IOException;
@@ -423,6 +424,232 @@ class PropertyDefaultValueTest extends TestHelper {
 
     database.command("sql", "ALTER PROPERTY Probe.bare DEFAULT 'fixed'");
     assertThat(database.getSchema().getType("Probe").getProperty("bare").getDefaultValue()).isEqualTo("fixed");
+  }
+
+  /**
+   * Issue #6799. The exact reproduction from the report: an edge property that had a DEFAULT, dropped, then an edge
+   * created. The name used to stay behind in the type's default-property set, so the next record create looked it up
+   * with {@code getPolymorphicProperty()} and blew up with "Cannot find property 'obsolete' in type 'TestEdge'".
+   */
+  @Test
+  void droppingAPropertyWithADefaultDoesNotBreakTheNextRecordCreate() {
+    database.command("sql", "CREATE VERTEX TYPE TestVertex");
+    database.command("sql", "CREATE PROPERTY TestVertex.id STRING");
+    database.command("sql", "CREATE INDEX ON TestVertex (id) UNIQUE");
+
+    database.command("sql", "CREATE EDGE TYPE TestEdge");
+    database.command("sql", "CREATE PROPERTY TestEdge.obsolete STRING");
+    database.command("sql", "ALTER PROPERTY TestEdge.obsolete DEFAULT 'legacy'");
+    database.command("sql", "DROP PROPERTY TestEdge.obsolete");
+
+    assertThat(database.getSchema().getType("TestEdge").getPolymorphicPropertiesWithDefaultDefined()).doesNotContain(
+        "obsolete");
+
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TestVertex SET id = 'source'");
+      database.command("sql", "CREATE VERTEX TestVertex SET id = 'target'");
+
+      final ResultSet rs = database.command("sql", "CREATE EDGE TestEdge FROM (SELECT FROM TestVertex WHERE id = 'source') "
+          + "TO (SELECT FROM TestVertex WHERE id = 'target')");
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().getElement().get().asEdge().has("obsolete")).isFalse();
+    });
+  }
+
+  /**
+   * The same invariant through the engine API, on a document type, and with a second defaulted property left in place:
+   * dropping one must not disturb the other.
+   */
+  @Test
+  void aDroppedDefaultLeavesTheSurvivingDefaultsAlone() {
+    final DocumentType type = database.getSchema().createDocumentType("Probe");
+    type.createProperty("gone", Type.STRING).setDefaultValue("'legacy'");
+    type.createProperty("kept", Type.STRING).setDefaultValue("'ok'");
+
+    type.dropProperty("gone");
+
+    assertThat(type.getPolymorphicPropertiesWithDefaultDefined()).containsExactly("kept");
+    database.transaction(() -> {
+      final MutableDocument doc = database.newDocument("Probe").save();
+      assertThat(doc.has("gone")).isFalse();
+      assertThat(doc.getString("kept")).isEqualTo("ok");
+    });
+  }
+
+  /**
+   * The set is per-declaring-type and read polymorphically, so dropping a defaulted property on a supertype has to
+   * clear it for every subtype too.
+   */
+  @Test
+  void droppingADefaultOnASupertypeClearsItForTheSubtypes() {
+    database.command("sql", "CREATE DOCUMENT TYPE Base");
+    database.command("sql", "CREATE PROPERTY Base.status STRING (DEFAULT 'first')");
+    database.command("sql", "CREATE DOCUMENT TYPE Derived EXTENDS Base");
+
+    final DocumentType derived = database.getSchema().getType("Derived");
+    assertThat(derived.getPolymorphicPropertiesWithDefaultDefined()).contains("status");
+
+    database.command("sql", "DROP PROPERTY Base.status");
+
+    assertThat(derived.getPolymorphicPropertiesWithDefaultDefined()).doesNotContain("status");
+    database.transaction(() -> assertThat(database.newDocument("Derived").save().has("status")).isFalse());
+  }
+
+  /**
+   * {@code getOrCreateProperty()} with a different type drops and recreates the property internally. The recreated one
+   * has no default, so the name must not survive from the dropped one.
+   */
+  @Test
+  void retypingAPropertyWithGetOrCreateDropsItsDefault() {
+    final DocumentType type = database.getSchema().createDocumentType("Probe");
+    type.createProperty("counter", Type.STRING).setDefaultValue("'legacy'");
+
+    type.getOrCreateProperty("counter", Type.INTEGER);
+
+    assertThat(type.getPolymorphicPropertiesWithDefaultDefined()).doesNotContain("counter");
+    database.transaction(() -> assertThat(database.newDocument("Probe").save().has("counter")).isFalse());
+  }
+
+  /**
+   * The default-property cache is updated read-copy-write. Setting a default on N properties of the same type
+   * concurrently used to let two threads copy the same snapshot and publish sets that each held only their own name,
+   * silently losing the other defaults - a record created afterwards would come out missing them. The update is a CAS
+   * now, so every name survives whatever the interleaving was.
+   */
+  @Test
+  @Timeout(60)
+  void concurrentDefaultUpdatesOnTheSameTypeDoNotLoseEachOther() throws Exception {
+    final int properties = 16;
+
+    final DocumentType type = database.getSchema().createDocumentType("Probe");
+    for (int i = 0; i < properties; i++)
+      type.createProperty("p" + i, Type.STRING);
+
+    final CountDownLatch start = new CountDownLatch(1);
+    final CountDownLatch done = new CountDownLatch(properties);
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+    final List<Thread> threads = new ArrayList<>(properties);
+
+    for (int i = 0; i < properties; i++) {
+      final int index = i;
+      final Thread t = new Thread(() -> {
+        try {
+          start.await();
+          type.getProperty("p" + index).setDefaultValue("'v" + index + "'");
+        } catch (final Throwable e) {
+          failure.compareAndSet(null, e);
+        } finally {
+          done.countDown();
+        }
+      });
+      threads.add(t);
+      t.start();
+    }
+
+    start.countDown();
+    done.await();
+    for (final Thread t : threads)
+      t.join();
+    assertThat(failure.get()).isNull();
+
+    final List<String> expected = new ArrayList<>();
+    for (int i = 0; i < properties; i++)
+      expected.add("p" + i);
+    assertThat(type.getPolymorphicPropertiesWithDefaultDefined()).containsExactlyInAnyOrderElementsOf(expected);
+
+    database.transaction(() -> {
+      final MutableDocument doc = database.newDocument("Probe").save();
+      for (int i = 0; i < properties; i++)
+        assertThat(doc.getString("p" + i)).isEqualTo("v" + i);
+    });
+  }
+
+  /**
+   * The other half of the same race: a DROP PROPERTY landing while other properties of the type are having their
+   * defaults set. The dropped name must be gone and none of the others may have been dropped with it.
+   */
+  @Test
+  @Timeout(60)
+  void aConcurrentDropDoesNotResurrectOrLoseOtherDefaults() throws Exception {
+    final int properties = 12;
+
+    final DocumentType type = database.getSchema().createDocumentType("Probe");
+    type.createProperty("doomed", Type.STRING).setDefaultValue("'legacy'");
+    for (int i = 0; i < properties; i++)
+      type.createProperty("p" + i, Type.STRING);
+
+    final CountDownLatch start = new CountDownLatch(1);
+    final CountDownLatch done = new CountDownLatch(properties + 1);
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+    final List<Thread> threads = new ArrayList<>(properties + 1);
+
+    for (int i = 0; i <= properties; i++) {
+      final int index = i;
+      final Thread t = new Thread(() -> {
+        try {
+          start.await();
+          if (index == properties)
+            type.dropProperty("doomed");
+          else
+            type.getProperty("p" + index).setDefaultValue("'v" + index + "'");
+        } catch (final Throwable e) {
+          failure.compareAndSet(null, e);
+        } finally {
+          done.countDown();
+        }
+      });
+      threads.add(t);
+      t.start();
+    }
+
+    start.countDown();
+    done.await();
+    for (final Thread t : threads)
+      t.join();
+    assertThat(failure.get()).isNull();
+
+    final List<String> expected = new ArrayList<>();
+    for (int i = 0; i < properties; i++)
+      expected.add("p" + i);
+    assertThat(type.getPolymorphicPropertiesWithDefaultDefined()).containsExactlyInAnyOrderElementsOf(expected);
+
+    database.transaction(() -> {
+      final MutableDocument doc = database.newDocument("Probe").save();
+      assertThat(doc.has("doomed")).isFalse();
+      for (int i = 0; i < properties; i++)
+        assertThat(doc.getString("p" + i)).isEqualTo("v" + i);
+    });
+  }
+
+  /**
+   * #6799 reached from the other side: the property object outlives the DROP, so a caller holding one can still call
+   * {@code setDefaultValue()} on it. Writing that default through would put the dropped name back into the cache and
+   * break the next record create all over again, so the publication rejects a detached handle instead - identity
+   * against the type's own declaration, which also covers a name that was dropped and recreated in between.
+   */
+  @Test
+  void aDroppedPropertyHandleCannotWriteItsDefaultBack() {
+    final DocumentType type = database.getSchema().createDocumentType("Probe");
+    final Property stale = type.createProperty("obsolete", Type.STRING);
+    stale.setDefaultValue("'legacy'");
+
+    type.dropProperty("obsolete");
+
+    assertThatThrownBy(() -> stale.setDefaultValue("'resurrected'")).isInstanceOf(SchemaException.class)
+        .hasMessageContaining("Probe.obsolete");
+    assertThat(type.getPolymorphicPropertiesWithDefaultDefined()).doesNotContain("obsolete");
+
+    // Including the request that happens to carry the value the property already had: whether the write would have
+    // changed anything is not what makes the handle detached.
+    assertThatThrownBy(() -> stale.setDefaultValue("'legacy'")).isInstanceOf(SchemaException.class)
+        .hasMessageContaining("Probe.obsolete");
+
+    // And the same for a namesake recreated in the meantime: the stale handle must not write through to it.
+    type.createProperty("obsolete", Type.INTEGER);
+    assertThatThrownBy(() -> stale.setDefaultValue("'resurrected'")).isInstanceOf(SchemaException.class);
+    assertThat(type.getPolymorphicPropertiesWithDefaultDefined()).doesNotContain("obsolete");
+
+    database.transaction(() -> assertThat(database.newDocument("Probe").save().has("obsolete")).isFalse());
   }
 
   /**

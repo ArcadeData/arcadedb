@@ -52,6 +52,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 
 public class LocalDocumentType implements DocumentType {
@@ -60,7 +61,12 @@ public class LocalDocumentType implements DocumentType {
   protected final List<LocalDocumentType>           superTypes                   = new ArrayList<>();
   protected final List<LocalDocumentType>           subTypes                     = new ArrayList<>();
   private         Set<String>                       aliases                      = Collections.emptySet();
-  protected final Map<String, Property>             properties                   = new HashMap<>();
+  // Mutated by CREATE/DROP PROPERTY under the schema write lock. Record creation reads it under the read lock and is
+  // therefore excluded, but two readers are not: query planning, and toJSON() - which LocalSchema.recordFileChanges
+  // calls to save schema.json AFTER the write lock is released, so a save running alongside another thread's DDL threw
+  // ConcurrentModificationException straight out of a plain HashMap. Concurrent, so a reader crossing an in-flight
+  // mutation sees a weakly consistent view of it rather than a corrupt one (#6799).
+  protected final Map<String, Property>             properties                   = new ConcurrentHashMap<>();
   protected final Map<Integer, List<IndexInternal>> bucketIndexesByBucket        = new HashMap<>();
   protected final Map<List<String>, TypeIndex>      indexesByProperties          = new HashMap<>();
   protected final RecordEventsRegistry              events                       = new RecordEventsRegistry();
@@ -73,7 +79,22 @@ public class LocalDocumentType implements DocumentType {
   protected       List<Integer>                     bucketIds                    = new ArrayList<>();
   protected volatile List<Integer>                  cachedPolymorphicBucketIds   = new ArrayList<>(); // PRE COMPILED LIST TO SPEED UP RUN-TIME OPERATIONS
   protected       BucketSelectionStrategy           bucketSelectionStrategy      = new RoundRobinBucketSelectionStrategy();
-  protected       Set<String>                       propertiesWithDefaultDefined = Collections.emptySet();
+  // Names of the OWN properties that declare a DEFAULT. A cache: the authority is the per-property default value, but
+  // record creation would otherwise pay an O(properties) scan to find the (usually empty) subset that has one.
+  // Copy-on-write, and read through getPolymorphicPropertiesWithDefaultDefined() by ApplyDefaultsStep (the SQL insert
+  // and UPDATE ... APPLY DEFAULTS plans), which holds no database lock - LocalDatabase.createRecord does take the read
+  // lock, so that path is already excluded against DDL. The replacement therefore has to be published atomically or a
+  // lock-free reader could observe a half-built set, the same publication requirement documented on
+  // cachedPolymorphicBuckets above.
+  // An AtomicReference rather than a plain volatile field, unlike those siblings, because the update is a
+  // read-copy-write and it must stay correct where its writers are NOT serialized: setDefaultValue publishes inside
+  // recordFileChanges, but that bypasses the write lock entirely while the schema is being read from file, and the
+  // CAS is what makes setPropertyHasDefault safe on its own terms rather than only as long as every future caller
+  // remembers to hold the lock. Without it, two writers copying the same snapshot would lose one of the two names.
+  // Maintained in exactly one place, {@link #setPropertyHasDefault}, so it cannot drift from the properties map
+  // again (issue #6799).
+  private final AtomicReference<Set<String>>        propertiesWithDefaultDefined = new AtomicReference<>(
+      Collections.emptySet());
   // Map: primary bucket id -> external bucket id. Populated lazily when the first EXTERNAL property is
   // set on the type, and persisted in schema.json under the per-type "externalBuckets" key.
   protected final Map<Integer, Integer>             externalBucketIdByPrimaryBucketId = new ConcurrentHashMap<>();
@@ -128,10 +149,11 @@ public class LocalDocumentType implements DocumentType {
 
   @Override
   public Set<String> getPolymorphicPropertiesWithDefaultDefined() {
+    final Set<String> own = propertiesWithDefaultDefined.get();
     if (superTypes.isEmpty())
-      return propertiesWithDefaultDefined;
+      return own;
 
-    final HashSet<String> set = new HashSet<>(propertiesWithDefaultDefined);
+    final HashSet<String> set = new HashSet<>(own);
     for (final LocalDocumentType superType : superTypes)
       set.addAll(superType.getPolymorphicPropertiesWithDefaultDefined());
     return set;
@@ -624,10 +646,49 @@ public class LocalDocumentType implements DocumentType {
 
     return recordFileChanges(() -> {
       final Property removed = properties.remove(propertyName);
-      // Keep the EXTERNAL counter consistent so hasExternalProperties() stays O(1).
-      if (removed != null && removed.isExternal())
-        ownExternalPropertyCount.decrementAndGet();
+      if (removed != null) {
+        // Keep the EXTERNAL counter consistent so hasExternalProperties() stays O(1).
+        if (removed.isExternal())
+          ownExternalPropertyCount.decrementAndGet();
+        // Issue #6799: and the same for the default-property cache. A dropped property must stop participating in
+        // default-value processing at once, or the next record create looks the name up with getPolymorphicProperty()
+        // and fails with "Cannot find property '<name>' in type '<type>'". Only the in-memory view was ever wrong -
+        // schema.json holds the default on the property itself, so a reload rebuilt the set correctly - which is why
+        // the failure looked like it healed on restart.
+        setPropertyHasDefault(propertyName, false);
+      }
       return removed;
+    });
+  }
+
+  /**
+   * The single point of maintenance for {@link #propertiesWithDefaultDefined}. Every mutation that can change whether
+   * an own property declares a DEFAULT routes here: {@link LocalProperty#setDefaultValue} when one is set, changed or
+   * cleared, and {@link #dropProperty} when the property itself goes away.
+   * <p>
+   * Copy-on-write: the set is published as an immutable snapshot, never mutated in place, so the lock-free readers on
+   * the record-create path always see one consistent version of it. The membership check up front keeps the common
+   * case (a type with no defaults at all, or a re-set that does not change membership) allocation-free.
+   */
+  void setPropertyHasDefault(final String propertyName, final boolean hasDefault) {
+    // The common case - a re-set that does not change membership, or a type with no defaults at all - reads the
+    // reference once and neither allocates nor writes. Deliberately a duplicate of the check inside updateAndGet
+    // below, not a substitute for it: this one skips the closure and the copy, that one re-decides against whatever
+    // the CAS actually saw. Removing either is a regression - one in allocation, the other in correctness.
+    if (hasDefault == propertiesWithDefaultDefined.get().contains(propertyName))
+      return;
+
+    propertiesWithDefaultDefined.updateAndGet(current -> {
+      if (hasDefault == current.contains(propertyName))
+        return current;
+
+      final Set<String> updated = new HashSet<>(current);
+      if (hasDefault)
+        updated.add(propertyName);
+      else
+        updated.remove(propertyName);
+
+      return updated.isEmpty() ? Collections.emptySet() : Collections.unmodifiableSet(updated);
     });
   }
 

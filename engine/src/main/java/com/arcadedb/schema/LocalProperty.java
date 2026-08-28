@@ -41,9 +41,29 @@ public class LocalProperty extends AbstractProperty {
         .checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
   }
 
+  /**
+   * A {@link Property} object outlives the DROP PROPERTY that removed it, so a caller can hold one that the type no
+   * longer declares. Writing a default through such a handle would put the dropped name back into the type's
+   * default-property cache and break the next record create - issue #6799 reached from the other side. Identity and
+   * not mere presence, so a namesake recreated in between is not written through the stale handle either.
+   */
+  private void checkStillDeclaredIn(final LocalDocumentType ownerType) {
+    if (ownerType.getPropertyIfExists(name) != this)
+      throw new SchemaException("Cannot set the default value of property '" + ownerType.getName() + "." + name
+          + "' because the property is no longer declared in the type");
+  }
+
   @Override
   public Property setDefaultValue(final Object defaultValue) {
     checkForSchemaMutation();
+    final LocalDocumentType ownerType = (LocalDocumentType) owner;
+
+    // Whether the requested default happens to match the current one is not part of the caller's contract, so the
+    // refusal cannot live only on the path that publishes something: a detached handle is refused first, whatever it
+    // carries. This read is outside the schema write lock, which is all a request that writes nothing needs - the
+    // authoritative check is the one inside the publication below.
+    checkStillDeclaredIn(ownerType);
+
     final Database database = owner.getSchema().getEmbedded().getDatabase();
 
     final Object convertedValue = defaultValue instanceof String ?
@@ -57,18 +77,25 @@ public class LocalProperty extends AbstractProperty {
     final Expression compiled = compileDefaultValue(convertedValue, database);
 
     if (!Objects.equals(this.defaultValue.value(), convertedValue)) {
-      // One publication, so no reader can see the new value with the old (or no) compiled expression.
-      this.defaultValue = new DefaultValue(convertedValue, compiled);
+      // The property's own default and the owner type's default-property cache are two views of one fact, and the
+      // other statement that changes them, DROP PROPERTY, mutates both under the schema write lock (recordFileChanges).
+      // Publishing them outside that lock let a concurrent DROP PROPERTY on the same type interleave between the two
+      // and leave the cache naming a property that no longer exists - the very state issue #6799 is about. Only the
+      // publication is serialized: conversion and validation stay outside, so a rejected default touches no state and
+      // its SchemaException reaches the caller unwrapped, and the write lock is held for two field assignments.
+      // This is why this setter takes the heavier path while setReadonly, setMandatory, setNotNull and the rest of
+      // them below just assign and save: a default is the only property attribute with a second reader-visible home,
+      // the per-type cache, and the two have to move together. Do not "harmonise" it back to a bare assignment.
+      ownerType.recordFileChanges(() -> {
+        // Re-checked here because this is the check that counts: holding the same lock as dropProperty() settles the
+        // order of the two, so whoever arrives second sees the other's result rather than a snapshot taken before it.
+        checkStillDeclaredIn(ownerType);
 
-      // REPLACE THE SET OF PROPERTIES WITH DEFAULT VALUES DEFINED
-      final Set<String> propertiesWithDefaultDefined = new HashSet<>(((LocalDocumentType) owner).propertiesWithDefaultDefined);
-      if (convertedValue == DEFAULT_NOT_SET)
-        propertiesWithDefaultDefined.remove(name);
-      else
-        propertiesWithDefaultDefined.add(name);
-      ((LocalDocumentType) owner).propertiesWithDefaultDefined = Collections.unmodifiableSet(propertiesWithDefaultDefined);
-
-      owner.getSchema().getEmbedded().saveConfiguration();
+        // One publication, so no reader can see the new value with the old (or no) compiled expression.
+        this.defaultValue = new DefaultValue(convertedValue, compiled);
+        ownerType.setPropertyHasDefault(name, convertedValue != DEFAULT_NOT_SET);
+        return null;
+      });
     }
     return this;
   }
