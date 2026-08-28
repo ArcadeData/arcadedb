@@ -134,11 +134,15 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
     }
 
     void run(final String query) throws IOException {
+      run(query, Map.of());
+    }
+
+    void run(final String query, final Map<String, Object> extra) throws IOException {
       final PackStreamWriter writer = new PackStreamWriter();
       writer.writeStructureHeader(BoltMessage.RUN, 3);
       writer.writeString(query);
       writer.writeMap(Map.of());
-      writer.writeMap(Map.of());
+      writer.writeMap(extra);
       out.writeMessage(writer.toByteArray());
     }
 
@@ -368,6 +372,39 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
       assertThat(check.signature()).isEqualTo(BoltMessage.SUCCESS);
       assertThat(check.records()).as("the transaction the rejected LOGOFF left behind must have been rolled back")
           .isEmpty();
+    }
+  }
+
+  /**
+   * An explicit transaction is bound to the database BEGIN opened it on. A RUN naming another one has to be
+   * refused rather than allowed to drop the connection's handle on that database, which is the only thing a
+   * later rollback has to work with.
+   */
+  @Test
+  void runCannotSwitchDatabaseInsideAnOpenTransaction() throws Exception {
+    try (final BoltConnection bolt = new BoltConnection(getDatabaseName())) {
+      bolt.begin(getDatabaseName());
+
+      bolt.run("CREATE (n:Issue6804DbSwitch {value: 1}) RETURN n");
+      assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
+      bolt.pull(0, -1);
+      assertThat(bolt.readSummary().metadata()).containsEntry("has_more", true);
+
+      bolt.run("RETURN 1 AS one", Map.of("db", "a-database-that-does-not-exist"));
+      final Summary rejected = bolt.readSummary();
+      assertThat(rejected.signature()).isEqualTo(BoltMessage.FAILURE);
+      assertThat(String.valueOf(rejected.metadata().get("message"))).contains("Cannot switch database");
+
+      // The connection must still hold the database the transaction was opened on, so RESET can roll it back.
+      bolt.sendNoFields(BoltMessage.RESET);
+      assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
+
+      bolt.run("MATCH (n:Issue6804DbSwitch) RETURN n");
+      assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
+      bolt.pull(-1, -1);
+      final Summary check = bolt.readSummary();
+      assertThat(check.signature()).isEqualTo(BoltMessage.SUCCESS);
+      assertThat(check.records()).as("the transaction must have been rolled back, not stranded").isEmpty();
     }
   }
 

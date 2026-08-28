@@ -766,6 +766,19 @@ public class BoltNetworkExecutor extends Thread {
 
     // Get database from message extra if specified
     final String db = message.getDatabase();
+
+    // An explicit transaction is bound to the database BEGIN opened it on. A later RUN in the same transaction
+    // naming a different one would make ensureDatabase() drop the reference to that database - it nulls it to
+    // force the switch - and with it the only handle a rollback has, stranding the transaction BEGIN opened if
+    // the new database then fails to open. Neo4j drivers fix the database at BEGIN, so a conforming client
+    // never reaches this.
+    if (explicitTransaction && isDatabaseSwitch(db)) {
+      sendFailure(BoltException.PROTOCOL_ERROR,
+          "Cannot switch database to '" + db + "' inside an open transaction started on '" + database.getName() + "'");
+      state = State.FAILED;
+      return;
+    }
+
     if (db != null && !db.isEmpty()) {
       databaseName = db;
     }
@@ -1214,13 +1227,22 @@ public class BoltNetworkExecutor extends Thread {
   /**
    * Ensure database is open and accessible.
    */
+  /**
+   * Whether {@code requestedDatabase} names a database other than the one this connection currently has open.
+   * {@code "system"} and {@code "neo4j"} are Neo4j virtual names that map to this connection's current (default)
+   * database, and an absent name means "keep the current one", so neither counts as a switch. Shared between the
+   * in-transaction guard in {@link #handleRun} and {@link #ensureDatabase()} so the two cannot drift apart.
+   */
+  private boolean isDatabaseSwitch(final String requestedDatabase) {
+    return database != null && database.isOpen()
+        && requestedDatabase != null && !requestedDatabase.isEmpty()
+        && !"system".equals(requestedDatabase) && !"neo4j".equals(requestedDatabase)
+        && !database.getName().equals(requestedDatabase);
+  }
+
   private boolean ensureDatabase() throws IOException {
     if (database != null && database.isOpen()) {
-      // Check if we need to switch to a different database
-      final String currentDbName = database.getName();
-      if (databaseName != null && !databaseName.isEmpty()
-          && !"system".equals(databaseName) && !"neo4j".equals(databaseName)
-          && !currentDbName.equals(databaseName)) {
+      if (isDatabaseSwitch(databaseName)) {
         // Database name changed, need to switch
         database = null;
       } else {
