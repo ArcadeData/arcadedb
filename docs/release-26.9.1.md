@@ -3996,13 +3996,13 @@ to `0` the moment that rebuild - deferred or not - actually completes.
 
 ## MCP: `full_text_search` and `efSearch` are bounded, and `set_server_setting` no longer accepts a missing value (#6837)
 
-#6762 capped the windows on `query`, `execute_command` and `profiler_start`, and its description said the full-text
-tool was capped too. It was not: `full_text_search` rejected only `limit < 1`. The per-bucket push-down bounds the
-index scan, but every surviving hit is then loaded with `lookupByRID`, serialized in full and accumulated into the
-reply's `JSONArray`, so `"limit": 2147483647` from a read-only caller still meant "return every matching document
-in one message". `limit` is now bounded at 1,000 - the ceiling the sibling search tools already use for a candidate
-window - and the tool's declared JSON Schema carries the same `minimum`/`maximum`, so a client can reject the call
-before it is sent.
+Issue #6762 capped the windows on `query`, `execute_command` and `profiler_start`, and its description said the
+full-text tool was capped too. It was not: `full_text_search` rejected only `limit < 1`. The per-bucket push-down
+bounds the index scan, but every surviving hit is then loaded with `lookupByRID`, serialized in full and accumulated
+into the reply's `JSONArray`, so `"limit": 2147483647` from a read-only caller still meant "return every matching
+document in one message". `limit` is now bounded at 1,000 - the ceiling the sibling search tools already use for a
+candidate window - and the tool's declared JSON Schema carries the same `minimum`/`maximum`, so a client can reject
+the call before it is sent.
 
 `efSearch` had the same half-bounded shape in `vector_search` and `hybrid_search`: a declared `minimum` of 1, no
 `maximum`, and a server-side check for the lower end only. It sizes the HNSW dynamic candidate list, so it is now
