@@ -30,6 +30,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * A borrowed pool instance must be handed back clean. Issue #6821: {@code PooledArcadeGraph.close()} put the instance
@@ -118,6 +119,33 @@ class ArcadeGraphFactoryPoolTransactionTest {
     assertThat(names)
         .as("the close behaviour a previous borrower configured must not commit the next borrower's abandoned writes")
         .isEmpty();
+  }
+
+  @Test
+  void aFailingCloseBehaviourIsReportedAndStillLeavesThePoolClean() {
+    final ArcadeGraph first = factory.get();
+    first.tx().onClose(tx -> {
+      throw new IllegalStateException("boom");
+    });
+    first.addVertex(T.label, "Person", "name", "abandoned");
+
+    assertThatThrownBy(first::close)
+        .as("a borrower whose commit-on-close failed has to hear about it")
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessage("boom");
+
+    final ArcadeGraph second = factory.get();
+    assertThat(second).as("the instance must be back in the pool even though its close behaviour blew up").isSameAs(first);
+    assertThat(second.tx().isOpen()).as("and back clean").isFalse();
+    second.addVertex(T.label, "Person", "name", "mine");
+    second.close();
+
+    final List<String> names = new ArrayList<>();
+    final ArcadeGraph reader = factory.get();
+    reader.traversal().V().hasLabel("Person").values("name").forEachRemaining(n -> names.add((String) n));
+    reader.close();
+
+    assertThat(names).as("a close behaviour that threw must not stay armed for the next borrower").isEmpty();
   }
 
   @Test

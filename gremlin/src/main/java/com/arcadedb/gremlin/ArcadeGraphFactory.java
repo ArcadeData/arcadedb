@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.remote.RemoteDatabase;
 import org.apache.commons.configuration2.Configuration;
+import org.apache.tinkerpop.gremlin.structure.Transaction;
 
 import java.io.Closeable;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -67,15 +68,17 @@ public class ArcadeGraphFactory implements Closeable {
      */
     @Override
     public void close() {
+      RuntimeException failure = null;
       try {
         // HONOUR THE CONFIGURED CLOSE BEHAVIOUR FIRST (ROLLBACK BY DEFAULT), AS A NON-POOLED ArcadeGraph.close() DOES.
         // UNCONDITIONALLY, EVEN WITH NO TRANSACTION OPEN: AbstractThreadLocalTransaction.doClose() ALSO CLEARS THE
         // onClose()/onReadWrite() CONSUMERS, AND THE TRANSACTION OBJECT OUTLIVES THE BORROW. SKIPPING THE CALL WOULD
         // LEAVE A BORROWER'S onClose(COMMIT) IN PLACE FOR THE NEXT ONE, WHICH IS #6821 THROUGH A SIDE DOOR.
         tx().close();
-      } catch (final Exception e) {
-        LogManager.instance()
-            .log(this, Level.WARNING, "Error on ending the pending transaction while releasing a pooled ArcadeGraph instance", e);
+      } catch (final RuntimeException e) {
+        // A BORROWER WHOSE COMMIT-ON-CLOSE FAILED HAS TO HEAR ABOUT IT, BUT ONLY ONCE THE INSTANCE IS BACK IN THE
+        // POOL AND CLEAN: HOLD THE FAILURE UNTIL THE finally BELOW HAS RUN.
+        failure = e;
       } finally {
         try {
           // WHATEVER THE CLOSE BEHAVIOUR DID, THE INSTANCE MUST NOT GO BACK ON THE QUEUE WITH AN OPEN TRANSACTION.
@@ -85,8 +88,21 @@ public class ArcadeGraphFactory implements Closeable {
           LogManager.instance()
               .log(this, Level.WARNING, "Error on rolling back the pending transaction while releasing a pooled ArcadeGraph instance", e);
         }
+
+        try {
+          // TinkerPop CLEARS THE CONSUMERS ONLY AFTER RUNNING THEM, SO ONE THAT THREW IS STILL ARMED FOR THE NEXT
+          // BORROWER OF THIS SLOT. PUT THE DEFAULTS BACK EXPLICITLY RATHER THAN TRUST doClose() TO HAVE GOT THERE.
+          tx().onClose(Transaction.CLOSE_BEHAVIOR.ROLLBACK).onReadWrite(Transaction.READ_WRITE_BEHAVIOR.AUTO);
+        } catch (final Exception e) {
+          LogManager.instance()
+              .log(this, Level.WARNING, "Error on resetting the transaction behaviour of a pooled ArcadeGraph instance", e);
+        }
+
         factory.release(this);
       }
+
+      if (failure != null)
+        throw failure;
     }
 
     public void dispose() {

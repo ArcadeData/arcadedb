@@ -126,6 +126,18 @@ class ArcadeGraphCloseTransactionTest {
         .isFalse();
   }
 
+  @Test
+  void theTraversalIsRefusedOnceTheGraphIsClosed() {
+    final ArcadeGraph graph = ArcadeGraph.open(DB_PATH);
+    graph.traversal().V().hasLabel("Person").count().next();
+    graph.close();
+
+    assertThatThrownBy(graph::traversal)
+        .as("building a traversal after close() would resurrect the very resources close() released")
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessage("Graph is closed");
+  }
+
   private long countPersons() {
     try (final ArcadeGraph graph = ArcadeGraph.open(DB_PATH)) {
       return graph.traversal().V().hasLabel("Person").count().next();
