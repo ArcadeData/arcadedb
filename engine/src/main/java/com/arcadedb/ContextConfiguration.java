@@ -201,7 +201,7 @@ public class ContextConfiguration implements Serializable {
     final Object v = getValue(iConfig);
     if (v == null)
       return 0;
-    return v instanceof Number n ? n.intValue() : (int) FileUtils.getSizeAsNumber(v.toString().trim());
+    return iConfig.narrowToInteger(v instanceof Number n ? n.longValue() : FileUtils.getSizeAsNumber(v.toString().trim()));
   }
 
   public long getValueAsLong(final GlobalConfiguration iConfig) {

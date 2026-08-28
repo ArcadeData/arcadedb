@@ -97,7 +97,6 @@ class Issue6875SettingValueCoercionTest {
 
   private void assertReadableThroughBothAccessors(final GlobalConfiguration cfg, final String value) {
     final Object coerced = cfg.coerce(value);
-    assertThat(cfg.isAssignable(value)).as("isAssignable('%s') for %s", value, cfg.getKey()).isTrue();
 
     final ContextConfiguration ctx = new ContextConfiguration();
     ctx.setValue(cfg.getKey(), coerced);
@@ -143,10 +142,6 @@ class Issue6875SettingValueCoercionTest {
     assertThatThrownBy(() -> GlobalConfiguration.SERVER_METRICS_TRACING_SAMPLING_RATE.coerce("half"))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("arcadedb.serverMetrics.tracing.samplingRate");
-
-    assertThat(GlobalConfiguration.ASYNC_WORKER_THREADS.isAssignable("abc")).isFalse();
-    assertThat(GlobalConfiguration.COMMIT_LOCK_TIMEOUT.isAssignable("soon")).isFalse();
-    assertThat(GlobalConfiguration.SERVER_METRICS_TRACING_SAMPLING_RATE.isAssignable("half")).isFalse();
   }
 
   /** An Integer setting cannot hold a value only a Long can represent: truncating it would be a silent wrong answer. */
@@ -155,7 +150,6 @@ class Issue6875SettingValueCoercionTest {
     assertThatThrownBy(() -> GlobalConfiguration.ASYNC_WORKER_THREADS.coerce("64GB"))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("arcadedb.asyncWorkerThreads");
-    assertThat(GlobalConfiguration.ASYNC_WORKER_THREADS.isAssignable("64GB")).isFalse();
 
     // the same magnitude is fine for a Long setting
     assertThat(GlobalConfiguration.COMMIT_LOCK_TIMEOUT.coerce("64GB")).isEqualTo(64L * 1024 * 1024 * 1024);
@@ -171,7 +165,6 @@ class Issue6875SettingValueCoercionTest {
     assertThatThrownBy(() -> GlobalConfiguration.ASYNC_WORKER_THREADS.coerce(5_000_000_000L))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("arcadedb.asyncWorkerThreads");
-    assertThat(GlobalConfiguration.ASYNC_WORKER_THREADS.isAssignable(5_000_000_000L)).isFalse();
 
     // and the setter built on it refuses the same input rather than storing the truncated low 32 bits
     final Object previous = GlobalConfiguration.ASYNC_WORKER_THREADS.getValue();
@@ -186,6 +179,33 @@ class Issue6875SettingValueCoercionTest {
     // a value inside the range still goes through untouched, from either form
     assertThat(GlobalConfiguration.ASYNC_WORKER_THREADS.coerce(12L)).isEqualTo(12);
     assertThat(GlobalConfiguration.ASYNC_WORKER_THREADS.coerce(12)).isEqualTo(12);
+  }
+
+  /**
+   * The same bound has to hold when READING, because not every value reaches a configuration map through
+   * {@code coerce}: {@link ContextConfiguration#setValue(GlobalConfiguration, Object)} is a plain map put, and
+   * {@code ALTER DATABASE ... SETTING} used it directly. Widening the accessor's {@code instanceof} from
+   * {@code Integer} to {@code Number} would otherwise have turned the {@code Integer.parseInt} that used to throw
+   * on such a value into a silent truncation to its low 32 bits.
+   */
+  @Test
+  void bothAccessorsRefuseAStoredIntegralValueOutsideTheIntegerRange() {
+    final ContextConfiguration ctx = new ContextConfiguration();
+    ctx.setValue(GlobalConfiguration.ASYNC_WORKER_THREADS, 5_000_000_000L);
+    assertThatThrownBy(() -> ctx.getValueAsInteger(GlobalConfiguration.ASYNC_WORKER_THREADS))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("arcadedb.asyncWorkerThreads");
+
+    // the same text stored as a string is refused identically, so the two accessors still agree
+    final ContextConfiguration textCtx = new ContextConfiguration();
+    textCtx.setValue(GlobalConfiguration.ASYNC_WORKER_THREADS.getKey(), "5000000000");
+    assertThatThrownBy(() -> textCtx.getValueAsInteger(GlobalConfiguration.ASYNC_WORKER_THREADS))
+        .isInstanceOf(IllegalArgumentException.class);
+
+    // a Long inside the range is still read, not refused
+    final ContextConfiguration okCtx = new ContextConfiguration();
+    okCtx.setValue(GlobalConfiguration.ASYNC_WORKER_THREADS, 12L);
+    assertThat(okCtx.getValueAsInteger(GlobalConfiguration.ASYNC_WORKER_THREADS)).isEqualTo(12);
   }
 
   /** {@code coerce} returns the DECLARED type, not merely something numeric: a Long setting must not yield an Integer. */

@@ -949,7 +949,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
     if (value.isEmpty() && setting.getType() != String.class)
       throw new IllegalArgumentException(
-          "Value must not be empty for setting '" + setting.getKey() + "' of type " + setting.getType().getSimpleName());
+          "'value' must not be empty for setting '" + setting.getKey() + "' of type " + setting.getType().getSimpleName());
 
     configuration.setValue(setting.getKey(), setting.coerce(value));
   }

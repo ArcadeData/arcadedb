@@ -2528,15 +2528,11 @@ public enum GlobalConfiguration {
       if (type == Boolean.class)
         return iValue instanceof Boolean b ? b : Boolean.parseBoolean(iValue.toString().trim());
 
-      if (type == Integer.class) {
+      if (type == Integer.class)
         // the range check has to cover a boxed Number too, not just the parsed-from-text path: Number.intValue()
         // keeps the low 32 bits, so a Long outside the int range would be stored silently truncated - where the
         // Integer.parseInt this method replaced threw. Every input reaches the same bound.
-        final long parsed = iValue instanceof Number n ? n.longValue() : FileUtils.getSizeAsNumber(iValue.toString().trim());
-        if (parsed < Integer.MIN_VALUE || parsed > Integer.MAX_VALUE)
-          throw new IllegalArgumentException("outside the range of an Integer");
-        return (int) parsed;
-      }
+        return narrowToInteger(iValue instanceof Number n ? n.longValue() : FileUtils.getSizeAsNumber(iValue.toString().trim()));
 
       if (type == Long.class)
         return iValue instanceof Number n ? n.longValue() : FileUtils.getSizeAsNumber(iValue.toString().trim());
@@ -2578,17 +2574,21 @@ public enum GlobalConfiguration {
   }
 
   /**
-   * Returns whether {@link #coerce(Object)} would accept {@code iValue}. Intended for callers that want to reject a
-   * value before storing it rather than handle the exception - see {@link #coerce(Object)} for why the two writers
-   * outside this class have to ask.
+   * Narrows an integral value to the {@code int} an {@code Integer} setting holds, refusing rather than truncating
+   * one outside the range.
+   * <p>
+   * Issue #6875: this is shared by {@link #coerce(Object)}, {@link #getValueAsInteger()} and
+   * {@link ContextConfiguration#getValueAsInteger(GlobalConfiguration)} so that the bound holds on the READ side
+   * too. Not every value reaches a configuration map through {@code coerce}:
+   * {@link ContextConfiguration#setValue(GlobalConfiguration, Object)} is a plain map put, so a boxed {@code Long}
+   * outside the {@code int} range can be stored, and {@code Number.intValue()} would then hand back its
+   * wrapped-around low 32 bits instead of failing.
    */
-  public boolean isAssignable(final Object iValue) {
-    try {
-      coerce(iValue);
-      return true;
-    } catch (final IllegalArgumentException e) {
-      return false;
-    }
+  int narrowToInteger(final long value) {
+    if (value < Integer.MIN_VALUE || value > Integer.MAX_VALUE)
+      throw new NumberFormatException(
+          "Value '" + value + "' is not valid for setting '" + key + "' of type Integer: outside the range of an Integer");
+    return (int) value;
   }
 
   public void setValue(final Object iValue) {
@@ -2640,7 +2640,7 @@ public enum GlobalConfiguration {
    */
   public int getValueAsInteger() {
     final Object v = value != nullValue && value != null ? value : defValue;
-    return v instanceof Number n ? n.intValue() : (int) FileUtils.getSizeAsNumber(v.toString().trim());
+    return narrowToInteger(v instanceof Number n ? n.longValue() : FileUtils.getSizeAsNumber(v.toString().trim()));
   }
 
   public long getValueAsLong() {
