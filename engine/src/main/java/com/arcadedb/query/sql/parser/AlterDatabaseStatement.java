@@ -98,6 +98,11 @@ public class AlterDatabaseStatement extends DDLStatement {
     }
 
     if (saveInDatabaseConfiguration) {
+      // Issue #6875: the third writer into a ContextConfiguration, after the set_server_setting MCP tool and the
+      // "set server setting" HTTP command. ContextConfiguration.setValue is a plain map put, so without this the
+      // SQL surface could store a value that is not the setting's declared type - accepted here with a result row,
+      // and thrown on later inside whichever component read the setting next.
+      finalValue = cfg.coerce(finalValue);
       db.getConfiguration().setValue(cfg, finalValue);
       try {
         db.saveConfiguration();

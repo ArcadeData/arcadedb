@@ -2515,46 +2515,153 @@ public enum GlobalConfiguration {
     }
   }
 
+  /**
+   * Converts {@code iValue} to this setting's declared {@link #getType() type}, or throws
+   * {@link IllegalArgumentException} naming the key, the type and the offending value when it does not parse.
+   * <p>
+   * Issue #6875: this is the single place a value is turned into a setting's type, so that {@link #setValue(Object)}
+   * and the administrative writers that store into a {@link ContextConfiguration} instead
+   * ({@code set_server_setting} and {@code POST /api/v1/server "set server setting"}) accept and refuse exactly
+   * the same strings. Before it existed the writers stored whatever they were handed and the
+   * {@code NumberFormatException} surfaced later, inside whichever component read the setting next.
+   * <p>
+   * The integral parse is {@link FileUtils#getSizeAsNumber(Object)} on the trimmed text, which is what
+   * {@link #getValueAsInteger()} and {@link #getValueAsLong()} have always used to read one back; it is a strict
+   * superset of {@code Integer.parseInt}/{@code Long.parseLong}, so nothing that parsed before stops parsing.
+   * <p>
+   * {@code Boolean} stays as permissive as {@code Boolean.parseBoolean}, deliberately: {@link #readConfiguration()}
+   * feeds every system property and environment variable through here during this class's static initializer, so
+   * turning a boolean typo into a throw would turn it into an {@code ExceptionInInitializerError} that takes the
+   * whole engine down instead of the setting.
+   *
+   * @param iValue the value to convert, or {@code null}
+   *
+   * @return the value as an instance of {@link #getType()}, or {@code null} when {@code iValue} is {@code null}
+   *
+   * @throws IllegalArgumentException if {@code iValue} cannot be represented as this setting's type
+   */
+  public Object coerce(final Object iValue) {
+    if (iValue == null)
+      return null;
+
+    // Both integral types share one parse, and it is applied OUTSIDE the wrapping below: coerceToIntegral and
+    // narrowToInteger each produce a message that already names the key, the type and the value, so re-wrapping
+    // them here would only bury the specific reason ("not a whole number", "outside the range") in a cause.
+    if (type == Integer.class)
+      return narrowToInteger(coerceToIntegral(iValue));
+
+    if (type == Long.class)
+      return coerceToIntegral(iValue);
+
+    try {
+      if (type == Boolean.class)
+        return iValue instanceof Boolean b ? b : Boolean.parseBoolean(iValue.toString().trim());
+
+      if (type == Float.class)
+        return iValue instanceof Number n ? n.floatValue() : Float.parseFloat(iValue.toString().trim());
+
+      if (type == String.class)
+        return iValue.toString();
+
+      if (type.isEnum()) {
+        if (type.isInstance(iValue))
+          return iValue;
+
+        if (iValue instanceof String string)
+          for (final Object constant : type.getEnumConstants())
+            if (((Enum<?>) constant).name().equalsIgnoreCase(string))
+              return constant;
+
+        throw new IllegalArgumentException("Invalid value of `" + key + "` option");
+      }
+
+      return iValue;
+    } catch (final RuntimeException e) {
+      throw invalidValue(iValue, e);
+    }
+  }
+
+  /**
+   * Reads {@code iValue} as the whole number an {@code Integer} or {@code Long} setting holds, refusing a
+   * fractional one rather than truncating it.
+   * <p>
+   * Issue #6875: the {@code Integer.parseInt}/{@code Long.parseLong} this replaced threw on {@code "6.7"}, and
+   * both routes into here can carry a fraction - {@code FileUtils.getSizeAsNumber} reads a decimal mantissa as a
+   * {@code float} and keeps only the integral part of the result, and {@code ALTER DATABASE ... SETTING} hands
+   * over whatever an arbitrary SQL expression evaluated to, so an unquoted {@code 6.7} arrives already boxed as a
+   * {@code Double}.
+   * <p>
+   * A decimal mantissa is refused outright rather than accepted when the product happens to land on a whole
+   * number. {@code "1.5MB"} would, {@code "6.7KB"} (6860.8 bytes) would not, and a rule that turns on which
+   * decimal fraction happens to be a power of two is not one an operator can predict; refusing every decimal is
+   * also exactly what the parsers this replaced did. A size SUFFIX on a whole mantissa - {@code "64MB"} - stays
+   * accepted, which is the widening this issue argued for.
+   */
+  private long coerceToIntegral(final Object iValue) {
+    try {
+      if (iValue instanceof Integer || iValue instanceof Long || iValue instanceof Short || iValue instanceof Byte)
+        return ((Number) iValue).longValue();
+
+      if (iValue instanceof Number n) {
+        final double asDouble = n.doubleValue();
+        if (Double.isNaN(asDouble) || Double.isInfinite(asDouble) || asDouble != Math.rint(asDouble))
+          throw new IllegalArgumentException("not a whole number");
+        return n.longValue();
+      }
+
+      final String text = iValue.toString().trim();
+      if (text.indexOf('.') > -1)
+        throw new IllegalArgumentException("not a whole number");
+      return FileUtils.getSizeAsNumber(text);
+    } catch (final RuntimeException e) {
+      throw invalidValue(iValue, e);
+    }
+  }
+
+  /**
+   * The rejection {@link #coerce(Object)} and {@link #coerceToIntegral(Object)} raise for a value that is not this
+   * setting's type. A numeric setting keeps reporting it as a {@link NumberFormatException} - a subclass of
+   * {@link IllegalArgumentException}, so a caller that catches the general form is unaffected either way, while one
+   * that distinguishes a malformed number ({@code GlobalConfigurationTest.typeConversion} does) still can. The
+   * message is the enriched one regardless: {@code For input string: "A"}, which is what
+   * {@link FileUtils#getSizeAsNumber(Object)} surfaces for {@code "abc"}, names neither the setting nor what was
+   * actually sent.
+   */
+  private IllegalArgumentException invalidValue(final Object iValue, final RuntimeException cause) {
+    final String message =
+        "Value '" + iValue + "' is not valid for setting '" + key + "' of type " + type.getSimpleName();
+
+    final IllegalArgumentException failure = type == Integer.class || type == Long.class || type == Float.class ?
+        new NumberFormatException(message) :
+        new IllegalArgumentException(message);
+    failure.initCause(cause);
+    return failure;
+  }
+
+  /**
+   * Narrows an integral value to the {@code int} an {@code Integer} setting holds, refusing rather than truncating
+   * one outside the range.
+   * <p>
+   * Issue #6875: this is shared by {@link #coerce(Object)}, {@link #getValueAsInteger()} and
+   * {@link ContextConfiguration#getValueAsInteger(GlobalConfiguration)} so that the bound holds on the READ side
+   * too. Not every value reaches a configuration map through {@code coerce}:
+   * {@link ContextConfiguration#setValue(GlobalConfiguration, Object)} is a plain map put, so a boxed {@code Long}
+   * outside the {@code int} range can be stored, and {@code Number.intValue()} would then hand back its
+   * wrapped-around low 32 bits instead of failing.
+   */
+  int narrowToInteger(final long value) {
+    if (value < Integer.MIN_VALUE || value > Integer.MAX_VALUE)
+      throw new NumberFormatException(
+          "Value '" + value + "' is not valid for setting '" + key + "' of type Integer: outside the range of an Integer");
+    return (int) value;
+  }
+
   public void setValue(final Object iValue) {
     final Object oldValue = value;
     explicitlySet = true;
 
     try {
-      if (iValue == null)
-        value = null;
-      else if (type == Boolean.class)
-        value = Boolean.parseBoolean(iValue.toString());
-      else if (type == Integer.class)
-        value = Integer.parseInt(iValue.toString());
-      else if (type == Long.class)
-        value = Long.parseLong(iValue.toString());
-      else if (type == Float.class)
-        value = Float.parseFloat(iValue.toString());
-      else if (type == String.class)
-        value = iValue.toString();
-      else if (type.isEnum()) {
-        boolean accepted = false;
-
-        if (type.isInstance(iValue)) {
-          value = iValue;
-          accepted = true;
-        } else if (iValue instanceof String string) {
-
-          for (final Object constant : type.getEnumConstants()) {
-            final Enum<?> enumConstant = (Enum<?>) constant;
-
-            if (enumConstant.name().equalsIgnoreCase(string)) {
-              value = enumConstant;
-              accepted = true;
-              break;
-            }
-          }
-        }
-
-        if (!accepted)
-          throw new IllegalArgumentException("Invalid value of `" + key + "` option");
-      } else
-        value = iValue;
+      value = coerce(iValue);
 
       if (callback != null)
         try {
@@ -2590,19 +2697,25 @@ public enum GlobalConfiguration {
         defValue != null ? SystemVariableResolver.INSTANCE.resolveSystemVariables(defValue.toString(), "") : null;
   }
 
+  /**
+   * Issue #6875: the trim, and the {@link Number} test widened from {@code Float}, keep this accessor and
+   * {@link ContextConfiguration#getValueAsInteger(GlobalConfiguration)} on exactly one parse. A value that reaches
+   * either holder without passing through {@link #coerce(Object)} - {@code ContextConfiguration.fromJSON}, the
+   * {@code Map} constructor - used to read back differently depending on which of the two a component happened to call.
+   */
   public int getValueAsInteger() {
     final Object v = value != nullValue && value != null ? value : defValue;
-    return (int) (v instanceof Number n ? n.intValue() : FileUtils.getSizeAsNumber(v.toString()));
+    return narrowToInteger(v instanceof Number n ? n.longValue() : FileUtils.getSizeAsNumber(v.toString().trim()));
   }
 
   public long getValueAsLong() {
     final Object v = value != nullValue && value != null ? value : defValue;
-    return v instanceof Number n ? n.longValue() : FileUtils.getSizeAsNumber(v.toString());
+    return v instanceof Number n ? n.longValue() : FileUtils.getSizeAsNumber(v.toString().trim());
   }
 
   public float getValueAsFloat() {
     final Object v = value != nullValue && value != null ? value : defValue;
-    return v instanceof Float f ? f : Float.parseFloat(v.toString());
+    return v instanceof Number n ? n.floatValue() : Float.parseFloat(v.toString().trim());
   }
 
   public String getKey() {

@@ -842,21 +842,19 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private void setDatabaseSetting(final String triple) throws IOException {
 
     final String tripleTrimmed = triple.trim();
-    final Integer firstSpace = tripleTrimmed.indexOf(" ");
+    final int firstSpace = tripleTrimmed.indexOf(" ");
     if (firstSpace == -1)
       throw new IllegalArgumentException("Expected <database> <key> <value>");
 
     final String pairTrimmed = tripleTrimmed.substring(firstSpace).trim();
-    final Integer secondSpace = pairTrimmed.indexOf(" ");
+    final int secondSpace = pairTrimmed.indexOf(" ");
     if (secondSpace == -1)
       throw new IllegalArgumentException("Expected <database> <key> <value>");
 
     final String db = tripleTrimmed.substring(0, firstSpace);
-    final String key = pairTrimmed.substring(0, secondSpace);
-    final String value = pairTrimmed.substring(secondSpace);
 
     final DatabaseInternal database = httpServer.getServer().getDatabase(db);
-    database.getConfiguration().setValue(key, value);
+    applySetting(database.getConfiguration(), pairTrimmed.substring(0, secondSpace), pairTrimmed.substring(secondSpace + 1));
     database.saveConfiguration();
   }
 
@@ -864,14 +862,54 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
     final String pairTrimmed = pair.trim();
 
-    final Integer firstSpace = pairTrimmed.indexOf(" ");
+    final int firstSpace = pairTrimmed.indexOf(" ");
     if (firstSpace == -1)
       throw new IllegalArgumentException("Expected <key> <value>");
 
-    final String key = pairTrimmed.substring(0, firstSpace);
-    final String value = pairTrimmed.substring(firstSpace);
+    applySetting(httpServer.getServer().getConfiguration(), pairTrimmed.substring(0, firstSpace),
+        pairTrimmed.substring(firstSpace + 1));
+  }
 
-    httpServer.getServer().getConfiguration().setValue(key, value);
+  /**
+   * Stores one {@code <key> <value>} pair of a "set ... setting" command into {@code configuration}.
+   * <p>
+   * Issue #6875: both callers used to hand the raw tokens to {@link ContextConfiguration#setValue(String, Object)},
+   * which is a plain map put. Three things went wrong there and are fixed here:
+   * <ul>
+   * <li>the value kept the separating space that {@code substring(firstSpace)} left on it, so every value was
+   * stored with a leading blank;</li>
+   * <li>the tokens kept the backticks and quotes the documented command syntax uses
+   * ({@code SET SERVER SETTING `arcadedb.foo` 10}), so a quoted key was stored under a name nothing reads - a
+   * silent no-op answered with a 200;</li>
+   * <li>nothing checked the value against the setting's declared type, so an unparseable one was accepted here and
+   * threw later, inside whichever component read the setting next.</li>
+   * </ul>
+   * A key that names no declared setting is still stored verbatim, as it always has been: it carries no type to
+   * validate against, and rejecting it would change behaviour this endpoint has long allowed. The {@code
+   * set_server_setting} MCP tool is stricter on that point only - for a DECLARED setting the two now accept and
+   * refuse exactly the same values, both through {@link GlobalConfiguration#coerce(Object)}.
+   * <p>
+   * The command is still tokenized on the first space(s) BEFORE the quotes are stripped, so quoting does not make a
+   * space part of a token: a database name or a setting key containing one would split wrong. That is unchanged
+   * here and harmless for what the grammar can address - every {@link GlobalConfiguration} key is a dotted
+   * identifier - and only the trailing {@code <value>}, which is whatever remains after the last split, can hold a
+   * quoted space.
+   */
+  private void applySetting(final ContextConfiguration configuration, final String rawKey, final String rawValue) {
+    final String key = FileUtils.getStringContent(rawKey.trim());
+    final String value = FileUtils.getStringContent(rawValue.trim());
+
+    final GlobalConfiguration setting = GlobalConfiguration.findByKey(key);
+    if (setting == null) {
+      configuration.setValue(key, value);
+      return;
+    }
+
+    if (value.isEmpty() && setting.getType() != String.class)
+      throw new IllegalArgumentException(
+          "'value' must not be empty for setting '" + setting.getKey() + "' of type " + setting.getType().getSimpleName());
+
+    configuration.setValue(setting.getKey(), setting.coerce(value));
   }
 
   private JSONObject getServerEvents(final String fileName) {
