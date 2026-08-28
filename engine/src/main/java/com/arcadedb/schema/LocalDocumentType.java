@@ -1554,11 +1554,19 @@ public class LocalDocumentType implements DocumentType {
           // getPageSizeForNewFile(), not getPageSize(): this creates a NEW index file, so the page size carried over has
           // to be one the creation path accepts. A HASH index predating #5713 can hold an unaddressable one, and
           // adding a bucket to its type must not fail because of it (#5713).
+          //
+          // getMetadataForNewFile(), not getMetadata(), for the same reason applied to the configuration: on a WRAPPER
+          // index type the latter answers with the underlying LSM-Tree's plain metadata, so the sub-index minted here
+          // for the new bucket came up with the DEFAULT analyzer, the DEFAULT geohash resolution or - for a sparse
+          // vector index, which refuses a plain IndexMetadata outright - not at all (issue #5742). The instance is
+          // handed over as-is rather than copied: this is one more bucket of the SAME logical index, which is exactly
+          // what index creation does when it passes one metadata instance to every bucket sub-index, and what keeps
+          // the full-text corpus counters type-wide instead of restarting them at zero for the new bucket.
           schema.createBucketIndex(this, idx.getKeyTypes(), bucket, name, idx.getType(), idx.isUnique(),
               idx.getPageSizeForNewFile(),
               idx.getNullStrategy(), null, idx.getPropertyNames().toArray(new String[idx.getPropertyNames().size()]), idx,
               IndexBuilder.BUILD_BATCH_SIZE,
-              idx.getMetadata());
+              idx.getMetadataForNewFile());
         }
       });
     }
@@ -2262,11 +2270,13 @@ public class LocalDocumentType implements DocumentType {
 
       // Inherit the page size of the index being propagated, like the createBucket() path above does. Hardcoding the
       // LSM default here gave a HASH index a page size it cannot address (#5713), and getPageSizeForNewFile() is the
-      // accessor that guarantees the value is legal to create with.
+      // accessor that guarantees the value is legal to create with. getMetadataForNewFile() is its counterpart for
+      // everything that is not the page size, and is handed over as-is, for the reasons spelled out in
+      // addBucketInternal(): the sub-index created here belongs to the SAME logical index being propagated (#5742).
       final Index subIndex = schema.createBucketIndex(this, index.getKeyTypes(), bucket, name, index.getType(),
           index.isUnique(), index.getPageSizeForNewFile(), index.getNullStrategy(), null,
           index.getPropertyNames().toArray(new String[index.getPropertyNames().size()]), index,
-          IndexBuilder.BUILD_BATCH_SIZE, index.getMetadata(), !sharesCallerTransaction);
+          IndexBuilder.BUILD_BATCH_SIZE, index.getMetadataForNewFile(), !sharesCallerTransaction);
 
       created.add(subIndex);
       if (sharesCallerTransaction)

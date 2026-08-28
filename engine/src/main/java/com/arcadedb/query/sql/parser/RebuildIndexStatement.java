@@ -376,9 +376,10 @@ public class RebuildIndexStatement extends DDLStatement {
         // answers the current page size unless it is not legal to create with, in which case it repairs it.
         final int pageSize = ((IndexInternal) idx).getPageSizeForNewFile();
         final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = idx.getNullStrategy();
-        // Get index metadata (includes vector-specific settings like dimensions, similarity, etc.), reconstructing
-        // FULL_TEXT/GEOSPATIAL from the index's persisted JSON so the rebuild preserves their type-specific
-        // settings (issue #4732/#5478) instead of the generic IndexMetadata getMetadata() would otherwise return.
+        // Get index metadata (includes vector-specific settings like dimensions, similarity, etc.) through the
+        // accessor that answers with the type-specific configuration a WRAPPER index keeps outside the underlying
+        // LSM-Tree, so the rebuild preserves the analyzers, the geohash resolution and the sparse dimensionality
+        // (issues #4732/#5478/#5742) instead of the generic IndexMetadata getMetadata() would otherwise return.
         // Shared with DatabaseChecker's auto-fix rebuild path (issue #5934).
         final IndexMetadata rebuildMetadata = IndexMetadata.reconstructForRebuild((IndexInternal) idx, typeName,
             propertyNames.toArray(new String[0]));
