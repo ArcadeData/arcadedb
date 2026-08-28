@@ -641,9 +641,14 @@ public class BoltNetworkExecutor extends Thread {
    * - means the most recently opened stream; any other value names one explicitly, which is how a client
    * interleaves several streams inside one transaction. A qid naming nothing fails the session, exactly as a
    * PULL with no result set behind it did before.
+   * <p>
+   * Outside an explicit transaction the qid is ignored altogether: only one stream can be open there (RUN is not
+   * valid in STREAMING), no qid is ever published in an auto-commit RUN SUCCESS, and the BOLT docs are explicit
+   * that qid does not apply to auto-commit. Honouring it would let a client that sent one anyway be answered
+   * "No active result set for qid ..." for the stream it is plainly asking about.
    */
   private BoltQueryStream resolveStream(final long qid) throws IOException {
-    final BoltQueryStream stream = qid < 0 ? currentStream : openStreams.get(qid);
+    final BoltQueryStream stream = qid < 0 || !explicitTransaction ? currentStream : openStreams.get(qid);
     if (stream == null) {
       sendFailure(BoltException.PROTOCOL_ERROR, qid < 0 ? "No active result set" : "No active result set for qid " + qid);
       state = State.FAILED;
@@ -678,8 +683,11 @@ public class BoltNetworkExecutor extends Thread {
         currentStream = open;
     }
 
-    if (openStreams.isEmpty())
+    if (openStreams.isEmpty()) {
       state = explicitTransaction ? State.TX_READY : State.READY;
+      if (!explicitTransaction)
+        nextQid = 0; // an auto-commit stream is always qid 0: the numbering restarts per transaction
+    }
   }
 
   /**

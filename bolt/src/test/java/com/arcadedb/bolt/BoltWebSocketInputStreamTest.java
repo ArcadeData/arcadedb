@@ -238,6 +238,24 @@ class BoltWebSocketInputStreamTest {
   }
 
   /**
+   * The cap bounds what is accumulated, and a ping accumulates nothing: a message that fills the cap exactly must
+   * still be delivered when someone keeps the socket alive in the middle of it.
+   */
+  @Test
+  void anInterleavedPingIsNotChargedAgainstTheFragmentedMessageLimit() throws Exception {
+    final byte[] first = new byte[(int) MAX_FRAME_SIZE - 24];
+    final byte[] last = new byte[24];
+
+    final BoltWebSocketInputStream stream = new BoltWebSocketInputStream(
+        new ByteArrayInputStream(concat(
+            maskedFrame(false, 0x2, first),
+            maskedFrame(true, 0x9, "ping".getBytes()),
+            maskedFrame(true, 0x0, last))), MAX_FRAME_SIZE);
+
+    assertThat(readFully(stream, (int) MAX_FRAME_SIZE)).hasSize((int) MAX_FRAME_SIZE);
+  }
+
+  /**
    * A reserved opcode used to fall through the same {@code default} branch that swallowed the continuations.
    * RFC 6455 5.2 requires failing the connection instead.
    */
