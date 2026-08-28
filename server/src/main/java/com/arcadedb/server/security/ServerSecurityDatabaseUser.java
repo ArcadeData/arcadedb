@@ -42,6 +42,16 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
   private final        String      userName;
   private              String[]    groups;
 
+  private static final AccessSnapshot NO_CONFIGURATION = new AccessSnapshot(
+      new boolean[DATABASE_ACCESS.values().length], null, null, -1, -1);
+  // The whole permission state of this (user, database) pair, published as ONE immutable value. See
+  // AccessSnapshot below for the invariant it carries.
+  private volatile     AccessSnapshot access = NO_CONFIGURATION;
+  private final        boolean     denyAll;
+  // #5269: fileIds already reported as "not yet in security configuration", to log that line at most once per file
+  // instead of on every access (which used to flood the logs at thousands of lines/sec under write load).
+  private final        Set<Integer> warnedNotRegisteredFiles = ConcurrentHashMap.newKeySet();
+
   /**
    * The whole permission state of this (user, database) pair, published as ONE immutable value.
    * <p>
@@ -61,24 +71,6 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
                         long resultSetLimit, long readTimeout) {
   }
 
-  /**
-   * The whole permission state in ONE volatile read - which is precisely the guarantee the snapshot exists
-   * to provide, and the only way a test can assert it: two successive calls to the public checks are two
-   * reads and may legitimately straddle a refresh. Package-private, for the tests that pin the invariant.
-   */
-  AccessSnapshot currentAccess() {
-    return access;
-  }
-
-  private static final AccessSnapshot NO_CONFIGURATION = new AccessSnapshot(
-      new boolean[DATABASE_ACCESS.values().length], null, null, -1, -1);
-
-  private volatile     AccessSnapshot access = NO_CONFIGURATION;
-  private final        boolean     denyAll;
-  // #5269: fileIds already reported as "not yet in security configuration", to log that line at most once per file
-  // instead of on every access (which used to flood the logs at thousands of lines/sec under write load).
-  private final        Set<Integer> warnedNotRegisteredFiles = ConcurrentHashMap.newKeySet();
-
   public ServerSecurityDatabaseUser(final String databaseName, final String userName, final String[] groups) {
     this(databaseName, userName, groups, false);
   }
@@ -89,6 +81,15 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
     this.userName = userName;
     this.groups = groups;
     this.denyAll = denyAll;
+  }
+
+  /**
+   * The whole permission state in ONE volatile read - which is precisely the guarantee the snapshot exists
+   * to provide, and the only way a test can assert it: two successive calls to the public checks are two
+   * reads and may legitimately straddle a refresh. Package-private, for the tests that pin the invariant.
+   */
+  AccessSnapshot currentAccess() {
+    return access;
   }
 
   public String[] getGroups() {
