@@ -168,16 +168,23 @@ class Issue6300AlgoMSTEdgeBudgetTest {
   void theRefusalNamesTheActualEdgeCountOnceTheRowHeadersFit() {
     // A budget wide enough for the graph (1056) plus the row headers (704) - 1760 - but not for the 10 edges'
     // entries on top of that (12 bytes each: an int neighbour id plus a double weight, 120 bytes total) fires the
-    // second reservation, which quotes the edge count it actually reached: for an 11-node graph the per-edge
-    // checkpoint stride (every 1024 nodes, or 1_048_576 entries) never triggers mid-walk, so every edge has
-    // already been read into the arrays by the time this fires - the same "counted then refused" shape the old
-    // MST-local counting pass had, now living in the shared helper instead.
+    // second reservation, which quotes the edge count it actually reached.
+    //
+    // Issue #6795: before that fix, weightedAdjacencyFromRecords (the OLTP path this 11-node/no-view graph takes)
+    // checkpointed only every 1024 nodes or 1_048_576 entries - neither ever reached here - so every edge was
+    // already read into the arrays by the time the single post-loop reservation fired, reporting the full 10.
+    // The fix makes it also consult capacityFor(), recomputed after every reservation exactly like the columnar
+    // path already did: with this budget only 40 bytes remain once the row headers are admitted, so the interval
+    // shrinks fast and the walk is refused after just 1 more edge entry - proof the checkpoint now fires mid-walk
+    // instead of only once the whole adjacency list is already built.
     database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1800L);
 
+    // "1 edge entries" (not the full EDGE_COUNT): the record path must refuse well before materialising all 10
+    // edges, mirroring the columnar path's own capacityFor-scaled checkpoint.
     assertThatThrownBy(() -> drain("CALL algo.mst('w') YIELD source RETURN source"))
         .hasStackTraceContaining("algo.mst(): the weighted adjacency list would need")
         .hasStackTraceContaining("more than the 1800 bytes allowed")
-        .hasStackTraceContaining(EDGE_COUNT + " edge entries");
+        .hasStackTraceContaining("1 edge entries");
   }
 
   @Test

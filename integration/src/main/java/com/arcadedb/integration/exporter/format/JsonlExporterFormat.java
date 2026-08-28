@@ -199,27 +199,39 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
     for (final String type : vertexTypes) {
       for (final Iterator<Record> cursor = database.iterateType(type, false); cursor.hasNext(); ) {
         Vertex vertex = null;
+        final Iterable<Edge> outEdges;
         try {
           vertex = cursor.next().asVertex(true);
 
           if (settings.includeRecords != null && !settings.includeRecords.contains(vertex.getIdentity().toString()))
             continue;
 
-          for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.OUT)) {
-            if (!(edge instanceof LightEdge))
-              continue;
-            if (settings.excludeTypes != null && settings.excludeTypes.contains(edge.getTypeName()))
-              continue;
-            if (settings.includeTypes != null && !settings.includeTypes.contains(edge.getTypeName()))
-              continue;
-
-            writeJsonLine("e", graphSerializer.serializeGraphElement(edge));
-            context.edges.incrementAndGet();
-          }
+          outEdges = vertex.getEdges(Vertex.DIRECTION.OUT);
         } catch (Exception e) {
           context.skippedRecords.incrementAndGet();
           LogManager.instance().log(this, Level.SEVERE, "Error on exporting lightweight edges of vertex %s", e,
               vertex != null ? vertex.getIdentity() : null);
+          continue;
+        }
+
+        // Issue #6795 (follow-up on #6471): each edge gets its OWN try/catch, so a failure on one edge is
+        // counted on its own and does not silently drop the rest of this vertex's edges.
+        for (final Edge edge : outEdges) {
+          if (!(edge instanceof LightEdge))
+            continue;
+          if (settings.excludeTypes != null && settings.excludeTypes.contains(edge.getTypeName()))
+            continue;
+          if (settings.includeTypes != null && !settings.includeTypes.contains(edge.getTypeName()))
+            continue;
+
+          try {
+            writeJsonLine("e", graphSerializer.serializeGraphElement(edge));
+            context.edges.incrementAndGet();
+          } catch (Exception e) {
+            context.skippedRecords.incrementAndGet();
+            LogManager.instance().log(this, Level.SEVERE, "Error on exporting lightweight edge %s of vertex %s", e,
+                edge.getIdentity(), vertex.getIdentity());
+          }
         }
       }
     }
