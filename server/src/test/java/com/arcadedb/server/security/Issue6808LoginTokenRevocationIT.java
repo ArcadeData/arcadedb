@@ -89,6 +89,33 @@ class Issue6808LoginTokenRevocationIT extends BaseGraphServerTest {
     });
   }
 
+  @Test
+  void reloadingTheUserFileWithARotatedPasswordRevokesTheTokenToo() throws Exception {
+    testEachServer(serverIndex -> {
+      createUser(serverIndex, PWD);
+      try {
+        final String token = login(serverIndex, PWD);
+        assertThat(queryWithToken(serverIndex, token)).isEqualTo(200);
+
+        // Third way a password can change: an operator edits server-users.jsonl and the file is re-read.
+        // The bearer path only requires the principal to still resolve by name, and it does, so the reload
+        // has to compare the stored hashes and revoke on its own.
+        final ServerSecurity security = getServer(serverIndex).getSecurity();
+        for (final JSONObject user : security.usersToJSON())
+          if (USER.equals(user.getString("name")))
+            user.put("password", security.encodePassword(PWD + "-from-file"));
+        security.saveUsers();
+        security.loadUsers();
+
+        assertThat(queryWithToken(serverIndex, token))
+            .as("a password rotated through the user file must revoke the tokens issued before it")
+            .isEqualTo(401);
+      } finally {
+        dropUser(serverIndex);
+      }
+    });
+  }
+
   private String login(final int serverIndex, final String password) throws Exception {
     final HttpURLConnection connection = open(serverIndex, "/api/v1/login", "POST", basicAuth(USER, password));
     connection.connect();
