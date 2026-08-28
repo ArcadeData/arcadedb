@@ -122,11 +122,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   // loop) cannot grow the cache without bound either. The overflow tuple space is itself finite: method,
   // path template and status are all small enumerations.
   private static final String     OVERFLOW_DB_TAG    = "other";
-  // Maximum number of distinct "db" tag values allowed on arcadedb.http.requests. ArcadeDBServer.startMetrics()
-  // installs the matching MeterFilter from this constant, so the registry-side bound and the cache-side bound
-  // below are one number rather than two independently-chosen ones. Far above any realistic per-server
-  // database count.
+  // Maximum number of distinct DATABASE NAMES allowed in the "db" tag of arcadedb.http.requests.
+  // ArcadeDBServer.startMetrics() installs the matching MeterFilter from this constant, so the registry-side
+  // bound and the cache-side bound below are one number rather than two independently-chosen ones. Far above
+  // any realistic per-server database count.
   public static final  int        MAX_DB_TAG_VALUES  = 1_000;
+  // The values above and beyond a database name that the "db" tag can carry: "none", UNKNOWN_DB_TAG and
+  // OVERFLOW_DB_TAG. MeterFilter.maximumAllowableTags counts EVERY distinct value of the tag, so the filter
+  // limit has to be the database-name budget plus these, or a server that has used the whole budget on real
+  // names would have its own collapse values denied - exactly the meters that exist to keep cardinality down.
+  public static final  int        RESERVED_DB_TAG_VALUES = 3;
   // Ceiling on the number of cached tuples: a MeterFilter can deny the meter but cannot stop computeIfAbsent
   // from retaining the key, so the cache needs a bound of its own. Sized as a multiple of MAX_DB_TAG_VALUES
   // so that a deployment with the maximum admissible number of databases still gets per-database RED

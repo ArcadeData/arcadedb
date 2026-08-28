@@ -598,7 +598,8 @@ public class ArcadeDBServer {
         // handler's own timer-cache bound stay tied to one number.
         Metrics.globalRegistry.config().meterFilter(
             MeterFilter.maximumAllowableTags("arcadedb.http.requests", "db",
-                AbstractServerHttpHandler.MAX_DB_TAG_VALUES, MeterFilter.deny()));
+                AbstractServerHttpHandler.MAX_DB_TAG_VALUES + AbstractServerHttpHandler.RESERVED_DB_TAG_VALUES,
+                MeterFilter.deny()));
         metricsFiltersInstalled = true;
       }
 

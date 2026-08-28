@@ -67,4 +67,27 @@ class Issue6807PromQLRangeParameterTest {
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("Invalid start timestamp");
   }
+
+  @Test
+  void parsesStepAsSecondsOrAsDuration() {
+    assertThat(GetPromQLQueryRangeHandler.parseStep("60")).isEqualTo(60_000L);
+    assertThat(GetPromQLQueryRangeHandler.parseStep("0.5")).isEqualTo(500L);
+    assertThat(GetPromQLQueryRangeHandler.parseStep("1m")).isEqualTo(60_000L);
+  }
+
+  @Test
+  void rejectsAStepThatIsNotFiniteOrNotRepresentable() {
+    // Double.parseDouble accepts both without throwing, and (long)(v * 1000) saturates to Long.MAX_VALUE -
+    // positive, so it passed the "step must be positive" test, and the evaluator then answered 200 with a
+    // single-point series instead of rejecting the request.
+    assertThatThrownBy(() -> GetPromQLQueryRangeHandler.parseStep("Infinity"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("is not finite");
+    assertThatThrownBy(() -> GetPromQLQueryRangeHandler.parseStep("1e300"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("outside the supported epoch range");
+    assertThatThrownBy(() -> GetPromQLQueryRangeHandler.parseStep("NaN"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("is not finite");
+  }
 }
