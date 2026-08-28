@@ -3716,6 +3716,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * synchronous full rebuild into a path whose contract is zero disk I/O and microsecond latency is a change of
    * a different kind from the one this issue is about. Whether the count thresholds should reach this path too
    * is a real question, and a separate one.
+   * <p>
+   * <b>What the calling query can wait on, and what it cannot.</b> Not {@code graphBuildLock}: that is taken by
+   * the spawned daemon thread, never by the thread that spawned it, so no query here ever waits on a build. The
+   * only lock this can reach is the instance monitor {@link #startAsyncGraphRebuild()} holds while it starts that
+   * thread, briefly, and only on the rare query that actually fires the trigger - the {@code asyncRebuildInProgress}
+   * check above turns the common case away before it. That is the identical exposure the exact search path has
+   * carried through {@code rebuildGraphBeforeSearch()} since issue #3679; it is new to this path, not to the class.
    */
   private void boundDeltaScanBeforeApproximateSearch() {
     if (graphState != GraphState.MUTABLE || asyncRebuildInProgress)

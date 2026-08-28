@@ -307,6 +307,19 @@ class Issue6797DeltaScanScalingTest extends TestHelper {
     assertThat(index.getStats().get("deltaScanBudget"))
         .as("ratio 0 reports the disabled sentinel").isEqualTo(Long.MAX_VALUE);
 
+    // No rebuild may still be settling from the fixture before the negative assertion below starts: this test
+    // proves a buffer is NOT drained, so a stray rebuild finishing during the wait would fail it for a reason
+    // that has nothing to do with the policy. Bounded in seconds, deliberately, and NOT by
+    // REBUILD_SETTLE_TIMEOUT: this waits on an in-process flag that the fixture's synchronous build has already
+    // cleared, so ten seconds is generous. Sizing it to the rebuild-permit timeout instead would mean that on the
+    // one occasion the flag is genuinely stuck - another class in the same JVM still holding the semaphore - this
+    // test blocks the whole vector lane for ten minutes before saying so.
+    Awaitility.await("the fixture's rebuild has fully finished, not just published its buffer")
+        .atMost(Duration.ofSeconds(10))
+        .pollInterval(Duration.ofMillis(50))
+        .untilAsserted(() -> assertThat(index.getStats().get("asyncRebuildInProgress")).isZero());
+
+    final long generationBefore = index.getStats().get("rebuildSnapshotGeneration");
     final int buffered = 600;
     insertVectors(random, buffered);
 
@@ -319,6 +332,11 @@ class Issue6797DeltaScanScalingTest extends TestHelper {
     assertThat(index.getStats().get("deltaVectorsCount"))
         .as("with the policy off, nothing bounds the scan - which is precisely the behaviour issue #6797 reports")
         .isEqualTo((long) buffered);
+    // The buffer count alone would also read unchanged if a rebuild had run and been immediately refilled, which
+    // cannot happen here but would make this test pass for the wrong reason if it could. The generation counter
+    // says no rebuild ran at all.
+    assertThat(index.getStats().get("rebuildSnapshotGeneration"))
+        .as("no rebuild of any kind may have run").isEqualTo(generationBefore);
   }
 
   /**
