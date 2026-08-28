@@ -119,9 +119,11 @@ class Issue6838ServerManifestVersionTest {
   }
 
   /**
-   * Reads the reactor root's own {@code <version>}, which is the first one declared after the {@code <parent>} block
-   * closes. Parsing it textually keeps the test free of an XML dependency and of any Maven-injected property, so it
-   * asserts against the file a release actually rewrites.
+   * Reads the reactor root's own {@code <version>}. The root POM is {@code arcadedb-parent} itself and declares no
+   * {@code <parent>}, so today that is simply the first {@code <version>} in the file; the {@code </parent>} skip is
+   * there so the answer stays the root's own version rather than an inherited one if that ever changes. Parsing it
+   * textually keeps the test free of an XML dependency and of any Maven-injected property, so it asserts against the
+   * file a release actually rewrites.
    */
   private static String readProjectVersion() throws IOException {
     final String pom = Files.readString(repositoryRoot().resolve("pom.xml"));
