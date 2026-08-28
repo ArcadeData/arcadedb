@@ -20,6 +20,7 @@ package com.arcadedb.mcp;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.mcp.tools.MCPVectorLeg;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -1601,7 +1602,18 @@ class MCPServerPluginTest extends BaseGraphServerTest {
         .put("efSearch", 0)
         .put("k", 1));
     assertThat(invalidEfSearch.getJSONArray("content").getJSONObject(0).getString("text"))
-        .contains("'efSearch' must be at least 1");
+        .contains("'efSearch' must be between 1 and " + MCPVectorLeg.MAX_EF_SEARCH);
+
+    // The upper end of the same window (#6837): efSearch sizes the HNSW candidate list, so leaving it unbounded let
+    // one call size that queue from an arbitrary caller-supplied integer.
+    final JSONObject oversizedEfSearch = callTool("vector_search", new JSONObject()
+        .put("database", getDatabaseName())
+        .put("indexName", "McpVectorRecord[embedding]")
+        .put("queryVector", new JSONArray().put(1.0).put(0.0).put(0.0))
+        .put("efSearch", Integer.MAX_VALUE)
+        .put("k", 1));
+    assertThat(oversizedEfSearch.getJSONArray("content").getJSONObject(0).getString("text"))
+        .contains("'efSearch' must be between 1 and " + MCPVectorLeg.MAX_EF_SEARCH);
 
     final JSONObject sparseEfSearch = callTool("vector_search", new JSONObject()
         .put("database", getDatabaseName())

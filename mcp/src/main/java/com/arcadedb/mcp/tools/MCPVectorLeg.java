@@ -50,6 +50,13 @@ import java.util.TreeSet;
 public final class MCPVectorLeg {
   public static final int DEFAULT_K             = 10;
   public static final int MAX_K                 = 1_000;
+  /**
+   * Upper bound on 'efSearch' (issue #6837). efSearch sizes the HNSW dynamic candidate list, so an unbounded value
+   * lets one caller ask a single traversal to keep an arbitrarily large priority queue alive. Ten times MAX_K leaves
+   * every legitimate recall/latency trade-off reachable - efSearch is only useful above k - while keeping the queue
+   * bounded by a constant instead of by whatever integer the caller sent.
+   */
+  public static final int MAX_EF_SEARCH         = 10_000;
   public static final int FILTER_OVERFETCH      = 8;
   public static final int MAX_FILTER_CANDIDATES = 8_000;
   public static final int MAX_FILTER_EXPRESSION = 4_096;
@@ -76,8 +83,8 @@ public final class MCPVectorLeg {
     MCPToolUtils.requireString(args, indexNameField);
     final boolean sparse = args.getBoolean("sparse", false);
     final Integer efSearch = args.has("efSearch") ? args.getInt("efSearch") : null;
-    if (efSearch != null && efSearch < 1)
-      throw new IllegalArgumentException("'efSearch' must be at least 1");
+    if (efSearch != null && (efSearch < 1 || efSearch > MAX_EF_SEARCH))
+      throw new IllegalArgumentException("'efSearch' must be between 1 and " + MAX_EF_SEARCH + ", got " + efSearch);
     if (sparse && efSearch != null)
       throw new IllegalArgumentException("'efSearch' applies only to dense LSM_VECTOR indexes");
     if (!sparse && args.has("queryIndices"))

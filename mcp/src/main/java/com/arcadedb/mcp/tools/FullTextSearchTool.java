@@ -41,6 +41,14 @@ import java.util.Map;
 public class FullTextSearchTool {
 
   private static final int DEFAULT_LIMIT = 10;
+  /**
+   * Upper bound on the requested window (issue #6837). The per-bucket push-down bounds the index scan, but every
+   * surviving hit is then loaded with {@code lookupByRID}, serialized in full and accumulated into the reply's
+   * JSONArray, so an unbounded 'limit' still turns one call into "return every matching document". The cap matches
+   * the ceiling the sibling search tools already use for a candidate window ({@link MCPVectorLeg#MAX_K},
+   * {@link HybridSearchTool#MAX_LEG_CANDIDATES}), which keeps one number to reason about across the search surface.
+   */
+  public static final  int MAX_LIMIT     = 1_000;
 
   public static JSONObject getDefinition() {
     return new JSONObject()
@@ -79,7 +87,11 @@ public class FullTextSearchTool {
                 .put("limit", new JSONObject()
                     .put("type", "integer")
                     .put("default", DEFAULT_LIMIT)
-                    .put("description", "Maximum number of results to return (default: 10)")))
+                    .put("minimum", 1)
+                    .put("maximum", MAX_LIMIT)
+                    .put("description",
+                        "Maximum number of results to return (default: " + DEFAULT_LIMIT + ", maximum: " + MAX_LIMIT
+                            + ")")))
             .put("required", new JSONArray().put("database").put("queryText")));
   }
 
@@ -93,9 +105,12 @@ public class FullTextSearchTool {
       throw new IllegalArgumentException("'queryText' must not be blank. Provide at least one term, for example 'java' "
           + "or '+java -python'.");
 
+    // The declared JSON-Schema window is advisory - the client is the one that would enforce it - so re-check it
+    // here, before the index is resolved, so an out-of-range limit is reported as a limit fault rather than as
+    // whatever addressing error the same call would also have produced.
     final int limit = args.getInt("limit", DEFAULT_LIMIT);
-    if (limit < 1)
-      throw new IllegalArgumentException("'limit' must be at least 1, got " + limit);
+    if (limit < 1 || limit > MAX_LIMIT)
+      throw new IllegalArgumentException("'limit' must be between 1 and " + MAX_LIMIT + ", got " + limit);
 
     final MCPToolUtils.DatabaseAccess access = MCPToolUtils.resolveDatabase(
         server, user, databaseName, config, MCPToolUtils.RequiredAccess.READ);

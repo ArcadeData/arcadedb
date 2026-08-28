@@ -77,7 +77,10 @@ public class VectorSearchTool {
                 .put("efSearch", new JSONObject()
                     .put("type", "integer")
                     .put("minimum", 1)
-                    .put("description", "Dense-index search beam width; higher values improve recall at higher cost"))
+                    .put("maximum", MCPVectorLeg.MAX_EF_SEARCH)
+                    .put("description",
+                        "Dense-index search beam width; higher values improve recall at higher cost (maximum: "
+                            + MCPVectorLeg.MAX_EF_SEARCH + ")"))
                 .put("filter", new JSONObject()
                     .put("type", "string")
                     .put("description",

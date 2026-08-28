@@ -55,6 +55,18 @@ jobs:
           jq --arg version "${{ github.event.inputs.releaseversion }}" '.version = $version' package.json > package.json.tmp
           mv package.json.tmp package.json
 
+      # server.json is the manifest the MCP registry publishes this server from. It is not a Maven artifact, so
+      # versions:set never reaches it and it silently drifted six releases behind HEAD (#6838). Rewrite it here, and
+      # only here: it names the last RELEASE, so the next-development step below deliberately leaves it alone rather
+      # than pinning a -SNAPSHOT container tag that was never pushed.
+      - name: Update server.json MCP registry manifest version
+        run: |
+          jq --arg version "${{ github.event.inputs.releaseversion }}" \
+            '.version = $version | .packages |= map(.identifier |= sub(":[^:]+$"; ":" + $version))' \
+            server.json > server.json.tmp
+          mv server.json.tmp server.json
+          cat server.json
+
       - name: Publish package
         run: |
           export MAVEN_OPTS="--add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.text=ALL-UNNAMED --add-opens=java.desktop/java.awt.font=ALL-UNNAMED"

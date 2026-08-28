@@ -3993,3 +3993,49 @@ the moment the question is actually useful: right before a query pays the deferr
 to `0` the moment that rebuild - deferred or not - actually completes.
 
 [#6657](https://github.com/ArcadeData/arcadedb/issues/6657)
+
+## MCP: `full_text_search` and `efSearch` are bounded, and `set_server_setting` no longer accepts a missing value (#6837)
+
+#6762 capped the windows on `query`, `execute_command` and `profiler_start`, and its description said the full-text
+tool was capped too. It was not: `full_text_search` rejected only `limit < 1`. The per-bucket push-down bounds the
+index scan, but every surviving hit is then loaded with `lookupByRID`, serialized in full and accumulated into the
+reply's `JSONArray`, so `"limit": 2147483647` from a read-only caller still meant "return every matching document
+in one message". `limit` is now bounded at 1,000 - the ceiling the sibling search tools already use for a candidate
+window - and the tool's declared JSON Schema carries the same `minimum`/`maximum`, so a client can reject the call
+before it is sent.
+
+`efSearch` had the same half-bounded shape in `vector_search` and `hybrid_search`: a declared `minimum` of 1, no
+`maximum`, and a server-side check for the lower end only. It sizes the HNSW dynamic candidate list, so it is now
+bounded at 10,000, which leaves every useful recall/latency trade-off reachable while making the queue a function of
+a constant rather than of whatever integer arrived.
+
+`set_server_setting` declared both `key` and `value` required and then read them with empty-string defaults,
+re-checking only the key. A call that omitted `value` therefore returned `isError: false` and stored `""` in the
+server's `ContextConfiguration` - for a numeric key, a `NumberFormatException` deferred to whichever component read
+that setting next, far from the call that caused it. Both members are now re-checked where they are read: an absent
+`value` is rejected, and an explicitly empty one is rejected for every setting whose type is not `String` (for a
+`String` setting `""` stays valid, because that is how a caller clears one). This matches the HTTP twin,
+`PostServerCommandHandler.setServerSetting`, which already refused the value-less form.
+
+The regression test that generalises this asserts the rule across the whole tool surface rather than for one tool:
+every numeric input that declares a lower bound must declare an upper one too, and `full_text_search` must advertise
+exactly the window it enforces.
+
+[#6837](https://github.com/ArcadeData/arcadedb/issues/6837)
+
+## MCP registry manifest no longer drifts from the released version (#6838)
+
+`server.json` is the manifest the MCP registry publishes this server from, and nothing in the build touched it: it
+declared `"version": "26.3.1"` and pinned `docker.io/arcadedata/arcadedb:26.3.1` while the project was at
+26.9.1-SNAPSHOT. A client installing from the registry entry resolved a container six releases old - missing every
+HA, Raft and security fix from 26.4.x through 26.8.x - while reading the tool surface of HEAD, and the stale
+`version` field made the entry look abandoned.
+
+The release workflow now rewrites both the `version` field and the OCI tag from the release version it is already
+given, next to the step that does the same for `studio/package.json`. It runs only on the release side, not on the
+next-development bump, so the manifest always names a container tag that was actually pushed rather than a
+`-SNAPSHOT` that never exists. A regression test holds the two halves together - the declared version and the pinned
+tag have to agree, and neither may be a SNAPSHOT - and fails if the manifest falls more than a quarter behind the
+POM, which is what noticing this in the first place required a human to do.
+
+[#6838](https://github.com/ArcadeData/arcadedb/issues/6838)
