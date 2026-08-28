@@ -4856,13 +4856,6 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
-   * @throws PageCorruptionException when the slot-table entry points inside the page header, which no writer can
-   *                                 produce: the page was READ fine, its CONTENTS are nonsense. A distinct type
-   *                                 rather than a plain {@link IOException} because a few lines away in the same
-   *                                 chunk-chain walk an {@code IOException} means the exact opposite - the disk
-   *                                 failed, so nothing at all is proved about the record (#6282).
-   */
-  /**
    * Whether the chunk whose size field sits at {@code chunkHeaderPos} describes itself legally: a non-negative size
    * whose {@code [int size][long nextChunk][content]} image fits inside the page's content area.
    * <p>
@@ -4879,6 +4872,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             && (long) chunkHeaderPos + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE + chunkSize <= page.getMaxContentSize();
   }
 
+  /**
+   * @throws PageCorruptionException when the slot-table entry points inside the page header, which no writer can
+   *                                 produce: the page was READ fine, its CONTENTS are nonsense. A distinct type
+   *                                 rather than a plain {@link IOException} because a few lines away in the same
+   *                                 chunk-chain walk an {@code IOException} means the exact opposite - the disk
+   *                                 failed, so nothing at all is proved about the record (#6282).
+   */
   private int getRecordPositionInPage(final BasePage page, final int positionInPage) throws IOException {
     final int recordPositionInPage = (int) page.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE);
     if (recordPositionInPage != 0 && recordPositionInPage < contentHeaderSize)
