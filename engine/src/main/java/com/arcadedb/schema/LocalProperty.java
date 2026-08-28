@@ -66,6 +66,15 @@ public class LocalProperty extends AbstractProperty {
       // publication is serialized: conversion and validation stay outside, so a rejected default touches no state and
       // its SchemaException reaches the caller unwrapped, and the write lock is held for two field assignments.
       type.recordFileChanges(() -> {
+        // Holding the same lock as dropProperty() also settles the order of the two: whoever arrives second sees the
+        // other's result. A handle to a property that has since been dropped (or dropped and recreated) is detached,
+        // and writing its default through would leave a name in the cache that resolves to nothing - #6799 reached
+        // from the other side. Identity and not mere presence, so a recreated namesake cannot be written through the
+        // stale handle either.
+        if (type.getPropertyIfExists(name) != this)
+          throw new SchemaException("Cannot set the default value of property '" + type.getName() + "." + name
+              + "' because the property is no longer declared in the type");
+
         // One publication, so no reader can see the new value with the old (or no) compiled expression.
         this.defaultValue = new DefaultValue(convertedValue, compiled);
         type.setPropertyHasDefault(name, convertedValue != DEFAULT_NOT_SET);

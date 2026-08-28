@@ -27,6 +27,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.File;
 import java.io.IOException;
@@ -516,6 +517,7 @@ class PropertyDefaultValueTest extends TestHelper {
    * now, so every name survives whatever the interleaving was.
    */
   @Test
+  @Timeout(60)
   void concurrentDefaultUpdatesOnTheSameTypeDoNotLoseEachOther() throws Exception {
     final int properties = 16;
 
@@ -545,7 +547,7 @@ class PropertyDefaultValueTest extends TestHelper {
     }
 
     start.countDown();
-    assertThat(done.await(30, TimeUnit.SECONDS)).isTrue();
+    done.await();
     for (final Thread t : threads)
       t.join();
     assertThat(failure.get()).isNull();
@@ -567,6 +569,7 @@ class PropertyDefaultValueTest extends TestHelper {
    * defaults set. The dropped name must be gone and none of the others may have been dropped with it.
    */
   @Test
+  @Timeout(60)
   void aConcurrentDropDoesNotResurrectOrLoseOtherDefaults() throws Exception {
     final int properties = 12;
 
@@ -600,7 +603,7 @@ class PropertyDefaultValueTest extends TestHelper {
     }
 
     start.countDown();
-    assertThat(done.await(30, TimeUnit.SECONDS)).isTrue();
+    done.await();
     for (final Thread t : threads)
       t.join();
     assertThat(failure.get()).isNull();
@@ -616,6 +619,32 @@ class PropertyDefaultValueTest extends TestHelper {
       for (int i = 0; i < properties; i++)
         assertThat(doc.getString("p" + i)).isEqualTo("v" + i);
     });
+  }
+
+  /**
+   * #6799 reached from the other side: the property object outlives the DROP, so a caller holding one can still call
+   * {@code setDefaultValue()} on it. Writing that default through would put the dropped name back into the cache and
+   * break the next record create all over again, so the publication rejects a detached handle instead - identity
+   * against the type's own declaration, which also covers a name that was dropped and recreated in between.
+   */
+  @Test
+  void aDroppedPropertyHandleCannotWriteItsDefaultBack() {
+    final DocumentType type = database.getSchema().createDocumentType("Probe");
+    final Property stale = type.createProperty("obsolete", Type.STRING);
+    stale.setDefaultValue("'legacy'");
+
+    type.dropProperty("obsolete");
+
+    assertThatThrownBy(() -> stale.setDefaultValue("'resurrected'")).isInstanceOf(SchemaException.class)
+        .hasMessageContaining("Probe.obsolete");
+    assertThat(type.getPolymorphicPropertiesWithDefaultDefined()).doesNotContain("obsolete");
+
+    // And the same for a namesake recreated in the meantime: the stale handle must not write through to it.
+    type.createProperty("obsolete", Type.INTEGER);
+    assertThatThrownBy(() -> stale.setDefaultValue("'resurrected'")).isInstanceOf(SchemaException.class);
+    assertThat(type.getPolymorphicPropertiesWithDefaultDefined()).doesNotContain("obsolete");
+
+    database.transaction(() -> assertThat(database.newDocument("Probe").save().has("obsolete")).isFalse());
   }
 
   /**
