@@ -67,6 +67,8 @@ class Issue6873VectorSelectTimeoutTest extends TestHelper {
   private static final int  DIMENSIONS = 8;
   private static final int  PRODUCTS   = 50;
   private static final int  K          = 25;
+  /** Enough buckets that the {@code Spread} fixture puts rows in more than one bucket index. */
+  private static final int  SPREAD_BUCKETS = 4;
   /** Virtual milliseconds. Never compared against a real clock: {@link StepClock} decides when it is exceeded. */
   private static final long BUDGET_MS  = 1_000;
 
@@ -184,6 +186,30 @@ class Issue6873VectorSelectTimeoutTest extends TestHelper {
   }
 
   /**
+   * The contract for a non-throwing expiry detected <i>before</i> the assembly loop: an empty list, not a partial one.
+   * <p>
+   * {@code allNeighbors} is not an answer - it holds RIDs and distances, and promoting any of them into a
+   * {@code SelectVectorResult} means loading a record and possibly running the post-filter WHERE, i.e. doing more work
+   * past a deadline that has already gone. So the rule is the one {@code executeCount()} and {@code SelectIterator}
+   * follow: hand back what was already produced, never produce more. This test pins that down with a fixture whose
+   * rows really are spread over several bucket indexes, so the budget dies with real candidates already accumulated.
+   */
+  @Test
+  void aNonThrowingExpiryBetweenIndexesReturnsEmptyRatherThanUnassembledNeighbours() {
+    createSchemaAndData();
+
+    // THE FIXTURE HAS TO ACTUALLY EXERCISE THE CASE: MORE THAN ONE BUCKET INDEX, AND NEIGHBOURS TO BE FOUND IN THEM
+    assertThat(countVectorBucketIndexes("Spread")).isGreaterThan(1);
+    assertThat(search("Spread", null)).isNotEmpty();
+
+    // startTimeout() PLUS THE FIRST INDEX'S CHECKPOINT ARE FREE, SO INDEX 1 IS SEARCHED IN FULL AND CONTRIBUTES
+    // CANDIDATES; THE SECOND INDEX'S CHECKPOINT IS THE FIRST READING PAST THE BUDGET
+    final List<SelectVectorResult<Vertex>> results = searchWithClock("Spread", new StepClock(2), false, false);
+
+    assertThat(results).isEmpty();
+  }
+
+  /**
    * Load-invariant: a budget nobody can exhaust must return exactly what an unbounded search returns. This is the
    * assertion that would catch a deadline armed wrongly (for instance one that expires immediately), and a JVM stall
    * can only make the real clock read later - which this test never looks at.
@@ -254,7 +280,11 @@ class Issue6873VectorSelectTimeoutTest extends TestHelper {
    * Runs the same search through the public fluent API, optionally applying a timeout to the select first.
    */
   private List<SelectVectorResult<Vertex>> search(final UnaryOperator<Select> withTimeout) {
-    final Select select = database.select().fromType("Product");
+    return search("Product", withTimeout);
+  }
+
+  private List<SelectVectorResult<Vertex>> search(final String typeName, final UnaryOperator<Select> withTimeout) {
+    final Select select = database.select().fromType(typeName);
     return (withTimeout == null ? select : withTimeout.apply(select))//
         .nearestTo("embedding", queryVector(), K).vertices();
   }
@@ -303,6 +333,19 @@ class Issue6873VectorSelectTimeoutTest extends TestHelper {
             "beamWidth" : 100
           }""");
 
+      // SAME SHAPE, SPREAD OVER SEVERAL BUCKETS SO MORE THAN ONE BUCKET INDEX HOLDS ROWS: THAT IS WHAT MAKES AN
+      // EXPIRY *BETWEEN* INDEXES OBSERVABLE, WITH REAL CANDIDATES ALREADY ACCUMULATED WHEN IT HAPPENS
+      database.command("sql", "CREATE VERTEX TYPE Spread IF NOT EXISTS BUCKETS " + SPREAD_BUCKETS);
+      database.command("sql", "CREATE PROPERTY Spread.embedding IF NOT EXISTS ARRAY_OF_FLOATS");
+      database.command("sql", """
+          CREATE INDEX IF NOT EXISTS ON Spread (embedding) LSM_VECTOR
+          METADATA {
+            "dimensions" : 8,
+            "similarity" : "EUCLIDEAN",
+            "maxConnections" : 16,
+            "beamWidth" : 100
+          }""");
+
       // SAME SHAPE, NO ROWS: A VECTOR SEARCH OVER IT RETURNS NO NEIGHBOUR AT ALL, WHICH IS WHAT MAKES THE PRE-SORT
       // CHECKPOINT DISTINGUISHABLE FROM THE ASSEMBLY ONE
       database.command("sql", "CREATE VERTEX TYPE Empty IF NOT EXISTS");
@@ -317,6 +360,12 @@ class Issue6873VectorSelectTimeoutTest extends TestHelper {
           }""");
 
       final Random rng = new Random(42);
+      for (int i = 0; i < PRODUCTS; i++) {
+        final float[] spread = new float[DIMENSIONS];
+        for (int j = 0; j < DIMENSIONS; j++)
+          spread[j] = rng.nextFloat();
+        database.newVertex("Spread").set("embedding", spread).save();
+      }
       for (int i = 0; i < PRODUCTS; i++) {
         final float[] vec = new float[DIMENSIONS];
         for (int j = 0; j < DIMENSIONS; j++)

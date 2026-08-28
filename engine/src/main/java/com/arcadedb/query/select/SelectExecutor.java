@@ -66,7 +66,11 @@ public class SelectExecutor {
   // WRITTEN AGAINST THE WALL CLOCK WOULD BE A RACE THAT A FASTER MACHINE TURNS RED. DRIVING THE CLOCK KEEPS THE TEST
   // DETERMINISTIC WHILE STILL EXERCISING THE REAL startTimeout() SATURATION AND THE REAL throw/truncate DECISION.
   // COSTS NOTHING ON THE HOT PATH: checkForTimeout() RETURNS ON THE Long.MAX_VALUE SENTINEL BEFORE READING IT, SO A
-  // SELECT WITHOUT A TIMEOUT NEVER TOUCHES THE SUPPLIER AT ALL
+  // SELECT WITHOUT A TIMEOUT NEVER TOUCHES THE SUPPLIER AT ALL.
+  // NOT volatile, AND IT DOES NOT NEED TO BE: EVERY CALL SITE BUILDS A FRESH SelectExecutor PER EXECUTION, THE FIELD
+  // IS ONLY EVER ASSIGNED BEFORE THAT EXECUTION STARTS, AND THE ONE PLACE THAT HANDS THE EXECUTOR TO OTHER THREADS
+  // (SelectParallelIterator'S PRODUCERS) READS select/evaluateWhere() AND NEVER THE DEADLINE. IF THAT EVER CHANGES,
+  // THE PUBLICATION OF THIS FIELD HAS TO BE REVISITED ALONG WITH timeoutDeadline, WHICH IS IN THE SAME POSITION
   LongSupplier clock = System::currentTimeMillis;
 
   // #6577: THE SINGLE SOURCE OF TRUTH FOR "WHICH OPERATORS CAN filterWithIndexesFinalNode() ACTUALLY TURN INTO AN
@@ -231,6 +235,12 @@ public class SelectExecutor {
    * so the deadline is honoured <i>between</i> indexes, <i>before the merge sort of what they returned</i> and
    * <i>per assembled result</i> (each of which loads a record and may run the post-filter WHERE). That will not cut
    * short one long search inside a single index, but it is the difference between a no-op and a bound.
+   * <p>
+   * What a non-throwing expiry returns: the results <b>already assembled</b>, which is an empty list whenever the
+   * deadline goes before the assembly loop starts - the neighbours the index searches accumulated are RIDs and
+   * distances, not results, and promoting them would mean loading records past a deadline that has already expired.
+   * That is the same rule {@link #executeCount()} and {@link SelectIterator} follow: hand back what was produced, do
+   * not produce more.
    */
   @SuppressWarnings("unchecked")
   <T extends Document> List<SelectVectorResult<T>> executeVector() {
@@ -259,8 +269,12 @@ public class SelectExecutor {
 
     final List<Pair<RID, Float>> allNeighbors = new ArrayList<>();
     for (final LSMVectorIndex lsmIndex : vectorIndexes) {
-      // #6873: THE COARSEST OF THE TWO CHECKPOINTS - ONE PER BUCKET INDEX. A NON-THROWING TIMEOUT KEEPS WHATEVER THE
-      // INDEXES SEARCHED SO FAR CONTRIBUTED, WHICH IS THE TRUNCATED ANSWER THE STREAMING PATHS RETURN
+      // #6873: THE COARSEST OF THE THREE CHECKPOINTS - ONE PER BUCKET INDEX, SINCE THE SEARCH INSIDE ONE INDEX IS NOT
+      // INTERRUPTIBLE FROM HERE. WHAT THE INDEXES SEARCHED SO FAR PUT IN allNeighbors IS *NOT* A PARTIAL ANSWER: IT IS
+      // RIDs AND DISTANCES, AND TURNING ANY OF IT INTO A RESULT MEANS LOADING RECORDS AND RUNNING THE POST-FILTER
+      // WHERE - MORE WORK, PAST A DEADLINE THAT HAS ALREADY GONE. SO A NON-THROWING EXPIRY ANYWHERE BEFORE THE
+      // ASSEMBLY LOOP ANSWERS WITH AN EMPTY LIST, WHICH IS THE SAME RULE THE OTHER PATHS FOLLOW: KEEP WHAT WAS
+      // ALREADY *PRODUCED* (RECORDS YIELDED BY SelectIterator, THE TALLY IN executeCount()), NEVER PRODUCE MORE
       if (checkForTimeout())
         break;
 
@@ -276,7 +290,8 @@ public class SelectExecutor {
     // INDEX THE LOOP ENDS ON ITS BOUND RATHER THAN ON THE CHECKPOINT ABOVE - SO WITHOUT A CHECKPOINT HERE THE SORT OF
     // UP TO indexes * k PAIRS AND THE RESULT-LIST ALLOCATION WOULD STILL RUN AFTER THE BUDGET IS GONE. IT ALSO MAKES
     // exceptionOnTimeout RAISE THE EXPIRY EVEN WHEN THE SEARCH FOUND NO NEIGHBOUR AT ALL, WHICH LEAVES THE ASSEMBLY
-    // LOOP BELOW WITH NO ITERATION TO CHECK ON
+    // LOOP BELOW WITH NO ITERATION TO CHECK ON. THE EMPTY LIST IS DELIBERATE AND NOT A LOST PARTIAL RESULT - SEE THE
+    // PER-INDEX CHECKPOINT ABOVE FOR WHY allNeighbors IS NOT AN ANSWER YET
     if (checkForTimeout())
       return new ArrayList<>();
 
