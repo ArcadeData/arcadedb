@@ -1867,8 +1867,10 @@ public class GraphDatabaseChecker {
    * vertex bucket that does not materialise as one is a load failure, and letting the {@link ClassCastException}
    * out to be caught further away as something else would describe it worse.
    *
-   * @param direction {@link Vertex.DIRECTION#IN} for the edge's incoming endpoint, anything else for its outgoing
-   *                  one
+   * @param direction {@link Vertex.DIRECTION#IN} or {@link Vertex.DIRECTION#OUT}, naming which endpoint to load.
+   *                  {@link Vertex.DIRECTION#BOTH} is rejected rather than folded into one of them: an edge has one
+   *                  endpoint per direction, so "both" names no single record to return and a caller that passes it
+   *                  has a bug that silently reading the OUT side would hide
    *
    * @return the endpoint vertex, or {@code null} when it could not be loaded - the caller decides what that means
    * for the adjacency entry it is walking, which is the only thing that legitimately differs between the two
@@ -1876,7 +1878,12 @@ public class GraphDatabaseChecker {
    */
   private static VertexInternal loadEndpointVertex(final Edge edge, final RID edgeRID, final Vertex.DIRECTION direction,
       final CheckReport report, final Map<RID, Long> missingReferences, final Map<RID, String> missingReferenceErrors) {
-    final boolean incoming = direction == Vertex.DIRECTION.IN;
+    final boolean incoming = switch (direction) {
+      case IN -> true;
+      case OUT -> false;
+      default -> throw new IllegalArgumentException(
+          "Cannot load a single endpoint of edge " + edgeRID + " for direction " + direction);
+    };
     final RID endpoint = incoming ? edge.getIn() : edge.getOut();
     final String side = incoming ? "incoming" : "outgoing";
 
