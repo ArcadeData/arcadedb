@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
+import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.server.ha.raft.RaftLogEntryCodec.TsSealedBlob;
@@ -157,6 +158,14 @@ class Issue6839TsSealedBlobRecoveryTest {
 
     assertThat(healthy.getEngine()).as("a healthy type is never re-initialised").isSameAs(engineBefore);
     assertThat(countSamples()).isEqualTo(ROWS);
+
+    // The one coupling in the repair path with no compile-time enforcement: sealedFileNameFor() rebuilds the
+    // <type>_shard_<index> half of the name that TimeSeriesShard's constructor owns, so a future rename there
+    // would silently send the repair at a path nothing reads. Asserted against the live store's own answer, which
+    // is derived from the path the shard actually opened.
+    assertThat(TimeSeriesSealedStore.sealedFileNameFor(TYPE_NAME, 0))
+        .as("the derived name must match the name the shard actually opened")
+        .isEqualTo(healthy.getEngine().getShard(0).getSealedStore().getSealedFileName());
   }
 
   /**
