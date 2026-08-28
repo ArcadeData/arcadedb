@@ -133,7 +133,9 @@ public class GetPromQLQueryRangeHandler extends AbstractServerHttpHandler {
       // Try as plain seconds (e.g. "60")
       seconds = Double.parseDouble(step);
     } catch (final NumberFormatException e) {
-      // Try as duration (e.g. "1m")
+      // Try as duration (e.g. "1m"). This branch does NOT go through secondsToMillis: parseDuration carries
+      // its own overflow guard (it refuses a value once `current > Long.MAX_VALUE / unitMs`), so the two
+      // forms of `step` are bounded by two different mechanisms. Keep them in step if either bound moves.
       return PromQLParser.parseDuration(step);
     }
 
