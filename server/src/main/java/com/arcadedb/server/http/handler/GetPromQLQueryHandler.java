@@ -57,12 +57,19 @@ public class GetPromQLQueryHandler extends AbstractServerHttpHandler {
     if (query == null || query.isBlank())
       return new ExecutionResponse(400, PromQLResponseFormatter.formatError("bad_data", "Missing required parameter: query"));
 
+    // Same validation as the range endpoint's start/end (issue #6807): the raw parseDouble accepted a
+    // non-numeric value only to fail with a 500 outside the catch below, and accepted Infinity/1e300 as an
+    // evaluation instant. There is no unbounded loop on this path, but the two endpoints must not disagree
+    // on what a timestamp is.
     final String timeStr = getQueryParameter(exchange, "time");
     final long evalTimeMs;
-    if (timeStr != null && !timeStr.isBlank())
-      evalTimeMs = (long) (Double.parseDouble(timeStr) * 1000);
-    else
-      evalTimeMs = System.currentTimeMillis();
+    try {
+      evalTimeMs = timeStr != null && !timeStr.isBlank()
+          ? GetPromQLQueryRangeHandler.parseTimestampMs("time", timeStr)
+          : System.currentTimeMillis();
+    } catch (final IllegalArgumentException e) {
+      return new ExecutionResponse(400, PromQLResponseFormatter.formatError("bad_data", e.getMessage()));
+    }
 
     final DatabaseInternal database = httpServer.getServer().getDatabase(databaseParam.getFirst(), false, false);
 

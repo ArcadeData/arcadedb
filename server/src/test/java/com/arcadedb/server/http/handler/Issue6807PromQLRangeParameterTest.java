@@ -69,6 +69,20 @@ class Issue6807PromQLRangeParameterTest {
   }
 
   @Test
+  void theInstantEndpointSharesTheSameTimestampContract() {
+    // GetPromQLQueryHandler parses its "time" parameter through the same helper, so the two endpoints
+    // cannot disagree on what a timestamp is - and a non-numeric value answers 400, not the 500 the
+    // unguarded parseDouble produced.
+    assertThat(GetPromQLQueryRangeHandler.parseTimestampMs("time", "1700000000")).isEqualTo(1_700_000_000_000L);
+    assertThatThrownBy(() -> GetPromQLQueryRangeHandler.parseTimestampMs("time", "Infinity"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("is not finite");
+    assertThatThrownBy(() -> GetPromQLQueryRangeHandler.parseTimestampMs("time", "now"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Invalid time timestamp");
+  }
+
+  @Test
   void parsesStepAsSecondsOrAsDuration() {
     assertThat(GetPromQLQueryRangeHandler.parseStep("60")).isEqualTo(60_000L);
     assertThat(GetPromQLQueryRangeHandler.parseStep("0.5")).isEqualTo(500L);
