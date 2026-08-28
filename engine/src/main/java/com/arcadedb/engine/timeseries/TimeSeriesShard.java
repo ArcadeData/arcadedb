@@ -204,9 +204,13 @@ public class TimeSeriesShard implements AutoCloseable {
     } catch (final Exception e) {
       if (database.isTransactionActive())
         database.rollback();
-      // Close both stores to avoid resource leaks before propagating the error
+      // The sealed store is this shard's own file handle and nothing else will close it, so it must be. The
+      // mutable bucket must NOT be, for the reason spelled out above the sealed-store construction: it is
+      // schema-registered, the schema owns closing it, and PaginatedComponentFile.close() is permanent. This
+      // branch is the second way into that trap and it is the one a retry is most likely to meet - both
+      // truncateToBlockCount's temp-file rewrite and the commit below it can throw - so closing here would poison
+      // the bucket on the very attempt meant to bring the type back (issue #6839).
       try { this.sealedStore.close(); } catch (final Exception ignored) {}
-      try { this.mutableBucket.close(); } catch (final Exception ignored) {}
       throw e instanceof IOException ? (IOException) e :
           new IOException("Crash recovery failed for shard " + shardIndex, e);
     }
