@@ -2112,7 +2112,7 @@ public enum GlobalConfiguration {
 
   // The three *_SIZE/*_LENGTH settings below are defense in depth at different layers of the same BOLT ingest
   // path, not redundant: BOLT_MAX_MESSAGE_SIZE bounds the whole reassembled message before it is even handed to
-  // the PackStream decoder, while BOLT_PACKSTREAM_MAX_VALUE_LENGTH bounds one BYTES_32/STRING_32 value within an
+  // the PackStream decoder, while BOLT_PACKSTREAM_MAX_VALUE_LENGTH bounds one BYTES/STRING value within an
   // already-accepted message. They share the same 16MB default because a single field legitimately consuming
   // the entire message budget is a real (if unusual) case, not because the two checks are meant to be identical.
 
@@ -2124,15 +2124,15 @@ public enum GlobalConfiguration {
       Integer.class, 16 * 1024 * 1024),
 
   BOLT_PACKSTREAM_MAX_VALUE_LENGTH("arcadedb.bolt.packstream.maxValueLength", SCOPE.SERVER, """
-      Maximum length in bytes accepted for a single PackStream BYTES_32/STRING_32 value on the BOLT wire protocol. \
+      Maximum length in bytes accepted for a single PackStream BYTES/STRING value on the BOLT wire protocol. \
       A declared length above this bound, or larger than the bytes actually remaining in the message, is rejected \
       before allocation, since the length is read off the wire before authentication. Default is 16MB""",
       Integer.class, 16 * 1024 * 1024),
 
   BOLT_PACKSTREAM_MAX_ELEMENTS("arcadedb.bolt.packstream.maxElements", SCOPE.SERVER, """
-      Maximum element/entry count accepted for a single PackStream LIST_32/MAP_32 declared size on the BOLT wire \
-      protocol. Guards against a client-declared count (e.g. a handful of bytes claiming billions of items) \
-      sizing the backing collection before any element is actually read. Default is 1048576""",
+      Maximum element/entry/field count accepted for a single PackStream list/map/structure declared size on the \
+      BOLT wire protocol. Guards against a client-declared count (e.g. a handful of bytes claiming billions of \
+      items) being trusted before any element is actually read. Default is 1048576""",
       Integer.class, 1_048_576),
 
   BOLT_PACKSTREAM_MAX_DEPTH("arcadedb.bolt.packstream.maxDepth", SCOPE.SERVER, """

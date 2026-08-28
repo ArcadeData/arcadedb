@@ -21,6 +21,7 @@ package com.arcadedb.bolt.message;
 import com.arcadedb.bolt.packstream.PackStreamWriter;
 
 import java.io.IOException;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -29,6 +30,9 @@ import java.util.Map;
  * Fields: extra (Map containing user_agent, scheme, principal, credentials, etc.)
  */
 public class HelloMessage extends BoltMessage {
+  private static final String CREDENTIALS_KEY = "credentials";
+  private static final String REDACTED        = "***";
+
   private final Map<String, Object> extra;
 
   public HelloMessage(final Map<String, Object> extra) {
@@ -53,7 +57,7 @@ public class HelloMessage extends BoltMessage {
   }
 
   public String getCredentials() {
-    return (String) extra.get("credentials");
+    return (String) extra.get(CREDENTIALS_KEY);
   }
 
   public String getRouting() {
@@ -71,8 +75,20 @@ public class HelloMessage extends BoltMessage {
     writer.writeMap(extra);
   }
 
+  /**
+   * Never renders the caller's credentials: for every BOLT version below 5.1 the HELLO extra map carries the
+   * cleartext password, and {@code BoltNetworkExecutor} logs every inbound message through {@code toString()}
+   * when {@code arcadedb.bolt.debug} is enabled - which is exactly the setting an operator turns on to
+   * troubleshoot a connection problem (issue #6801). {@code LogonMessage.toString()} already omits it.
+   */
   @Override
   public String toString() {
-    return "HELLO{extra=" + extra + "}";
+    if (!extra.containsKey(CREDENTIALS_KEY))
+      return "HELLO{extra=" + extra + "}";
+
+    // Only allocated on the debug-logging path of a pre-5.1 (or explicitly authenticated) HELLO.
+    final Map<String, Object> redacted = new LinkedHashMap<>(extra);
+    redacted.put(CREDENTIALS_KEY, REDACTED);
+    return "HELLO{extra=" + redacted + "}";
   }
 }
