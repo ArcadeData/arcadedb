@@ -314,7 +314,8 @@ public class GraphQLSchema {
    * not for every pairing, and a pairing it cannot coerce matches nothing without saying why.
    * <p>
    * Only the five built-in scalars are checked, with the coercion rules of the specification: {@code Int} takes
-   * integral values in 32-bit range, {@code Float} takes any number (an integer input value is a valid float),
+   * integral values in 32-bit range, {@code Float} takes any finite number (an integer input value is a valid
+   * float, {@code NaN} and the infinities are not values the specification lets a Float carry),
    * {@code ID} takes a string or an integral value of any width - it is serialised as a string and carries no range
    * of its own, which is exactly why a schema uses it for a key too large for {@code Int}. Every other declared type name - a custom scalar such as the
    * {@code WHERE} used for the free-form predicate argument, an enum, an input object - is deliberately left
@@ -333,7 +334,7 @@ public class GraphQLSchema {
     final String declared = typeName.getName();
     final boolean valid = switch (declared) {
       case "Int" -> isInteger(value);
-      case "Float" -> value instanceof Number;
+      case "Float" -> value instanceof Number && isFinite(value);
       case "Boolean" -> value instanceof Boolean;
       case "String" -> value instanceof String;
       case "ID" -> value instanceof String || isIntegral(value);
@@ -347,10 +348,28 @@ public class GraphQLSchema {
   }
 
   /**
-   * Whether the value is an integral number the 32-bit {@code Int} scalar can hold.
+   * Whether the value is an integral number the 32-bit {@code Int} scalar can hold. The width has to be checked for
+   * every type wide enough to exceed it, not only for {@code Long}: {@link BigInteger} carries no bound at all.
    */
   private static boolean isInteger(final Object value) {
-    return isIntegral(value) && (!(value instanceof Long l) || l == l.intValue());
+    if (value instanceof Long l)
+      return l == l.intValue();
+    if (value instanceof BigInteger b)
+      // bitLength() EXCLUDES THE SIGN BIT, SO A SIGNED 32-BIT VALUE IS EXACTLY ONE OF AT MOST 31 BITS
+      return b.bitLength() < Integer.SIZE;
+    return value instanceof Integer || value instanceof Short || value instanceof Byte;
+  }
+
+  /**
+   * Whether the value is a finite number. {@code NaN} and the infinities are representable in Java but are not
+   * values the {@code Float} scalar can carry.
+   */
+  private static boolean isFinite(final Object value) {
+    if (value instanceof Double d)
+      return !d.isNaN() && !d.isInfinite();
+    if (value instanceof Float f)
+      return !f.isNaN() && !f.isInfinite();
+    return true;
   }
 
   /**
