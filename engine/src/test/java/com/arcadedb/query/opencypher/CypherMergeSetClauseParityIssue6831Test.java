@@ -194,4 +194,50 @@ class CypherMergeSetClauseParityIssue6831Test {
     assertThat(row.<String>getProperty("bank")).isEqualTo("ACME");
     assertThat(row.<String>getProperty("branch")).isEqualTo("WEST");
   }
+
+  /**
+   * WHICH record an expression target names is a read of the graph like any other, so it is answered from the
+   * pre-clause state: n.enabled was true when the clause began, so the CASE selects n and the flag is written.
+   */
+  @Test
+  void expressionTargetResolvesAgainstThePreClauseState() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:P {id: 1, enabled: true})"));
+
+    database.transaction(() -> database.command("opencypher",
+        "MATCH (n:P) SET n.enabled = false, (CASE WHEN n.enabled THEN n END).flag = true"));
+
+    final ResultSet rs = database.query("opencypher", "MATCH (n:P) RETURN n.flag AS flag, n.enabled AS enabled");
+    final var row = rs.next();
+    assertThat(row.<Boolean>getProperty("flag")).isTrue();
+    assertThat(row.<Boolean>getProperty("enabled")).isFalse();
+  }
+
+  /**
+   * Resolving the target in phase 1 must not outrun a label write in the same clause: the rewrite deletes the record
+   * the target names, so the captured vertex has to follow the move rather than be written to after its death.
+   */
+  @Test
+  void expressionTargetFollowsALabelWriteFromTheSameClause() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:P {id: 1})"));
+
+    database.transaction(() -> database.command("opencypher",
+        "MATCH (n:P) SET n:Extra, (CASE WHEN true THEN n END).x = 1"));
+
+    final ResultSet rs = database.query("opencypher", "MATCH (n:Extra) RETURN n.x AS x");
+    assertThat(rs.next().<Number>getProperty("x").intValue()).isEqualTo(1);
+  }
+
+  /** Two expression-target writes to the same record accumulate rather than the second losing the first. */
+  @Test
+  void twoExpressionTargetWritesToTheSameRecordAccumulate() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:P {id: 1})"));
+
+    database.transaction(() -> database.command("opencypher",
+        "MATCH (n:P) SET (CASE WHEN true THEN n END).a = 1, (CASE WHEN true THEN n END).b = 2"));
+
+    final ResultSet rs = database.query("opencypher", "MATCH (n:P) RETURN n.a AS a, n.b AS b");
+    final var row = rs.next();
+    assertThat(row.<Number>getProperty("a").intValue()).isEqualTo(1);
+    assertThat(row.<Number>getProperty("b").intValue()).isEqualTo(2);
+  }
 }

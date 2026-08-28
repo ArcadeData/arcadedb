@@ -185,4 +185,33 @@ class CypherSetFromEntityIssue6832Test {
     assertThat(row.<Number>getProperty("id").intValue()).isEqualTo(1);
     assertThat(row.<String>getProperty("name")).isEqualTo("keep");
   }
+
+  /**
+   * SET is a simultaneous assignment: every read observes the pre-clause state (#5190). The entity right-hand side is
+   * a read like any other, so an earlier item of the same clause must not be visible to it.
+   */
+  @Test
+  void replaceFromNodeReadsThePreClauseStateOfTheSource() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:A {id: 1}), (:B {id: 2, name: 'old'})"));
+
+    database.transaction(() -> database.command("opencypher",
+        "MATCH (a:A), (b:B) SET b.name = 'new', a = b"));
+
+    final ResultSet rs = database.query("opencypher", "MATCH (a:A) RETURN a.name AS name");
+    assertThat(rs.next().<String>getProperty("name")).isEqualTo("old");
+
+    final ResultSet source = database.query("opencypher", "MATCH (b:B) RETURN b.name AS name");
+    assertThat(source.next().<String>getProperty("name")).isEqualTo("new");
+  }
+
+  @Test
+  void mergeFromNodeReadsThePreClauseStateOfTheSource() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:A {id: 1}), (:B {id: 2, name: 'old'})"));
+
+    database.transaction(() -> database.command("opencypher",
+        "MATCH (a:A), (b:B) SET b.name = 'new', a += b"));
+
+    final ResultSet rs = database.query("opencypher", "MATCH (a:A) RETURN a.name AS name");
+    assertThat(rs.next().<String>getProperty("name")).isEqualTo("old");
+  }
 }
