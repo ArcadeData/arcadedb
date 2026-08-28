@@ -34,6 +34,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.io.RandomAccessFile;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -259,6 +260,28 @@ class Issue6282BrokenChainDeleteAndProbeTest extends TestHelper {
     });
   }
 
+  /**
+   * A chunk that does not describe itself legally is corruption too, and the walk used to follow its continuation
+   * pointer straight past it: a size running off the end of the page reached the end of a chain of nonsense and was
+   * reported CLEAN. {@code loadMultiPageRecord} could then never confirm the break the read had just hit, so the
+   * record spent its whole retry budget and came back as a concurrency problem that did not exist (PR review).
+   */
+  @Test
+  void aChunkSizeThatRunsOffThePageIsABreakRatherThanACleanWalk() {
+    final RID rid = createMultiPageVertex();
+    corruptFirstChunkSize(rid.getBucketId());
+
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(rid.getBucketId());
+
+    assertThat(bucket.isChunkChainBroken(rid))
+        .as("a chunk whose declared size leaves the page cannot be walked past as if the chain were sound").isTrue();
+
+    database.transaction(() -> assertThatThrownBy(() -> database.lookupByRID(rid, true).asVertex().toJSON())
+        .as("and the read must confirm it rather than spend TX_RETRIES calling it contention")
+        .isInstanceOf(BrokenChunkChainException.class)
+        .isNotInstanceOf(NeedRetryException.class));
+  }
+
   /** The hook is absent unless a test installs it, which is what makes it free in production. */
   @Test
   void theFaultInjectorIsAbsentByDefault() {
@@ -364,6 +387,40 @@ class Issue6282BrokenChainDeleteAndProbeTest extends TestHelper {
       }
     });
     db.getPageManager().waitAllPagesOfDatabaseAreFlushed(db);
+  }
+
+  /**
+   * Declares a head-chunk size far larger than the page can hold - the shape a torn or mis-written header leaves.
+   * <p>
+   * Written straight into the CLOSED file rather than through a transaction: a commit compresses the pages it
+   * touched, and that pass has a size guard of its own which deletes the record before the walk under test ever
+   * sees it. Corrupting the bytes on disk is also the more honest fixture for the fault this is about. The database
+   * is left closed; the caller reopens it.
+   */
+  private void corruptFirstChunkSize(final int bucketId) {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(bucketId);
+    final int pageSize = file.getPageSize();
+    final String path = file.getFilePath();
+
+    final int[] chunkOffset = new int[1];
+    db.transaction(() -> {
+      try {
+        chunkOffset[0] = firstChunkOffset(db.getTransaction().getPage(new PageId(db, bucketId, 0), pageSize));
+      } catch (final IOException e) {
+        throw new RuntimeException(e);
+      }
+    });
+
+    database.close();
+    try (final RandomAccessFile raw = new RandomAccessFile(path, "rw")) {
+      // Page 0, content-relative offset: the marker is one byte, then the declared chunk size.
+      raw.seek(BasePage.PAGE_HEADER_SIZE + chunkOffset[0] + 1L);
+      raw.writeInt(Integer.MAX_VALUE / 2);
+    } catch (final IOException e) {
+      throw new RuntimeException(e);
+    }
+    database = factory.open();
   }
 
   private int firstChunkOffset(final BasePage page) throws IOException {
