@@ -48,7 +48,7 @@ public class FullTextSearchTool {
    * the ceiling the sibling search tools already use for a candidate window ({@link MCPVectorLeg#MAX_K},
    * {@link HybridSearchTool#MAX_LEG_CANDIDATES}), which keeps one number to reason about across the search surface.
    */
-  public static final  int MAX_LIMIT     = 1_000;
+  public static final int MAX_LIMIT = 1_000;
 
   public static JSONObject getDefinition() {
     return new JSONObject()
