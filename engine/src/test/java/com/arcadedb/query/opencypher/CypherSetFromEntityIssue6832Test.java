@@ -26,6 +26,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -126,5 +128,61 @@ class CypherSetFromEntityIssue6832Test {
     assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher", "MATCH (a:A) SET a += 'nope'")))
         .rootCause()
         .hasMessageContaining("TypeError");
+  }
+
+  /**
+   * The map forms used to be the way around the property-value type check that the dot form applies: only
+   * applyPropertySet validated, so SET n = {x: {y: 1}} stored a map where SET n.x = {y: 1} raised. Neo4j refuses both
+   * with "Property values can only be of primitive types or arrays thereof".
+   */
+  @Test
+  void replaceMapRejectsANestedMapValue() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:A {id: 1})"));
+
+    assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher", "MATCH (a:A) SET a = {x: {y: 1}}")))
+        .rootCause()
+        .hasMessageContaining("TypeError: InvalidPropertyType");
+  }
+
+  @Test
+  void mergeMapRejectsANestedMapValue() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:A {id: 1})"));
+
+    assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher", "MATCH (a:A) SET a += {x: {y: 1}}")))
+        .rootCause()
+        .hasMessageContaining("TypeError: InvalidPropertyType");
+  }
+
+  @Test
+  void mergeMapRejectsAListOfMapsValue() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:A {id: 1})"));
+
+    assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher", "MATCH (a:A) SET a += {x: [{y: 1}]}")))
+        .rootCause()
+        .hasMessageContaining("TypeError: InvalidPropertyType");
+  }
+
+  @Test
+  void mergeMapStillAcceptsAListOfScalars() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:A {id: 1})"));
+
+    database.transaction(() -> database.command("opencypher", "MATCH (a:A) SET a += {tags: ['x', 'y']}"));
+
+    final ResultSet rs = database.query("opencypher", "MATCH (a:A) RETURN a.tags AS tags");
+    assertThat(rs.next().<List<Object>>getProperty("tags")).containsExactly("x", "y");
+  }
+
+  /** Copying from an entity onto itself must be a no-op, not a self-inflicted wipe: the replace form clears the
+   *  target before reading the source, and a MutableDocument hands out a live view of its own property map. */
+  @Test
+  void replaceFromItselfKeepsEveryProperty() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:A {id: 1, name: 'keep'})"));
+
+    database.transaction(() -> database.command("opencypher", "MATCH (a:A) SET a = a"));
+
+    final ResultSet rs = database.query("opencypher", "MATCH (a:A) RETURN a.id AS id, a.name AS name");
+    final var row = rs.next();
+    assertThat(row.<Number>getProperty("id").intValue()).isEqualTo(1);
+    assertThat(row.<String>getProperty("name")).isEqualTo("keep");
   }
 }
