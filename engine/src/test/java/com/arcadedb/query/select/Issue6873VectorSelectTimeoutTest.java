@@ -210,6 +210,26 @@ class Issue6873VectorSelectTimeoutTest extends TestHelper {
   }
 
   /**
+   * The per-index checkpoint gates the approximate search exactly as it gates the exact one - the two differ only in
+   * which {@code LSMVectorIndex} call the loop body makes, and the deadline sits in front of both.
+   */
+  @Test
+  void approximateVectorSearchIsBoundedByTheSameDeadline() {
+    createSchemaAndData();
+
+    assertThatThrownBy(() -> searchWithClock("Product", new StepClock(1), true, false, true))//
+        .isInstanceOf(TimeoutException.class).hasMessageContaining("Timeout on iteration");
+
+    assertThat(searchWithClock("Product", new StepClock(1), false, false, true)).isEmpty();
+
+    // AND, LOAD-INVARIANT, A BUDGET NOBODY CAN EXHAUST LEAVES THE APPROXIMATE SEARCH ALONE
+    final List<SelectVectorResult<Vertex>> unbounded = database.select().fromType("Product")//
+        .nearestTo("embedding", queryVector(), K).approximate(true).vertices();
+    assertThat(database.select().fromType("Product").timeout(1, TimeUnit.HOURS, true)//
+        .nearestTo("embedding", queryVector(), K).approximate(true).vertices()).hasSize(unbounded.size());
+  }
+
+  /**
    * Load-invariant: a budget nobody can exhaust must return exactly what an unbounded search returns. This is the
    * assertion that would catch a deadline armed wrongly (for instance one that expires immediately), and a JVM stall
    * can only make the real clock read later - which this test never looks at.
@@ -265,8 +285,13 @@ class Issue6873VectorSelectTimeoutTest extends TestHelper {
 
   private List<SelectVectorResult<Vertex>> searchWithClock(final String typeName, final StepClock clock,
       final boolean exceptionOnTimeout, final boolean withPostFilter) {
+    return searchWithClock(typeName, clock, exceptionOnTimeout, withPostFilter, false);
+  }
+
+  private List<SelectVectorResult<Vertex>> searchWithClock(final String typeName, final StepClock clock,
+      final boolean exceptionOnTimeout, final boolean withPostFilter, final boolean approximate) {
     final Select select = database.select().fromType(typeName).timeout(BUDGET_MS, TimeUnit.MILLISECONDS, exceptionOnTimeout);
-    final SelectVectorBuilder builder = select.nearestTo("embedding", queryVector(), K);
+    final SelectVectorBuilder builder = select.nearestTo("embedding", queryVector(), K).approximate(approximate);
     if (withPostFilter)
       builder.where().property("category").eq().value("electronics");
     select.compile();
