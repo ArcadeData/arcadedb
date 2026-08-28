@@ -116,6 +116,14 @@ public class PageManager extends LockContext {
   private final    AtomicLong                        totalSnapshotBarrierMillis            = new AtomicLong();
   private final    AtomicLong                        maxSnapshotBarrierMillis              = new AtomicLong();
   private final    AtomicLong                        totalSnapshotBarriersInexact          = new AtomicLong();
+  // #6132, item 2: a barrier that gives up before publishing a window was counted only as a barrier, indistinguishable
+  // from one that succeeded. The two invalidation counters above require a window to EXIST, so they cannot see it.
+  // Split by the step that gave up, because the answer differs: SUSPEND_TIMEOUT is a busy process (another suspender
+  // resuming), FLUSH_TIMEOUT is a sick disk, and the rest is everything else - and the consumer's fallback to
+  // suspend-and-freeze hides all three behind a backup that still completes, just by throttling every writer.
+  private final    AtomicLong                        totalSnapshotBarriersFailed           = new AtomicLong();
+  private final    AtomicLong                        totalSnapshotBarriersFailedSuspend    = new AtomicLong();
+  private final    AtomicLong                        totalSnapshotBarriersFailedFlush      = new AtomicLong();
   private volatile long                              lastCheckForRAM                       = 0;
   // LIFECYCLE INVARIANT (#5070): flushThread and readCache are written only under LIFECYCLE_LOCK
   // during the 0->1 startup / 1->0 shutdown transitions, and read lock-free on the hot paths. That is safe
@@ -174,6 +182,49 @@ public class PageManager extends LockContext {
    * archive the backup is writing and the ordinary growth of the database while the window is open.
    */
   private static final int SNAPSHOT_MAX_SIZE_FREE_SPACE_DIVISOR = 2;
+
+  /**
+   * TEST-ONLY fault injection on the logical page-read funnel (#6282, item 4).
+   * <p>
+   * There was no way to make a specific page read fail on demand, and the paths whose WRONG ANSWER is the most
+   * expensive in the engine are exactly the I/O-failure paths: {@code LocalBucket.findBrokenChunkChain} answering
+   * "the chain is broken" for a page it merely could not read condemns a HEALTHY record permanently and points the
+   * operator at {@code CHECK DATABASE FIX}, which deletes it. That defect was found by reading rather than by a
+   * test, in the third review round of #6258, and it could not have been found by a test.
+   * <p>
+   * It hooks {@link #getCachedPage}, the funnel {@link #getImmutablePage} and {@link #getMutablePage} both go
+   * through, rather than the physical read in {@link #loadPage}: a test that wants a read to fail has no way to keep
+   * the page out of the read cache, so a hook on the physical read would simply never fire for a page the engine has
+   * just written.
+   * <p>
+   * <b>Cost when nothing is installed</b>: one read of a {@code static volatile} reference that is always null and a
+   * branch the predictor always gets right - the same shape, and the same reasoning, as {@link #activeSnapshots} on
+   * the write path. Nothing is allocated and nothing is looked up.
+   * <p>
+   * Static because a test installs it before it has a {@link PageManager} reference to hand, and JVM-wide because
+   * this class is. Tests MUST clear it in a {@code finally}.
+   */
+  @ExcludeFromJacocoGeneratedReport
+  @FunctionalInterface
+  public interface PageReadFaultInjector {
+    /**
+     * @throws IOException to make this logical page read fail, as a disk that could not serve the page would. Return
+     *                     normally to let it proceed.
+     */
+    void onPageRead(PageId pageId) throws IOException;
+  }
+
+  private static volatile PageReadFaultInjector pageReadFaultInjector = null;
+
+  /** Installs (or, with {@code null}, removes) the test-only page-read fault injector. See {@link PageReadFaultInjector}. */
+  public static void setPageReadFaultInjector(final PageReadFaultInjector injector) {
+    pageReadFaultInjector = injector;
+  }
+
+  /** The installed test-only page-read fault injector, {@code null} when there is none - which is the steady state. */
+  public static PageReadFaultInjector getPageReadFaultInjector() {
+    return pageReadFaultInjector;
+  }
 
   @ExcludeFromJacocoGeneratedReport
   public interface ConcurrentPageAccessCallback {
@@ -258,6 +309,17 @@ public class PageManager extends LockContext {
      * publication locks held - so a non-zero value means index compaction was feeding the pipeline throughout.
      */
     public long   snapshotBarriersInexact;
+    /**
+     * #6132: barriers that gave up before publishing a window at all, and the split of the two steps that can. A
+     * failed barrier leaves NO other trace an operator can alert on - {@link #snapshotWindowsInvalidated} and its two
+     * halves are incremented from a window that exists, and the consumer falls back to suspend-and-freeze and still
+     * completes - so without these a backup that has quietly gone back to throttling every writer on the server looks
+     * exactly like one that has not. {@code snapshotBarriersFailedSuspend} is transient and expected under load;
+     * {@code snapshotBarriersFailedFlush} is a write that never landed, which points at the disk.
+     */
+    public long   snapshotBarriersFailed;
+    public long   snapshotBarriersFailedSuspend;
+    public long   snapshotBarriersFailedFlush;
     /** See {@link PageManager#getDeferredRAMBytes()} (#6087): dirty pages held in RAM by a flush suspension. */
     public long   deferredRAMBytes;
     /** See {@link PageManager#getFlushQueueWaits()} (#6259): commits held waiting for room in the flush queue. */
@@ -539,6 +601,20 @@ public class PageManager extends LockContext {
     maxSnapshotBarrierMillis.accumulateAndGet(elapsedMillis, Math::max);
   }
 
+  /**
+   * Counts a barrier that gave up before publishing a window (#6132, item 2). Always bumps the total, and the split
+   * counter for the step that gave up when there is one - the total is what an operator alerts on, the split is what
+   * tells them where to look. Paired with {@link #recordSnapshotBarrier}, which times this barrier whether it
+   * succeeded or not.
+   */
+  private void recordSnapshotBarrierFailure(final PageSnapshotException.Reason reason) {
+    totalSnapshotBarriersFailed.incrementAndGet();
+    if (reason == PageSnapshotException.Reason.SUSPEND_TIMEOUT)
+      totalSnapshotBarriersFailedSuspend.incrementAndGet();
+    else if (reason == PageSnapshotException.Reason.FLUSH_TIMEOUT)
+      totalSnapshotBarriersFailedFlush.incrementAndGet();
+  }
+
   private PageSnapshot openSnapshotInternal(final DatabaseInternal database) throws IOException, InterruptedException {
     final PageManagerFlushThread thread = flushThread;
     if (thread == null)
@@ -633,6 +709,16 @@ public class PageManager extends LockContext {
         } finally {
           applyLock.writeLock().unlock();
         }
+      } catch (final PageSnapshotException e) {
+        // #6132: A BARRIER THAT NEVER PUBLISHES A WINDOW IS INVISIBLE TO EVERY OTHER SNAPSHOT COUNTER - THEY ALL
+        // REQUIRE A WINDOW TO EXIST - AND ITS CONSUMER FALLS BACK TO SUSPEND-AND-FREEZE AND STILL COMPLETES, SO THE
+        // BACKUP THAT NOW THROTTLES EVERY WRITER ON THE SERVER REPORTS SUCCESS. COUNTED HERE, SPLIT BY THE STEP THAT
+        // GAVE UP
+        recordSnapshotBarrierFailure(e.getReason());
+        throw e;
+      } catch (final IOException | InterruptedException | RuntimeException e) {
+        recordSnapshotBarrierFailure(PageSnapshotException.Reason.OTHER);
+        throw e;
       } finally {
         if (suspended)
           thread.setSuspended(database, false);
@@ -742,10 +828,15 @@ public class PageManager extends LockContext {
         continue;
       }
 
-      // getTotalPages() is a channel.size() syscall, and unlike SnapshotFile.lastModified() it CANNOT be made lazy:
-      // the page count at t0 is what defines which pages the snapshot covers, and reading it later would let a page
-      // appended after t0 into the snapshot un-shadowed. An fstat per file is orders of magnitude cheaper than the
-      // flush-queue drain this same barrier already performed.
+      // The page count at t0 is what defines which pages the snapshot covers, so unlike SnapshotFile.lastModified()
+      // it CANNOT be made lazy: reading it later would let a page appended after t0 into the snapshot un-shadowed.
+      // It is no longer a channel.size() SYSCALL, though, which is a different question and the one #6132 asked:
+      // #6126 waved the fstat through as "definitionally part of t0", true about WHEN it must be read and not about
+      // what it has to cost. Dozens to hundreds of them - one per bucket, index and compacted sub-index, each with a
+      // channelLock acquisition - ran under the JVM-wide lock the rest of this barrier works to keep short, and on a
+      // stalled filesystem not one of them was bounded by SNAPSHOT_BARRIER_MAX_MILLIS the way every other step is.
+      // PaginatedComponentFile now keeps the count itself; see its `totalPages` field for why it is exact, and
+      // Issue6132SnapshotBarrierFollowupsTest for the assertion that it agrees with the filesystem at t0.
       files.add(new PageSnapshot.SnapshotFile(paginated.getFileId(), paginated, paginated.getPageSize(),
           (int) paginated.getTotalPages(), paginated.getFileName()));
     }
@@ -796,7 +887,10 @@ public class PageManager extends LockContext {
    * <ul>
    * <li>the t0 size of the page files, which the shadow provably cannot exceed - it holds ONE pre-image per page that
    * existed at t0, and pages appended after t0 need none (challenge C7);</li>
-   * <li>half the space still usable on the spill volume, so a window can never be the reason the disk fills.</li>
+   * <li>half the space still usable on the spill volume, so a window can never be the reason the disk fills - but
+   * never LESS than {@code arcadedb.pageSnapshotMaxRAM}, because that half of the budget never touches the disk at
+   * all (#6132). Below it, a shadow that would have lived entirely in RAM was refused over free space it was never
+   * going to use.</li>
    * </ul>
    * The flat 1 GB default this replaces was measured to be undersized for what it protects: on a 128 MB database
    * under a flat-out writer the shadow reached 100% of the database size, so ANY fixed number is simply the database
@@ -834,11 +928,22 @@ public class PageManager extends LockContext {
     if (spillVolumeUsableSpace <= 0)
       return databaseSize;
 
+    // THE RAM BUDGET NEEDS NO DISK, SO IT IS NOT BOUNDED BY DISK (#6132, item 3). The cap covers RAM PLUS spill, and
+    // sizing it from the free space alone put it BELOW arcadedb.pageSnapshotMaxRAM whenever the spill volume had less
+    // than twice the RAM budget free - 20 MB against a 64 MB default on a volume with 40 MB free. A shadow that would
+    // have lived entirely in RAM and never written a byte to that volume was then invalidated at 20 MB, and its
+    // backup fell back to throttling every writer because of space it was never going to use, in exactly the case
+    // pageSnapshotSpillPath exists for: an operator who pointed it at a small volume.
+    final long ramBudget = configuration.getValueAsLong(GlobalConfiguration.PAGE_SNAPSHOT_MAX_RAM) * 1024 * 1024;
+
     // CLAMPED TO AT LEAST ONE BYTE: THE DIVISION IS INTEGER, SO A VOLUME DOWN TO ITS LAST BYTE COMPUTES 1/2 == 0 AND
     // WOULD HAND THE SHADOW THE SAME "UNCAPPED" SENTINEL THE BRANCH ABOVE EXISTS TO AVOID - INVERTING THIS CAP
     // PRECISELY IN THE DISK-ALMOST-FULL CASE IT IS FOR. A ONE-BYTE CAP INSTEAD BREACHES ON THE FIRST CAPTURE, WHICH
-    // IS THE CORRECT ANSWER: THE WINDOW IS ABANDONED AND ITS CONSUMER FALLS BACK
-    return Math.max(1L, Math.min(databaseSize, spillVolumeUsableSpace / SNAPSHOT_MAX_SIZE_FREE_SPACE_DIVISOR));
+    // IS THE CORRECT ANSWER: THE WINDOW IS ABANDONED AND ITS CONSUMER FALLS BACK.
+    // The outer min() is unchanged and still the provable ceiling: whichever of the two budgets wins, no shadow can
+    // ever need more than one pre-image per page that existed at t0.
+    return Math.max(1L,
+        Math.min(databaseSize, Math.max(ramBudget, spillVolumeUsableSpace / SNAPSHOT_MAX_SIZE_FREE_SPACE_DIVISOR)));
   }
 
   private PageSnapshot registerSnapshot(final PageSnapshot snapshot) {
@@ -1396,6 +1501,9 @@ public class PageManager extends LockContext {
     stats.snapshotBarrierMillis = totalSnapshotBarrierMillis.get();
     stats.snapshotBarrierMaxMillis = maxSnapshotBarrierMillis.get();
     stats.snapshotBarriersInexact = totalSnapshotBarriersInexact.get();
+    stats.snapshotBarriersFailed = totalSnapshotBarriersFailed.get();
+    stats.snapshotBarriersFailedSuspend = totalSnapshotBarriersFailedSuspend.get();
+    stats.snapshotBarriersFailedFlush = totalSnapshotBarriersFailedFlush.get();
     stats.deferredRAMBytes = getDeferredRAMBytes();
     stats.flushQueueWaits = getFlushQueueWaits();
     collectSnapshotGauges(stats);
@@ -1808,6 +1916,12 @@ public class PageManager extends LockContext {
    */
   private CachedPage getCachedPage(final PageId pageId, final int pageSize, final boolean isNew, final boolean createIfNotExists)
       throws IOException {
+    // #6282, item 4: the ONE place a logical page read can be made to fail on demand. See PageReadFaultInjector for
+    // why it is here and not at the physical read, and for what it costs when nothing is installed (a null field).
+    final PageReadFaultInjector faultInjector = pageReadFaultInjector;
+    if (faultInjector != null)
+      faultInjector.onPageRead(pageId);
+
     checkForPageDisposal();
 
     CachedPage page = readCache.get(pageId);

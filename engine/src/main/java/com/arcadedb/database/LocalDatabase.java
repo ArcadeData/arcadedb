@@ -1578,13 +1578,21 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       } else {
         try {
           bucket.deleteRecord(record.getIdentity(), forceBrokenChainDelete);
+        } catch (final BrokenChunkChainException e) {
+          // THE ARM #6258 LEFT OUT AS DEAD CODE, LIVE SINCE #6282: deleteRecordInternal walks the chunk chain itself
+          // and never loads the record, so it used to report a break as the #4932 retry signal and this branch had
+          // to walk the chain a second time to find out which of the two it was holding. It now confirms the break
+          // against the newest committed image and says so, exactly as the loader does for the vertex branch above.
+          if (!tolerateBrokenChain || forceBrokenChainDelete)
+            throw e;
+          logBrokenChainForcePhysicalDelete(record.getIdentity(), e);
+          bucket.deleteRecord(record.getIdentity(), true);
         } catch (final ConcurrentModificationException e) {
-          // NO BrokenChunkChainException ARM HERE, unlike the vertex branch above, and the asymmetry is real rather
-          // than an omission (code review on #6258): deleteRecordInternal walks the chunk chain itself and never
-          // loads the record, so it reports a break as the #4932 retry signal and the structural probe below is
-          // still what tells the two apart. The vertex branch differs because reaching a vertex's edge lists means
-          // READING it, which is where the loader's own verdict comes from. Add the arm here the day
-          // deleteRecordInternal learns to name a broken chain as one.
+          // STILL REACHABLE, and not redundant with the arm above: the delete's own walk raises this for a break it
+          // could NOT confirm - a chain caught mid-publication, or one that broke somewhere else in the committed
+          // image - and for the ordinary page conflicts of a busy bucket. The probe is what tells a chain that is
+          // genuinely broken (the case that would otherwise make the record undeletable forever) from contention,
+          // and since #6282 it asks the newest committed image rather than this transaction's pinned view.
           if (!tolerateBrokenChain || forceBrokenChainDelete || !bucket.isChunkChainBroken(record.getIdentity()))
             throw e;
           logBrokenChainForcePhysicalDelete(record.getIdentity(), e);

@@ -551,10 +551,11 @@ public enum GlobalConfiguration {
       loudly, so the consumer can fall back to the suspend-and-freeze path - never a silently truncated or torn \
       snapshot. The default -1 sizes the cap AUTOMATICALLY when the window opens (issue #6125), as the smaller of \
       the ceiling the shadow provably cannot exceed - one pre-image per page that existed at t0, so the t0 size of \
-      the page files - and half the space still usable on the volume holding the spill file. A flat number cannot \
-      do that: measurements on a 128 MB database show the shadow reaching 100% of the database under a flat-out \
-      writer, so any fixed default is simply the database size above which backups silently start falling back to \
-      throttling the writers. Set a positive value to pin an absolute cap in MB, or 0 for no cap at all; any \
+      the page files - and half the space still usable on the volume holding the spill file, but never less than \
+      PAGE_SNAPSHOT_MAX_RAM, because that half of the budget never touches the disk (issue #6132). A flat number \
+      cannot do that: measurements on a 128 MB database show the shadow reaching 100% of the database under a \
+      flat-out writer, so any fixed default is simply the database size above which backups silently start falling \
+      back to throttling the writers. Set a positive value to pin an absolute cap in MB, or 0 for no cap at all; any \
       negative value means automatic, so -1 is the spelling to use rather than the only one accepted.""",
       Long.class, -1),
 

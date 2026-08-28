@@ -91,12 +91,13 @@ public class BucketIterator implements Iterator<Record> {
   /**
    * Number of records skipped so far for a known, tolerated corruption reason - a corrupted on-disk record
    * ({@link SerializationException}), page-layer corruption in a raw slot/pointer read, or a multi-page record
-   * whose chunk chain {@link LocalBucket#isChunkChainBroken} confirms is structurally broken - all via
+   * whose chunk chain the loader itself confirms is structurally broken ({@link BrokenChunkChainException}) - all via
    * {@link #logSkippedRecord(Exception)} in {@link #fetchNext()}. A correctness-sensitive caller (e.g. an exact
    * {@code COUNT}) can check this after exhausting the iterator to detect a truncated result; it is not
    * incremented for the benign concurrent-delete race handled by {@link RecordNotFoundException}, nor for a
-   * {@link ConcurrentModificationException} not confirmed as a broken chain (transient contention propagates
-   * instead so a retry can resolve it), nor for any other exception, which likewise propagates (#6015). It is
+   * {@link ConcurrentModificationException}, which the loader raises for a break it could NOT confirm and which
+   * therefore propagates so a retry can resolve it (#6282), nor for any other exception, which likewise
+   * propagates (#6015). It is
    * also, deliberately, not incremented for a slot whose position resolves to 0: since 24.1.1 that is a plain
    * deleted record (the delete zeroes the slot), not corruption, so it is skipped the same way
    * {@link RecordNotFoundException} is - this counter tracks skipped-due-to-corruption, not every reason a scan
@@ -110,8 +111,7 @@ public class BucketIterator implements Iterator<Record> {
    * Counts and logs a record slot skipped for a known, tolerated reason: a corrupted on-disk record
    * ({@link SerializationException}), page-layer corruption in a raw slot/pointer read (an unchecked exception
    * from a {@code BasePage.read*}/{@code Binary} accessor), or a confirmed structurally-broken multi-page chunk
-   * chain ({@link ConcurrentModificationException} where {@link LocalBucket#isChunkChainBroken} returns
-   * {@code true}) - see the call sites in {@link #fetchNext()}.
+   * chain ({@link BrokenChunkChainException}) - see the call sites in {@link #fetchNext()}.
    */
   private void logSkippedRecord(final Exception e) {
     skippedRecords++;
@@ -210,25 +210,23 @@ public class BucketIterator implements Iterator<Record> {
               } catch (final BrokenChunkChainException e) {
                 // THE LOADER ITSELF SAYS SO (#6258): a chain the read could not parse, confirmed broken against the
                 // newest committed image with the read's own chunks proven current. No second walk needed here.
-                // UNDO THE RESERVED SLOT: see the JLS note on the ConcurrentModificationException arm below.
-                writeIndex--;
-                logSkippedRecord(e);
-              } catch (final ConcurrentModificationException e) {
-                if (!bucket.isChunkChainBroken(rid))
-                  // TRANSIENT CONTENTION, NOT PROVEN CORRUPTION: loadMultiPageRecord() throws this after
-                  // exhausting TX_RETRIES, but exhausted retries alone do not prove the chain is broken - its
-                  // page-version validation also fails under ordinary concurrent writes to OTHER records sharing
-                  // the chain's pages. Propagate so the caller's retry machinery (if any) re-runs, the same
-                  // disambiguation LocalDatabase.deleteRecordInternal() already applies to this exception.
-                  throw e;
-                // CONFIRMED STRUCTURALLY BROKEN CHAIN: a version-blind walk (isChunkChainBroken) found a genuinely
-                // bad continuation pointer, not just a version mismatch - this is corruption, not contention.
                 // UNDO THE RESERVED SLOT: per JLS 15.26.1, `nextBatch[writeIndex++] = ...` evaluates the array
                 // index (incrementing writeIndex) BEFORE the right-hand side, so the increment already happened
                 // even though lookupByRID() threw before ever writing into that slot. Do not "simplify" this away.
                 writeIndex--;
                 logSkippedRecord(e);
               }
+              // NO ConcurrentModificationException ARM, AND ITS REMOVAL IS THE POINT (#6282). Until #6258 this
+              // exception was the only thing the loader could say about a chain it could not parse, so the scan
+              // re-walked the chain with isChunkChainBroken to tell corruption from contention and skipped the
+              // record when the walk agreed. The loader now answers that question ITSELF, and it asks a strictly
+              // STRONGER version of it: the committed image must fail to walk AND the chunks this read consumed
+              // must still be current, which is what rules out a chain caught mid-publication. So a CME reaching
+              // here means the break could NOT be confirmed - the record moved under the read - and a probe saying
+              // "broken" about it is answering a weaker question about a chain that is no longer the one this read
+              // followed. Skipping on that evidence silently drops a HEALTHY record from a scan; propagating lets
+              // the caller's retry machinery re-read it, which is what getSkippedRecordCount's contract has said
+              // all along.
 
             } else if (recordSize[0] == LocalBucket.RECORD_PLACEHOLDER_POINTER) {
               // PLACEHOLDER
@@ -253,14 +251,9 @@ public class BucketIterator implements Iterator<Record> {
                 // See the identical arm on the NOT-DELETED branch above (#6258).
                 logSkippedRecord(e);
                 continue;
-              } catch (final ConcurrentModificationException e) {
-                if (!bucket.isChunkChainBroken(placeholderTargetRid))
-                  // TRANSIENT CONTENTION, NOT PROVEN CORRUPTION: see the identical disambiguation on the
-                  // NOT-DELETED branch above.
-                  throw e;
-                logSkippedRecord(e);
-                continue;
               }
+              // NO ConcurrentModificationException ARM: see the NOT-DELETED branch above for why the probe that
+              // used to be here is now answering the wrong question (#6282).
 
               if (view == null)
                 continue;
@@ -276,8 +269,8 @@ public class BucketIterator implements Iterator<Record> {
           } catch (final SerializationException e) {
             // KNOWN-CORRUPT ON-DISK RECORD: log and skip so one bad record does not abort an otherwise healthy
             // full scan (the CHECK DATABASE-shaped case). Every OTHER exception - including one from a
-            // user-supplied AfterRecordReadListener/trigger, and a ConcurrentModificationException not confirmed
-            // as a broken chunk chain by the two dedicated catches above - is deliberately NOT caught here and
+            // user-supplied AfterRecordReadListener/trigger, and a ConcurrentModificationException, which the
+            // loader raises only for a break it could NOT confirm - is deliberately NOT caught here and
             // propagates instead, so a real bug (or genuine contention needing a real retry) surfaces where it
             // can be diagnosed or retried instead of silently looking like "this bucket has fewer records"
             // (#6015; see #5976 for a listener bug this used to hide).
