@@ -149,6 +149,23 @@ class ArcadeGraphFactoryPoolTransactionTest {
   }
 
   @Test
+  void aBorrowedInstanceCannotDropTheDatabaseTheWholePoolShares() {
+    final ArcadeGraph borrowed = factory.get();
+
+    assertThatThrownBy(borrowed::drop)
+        .as("one borrowed handle must not delete the database every other pooled instance still points at")
+        .isInstanceOf(UnsupportedOperationException.class);
+
+    borrowed.close();
+
+    final ArcadeGraph other = factory.get();
+    assertThat(other.getDatabase().isOpen()).as("the shared database must have survived").isTrue();
+    other.addVertex(T.label, "Person", "name", "still-usable");
+    other.tx().commit();
+    other.close();
+  }
+
+  @Test
   void theFactoryDoesNotMakeAbandonedWritesDurableOnClose() {
     final ArcadeGraph graph = factory.get();
     graph.addVertex(T.label, "Person", "name", "abandoned");

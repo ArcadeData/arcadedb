@@ -85,6 +85,9 @@ public class ArcadeGraphFactory implements Closeable {
           if (getDatabase().isTransactionActive())
             getDatabase().rollback();
         } catch (final Exception e) {
+          // RESIDUAL RISK, AND THERE IS NOTHING BETTER TO DO ABOUT IT HERE: IF THE ROLLBACK ITSELF FAILS (AN I/O
+          // ERROR, SAY) THE INSTANCE GOES BACK ON THE QUEUE WITH ITS TRANSACTION STILL OPEN, AND ONLY THIS LOG LINE
+          // SAYS SO. DROPPING THE INSTANCE INSTEAD WOULD SILENTLY SHRINK THE POOL BELOW ITS COUNTER.
           LogManager.instance()
               .log(this, Level.WARNING, "Error on rolling back the pending transaction while releasing a pooled ArcadeGraph instance", e);
         }
