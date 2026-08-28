@@ -19,6 +19,7 @@
 package com.arcadedb.query.select;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
@@ -111,7 +112,7 @@ public class Issue6817SelectJsonRoundTripTest extends TestHelper {
   @Test
   void multipleBucketsRoundTrip() {
     final List<String> buckets = database.getSchema().getType("Multi").getBuckets(false).stream()//
-        .map(com.arcadedb.engine.Bucket::getName).toList();
+        .map(Bucket::getName).toList();
     assertThat(buckets.size()).isGreaterThan(1);
 
     final JSONObject json = database.select().fromBuckets(buckets.toArray(new String[0]))//

@@ -23,6 +23,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.MultiIterator;
 
 import org.junit.jupiter.api.Test;
 
@@ -37,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * https://github.com/ArcadeData/arcadedb/issues/6815
  * <p>
  * {@code SelectExecutor.buildIterator()} installed the caller's {@code timeout()} on the source iterator only when
- * that source happened to be a {@link com.arcadedb.utility.MultiIterator}. Two of the four sources it can return are
+ * that source happened to be a {@link MultiIterator}. Two of the four sources it can return are
  * not: an index-answered plan yields a {@code MultiIndexCursor}, and a single-bucket {@code fromBuckets(...)} yields
  * the bucket iterator itself. Neither carries a deadline, so {@code timeout()} was a silent no-op for every indexed
  * query - by far the common shape - and for a one-bucket scan, on {@code documents()}/{@code vertices()}/
