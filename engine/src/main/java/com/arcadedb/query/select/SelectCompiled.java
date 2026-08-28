@@ -20,7 +20,9 @@ package com.arcadedb.query.select;/*
 import com.arcadedb.database.Document;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.Pair;
 
 import java.util.HashMap;
 import java.util.stream.Collectors;
@@ -68,6 +70,18 @@ public class SelectCompiled {
       json.put("timeoutInMs", select.timeoutInMs);
       json.put("exceptionOnTimeout", select.exceptionOnTimeout);
     }
+
+    // #6817: orderBy AND parallel WERE NEITHER WRITTEN HERE NOR READ BACK BY Select.json(JSONObject), SO A
+    // ROUND-TRIPPED SELECT SILENTLY LOST ITS ORDERING AND RAN SERIALLY. ONLY NON-DEFAULT STATE IS EMITTED, SO A
+    // SELECT THAT NEVER SET EITHER STILL SERIALIZES TO EXACTLY THE SAME DOCUMENT AS BEFORE
+    if (select.orderBy != null && !select.orderBy.isEmpty()) {
+      final JSONArray orderBy = new JSONArray();
+      for (final Pair<String, Boolean> entry : select.orderBy)
+        orderBy.put(new JSONObject().put("property", entry.getFirst()).put("ascending", entry.getSecond()));
+      json.put("orderBy", orderBy);
+    }
+    if (select.parallel)
+      json.put("parallel", select.parallel);
 
     return json;
   }

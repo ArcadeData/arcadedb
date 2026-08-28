@@ -63,9 +63,15 @@ public class MultiIterator<T> implements ResettableIterator<T>, IterableGraph<T>
   }
 
   private boolean hasNextInternal() {
-    if (timeout > -1L && System.currentTimeMillis() - beginTime > timeout) {
-      throw new TimeoutException("Timeout on iteration");
-    }
+    // #6816: DELEGATE TO checkForTimeout() RATHER THAN RE-IMPLEMENTING THE CHECK HERE. IT IS THE ONLY PLACE THAT
+    // HONOURS exceptionOnTimeout, AND THE INLINE COPY THAT USED TO LIVE HERE THREW UNCONDITIONALLY - SO A CALLER
+    // ASKING FOR "STOP EARLY AND GIVE ME WHAT YOU HAVE" (Select.timeout(v, unit, false)) GOT A TimeoutException
+    // INSTEAD, AND checkForTimeout()'S NON-THROWING BRANCH WAS UNREACHABLE FROM THE ITERATION PATH: ITS TWO INTERNAL
+    // CALLERS (getNextPartial(), countEntries()) ARE ONLY EVER REACHED ONCE THIS CHECK HAS ALREADY PASSED, I.E. ONLY
+    // WHILE THE DEADLINE HAS *NOT* EXPIRED. EVERY PRE-EXISTING CALLER PASSES exceptionOnTimeout == true
+    // (LocalDatabase.iterateType()), SO NONE OF THEM CAN SEE A BEHAVIOUR CHANGE
+    if (checkForTimeout())
+      return false;
 
     if (sourcesIterator == null) {
       if (sources == null || sources.isEmpty())

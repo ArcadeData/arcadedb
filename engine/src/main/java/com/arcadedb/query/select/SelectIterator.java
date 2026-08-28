@@ -113,10 +113,15 @@ public class SelectIterator<T extends Document> implements Iterator<T>, AutoClos
   }
 
   protected T fetchNext() {
-    if (!iterator.hasNext())
-      return null;
+    while (iterator.hasNext()) {
+      // #6815: THE SELECT DEADLINE IS ENFORCED HERE, ON THE CONSUMER SIDE, BECAUSE ONLY ONE OF THE FOUR SOURCES
+      // SelectExecutor.buildIterator() CAN RETURN CARRIES A TIMEOUT OF ITS OWN - AN INDEX-ANSWERED PLAN AND A
+      // SINGLE-BUCKET fromBuckets() BOTH USED TO IGNORE timeout() ENTIRELY. RETURNING null ENDS THE STREAM WITH
+      // WHAT THE CALLER ALREADY RECEIVED (THE NON-THROWING MODE); checkForTimeout() THROWS BY ITSELF OTHERWISE.
+      // THE CHECK ALSO COVERS A LONG RUN OF NON-MATCHING RECORDS, WHICH NEVER RETURNS TO hasNext()
+      if (executor.checkForTimeout())
+        return null;
 
-    do {
       final Document record = iterator.next().asDocument();
 
       if (filterOutRecords != null && filterOutRecords.contains(record.getIdentity()))
@@ -131,8 +136,7 @@ public class SelectIterator<T extends Document> implements Iterator<T>, AutoClos
 
         return (T) record;
       }
-
-    } while (iterator.hasNext());
+    }
 
     // NOT FOUND
     return null;
