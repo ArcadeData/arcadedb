@@ -35,6 +35,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Random;
 import java.util.Set;
+import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -286,6 +287,49 @@ class Issue6797DeltaScanScalingTest extends TestHelper {
         .pollInterval(Duration.ofMillis(50))
         .untilAsserted(() -> {
           index.findNeighborsFromVectorApproximate(randomUnitVector(random), 10);
+          assertThat(index.getStats().get("deltaVectorsCount")).isZero();
+        });
+  }
+
+  /**
+   * The grouped path completes the set. It has its own delta scan - {@code scoreDeltaCandidates}, which scores the
+   * whole buffer rather than a top-k slice of it, so it is if anything the costlier of the two - and its own
+   * charge to the amortization counter. Since the value this fix claims is that every search path pays for what
+   * it scans, each of the three paths that scans is asserted end to end rather than two of them plus an
+   * assumption about the third.
+   */
+  @Test
+  void theGroupedSearchPathIsBoundedToo() {
+    disableEveryCountBasedTrigger();
+    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MAX_DELTA_SCAN_RATIO, 1.0f);
+
+    final Random random = new Random(6797);
+    final LSMVectorIndex index = createSettledIndex(random);
+
+    // One group per row, so the cap fills within the first beam and the walk stops there. Grouping by something
+    // coarse - a bucket id, say - is a trap this test fell into first: with only a handful of distinct keys the
+    // cap can never fill, the walk resumes until it exhausts its candidate budget, and the measured cost climbs
+    // to most of the graph. The buffer then never exceeds it and no rebuild is triggered - which is the policy
+    // being RIGHT, not a gap: a scan of a thousand vectors does not dominate a walk that visited a thousand nodes.
+    final Function<RID, Object> groupKey = rid -> rid;
+    for (int i = 0; i < 3; i++)
+      assertThat(index.findNeighborsFromVectorGrouped(randomUnitVector(random), 5, 1, -1, null, groupKey))
+          .isNotEmpty();
+
+    final long budget = index.getStats().get("deltaScanBudget");
+    assertThat(budget).as("a grouped walk must feed the measurement the budget is derived from")
+        .isLessThan(Long.MAX_VALUE);
+
+    // Comfortably over, not marginally: the budget tracks an EWMA that keeps moving as the loop below queries,
+    // and a buffer that only just cleared it could be overtaken by its own denominator.
+    insertVectors(random, (int) Math.min(budget * 2 + 200, 5_000));
+    assertThat(index.getStats().get("deltaVectorsCount")).isGreaterThanOrEqualTo(budget);
+
+    Awaitility.await("grouped queries alone must be able to drain a buffer they are paying to scan")
+        .atMost(REBUILD_SETTLE_TIMEOUT)
+        .pollInterval(Duration.ofMillis(50))
+        .untilAsserted(() -> {
+          index.findNeighborsFromVectorGrouped(randomUnitVector(random), 5, 1, -1, null, groupKey);
           assertThat(index.getStats().get("deltaVectorsCount")).isZero();
         });
   }

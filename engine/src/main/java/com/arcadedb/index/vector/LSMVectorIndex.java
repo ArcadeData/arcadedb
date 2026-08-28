@@ -8545,8 +8545,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * that only one of the two workloads is paying: this budget is evaluated on the search path, against a walk cost
    * that only searches produce. An ingest-only workload never reaches it and keeps the geometric amortization
    * untouched; a query-heavy workload trades rebuild CPU it has to spare for the latency it is actually losing.
-   * The absolute {@code mutationsBeforeRebuild} floor is applied on top, so this can never rebuild more eagerly
-   * than that setting already permits.
+   * The floor applied on top is the <em>absolute</em> {@code mutationsBeforeRebuild}, deliberately, and not the
+   * ratio-scaled {@link #getEffectiveMutationsBeforeRebuild()} the count trigger uses. Flooring at the effective
+   * threshold would make this policy inert by construction: the count trigger already fires there, so a budget
+   * that could never bind below it could never fire first, and firing below it is the entire point. What the
+   * absolute floor buys is the guarantee that no configuration of this setting rebuilds more eagerly than
+   * {@code mutationsBeforeRebuild} already permits, which is the promise an operator tuning that knob is owed.
    * <p>
    * <b>One workload it cannot see.</b> The issue #6502 and #6514 pre-filter plans answer a narrow allow-list by
    * scanning it directly and return without walking the graph at all, so they produce no {@code visitedCount} to
