@@ -694,9 +694,9 @@ public class GraphDatabaseChecker {
             deleteCorruptedRecord(rid);
             // Counted AFTER the delete returns, not before it is attempted (issue #6128). autoFix is what an
             // operator reads to decide whether a run did anything, so it must not include a repair that failed -
-            // and the failure here is routine rather than exotic: checkEdges flags both ends of a dangling edge,
-            // and the far end is flagged precisely because it is not there, so its delete always raises
-            // RecordNotFoundException. One dangling edge used to report two repairs.
+            // and the failure here is routine rather than exotic: an adjacency list still naming an EDGE record
+            // that is gone flags that RID (the "edge not found" arm of the walk above), and its delete therefore
+            // always raises RecordNotFoundException. One such entry used to report a repair that never happened.
             autoFix.incrementAndGet();
             // Reported, not only counted: an operator reads deletedRecordsAfterFix to learn WHICH records a repair
             // removed, and until this arm populated it the answer depended on which pass happened to do the delete -
@@ -1052,24 +1052,13 @@ public class GraphDatabaseChecker {
                   removeEntry = true;
                   ++report.invalidLinks;
                 } else {
-                  try {
-                    inVertex = (VertexInternal) edge.getOutVertex().asVertex(true);
-                  } catch (final RecordNotFoundException e) {
-                    report.warn("edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " that is not found (deleted?)");
-                    trackMissingReference(missingReferences, missingReferenceErrors, report.maxWarnings, edge.getOut(), describe(e));
-                    report.corrupt(edgeRID);
+                  // #5777: one shared arm for all four endpoint loads in this class - see loadEndpointVertex.
+                  inVertex = loadEndpointVertex(edge, edgeRID, Vertex.DIRECTION.OUT, report, missingReferences,
+                      missingReferenceErrors);
+                  if (inVertex == null)
+                    // An adjacency entry naming an edge whose far endpoint is unusable is pruned, exactly as both
+                    // catch arms this replaces did.
                     removeEntry = true;
-                    report.corrupt(edge.getOut());
-                    ++report.invalidLinks;
-                  } catch (final Exception e) {
-                    // UNKNOWN ERROR ON LOADING
-                    report.warn("edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " which cannot be loaded (error: "
-                            + describe(e) + ")");
-                    trackMissingReference(missingReferences, missingReferenceErrors, report.maxWarnings, edge.getOut(), describe(e));
-                    report.corrupt(edgeRID);
-                    removeEntry = true;
-                    report.corrupt(edge.getOut());
-                  }
                 }
 
                 if (!edge.getIn().equals(vertexIdentity)) {
@@ -1312,24 +1301,11 @@ public class GraphDatabaseChecker {
                   removeEntry = true;
                   ++report.invalidLinks;
                 } else {
-                  try {
-                    outVertex = (VertexInternal) edge.getInVertex().asVertex(true);
-                  } catch (final RecordNotFoundException e) {
-                    report.warn("edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " that is not found (deleted?)");
-                    trackMissingReference(missingReferences, missingReferenceErrors, report.maxWarnings, edge.getIn(), describe(e));
-                    report.corrupt(edgeRID);
+                  // #5777: the twin of the checkIncomingEdges arm, now the same code rather than a copy of it.
+                  outVertex = loadEndpointVertex(edge, edgeRID, Vertex.DIRECTION.IN, report, missingReferences,
+                      missingReferenceErrors);
+                  if (outVertex == null)
                     removeEntry = true;
-                    report.corrupt(edge.getIn());
-                    ++report.invalidLinks;
-                  } catch (final Exception e) {
-                    // UNKNOWN ERROR ON LOADING
-                    report.warn("edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " which cannot be loaded (error: "
-                            + describe(e) + ")");
-                    trackMissingReference(missingReferences, missingReferenceErrors, report.maxWarnings, edge.getIn(), describe(e));
-                    report.corrupt(edgeRID);
-                    removeEntry = true;
-                    report.corrupt(edge.getIn());
-                  }
                 }
 
                 if (!edge.getOut().equals(vertexIdentity)) {
@@ -1612,30 +1588,17 @@ public class GraphDatabaseChecker {
             boolean inProbed = false;
             boolean inUnreferenced = false;
 
-            Vertex inVertex = null;
-            try {
-              inVertex = edge.getInVertex().asVertex(true);
-            } catch (final RecordNotFoundException e) {
-              report.warn("edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " that is not found (deleted?)");
-              trackMissingReference(missingReferences, missingReferenceErrors, report.maxWarnings, edge.getIn(), describe(e));
-              report.corrupt(edgeRID);
-              report.corrupt(edge.getIn());
-              ++report.invalidLinks;
-            } catch (final Exception e) {
-              // UNKNOWN ERROR ON LOADING
-              report.warn("edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " which cannot be loaded (error: "
-                      + describe(e) + ")");
-              trackMissingReference(missingReferences, missingReferenceErrors, report.maxWarnings, edge.getIn(), describe(e));
-              report.corrupt(edgeRID);
-              report.corrupt(edge.getIn());
-            }
+            // #5777: BOTH endpoints go through the same arm, so the two sides cannot report the same finding
+            // differently again. This one used to flag the missing IN vertex corrupted where the OUT arm below
+            // flagged only the edge - see loadEndpointVertex for which of the two was right and why.
+            final VertexInternal inVertex = loadEndpointVertex(edge, edgeRID, Vertex.DIRECTION.IN, report,
+                missingReferences, missingReferenceErrors);
 
             if (inVertex != null)
               try {
                 // Memoised per list (#6062). A vertex with no IN list at all answers false, exactly as the
                 // inEdges == null arm this replaces did, and an unreadable one still throws into the guard below.
-                final boolean referenced = probeCache.containsEdge((VertexInternal) inVertex, Vertex.DIRECTION.IN,
-                    edgeRID);
+                final boolean referenced = probeCache.containsEdge(inVertex, Vertex.DIRECTION.IN, edgeRID);
                 inProbed = true;
                 if (!referenced) {
                   // LEGITIMATE FOR A UNIDIRECTIONAL EDGE TYPE, a defect for a bidirectional one - which is why the
@@ -1655,28 +1618,13 @@ public class GraphDatabaseChecker {
                           + "), left to the vertex check to rebuild");
               }
 
-            Vertex outVertex = null;
-            try {
-              outVertex = edge.getOutVertex().asVertex(true);
-            } catch (final RecordNotFoundException e) {
-              report.warn("edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " that is not found (deleted?)");
-              trackMissingReference(missingReferences, missingReferenceErrors, report.maxWarnings, edge.getOut(), describe(e));
-              report.corrupt(edgeRID);
-              ++report.invalidLinks;
-            } catch (final Exception e) {
-              // UNKNOWN ERROR ON LOADING
-              report.warn("edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " which cannot be loaded (error: "
-                      + describe(e) + ")");
-              trackMissingReference(missingReferences, missingReferenceErrors, report.maxWarnings, edge.getOut(), describe(e));
-              report.corrupt(edgeRID);
-              report.corrupt(edge.getOut());
-            }
+            final VertexInternal outVertex = loadEndpointVertex(edge, edgeRID, Vertex.DIRECTION.OUT, report,
+                missingReferences, missingReferenceErrors);
 
             if (outVertex != null)
               try {
                 // See the incoming side: memoised per list rather than re-walked per edge (#6062).
-                final boolean referenced = probeCache.containsEdge((VertexInternal) outVertex, Vertex.DIRECTION.OUT,
-                    edgeRID);
+                final boolean referenced = probeCache.containsEdge(outVertex, Vertex.DIRECTION.OUT, edgeRID);
                 outProbed = true;
                 if (!referenced) {
                   // ALWAYS A DEFECT, for every edge type: no outgoing traversal can reach the record. Same
@@ -1790,9 +1738,11 @@ public class GraphDatabaseChecker {
             deleteCorruptedRecord(rid);
             // Counted AFTER the delete returns, not before it is attempted (issue #6128). autoFix is what an
             // operator reads to decide whether a run did anything, so it must not include a repair that failed -
-            // and the failure here is routine rather than exotic: checkEdges flags both ends of a dangling edge,
-            // and the far end is flagged precisely because it is not there, so its delete always raises
-            // RecordNotFoundException. One dangling edge used to report two repairs.
+            // and the failure here is routine rather than exotic. It used to be so by construction: a dangling
+            // edge flagged its ABSENT endpoint alongside itself, whose delete could never succeed, so one
+            // dangling edge reported two repairs. #5777 stopped flagging an endpoint that is merely not there,
+            // and what remains is the ordinary race - the record this pass read and flagged is gone by the time
+            // the repair loop reaches it.
             autoFix.incrementAndGet();
             // Reported, not only counted: an operator reads deletedRecordsAfterFix to learn WHICH records a repair
             // removed, and until this arm populated it the answer depended on which pass happened to do the delete -
@@ -1818,7 +1768,7 @@ public class GraphDatabaseChecker {
       // Same sum as the vertex arm, and prunedDanglingEntries is structurally ZERO here: pruning happens in
       // checkIncomingEdges/checkOutgoingEdges, which only checkVertices calls. Kept rather than simplified to
       // autoFix.get() so the two arms report autoFix identically, and so an edge arm that one day does prune -
-      // #5777 is about exactly this arm's handling of endpoints - cannot silently stop counting it. Do not read
+      // #5777 changed exactly this arm's handling of endpoints - cannot silently stop counting it. Do not read
       // it as evidence that this arm prunes today. reconnectedEdges is structurally zero here for the same reason:
       // this arm plans no re-links.
       putRepairCounters(stats, autoFix.get(), report.prunedDanglingEntries, 0L);
@@ -1879,6 +1829,85 @@ public class GraphDatabaseChecker {
   }
 
   /**
+   * Loads ONE endpoint vertex of {@code edge} and reports what happened. The single arm every endpoint probe in
+   * this class goes through - the two in {@code checkEdges}, and the far-endpoint probe of
+   * {@code checkIncomingEdges}/{@code checkOutgoingEdges} (issue #5777).
+   * <p>
+   * IT EXISTS BECAUSE THE FOUR COPIES DIVERGED. They were the same fifteen lines with the direction swapped, and
+   * one of them - {@code checkEdges}' incoming side - additionally flagged the MISSING VERTEX corrupted where its
+   * outgoing twin flagged only the edge. Nothing distinguished the two cases: an edge dangling on its IN side and
+   * an edge dangling on its OUT side are the same finding and the same repair, and the unknown-error arms beside
+   * them were symmetric in the opposite direction, which is what a copy-paste divergence looks like rather than a
+   * decision. One arm cannot drift from itself.
+   * <p>
+   * THE POLICY IT SETTLES, and why the outgoing side was the right one:
+   * <ul>
+   *   <li>NOT FOUND ({@link RecordNotFoundException}) - the edge is flagged, the endpoint is NOT. A RID that
+   *   simply is not there is not corruption, and the difference is expensive: a record flagged corrupted puts its
+   *   BUCKET into {@code affectedBuckets}, and {@code CHECK DATABASE ... FIX} then drops and rebuilds every index
+   *   on that bucket - a full bucket scan per index. Flagging the absent endpoint therefore had a dangling-edge
+   *   sweep after a bulk delete rebuild the indexes of every vertex bucket the deleted vertices lived in, and
+   *   bought nothing for it: the repair loop's {@code deleteRecord} on a RID that is not there raises
+   *   {@link RecordNotFoundException} and is ignored, so no repair was ever performed on the strength of the
+   *   flag. It is the same rule the {@code RECORD} scope already applies to a hand-typed RID that does not
+   *   resolve, and the same rule #5680/#5764 settled. Nothing else consumes {@code corruptedRecords}: it becomes
+   *   {@code affectedBuckets} in {@code DatabaseChecker.check()} and the delete list here, and neither wants a
+   *   phantom. The operator still learns about the missing vertex through {@code trackMissingReference}, which is
+   *   the mechanism built for it and which collapses "one missing supernode" into a single line naming the
+   *   reference count instead of one line per incident edge.</li>
+   *   <li>UNLOADABLE (anything else) - BOTH are flagged. Here the record IS there and could not be read, which is
+   *   corruption by the same definition, and rebuilding the indexes on its bucket is exactly what a corrupt record
+   *   in that bucket calls for.</li>
+   * </ul>
+   * {@code invalidLinks} keeps the split it already had - counted for a not-found endpoint, not for an unloadable
+   * one - because that number is published and this change is about what gets REPAIRED, not about renumbering
+   * what gets reported.
+   * <p>
+   * The {@link VertexInternal} cast sits INSIDE the guard, as two of the four copies already had it: a record in a
+   * vertex bucket that does not materialise as one is a load failure, and letting the {@link ClassCastException}
+   * out to be caught further away as something else would describe it worse.
+   *
+   * @param direction {@link Vertex.DIRECTION#IN} or {@link Vertex.DIRECTION#OUT}, naming which endpoint to load.
+   *                  {@link Vertex.DIRECTION#BOTH} is rejected rather than folded into one of them: an edge has one
+   *                  endpoint per direction, so "both" names no single record to return and a caller that passes it
+   *                  has a bug that silently reading the OUT side would hide
+   *
+   * @return the endpoint vertex, or {@code null} when it could not be loaded - the caller decides what that means
+   * for the adjacency entry it is walking, which is the only thing that legitimately differs between the two
+   * families of caller (the list walkers prune the entry, the edge scan has no entry to prune)
+   */
+  private static VertexInternal loadEndpointVertex(final Edge edge, final RID edgeRID, final Vertex.DIRECTION direction,
+      final CheckReport report, final Map<RID, Long> missingReferences, final Map<RID, String> missingReferenceErrors) {
+    // Every constant spelled out and NO default: the switch is visibly exhaustive, and a constant added to
+    // DIRECTION one day fails to compile here instead of being swallowed into a catch-all arm.
+    final boolean incoming = switch (direction) {
+      case IN -> true;
+      case OUT -> false;
+      case BOTH -> throw new IllegalArgumentException(
+          "Cannot load a single endpoint of edge " + edgeRID + " for direction " + direction);
+    };
+    final RID endpoint = incoming ? edge.getIn() : edge.getOut();
+    final String side = incoming ? "incoming" : "outgoing";
+
+    try {
+      return (VertexInternal) (incoming ? edge.getInVertex() : edge.getOutVertex()).asVertex(true);
+    } catch (final RecordNotFoundException e) {
+      report.warn("edge " + edgeRID + " points to the " + side + " vertex " + endpoint + " that is not found (deleted?)");
+      trackMissingReference(missingReferences, missingReferenceErrors, report.maxWarnings, endpoint, describe(e));
+      report.corrupt(edgeRID);
+      ++report.invalidLinks;
+    } catch (final Exception e) {
+      // UNKNOWN ERROR ON LOADING
+      report.warn("edge " + edgeRID + " points to the " + side + " vertex " + endpoint + " which cannot be loaded (error: "
+              + describe(e) + ")");
+      trackMissingReference(missingReferences, missingReferenceErrors, report.maxWarnings, endpoint, describe(e));
+      report.corrupt(edgeRID);
+      report.corrupt(endpoint);
+    }
+    return null;
+  }
+
+  /**
    * Returns the exception message, or the exception's simple class name when the message is {@code null} (e.g. a
    * {@link NullPointerException}). Without this, CHECK DATABASE prints an undiagnosable "error: null" for any failure
    * whose exception carries no message, which makes triaging a corrupted/diverged replica impossible.
@@ -1893,6 +1922,13 @@ public class GraphDatabaseChecker {
    * count instead of emitting one line per dangling edge. A single missing supernode can be referenced by millions of
    * edges; this collapses that fan-out into "vertex X could not be loaded, referenced by N edge(s)". The distinct-target
    * set is bounded by {@code maxTracked} to keep memory in check (counts for already-tracked targets keep incrementing).
+   * <p>
+   * "MISSING" IS THE COMMON CASE, NOT THE ONLY ONE. {@link #loadEndpointVertex} calls this for BOTH of its failure
+   * arms, so an entry can also be a target that is right there and could not be DECODED. The distinction is not lost -
+   * {@code missingReferenceErrors} carries the exception text per target, and only the absent ones leave the target
+   * unflagged - but a consumer reading {@code missingReferences} alone must not take the key to mean "this record no
+   * longer exists". Longstanding behaviour, spelled out here rather than changed: the map is the operator's
+   * "which far records did edges fail to reach", and both shapes belong in it.
    */
   private static void trackMissingReference(final Map<RID, Long> missingReferences, final Map<RID, String> missingReferenceErrors,
       final int maxTracked, final RID target, final String error) {

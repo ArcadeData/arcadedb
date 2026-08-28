@@ -215,7 +215,13 @@ class CheckDatabaseSinglePassTest extends TestHelper {
    * <p>
    * Reached through the one caller that flags the same RID twice in one visit: an edge whose IN and OUT vertices
    * are both gone flags the edge on each side. With a cap of 1 the edge is the only retained RID, so the second
-   * flag on it is exactly the case the {@code contains} check answers.
+   * flag on it is exactly the case the {@code contains} check answers - {@code addBounded} is already past the cap
+   * by then and can only recognise the repeat because the set still holds it.
+   * <p>
+   * #5777 sharpened this: the two flags used to be the edge and the MISSING IN VERTEX, and the edge's second flag
+   * only came from the OUT side flagging it again. An absent endpoint is no longer flagged at all, so the edge is
+   * now the only RID this visit produces - and the arithmetic below is purely the de-duplication being measured,
+   * with no second finding riding along.
    */
   @Test
   void theCorruptedTotalDoesNotDoubleCountARetainedRecordPastTheCap() {
@@ -236,16 +242,20 @@ class CheckDatabaseSinglePassTest extends TestHelper {
     final Map<String, Object> stats = new GraphDatabaseChecker((DatabaseInternal) database)
         .checkEdges("WorksAt", false, 0, 100, 1);
 
-    // The retained slot holds the EDGE because checkEndpoints flags it before the missing endpoint it found: the
-    // IN branch calls corrupt(edgeRID) first, then corrupt(edge.getIn()). Asserted rather than assumed, so a
-    // future reorder of that branch fails here instead of quietly changing what this test is measuring.
+    // The retained slot holds the EDGE, which is the only record either side flags. Asserted rather than assumed,
+    // so a future change to what the endpoint arms flag fails here instead of quietly changing what this test is
+    // measuring.
     final Collection<RID> corrupted = (Collection<RID>) stats.get("corruptedRecords");
-    assertThat(corrupted).as("precondition: the cap must bite, and the edge must be what it retained")
+    assertThat(corrupted).as("precondition: the edge, and only the edge, must be what the cap retained")
         .hasSize(1).containsExactly(edge);
-    // Flagged: the edge (twice - once per missing endpoint) and the missing IN vertex. The edge's second flag is
-    // the one that must not count, because the set still answers "already seen" for it.
+    // Flagged twice - once per missing endpoint. The second flag arrives with the set already at its cap, so it is
+    // the contains() branch that has to answer "already seen"; counting it would be the #5773 defect.
     assertThat((Long) stats.get("totalCorruptedRecords"))
-        .as("a retained RID flagged twice is one corrupted record: %s", stats).isEqualTo(2L);
+        .as("a retained RID flagged twice is one corrupted record: %s", stats).isEqualTo(1L);
+    // The absent endpoints are still REPORTED, through the channel that scales to a missing supernode (#5777).
+    assertThat((Map<RID, Long>) stats.get("missingReferences"))
+        .as("both absent endpoints must still reach the operator: %s", stats)
+        .containsOnlyKeys(endpoints[0], endpoints[1]);
   }
 
   /**
