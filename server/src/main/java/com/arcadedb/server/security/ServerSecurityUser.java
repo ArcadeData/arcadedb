@@ -154,14 +154,12 @@ public class ServerSecurityUser implements SecurityUser {
     if (databaseGroups == null)
       return;
 
-    // Both halves under ONE critical section (the two methods are themselves synchronized on dbu, and the
-    // monitor is reentrant). Called separately, a concurrent request could observe the new database-level
-    // grants together with the old per-type map, or the reverse - a window of microseconds, but a refresh
-    // that exists to make a revocation take effect should not have a state in which it is half taken.
-    synchronized (dbu) {
-      dbu.updateDatabaseConfiguration(databaseGroups);
-      dbu.updateFileAccess(database, databaseGroups);
-    }
+    // ONE published value for both halves. Calling the two updaters in sequence let a concurrent request
+    // observe the new database-level grants together with the old per-type map, or the reverse - a window of
+    // microseconds, but a refresh that exists to make a revocation take effect should not have a state in
+    // which it is half taken. The authorization checks are unsynchronized by design, so only an atomic
+    // publish closes it.
+    dbu.refresh(database, databaseGroups);
   }
 
   public void refreshDatabaseNames() {
@@ -212,8 +210,7 @@ public class ServerSecurityUser implements SecurityUser {
       final JSONObject databaseGroups = syntheticGroupConfig != null ?
           syntheticGroupConfig :
           server.getSecurity().getDatabaseGroupsConfiguration(database.getName());
-      dbu.updateDatabaseConfiguration(databaseGroups);
-      dbu.updateFileAccess((DatabaseInternal) database, databaseGroups);
+      dbu.refresh((DatabaseInternal) database, databaseGroups);
     }
 
     final ServerSecurityDatabaseUser prev = databaseCache.putIfAbsent(database.getName(), dbu);

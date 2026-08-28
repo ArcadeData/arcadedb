@@ -28,6 +28,8 @@ import com.arcadedb.server.ArcadeDBServer;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -99,6 +101,44 @@ class Issue6806GroupPermissionRefreshTest {
     alice.refreshDatabaseConfiguration(database, groups(new JSONArray().put("updateSecurity"), -1L));
 
     assertThat(dbUser.requestAccessOnDatabase(DATABASE_ACCESS.UPDATE_SECURITY)).isTrue();
+  }
+
+  @Test
+  void aRefreshNeverPublishesHalfOfTheNewConfiguration() throws Exception {
+    // The authorization checks are unsynchronized by design - they run on every record access - so the two
+    // halves of the permission state have to be published as one value. When they were two independent
+    // volatile writes, a reader could see the new database-level grants crossed with the old per-type map.
+    // A reader spinning across many refreshes must only ever observe one configuration or the other.
+    final DatabaseInternal database = mockDatabase();
+    final ServerSecurityUser alice = newUser(database, groups(new JSONArray().put("updateSchema"), 7L));
+    final ServerSecurityDatabaseUser dbUser = alice.getDatabaseUser(database);
+
+    final AtomicBoolean stop = new AtomicBoolean();
+    final AtomicReference<String> mixed = new AtomicReference<>();
+    final Thread reader = new Thread(() -> {
+      while (!stop.get()) {
+        // ONE read of the published state - two successive calls to the public checks are two reads and may
+        // legitimately straddle a refresh, which is exactly why the state is one value. In this
+        // configuration the halves move together: updateSchema is granted exactly when the quota is 7, so a
+        // snapshot carrying one without the other could only come from a half-published refresh.
+        final ServerSecurityDatabaseUser.AccessSnapshot snapshot = dbUser.currentAccess();
+        final boolean granted = snapshot.databaseAccess()[DATABASE_ACCESS.UPDATE_SCHEMA.ordinal()];
+        final long limit = snapshot.resultSetLimit();
+        if (granted != (limit == 7L))
+          mixed.compareAndSet(null, "updateSchema=" + granted + " resultSetLimit=" + limit);
+      }
+    });
+    reader.start();
+    try {
+      for (int i = 0; i < 2_000; i++)
+        alice.refreshDatabaseConfiguration(database,
+            i % 2 == 0 ? groups(new JSONArray(), -1L) : groups(new JSONArray().put("updateSchema"), 7L));
+    } finally {
+      stop.set(true);
+      reader.join(30_000);
+    }
+
+    assertThat(mixed.get()).as("observed a half-published refresh").isNull();
   }
 
   @Test

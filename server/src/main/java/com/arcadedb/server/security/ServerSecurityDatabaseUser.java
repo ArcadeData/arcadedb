@@ -41,19 +41,39 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
   private final        String      databaseName;
   private final        String      userName;
   private              String[]    groups;
-  private volatile     boolean[][] fileAccessMap     = null;
-  // Companion to fileAccessMap, keyed by type name instead of bucket file id: the only way to gate a type that
-  // owns no bucket (a TimeSeries type). See updateFileAccess().
-  private volatile     Map<String, boolean[]> typeAccessMap = null;
-  // Written under the updateDatabaseConfiguration() monitor but read by unsynchronized getters on the query
-  // path, so they are volatile: without it a reader has no visibility guarantee and a 64-bit read is not
-  // required to be atomic, which would let a query observe a torn limit.
-  private volatile     long        resultSetLimit    = -1;
-  private volatile     long        readTimeout       = -1;
-  // INVARIANT: never mutated in place. updateDatabaseConfiguration() builds a replacement and swaps it in,
-  // so a reader racing with a security refresh sees either the previous or the next set of permissions,
-  // never a partially rebuilt one that would deny an access the user actually holds.
-  private volatile     boolean[]   databaseAccessMap = new boolean[DATABASE_ACCESS.values().length];
+
+  /**
+   * The whole permission state of this (user, database) pair, published as ONE immutable value.
+   * <p>
+   * INVARIANT: never mutated in place. Every refresh builds a replacement and swaps it in, so a reader
+   * racing with it sees either the previous configuration or the next one in full - never the
+   * database-level grants of one crossed with the per-type grants of the other. The five parts used to be
+   * five independently-swapped fields, which left exactly that window open during a grant or a revocation:
+   * the authorization checks below are deliberately unsynchronized (they run on every record access), so
+   * "each field is volatile" bought visibility but not a consistent view across fields.
+   *
+   * @param databaseAccess indexed by {@link DATABASE_ACCESS#ordinal()}
+   * @param fileAccess     indexed by bucket file id; {@code null} means "not configured yet, allow"
+   * @param typeAccess     keyed by type name, the only way to gate a type that owns no bucket (a TimeSeries
+   *                       type); {@code null} means "not configured yet, allow"
+   */
+  record AccessSnapshot(boolean[] databaseAccess, boolean[][] fileAccess, Map<String, boolean[]> typeAccess,
+                        long resultSetLimit, long readTimeout) {
+  }
+
+  /**
+   * The whole permission state in ONE volatile read - which is precisely the guarantee the snapshot exists
+   * to provide, and the only way a test can assert it: two successive calls to the public checks are two
+   * reads and may legitimately straddle a refresh. Package-private, for the tests that pin the invariant.
+   */
+  AccessSnapshot currentAccess() {
+    return access;
+  }
+
+  private static final AccessSnapshot NO_CONFIGURATION = new AccessSnapshot(
+      new boolean[DATABASE_ACCESS.values().length], null, null, -1, -1);
+
+  private volatile     AccessSnapshot access = NO_CONFIGURATION;
   private final        boolean     denyAll;
   // #5269: fileIds already reported as "not yet in security configuration", to log that line at most once per file
   // instead of on every access (which used to flood the logs at thousands of lines/sec under write load).
@@ -87,12 +107,12 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
 
   @Override
   public long getResultSetLimit() {
-    return resultSetLimit;
+    return access.resultSetLimit();
   }
 
   @Override
   public long getReadTimeout() {
-    return readTimeout;
+    return access.readTimeout();
   }
 
   public String getDatabaseName() {
@@ -103,7 +123,7 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
   public boolean requestAccessOnDatabase(final DATABASE_ACCESS access) {
     if (denyAll)
       return false;
-    return databaseAccessMap[access.ordinal()];
+    return this.access.databaseAccess()[access.ordinal()];
   }
 
   @Override
@@ -111,7 +131,7 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
     if (denyAll)
       return false;
 
-    final boolean[][] currentMap = fileAccessMap;
+    final boolean[][] currentMap = this.access.fileAccess();
     if (currentMap == null)
       return true;
 
@@ -142,7 +162,7 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
     if (denyAll)
       return false;
 
-    final Map<String, boolean[]> currentMap = typeAccessMap;
+    final Map<String, boolean[]> currentMap = this.access.typeAccess();
     if (currentMap == null)
       return true;
 
@@ -151,20 +171,40 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
     return permissions == null || permissions[access.ordinal()];
   }
 
+  /**
+   * Rebuilds BOTH halves of the permission state from {@code configuredGroups} and publishes them in a
+   * single volatile write, so a concurrent authorization can never combine the database-level grants of one
+   * configuration with the per-type grants of another. This is what a security refresh should call;
+   * {@link #updateDatabaseConfiguration} and {@link #updateFileAccess} remain for the callers that genuinely
+   * rebuild one half only, and each is atomic in itself.
+   */
+  public synchronized void refresh(final DatabaseInternal database, final JSONObject configuredGroups) {
+    final AccessSnapshot current = this.access;
+    final AccessSnapshot withDatabase = withDatabaseConfiguration(current, configuredGroups);
+    this.access = withFileAccess(withDatabase, database, configuredGroups);
+  }
+
   public synchronized void updateDatabaseConfiguration(final JSONObject configuredGroups) {
+    this.access = withDatabaseConfiguration(this.access, configuredGroups);
+  }
+
+  /**
+   * Returns {@code current} with its database-level grants and its two quotas rebuilt from
+   * {@code configuredGroups}, leaving the per-type/per-bucket half as it was. Pure: it publishes nothing, so
+   * {@link #refresh} can compose it with {@link #withFileAccess} into a single write.
+   */
+  private AccessSnapshot withDatabaseConfiguration(final AccessSnapshot current, final JSONObject configuredGroups) {
     // The limits below keep the most restrictive value across the groups of ONE configuration, so they have
     // to start over on every call. Carrying them across calls would pin the user to the tightest value ever
     // configured and silently ignore a refresh that relaxes or drops a limit.
-    resultSetLimit = -1;
-    readTimeout = -1;
+    long resultSetLimit = -1;
+    long readTimeout = -1;
 
     // WORK ON A COPY AND SWAP IT AT THE END
     final boolean[] newDatabaseAccessMap = new boolean[DATABASE_ACCESS.values().length];
 
-    if (configuredGroups == null) {
-      databaseAccessMap = newDatabaseAccessMap;
-      return;
-    }
+    if (configuredGroups == null)
+      return new AccessSnapshot(newDatabaseAccessMap, current.fileAccess(), current.typeAccess(), -1, -1);
 
     JSONArray access = null;
     for (final String groupName : groups) {
@@ -218,12 +258,23 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
         newDatabaseAccessMap[DATABASE_ACCESS.getByName(access.getString(i)).ordinal()] = true;
     }
 
-    databaseAccessMap = newDatabaseAccessMap;
+    return new AccessSnapshot(newDatabaseAccessMap, current.fileAccess(), current.typeAccess(), resultSetLimit,
+        readTimeout);
   }
 
   public synchronized void updateFileAccess(final DatabaseInternal database, final JSONObject configuredGroups) {
+    this.access = withFileAccess(this.access, database, configuredGroups);
+  }
+
+  /**
+   * Returns {@code current} with its per-bucket and per-type maps rebuilt from {@code configuredGroups},
+   * leaving the database-level half as it was. Pure, for the same reason as
+   * {@link #withDatabaseConfiguration}.
+   */
+  private AccessSnapshot withFileAccess(final AccessSnapshot current, final DatabaseInternal database,
+      final JSONObject configuredGroups) {
     if (configuredGroups == null)
-      return;
+      return current;
 
     final List<ComponentFile> files = database.getFileManager().getFiles();
 
@@ -245,9 +296,6 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
       newFileAccessMap[i] = resolveTypeAccess(type.getName(), configuredGroups, defaultGroupTypes, defaultType);
     }
 
-    // SWAP WITH THE NEW MAP (VOLATILE PROPERTY)
-    fileAccessMap = newFileAccessMap;
-
     // #5269: the refreshed map may now cover files previously reported as missing; reset the throttle so a genuinely
     // new file created later can still be reported once.
     warnedNotRegisteredFiles.clear();
@@ -259,7 +307,9 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
     final Map<String, boolean[]> newTypeAccessMap = new HashMap<>();
     for (final DocumentType type : database.getSchema().getTypes())
       newTypeAccessMap.put(type.getName(), resolveTypeAccess(type.getName(), configuredGroups, defaultGroupTypes, defaultType));
-    typeAccessMap = newTypeAccessMap;
+
+    return new AccessSnapshot(current.databaseAccess(), newFileAccessMap, newTypeAccessMap, current.resultSetLimit(),
+        current.readTimeout());
   }
 
   /**
