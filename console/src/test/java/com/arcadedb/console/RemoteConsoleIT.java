@@ -170,8 +170,18 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
     assertThat(console.parse("create user albert identified by einstein")).isTrue();
     assertThat(console.parse("drop user albert")).isTrue();
 
-    // TEST SYNTAX ERROR
-    assertThatThrownBy(() -> assertThat(console.parse("create user albert identified by einstein grand connect on db1")).isTrue()).isInstanceOf(Exception.class);
+    // Syntax error: a `create user` with no IDENTIFIED BY at all has nowhere to take a password from and
+    // is rejected outright.
+    assertThatThrownBy(() -> assertThat(console.parse("create user albert")).isTrue()).isInstanceOf(Exception.class);
+
+    // A mistyped grant clause is not a syntax error any more (issue #6830). Only the exact
+    // ` GRANT CONNECT TO ` phrase delimits the password, and since #6830 a password may contain spaces, so
+    // `grand connect on db1` is an ordinary - if surprising - password rather than something the console can
+    // tell apart from one. Asserted explicitly rather than deleted: this used to throw only because the
+    // console rejected spaces in passwords, and #6830 removed that check because it made accounts the
+    // console could not create.
+    assertThat(console.parse("create user albert identified by einstein grand connect on db1")).isTrue();
+    assertThat(console.parse("drop user albert")).isTrue();
 
     assertThat(console.parse("create user albert identified by einstein grant connect to db1")).isTrue();
     assertThat(console.parse("create user jeff identified by amazonaws grant connect to db1:readonly")).isTrue();
