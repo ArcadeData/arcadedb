@@ -216,7 +216,10 @@ class CheckDatabaseTest extends TestHelper {
       assertThat((Long) row.getProperty("totalAllocatedEdges")).isEqualTo(TOTAL - 1);
       assertThat((Long) row.getProperty("totalActiveEdges")).isEqualTo(TOTAL - 1);
       assertThat((Long) row.getProperty("totalDeletedRecords")).isEqualTo(1);
-      assertThat(((Collection) row.getProperty("corruptedRecords")).size()).isEqualTo(TOTAL); // ALL THE EDGES + ROOT VERTEX
+      // ALL THE EDGES. The root vertex is NOT among them: it was deleted at low level, and #5777 stopped calling a
+      // RID that is simply absent corrupt - it is reported through missingReferences instead, which is what keeps
+      // FIX from dropping and rebuilding every index on the vertex bucket over a record that is not there.
+      assertThat(((Collection) row.getProperty("corruptedRecords")).size()).isEqualTo(TOTAL - 1);
       assertThat((Long) row.getProperty("missingReferenceBack")).isEqualTo(0);
       assertThat((Long) row.getProperty("invalidLinks")).isEqualTo((TOTAL - 1) * 2);
       assertThat(((Collection) row.getProperty("warnings")).size()).isEqualTo(TOTAL - 1);
