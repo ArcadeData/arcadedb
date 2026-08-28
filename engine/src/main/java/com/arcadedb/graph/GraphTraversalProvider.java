@@ -41,10 +41,25 @@ import java.util.function.IntConsumer;
 public interface GraphTraversalProvider {
 
   /**
-   * Returns the total number of nodes in this provider's CSR structure.
-   * Dense node IDs range from 0 (inclusive) to getNodeCount() (exclusive).
+   * Returns the number of live nodes in this provider's graph.
+   * <p>
+   * Providers whose node ID space can contain holes must expose the exclusive bound of that space through
+   * {@link #getNodeIdUpperBound()} instead of requiring callers to infer it from this count.
    */
   int getNodeCount();
+
+  /**
+   * Returns the exclusive upper bound of node IDs this provider can expose.
+   * <p>
+   * Every ID returned by {@link #getNodeId(RID)} or {@link #getNeighborIds(int, Vertex.DIRECTION, String...)} is
+   * smaller than this bound. The range may contain holes, so node-indexed arrays must be sized from this method
+   * while result enumeration must still tolerate an ID that does not resolve to a live node.
+   * <p>
+   * The default preserves the compact-ID contract of existing providers.
+   */
+  default int getNodeIdUpperBound() {
+    return getNodeCount();
+  }
 
   /**
    * Returns true if this provider is ready to serve queries.
