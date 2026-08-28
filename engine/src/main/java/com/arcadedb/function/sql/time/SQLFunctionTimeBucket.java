@@ -65,8 +65,13 @@ public class SQLFunctionTimeBucket extends SQLFunctionConfigurableAbstract {
 
     final long timestampMs = toEpochMs(params[1]);
 
-    // Truncate to bucket boundary
-    final long bucketStart = (timestampMs / intervalMs) * intervalMs;
+    // Floor to the bucket boundary. Math.floorDiv, not '/': Java integer division truncates TOWARD ZERO, so for a
+    // pre-epoch (negative) timestamp the plain division returned a boundary LATER than its own input - '1h' over
+    // -1800000 (1969-12-31T23:30:00Z) answered the epoch itself - and collapsed the last pre-epoch bucket into the
+    // first post-epoch one, silently merging two intervals under one GROUP BY key (issue #6824). The engine's own
+    // bucket anchor was floor-aligned for the same reason in #4595; this is the SQL function that fix did not
+    // reach. intervalMs is positive here (guarded above), so floorDiv differs from '/' only on negative inputs.
+    final long bucketStart = Math.floorDiv(timestampMs, intervalMs) * intervalMs;
 
     return new Date(bucketStart);
   }

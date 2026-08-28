@@ -178,15 +178,17 @@ public class TimeSeriesShard implements AutoCloseable {
       }
     }
 
-    // If sealedStore construction fails, close mutableBucket to avoid a resource leak
-    final TimeSeriesSealedStore tempSealedStore;
-    try {
-      tempSealedStore = new TimeSeriesSealedStore(shardPath, columns);
-    } catch (final IOException e) {
-      try { this.mutableBucket.close(); } catch (final Exception ignored) {}
-      throw e;
-    }
-    this.sealedStore = tempSealedStore;
+    // The mutable bucket is deliberately NOT closed when the sealed store fails to open. By the time control
+    // reaches here it is registered with the schema on BOTH branches above - the component factory registered it
+    // on a cold open, and the creation branch calls registerFile() itself - so the schema owns its lifecycle and
+    // will close it with the database. Closing it here never prevented a leak; it only made the file unusable,
+    // because PaginatedComponentFile.close() sets open=false and its own lazy reopen then refuses ("was closed on
+    // purpose"), for the life of the process. That was harmless while a failed initEngine() meant the type
+    // vanished from the schema, and became the thing standing in the way of recovery once #6356 made the type stay
+    // registered: retrying initEngine() after the sealed file is repaired reuses this very component and produced
+    // a type reporting isEngineAvailable() == true whose every read threw FileNotFoundException (issue #6839).
+    // The failure at initHeaderPage() a few lines above already propagates without closing, for the same reason.
+    this.sealedStore = new TimeSeriesSealedStore(shardPath, columns);
 
     // Crash recovery: if a compaction was interrupted, truncate any partial sealed blocks
     database.begin();
@@ -202,9 +204,13 @@ public class TimeSeriesShard implements AutoCloseable {
     } catch (final Exception e) {
       if (database.isTransactionActive())
         database.rollback();
-      // Close both stores to avoid resource leaks before propagating the error
+      // The sealed store is this shard's own file handle and nothing else will close it, so it must be. The
+      // mutable bucket must NOT be, for the reason spelled out above the sealed-store construction: it is
+      // schema-registered, the schema owns closing it, and PaginatedComponentFile.close() is permanent. This
+      // branch is the second way into that trap and it is the one a retry is most likely to meet - both
+      // truncateToBlockCount's temp-file rewrite and the commit below it can throw - so closing here would poison
+      // the bucket on the very attempt meant to bring the type back (issue #6839).
       try { this.sealedStore.close(); } catch (final Exception ignored) {}
-      try { this.mutableBucket.close(); } catch (final Exception ignored) {}
       throw e instanceof IOException ? (IOException) e :
           new IOException("Crash recovery failed for shard " + shardIndex, e);
     }
@@ -1175,6 +1181,22 @@ public class TimeSeriesShard implements AutoCloseable {
   @Override
   public void close() throws IOException {
     mutableBucket.close();
+    sealedStore.close();
+  }
+
+  /**
+   * Releases only what this shard owns outright, leaving the mutable bucket open. Used when a LATER shard of the
+   * same type fails to construct and the engine has to unwind the shards it already built (issue #6839).
+   * <p>
+   * {@link #close()} is wrong there for the reason spelled out in the constructor: the mutable bucket is
+   * registered with the schema, which owns closing it, and {@code PaginatedComponentFile.close()} sets
+   * {@code open=false} permanently. So unwinding with the full close made one corrupt {@code .ts.sealed} on shard
+   * N poison the buckets of shards 0..N-1 too, and no later {@code initEngine()} could recover the type however
+   * good the incoming blob was - the whole recovery path #6839 adds would work for {@code SHARDS 1} and silently
+   * not for anything above it. The sealed store is this shard's own file handle and nothing else will close it,
+   * so it still must be.
+   */
+  void closeAfterFailedInit() throws IOException {
     sealedStore.close();
   }
 

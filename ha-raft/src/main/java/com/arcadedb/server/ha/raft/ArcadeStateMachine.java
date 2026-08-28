@@ -25,6 +25,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.WALFile;
+import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.WALVersionGapException;
@@ -58,6 +59,7 @@ import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.apache.ratis.util.LifeCycle;
 
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
@@ -1984,7 +1986,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * full {@code .ts.sealed} file is replaced atomically and the in-memory sealed store reopened.
    * Idempotent: re-applying the same blob (crash/restart replay) simply rewrites the identical file.
    */
-  private void applySealedBlobs(final DatabaseInternal db, final List<RaftLogEntryCodec.TsSealedBlob> blobs)
+  // Package-private rather than private so Issue6839TsSealedBlobRecoveryTest can drive the apply path directly:
+  // the recovery it pins is entirely inside this method, and a 3-node IT would only add flakiness to prove it.
+  void applySealedBlobs(final DatabaseInternal db, final List<RaftLogEntryCodec.TsSealedBlob> blobs)
       throws IOException {
     if (blobs == null || blobs.isEmpty())
       return;
@@ -1997,16 +2001,78 @@ public class ArcadeStateMachine extends BaseStateMachine {
             decodedDbName(db));
         continue;
       }
-      if (!(schema.getType(blob.typeName()) instanceof LocalTimeSeriesType tsType) || tsType.getEngine() == null) {
+      if (!(schema.getType(blob.typeName()) instanceof LocalTimeSeriesType tsType)) {
         LogManager.instance().log(this, Level.SEVERE,
-            "Received TimeSeries sealed blob for non-timeseries or uninitialized type '%s' (db=%s); skipping", null,
+            "Received TimeSeries sealed blob for non-timeseries type '%s' (db=%s); skipping", null,
             blob.typeName(), decodedDbName(db));
+        continue;
+      }
+      if (tsType.getEngine() == null) {
+        // The type is registered with no engine (issue #6356), which used to end here: the blob was logged away,
+        // and since a Raft entry is applied once and never re-shipped, that made every one of them a permanent
+        // divergence - on the very state LocalSchema.readConfiguration() justifies keeping by pointing at HA as
+        // the thing that would repair it. This blob IS that repair, so install it and retry (issue #6839).
+        if (repairEngineWithSealedBlob(db, tsType, blob))
+          HALog.log(this, HALog.DETAILED,
+              "Repaired TimeSeries type %s shard %d from a replicated sealed blob (%d bytes) on db '%s'",
+              blob.typeName(), blob.shardIndex(), blob.bytes().length, decodedDbName(db));
         continue;
       }
       tsType.getEngine().getShard(blob.shardIndex()).getSealedStore().installSealedFileBytes(blob.bytes());
       HALog.log(this, HALog.DETAILED, "Installed TimeSeries sealed blob for %s shard %d (%d bytes) on db '%s'",
           blob.typeName(), blob.shardIndex(), blob.bytes().length, decodedDbName(db));
     }
+  }
+
+  /**
+   * Puts the leader's sealed bytes in place for a type registered with no engine and re-runs {@code initEngine()}.
+   * Returns whether the type now has one.
+   * <p>
+   * The order is the point. Retrying {@code initEngine()} FIRST recovers nothing in the reported case: the
+   * engine failed because this shard's {@code .ts.sealed} could not be opened, so re-opening the same file fails
+   * for the same reason and there is still no store to install the blob through. The blob is the authoritative
+   * copy of exactly that file, so it goes down first and {@code initEngine()} then opens the store over it -
+   * which is also why nothing is installed afterwards: the file already IS the blob.
+   * <p>
+   * Written through a temporary and moved with {@code REPLACE_EXISTING}, the same way
+   * {@code TimeSeriesSealedStore.installSealedFileBytes} does it, so a crash mid-write cannot leave a half-file
+   * where a whole one used to be. The target name is derived from the type and shard rather than taken from
+   * {@code blob.fileName()}: a path from a replicated payload must not select a file on this node.
+   * <p>
+   * A failure here is logged and reported, never thrown: one unrepairable type must not abort the apply of an
+   * entry that may carry blobs for others, and the state it leaves behind is the state it started from - still
+   * visible, still reported by {@code CHECK DATABASE}, still failing loudly on every read and write.
+   */
+  private boolean repairEngineWithSealedBlob(final DatabaseInternal db, final LocalTimeSeriesType tsType,
+      final RaftLogEntryCodec.TsSealedBlob blob) {
+    // tsType.getName(), not blob.typeName(): the two are equal here - tsType came from getType(blob.typeName()) -
+    // but taking it from the resolved schema type means the name selecting a file on this node provably came from
+    // the local schema and not from the wire, rather than only doing so as long as the caller keeps that lookup.
+    final File target = new File(db.getDatabasePath(),
+        TimeSeriesSealedStore.sealedFileNameFor(tsType.getName(), blob.shardIndex()));
+    final File incoming = new File(target.getPath() + ".incoming");
+    try {
+      try (final FileOutputStream out = new FileOutputStream(incoming)) {
+        out.write(blob.bytes());
+        out.getFD().sync();
+      }
+      Files.move(incoming.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
+      tsType.initEngine();
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.SEVERE,
+          "Received TimeSeries sealed blob for type '%s' shard %d (db=%s) whose storage engine is unavailable, and "
+              + "the engine could not be initialised over it: %s", e, blob.typeName(), blob.shardIndex(),
+          decodedDbName(db), e.getMessage());
+      return false;
+    }
+
+    if (!tsType.isEngineAvailable()) {
+      LogManager.instance().log(this, Level.SEVERE,
+          "TimeSeries type '%s' (db=%s) still has no storage engine after installing the replicated sealed blob "
+              + "for shard %d; skipping", null, blob.typeName(), decodedDbName(db), blob.shardIndex());
+      return false;
+    }
+    return true;
   }
 
   private static String decodedDbName(final DatabaseInternal db) {
