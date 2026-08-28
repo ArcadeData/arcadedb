@@ -400,6 +400,74 @@ class JsonLImporterIT {
   }
 
   /**
+   * Issue #6460 follow-up (#6795, comment on the closed issue): {@code reconcileUnresolvedLinks} used to remap
+   * EVERY RID element of a mixed-resolution LIST-of-LINK, not only the ones pass 1 actually left unresolved. On a
+   * normal same-schema restore the source and target RID spaces overlap, so an already-correct element can equal
+   * some OTHER record's source RID and get silently re-pointed a second time.
+   * <p>
+   * Person#1 (source "#1:20") is imported first and always lands at the fresh bucket's first position "#1:0" (a
+   * database created for this schema - a single Person type and no other user type - always allocates its first
+   * user bucket as bucket 1). Person#3's source "r" is deliberately set to that exact value "#1:0" - a coincidence
+   * that is completely ordinary in a same-schema restore, since the source and target bucket sequences both start
+   * counting from 0. Person#2.friends mixes a backward reference to Person#1 (resolved immediately on pass 1, to
+   * "#1:0") with a forward reference to Person#4 (source "#1:99", unresolved until the reconciliation pass) in the
+   * SAME list. The bug re-applies {@code ridIndex.get(...)} to the already-resolved "#1:0" element during
+   * reconciliation, finds Person#3's mapping under that same key purely by coincidence, and silently replaces
+   * Person#1's identity with Person#3's.
+   */
+  @Test
+  void importDatabaseReconcileDoesNotRemapAlreadyResolvedListElement() throws Exception {
+    Path jsonlFile = Files.createTempFile("arcadedb-6795-reconcile-overlap-", ".jsonl");
+    try {
+      Files.writeString(jsonlFile, ""
+          + "{\"t\":\"info\",\"c\":{\"description\":\"test\",\"exporterVersion\":1,\"dbVersion\":\"25.1.1-SNAPSHOT\",\"dbBuild\":\"\",\"dbTimestamp\":\"\"}}\n"
+          + "{\"t\":\"db\",\"c\":{\"name\":\"test\",\"executedOn\":\"2025-01-01\",\"executedOnTimestamp\":0}}\n"
+          + "{\"t\":\"schema\",\"c\":{\"schemaVersion\":1,\"dbmsVersion\":\"25.1.1-SNAPSHOT\",\"dbmsBuild\":\"\",\"settings\":{\"zoneId\":\"UTC\",\"dateFormat\":\"yyyy-MM-dd\",\"dateTimeFormat\":\"yyyy-MM-dd HH:mm:ss\"},"
+          + "\"types\":{\"Person\":{\"type\":\"v\",\"parents\":[],\"buckets\":[\"Person_0\"],\"properties\":{"
+          + "\"id\":{\"type\":\"INTEGER\",\"custom\":{}},"
+          + "\"friends\":{\"type\":\"LIST\",\"of\":\"LINK\",\"custom\":{}}"
+          + "},\"indexes\":{},\"custom\":{}}}}}\n"
+          + "{\"t\":\"v\",\"c\":{\"p\":{\"id\":1},\"r\":\"#1:20\",\"t\":\"Person\",\"o\":[],\"i\":[]}}\n"
+          + "{\"t\":\"v\",\"c\":{\"p\":{\"id\":2,\"friends\":[\"#1:20\",\"#1:99\"]},\"r\":\"#1:21\",\"t\":\"Person\",\"o\":[],\"i\":[]}}\n"
+          + "{\"t\":\"v\",\"c\":{\"p\":{\"id\":3},\"r\":\"#1:0\",\"t\":\"Person\",\"o\":[],\"i\":[]}}\n"
+          + "{\"t\":\"v\",\"c\":{\"p\":{\"id\":4},\"r\":\"#1:99\",\"t\":\"Person\",\"o\":[],\"i\":[]}}\n");
+
+      var importer = new Importer(
+          ("-url " + jsonlFile.toAbsolutePath() + " -database " + DATABASE_PATH + " -forceDatabaseCreate true").split(" "));
+      Map<String, Object> result = importer.load();
+
+      assertThat(result).containsEntry("createdVertices", 4L);
+      assertThat(result).doesNotContainKey("errors");
+
+      try (var db = new DatabaseFactory(DATABASE_PATH).open()) {
+        final Map<Integer, Document> byId = new HashMap<>();
+        for (final Iterator<Record> it = db.iterateType("Person", true); it.hasNext(); ) {
+          final Document doc = it.next().asDocument(true);
+          byId.put((Integer) doc.get("id"), doc);
+        }
+
+        final RID person1Rid = byId.get(1).getIdentity();
+        final RID person3Rid = byId.get(3).getIdentity();
+        final RID person4Rid = byId.get(4).getIdentity();
+
+        // Person#1 always lands at the fresh bucket's first position - the coincidence this test relies on.
+        assertThat(person1Rid.toString()).isEqualTo("#1:0");
+
+        final List<?> friends = (List<?>) byId.get(2).get("friends");
+        assertThat(friends).hasSize(2);
+        // Already resolved on pass 1 (backward reference): must stay Person#1's identity, not be silently
+        // re-pointed at Person#3 just because Person#3's SOURCE rid happens to equal Person#1's TARGET rid.
+        assertThat(friends.get(0)).isEqualTo(person1Rid);
+        assertThat(friends.get(0)).isNotEqualTo(person3Rid);
+        // Genuinely unresolved on pass 1 (forward reference): must still be fixed up by reconciliation.
+        assertThat(friends.get(1)).isEqualTo(person4Rid);
+      }
+    } finally {
+      Files.deleteIfExists(jsonlFile);
+    }
+  }
+
+  /**
    * Issue #6561: {@code -onRowError skip} commits/rolls back per record, so - exactly like CSV/JSON (see
    * {@code Issue5968ImporterSkipOnRowErrorTest}) - it must own the transaction outright and reject an already-active
    * caller-managed transaction eagerly, rather than silently committing/discarding whatever the caller had pending

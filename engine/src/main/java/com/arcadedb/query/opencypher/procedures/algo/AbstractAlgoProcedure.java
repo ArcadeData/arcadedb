@@ -1081,6 +1081,11 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
       final int[][] neighbors = new int[nodeCount][];
       final double[][] weights = new double[nodeCount][];
       final RecordRowReader reader = new RecordRowReader();
+      // Issue #6795 (follow-up on #6715): mirrors weightedAdjacencyFromColumns's own checkpoint interval - a
+      // weighted entry costs INT_BYTES + DOUBLE_BYTES like there too, and this path was left on the full
+      // unweighted ADJACENCY_CHECKPOINT_ENTRIES with no capacityFor cap, letting it overshoot the budget by up
+      // to three times as many bytes (~12 MB at the default constant) before ever checkpointing.
+      final long maxEntryCheckpoint = ADJACENCY_CHECKPOINT_ENTRIES / 3;
       long entries = 0;
       long totalEntries = 0;
 
@@ -1090,7 +1095,8 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
         weights[i] = row.weights();
         entries += row.neighbors().length;
         totalEntries += row.neighbors().length;
-        if (entries >= ADJACENCY_CHECKPOINT_ENTRIES || (i & 1023) == 1023) {
+        final long entryCheckpoint = Math.min(maxEntryCheckpoint, memory.capacityFor(INT_BYTES + DOUBLE_BYTES));
+        if (entries >= entryCheckpoint || (i & 1023) == 1023) {
           reserveWeightedAdjacency(0, entries);
           entries = 0;
         }
