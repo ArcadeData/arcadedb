@@ -208,6 +208,34 @@ class Issue6875SettingValueCoercionTest {
     assertThat(okCtx.getValueAsInteger(GlobalConfiguration.ASYNC_WORKER_THREADS)).isEqualTo(12);
   }
 
+  /**
+   * A fraction is refused rather than truncated for an integral setting, from either route in: the
+   * {@code Integer.parseInt} this replaced threw on {@code "6.7"}, and {@code ALTER DATABASE ... SETTING} hands
+   * over whatever an arbitrary SQL expression evaluated to, so an unquoted {@code 6.7} arrives already boxed.
+   */
+  @Test
+  void coerceRefusesAFractionalValueForAnIntegralSetting() {
+    assertThatThrownBy(() -> GlobalConfiguration.ASYNC_WORKER_THREADS.coerce(6.7d))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("arcadedb.asyncWorkerThreads");
+    assertThatThrownBy(() -> GlobalConfiguration.ASYNC_WORKER_THREADS.coerce(6.7f))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> GlobalConfiguration.ASYNC_WORKER_THREADS.coerce("6.7"))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> GlobalConfiguration.COMMIT_LOCK_TIMEOUT.coerce(6.7d))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("arcadedb.commitLockTimeout");
+    assertThatThrownBy(() -> GlobalConfiguration.COMMIT_LOCK_TIMEOUT.coerce("6.7"))
+        .isInstanceOf(IllegalArgumentException.class);
+
+    // a Double that IS a whole number is fine, and so is a fraction OF A UNIT whose byte count is whole
+    assertThat(GlobalConfiguration.ASYNC_WORKER_THREADS.coerce(6.0d)).isEqualTo(6);
+    assertThat(GlobalConfiguration.COMMIT_LOCK_TIMEOUT.coerce("1.5MB")).isEqualTo(1024L * 1024 * 3 / 2);
+
+    // a Float setting is unaffected: a fraction is exactly what it holds
+    assertThat(GlobalConfiguration.SERVER_METRICS_TRACING_SAMPLING_RATE.coerce(0.25d)).isEqualTo(0.25f);
+  }
+
   /** {@code coerce} returns the DECLARED type, not merely something numeric: a Long setting must not yield an Integer. */
   @Test
   void coerceReturnsTheDeclaredType() {

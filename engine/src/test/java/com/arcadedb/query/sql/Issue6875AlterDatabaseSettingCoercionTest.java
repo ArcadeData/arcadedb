@@ -60,6 +60,19 @@ class Issue6875AlterDatabaseSettingCoercionTest extends TestHelper {
     assertThat(database.getConfiguration().getValueAsInteger(GlobalConfiguration.ASYNC_WORKER_THREADS)).isEqualTo(6);
   }
 
+  /**
+   * The SQL value is an arbitrary expression, so an unquoted {@code 6.7} reaches the setting already boxed as a
+   * floating-point number rather than as text. It must be refused, not truncated to 6.
+   */
+  @Test
+  void alterDatabaseRefusesAFractionalValueForAnIntegralSetting() {
+    assertThatThrownBy(() -> database.command("sql", "alter database `arcadedb.asyncWorkerThreads` 6.7"))
+        .hasMessageContaining("arcadedb.asyncWorkerThreads");
+
+    assertThatCode(() -> database.getConfiguration().getValueAsInteger(GlobalConfiguration.ASYNC_WORKER_THREADS))
+        .doesNotThrowAnyException();
+  }
+
   /** A String setting is unaffected: it takes any text, quotes stripped by the expression evaluator as before. */
   @Test
   void alterDatabaseStillAcceptsAnyTextForAStringSetting() {

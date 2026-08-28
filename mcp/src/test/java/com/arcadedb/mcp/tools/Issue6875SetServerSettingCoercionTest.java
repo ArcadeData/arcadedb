@@ -122,6 +122,29 @@ class Issue6875SetServerSettingCoercionTest extends BaseGraphServerTest {
     }
   }
 
+  /** A secret is masked on the way out of the setter, not only out of the getter. */
+  @Test
+  void masksTheNewValueOfAHiddenSetting() {
+    final GlobalConfiguration setting = GlobalConfiguration.NETWORK_SSL_KEYSTORE_PASSWORD;
+    assertThat(setting.isHidden()).isTrue();
+
+    final boolean hadValue = getServer(0).getConfiguration().hasValue(setting.getKey());
+    final Object previous = getServer(0).getConfiguration().getValue(setting);
+    try {
+      final JSONObject result = SetServerSettingTool.execute(getServer(0), user,
+          new JSONObject().put("key", setting.getKey()).put("value", "s3cr3t-not-in-the-response"), config);
+
+      assertThat(result.getString("newValue")).isEqualTo("*****");
+      assertThat(result.getString("previousValue")).isEqualTo("*****");
+      assertThat(result.toString()).doesNotContain("s3cr3t-not-in-the-response");
+
+      // masked in the response, but still actually stored
+      assertThat(getServer(0).getConfiguration().getValueAsString(setting)).isEqualTo("s3cr3t-not-in-the-response");
+    } finally {
+      getServer(0).getConfiguration().setValue(setting.getKey(), hadValue ? previous : null);
+    }
+  }
+
   /** A String setting takes any text, including one that would not parse as a number. */
   @Test
   void stillAcceptsAnyTextForAStringSetting() {

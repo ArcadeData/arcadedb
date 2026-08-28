@@ -2524,18 +2524,18 @@ public enum GlobalConfiguration {
     if (iValue == null)
       return null;
 
+    // Both integral types share one parse, and it is applied OUTSIDE the wrapping below: coerceToIntegral and
+    // narrowToInteger each produce a message that already names the key, the type and the value, so re-wrapping
+    // them here would only bury the specific reason ("not a whole number", "outside the range") in a cause.
+    if (type == Integer.class)
+      return narrowToInteger(coerceToIntegral(iValue));
+
+    if (type == Long.class)
+      return coerceToIntegral(iValue);
+
     try {
       if (type == Boolean.class)
         return iValue instanceof Boolean b ? b : Boolean.parseBoolean(iValue.toString().trim());
-
-      if (type == Integer.class)
-        // the range check has to cover a boxed Number too, not just the parsed-from-text path: Number.intValue()
-        // keeps the low 32 bits, so a Long outside the int range would be stored silently truncated - where the
-        // Integer.parseInt this method replaced threw. Every input reaches the same bound.
-        return narrowToInteger(iValue instanceof Number n ? n.longValue() : FileUtils.getSizeAsNumber(iValue.toString().trim()));
-
-      if (type == Long.class)
-        return iValue instanceof Number n ? n.longValue() : FileUtils.getSizeAsNumber(iValue.toString().trim());
 
       if (type == Float.class)
         return iValue instanceof Number n ? n.floatValue() : Float.parseFloat(iValue.toString().trim());
@@ -2557,20 +2557,61 @@ public enum GlobalConfiguration {
 
       return iValue;
     } catch (final RuntimeException e) {
-      final String message =
-          "Value '" + iValue + "' is not valid for setting '" + key + "' of type " + type.getSimpleName();
-
-      // A numeric setting keeps reporting a bad value as a NumberFormatException. It is a subclass of
-      // IllegalArgumentException, so a caller that catches the general form is unaffected either way, while one
-      // that distinguishes a malformed number - GlobalConfigurationTest.typeConversion does - still can. The
-      // message is the enriched one regardless: 'For input string: "A"', which is what FileUtils.getSizeAsNumber
-      // surfaces for "abc", names neither the setting nor what was actually sent.
-      final IllegalArgumentException failure = type == Integer.class || type == Long.class || type == Float.class ?
-          new NumberFormatException(message) :
-          new IllegalArgumentException(message);
-      failure.initCause(e);
-      throw failure;
+      throw invalidValue(iValue, e);
     }
+  }
+
+  /**
+   * Reads {@code iValue} as the whole number an {@code Integer} or {@code Long} setting holds, refusing a
+   * fractional one rather than truncating it.
+   * <p>
+   * Issue #6875: the {@code Integer.parseInt}/{@code Long.parseLong} this replaced threw on {@code "6.7"}, and
+   * both routes into here can carry a fraction - {@code FileUtils.getSizeAsNumber} reads a plain {@code "6.7"} as
+   * a double and keeps its integral part, and {@code ALTER DATABASE ... SETTING} hands over whatever an arbitrary
+   * SQL expression evaluated to, so an unquoted {@code 6.7} arrives already boxed as a {@code Double}. A
+   * size-suffixed {@code "1.5MB"} is a different thing - a fraction OF A UNIT whose byte count is a whole number -
+   * and stays accepted.
+   */
+  private long coerceToIntegral(final Object iValue) {
+    try {
+      if (iValue instanceof Integer || iValue instanceof Long || iValue instanceof Short || iValue instanceof Byte)
+        return ((Number) iValue).longValue();
+
+      if (iValue instanceof Number n) {
+        final double asDouble = n.doubleValue();
+        if (Double.isNaN(asDouble) || Double.isInfinite(asDouble) || asDouble != Math.rint(asDouble))
+          throw new IllegalArgumentException("not a whole number");
+        return n.longValue();
+      }
+
+      final String text = iValue.toString().trim();
+      final long parsed = FileUtils.getSizeAsNumber(text);
+      if (!text.isEmpty() && text.indexOf('.') > -1 && Character.isDigit(text.charAt(text.length() - 1)))
+        throw new IllegalArgumentException("not a whole number");
+      return parsed;
+    } catch (final RuntimeException e) {
+      throw invalidValue(iValue, e);
+    }
+  }
+
+  /**
+   * The rejection {@link #coerce(Object)} and {@link #coerceToIntegral(Object)} raise for a value that is not this
+   * setting's type. A numeric setting keeps reporting it as a {@link NumberFormatException} - a subclass of
+   * {@link IllegalArgumentException}, so a caller that catches the general form is unaffected either way, while one
+   * that distinguishes a malformed number ({@code GlobalConfigurationTest.typeConversion} does) still can. The
+   * message is the enriched one regardless: {@code For input string: "A"}, which is what
+   * {@link FileUtils#getSizeAsNumber(Object)} surfaces for {@code "abc"}, names neither the setting nor what was
+   * actually sent.
+   */
+  private IllegalArgumentException invalidValue(final Object iValue, final RuntimeException cause) {
+    final String message =
+        "Value '" + iValue + "' is not valid for setting '" + key + "' of type " + type.getSimpleName();
+
+    final IllegalArgumentException failure = type == Integer.class || type == Long.class || type == Float.class ?
+        new NumberFormatException(message) :
+        new IllegalArgumentException(message);
+    failure.initCause(cause);
+    return failure;
   }
 
   /**

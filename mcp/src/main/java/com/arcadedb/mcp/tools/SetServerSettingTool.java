@@ -98,8 +98,11 @@ public class SetServerSettingTool {
     // so an unset secret cannot be distinguished from a set one either.
     result.put("previousValue",
         cfg.isHidden() ? "*****" : oldValue != null ? oldValue.toString() : JSONObject.NULL);
-    // the value as STORED, which for a typed setting is the coerced form rather than the text the caller sent
-    result.put("newValue", coerced != null ? coerced.toString() : JSONObject.NULL);
+    // the value as STORED, which for a typed setting is the coerced form rather than the text the caller sent -
+    // masked for a secret on the same terms as previousValue above, so that a response the caller may log, cache
+    // or hand on does not carry a credential this server otherwise refuses to hand back
+    result.put("newValue",
+        cfg.isHidden() ? "*****" : coerced != null ? coerced.toString() : JSONObject.NULL);
     result.put("message", "Setting '" + key + "' updated successfully.");
     return result;
   }
