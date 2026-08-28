@@ -953,7 +953,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       final int headerPos = (int) (chunkPositionInPageOffset + chunkMarker[1]);
       final int chunkSize = chunkPage.readInt(headerPos);
-      if (chunkSize < 0 || headerPos + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE + chunkSize > chunkPage.getMaxContentSize())
+      if (!chunkImageFitsPage(chunkPage, headerPos, chunkSize))
         return NO_OFF_PAGE_FINGERPRINT;
 
       // The chunk's own identity goes in too: a chain relocated onto other slots is a different tail even when every
@@ -2875,9 +2875,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    */
   private static byte[] readChunkImage(final BasePage page, final int chunkHeaderPos) throws IOException {
     final int chunkSize = page.readInt(chunkHeaderPos);
-    final int imageSize = INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE + chunkSize;
-    if (chunkSize < 0 || chunkHeaderPos + imageSize > page.getMaxContentSize())
+    if (!chunkImageFitsPage(page, chunkHeaderPos, chunkSize))
       return null;
+    final int imageSize = INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE + chunkSize;
     final byte[] image = new byte[imageSize];
     page.readByteArray(chunkHeaderPos, image, 0, imageSize);
     return image;
@@ -3568,10 +3568,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // never confirm the break, so a record with a corrupt chunk size spent its whole retry budget and was
         // reported as contention. Same bound, in the same words, as offPageContentFingerprint and chunkFootprint.
         final int chunkHeaderPosition = (int) (chunkPositionInPage + chunkHeader[1]);
-        final int chunkSize = chunkPage.readInt(chunkHeaderPosition);
-        if (chunkSize < 0
-                || chunkHeaderPosition + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE + chunkSize
-                > chunkPage.getMaxContentSize()) {
+        if (!chunkImageFitsPage(chunkPage, chunkHeaderPosition, chunkPage.readInt(chunkHeaderPosition))) {
           // NOT A FAILED HOP: the chunk this walk is STANDING on is malformed, so there is no pointer to name. The
           // delete path does not read sizes at all, so its confirmation can never match this and falls back to the
           // retry - which is the conservative answer for a shape it did not itself observe.
@@ -4865,6 +4862,23 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    *                                 chunk-chain walk an {@code IOException} means the exact opposite - the disk
    *                                 failed, so nothing at all is proved about the record (#6282).
    */
+  /**
+   * Whether the chunk whose size field sits at {@code chunkHeaderPos} describes itself legally: a non-negative size
+   * whose {@code [int size][long nextChunk][content]} image fits inside the page's content area.
+   * <p>
+   * <b>LONG arithmetic, and that is the whole reason this is a method rather than three copies of an expression</b>
+   * (PR review on #6282): {@code chunkHeaderPos + 12 + Integer.MAX_VALUE} overflows an int to a NEGATIVE number,
+   * which passes any {@code > getMaxContentSize()} test - so the largest corrupt size representable walked straight
+   * through the guard written to stop it, while smaller ones were caught. The {@code chunkSize < 0} half only ever
+   * covered a size STORED as negative, not one that wraps the sum.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private static boolean chunkImageFitsPage(final BasePage page, final int chunkHeaderPos, final int chunkSize) {
+    return chunkSize >= 0
+            && (long) chunkHeaderPos + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE + chunkSize <= page.getMaxContentSize();
+  }
+
   private int getRecordPositionInPage(final BasePage page, final int positionInPage) throws IOException {
     final int recordPositionInPage = (int) page.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE);
     if (recordPositionInPage != 0 && recordPositionInPage < contentHeaderSize)

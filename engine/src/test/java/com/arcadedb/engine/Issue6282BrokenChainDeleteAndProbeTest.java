@@ -32,6 +32,8 @@ import com.arcadedb.schema.VertexType;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.io.RandomAccessFile;
@@ -265,11 +267,16 @@ class Issue6282BrokenChainDeleteAndProbeTest extends TestHelper {
    * pointer straight past it: a size running off the end of the page reached the end of a chain of nonsense and was
    * reported CLEAN. {@code loadMultiPageRecord} could then never confirm the break the read had just hit, so the
    * record spent its whole retry budget and came back as a concurrency problem that did not exist (PR review).
+   * <p>
+   * Three sizes, because the bound has two ways to be wrong: a large one that stays in range of an int, the largest
+   * representable one - which overflows {@code offset + header + size} to a NEGATIVE number and so passes any
+   * {@code >} test written in int arithmetic - and a negative one.
    */
-  @Test
-  void aChunkSizeThatRunsOffThePageIsABreakRatherThanACleanWalk() {
+  @ParameterizedTest(name = "declared chunk size {0}")
+  @ValueSource(ints = { 1_073_741_823, Integer.MAX_VALUE, -1 })
+  void aChunkSizeThatRunsOffThePageIsABreakRatherThanACleanWalk(final int corruptSize) {
     final RID rid = createMultiPageVertex();
-    corruptFirstChunkSize(rid.getBucketId());
+    corruptFirstChunkSize(rid.getBucketId(), corruptSize);
 
     final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(rid.getBucketId());
 
@@ -396,8 +403,13 @@ class Issue6282BrokenChainDeleteAndProbeTest extends TestHelper {
    * touched, and that pass has a size guard of its own which deletes the record before the walk under test ever
    * sees it. Corrupting the bytes on disk is also the more honest fixture for the fault this is about. The database
    * is left closed; the caller reopens it.
+   *
+   * @param corruptSize the size to declare. {@code Integer.MAX_VALUE} is the case that matters most: it makes
+   *                    {@code offset + header + size} overflow an int to a NEGATIVE number, so a bounds check
+   *                    written in int arithmetic lets the largest corrupt size representable straight through the
+   *                    guard meant to stop it (PR review).
    */
-  private void corruptFirstChunkSize(final int bucketId) {
+  private void corruptFirstChunkSize(final int bucketId, final int corruptSize) {
     final DatabaseInternal db = (DatabaseInternal) database;
     final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(bucketId);
     final int pageSize = file.getPageSize();
@@ -416,7 +428,7 @@ class Issue6282BrokenChainDeleteAndProbeTest extends TestHelper {
     try (final RandomAccessFile raw = new RandomAccessFile(path, "rw")) {
       // Page 0, content-relative offset: the marker is one byte, then the declared chunk size.
       raw.seek(BasePage.PAGE_HEADER_SIZE + chunkOffset[0] + 1L);
-      raw.writeInt(Integer.MAX_VALUE / 2);
+      raw.writeInt(corruptSize);
     } catch (final IOException e) {
       throw new RuntimeException(e);
     }
