@@ -45,6 +45,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>
  * The schema-wide test below is the part that prevents the next instance: every numeric tool input that declares a
  * lower bound must also declare an upper one, and the declared window must be the one the server enforces.
+ * <p>
+ * The bound cases deliberately name indexes that do not exist in the fixture ({@code Person[name]},
+ * {@code Doc[embedding]}). Every check under test runs before the index is resolved - {@code FullTextSearchTool}
+ * validates 'limit' ahead of {@code resolveIndex}, and {@code VectorSearchTool} calls
+ * {@code MCPVectorLeg.validateArguments} ahead of {@code resolveDatabase} - so a test that reached the lookup would
+ * be reporting an addressing error rather than the bound. Asserting on the message is what keeps that distinction
+ * honest: if a check ever moved behind index resolution, these tests would fail rather than pass for a new reason.
  *
  * @author Roberto Franchini (r.franchini@arcadedata.com)
  */
