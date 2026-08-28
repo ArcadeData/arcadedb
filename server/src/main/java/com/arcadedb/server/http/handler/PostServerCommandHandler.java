@@ -930,6 +930,12 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
    * validate against, and rejecting it would change behaviour this endpoint has long allowed. The {@code
    * set_server_setting} MCP tool is stricter on that point only - for a DECLARED setting the two now accept and
    * refuse exactly the same values, both through {@link GlobalConfiguration#coerce(Object)}.
+   * <p>
+   * The command is still tokenized on the first space(s) BEFORE the quotes are stripped, so quoting does not make a
+   * space part of a token: a database name or a setting key containing one would split wrong. That is unchanged
+   * here and harmless for what the grammar can address - every {@link GlobalConfiguration} key is a dotted
+   * identifier - and only the trailing {@code <value>}, which is whatever remains after the last split, can hold a
+   * quoted space.
    */
   private void applySetting(final ContextConfiguration configuration, final String rawKey, final String rawValue) {
     final String key = FileUtils.getStringContent(rawKey.trim());
