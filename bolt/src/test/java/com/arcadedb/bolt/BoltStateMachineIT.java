@@ -173,6 +173,10 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
           records.add(decodeSingleField(response));
           continue;
         }
+        // IGNORED is a zero-field structure, so there is no field to decode - reading one would EOF and bury the
+        // real assertion under an IOException.
+        if (signature == BoltMessage.IGNORED)
+          return new Summary(signature, Map.of(), records);
         return new Summary(signature, asMetadata(decodeSingleField(response)), records);
       }
     }
@@ -365,6 +369,40 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
       final Summary summary = bolt.readSummary();
       assertThat(summary.signature()).isEqualTo(BoltMessage.SUCCESS);
       assertThat(summary.records()).hasSize(1);
+    }
+  }
+
+  /**
+   * -1 is the only "no qid given" sentinel. A malformed negative qid names no stream, so it has to fail rather
+   * than quietly act on whichever stream happens to be the current one.
+   */
+  @Test
+  void aMalformedNegativeQidDoesNotFallBackToTheCurrentStream() throws Exception {
+    try (final BoltConnection bolt = new BoltConnection(getDatabaseName())) {
+      bolt.begin(getDatabaseName());
+
+      bolt.run("UNWIND [1, 2, 3] AS x RETURN x");
+      assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
+
+      bolt.pull(-1, -2);
+      final Summary rejected = bolt.readSummary();
+      assertThat(rejected.signature()).isEqualTo(BoltMessage.FAILURE);
+      assertThat(String.valueOf(rejected.metadata().get("message"))).contains("qid -2");
+    }
+  }
+
+  @Test
+  void aMalformedNegativeQidOnDiscardIsRejectedToo() throws Exception {
+    try (final BoltConnection bolt = new BoltConnection(getDatabaseName())) {
+      bolt.begin(getDatabaseName());
+
+      bolt.run("UNWIND [1, 2, 3] AS x RETURN x");
+      assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
+
+      bolt.discard(-1, -2);
+      final Summary rejected = bolt.readSummary();
+      assertThat(rejected.signature()).isEqualTo(BoltMessage.FAILURE);
+      assertThat(String.valueOf(rejected.metadata().get("message"))).contains("qid -2");
     }
   }
 

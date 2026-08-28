@@ -163,6 +163,13 @@ public class BoltNetworkExecutor extends Thread {
   /** Next qid to hand out, numbered from 0 per explicit transaction as a Neo4j server does. */
   private long nextQid;
 
+  /**
+   * The value {@code PullMessage}/{@code DiscardMessage} report when the client omits the qid, meaning "the
+   * stream opened last". It is the only sentinel: any other negative value is malformed and must fail the lookup
+   * rather than quietly act on whichever stream happens to be current.
+   */
+  private static final long OMITTED_QID = -1;
+
   public BoltNetworkExecutor(final ArcadeDBServer server, final Socket socket, final BoltNetworkListener listener) {
     this(server, socket, listener, null);
   }
@@ -622,17 +629,20 @@ public class BoltNetworkExecutor extends Thread {
       try {
         database.rollback();
       } catch (final Exception e) {
-        LogManager.instance().log(this, Level.FINE, "Failed to roll back the open transaction during teardown", e);
+        // WARNING, not FINE: teardown carries on either way, but a rollback that threw may have left the
+        // transaction only half cleaned up, which is worth seeing in the log.
+        LogManager.instance().log(this, Level.WARNING, "Failed to roll back the open transaction during teardown", e);
       }
     }
     explicitTransaction = false;
   }
 
   /**
-   * Selects the stream a PULL/DISCARD acts on. A qid of -1 - the default a driver sends when it omits the field
-   * - means the most recently opened stream; any other value names one explicitly, which is how a client
-   * interleaves several streams inside one transaction. A qid naming nothing fails the session, exactly as a
-   * PULL with no result set behind it did before.
+   * Selects the stream a PULL/DISCARD acts on. -1 is the only sentinel - it is what a driver sends when it omits
+   * the field, and it means the most recently opened stream; any other value names one explicitly, which is how a
+   * client interleaves several streams inside one transaction. A qid naming nothing, including a malformed
+   * negative one that is not the sentinel, fails the session, exactly as a PULL with no result set behind it did
+   * before.
    * <p>
    * Outside an explicit transaction the qid is ignored altogether: only one stream can be open there (RUN is not
    * valid in STREAMING), no qid is ever published in an auto-commit RUN SUCCESS, and the BOLT docs are explicit
@@ -640,9 +650,10 @@ public class BoltNetworkExecutor extends Thread {
    * "No active result set for qid ..." for the stream it is plainly asking about.
    */
   private BoltQueryStream resolveStream(final long qid) throws IOException {
-    final BoltQueryStream stream = qid < 0 || !explicitTransaction ? currentStream : openStreams.get(qid);
+    final BoltQueryStream stream = qid == OMITTED_QID || !explicitTransaction ? currentStream : openStreams.get(qid);
     if (stream == null) {
-      sendFailure(BoltException.PROTOCOL_ERROR, qid < 0 ? "No active result set" : "No active result set for qid " + qid);
+      sendFailure(BoltException.PROTOCOL_ERROR,
+          qid == OMITTED_QID ? "No active result set" : "No active result set for qid " + qid);
       state = State.FAILED;
       return null;
     }
