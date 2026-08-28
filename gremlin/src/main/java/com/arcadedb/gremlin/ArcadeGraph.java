@@ -488,7 +488,16 @@ public class ArcadeGraph implements Graph, Closeable {
     }
   }
 
+  /**
+   * Drops the underlying database. Refused when the database lifecycle is managed externally - a pooled instance over
+   * the factory's local database, or a server-managed one opened with {@link #openShared} - because other holders
+   * still point at it and dropping it from one borrowed handle would delete it under all of them (issue #6821).
+   */
   public void drop() {
+    if (sharedDatabase)
+      throw new UnsupportedOperationException(
+          "Cannot drop a database whose lifecycle is managed externally (server-managed, or shared by a pool): drop it through its owner");
+
     gremlinJavaEngine = null;
     if (gremlinGroovyEngine != null) {
       gremlinGroovyEngine.reset();
