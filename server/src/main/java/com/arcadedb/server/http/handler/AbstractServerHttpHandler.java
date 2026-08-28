@@ -482,8 +482,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       if (idempotentPost) {
         // Bind the key to method/path/database/body so a reused correlation id cannot replay a different
         // request's response (the core defect: same X-Request-Id across distinct writes).
+        // The RAW path parameter, not the bounded metric tag: this key is an identity, so it must keep
+        // distinguishing two databases that the tag would deliberately fold together (both "unknown" when
+        // neither exists yet). The relative path already carries the name, so nothing changes in practice -
+        // but the identity of a request must never depend on a value chosen for meter cardinality.
         idempotencyKey = buildIdempotencyKey(rawRequestId, exchange.getRequestMethod().toString(),
-            exchange.getRelativePath(), databaseTag(exchange), payloadAsString);
+            exchange.getRelativePath(), rawDatabaseParameter(exchange), payloadAsString);
         final String currentPrincipal = user != null ? user.getName() : null;
 
         final IdempotencyCache.Reservation reservation = httpServer.getIdempotencyCache().reserve(idempotencyKey);
@@ -1062,6 +1066,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    */
   private String databaseTag(final HttpServerExchange exchange) {
     return databaseTag(exchange, httpServer.getServer());
+  }
+
+  /**
+   * Returns the route's {@code {database}} path parameter verbatim, or {@code null} when the route is not
+   * database-scoped. Unlike {@link #databaseTag} this value is unbounded and client-chosen, so it belongs
+   * only where the concrete name is the point - request identity - never in a meter tag or a log field.
+   */
+  private static String rawDatabaseParameter(final HttpServerExchange exchange) {
+    final PathTemplateMatch match = exchange.getAttachment(PathTemplateMatch.ATTACHMENT_KEY);
+    return match != null ? match.getParameters().get("database") : null;
   }
 
   /**
