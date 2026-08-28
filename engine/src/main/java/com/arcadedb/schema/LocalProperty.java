@@ -60,13 +60,7 @@ public class LocalProperty extends AbstractProperty {
       // One publication, so no reader can see the new value with the old (or no) compiled expression.
       this.defaultValue = new DefaultValue(convertedValue, compiled);
 
-      // REPLACE THE SET OF PROPERTIES WITH DEFAULT VALUES DEFINED
-      final Set<String> propertiesWithDefaultDefined = new HashSet<>(((LocalDocumentType) owner).propertiesWithDefaultDefined);
-      if (convertedValue == DEFAULT_NOT_SET)
-        propertiesWithDefaultDefined.remove(name);
-      else
-        propertiesWithDefaultDefined.add(name);
-      ((LocalDocumentType) owner).propertiesWithDefaultDefined = Collections.unmodifiableSet(propertiesWithDefaultDefined);
+      ((LocalDocumentType) owner).setPropertyHasDefault(name, convertedValue != DEFAULT_NOT_SET);
 
       owner.getSchema().getEmbedded().saveConfiguration();
     }

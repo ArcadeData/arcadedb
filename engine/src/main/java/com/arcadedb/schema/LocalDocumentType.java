@@ -73,7 +73,13 @@ public class LocalDocumentType implements DocumentType {
   protected       List<Integer>                     bucketIds                    = new ArrayList<>();
   protected volatile List<Integer>                  cachedPolymorphicBucketIds   = new ArrayList<>(); // PRE COMPILED LIST TO SPEED UP RUN-TIME OPERATIONS
   protected       BucketSelectionStrategy           bucketSelectionStrategy      = new RoundRobinBucketSelectionStrategy();
-  protected       Set<String>                       propertiesWithDefaultDefined = Collections.emptySet();
+  // Names of the OWN properties that declare a DEFAULT. A cache: the authority is the per-property default value, but
+  // record creation would otherwise pay an O(properties) scan to find the (usually empty) subset that has one.
+  // Copy-on-write reassigned under schema mutation and read lock-free by every record create through
+  // getPolymorphicPropertiesWithDefaultDefined(): volatile so a creating thread cannot observe a partially built
+  // replacement set, same publication pattern as cachedPolymorphicBuckets above. Maintained in exactly one place,
+  // {@link #setPropertyHasDefault}, so it cannot drift from the properties map again (issue #6799).
+  protected volatile Set<String>                    propertiesWithDefaultDefined = Collections.emptySet();
   // Map: primary bucket id -> external bucket id. Populated lazily when the first EXTERNAL property is
   // set on the type, and persisted in schema.json under the per-type "externalBuckets" key.
   protected final Map<Integer, Integer>             externalBucketIdByPrimaryBucketId = new ConcurrentHashMap<>();
@@ -624,11 +630,41 @@ public class LocalDocumentType implements DocumentType {
 
     return recordFileChanges(() -> {
       final Property removed = properties.remove(propertyName);
-      // Keep the EXTERNAL counter consistent so hasExternalProperties() stays O(1).
-      if (removed != null && removed.isExternal())
-        ownExternalPropertyCount.decrementAndGet();
+      if (removed != null) {
+        // Keep the EXTERNAL counter consistent so hasExternalProperties() stays O(1).
+        if (removed.isExternal())
+          ownExternalPropertyCount.decrementAndGet();
+        // Issue #6799: and the same for the default-property cache. A dropped property must stop participating in
+        // default-value processing at once, or the next record create looks the name up with getPolymorphicProperty()
+        // and fails with "Cannot find property '<name>' in type '<type>'". Only the in-memory view was ever wrong -
+        // schema.json holds the default on the property itself, so a reload rebuilt the set correctly - which is why
+        // the failure looked like it healed on restart.
+        setPropertyHasDefault(propertyName, false);
+      }
       return removed;
     });
+  }
+
+  /**
+   * The single point of maintenance for {@link #propertiesWithDefaultDefined}. Every mutation that can change whether
+   * an own property declares a DEFAULT routes here: {@link LocalProperty#setDefaultValue} when one is set, changed or
+   * cleared, and {@link #dropProperty} when the property itself goes away.
+   * <p>
+   * Copy-on-write: the set is published as an immutable snapshot, never mutated in place, so the lock-free readers on
+   * the record-create path always see one consistent version of it. The membership check up front keeps the common
+   * case (a type with no defaults at all, or a re-set that does not change membership) allocation-free.
+   */
+  void setPropertyHasDefault(final String propertyName, final boolean hasDefault) {
+    if (hasDefault == propertiesWithDefaultDefined.contains(propertyName))
+      return;
+
+    final Set<String> updated = new HashSet<>(propertiesWithDefaultDefined);
+    if (hasDefault)
+      updated.add(propertyName);
+    else
+      updated.remove(propertyName);
+
+    propertiesWithDefaultDefined = updated.isEmpty() ? Collections.emptySet() : Collections.unmodifiableSet(updated);
   }
 
   @Override

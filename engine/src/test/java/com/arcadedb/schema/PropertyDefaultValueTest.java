@@ -426,6 +426,90 @@ class PropertyDefaultValueTest extends TestHelper {
   }
 
   /**
+   * Issue #6799. The exact reproduction from the report: an edge property that had a DEFAULT, dropped, then an edge
+   * created. The name used to stay behind in the type's default-property set, so the next record create looked it up
+   * with {@code getPolymorphicProperty()} and blew up with "Cannot find property 'obsolete' in type 'TestEdge'".
+   */
+  @Test
+  void droppingAPropertyWithADefaultDoesNotBreakTheNextRecordCreate() {
+    database.command("sql", "CREATE VERTEX TYPE TestVertex");
+    database.command("sql", "CREATE PROPERTY TestVertex.id STRING");
+    database.command("sql", "CREATE INDEX ON TestVertex (id) UNIQUE");
+
+    database.command("sql", "CREATE EDGE TYPE TestEdge");
+    database.command("sql", "CREATE PROPERTY TestEdge.obsolete STRING");
+    database.command("sql", "ALTER PROPERTY TestEdge.obsolete DEFAULT 'legacy'");
+    database.command("sql", "DROP PROPERTY TestEdge.obsolete");
+
+    assertThat(database.getSchema().getType("TestEdge").getPolymorphicPropertiesWithDefaultDefined()).doesNotContain(
+        "obsolete");
+
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TestVertex SET id = 'source'");
+      database.command("sql", "CREATE VERTEX TestVertex SET id = 'target'");
+
+      final ResultSet rs = database.command("sql", "CREATE EDGE TestEdge FROM (SELECT FROM TestVertex WHERE id = 'source') "
+          + "TO (SELECT FROM TestVertex WHERE id = 'target')");
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().getElement().get().asEdge().has("obsolete")).isFalse();
+    });
+  }
+
+  /**
+   * The same invariant through the engine API, on a document type, and with a second defaulted property left in place:
+   * dropping one must not disturb the other.
+   */
+  @Test
+  void aDroppedDefaultLeavesTheSurvivingDefaultsAlone() {
+    final DocumentType type = database.getSchema().createDocumentType("Probe");
+    type.createProperty("gone", Type.STRING).setDefaultValue("'legacy'");
+    type.createProperty("kept", Type.STRING).setDefaultValue("'ok'");
+
+    type.dropProperty("gone");
+
+    assertThat(type.getPolymorphicPropertiesWithDefaultDefined()).containsExactly("kept");
+    database.transaction(() -> {
+      final MutableDocument doc = database.newDocument("Probe").save();
+      assertThat(doc.has("gone")).isFalse();
+      assertThat(doc.getString("kept")).isEqualTo("ok");
+    });
+  }
+
+  /**
+   * The set is per-declaring-type and read polymorphically, so dropping a defaulted property on a supertype has to
+   * clear it for every subtype too.
+   */
+  @Test
+  void droppingADefaultOnASupertypeClearsItForTheSubtypes() {
+    database.command("sql", "CREATE DOCUMENT TYPE Base");
+    database.command("sql", "CREATE PROPERTY Base.status STRING (DEFAULT 'first')");
+    database.command("sql", "CREATE DOCUMENT TYPE Derived EXTENDS Base");
+
+    final DocumentType derived = database.getSchema().getType("Derived");
+    assertThat(derived.getPolymorphicPropertiesWithDefaultDefined()).contains("status");
+
+    database.command("sql", "DROP PROPERTY Base.status");
+
+    assertThat(derived.getPolymorphicPropertiesWithDefaultDefined()).doesNotContain("status");
+    database.transaction(() -> assertThat(database.newDocument("Derived").save().has("status")).isFalse());
+  }
+
+  /**
+   * {@code getOrCreateProperty()} with a different type drops and recreates the property internally. The recreated one
+   * has no default, so the name must not survive from the dropped one.
+   */
+  @Test
+  void retypingAPropertyWithGetOrCreateDropsItsDefault() {
+    final DocumentType type = database.getSchema().createDocumentType("Probe");
+    type.createProperty("counter", Type.STRING).setDefaultValue("'legacy'");
+
+    type.getOrCreateProperty("counter", Type.INTEGER);
+
+    assertThat(type.getPolymorphicPropertiesWithDefaultDefined()).doesNotContain("counter");
+    database.transaction(() -> assertThat(database.newDocument("Probe").save().has("counter")).isFalse());
+  }
+
+  /**
    * Closes the database, rewrites one property's persisted default in schema.json to something this release would
    * reject at DDL time, and reopens - standing in for a database created by an earlier release.
    */
