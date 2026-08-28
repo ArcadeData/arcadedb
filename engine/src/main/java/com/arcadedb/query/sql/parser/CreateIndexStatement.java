@@ -355,8 +355,9 @@ public class CreateIndexStatement extends DDLStatement {
       resultingIndex = ftBuilder.create();
 
     } else if (indexType == Schema.INDEX_TYPE.LSM_SPARSE_VECTOR) {
-      final TypeLSMSparseVectorIndexBuilder sparseBuilder = builder.withType(Schema.INDEX_TYPE.LSM_SPARSE_VECTOR)
-          .withSparseVectorType();
+      // Builder is already a TypeLSMSparseVectorIndexBuilder after the withType() above, exactly like the three
+      // branches around this one: re-selecting the index type here would be a no-op.
+      final TypeLSMSparseVectorIndexBuilder sparseBuilder = builder.withSparseVectorType();
       if (metadata != null) {
         final Map<String, Object> metadataMap = metadata.toMap((Result) null, context);
         final JSONObject jsonMetadata = new JSONObject(metadataMap);

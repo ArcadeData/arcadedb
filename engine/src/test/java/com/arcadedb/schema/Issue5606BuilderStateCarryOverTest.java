@@ -54,6 +54,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class Issue5606BuilderStateCarryOverTest extends TestHelper {
   private static final String   TYPE_NAME     = "Issue5606";
+  private static final String   BUCKET_NAME   = "Issue5606_bucket";
   private static final String[] PROPERTY_NAME = { "name" };
 
   /**
@@ -94,6 +95,9 @@ class Issue5606BuilderStateCarryOverTest extends TestHelper {
    * from a pristine builder's: both are structural and final, handed to the specialised builder from the source.
    */
   private static final Set<String> NOT_CONFIGURABLE = Set.of("database", "indexImplementation");
+
+  /** The bucket-level identity, handed to the specialised builder rather than configured through a setter. */
+  private static final Set<String> BUCKET_IDENTITY = Set.of("typeName", "bucketName", "propertyNames");
 
   @ParameterizedTest
   @EnumSource(SpecialisedBuilder.class)
@@ -183,6 +187,78 @@ class Issue5606BuilderStateCarryOverTest extends TestHelper {
   }
 
   /**
+   * The SAME swap one hierarchy over: {@link BucketIndexBuilder#withType} hands back a
+   * {@link BucketLSMVectorIndexBuilder} for {@code LSM_VECTOR}, and that copy constructor carried the identical
+   * hand-written field list - already missing {@code replaceIfIncompatible} and {@code userMetadata}, the exact two
+   * this issue is about. Fixing one hierarchy and leaving the other is not a fix, so it is asserted the same way.
+   */
+  @Test
+  void everySettingSurvivesTheBucketBuilderSwap() {
+    final BucketIndexBuilder source = configureEveryBaseSetting(
+        database.getSchema().buildBucketIndex(TYPE_NAME, BUCKET_NAME, PROPERTY_NAME));
+
+    final IndexBuilder<?> swapped = source.withType(Schema.INDEX_TYPE.LSM_VECTOR);
+
+    assertThat(swapped).isInstanceOf(BucketLSMVectorIndexBuilder.class);
+    assertThat(swapped.metadata).isInstanceOf(LSMVectorIndexMetadata.class);
+    assertThat(swapped.getIndexType()).isEqualTo(Schema.INDEX_TYPE.LSM_VECTOR);
+
+    for (final Field field : declaredFieldsOf(IndexBuilder.class, BucketIndexBuilder.class)) {
+      if (NOT_CARRIED_OVER.contains(field.getName()))
+        continue;
+      assertThat(Objects.deepEquals(read(field, swapped), read(field, source)))
+          .withFailMessage("'%s' did not survive BucketIndexBuilder.withType(LSM_VECTOR): the specialised builder has"
+                  + " <%s> but the caller had configured <%s>. Carry it over in BucketIndexBuilder's copy constructor"
+                  + " (or in IndexBuilder.copyBaseFieldsFrom when the field is declared there) - see issue #5606.",
+              field.getName(), describe(read(field, swapped)), describe(read(field, source)))
+          .isTrue();
+    }
+  }
+
+  /** The bucket-level half of {@link #everySettingIsActuallyConfiguredByThisTest}. */
+  @Test
+  void everyBaseSettingIsActuallyConfiguredByThisTest() {
+    final BucketIndexBuilder pristine = database.getSchema().buildBucketIndex(TYPE_NAME, BUCKET_NAME, PROPERTY_NAME);
+    final BucketIndexBuilder configured = configureEveryBaseSetting(
+        database.getSchema().buildBucketIndex(TYPE_NAME, BUCKET_NAME, PROPERTY_NAME));
+
+    final List<String> leftAtDefault = new ArrayList<>();
+    for (final Field field : declaredFieldsOf(IndexBuilder.class, BucketIndexBuilder.class)) {
+      if (NOT_CARRIED_OVER.contains(field.getName()) || NOT_CONFIGURABLE.contains(field.getName())
+          || BUCKET_IDENTITY.contains(field.getName()))
+        continue;
+      if (Objects.deepEquals(read(field, configured), read(field, pristine)))
+        leftAtDefault.add(field.getName());
+    }
+
+    assertThat(leftAtDefault)
+        .withFailMessage("configureEveryBaseSetting() leaves %s at its default value, so the bucket-level carry-over"
+            + " test does not actually check it. See issue #5606.", leftAtDefault)
+        .isEmpty();
+  }
+
+  /**
+   * The {@link IndexBuilder} half of {@link #configureEverySetting}, for the bucket-level builder, which declares no
+   * settings of its own - only the type/bucket/properties identity.
+   */
+  private BucketIndexBuilder configureEveryBaseSetting(final BucketIndexBuilder builder) {
+    builder.withUnique(true);
+    builder.withPageSize(8192);
+    builder.withNullStrategy(LSMTreeIndexAbstract.NULL_STRATEGY.ERROR);
+    builder.withCallback((document, totalIndexed) -> {
+    });
+    builder.withIgnoreIfExists(true);
+    builder.withReplaceIfIncompatible(true);
+    builder.withIndexName("Issue5606ManualName");
+    builder.withFilePath("target/issue5606.idx");
+    builder.withKeyTypes(new Type[] { Type.STRING });
+    builder.withBatchSize(37);
+    builder.withMaxAttempts(11);
+    builder.withUserMetadata(new JSONObject().put("issue", 5606));
+    return builder;
+  }
+
+  /**
    * Sets every field of {@link IndexBuilder} and {@link TypeIndexBuilder} to something distinguishable from the
    * default, through the public API rather than reflection: an option that cannot be reached from outside the class
    * is not one the carry-over has to protect.
@@ -213,10 +289,15 @@ class Issue5606BuilderStateCarryOverTest extends TestHelper {
     return builder;
   }
 
-  /** Every instance field the two builder classes declare, in a stable order. */
+  /** Every instance field the two type-level builder classes declare, in a stable order. */
   private static List<Field> declaredBuilderFields() {
+    return declaredFieldsOf(IndexBuilder.class, TypeIndexBuilder.class);
+  }
+
+  /** Every instance field the given classes declare, in a stable order. */
+  private static List<Field> declaredFieldsOf(final Class<?>... classes) {
     final List<Field> fields = new ArrayList<>();
-    for (final Class<?> clazz : new Class<?>[] { IndexBuilder.class, TypeIndexBuilder.class })
+    for (final Class<?> clazz : classes)
       for (final Field field : clazz.getDeclaredFields())
         if (!Modifier.isStatic(field.getModifiers()) && !field.isSynthetic()) {
           field.setAccessible(true);
