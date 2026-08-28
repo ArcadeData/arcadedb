@@ -20,12 +20,14 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.event.AfterRecordUpdateListener;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -148,5 +150,48 @@ class CypherMergeSetClauseParityIssue6831Test {
 
     final ResultSet rs = database.query("opencypher", "MATCH (n:P) RETURN n.gone AS gone");
     assertThat(rs.next().<Object>getProperty("gone")).isNull();
+  }
+
+  /**
+   * #4474 travels with the shared applier: re-asserting a value the record already holds must still not write, because
+   * the write would bump the record's MVCC version and invalidate it for every concurrent reader that had matched it.
+   * The pre-existing regression test for this asserts the absence of a ConcurrentModificationException between two
+   * racing threads, which no longer fails when the optimization is removed; counting the update events the write would
+   * have raised pins the behaviour directly and deterministically.
+   */
+  @Test
+  void onMatchSetDoesNotRewriteAnUnchangedValue() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:P {id: 1, bank: 'ACME'})"));
+
+    final AtomicInteger updates = new AtomicInteger();
+    final AfterRecordUpdateListener listener = record -> updates.incrementAndGet();
+    database.getSchema().getType("P").getEvents().registerListener(listener);
+    try {
+      database.transaction(() -> database.command("opencypher", "MERGE (n:P {id: 1}) ON MATCH SET n.bank = 'ACME'"));
+      assertThat(updates.get()).isZero();
+
+      // The guard has to be about the value, not about SET being inert: a different value does write.
+      database.transaction(() -> database.command("opencypher", "MERGE (n:P {id: 1}) ON MATCH SET n.bank = 'OTHER'"));
+      assertThat(updates.get()).isEqualTo(1);
+    } finally {
+      database.getSchema().getType("P").getEvents().unregisterListener(listener);
+    }
+  }
+
+  /**
+   * The same guard must not swallow a genuine removal: an unchanged-value skip is decided per item, and a null value
+   * on a property that exists is a change.
+   */
+  @Test
+  void onMatchSetStillWritesWhenOnlyOneOfTwoItemsChanges() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:P {id: 1, bank: 'ACME', branch: 'HQ'})"));
+
+    database.transaction(() -> database.command("opencypher",
+        "MERGE (n:P {id: 1}) ON MATCH SET n.bank = 'ACME', n.branch = 'WEST'"));
+
+    final ResultSet rs = database.query("opencypher", "MATCH (n:P) RETURN n.bank AS bank, n.branch AS branch");
+    final var row = rs.next();
+    assertThat(row.<String>getProperty("bank")).isEqualTo("ACME");
+    assertThat(row.<String>getProperty("branch")).isEqualTo("WEST");
   }
 }

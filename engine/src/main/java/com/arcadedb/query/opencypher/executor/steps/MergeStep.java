@@ -71,7 +71,9 @@ import java.util.concurrent.atomic.AtomicReference;
  * - MERGE (a)-[r:KNOWS]->(b) - finds or creates relationship
  * <p>
  * MERGE is an "upsert" operation (update or insert).
- * TODO: Support ON CREATE SET and ON MATCH SET sub-clauses
+ * <p>
+ * The ON CREATE SET / ON MATCH SET sub-clauses are applied by {@link SetClauseApplier}, the same implementation the
+ * stand-alone SET step uses.
  */
 public class MergeStep extends AbstractExecutionStep {
   private final MergeClause        mergeClause;

@@ -103,8 +103,9 @@ public final class SetClauseApplier {
    *
    * @param setClause         the clause to apply; a null or empty clause is a no-op
    * @param result            the row carrying the variables the clause writes to
-   * @param writtenDocs       the latest written state per RID, so that a later row of the same result set reads
-   *                          through this row's writes (self-referential SET across a row fanout)
+   * @param writtenDocs       the latest written state per RID, so that a later write reads through an earlier one:
+   *                          across the items of this clause, and - for a caller that keeps the map across rows, as
+   *                          the stand-alone SET step does - across a row fanout onto the same record
    * @param labelReplacements the vertices a label write already replaced, and the machinery to perform the next one
    */
   public void apply(final SetClause setClause, final Result result, final Map<RID, MutableDocument> writtenDocs,
@@ -218,11 +219,7 @@ public final class SetClauseApplier {
     } else
       propertyName = item.getProperty();
 
-    Object value = precomputedValue;
-    if (value != null) {
-      value = TemporalUtil.toCoreJavaType(value);
-      validatePropertyValue(value);
-    }
+    final Object value = precomputedValue != null ? coerceAndValidate(precomputedValue) : null;
 
     // Issue #4474: a MERGE action never re-asserts a value the record already holds, because the write would bump
     // the MVCC version and invalidate the record for every concurrent reader that had matched it. The statistic is
@@ -297,7 +294,7 @@ public final class SetClauseApplier {
     int propertiesSet = 0;
     for (final Map.Entry<String, Object> entry : map.entrySet()) {
       if (entry.getValue() != null) {
-        mutableDoc.set(entry.getKey(), TemporalUtil.toCoreJavaType(entry.getValue()));
+        mutableDoc.set(entry.getKey(), coerceAndValidate(entry.getValue()));
         propertiesSet++;
       }
     }
@@ -340,7 +337,7 @@ public final class SetClauseApplier {
           propertiesSet++;
         }
       } else {
-        mutableDoc.set(entry.getKey(), TemporalUtil.toCoreJavaType(entry.getValue()));
+        mutableDoc.set(entry.getKey(), coerceAndValidate(entry.getValue()));
         propertiesSet++;
       }
     }
@@ -473,6 +470,18 @@ public final class SetClauseApplier {
     // Combined SET n.prop+n:Label across fanout still has ordering-dependent behaviour, but this prevents outright
     // stale reads.
     writtenDocs.remove(originalRid);
+  }
+
+  /**
+   * Coerces a right-hand-side value to its stored Java type and rejects the ones a property cannot hold. Every write
+   * goes through here, so {@code SET n = {x: {y: 1}}} is refused exactly like the {@code SET n.x = {y: 1}} that Neo4j
+   * refuses with "Property values can only be of primitive types or arrays thereof" - the map forms used to be the
+   * way around the check.
+   */
+  private static Object coerceAndValidate(final Object value) {
+    final Object coerced = TemporalUtil.toCoreJavaType(value);
+    validatePropertyValue(coerced);
+    return coerced;
   }
 
   private static void validatePropertyValue(final Object value) {
