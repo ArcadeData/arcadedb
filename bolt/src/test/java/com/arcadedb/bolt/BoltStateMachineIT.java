@@ -297,6 +297,34 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
   }
 
   /**
+   * Every open stream pins an engine result set for the life of the transaction, and nothing in the protocol
+   * obliges a client to consume one, so a connection cannot be allowed to open them without limit.
+   */
+  @Test
+  void openingMoreStreamsThanTheLimitAllowsIsRejected() throws Exception {
+    final int previousLimit = GlobalConfiguration.BOLT_MAX_OPEN_STREAMS.getValueAsInteger();
+    GlobalConfiguration.BOLT_MAX_OPEN_STREAMS.setValue(2);
+    try (final BoltConnection bolt = new BoltConnection(getDatabaseName())) {
+      bolt.begin(getDatabaseName());
+
+      // Two streams, each left with rows outstanding so neither is released.
+      for (int i = 0; i < 2; i++) {
+        bolt.run("UNWIND [1, 2, 3] AS x RETURN x");
+        assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
+        bolt.pull(1, -1);
+        assertThat(bolt.readSummary().metadata()).containsEntry("has_more", true);
+      }
+
+      bolt.run("RETURN 1 AS one");
+      final Summary rejected = bolt.readSummary();
+      assertThat(rejected.signature()).isEqualTo(BoltMessage.FAILURE);
+      assertThat(String.valueOf(rejected.metadata().get("message"))).contains("Too many result streams open");
+    } finally {
+      GlobalConfiguration.BOLT_MAX_OPEN_STREAMS.setValue(previousLimit);
+    }
+  }
+
+  /**
    * Outside an explicit transaction there is exactly one stream and no qid is ever published for it, so a PULL
    * that names one anyway has to reach that stream rather than be told the qid does not exist.
    */

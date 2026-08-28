@@ -2162,6 +2162,14 @@ public enum GlobalConfiguration {
       Default is 1000, generous for any real BOLT message.""",
       Integer.class, 1000),
 
+  BOLT_MAX_OPEN_STREAMS("arcadedb.bolt.maxOpenStreams", SCOPE.SERVER, """
+      Maximum number of result streams one BOLT connection may hold open at the same time. BOLT 4.0+ lets a client \
+      open several streams inside a single explicit transaction, told apart by the qid a RUN returns, and each one \
+      pins an engine result set (cursors, pages) for as long as that transaction lives - while nothing in the \
+      protocol obliges the client to ever consume one. No real driver holds more than a handful open. \
+      Default is 1024""",
+      Integer.class, 1024),
+
   // gRPC
   GRPC_PORT("arcadedb.grpc.port", SCOPE.SERVER, """
       TCP/IP port number used for incoming connections for the gRPC plugin. Registered here, rather than read as a \
