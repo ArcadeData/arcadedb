@@ -738,10 +738,12 @@ public class MergeStep extends AbstractExecutionStep {
       if (bound instanceof Vertex v) {
         if (vertex != null && !vertex.equals(v))
           return;
-        // #6461: vertex == null here means v is the row's own anchor instance (forcedVertex is only
-        // ever non-null when this node was just reached via a live edge traversal below, which is
+        // #6461/#6795: vertex == null here means v is the row's own anchor instance (forcedVertex is
+        // only ever non-null when this node was just reached via a live edge traversal above, which is
         // already fresh) - reload it before its edges are enumerated below. See reloadAnchorVertex.
-        vertex = vertex == null ? reloadAnchorVertex(v) : v;
+        // When forcedVertex IS non-null, keep it: a pre-bound *middle* node reached via traversal must
+        // still use the fresh instance, not the possibly-stale one carried from an earlier MATCH.
+        vertex = vertex == null ? reloadAnchorVertex(v) : vertex;
       }
     }
 

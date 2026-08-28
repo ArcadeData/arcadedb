@@ -73,9 +73,16 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
   // loaded (loadProperties() below). A value that cannot be resolved yet - it references a record appearing LATER in
   // the source stream - is a forward reference: the referenced record's old-to-new RID mapping does not exist yet.
   // Rather than leaving it silently wrong (the original bug) or failing the whole record, the record's own new RID
-  // and the names of its still-unresolved properties are remembered here and revisited in a reconciliation pass once
-  // the entire file has been read and every RID mapping is known (see reconcileUnresolvedLinks()).
-  private final Map<RID, Set<String>> pendingLinkReconciliation = new HashMap<>();
+  // and, per still-unresolved property, the OLD/source RID value(s) that failed to resolve are remembered here and
+  // revisited in a reconciliation pass once the entire file has been read and every RID mapping is known (see
+  // reconcileUnresolvedLinks()).
+  //
+  // Issue #6795: the value used to be just the set of unresolved PROPERTY NAMES, so reconciliation re-applied
+  // ridIndex to every RID element of a LIST/MAP property, including ones pass 1 already resolved. On a normal
+  // same-schema restore the source and target RID spaces overlap, so an already-correct element (now holding its
+  // NEW target RID) could equal another record's OLD source RID and get silently re-pointed a second time.
+  // Recording the specific old-source RIDs left unresolved lets reconciliation touch only those elements.
+  private final Map<RID, Map<String, Set<RID>>> pendingLinkReconciliation = new HashMap<>();
 
   @Override
   public void load(SourceSchema sourceSchema,
@@ -460,14 +467,14 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
    * regular LINK-typed property was passed through untouched, so after import it silently pointed at the source
    * database's RID - now a different, unrelated record, or none.
    *
-   * @return the names of properties whose LINK value(s) could not be resolved yet because they reference a record
-   * that has not been imported so far (a forward reference); empty when every LINK value resolved immediately. The
-   * caller is expected to remember these against the record's own (new) identity so {@link #reconcileUnresolvedLinks}
-   * can revisit them once every RID mapping is known.
+   * @return per still-unresolved property, the OLD/source RID value(s) that could not be resolved yet because they
+   * reference a record that has not been imported so far (a forward reference); empty when every LINK value
+   * resolved immediately. The caller is expected to remember these against the record's own (new) identity so
+   * {@link #reconcileUnresolvedLinks} can revisit them once every RID mapping is known.
    */
-  private Set<String> loadProperties(DatabaseInternal database, MutableDocument imported, JSONObject properties) {
+  private Map<String, Set<RID>> loadProperties(DatabaseInternal database, MutableDocument imported, JSONObject properties) {
     Map<String, Object> json2map = json2map(database, properties);
-    final Set<String> unresolved = remapLinkProperties(imported.getType(), json2map);
+    final Map<String, Set<RID>> unresolved = remapLinkProperties(imported.getType(), json2map);
     imported.fromMap(json2map);
     return unresolved;
   }
@@ -475,16 +482,17 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
   /**
    * Remaps every LINK-typed value in {@code properties} in place, consulting {@code ridIndex} for the schema-declared
    * LINK properties of {@code type} (scalar LINK, and LIST/MAP declared {@code OF LINK}). A value that {@code
-   * ridIndex} does not (yet) know about is left untouched and its property name is added to the returned set.
+   * ridIndex} does not (yet) know about is left untouched and its OLD/source RID is added to the returned map,
+   * keyed by property name.
    * <p>
    * Only schema-declared properties are inspected: without a declared type there is no reliable way to tell a LINK
    * string ("#12:34") apart from an ordinary string that merely looks like one.
    */
-  private Set<String> remapLinkProperties(final DocumentType type, final Map<String, Object> properties) {
+  private Map<String, Set<RID>> remapLinkProperties(final DocumentType type, final Map<String, Object> properties) {
     if (type == null || properties.isEmpty())
-      return Set.of();
+      return Map.of();
 
-    Set<String> unresolved = null;
+    Map<String, Set<RID>> unresolved = null;
 
     for (final Map.Entry<String, Object> entry : properties.entrySet()) {
       final Object value = entry.getValue();
@@ -497,37 +505,42 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
       final Type propertyType = property.getType();
 
+      final Set<RID> propertyUnresolved;
       if (propertyType == Type.LINK) {
-        if (unresolved == null)
-          unresolved = new HashSet<>();
-        entry.setValue(remapLinkValue(value, unresolved, entry.getKey()));
+        propertyUnresolved = new HashSet<>();
+        entry.setValue(remapLinkValue(value, propertyUnresolved));
       } else if (propertyType == Type.LIST && "LINK".equalsIgnoreCase(property.getOfType()) && value instanceof List<?> list) {
-        if (unresolved == null)
-          unresolved = new HashSet<>();
+        propertyUnresolved = new HashSet<>();
         final List<Object> remapped = new ArrayList<>(list.size());
         for (final Object item : list)
-          remapped.add(remapLinkValue(item, unresolved, entry.getKey()));
+          remapped.add(remapLinkValue(item, propertyUnresolved));
         entry.setValue(remapped);
       } else if (propertyType == Type.MAP && "LINK".equalsIgnoreCase(property.getOfType()) && value instanceof Map<?, ?> valueMap) {
-        if (unresolved == null)
-          unresolved = new HashSet<>();
+        propertyUnresolved = new HashSet<>();
         final Map<Object, Object> remapped = new HashMap<>();
         for (final Map.Entry<?, ?> mapEntry : valueMap.entrySet())
-          remapped.put(mapEntry.getKey(), remapLinkValue(mapEntry.getValue(), unresolved, entry.getKey()));
+          remapped.put(mapEntry.getKey(), remapLinkValue(mapEntry.getValue(), propertyUnresolved));
         entry.setValue(remapped);
+      } else
+        continue;
+
+      if (!propertyUnresolved.isEmpty()) {
+        if (unresolved == null)
+          unresolved = new HashMap<>();
+        unresolved.put(entry.getKey(), propertyUnresolved);
       }
     }
 
-    return unresolved == null ? Set.of() : unresolved;
+    return unresolved == null ? Map.of() : unresolved;
   }
 
   /**
    * Resolves a single LINK value (the exported source RID, as a String) to the RID the referenced record was
    * actually recreated at. If {@code ridIndex} has no mapping yet for it - the referenced record has not been
-   * imported so far - {@code propertyName} is recorded into {@code unresolved} and the original value is returned
+   * imported so far - its OLD/source RID is recorded into {@code unresolved} and the original value is returned
    * unchanged, to be revisited by {@link #reconcileUnresolvedLinks}.
    */
-  private Object remapLinkValue(final Object value, final Set<String> unresolved, final String propertyName) {
+  private Object remapLinkValue(final Object value, final Set<RID> unresolved) {
     if (!(value instanceof String string))
       return value;
 
@@ -544,7 +557,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     if (newRid != null)
       return newRid.toString();
 
-    unresolved.add(propertyName);
+    unresolved.add(oldRid);
     return value;
   }
 
@@ -573,7 +586,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       return;
 
     int reconciled = 0;
-    for (final Map.Entry<RID, Set<String>> entry : pendingLinkReconciliation.entrySet()) {
+    for (final Map.Entry<RID, Map<String, Set<RID>>> entry : pendingLinkReconciliation.entrySet()) {
       try {
         final Record record = database.lookupByRID(entry.getKey(), true);
         if (!(record instanceof Document document))
@@ -583,7 +596,14 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
         final MutableDocument mutable = document.modify();
         boolean changed = false;
 
-        for (final String propertyName : entry.getValue()) {
+        for (final Map.Entry<String, Set<RID>> propertyEntry : entry.getValue().entrySet()) {
+          final String propertyName = propertyEntry.getKey();
+          // Issue #6795: only an element whose CURRENT value is one of the OLD/source RIDs pass 1 actually left
+          // unresolved for this property is a candidate for remapping - an element pass 1 already resolved (now
+          // holding its NEW target RID) is left untouched even if that value happens to also be a key in
+          // ridIndex, which a normal same-schema restore (overlapping source/target RID spaces) makes routine.
+          final Set<RID> stillUnresolved = propertyEntry.getValue();
+
           final Property property = type.getPolymorphicPropertyIfExists(propertyName);
           if (property == null)
             continue;
@@ -593,16 +613,18 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
             continue;
 
           if (property.getType() == Type.LINK && currentValue instanceof RID currentRid) {
-            final RID newRid = ridIndex.get(currentRid);
-            if (newRid != null) {
-              mutable.set(propertyName, newRid);
-              changed = true;
+            if (stillUnresolved.contains(currentRid)) {
+              final RID newRid = ridIndex.get(currentRid);
+              if (newRid != null) {
+                mutable.set(propertyName, newRid);
+                changed = true;
+              }
             }
           } else if (currentValue instanceof List<?> list) {
             final List<Object> updated = new ArrayList<>(list.size());
             boolean listChanged = false;
             for (final Object item : list) {
-              if (item instanceof RID itemRid) {
+              if (item instanceof RID itemRid && stillUnresolved.contains(itemRid)) {
                 final RID newRid = ridIndex.get(itemRid);
                 if (newRid != null) {
                   updated.add(newRid);
@@ -621,7 +643,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
             boolean mapChanged = false;
             for (final Map.Entry<?, ?> mapEntry : valueMap.entrySet()) {
               Object mapValue = mapEntry.getValue();
-              if (mapValue instanceof RID itemRid) {
+              if (mapValue instanceof RID itemRid && stillUnresolved.contains(itemRid)) {
                 final RID newRid = ridIndex.get(itemRid);
                 if (newRid != null) {
                   mapValue = newRid;

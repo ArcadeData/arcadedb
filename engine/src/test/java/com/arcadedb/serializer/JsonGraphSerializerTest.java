@@ -19,16 +19,26 @@
 package com.arcadedb.serializer;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Document;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Type;
+import com.arcadedb.utility.DateUtils;
 import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.LocalDate;
+import java.util.Calendar;
+import java.util.Date;
 import java.util.Map;
+import java.util.TimeZone;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class JsonGraphSerializerTest extends TestHelper {
 
@@ -83,6 +93,107 @@ class JsonGraphSerializerTest extends TestHelper {
     assertThat(JsonPath.<String>read(json, "$.i")).isNotEmpty();
     assertThat(JsonPath.<String>read(json, "$.o")).isNotEmpty();
 
+  }
+
+  /**
+   * Issue #6795 (follow-up on #6455): {@code encodeTemporalForWriteBack}'s write-back encoding used to be gated
+   * on {@code value instanceof Temporal}, which the default {@code java.time.LocalDate}/{@code LocalDateTime}
+   * implementations satisfy but the supported non-default {@code arcadedb.dateImplementation=java.util.Date} (or
+   * {@code Calendar}) does not - the binary serializer hands a DATE property back as a plain {@link Date} or
+   * {@link Calendar} there, so the guard never fired, the value fell through to the raw epoch-millis encoding
+   * {@link com.arcadedb.serializer.json.JSONObject#put(String, Object)}'s default temporal branch uses, and the
+   * re-import decoded that millis number as epoch DAYS - the original #6455 data-loss symptom returns. A real
+   * {@link Document}/{@link DocumentType}/{@link Property} chain isn't needed to pin the encoding decision itself,
+   * so this drives {@link JsonGraphSerializer#serializeGraphElement(Document)} directly against a minimal mocked
+   * DATE property, sidestepping how the engine's storage layer happens to represent {@code dateImplementation}
+   * internally.
+   */
+  @Test
+  void dateWrittenAsJavaUtilDateIsEncodedAsEpochDaysForWriteBack() {
+    final Calendar calendar = Calendar.getInstance(TimeZone.getTimeZone("UTC"));
+    calendar.clear();
+    calendar.set(2024, Calendar.JANUARY, 15);
+    final Date birth = calendar.getTime();
+
+    final Property property = mock(Property.class);
+    when(property.getType()).thenReturn(Type.DATE);
+
+    final DocumentType type = mock(DocumentType.class);
+    when(type.existsProperty("birth")).thenReturn(true);
+    when(type.getProperty("birth")).thenReturn(property);
+
+    final Document document = mock(Document.class);
+    when(document.getTypeName()).thenReturn("Person");
+    when(document.getType()).thenReturn(type);
+    when(document.toMap(false)).thenReturn(Map.of("birth", birth));
+
+    final JsonGraphSerializer serializer = JsonGraphSerializer.createJsonGraphSerializer()
+        .setIncludeMetadata(false)
+        .setPrecisionAwareTemporals(true);
+
+    final Object encoded = serializer.serializeGraphElement(document).getJSONObject("p").get("birth");
+
+    assertThat(encoded).isEqualTo(DateUtils.dateToEpochDays(birth));
+  }
+
+  /**
+   * Same gap, {@code java.util.Calendar} side - the two implementations {@code arcadedb.dateImplementation}
+   * supports besides the default {@code java.time.LocalDate}.
+   */
+  @Test
+  void dateWrittenAsCalendarIsEncodedAsEpochDaysForWriteBack() {
+    final Calendar birth = Calendar.getInstance(TimeZone.getTimeZone("UTC"));
+    birth.clear();
+    birth.set(2024, Calendar.JANUARY, 15);
+
+    final Property property = mock(Property.class);
+    when(property.getType()).thenReturn(Type.DATE);
+
+    final DocumentType type = mock(DocumentType.class);
+    when(type.existsProperty("birth")).thenReturn(true);
+    when(type.getProperty("birth")).thenReturn(property);
+
+    final Document document = mock(Document.class);
+    when(document.getTypeName()).thenReturn("Person");
+    when(document.getType()).thenReturn(type);
+    when(document.toMap(false)).thenReturn(Map.of("birth", birth));
+
+    final JsonGraphSerializer serializer = JsonGraphSerializer.createJsonGraphSerializer()
+        .setIncludeMetadata(false)
+        .setPrecisionAwareTemporals(true);
+
+    final Object encoded = serializer.serializeGraphElement(document).getJSONObject("p").get("birth");
+
+    assertThat(encoded).isEqualTo(DateUtils.dateToEpochDays(birth));
+  }
+
+  /**
+   * Sanity check that the fix did not change the well-covered default path: a {@link LocalDate} value must still
+   * take the {@code Temporal} branch and encode identically.
+   */
+  @Test
+  void dateWrittenAsLocalDateStillEncodesAsEpochDaysForWriteBack() {
+    final LocalDate birth = LocalDate.of(2024, 1, 15);
+
+    final Property property = mock(Property.class);
+    when(property.getType()).thenReturn(Type.DATE);
+
+    final DocumentType type = mock(DocumentType.class);
+    when(type.existsProperty("birth")).thenReturn(true);
+    when(type.getProperty("birth")).thenReturn(property);
+
+    final Document document = mock(Document.class);
+    when(document.getTypeName()).thenReturn("Person");
+    when(document.getType()).thenReturn(type);
+    when(document.toMap(false)).thenReturn(Map.of("birth", birth));
+
+    final JsonGraphSerializer serializer = JsonGraphSerializer.createJsonGraphSerializer()
+        .setIncludeMetadata(false)
+        .setPrecisionAwareTemporals(true);
+
+    final Object encoded = serializer.serializeGraphElement(document).getJSONObject("p").get("birth");
+
+    assertThat(encoded).isEqualTo(birth.toEpochDay());
   }
 
 }

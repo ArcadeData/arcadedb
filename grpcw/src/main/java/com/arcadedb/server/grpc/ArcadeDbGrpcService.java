@@ -2697,7 +2697,18 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             // Issue #6607: honour TransactionContext on the first chunk
             final boolean hasTx = c.hasTransaction();
             final String incomingTxId = hasTx ? c.getTransaction().getTransactionId() : "";
-            final TransactionContext txCtx = resolveAuthorizedTransaction(incomingTxId, c.getCredentials());
+            // Issue #6795: resolved outside the per-chunk catch below, mirroring bulkInsert/insertBidirectional,
+            // so a StatusRuntimeException (e.g. PERMISSION_DENIED from authorizeTransactionAccess) reaches the
+            // client as-is instead of being folded by that catch into a transaction-level error entry inside an
+            // otherwise "successful" InsertSummary.
+            final TransactionContext txCtx;
+            try {
+              txCtx = resolveAuthorizedTransaction(incomingTxId, c.getCredentials());
+            } catch (final StatusRuntimeException sre) {
+              cancelled.set(true);
+              out.onError(sre);
+              return;
+            }
 
             if (isUnknownSuppliedTransaction(incomingTxId, txCtx)) {
               streamFailed.set(true);
@@ -3340,6 +3351,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final AtomicReference<InsertContext> ref = new AtomicReference<>();
     final AtomicBoolean cancelled = new AtomicBoolean(false);
     final AtomicBoolean started = new AtomicBoolean(false);
+    // Issue #6795: the external TransactionContext resolved from Start.transaction, if any. CHUNK dispatches
+    // its insertRows() call onto this transaction's own dedicated executor (mirroring insertStream/bulkInsert),
+    // since the ArcadeDB transaction begun there is bound via ThreadLocal to that executor's thread, not to
+    // this stream's own streamExecutor thread.
+    final AtomicReference<TransactionContext> extTxCtxRef = new AtomicReference<>();
 
     // Issue #5041 (CON-1): capture the gRPC Context here, on the inbound thread where the auth
     // interceptor has attached it, so the header/Bearer-authenticated user (USER_CONTEXT_KEY) is
@@ -3414,12 +3430,39 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
                   return;
                 }
 
-                final InsertOptions opts = defaults(reqMsg.getStart().getOptions());
-                final InsertContext ctx = new InsertContext(opts);
+                final Start startMsg = reqMsg.getStart();
+                final InsertOptions opts = defaults(startMsg.getOptions());
+
+                // Issue #6795: honour Start.transaction, mirroring insertStream/bulkInsert. Before this,
+                // insertBidirectional always began its OWN transaction (getStart().getTransaction() was never
+                // read), so rows never joined the caller's transaction and a client rollback could not undo them.
+                final boolean hasTx = startMsg.hasTransaction();
+                final String incomingTxId = hasTx ? startMsg.getTransaction().getTransactionId() : "";
+                final TransactionContext txCtx;
+                try {
+                  txCtx = resolveAuthorizedTransaction(incomingTxId, startMsg.getCredentials());
+                } catch (final StatusRuntimeException sre) {
+                  out.onError(sre);
+                  streamExecutor.shutdown();
+                  return;
+                }
+
+                if (isUnknownSuppliedTransaction(incomingTxId, txCtx)) {
+                  out.onError(unknownTransactionStatus(incomingTxId).asException());
+                  streamExecutor.shutdown();
+                  return;
+                }
+
+                // External transaction: skip begin/commit/rollback (the caller's TransactionContext owns the
+                // lifecycle) and, below, dispatch CHUNK's insertRows() onto its own dedicated executor. COMMIT's
+                // ctx.flushCommit(true) is already a no-op for an external transaction (InsertContext.close()
+                // too), so the stream's own COMMIT/half-close never touches the caller's transaction.
+                final InsertContext ctx = txCtx != null ? new InsertContext(txCtx.db, opts) : new InsertContext(opts);
                 ctx.startedAt = System.currentTimeMillis();
                 ctx.totals = new Counts();
 
                 ref.set(ctx);
+                extTxCtxRef.set(txCtx);
                 sessionWatermark.put(ctx.sessionId, 0L);
 
                 sendResponse.accept(
@@ -3447,7 +3490,23 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
                 Counts perChunk;
                 try {
-                  perChunk = insertRows(ctx, c.getRowsList().iterator());
+                  if (ctx.externalTransaction) {
+                    // Issue #6795: dispatch onto the external transaction's own dedicated executor, the same
+                    // way insertStream/bulkInsert do - the transaction begun there is bound via ThreadLocal to
+                    // that executor's thread, not to this stream's streamExecutor thread. Also touches the
+                    // transaction (issue #6755's fix for insertStream): resolveAuthorizedTransaction only ran
+                    // once, on START, so later chunks must refresh it themselves or the idle reaper can reap a
+                    // transaction that is still actively receiving chunks.
+                    final TransactionContext extTxCtx = extTxCtxRef.get();
+                    extTxCtx.touch();
+                    try {
+                      perChunk = submitToActiveTransaction(extTxCtx, () -> insertRows(ctx, c.getRowsList().iterator())).get();
+                    } catch (final ExecutionException ee) {
+                      final Throwable cause = ee.getCause();
+                      throw cause instanceof Exception ex ? ex : ee;
+                    }
+                  } else
+                    perChunk = insertRows(ctx, c.getRowsList().iterator());
                   ctx.totals.add(perChunk);
                   sessionWatermark.put(ctx.sessionId, c.getChunkSeq());
 

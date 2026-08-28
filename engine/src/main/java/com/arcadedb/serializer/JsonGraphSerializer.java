@@ -30,7 +30,9 @@ import com.arcadedb.utility.DateUtils;
 
 import java.time.temporal.Temporal;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.Collection;
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
 
@@ -97,7 +99,7 @@ public class JsonGraphSerializer extends JsonSerializer {
         else if (value.equals(Double.NEGATIVE_INFINITY) || value.equals(Float.NEGATIVE_INFINITY))
           // JSON DOES NOT SUPPORT INFINITY
           value = "NegInfinity";
-        else if (type != null && value instanceof Temporal && type.existsProperty(prop.getKey()))
+        else if (type != null && isEncodableTemporal(value) && type.existsProperty(prop.getKey()))
           value = encodeTemporalForWriteBack(value, type.getProperty(prop.getKey()).getType());
       }
       properties.put(prop.getKey(), value);
@@ -177,6 +179,16 @@ public class JsonGraphSerializer extends JsonSerializer {
   public JsonGraphSerializer setPrecisionAwareTemporals(final boolean precisionAwareTemporals) {
     this.precisionAwareTemporals = precisionAwareTemporals;
     return this;
+  }
+
+  /**
+   * Issue #6795 (follow-up on #6455): {@code arcadedb.dateImplementation=java.util.Date} (or {@code Calendar})
+   * makes the binary serializer hand back a DATE property as a {@link Date}/{@link Calendar} rather than a
+   * {@link Temporal}, so the write-back encoding must recognize those too - {@link DateUtils#dateToEpochDays}
+   * already handles both.
+   */
+  private static boolean isEncodableTemporal(final Object value) {
+    return value instanceof Temporal || value instanceof Date || value instanceof Calendar;
   }
 
   private static Object encodeTemporalForWriteBack(final Object value, final Type propertyType) {

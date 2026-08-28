@@ -21,7 +21,14 @@ package com.arcadedb.integration.exporter;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.IterableGraph;
+import com.arcadedb.graph.LightEdge;
+import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.integration.TestHelper;
 import com.arcadedb.integration.importer.OrientDBImporter;
 import com.arcadedb.integration.importer.OrientDBImporterIT;
@@ -41,6 +48,7 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
 import java.net.URL;
 import java.util.Iterator;
+import java.util.List;
 import java.util.zip.GZIPInputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -277,6 +285,157 @@ class JsonlExporterIT {
       // its own first record: only the second, unaffected widget makes it into exportVertices' output.
       assertThat(vertexLines).isEqualTo(1);
 
+    } finally {
+      if (realDatabase.isOpen())
+        realDatabase.close();
+    }
+  }
+
+  /**
+   * Issue #6471 follow-up (#6795, comment on the closed issue): {@code exportLightweightEdges} wrapped a whole
+   * vertex's per-edge loop in ONE try/catch, so a failure on any single edge counted {@code skippedRecords} +1
+   * and silently dropped the REST of that vertex's remaining edges too - the same silent-drop class #6471
+   * targeted, surviving inside the very file the fix landed in. The primary guarantee still held (any skip still
+   * fails the export loudly via {@code ExportException}), so this pins the finer-grained guarantee: a failure on
+   * one edge must not cost its siblings.
+   */
+  @Test
+  void exportLightweightEdgesContinuesAfterOneEdgeFailsToSerialize() throws Exception {
+    final File file = new File(FILE);
+
+    final RID hubRid;
+    final RID leafARid;
+    final RID leafBRid;
+    try (final Database db = new DatabaseFactory(DATABASE_PATH).create()) {
+      db.transaction(() -> {
+        db.getSchema().buildVertexType().withName("Node").create();
+        db.getSchema().buildEdgeType().withName("Follows").withLightweight(true).create();
+      });
+
+      final MutableVertex[] holder = new MutableVertex[3];
+      db.transaction(() -> {
+        holder[0] = db.newVertex("Node").set("id", 0).save();
+        holder[1] = db.newVertex("Node").set("id", 1).save();
+        holder[2] = db.newVertex("Node").set("id", 2).save();
+        holder[0].newEdge("Follows", holder[1]);
+        holder[0].newEdge("Follows", holder[2]);
+      });
+
+      hubRid = holder[0].getIdentity();
+      leafARid = holder[1].getIdentity();
+      leafBRid = holder[2].getIdentity();
+    }
+
+    final DatabaseInternal realDatabase = (DatabaseInternal) new DatabaseFactory(DATABASE_PATH).open();
+    try {
+      final Vertex realHub = (Vertex) realDatabase.lookupByRID(hubRid, true);
+      Edge realEdgeToA = null;
+      Edge realEdgeToB = null;
+      for (final Edge e : realHub.getEdges(Vertex.DIRECTION.OUT)) {
+        if (leafARid.equals(e.getIn().getIdentity()))
+          realEdgeToA = e;
+        else if (leafBRid.equals(e.getIn().getIdentity()))
+          realEdgeToB = e;
+      }
+      assertThat(realEdgeToA).isNotNull();
+      assertThat(realEdgeToB).isNotNull();
+
+      // The edge to leaf A always throws when serialized; the edge to leaf B must still make it into the export.
+      final Edge finalRealEdgeToA = realEdgeToA;
+      final Edge failingEdgeToA = (Edge) Proxy.newProxyInstance(getClass().getClassLoader(), new Class<?>[] { LightEdge.class },
+          (proxy, method, args) -> {
+            if ("toMap".equals(method.getName()))
+              throw new RuntimeException("Simulated edge serialization failure");
+            try {
+              return method.invoke(finalRealEdgeToA, args);
+            } catch (final InvocationTargetException e) {
+              throw e.getCause();
+            }
+          });
+
+      final List<Edge> craftedOutEdges = List.of(failingEdgeToA, realEdgeToB);
+      final IterableGraph<Edge> craftedIterable = new IterableGraph<>() {
+        @Override
+        public Class<? extends Document> getEntryType() {
+          return Edge.class;
+        }
+
+        @Override
+        public Iterator<Edge> iterator() {
+          return craftedOutEdges.iterator();
+        }
+      };
+
+      final Vertex hubVertexProxy = (Vertex) Proxy.newProxyInstance(getClass().getClassLoader(), new Class<?>[] { Vertex.class },
+          (proxy, method, args) -> {
+            if ("getEdges".equals(method.getName()) && args != null && args.length >= 1 && Vertex.DIRECTION.OUT.equals(args[0]))
+              return craftedIterable;
+            try {
+              return method.invoke(realHub, args);
+            } catch (final InvocationTargetException e) {
+              throw e.getCause();
+            }
+          });
+
+      // Same proxying idiom as exportFailsLoudlyWhenARecordCannotBeSerialized above: every call forwards to the
+      // real database, except iterateType("Node", false), whose returned records are passed through unchanged -
+      // EXCEPT the hub, whose asVertex(true) hands back hubVertexProxy instead.
+      final DatabaseInternal proxyDatabase = (DatabaseInternal) Proxy.newProxyInstance(
+          DatabaseInternal.class.getClassLoader(), new Class<?>[] { DatabaseInternal.class },
+          (proxy, method, args) -> {
+            if ("iterateType".equals(method.getName()) && "Node".equals(args[0]) && Boolean.FALSE.equals(args[1])) {
+              final Iterator<Record> real = (Iterator<Record>) method.invoke(realDatabase, args);
+              return new Iterator<Record>() {
+                @Override
+                public boolean hasNext() {
+                  return real.hasNext();
+                }
+
+                @Override
+                public Record next() {
+                  final Record record = real.next();
+                  if (!hubRid.equals(record.getIdentity()))
+                    return record;
+
+                  return (Record) Proxy.newProxyInstance(getClass().getClassLoader(), new Class<?>[] { Record.class },
+                      (recordProxy, recordMethod, recordArgs) -> {
+                        if ("asVertex".equals(recordMethod.getName()))
+                          return hubVertexProxy;
+                        try {
+                          return recordMethod.invoke(record, recordArgs);
+                        } catch (final InvocationTargetException e) {
+                          throw e.getCause();
+                        }
+                      });
+                }
+              };
+            }
+            try {
+              return method.invoke(realDatabase, args);
+            } catch (final InvocationTargetException e) {
+              throw e.getCause();
+            }
+          });
+
+      final Exporter exporter = new Exporter(proxyDatabase, FILE);
+      exporter.setFormat("jsonl").setOverwrite(true);
+
+      assertThatThrownBy(exporter::exportDatabase)//
+          .isInstanceOf(ExportException.class)//
+          .hasMessageContaining("skipped");
+
+      boolean foundEdgeToLeafB = false;
+      try (final BufferedReader in = new BufferedReader(new InputStreamReader(new GZIPInputStream(new FileInputStream(file))))) {
+        while (in.ready()) {
+          final String line = in.readLine();
+          final JSONObject json = new JSONObject(line);
+          if ("e".equals(json.getString("t")) && leafBRid.toString().equals(json.getJSONObject("c").getString("i")))
+            foundEdgeToLeafB = true;
+        }
+      }
+      assertThat(foundEdgeToLeafB)
+          .as("the edge to the SECOND leaf must still be exported despite the first edge's failure")
+          .isTrue();
     } finally {
       if (realDatabase.isOpen())
         realDatabase.close();

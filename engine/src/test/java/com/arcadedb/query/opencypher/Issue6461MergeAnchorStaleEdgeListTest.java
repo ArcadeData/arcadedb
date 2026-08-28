@@ -59,8 +59,12 @@ class Issue6461MergeAnchorStaleEdgeListTest {
     database.getSchema().createVertexType("Par");
     database.getSchema().createVertexType("Chi");
     database.getSchema().createVertexType("A");
+    database.getSchema().createVertexType("Mid");
+    database.getSchema().createVertexType("Leaf");
     database.getSchema().createEdgeType("HAS");
     database.getSchema().createEdgeType("L");
+    database.getSchema().createEdgeType("R");
+    database.getSchema().createEdgeType("S");
   }
 
   @AfterEach
@@ -109,5 +113,33 @@ class Issue6461MergeAnchorStaleEdgeListTest {
 
     final ResultSet edgeCount = database.query("opencypher", "MATCH (:A)-[r:L]->(:A) RETURN count(r) AS c");
     assertThat(edgeCount.next().<Number>getProperty("c").longValue()).isEqualTo(1);
+  }
+
+  /**
+   * Follow-up form reported on #6795: a *middle* node of a multi-hop path, reached via a live edge
+   * traversal in the same MERGE (giving {@code traverseFromNode} a fresh {@code forcedVertex}), is ALSO
+   * directly pre-bound by the outer MATCH. {@code traverseFromNode} discarded the fresh instance in
+   * favour of the stale pre-bound one, so the second UNWIND row - which must observe the edge the first
+   * row appended to that middle node - missed it and created a duplicate leaf and edge.
+   */
+  @Test
+  void unwindMergeThroughPreboundMiddleNodeDoesNotDuplicateEdgeOrLeaf() {
+    database.command("opencypher", "CREATE (a:Mid {id:1})");
+    database.command("opencypher", "CREATE (b:Mid {id:2})");
+    database.command("opencypher", "MATCH (a:Mid {id:1}),(b:Mid {id:2}) CREATE (a)-[:R]->(b)");
+
+    database.command("opencypher",
+        "MATCH (a:Mid {id:1}),(b:Mid {id:2}) UNWIND [100,100,200] AS cid MERGE (a)-[:R]->(b)-[:S]->(c:Leaf {id:cid})");
+
+    final ResultSet edgeCount = database.query("opencypher", "MATCH (:Mid)-[r:S]->(:Leaf) RETURN count(r) AS c");
+    assertThat(edgeCount.next().<Number>getProperty("c").longValue()).isEqualTo(2);
+
+    final Map<Object, Long> leafCountsById = new HashMap<>();
+    final ResultSet leaves = database.query("opencypher", "MATCH (c:Leaf) RETURN c.id AS id, count(*) AS c");
+    while (leaves.hasNext()) {
+      final Result r = leaves.next();
+      leafCountsById.put(r.getProperty("id"), ((Number) r.getProperty("c")).longValue());
+    }
+    assertThat(leafCountsById).containsEntry(100L, 1L).containsEntry(200L, 1L);
   }
 }
