@@ -619,14 +619,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * Deletes a record an integrity check has already judged beyond repair, escalating to {@link #deleteRecord(RID,
    * boolean) force} only for the one failure that force exists to clear: a structurally broken chunk chain.
    * <p>
-   * The escalation is GATED, not unconditional, and that is the whole point of this method. Since #6282 the delete
-   * itself names a break it has confirmed against the newest committed image, so the common case needs no second
-   * question at all. What is left under {@link ConcurrentModificationException} does: it does not prove corruption -
-   * the same page-version validation fails when concurrent writes touch OTHER records sharing the chain's pages, so
-   * on a busy bucket it is ordinary contention, and forcing through it would orphan chunks and skip index cleanup
-   * for a healthy record. The version-blind structural probe is what tells the two apart; it is the same
-   * discriminator {@code LocalDatabase.deleteRecord} uses for the tolerant path, and a transient conflict still
-   * propagates as the retry signal it is.
+   * The escalation is GATED, not unconditional, and that is the whole point of this method. Since #6282 the gate is
+   * the delete's OWN verdict: {@link #deleteRecordInternal} confirms a break against the newest committed image, at
+   * the same hop and to the same target, before naming it - and only that earns the force. A
+   * {@link ConcurrentModificationException} is the other answer, and it does not prove corruption: the same
+   * page-version validation fails when concurrent writes touch OTHER records sharing the chain's pages, so on a busy
+   * bucket it is ordinary contention, and forcing through it would orphan chunks and skip index cleanup for a
+   * healthy record. It propagates as the retry signal it is.
    * <p>
    * Deliberately does NOT consult {@code DELETE_TOLERATE_BROKEN_CHAIN}: that setting governs whether an ORDINARY
    * delete may force through, and its own documentation states that CHECK DATABASE FIX is unaffected by it either
@@ -645,15 +644,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // so (#6282). This is the case force exists for, and the one this method escalates for.
       LogManager.instance().log(this, Level.FINE, "Force-deleting record %s: %s", e, rid, e.getMessage());
       deleteRecord(rid, true);
-    } catch (final ConcurrentModificationException e) {
-      // CONTENTION, or a break the confirmation could not prove. The probe is what tells them apart, and since #6282
-      // it too reads the newest committed image rather than this transaction's pinned view - which matters here more
-      // than anywhere, because a false positive escalates to a FORCE delete of a healthy record.
-      if (!isChunkChainBroken(rid))
-        // CONTENTION, not corruption: preserve the NeedRetryException semantics so the caller can retry.
-        throw e;
-      deleteRecord(rid, true);
     }
+    // NO ConcurrentModificationException ARM, AND ITS REMOVAL IS THE POINT (#6282). It used to re-walk the chain
+    // with isChunkChainBroken and force through when that walk agreed - but the delete has ALREADY asked a stronger
+    // question and declined to answer it: a CME from deleteRecordInternal means the newest committed image either
+    // walks cleanly or breaks somewhere else, i.e. the record moved under the delete. Forcing on the weaker walk is
+    // how a healthy record caught mid-publication gets deleted, and this method's answer is not a message but a
+    // removal. Let it propagate as the retry signal it is; the next attempt either succeeds or comes back as the
+    // BrokenChunkChainException the arm above handles.
   }
 
   @Override
@@ -3563,8 +3561,26 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final LongHashSet visitedPointers = walk.chunks;
 
       for (int chunkId = 0; ; ++chunkId) {
-        final long nextChunkPointer = chunkPage.readLong(
-                (int) (chunkPositionInPage + chunkHeader[1] + INT_SERIALIZED_SIZE));
+        // The chunk has to describe itself legally before its continuation pointer means anything (PR review). A
+        // size that runs past the end of the page's content area - or a negative one - is the same provable
+        // corruption the reader meets as an exception out of getImmutableView, and without this the walk followed
+        // the pointer, reached the end of a chain of nonsense and reported it CLEAN: loadMultiPageRecord could then
+        // never confirm the break, so a record with a corrupt chunk size spent its whole retry budget and was
+        // reported as contention. Same bound, in the same words, as offPageContentFingerprint and chunkFootprint.
+        final int chunkHeaderPosition = (int) (chunkPositionInPage + chunkHeader[1]);
+        final int chunkSize = chunkPage.readInt(chunkHeaderPosition);
+        if (chunkSize < 0
+                || chunkHeaderPosition + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE + chunkSize
+                > chunkPage.getMaxContentSize()) {
+          // NOT A FAILED HOP: the chunk this walk is STANDING on is malformed, so there is no pointer to name. The
+          // delete path does not read sizes at all, so its confirmation can never match this and falls back to the
+          // retry - which is the conservative answer for a shape it did not itself observe.
+          walk.brokenAtChunk = chunkId;
+          walk.brokenAtPointer = 0;
+          return "invalid chunk size at chunk " + chunkId;
+        }
+
+        final long nextChunkPointer = chunkPage.readLong(chunkHeaderPosition + INT_SERIALIZED_SIZE);
         if (nextChunkPointer == 0) {
           // REACHED THE LAST CHUNK CLEANLY. The break location is cleared rather than left pointing at the last
           // SUCCESSFUL hop: both current consumers read it only after a reason came back, but a documented invariant
@@ -3651,17 +3667,24 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
-   * Structural probe for the tolerant delete path: tells whether the record at {@code rid} is a multi-page record
-   * whose chunk chain is structurally broken. Unlike {@link #loadMultiPageRecord} this walk ignores page versions,
-   * so a version race on a chain that still walks is not reported as a break. Any failure to probe (including a
-   * record that is not multi-page, or is already gone) conservatively returns {@code false}, keeping the caller on
-   * the strict retry behaviour.
+   * DIAGNOSTIC structural probe: does the chunk chain of {@code rid} walk cleanly against the NEWEST COMMITTED image
+   * of its pages? Unlike {@link #loadMultiPageRecord} this walk ignores page versions, so a version race on a chain
+   * that still walks is not reported as a break. Any failure to probe (including a record that is not multi-page, or
+   * is already gone) conservatively returns {@code false}.
    * <p>
-   * It is the WEAKER of the two questions #6258 asks. {@link #confirmBrokenChunkChain} follows a broken walk of the
-   * committed image with a second one - are the chunks the read consumed still, byte for byte, the ones the
-   * committed image holds - which is what rules out a chain caught half-published. This has no read to compare
-   * against, so it cannot; callers that DO hold the loader's verdict must take that instead, and since #6282 the
-   * read path no longer consults this at all.
+   * <b>Never use this as the verdict that force-deletes a record</b>, which is what it was written for and what
+   * every caller of it did until #6282. It is the WEAKER of the two questions #6258 asks: a commit publishes its
+   * pages one at a time and readers take no lock, so an independently loaded set of newest images can be a chain
+   * caught HALF-PUBLISHED, and this walk reports it broken. {@link #confirmBrokenChunkChain} rules that out by
+   * following the broken walk with a second question - are the chunks the read consumed still, byte for byte, the
+   * ones the committed image holds - and {@link #confirmBrokenChunkChainOnDelete} rules it out by requiring the
+   * committed image to fail at the SAME hop, to the SAME target, the delete itself failed at. This has neither a
+   * read nor a hop to compare against, so it can rule out nothing; a caller that force-deletes on it deletes a
+   * healthy record, skips its index cleanup and orphans its continuation chunks.
+   * <p>
+   * The callers that used to consult it now take the loader's or the delete's own confirmed verdict
+   * ({@link BrokenChunkChainException}) and retry on anything weaker. What is left for this is what its name says:
+   * answering the question, for {@code CHECK DATABASE}-shaped diagnostics and for tests.
    * <p>
    * It judges from the NEWEST COMMITTED image of every page and not from the caller's transaction (#6282, item 2).
    * The distinction is invisible under {@code READ_COMMITTED}, which pins nothing, and load-bearing under
