@@ -244,4 +244,36 @@ class CypherMergeSetClauseParityIssue6831Test {
     assertThat(row.<Number>getProperty("a").intValue()).isEqualTo(1);
     assertThat(row.<Number>getProperty("b").intValue()).isEqualTo(2);
   }
+
+  /**
+   * The map-replace and map-merge forms reach the type check through the shared applier, but this PR's whole thesis
+   * is that the MERGE path cannot be assumed to behave like the stand-alone one: assert it here rather than infer it.
+   */
+  @Test
+  void onMatchSetRejectsAScalarReplaceSource() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:P {id: 1})"));
+
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.command("opencypher", "MERGE (n:P {id: 1}) ON MATCH SET n = 5")))
+        .rootCause()
+        .hasMessageContaining("TypeError");
+  }
+
+  @Test
+  void onCreateSetRejectsAScalarMergeSource() {
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.command("opencypher", "MERGE (n:P {id: 9}) ON CREATE SET n += 'nope'")))
+        .rootCause()
+        .hasMessageContaining("TypeError");
+  }
+
+  @Test
+  void onMatchSetRejectsANestedMapInsideAMergeSource() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:P {id: 1})"));
+
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.command("opencypher", "MERGE (n:P {id: 1}) ON MATCH SET n += {bad: {nested: 1}}")))
+        .rootCause()
+        .hasMessageContaining("TypeError: InvalidPropertyType");
+  }
 }
