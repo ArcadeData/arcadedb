@@ -293,6 +293,29 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
   }
 
   /**
+   * Outside an explicit transaction there is exactly one stream and no qid is ever published for it, so a PULL
+   * that names one anyway has to reach that stream rather than be told the qid does not exist.
+   */
+  @Test
+  void pullWithAQidInAutoCommitStillReachesTheOnlyStream() throws Exception {
+    try (final BoltConnection bolt = new BoltConnection(getDatabaseName())) {
+      // Run and fully consume one auto-commit query first, so a per-connection qid counter would have moved on.
+      bolt.run("RETURN 1 AS one");
+      assertThat(bolt.readSummary().metadata()).doesNotContainKey("qid");
+      bolt.pull(-1, -1);
+      assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
+
+      bolt.run("RETURN 2 AS two");
+      assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
+
+      bolt.pull(-1, 0);
+      final Summary summary = bolt.readSummary();
+      assertThat(summary.signature()).isEqualTo(BoltMessage.SUCCESS);
+      assertThat(summary.records()).hasSize(1);
+    }
+  }
+
+  /**
    * RUN stays invalid in STREAMING: outside an explicit transaction there is nothing to multiplex onto, and the
    * BOLT state machine does not list RUN there.
    */

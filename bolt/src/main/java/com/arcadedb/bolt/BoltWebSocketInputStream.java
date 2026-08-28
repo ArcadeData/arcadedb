@@ -115,8 +115,10 @@ class BoltWebSocketInputStream extends InputStream {
       }
 
       // The accumulated message, not just this frame, is what has to stay inside the cap: otherwise a client
-      // could fragment its way past maxFrameSize one legal-looking frame at a time.
-      if (fragments != null && fragments.size() + payloadLen > maxFrameSize)
+      // could fragment its way past maxFrameSize one legal-looking frame at a time. Only a continuation frame
+      // adds to the accumulation, so a ping legally interleaved between two fragments must not be charged
+      // against it - otherwise a cap-sized message would be rejected because someone kept the socket alive.
+      if (opcode == 0x0 && fragments != null && fragments.size() + payloadLen > maxFrameSize)
         throw new IOException(
             "BOLT WebSocket fragmented message too large: " + (fragments.size() + payloadLen) + " bytes (max " + maxFrameSize + ")");
 
