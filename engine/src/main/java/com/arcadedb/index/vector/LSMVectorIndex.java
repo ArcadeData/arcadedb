@@ -3794,8 +3794,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // instead. Only a rebuild that ran to completion chains, so a failing one cannot spin, and each chained
       // rebuild subtracts the mutations it snapshotted, so the counter cannot be re-served indefinitely without
       // new writes actually arriving.
+      //
+      // Deliberately NOT also chained on deltaScanOverBudget() (issue #6797): the build that just completed reset
+      // the scan-work counter its amortization half reads, so the condition could only be true here in the race
+      // window between that reset and this line - and it SHOULD be false, because a rebuild whose residue nobody
+      // has queried yet has not been paid for. The next search picks it up once it has been.
       if (completed && !Thread.currentThread().isInterrupted() && isValid()
-          && (mutationsSinceSerialize.get() >= getEffectiveMutationsBeforeRebuild() || deltaScanOverBudget()))
+          && mutationsSinceSerialize.get() >= getEffectiveMutationsBeforeRebuild())
         startAsyncGraphRebuild();
     }, "VectorIndex-AsyncRebuild-" + indexName);
     asyncRebuildThread.setDaemon(true);
@@ -4694,10 +4699,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (currentDelta.isEmpty() || k <= 0)
       return;
 
-    // Charged up front, on the size actually about to be walked: what the amortization guard needs to know is
-    // how much brute-force work this query committed to, and the prune below skips allocations, not comparisons.
-    recordDeltaScanWork(currentDelta.size());
-
     // Collect already-seen RIDs from graph results to avoid duplicates
     final RidHashSet seenRIDs = new RidHashSet(results.size());
     for (final Pair<RID, Float> r : results)
@@ -4729,10 +4730,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
     float worst = heapFull ? best.peek().getSecond() : Float.POSITIVE_INFINITY;
 
     boolean added = false;
+    int compared = 0;
     for (final DeltaVectorEntry delta : currentDelta) {
       if (filtered && !allowedRIDs.contains(delta.rid))
         continue;
 
+      compared++;
       final float score = similarity.compare(queryVectorFloat, delta.vector);
       final float distance = scoreToDistance(similarity, score);
 
@@ -4772,6 +4775,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
         worst = best.peek().getSecond();
       added = true;
     }
+
+    // Counted, not assumed to be the buffer size: an allow-list rejects entries before they are ever compared,
+    // and charging the amortization guard for work no core performed would make it rebuild sooner than the CPU
+    // it is trading against justifies. The prune above is not subtracted - it skips the allocation, not the
+    // comparison, which is the expensive half.
+    recordDeltaScanWork(compared);
 
     if (added) {
       results.clear();
@@ -5995,8 +6004,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (buffered == 0)
       return null;
 
-    recordDeltaScanWork(buffered);
-
     final float[] distances = new float[buffered];
     final int[] positions = new int[buffered];
     // Hoisted for the same reason mergeWithDeltaScan hoists them (issue #6797): this loop runs once per buffered
@@ -6019,6 +6026,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
       positions[kept] = i;
       kept++;
     }
+    // `kept`, not `buffered`: the entries an allow-list or a tombstone rejected were never compared, and the
+    // amortization guard has to be charged for comparisons actually performed - see mergeWithDeltaScan.
+    recordDeltaScanWork(kept);
     return kept == 0 ? null : new ScoredCandidateCursor(distances, positions, kept);
   }
 
@@ -8503,10 +8513,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * Whether the delta buffer has outgrown {@link #deltaScanBudget()}. Split out so the search trigger and the
-   * chained-rebuild check at the end of {@link #startAsyncGraphRebuild()} cannot disagree: a rebuild that drains
-   * only part of the buffer - anything ingested while it ran stays behind - has to be able to chain on the same
-   * condition that started it, or the buffer sits over budget until the next search notices.
+   * Whether the delta buffer has outgrown {@link #deltaScanBudget()} <em>and</em> the scans have paid for the
+   * rebuild that would drain it. Split out so the search path and the inactivity timer decide it identically: it
+   * would be odd for a search to judge the scan too expensive and the timer, looking at the same buffer with the
+   * machine idle, to decline.
    */
   private boolean deltaScanOverBudget() {
     final float ratio = maxDeltaScanRatio();
@@ -8564,6 +8574,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
     return (long) Math.min(Long.MAX_VALUE, work);
   }
 
+  /**
+   * Visible for tests: the amortization counter, without the manifest read {@link #getStats()} performs. A test
+   * that has to poll this after every query in a loop cannot afford the full snapshot.
+   */
+  long deltaScanWorkForTest() {
+    return deltaScanWorkSinceRebuild.get();
+  }
+
   /** Charges one query's brute-force scan of {@code scanned} buffered vectors to the amortization window. */
   private void recordDeltaScanWork(final int scanned) {
     if (scanned > 0)
@@ -8596,9 +8614,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * buffer promptly - but to apply the same threshold the search path uses, and only where the search
    * path would also apply it: once the graph is large enough that a rebuild is no longer free.
    *
+   * Package-private so a test can put the index into a given state and ask the timer's question directly. Driving
+   * it through a real timer instead would have to race the search path, which evaluates the same condition on
+   * every query and would usually get there first (issue #6797).
+   *
    * @return {@code true} when pending mutations justify (or exceed) a rebuild
    */
-  private boolean inactivityRebuildIsWorthIt() {
+  boolean inactivityRebuildIsWorthIt() {
     final int pending = mutationsSinceSerialize.get();
     if (pending <= 0)
       return false;
