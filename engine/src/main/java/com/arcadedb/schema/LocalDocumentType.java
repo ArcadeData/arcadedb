@@ -672,7 +672,9 @@ public class LocalDocumentType implements DocumentType {
    */
   void setPropertyHasDefault(final String propertyName, final boolean hasDefault) {
     // The common case - a re-set that does not change membership, or a type with no defaults at all - reads the
-    // reference once and neither allocates nor writes.
+    // reference once and neither allocates nor writes. Deliberately a duplicate of the check inside updateAndGet
+    // below, not a substitute for it: this one skips the closure and the copy, that one re-decides against whatever
+    // the CAS actually saw. Removing either is a regression - one in allocation, the other in correctness.
     if (hasDefault == propertiesWithDefaultDefined.get().contains(propertyName))
       return;
 
