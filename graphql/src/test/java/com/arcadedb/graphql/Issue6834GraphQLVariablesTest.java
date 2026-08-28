@@ -249,6 +249,43 @@ class Issue6834GraphQLVariablesTest extends AbstractGraphQLTest {
   }
 
   @Test
+  void idAcceptsAnIntegralValueOfAnyWidth() {
+    executeTest(database -> {
+      final String types = """
+          type Query {
+            bookByKey(key: ID): Book
+          }
+
+          type Book {
+            id: String
+            key: ID
+            name: String
+          }""";
+      database.command("graphql", types);
+
+      database.newVertex("Book").set("id", "book-3").set("key", 5_000_000_000L).set("name", "Big key").save();
+
+      // ID carries no range of its own - it is serialised as a string - which is exactly why a schema reaches for
+      // it when the key does not fit in the 32-bit Int. Routing it through the Int bound would reject the values
+      // it exists to accept.
+      try (final ResultSet resultSet = database.query("graphql", "query($k: ID) { bookByKey(key: $k) { id } }", "k",
+          5_000_000_000L)) {
+        assertThat(resultSet.hasNext()).isTrue();
+        assertThat(resultSet.next().<String>getProperty("id")).isEqualTo("book-3");
+        assertThat(resultSet.hasNext()).isFalse();
+      }
+
+      // A string is equally valid for ID, a floating-point value is not.
+      assertThatThrownBy(
+          () -> database.query("graphql", "query($k: ID) { bookByKey(key: $k) { id } }", "k", 1.5d).close())
+          .isInstanceOf(CommandParsingException.class)
+          .hasMessageContaining("ID");
+
+      return null;
+    });
+  }
+
+  @Test
   void defaultLiteralThatTheDeclaredTypeCannotHoldIsRejected() {
     executeTest(database -> {
       defineTypes(database);
