@@ -170,8 +170,17 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
     assertThat(console.parse("create user albert identified by einstein")).isTrue();
     assertThat(console.parse("drop user albert")).isTrue();
 
-    // TEST SYNTAX ERROR
-    assertThatThrownBy(() -> assertThat(console.parse("create user albert identified by einstein grand connect on db1")).isTrue()).isInstanceOf(Exception.class);
+    // TEST SYNTAX ERROR: a `create user` with no IDENTIFIED BY at all has nowhere to take a password from
+    // and is rejected outright.
+    assertThatThrownBy(() -> assertThat(console.parse("create user albert")).isTrue()).isInstanceOf(Exception.class);
+
+    // A MISTYPED GRANT CLAUSE IS *NOT* A SYNTAX ERROR ANY MORE (ISSUE #6830). ONLY THE EXACT ` GRANT CONNECT TO `
+    // PHRASE DELIMITS THE PASSWORD, AND SINCE #6830 A PASSWORD MAY CONTAIN SPACES, SO `grand connect on db1`
+    // IS AN ORDINARY - IF SURPRISING - PASSWORD RATHER THAN SOMETHING THE CONSOLE CAN TELL APART FROM ONE.
+    // ASSERTED EXPLICITLY, NOT DELETED: THIS USED TO THROW ONLY BECAUSE THE CONSOLE REJECTED SPACES IN
+    // PASSWORDS, AND #6830 REMOVED THAT CHECK BECAUSE IT MADE ACCOUNTS THE CONSOLE COULD NOT CREATE.
+    assertThat(console.parse("create user albert identified by einstein grand connect on db1")).isTrue();
+    assertThat(console.parse("drop user albert")).isTrue();
 
     assertThat(console.parse("create user albert identified by einstein grant connect to db1")).isTrue();
     assertThat(console.parse("create user jeff identified by amazonaws grant connect to db1:readonly")).isTrue();

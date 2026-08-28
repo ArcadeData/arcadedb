@@ -79,6 +79,16 @@ class Issue6655StaleGraphPrefixReuseTest {
   private static final int    MAX_CONNECTIONS = 64;
   private static final int    BEAM_WIDTH      = 400;
 
+  // How long to let the async rebuild of 20,200 x 128 vectors converge. Sized for the worst case rather
+  // than for a developer machine, which is what the @Tag("vector") note in CLAUDE.md asks for: the rebuild
+  // has to wait out whatever else in this JVM holds the sole LSMVectorIndex.REBUILD_SEMAPHORE permit before
+  // it can even start, and then runs on however many cores the runner has. At 60s a green local run
+  // (~10s for this whole class) still went red on a 4-vCPU CI runner with the rebuild reporting itself
+  // still in flight (run 33161892670). This is a convergence wait, not a latency bound - it asserts that
+  // the rebuild happens, not that it is fast - so a generous value cannot turn a passing run red, and the
+  // assertion below distinguishes "still working" from "never ran" for whoever reads the next timeout.
+  private static final Duration ASYNC_REBUILD_TIMEOUT = Duration.ofMinutes(4);
+
   private String dbPath;
 
   @BeforeEach
@@ -190,9 +200,14 @@ class Issue6655StaleGraphPrefixReuseTest {
 
         // The async rebuild kicked off by the reuse eventually folds the gap into the graph proper.
         Awaitility.await("the async rebuild kicked off by the stale-prefix reuse completes")
-            .atMost(Duration.ofSeconds(60))
+            .atMost(ASYNC_REBUILD_TIMEOUT)
             .pollInterval(Duration.ofMillis(200))
-            .untilAsserted(() -> assertThat(index.getStats().get("graphRebuildCount")).isEqualTo(1L));
+            .untilAsserted(() -> assertThat(index.getStats().get("graphRebuildCount"))
+                .as("graphRebuildCount, with asyncRebuildInProgress=%s: a 1 there means the rebuild is still "
+                        + "running or still parked on the JVM-wide REBUILD_SEMAPHORE and this wait is simply "
+                        + "too short; a 0 means it was never started or was skipped, which is a real defect",
+                    index.getStats().get("asyncRebuildInProgress"))
+                .isEqualTo(1L));
 
         assertThat(index.getStats().get("graphState"))
             .as("once the deferred rebuild completes the graph goes back to IMMUTABLE").isEqualTo(1L);

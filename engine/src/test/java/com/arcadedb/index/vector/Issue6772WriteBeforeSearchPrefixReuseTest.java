@@ -90,6 +90,16 @@ class Issue6772WriteBeforeSearchPrefixReuseTest {
   private static final int    MAX_CONNECTIONS = 64;
   private static final int    BEAM_WIDTH      = 400;
 
+  // How long to let the async rebuild of 20,201 x 128 vectors converge. Sized for the worst case rather
+  // than for a developer machine, which is what the @Tag("vector") note in CLAUDE.md asks for: the rebuild
+  // has to wait out whatever else in this JVM holds the sole LSMVectorIndex.REBUILD_SEMAPHORE permit before
+  // it can even start, and then runs on however many cores the runner has. At 60s a green local run
+  // (~20s for this whole class) still went red on a 4-vCPU CI runner with the rebuild reporting itself
+  // still in flight (run 33161892670). This is a convergence wait, not a latency bound - it asserts that
+  // the rebuild happens, not that it is fast - so a generous value cannot turn a passing run red, and the
+  // assertions below distinguish "still working" from "never ran" for whoever reads the next timeout.
+  private static final Duration ASYNC_REBUILD_TIMEOUT = Duration.ofMinutes(4);
+
   /** The single record the searching session writes before it searches - the whole point of this test. */
   private static final int IN_SESSION_DOC_ID = NUM_VECTORS + GAP_VECTORS;
 
@@ -197,9 +207,14 @@ class Issue6772WriteBeforeSearchPrefixReuseTest {
 
         // The async rebuild kicked off by the reuse eventually folds everything into the graph proper.
         Awaitility.await("the async rebuild kicked off by the stale-prefix reuse completes")
-            .atMost(Duration.ofSeconds(60))
+            .atMost(ASYNC_REBUILD_TIMEOUT)
             .pollInterval(Duration.ofMillis(200))
-            .untilAsserted(() -> assertThat(index.getStats().get("graphRebuildCount")).isEqualTo(1L));
+            .untilAsserted(() -> assertThat(index.getStats().get("graphRebuildCount"))
+                .as("graphRebuildCount, with asyncRebuildInProgress=%s: a 1 there means the rebuild is still "
+                        + "running or still parked on the JVM-wide REBUILD_SEMAPHORE and this wait is simply "
+                        + "too short; a 0 means it was never started or was skipped, which is a real defect",
+                    index.getStats().get("asyncRebuildInProgress"))
+                .isEqualTo(1L));
 
         assertThat(index.getStats().get("graphNodeCount"))
             .as("once the deferred rebuild completes the graph covers every live vector")
@@ -279,9 +294,14 @@ class Issue6772WriteBeforeSearchPrefixReuseTest {
         // Teardown hygiene, not an assertion about the fix: the reuse kicks off an async rebuild, and dropping the
         // database out from under it leaves it persisting a graph into files that are going away.
         Awaitility.await("the async rebuild kicked off by the stale-prefix reuse settles before the drop")
-            .atMost(Duration.ofSeconds(60))
+            .atMost(ASYNC_REBUILD_TIMEOUT)
             .pollInterval(Duration.ofMillis(200))
-            .untilAsserted(() -> assertThat(index.getStats().get("asyncRebuildInProgress")).isZero());
+            .untilAsserted(() -> assertThat(index.getStats().get("asyncRebuildInProgress"))
+                .as("asyncRebuildInProgress, with graphRebuildCount=%s: this stays 1 for as long as the rebuild "
+                        + "is running OR parked on the JVM-wide REBUILD_SEMAPHORE (whose own permit wait is "
+                        + "10 minutes by default), so a timeout here means the wait was too short, not that "
+                        + "anything hung", index.getStats().get("graphRebuildCount"))
+                .isZero());
       } finally {
         db.drop();
       }
