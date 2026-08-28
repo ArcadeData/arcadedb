@@ -178,7 +178,14 @@ public class ArcadeGraphFactory implements Closeable {
     while (!pooledInstances.isEmpty()) {
       final PooledArcadeGraph instance = pooledInstances.poll();
       if (instance != null)
-        instance.dispose();
+        try {
+          instance.dispose();
+        } catch (final Exception e) {
+          // ONE INSTANCE THAT FAILS TO DISPOSE MUST NOT STRAND THE REST: EVERY OTHER POOLED GRAPH STILL HOLDS A
+          // DRIVER Cluster (A NETTY EVENT-LOOP GROUP AND A CONNECTION POOL) AND, OVER A REMOTE POOL, ITS OWN
+          // CONNECTION - THE VERY RESOURCES #6822 IS ABOUT - AND THE SHARED LOCAL DATABASE BELOW WOULD STAY OPEN.
+          LogManager.instance().log(this, Level.WARNING, "Error on disposing a pooled ArcadeGraph instance", e);
+        }
     }
 
     if (localDatabase != null)
