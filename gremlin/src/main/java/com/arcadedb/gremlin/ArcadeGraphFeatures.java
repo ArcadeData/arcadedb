@@ -173,8 +173,16 @@ public class ArcadeGraphFeatures implements Graph.Features {
       return false;
     }
 
+    /**
+     * A vertex property id is {@code (vertex RID, key)} rendered as a string, never a number (issue #6823).
+     */
     @Override
     public boolean supportsNumericIds() {
+      return false;
+    }
+
+    @Override
+    public boolean supportsStringIds() {
       return true;
     }
 

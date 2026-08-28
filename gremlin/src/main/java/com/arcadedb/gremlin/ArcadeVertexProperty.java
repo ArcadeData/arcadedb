@@ -36,9 +36,17 @@ import java.util.NoSuchElementException;
  */
 public class ArcadeVertexProperty<T> implements VertexProperty<T> {
 
+  private static final char ID_SEPARATOR = '-';
+
   protected final String       key;
   protected final T            value;
   protected final ArcadeVertex vertex;
+
+  /**
+   * Cached only once the vertex has a RID, because {@code equals()}/{@code hashCode()} both go through {@link #id()}
+   * and would otherwise rebuild the string on every probe of a {@code Set}, a {@code Map} or a {@code dedup()}.
+   */
+  private volatile String id;
 
   protected ArcadeVertexProperty(final ArcadeVertex vertex, final String key, final T value) {
     this.vertex = vertex;
@@ -80,9 +88,40 @@ public class ArcadeVertexProperty<T> implements VertexProperty<T> {
 
   }
 
+  /**
+   * A vertex property has single cardinality here, so {@code (vertex, key)} is its identity. TinkerPop's
+   * {@code ElementHelper} compares vertex properties by id alone, so the id must be unique: deriving it from a sum of
+   * hash codes made distinct properties of the same vertex compare equal and be deduplicated away (issue #6823).
+   * The vertex id is a RID, which never contains the separator, so no pair of (vertex, key) can produce the same id.
+   * <p>
+   * Caveat for a property read off a vertex that has not been saved yet: its id is built from the vertex's transient
+   * id and therefore changes once the vertex gets its RID. A property held in a {@code Set} or a {@code Map} from
+   * before the save is no longer findable there afterwards, because its {@code hashCode()} has moved with it. That is
+   * inherent to an identity anchored on the RID; read the property again after the save.
+   */
   @Override
   public Object id() {
-    return (long) (this.key.hashCode() + this.value.hashCode() + this.vertex.id().hashCode());
+    String result = id;
+    if (result == null) {
+      final Object vertexId = this.vertex.id();
+      // AN UNSAVED VERTEX HAS NO RID YET: FALL BACK TO ITS TRANSIENT ID SO id() NEITHER THROWS NOR COLLIDES.
+      final String prefix = vertexId != null ? vertexId.toString() : this.vertex.transientId();
+
+      if (prefix.indexOf(ID_SEPARATOR) < 0)
+        result = prefix + ID_SEPARATOR + this.key;
+      else
+        // A VERTEX RID (#bucket:offset, BOTH NON-NEGATIVE) AND A TRANSIENT ID (?counter) CANNOT CONTAIN THE
+        // SEPARATOR, SO THE BRANCH ABOVE IS WHAT EVERY REAL VERTEX TAKES. RID CAN STILL RENDER NEGATIVE COMPONENTS
+        // FOR THE SENTINELS THE INDEX AND EDGE-SEGMENT INTERNALS USE, AND THOSE WOULD MAKE THE SPLIT AMBIGUOUS:
+        // LENGTH-PREFIX THEM INSTEAD OF TRUSTING THEY CAN NEVER REACH A VERTEX. THE TWO FORMS CANNOT COLLIDE WITH
+        // EACH OTHER EITHER, SINCE ONE STARTS WITH A DIGIT AND THE OTHER WITH '#' OR '?'.
+        result = prefix.length() + ID_SEPARATOR + prefix + this.key;
+
+      if (vertexId != null)
+        // ONLY A RID IS FINAL: AN UNSAVED VERTEX WILL GET ONE LATER AND THE ID HAS TO FOLLOW IT.
+        id = result;
+    }
+    return result;
   }
 
   @Override
