@@ -76,8 +76,18 @@ public class LocalTimeSeriesType extends LocalDocumentType {
   public synchronized void initEngine() throws IOException {
     if (engine != null)
       return;
-    engine = new TimeSeriesEngine((DatabaseInternal) schema.getDatabase(), name, tsColumns, shardCount > 0 ? shardCount : 1,
-        compactionBucketIntervalMs, mutableFormatVersion);
+    try {
+      engine = new TimeSeriesEngine((DatabaseInternal) schema.getDatabase(), name, tsColumns,
+          shardCount > 0 ? shardCount : 1, compactionBucketIntervalMs, mutableFormatVersion);
+    } catch (final IOException | RuntimeException e) {
+      // Record why THIS attempt failed, so a retry that fails for a new reason does not keep reporting the old
+      // one. Since #6839 this method is retried outside schema load - the HA sealed-blob repair path drives it -
+      // and markEngineUnavailable() is deliberately restricted to the single-threaded load path, so without this
+      // a second failure left CHECK DATABASE and requireEngine()'s message describing the FIRST one. Set here,
+      // inside the same synchronized block that clears it on success, so the two can never interleave.
+      engineUnavailableReason = e.getMessage() != null ? e.getMessage() : e.toString();
+      throw e;
+    }
     // A retry that succeeds after a prior markEngineUnavailable() must not leave the stale reason behind: nothing
     // else clears it, and getEngineUnavailableReason() otherwise keeps reporting why the engine failed even after
     // isEngineAvailable() has correctly flipped to true.

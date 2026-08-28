@@ -105,11 +105,16 @@ public class TimeSeriesEngine implements AutoCloseable {
         shards[i] = new TimeSeriesShard(database, typeName, i, columns, compactionBucketIntervalMs, tagDictionary);
     } catch (final Exception e) {
       shardExecutor.shutdownNow();
-      // Close any shards that were successfully created
+      // Release the shards that were successfully created - their sealed stores only, NOT their mutable buckets.
+      // A full close() here made a corrupt .ts.sealed on shard N take the mutable buckets of shards 0..N-1 down
+      // with it, permanently: those buckets are registered with the schema, which owns closing them, and
+      // PaginatedComponentFile.close() sets open=false so its own lazy reopen refuses ever after. That left
+      // initEngine() unretryable for any type with more than one shard, so the whole recovery path added for
+      // issue #6839 would have worked for SHARDS 1 and silently not above it.
       for (final TimeSeriesShard shard : shards) {
         if (shard != null) {
           try {
-            shard.close();
+            shard.closeAfterFailedInit();
           } catch (final IOException ignored) {
           }
         }
