@@ -21,6 +21,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
@@ -49,6 +50,14 @@ public class SelectExecutor {
   // skip) TO A MultiIndexCursor
   int             indexCandidateLimit = -1;
 
+  // #6815: THE ABSOLUTE DEADLINE FOR THIS EXECUTION, OWNED BY THE CONSUMER INSTEAD OF BY THE SOURCE ITERATOR.
+  // buildIterator() CAN RETURN FOUR DIFFERENT SOURCES AND ONLY ONE OF THEM (MultiIterator) CARRIES A TIMEOUT OF ITS
+  // OWN, SO INSTALLING select.timeoutInMs THERE - THE ONLY THING THAT USED TO HAPPEN - SILENTLY DROPPED IT FOR EVERY
+  // INDEX-ANSWERED PLAN (A MultiIndexCursor) AND FOR A SINGLE-BUCKET fromBuckets() (A BARE BUCKET ITERATOR), I.E. FOR
+  // THE COMMONEST QUERY SHAPE OF ALL. Long.MAX_VALUE MEANS "NO TIMEOUT REQUESTED" AND KEEPS THE PER-RECORD CHECK A
+  // SINGLE PERFECTLY PREDICTED COMPARE ON THE HOT PATH
+  private long timeoutDeadline = Long.MAX_VALUE;
+
   // #6577: THE SINGLE SOURCE OF TRUTH FOR "WHICH OPERATORS CAN filterWithIndexesFinalNode() ACTUALLY TURN INTO AN
   // IndexCursor" - isTheNodeFullyIndexed() MUST TREAT EXACTLY THIS SET, AND NO MORE, AS "THIS LEAF IS INDEXED".
   // TREATING A WIDER SET AS INDEXED IS WHAT LET #6577 THROUGH: A neq/like/ilike LEAF PASSED THE "UNDER AN or, BOTH
@@ -74,7 +83,33 @@ public class SelectExecutor {
     this.select = select;
   }
 
+  /**
+   * Arms the deadline for one execution. Called from the three entry points ({@link #execute()},
+   * {@link #executeCount()}, {@link #executeExists()}) rather than from the constructor, so the window it covers is
+   * exactly the work the caller asked to bound - index lookup included, since that is part of answering the query.
+   */
+  private void startTimeout() {
+    if (select.timeoutInMs > 0)
+      timeoutDeadline = System.currentTimeMillis() + select.timeoutInMs;
+  }
+
+  /**
+   * #6815: enforces the select deadline on the consumer side, where every source shape passes, instead of on the one
+   * source that happens to know how to enforce it itself. Mirrors {@link com.arcadedb.utility.MultiIterator#checkForTimeout()}:
+   * with {@code exceptionOnTimeout} the expiry is thrown, otherwise the caller is told to stop and keep what it has.
+   *
+   * @return {@code true} when the deadline expired and the caller asked NOT to be thrown at
+   */
+  boolean checkForTimeout() {
+    if (timeoutDeadline == Long.MAX_VALUE || System.currentTimeMillis() <= timeoutDeadline)
+      return false;
+    if (select.exceptionOnTimeout)
+      throw new TimeoutException("Timeout on iteration");
+    return true;
+  }
+
   <T extends Document> SelectIterator<T> execute() {
+    startTimeout();
     final MultiIndexCursor iteratorFromIndexes = lookForIndexes();
     final Iterator<? extends Identifiable> iterator = buildIterator(iteratorFromIndexes);
 
@@ -90,6 +125,7 @@ public class SelectExecutor {
    * would keep a retired compacted file undroppable until the next restart.
    */
   long executeCount() {
+    startTimeout();
     final MultiIndexCursor iteratorFromIndexes = lookForIndexes();
     try {
       final Iterator<? extends Identifiable> iterator = buildIterator(iteratorFromIndexes);
@@ -99,6 +135,12 @@ public class SelectExecutor {
       long count = 0;
       int skipped = 0;
       while (iterator.hasNext()) {
+        // #6815: count() NEVER BUILDS A SelectIterator, IT DRAINS THE SOURCE IN THIS LOOP, SO THE DEADLINE HAS TO BE
+        // CHECKED HERE TOO. A NON-THROWING TIMEOUT RETURNS THE PARTIAL TALLY, MATCHING THE TRUNCATED RESULT SET THE
+        // STREAMING PATH RETURNS
+        if (checkForTimeout())
+          break;
+
         final Document record = iterator.next().asDocument();
         if (filterOutRecords != null && filterOutRecords.contains(record.getIdentity()))
           continue;
@@ -138,11 +180,17 @@ public class SelectExecutor {
    * cursor is abandoned partway on every positive answer.
    */
   boolean executeExists() {
+    startTimeout();
     final MultiIndexCursor iteratorFromIndexes = lookForIndexes();
     try {
       final Iterator<? extends Identifiable> iterator = buildIterator(iteratorFromIndexes);
 
       while (iterator.hasNext()) {
+        // #6815: SAME AS executeCount(). A NON-THROWING TIMEOUT ANSWERS false - THE SCAN NEVER FOUND A MATCH WITHIN
+        // THE BUDGET IT WAS GIVEN, WHICH IS THE PARTIAL ANSWER THE CALLER ASKED TO BE GIVEN RATHER THAN AN EXCEPTION
+        if (checkForTimeout())
+          return false;
+
         final Document record = iterator.next().asDocument();
         if (select.rootTreeElement == null || evaluateWhere(record))
           return true;
@@ -221,6 +269,9 @@ public class SelectExecutor {
       iterator = multiIterator;
     }
 
+    // #6815: KEPT AS THE FAST PATH ONLY - THE AUTHORITATIVE DEADLINE IS checkForTimeout(), WHICH EVERY SOURCE SHAPE
+    // GOES THROUGH. THIS ALSO STAYS BECAUSE SelectParallelIterator READS THE MultiIterator'S OWN checkForTimeout() TO
+    // DRIVE ITS PRODUCER SHUTDOWN
     if (select.timeoutInMs > 0 && iterator instanceof MultiIterator<? extends Identifiable> multiIterator)
       multiIterator.setTimeout(select.timeoutInMs, select.exceptionOnTimeout);
 
