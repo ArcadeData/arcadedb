@@ -2045,8 +2045,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   private boolean repairEngineWithSealedBlob(final DatabaseInternal db, final LocalTimeSeriesType tsType,
       final RaftLogEntryCodec.TsSealedBlob blob) {
+    // tsType.getName(), not blob.typeName(): the two are equal here - tsType came from getType(blob.typeName()) -
+    // but taking it from the resolved schema type means the name selecting a file on this node provably came from
+    // the local schema and not from the wire, rather than only doing so as long as the caller keeps that lookup.
     final File target = new File(db.getDatabasePath(),
-        TimeSeriesSealedStore.sealedFileNameFor(blob.typeName(), blob.shardIndex()));
+        TimeSeriesSealedStore.sealedFileNameFor(tsType.getName(), blob.shardIndex()));
     final File incoming = new File(target.getPath() + ".incoming");
     try {
       try (final FileOutputStream out = new FileOutputStream(incoming)) {

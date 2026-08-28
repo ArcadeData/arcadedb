@@ -73,9 +73,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class Issue6839TsSealedBlobRecoveryTest {
 
-  private static final String TYPE_NAME  = "Cpu";
-  private static final String SEALED_FILE = TYPE_NAME + "_shard_0.ts.sealed";
-  private static final int    ROWS       = 3_000;
+  private static final String TYPE_NAME   = "Cpu";
+  private static final String SEALED_FILE = sealedFileName(0);
+  private static final int    ROWS        = 3_000;
 
   @TempDir
   private Path          serverDir;
@@ -158,6 +158,37 @@ class Issue6839TsSealedBlobRecoveryTest {
     assertThat(countSamples()).isEqualTo(ROWS);
   }
 
+  /**
+   * The same recovery on a type with more than one shard, which is where a second copy of the very defect this PR
+   * fixes lived: {@code TimeSeriesEngine}'s constructor closes every shard it had already built when a later one
+   * throws, and {@code TimeSeriesShard.close()} closes the mutable bucket. So a corrupt {@code .ts.sealed} on
+   * shard 1 took shard 0's mutable bucket down with it - permanently, since
+   * {@code PaginatedComponentFile.close()} sets {@code open=false} - and no later repair could ever succeed,
+   * however good the incoming blob was. Both other arms use SHARDS 1 and cannot see it.
+   */
+  @Test
+  void aSealedBlobRepairsATypeWithMoreThanOneShard() throws Exception {
+    final byte[] leaderSealedBytes = buildTypeAndCaptureItsSealedFile(2, 1);
+
+    breakTheSealedFileAndReopen(1);
+
+    final LocalTimeSeriesType broken = (LocalTimeSeriesType) database.getSchema().getType(TYPE_NAME);
+    assertThat(broken.isEngineAvailable()).isFalse();
+    assertThat(broken.getEngineUnavailableReason()).contains(sealedFileName(1));
+
+    new ArcadeStateMachine().applySealedBlobs(database,
+        List.of(new TsSealedBlob(TYPE_NAME, 1, sealedFileName(1), leaderSealedBytes)));
+
+    assertThat(broken.isEngineAvailable()).as("shard 0's bucket must not have been poisoned by shard 1").isTrue();
+    assertThat(broken.getEngineUnavailableReason()).isNull();
+
+    // Every sample is back - the repaired shard's from the blob, shard 0's from its own untouched files - and both
+    // shards still take writes, which is what a closed mutable bucket would refuse.
+    assertThat(countSamples()).isEqualTo(ROWS);
+    appendRows(broken.getEngine(), ROWS, 100);
+    assertThat(countSamples()).isEqualTo(ROWS + 100L);
+  }
+
   // ---- Helpers ----
 
   /**
@@ -165,15 +196,23 @@ class Issue6839TsSealedBlobRecoveryTest {
    * which is exactly what the leader ships in a {@link TsSealedBlob}.
    */
   private byte[] buildTypeAndCaptureItsSealedFile() throws IOException {
+    return buildTypeAndCaptureItsSealedFile(1, 0);
+  }
+
+  private byte[] buildTypeAndCaptureItsSealedFile(final int shardCount, final int shardIndex) throws IOException {
     database.command("sql", "CREATE TIMESERIES TYPE " + TYPE_NAME
-        + " TIMESTAMP ts TAGS (hostname STRING) FIELDS (usage DOUBLE) SHARDS 1");
+        + " TIMESTAMP ts TAGS (hostname STRING) FIELDS (usage DOUBLE) SHARDS " + shardCount);
     final TimeSeriesEngine engine = ((LocalTimeSeriesType) database.getSchema().getType(TYPE_NAME)).getEngine();
     appendRows(engine, 0, ROWS);
     engine.compactAll();
 
-    final File sealed = new File(databasePath, SEALED_FILE);
+    final File sealed = new File(databasePath, sealedFileName(shardIndex));
     assertThat(sealed).exists();
     return Files.readAllBytes(sealed.toPath());
+  }
+
+  private static String sealedFileName(final int shardIndex) {
+    return TYPE_NAME + "_shard_" + shardIndex + ".ts.sealed";
   }
 
   /**
@@ -181,8 +220,12 @@ class Issue6839TsSealedBlobRecoveryTest {
    * database, which is the state {@code LocalSchema.readConfiguration()} registers rather than dropping (#6356).
    */
   private void breakTheSealedFileAndReopen() throws IOException {
+    breakTheSealedFileAndReopen(0);
+  }
+
+  private void breakTheSealedFileAndReopen(final int shardIndex) throws IOException {
     database.close();
-    final File sealed = new File(databasePath, SEALED_FILE);
+    final File sealed = new File(databasePath, sealedFileName(shardIndex));
     try (final RandomAccessFile raf = new RandomAccessFile(sealed, "rw")) {
       raf.seek(0);
       final int b = raf.read();

@@ -1181,6 +1181,22 @@ public class TimeSeriesShard implements AutoCloseable {
   }
 
   /**
+   * Releases only what this shard owns outright, leaving the mutable bucket open. Used when a LATER shard of the
+   * same type fails to construct and the engine has to unwind the shards it already built (issue #6839).
+   * <p>
+   * {@link #close()} is wrong there for the reason spelled out in the constructor: the mutable bucket is
+   * registered with the schema, which owns closing it, and {@code PaginatedComponentFile.close()} sets
+   * {@code open=false} permanently. So unwinding with the full close made one corrupt {@code .ts.sealed} on shard
+   * N poison the buckets of shards 0..N-1 too, and no later {@code initEngine()} could recover the type however
+   * good the incoming blob was - the whole recovery path #6839 adds would work for {@code SHARDS 1} and silently
+   * not for anything above it. The sealed store is this shard's own file handle and nothing else will close it,
+   * so it still must be.
+   */
+  void closeAfterFailedInit() throws IOException {
+    sealedStore.close();
+  }
+
+  /**
    * Drops this shard: deletes the sealed store file and removes the mutable bucket
    * from the file manager. The mutable bucket file is deleted via the schema's file manager.
    */
