@@ -214,4 +214,30 @@ class CypherSetFromEntityIssue6832Test {
     final ResultSet rs = database.query("opencypher", "MATCH (a:A) RETURN a.name AS name");
     assertThat(rs.next().<String>getProperty("name")).isEqualTo("old");
   }
+
+  /** The same protection on the merge form: "+=" reads a copy of the source, so self-merge cannot lose anything. */
+  @Test
+  void mergeFromItselfKeepsEveryProperty() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:A {id: 1, name: 'keep'})"));
+
+    database.transaction(() -> database.command("opencypher", "MATCH (a:A) SET a += a"));
+
+    final ResultSet rs = database.query("opencypher", "MATCH (a:A) RETURN a.id AS id, a.name AS name");
+    final var row = rs.next();
+    assertThat(row.<Number>getProperty("id").intValue()).isEqualTo(1);
+    assertThat(row.<String>getProperty("name")).isEqualTo("keep");
+  }
+
+  /** And on the MERGE side, which reaches the same copy through the shared applier. */
+  @Test
+  void mergeActionFromItselfKeepsEveryProperty() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:A {id: 1, name: 'keep'})"));
+
+    database.transaction(() -> database.command("opencypher", "MERGE (a:A {id: 1}) ON MATCH SET a += a"));
+
+    final ResultSet rs = database.query("opencypher", "MATCH (a:A) RETURN a.id AS id, a.name AS name");
+    final var row = rs.next();
+    assertThat(row.<Number>getProperty("id").intValue()).isEqualTo(1);
+    assertThat(row.<String>getProperty("name")).isEqualTo("keep");
+  }
 }
