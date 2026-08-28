@@ -57,12 +57,20 @@ public class LocalProperty extends AbstractProperty {
     final Expression compiled = compileDefaultValue(convertedValue, database);
 
     if (!Objects.equals(this.defaultValue.value(), convertedValue)) {
-      // One publication, so no reader can see the new value with the old (or no) compiled expression.
-      this.defaultValue = new DefaultValue(convertedValue, compiled);
+      final LocalDocumentType type = (LocalDocumentType) owner;
 
-      ((LocalDocumentType) owner).setPropertyHasDefault(name, convertedValue != DEFAULT_NOT_SET);
-
-      owner.getSchema().getEmbedded().saveConfiguration();
+      // The property's own default and the owner type's default-property cache are two views of one fact, and the
+      // other statement that changes them, DROP PROPERTY, mutates both under the schema write lock (recordFileChanges).
+      // Publishing them outside that lock let a concurrent DROP PROPERTY on the same type interleave between the two
+      // and leave the cache naming a property that no longer exists - the very state issue #6799 is about. Only the
+      // publication is serialized: conversion and validation stay outside, so a rejected default touches no state and
+      // its SchemaException reaches the caller unwrapped, and the write lock is held for two field assignments.
+      type.recordFileChanges(() -> {
+        // One publication, so no reader can see the new value with the old (or no) compiled expression.
+        this.defaultValue = new DefaultValue(convertedValue, compiled);
+        type.setPropertyHasDefault(name, convertedValue != DEFAULT_NOT_SET);
+        return null;
+      });
     }
     return this;
   }

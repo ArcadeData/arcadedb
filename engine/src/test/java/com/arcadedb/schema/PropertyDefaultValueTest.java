@@ -510,6 +510,115 @@ class PropertyDefaultValueTest extends TestHelper {
   }
 
   /**
+   * The default-property cache is updated read-copy-write. Setting a default on N properties of the same type
+   * concurrently used to let two threads copy the same snapshot and publish sets that each held only their own name,
+   * silently losing the other defaults - a record created afterwards would come out missing them. The update is a CAS
+   * now, so every name survives whatever the interleaving was.
+   */
+  @Test
+  void concurrentDefaultUpdatesOnTheSameTypeDoNotLoseEachOther() throws Exception {
+    final int properties = 16;
+
+    final DocumentType type = database.getSchema().createDocumentType("Probe");
+    for (int i = 0; i < properties; i++)
+      type.createProperty("p" + i, Type.STRING);
+
+    final CountDownLatch start = new CountDownLatch(1);
+    final CountDownLatch done = new CountDownLatch(properties);
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+    final List<Thread> threads = new ArrayList<>(properties);
+
+    for (int i = 0; i < properties; i++) {
+      final int index = i;
+      final Thread t = new Thread(() -> {
+        try {
+          start.await();
+          type.getProperty("p" + index).setDefaultValue("'v" + index + "'");
+        } catch (final Throwable e) {
+          failure.compareAndSet(null, e);
+        } finally {
+          done.countDown();
+        }
+      });
+      threads.add(t);
+      t.start();
+    }
+
+    start.countDown();
+    assertThat(done.await(30, TimeUnit.SECONDS)).isTrue();
+    for (final Thread t : threads)
+      t.join();
+    assertThat(failure.get()).isNull();
+
+    final List<String> expected = new ArrayList<>();
+    for (int i = 0; i < properties; i++)
+      expected.add("p" + i);
+    assertThat(type.getPolymorphicPropertiesWithDefaultDefined()).containsExactlyInAnyOrderElementsOf(expected);
+
+    database.transaction(() -> {
+      final MutableDocument doc = database.newDocument("Probe").save();
+      for (int i = 0; i < properties; i++)
+        assertThat(doc.getString("p" + i)).isEqualTo("v" + i);
+    });
+  }
+
+  /**
+   * The other half of the same race: a DROP PROPERTY landing while other properties of the type are having their
+   * defaults set. The dropped name must be gone and none of the others may have been dropped with it.
+   */
+  @Test
+  void aConcurrentDropDoesNotResurrectOrLoseOtherDefaults() throws Exception {
+    final int properties = 12;
+
+    final DocumentType type = database.getSchema().createDocumentType("Probe");
+    type.createProperty("doomed", Type.STRING).setDefaultValue("'legacy'");
+    for (int i = 0; i < properties; i++)
+      type.createProperty("p" + i, Type.STRING);
+
+    final CountDownLatch start = new CountDownLatch(1);
+    final CountDownLatch done = new CountDownLatch(properties + 1);
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+    final List<Thread> threads = new ArrayList<>(properties + 1);
+
+    for (int i = 0; i <= properties; i++) {
+      final int index = i;
+      final Thread t = new Thread(() -> {
+        try {
+          start.await();
+          if (index == properties)
+            type.dropProperty("doomed");
+          else
+            type.getProperty("p" + index).setDefaultValue("'v" + index + "'");
+        } catch (final Throwable e) {
+          failure.compareAndSet(null, e);
+        } finally {
+          done.countDown();
+        }
+      });
+      threads.add(t);
+      t.start();
+    }
+
+    start.countDown();
+    assertThat(done.await(30, TimeUnit.SECONDS)).isTrue();
+    for (final Thread t : threads)
+      t.join();
+    assertThat(failure.get()).isNull();
+
+    final List<String> expected = new ArrayList<>();
+    for (int i = 0; i < properties; i++)
+      expected.add("p" + i);
+    assertThat(type.getPolymorphicPropertiesWithDefaultDefined()).containsExactlyInAnyOrderElementsOf(expected);
+
+    database.transaction(() -> {
+      final MutableDocument doc = database.newDocument("Probe").save();
+      assertThat(doc.has("doomed")).isFalse();
+      for (int i = 0; i < properties; i++)
+        assertThat(doc.getString("p" + i)).isEqualTo("v" + i);
+    });
+  }
+
+  /**
    * Closes the database, rewrites one property's persisted default in schema.json to something this release would
    * reject at DDL time, and reopens - standing in for a database created by an earlier release.
    */

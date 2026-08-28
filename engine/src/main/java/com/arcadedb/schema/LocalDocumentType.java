@@ -52,6 +52,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 
 public class LocalDocumentType implements DocumentType {
@@ -75,11 +76,15 @@ public class LocalDocumentType implements DocumentType {
   protected       BucketSelectionStrategy           bucketSelectionStrategy      = new RoundRobinBucketSelectionStrategy();
   // Names of the OWN properties that declare a DEFAULT. A cache: the authority is the per-property default value, but
   // record creation would otherwise pay an O(properties) scan to find the (usually empty) subset that has one.
-  // Copy-on-write reassigned under schema mutation and read lock-free by every record create through
-  // getPolymorphicPropertiesWithDefaultDefined(): volatile so a creating thread cannot observe a partially built
-  // replacement set, same publication pattern as cachedPolymorphicBuckets above. Maintained in exactly one place,
-  // {@link #setPropertyHasDefault}, so it cannot drift from the properties map again (issue #6799).
-  protected volatile Set<String>                    propertiesWithDefaultDefined = Collections.emptySet();
+  // Copy-on-write and read lock-free by every record create through getPolymorphicPropertiesWithDefaultDefined(), so
+  // the replacement has to be published atomically or a creating thread could observe a half-built set - the same
+  // publication requirement documented on cachedPolymorphicBuckets above. An AtomicReference rather than a volatile
+  // field because the update is a read-copy-write: two ALTER PROPERTY ... DEFAULT statements on two properties of the
+  // same type would otherwise copy the same snapshot and the second publication would drop the first one's name.
+  // Maintained in exactly one place, {@link #setPropertyHasDefault}, so it cannot drift from the properties map
+  // again (issue #6799).
+  private final AtomicReference<Set<String>>        propertiesWithDefaultDefined = new AtomicReference<>(
+      Collections.emptySet());
   // Map: primary bucket id -> external bucket id. Populated lazily when the first EXTERNAL property is
   // set on the type, and persisted in schema.json under the per-type "externalBuckets" key.
   protected final Map<Integer, Integer>             externalBucketIdByPrimaryBucketId = new ConcurrentHashMap<>();
@@ -134,10 +139,11 @@ public class LocalDocumentType implements DocumentType {
 
   @Override
   public Set<String> getPolymorphicPropertiesWithDefaultDefined() {
+    final Set<String> own = propertiesWithDefaultDefined.get();
     if (superTypes.isEmpty())
-      return propertiesWithDefaultDefined;
+      return own;
 
-    final HashSet<String> set = new HashSet<>(propertiesWithDefaultDefined);
+    final HashSet<String> set = new HashSet<>(own);
     for (final LocalDocumentType superType : superTypes)
       set.addAll(superType.getPolymorphicPropertiesWithDefaultDefined());
     return set;
@@ -655,16 +661,23 @@ public class LocalDocumentType implements DocumentType {
    * case (a type with no defaults at all, or a re-set that does not change membership) allocation-free.
    */
   void setPropertyHasDefault(final String propertyName, final boolean hasDefault) {
-    if (hasDefault == propertiesWithDefaultDefined.contains(propertyName))
+    // The common case - a re-set that does not change membership, or a type with no defaults at all - reads the
+    // reference once and neither allocates nor writes.
+    if (hasDefault == propertiesWithDefaultDefined.get().contains(propertyName))
       return;
 
-    final Set<String> updated = new HashSet<>(propertiesWithDefaultDefined);
-    if (hasDefault)
-      updated.add(propertyName);
-    else
-      updated.remove(propertyName);
+    propertiesWithDefaultDefined.updateAndGet(current -> {
+      if (hasDefault == current.contains(propertyName))
+        return current;
 
-    propertiesWithDefaultDefined = updated.isEmpty() ? Collections.emptySet() : Collections.unmodifiableSet(updated);
+      final Set<String> updated = new HashSet<>(current);
+      if (hasDefault)
+        updated.add(propertyName);
+      else
+        updated.remove(propertyName);
+
+      return updated.isEmpty() ? Collections.emptySet() : Collections.unmodifiableSet(updated);
+    });
   }
 
   @Override
