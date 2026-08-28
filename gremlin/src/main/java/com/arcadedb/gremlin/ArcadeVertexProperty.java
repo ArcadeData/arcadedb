@@ -93,6 +93,11 @@ public class ArcadeVertexProperty<T> implements VertexProperty<T> {
    * {@code ElementHelper} compares vertex properties by id alone, so the id must be unique: deriving it from a sum of
    * hash codes made distinct properties of the same vertex compare equal and be deduplicated away (issue #6823).
    * The vertex id is a RID, which never contains the separator, so no pair of (vertex, key) can produce the same id.
+   * <p>
+   * Caveat for a property read off a vertex that has not been saved yet: its id is built from the vertex's transient
+   * id and therefore changes once the vertex gets its RID. A property held in a {@code Set} or a {@code Map} from
+   * before the save is no longer findable there afterwards, because its {@code hashCode()} has moved with it. That is
+   * inherent to an identity anchored on the RID; read the property again after the save.
    */
   @Override
   public Object id() {
