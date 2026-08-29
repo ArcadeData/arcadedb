@@ -523,6 +523,16 @@ class DeltaOverlay {
   }
 
   /**
+   * Returns the exclusive upper bound of the node ID space.
+   * <p>
+   * Overflow slots are allocated monotonically and are not renumbered or reused when a node is deleted, so the
+   * bound includes deleted base and overflow slots even though {@link #getTotalNodeCount()} does not.
+   */
+  int getNodeIdUpperBound() {
+    return baseNodeCount + overflowCount;
+  }
+
+  /**
    * Returns the number of live overflow vertices, i.e. the allocated overflow slots minus the
    * ones that have been deleted. The internal {@code overflowCount} field is a monotonic
    * slot-allocation counter (it drives overflow id assignment and the {@link #isDeleted} bounds

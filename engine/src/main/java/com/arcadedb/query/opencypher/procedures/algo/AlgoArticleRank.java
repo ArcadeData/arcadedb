@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.procedures.algo;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.graph.DenseNodeIdProvider;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
@@ -111,7 +112,10 @@ public class AlgoArticleRank extends AbstractAlgoProcedure {
     final WorkGuard guard = newWorkGuard(context);
 
     // Try CSR-accelerated path
-    final GraphTraversalProvider provider = findProvider(db, null);
+    // Renumbered when the provider's id space has holes in it, so that n below is both the array size and the
+    // exclusive id bound - the two have to be the same number for a rank array indexed by neighbour id
+    // (issue #6792). wrap() is a no-op for a compact id space.
+    final GraphTraversalProvider provider = DenseNodeIdProvider.wrap(findProvider(db, null));
     if (provider != null) {
       context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
       return executeWithCSR(provider, dampingFactor, maxIterations, tolerance, guard);

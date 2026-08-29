@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.graph.DenseNodeIdProvider;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphEngine;
@@ -649,7 +650,10 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
    */
   protected int[][] buildAdjacencyFromProvider(final GraphTraversalProvider provider, final Vertex.DIRECTION dir,
       final String[] relTypes) {
-    final int n = provider.getNodeCount();
+    // The ID space, not the live count: the two differ for a provider that leaves holes behind deleted nodes,
+    // and sizing from the count would leave the highest live nodes out of the adjacency and let a neighbour id
+    // index past the end of it (issue #6792).
+    final int n = provider.getNodeIdUpperBound();
     final int[][] adj = new int[n][];
     for (int i = 0; i < n; i++)
       adj[i] = provider.getNeighborIds(i, dir, relTypes);
@@ -687,7 +691,14 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
         // A Graph Analytical View is shared, pre-built state this call neither allocates nor frees, so its own
         // footprint is not the call's to price. What is the call's is the copy adjacency() takes out of it, and
         // that is reserved there.
-        return new GraphData(provider, provider.getNodeCount(), memory);
+        //
+        // Wrapped so that the node ids reaching the fifty-odd procedures built on GraphData are the compact
+        // 0..nodeCount space they all assume. A view holding overlay deletions does not renumber, so its ids
+        // have holes in them; renumbering here once means no procedure has to size an array from the id bound
+        // and then remember to skip the holes in it, and every procedure written before overlays existed is
+        // correct in front of one (issue #6792). wrap() is a no-op for a compact id space.
+        final GraphTraversalProvider dense = DenseNodeIdProvider.wrap(provider);
+        return new GraphData(dense, dense.getNodeIdUpperBound(), memory);
       }
     }
     return new GraphData(loadVertices(db, nodeLabels, memory), memory);
@@ -701,6 +712,10 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     private static final int[]    EMPTY_NEIGHBORS = new int[0];
     private static final double[] EMPTY_WEIGHTS   = new double[0];
 
+    /**
+     * Size of every node-ID-indexed structure. For a provider-backed graph this is the exclusive node ID bound,
+     * which can exceed the live node count when the provider retains deleted slots as holes.
+     */
     public final int                     nodeCount;
     private final GraphTraversalProvider provider;
     private final List<Vertex>           vertices;

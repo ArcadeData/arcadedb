@@ -96,7 +96,10 @@ public class AlgoWCC extends AbstractAlgoProcedure {
     // own CSR index (GraphAnalyticalView#getCSRIndex), so passing the filter through keeps the
     // parallel algorithm for a filtered call instead of dropping to the single-threaded BFS below.
     final GraphTraversalProvider provider = findProvider(db, relTypes);
-    if (provider instanceof GraphAnalyticalView gav) {
+    // Only while the view is not serving pending changes: the GraphAlgorithms kernel below reads its base CSR
+    // arrays directly and sizes its result from the base node mapping, which is neither the current graph nor
+    // as wide as the id space the view now reports - see GraphTraversalProvider#hasPendingChanges (issue #6792).
+    if (provider instanceof GraphAnalyticalView gav && !gav.hasPendingChanges()) {
       context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
       return executeWithCSR(context, gav, relTypes);
     }

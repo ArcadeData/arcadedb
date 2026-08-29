@@ -1245,6 +1245,47 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return snap.nodeMapping.size();
   }
 
+  /**
+   * The exclusive bound of the dense node ID space, which is <b>not</b> {@link #getNodeCount()} while an overlay
+   * is active: the overlay retains the slot of every deleted node and allocates the ID of every added one above
+   * the base mapping, so the live count shrinks while the largest live ID does not move (issue #6792).
+   */
+  @Override
+  public int getNodeIdUpperBound() {
+    final Snapshot snap = checkBuilt();
+    final DeltaOverlay ov = snap.overlay;
+    if (ov != null)
+      return ov.getNodeIdUpperBound();
+    return snap.nodeMapping.size();
+  }
+
+  /**
+   * True for a node ID this view still holds, false for the slot of one the overlay has deleted.
+   * <p>
+   * Deliberately not phrased as "{@link #getRID(int)} answers non-null": a base node the overlay deleted is
+   * still in the base mapping, so its RID is still there to be read - it just no longer names a node of this
+   * graph. The liveness question has to be asked of the overlay, which is the only thing that knows.
+   */
+  @Override
+  public boolean isNodeLive(final int nodeId) {
+    if (nodeId < 0)
+      return false;
+    final Snapshot snap = checkBuilt();
+    final DeltaOverlay ov = snap.overlay;
+    if (ov == null)
+      return nodeId < snap.nodeMapping.size();
+    return nodeId < ov.getNodeIdUpperBound() && !ov.isDeleted(nodeId);
+  }
+
+  /**
+   * True while committed changes are being served from the delta overlay rather than from the base CSR arrays,
+   * which is the SPI form of {@link #hasActiveOverlay()} - see there for what a caller must do about it.
+   */
+  @Override
+  public boolean hasPendingChanges() {
+    return hasActiveOverlay();
+  }
+
   public int getEdgeCount() {
     final Snapshot snap = checkBuilt();
     int total = 0;
