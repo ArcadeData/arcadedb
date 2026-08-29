@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.graph.DenseNodeIdProvider;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
@@ -58,6 +59,14 @@ public final class CSRCountStep extends AbstractExecutionStep {
       // vertex; one built over a subset of the vertex types would count a subset of the graph (issue #5757).
       if (provider != null && op.requiresFullVertexCoverage() && !provider.coversVertexType(null))
         provider = null;
+
+      // Every CountOp indexes its scratch arrays by node id and iterates the id space from the node count, so
+      // the two have to be the same number. They are not for a provider holding overlay deletions, which keeps
+      // the slot of every deleted node and allocates the id of every added one above the base mapping: the
+      // count then names neither the size of the space nor the ids in it, and the operator both skips the
+      // highest live nodes and indexes past the end of its own arrays (issue #6792). Renumbering here hands the
+      // operators the compact space they are written against; it is a no-op when there are no holes.
+      provider = DenseNodeIdProvider.wrap(provider);
 
       final WorkGuard guard = WorkGuard.forCommandDeadline(context);
       final long count;

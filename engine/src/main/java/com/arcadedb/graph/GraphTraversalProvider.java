@@ -52,13 +52,53 @@ public interface GraphTraversalProvider {
    * Returns the exclusive upper bound of node IDs this provider can expose.
    * <p>
    * Every ID returned by {@link #getNodeId(RID)} or {@link #getNeighborIds(int, Vertex.DIRECTION, String...)} is
-   * smaller than this bound. The range may contain holes, so node-indexed arrays must be sized from this method
-   * while result enumeration must still tolerate an ID that does not resolve to a live node.
+   * smaller than this bound. The range may contain holes - IDs whose node is gone - so an array indexed by node
+   * ID has to be sized from this method rather than from {@link #getNodeCount()}, and an enumeration of it has
+   * to ask {@link #isNodeLive(int)} about every ID it visits.
+   * <p>
+   * The two answers differ only for a provider that allocates IDs monotonically and does not renumber when a
+   * node is deleted, which is what a delta overlay does: the live count shrinks while the largest live ID does
+   * not move. Sizing from the count then leaves the highest live nodes outside every array - silently absent
+   * from the answer - and lets a neighbour ID index past the end of one (issue #6792).
+   * <p>
+   * A consumer that would rather not carry holes at all wraps the provider in
+   * {@link DenseNodeIdProvider#wrap(GraphTraversalProvider)}, which renumbers them away.
    * <p>
    * The default preserves the compact-ID contract of existing providers.
    */
   default int getNodeIdUpperBound() {
     return getNodeCount();
+  }
+
+  /**
+   * Returns true when {@code nodeId} addresses a node this provider still holds, false for a hole left behind by
+   * a deleted one.
+   * <p>
+   * The companion of {@link #getNodeIdUpperBound()}: the bound says how far the ID space reaches, this says
+   * which of those IDs mean anything. The default is the compact-ID contract - every ID below the bound is
+   * live - which is exactly true for a provider that never leaves holes.
+   */
+  default boolean isNodeLive(final int nodeId) {
+    return nodeId >= 0 && nodeId < getNodeIdUpperBound();
+  }
+
+  /**
+   * Returns true while this provider is serving changes that its raw CSR arrays do not contain.
+   * <p>
+   * <b>The predicate a consumer that reads those arrays directly has to check before it may believe them.</b>
+   * {@link #getNeighborIds}, {@link #countEdges} and every other per-node accessor on this SPI apply the pending
+   * changes themselves and need no such check; the ones that bypass them do:
+   * {@link #getNeighborView(Vertex.DIRECTION, String...)} already answers {@code null} rather than hand back a
+   * stale packed view, and the kernels in {@code GraphAlgorithms} read a
+   * {@code GraphAnalyticalView}'s CSR indices straight off the view, so a caller reaching for one of them must
+   * refuse here and read the graph through this SPI instead.
+   * <p>
+   * Two things go wrong otherwise, and neither raises anything the caller can attribute: the answer is the graph
+   * as it stood at the last build rather than as it stands now, and the arrays those kernels size from the base
+   * node mapping are shorter than the ID space this provider now reports (issue #6792).
+   */
+  default boolean hasPendingChanges() {
+    return false;
   }
 
   /**

@@ -115,7 +115,11 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
     // Not the coarser hasEdgeProperties(): the CSR kernel below reads the weight column directly and falls back
     // to a unit weight when it is missing, so a view materialising some OTHER property would silently answer an
     // unweighted shortest path to a weighted question (issue #6301).
-    if (provider instanceof GraphAnalyticalView gav && gav.servesEdgeProperty(weightProperty, relTypes)) {
+    // Only while the view is not serving pending changes: the GraphAlgorithms kernel below reads its base CSR
+    // arrays directly and sizes its result from the base node mapping, which is neither the current graph nor
+    // as wide as the id space the view now reports - see GraphTraversalProvider#hasPendingChanges (issue #6792).
+    if (provider instanceof GraphAnalyticalView gav && !gav.hasPendingChanges()
+        && gav.servesEdgeProperty(weightProperty, relTypes)) {
       final Stream<Result> accelerated = executeWithCSR(context, gav, startNode.getIdentity(), relTypes, weightProperty, dir);
       // Null means the kernel refused: it reads the CSR arrays directly, and a delta overlay holds edges those
       // arrays do not have (issue #6315). Serving edge properties and being readable array-by-array are two
