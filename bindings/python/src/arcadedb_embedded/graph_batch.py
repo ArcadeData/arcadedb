@@ -49,6 +49,10 @@ class GraphBatch:
         wal_flush: Optional[str] = None,
         pre_allocate_edge_chunks: Optional[bool] = None,
         parallel_flush: Optional[bool] = None,
+        commit_retries: Optional[int] = None,
+        commit_retry_delay_ms: Optional[int] = None,
+        chunk_cache_capacity: Optional[int] = None,
+        max_deferred_incoming_edges: Optional[int] = None,
     ) -> "GraphBatch":
         """Build a GraphBatch from the Java builder API."""
         try:
@@ -74,6 +78,21 @@ class GraphBatch:
                 builder = builder.withPreAllocateEdgeChunks(pre_allocate_edge_chunks)
             if parallel_flush is not None:
                 builder = builder.withParallelFlush(parallel_flush)
+            if commit_retries is not None:
+                builder = builder.withCommitRetries(commit_retries)
+            if commit_retry_delay_ms is not None:
+                # Java takes a long here; JPype picks the overload from the
+                # Python int, but be explicit so a large delay cannot land on
+                # an int-typed candidate.
+                builder = builder.withCommitRetryDelay(
+                    jpype.JLong(commit_retry_delay_ms)
+                )
+            if chunk_cache_capacity is not None:
+                builder = builder.withChunkCacheCapacity(chunk_cache_capacity)
+            if max_deferred_incoming_edges is not None:
+                builder = builder.withMaxDeferredIncomingEdges(
+                    max_deferred_incoming_edges
+                )
 
             return cls(java_database, builder.build())
         except ValueError:

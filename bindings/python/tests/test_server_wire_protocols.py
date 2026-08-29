@@ -135,32 +135,24 @@ def test_postgres_wire_answers_a_query(wire_server):
     assert any("alpha" in str(r) for r in rows), rows
 
 
-@pytest.mark.xfail(
-    reason="engine ignores arcadedb.redis.port; binds 6379 (ArcadeDB #5796)",
-    strict=True,
-)
 def test_redis_port_setting_is_honored(wire_server):
-    """arcadedb.redis.port is accepted and ignored.
+    """arcadedb.redis.port is honoured, like the Postgres and Bolt ports.
 
-    Measured 2026-08-01 on 26.8.1.dev24. With all three plugins enabled and a
-    distinct port passed to each, the startup log reads:
+    This was an xfail(strict) until 2026-08-11. Redis ignored the setting and
+    always bound 6379, while Postgres and Bolt honoured theirs through the
+    same passthrough: ServerPlugin.configure() is handed the server's
+    ContextConfiguration, and the Redis plugin dropped the argument and read
+    the static GlobalConfiguration default at startService(). Bolt had carried
+    the identical bug until #3809, so two plugins were converted and two were
+    left behind.
 
-        [PostgresNetworkListener] Listening ... on 0.0.0.0:56857   <- ours
-        [BoltNetworkListener]     Listening ... on 0.0.0.0:38377   <- ours
-        [RedisNetworkListener]    Listening ... on 0.0.0.0:6379    <- default
+    Filed as ArcadeDB #5796 on 2026-08-03, fixed upstream and closed
+    2026-08-07. The strict marker is what reported the fix: the test began
+    passing and CI turned red on the XPASS rather than going quietly green.
+    It now guards the fix instead of the bug.
 
-    So the setting reaches the engine (Postgres and Bolt honour theirs by the
-    same passthrough) and the Redis listener does not read it. xfail(strict)
-    so this turns into a failure the day it is fixed, rather than sitting here
-    as a permanently green skip.
-
-    Root-caused and filed as ArcadeDB #5796 on 2026-08-03. ServerPlugin
-    .configure() is handed the server's ContextConfiguration; Postgres and
-    Bolt read the port from it, while Redis drops the argument and reads the
-    static GlobalConfiguration default at startService(). MongoDB has the same
-    shape (untested here, that jar is excluded from the wheel). Bolt carried
-    the identical bug until #3809 fixed it, so two plugins were converted and
-    two were left behind.
+    MongoDB has the same plugin shape and is untested here, since that jar is
+    excluded from the wheel.
     """
     _, ports = wire_server
     assert _wait(
