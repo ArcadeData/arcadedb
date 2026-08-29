@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.graph.DenseNodeIdProvider;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
@@ -93,7 +94,10 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
     final WorkGuard guard = newWorkGuard(context);
 
     // Try CSR-accelerated path
-    final GraphTraversalProvider provider = findProvider(db, relTypes);
+    // Renumbered when the provider's id space has holes in it, so that n below is both the array size and the
+    // exclusive id bound - the two have to be the same number for a rank array indexed by neighbour id
+    // (issue #6792). wrap() is a no-op for a compact id space.
+    final GraphTraversalProvider provider = DenseNodeIdProvider.wrap(findProvider(db, relTypes));
     if (provider != null) {
       final int sourceIdx = provider.getNodeId(sourceVertex.getIdentity());
       if (sourceIdx >= 0) {
