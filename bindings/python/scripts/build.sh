@@ -373,6 +373,21 @@ else
         NEWEST=$(ls -t dist/*.whl | head -n1)
         if [[ "$NEWEST" -nt "$BUILD_START_MARKER" ]]; then
             echo -e "${GREEN}✅ Wheel file created successfully!${NC}"
+        elif [[ -n "$JAR_LIB_DIR" ]]; then
+            # MTIME IS A HEURISTIC; THE SHA256 BELOW IS THE FACT.
+            #
+            # `docker cp` preserves the timestamp from inside the container, so a
+            # run whose layers all cache-hit copies out a wheel stamped when the
+            # layer was first built. The wheel is correct and current, and the
+            # -nt test calls it stale. That failed a pinned-pair build whose
+            # wheel carried exactly the right engine commit.
+            #
+            # When JAR_LIB_DIR is set, the next step compares the SHA256 of the
+            # integration jar INSIDE the wheel against the one on disk and exits
+            # 1 on mismatch. That is a content check and strictly stronger, so
+            # let it be the gate rather than failing here on a file date.
+            echo -e "${YELLOW}⚠️  No wheel newer than this run; docker layers likely all cached.${NC}"
+            echo -e "${YELLOW}   Deferring to the SHA256 jar verification below, which is authoritative.${NC}"
         else
             echo -e "${RED}❌ No wheel was produced by this build${NC}"
             echo -e "${YELLOW}💡 dist/ still holds only wheels older than this run:${NC}"
