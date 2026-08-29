@@ -24,9 +24,6 @@ except Exception:  # not installed: fall back to the build-time file
 # Import async execution
 from .async_executor import AsyncExecutor
 
-# Import citation helper
-from .citation import cite
-
 # Import core database classes
 from .core import (
     Database,
@@ -89,8 +86,6 @@ __all__ = [
     "Document",
     "Vertex",
     "Edge",
-    # Citation
-    "cite",
     # Build provenance
     "jar_fingerprint",
     "create_database",

@@ -148,7 +148,6 @@ Versions are automatically extracted from the main ArcadeDB `pom.xml`. See [vers
 ```bash
 arcadedb_embedded/
 ├── async_executor.py    # Asynchronous command/query + record execution
-├── citation.py          # Citation helper
 ├── core.py              # Database and DatabaseFactory
 ├── exceptions.py        # ArcadeDBError exception
 ├── exporter.py          # Data export (JSONL, GraphML, GraphSON, CSV)
