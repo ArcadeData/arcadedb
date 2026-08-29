@@ -39,6 +39,20 @@ on:
         required: false
         default: "0[1-9]_*.py 1[0-9]_*.py 2[0-9]_*.py"
 
+# SUPERSEDE, do not race.
+#
+# A force-push to a PR branch left the OLD run going alongside the new one: on
+# #6889 both 118b347ce and 75293c7a2 ran at once, and the stale one reported a
+# failure that the newer commit had already fixed. Anyone reading the PR sees a
+# red check against work that is done.
+#
+# cancel-in-progress is scoped to pull_request ONLY. On a push to a long-lived
+# branch a superseded run is often the one you still want -- it is the record
+# for that commit -- so those are left to finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   EXAMPLES: ${{ inputs.examples || '0[1-9]_*.py 1[0-9]_*.py 2[0-9]_*.py' }}
 
@@ -284,19 +298,69 @@ jobs:
           # Determine which examples are selected
           examples=$(ls $EXAMPLES 2>/dev/null || true)
 
+          # EXIT 75 MEANS "THE DATASET HOST IS DOWN", NOT "THE BINDINGS BROKE".
+          #
+          # On 2026-08-29 the TLS certificate for files.grouplens.org expired and
+          # every job here went red on BOTH this fork and upstream's main -- 11
+          # and 12 jobs, every OS, Python 3.10 through 3.14 -- at this step,
+          # before a single example ran. Re-running does not help: a re-run
+          # happens now, and the certificate is still expired.
+          #
+          # The cost is not the lost coverage, it is that upstream's main showed
+          # a failing run titled with a Python bindings PR. A third party letting
+          # a certificate lapse must not be indistinguishable from a regression
+          # we introduced.
+          #
+          # So: skip the examples that need the dataset, keep running the rest,
+          # and say plainly why. Any other non-zero exit is still a hard failure.
+          SKIPPED_DATASETS=""
+          fetch() {  # fetch <label> <download_data.py args...>
+            local label="$1"; shift
+            # rc MUST be captured in the else branch. After `if cmd; then ...; fi`
+            # with no else, the IF STATEMENT returns 0, so a `$?` read after `fi`
+            # is the if's status and not the command's -- which silently turned
+            # every failure into "exited 0" and would have made this skip
+            # everything, including real ones.
+            local rc=0
+            if python3 download_data.py "$@"; then
+              return 0
+            else
+              rc=$?
+            fi
+            if [ "$rc" -eq 75 ]; then
+              echo "::warning title=Dataset unavailable::$label host unreachable; skipping examples that need it"
+              SKIPPED_DATASETS="$SKIPPED_DATASETS $label"
+              return 0
+            fi
+            echo "::error title=Dataset download failed::$label exited $rc"
+            return "$rc"
+          }
+
           if echo "$examples" | grep -qE '(^|[[:space:]])(04_csv_import_documents|05_csv_import_graph|06_vector_search_recommendations)\.py([[:space:]]|$)'; then
             echo "📥 Downloading MovieLens Small dataset..."
-            python3 download_data.py movielens-small
+            fetch movielens-small movielens-small
           fi
 
           if echo "$examples" | grep -qE '(^|[[:space:]])(07_stackoverflow_tables_oltp|08_stackoverflow_tables_olap|09_stackoverflow_graph_oltp|10_stackoverflow_graph_olap|13_stackoverflow_hybrid_queries)\.py([[:space:]]|$)'; then
             echo "📥 Downloading Stack Overflow Tiny dataset (no vectors)..."
-            python3 download_data.py stackoverflow-tiny --no-vectors
+            fetch stackoverflow-tiny-novec stackoverflow-tiny --no-vectors
           fi
 
           if echo "$examples" | grep -qE '(^|[[:space:]])(11_vector_index_build|12_vector_search)\.py([[:space:]]|$)'; then
             echo "📥 Downloading Stack Overflow Tiny dataset (with vectors)..."
-            python3 download_data.py stackoverflow-tiny
+            fetch stackoverflow-tiny stackoverflow-tiny
+          fi
+
+          # HAND THE SKIP LIST TO THE NEXT STEP.
+          #
+          # Each step is its own shell, so SKIPPED_DATASETS dies here. Without
+          # this the download skips politely and the example loop then runs
+          # 04_csv_import_documents.py --dataset movielens-small against data
+          # that was never fetched -- the job still fails, just later and with a
+          # worse error. Caught in review on #6889.
+          echo "SKIPPED_DATASETS=$(echo $SKIPPED_DATASETS | xargs)" >> "$GITHUB_ENV"
+          if [ -n "$(echo $SKIPPED_DATASETS | xargs)" ]; then
+            echo "::notice title=Datasets unavailable::skipping examples that need:$SKIPPED_DATASETS"
           fi
 
       - name: Install timeout command (macOS only)
@@ -347,9 +411,32 @@ jobs:
             TIMEOUT_CMD="timeout"
           fi
 
+          # WHICH EXAMPLES NEED WHICH DATASET. Same grouping the download step
+          # uses to decide what to fetch, kept in the same file so the two
+          # cannot drift into disagreeing about what a dataset is for.
+          needs_dataset() {  # <example.py> -> prints the label, or nothing
+            case "$1" in
+              04_csv_import_documents.py|05_csv_import_graph.py|06_vector_search_recommendations.py)
+                echo "movielens-small" ;;
+              07_stackoverflow_tables_oltp.py|08_stackoverflow_tables_olap.py|09_stackoverflow_graph_oltp.py|10_stackoverflow_graph_olap.py|13_stackoverflow_hybrid_queries.py)
+                echo "stackoverflow-tiny-novec" ;;
+              11_vector_index_build.py|12_vector_search.py)
+                echo "stackoverflow-tiny" ;;
+            esac
+          }
+
           # Run each example
           for example in $examples; do
             total=$((total + 1))
+
+            # Skip, do not fail, when the dataset host was unreachable. Counted
+            # as skipped and named, so a reader can tell "not run" from "passed".
+            need=$(needs_dataset "$(basename "$example")")
+            if [ -n "$need" ] && echo " ${SKIPPED_DATASETS:-} " | grep -q " $need "; then
+              echo "SKIP $example - dataset '$need' unavailable (third-party host)"
+              skipped=$((skipped + 1))
+              continue
+            fi
 
             # Set example-specific parameters and timeout
             case "$example" in

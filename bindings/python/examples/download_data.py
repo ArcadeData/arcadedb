@@ -99,6 +99,7 @@ import json
 import os
 import re
 import shutil
+import ssl
 import subprocess
 import time
 import urllib.error
@@ -601,6 +602,38 @@ def introduce_null_values_movielens(extract_dir):
     print(f"\n[TIME]  Total CSV NULL injection time: {overall_elapsed:.2f}s")
 
 
+class DatasetUnavailable(RuntimeError):
+    """The dataset host could not be reached. Not a defect in the bindings.
+
+    WHY THIS IS A DISTINCT TYPE. On 2026-08-29 the TLS certificate for
+    files.grouplens.org (University of Minnesota, the MovieLens host) expired,
+    and every `Test Python Examples` job on BOTH this fork and upstream's main
+    went red -- 11 and 12 jobs, every OS, every Python from 3.10 to 3.14. The
+    failing step was `Download datasets`; not one example had run yet.
+
+    Re-running does not help, because a re-run executes now and the certificate
+    is still expired. The examples suite was therefore reporting, to anyone
+    reading upstream's main, that a Python bindings PR had broken something.
+
+    A third party letting a certificate lapse and a genuine regression in these
+    bindings must not look the same. This type is what lets the caller tell them
+    apart: raised ONLY for transport failures reaching the dataset, never for a
+    parse error, a bad checksum, or anything the bindings did.
+    """
+
+
+# Transport-level failures: the host is unreachable, refusing, or presenting a
+# certificate we cannot verify. Deliberately NOT a catch-all -- a zip that
+# downloads and then fails to extract is a real problem and must still fail.
+_TRANSPORT_ERRORS = (
+    urllib.error.URLError,
+    urllib.error.HTTPError,
+    TimeoutError,
+    ConnectionError,
+    ssl.SSLError,
+)
+
+
 def download_movielens(size="large", inject_nulls=True):
     """Download and extract MovieLens dataset.
 
@@ -711,6 +744,13 @@ def download_movielens(size="large", inject_nulls=True):
 
         return extract_dir
 
+    except _TRANSPORT_ERRORS as e:
+        # The HOST failed us, not the code. Distinguished so CI can skip rather
+        # than report a bindings regression that did not happen.
+        print(f"[UNAVAILABLE] Cannot reach the dataset host: {e}")
+        print(f"   URL: {url}")
+        print("   This is a third-party host, not a defect in arcadedb-embedded.")
+        raise DatasetUnavailable(f"{url}: {e}") from e
     except Exception as e:
         print(f"[ERROR] Error downloading dataset: {e}")
         print(f"   You can manually download from: {url}")
@@ -907,6 +947,14 @@ def download_stackoverflow(size="small"):
 
         return extract_dir
 
+    except _TRANSPORT_ERRORS as e:
+        # Same split as movielens: the stackoverflow dumps come from a third
+        # party too, and one unreachable host must not be indistinguishable
+        # from a broken binding.
+        print(f"[UNAVAILABLE] Cannot reach the dataset host: {e}")
+        print(f"   URL: {config['urls'][0]}")
+        print("   This is a third-party host, not a defect in arcadedb-embedded.")
+        raise DatasetUnavailable(f"{config['urls'][0]}: {e}") from e
     except Exception as e:
         print(f"[ERROR] Error downloading dataset: {e}")
         print(f"   You can manually download from: {config['urls'][0]}")
@@ -2723,5 +2771,25 @@ Note: Verification uses smart sampling (100K rows) for fast performance.
     print()
 
 
+# Exit code 75 (EX_TEMPFAIL) for "the dataset host is down".
+#
+# CI needs to tell "skip these examples" from "the bindings are broken" WITHOUT
+# parsing log text, and an exit code is the only channel a shell step reads
+# reliably. 75 is sysexits.h's EX_TEMPFAIL: a temporary failure, retry later --
+# which is exactly the situation, since the certificate will be renewed.
+EXIT_DATASET_UNAVAILABLE = 75
+
+
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except DatasetUnavailable as e:
+        # Not a traceback: a traceback here reads as a crash in the bindings,
+        # which is precisely the confusion this exists to remove.
+        print()
+        print("=" * 70)
+        print("[SKIP] Dataset unavailable, examples needing it cannot run")
+        print("=" * 70)
+        print(f"   {e}")
+        print("   The dataset host is a third party. Nothing here is broken.")
+        raise SystemExit(EXIT_DATASET_UNAVAILABLE)
