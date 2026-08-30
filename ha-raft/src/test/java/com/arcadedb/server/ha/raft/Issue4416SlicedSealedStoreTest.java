@@ -265,11 +265,6 @@ class Issue4416SlicedSealedStoreTest {
   }
 
   /**
-   * A cap so small that a slice cannot even carry its own framing leaves the ceiling AT the per-entry cap, which
-   * is what keeps the pre-existing behaviour intact: such a shard is still skipped and its samples still stay in
-   * the replicated mutable bucket, rather than being shipped as an unbounded run of payload-free entries.
-   */
-  /**
    * The reserve has to grow WITH the slice, because what it absorbs does: a slice of already-compressed sealed
    * blocks can come off the LZ4 encoder larger than it went in, by up to {@code n/255 + 16} bytes. A fixed reserve
    * is under water by the time the entry cap reaches a few megabytes, and an entry over the cap is not a slow
@@ -291,6 +286,11 @@ class Issue4416SlicedSealedStoreTest {
     }
   }
 
+  /**
+   * A cap so small that a slice cannot even carry its own framing leaves the ceiling AT the per-entry cap, which
+   * is what keeps the pre-existing behaviour intact: such a shard is still skipped and its samples still stay in
+   * the replicated mutable bucket, rather than being shipped as an unbounded run of payload-free entries.
+   */
   @Test
   void aCapTooSmallToSliceLeavesTheCeilingAtOneEntry() {
     final ContextConfiguration configuration = new ContextConfiguration();

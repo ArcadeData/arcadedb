@@ -2277,6 +2277,18 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // being refused. Everything but the final slice of each store goes out HERE, ahead of the publishing entry,
       // as a delivery-only entry the follower merely stages; the final slice is handed to replicateSchema below
       // so the install lands in the same entry as the mutable-bucket clear WAL.
+      //
+      // WHAT A FAILURE PART-WAY THROUGH THIS LOOP LEAVES, since the loop makes several quorum round trips where
+      // the whole-file path made one, and nothing here retries or rolls back. The compaction has already run
+      // LOCALLY - the sealed file is swapped and the mutable-bucket clear is committed on this node, because
+      // commit() inside the session buffers the WAL for shipping AFTER applying it here - so a throw leaves this
+      // node sealed and the others still holding those samples in their (fully replicated) mutable bucket. Every
+      // node still answers the same sample count; what diverges is where the samples live, and the page versions
+      // this node advanced past theirs. The recovery is the one that already existed for a failed whole-file
+      // compaction, not a new one: the next entry touching those pages hits a version gap on the followers and
+      // escalates to a snapshot resync, and a follower's part-written staging file is truncated by the first
+      // slice of the next sequence. Deliberately not retried here - a retry would re-ship a sealed image the next
+      // compaction is about to rewrite anyway.
       final long sealedChunkBudget = GlobalConfiguration.replicatedSealedChunkBudget(proxied.getConfiguration());
       final List<RaftLogEntryCodec.TsSealedBlob> sealedBlobs = new ArrayList<>(recordedSealed.size());
       final List<RaftLogEntryCodec.TsSealedChunk> finalSealedChunks = new ArrayList<>();

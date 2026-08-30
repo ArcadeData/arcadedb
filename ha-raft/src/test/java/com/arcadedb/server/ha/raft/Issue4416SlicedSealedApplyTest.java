@@ -31,6 +31,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.RandomAccessFile;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -169,6 +170,33 @@ class Issue4416SlicedSealedApplyTest {
     stateMachine.applySealedChunks(follower, slice(leaderSealed, 4_096));
 
     assertThat(Files.readAllBytes(new File(followerPath, SEALED_FILE).toPath())).isEqualTo(leaderSealed);
+    assertThat(sealedSampleCountOf(follower)).isEqualTo(sealedSampleCountOf(leader));
+  }
+
+  /**
+   * The first slice must discard a LONGER leftover, not write over its head. {@code RandomAccessFile.write} never
+   * shrinks a file, so a staging file left behind by a longer abandoned sequence would keep its tail underneath
+   * the new one and the reassembly would come out the wrong length.
+   * <p>
+   * It plants the leftover directly rather than producing one, because the leftover this guards against is the
+   * one a FAILED delete leaves - and a delete that fails is not something a test can arrange portably. What it
+   * pins is therefore the invariant rather than the mechanism: offset 0 discards whatever was staged, however
+   * that is implemented. Remove both the truncation and the delete and this fails.
+   */
+  @Test
+  void theFirstSliceDiscardsALongerLeftover() throws Exception {
+    final byte[] leaderSealed = sealedBytesOf(leader);
+    final File staging = new File(followerPath, SEALED_FILE + ArcadeStateMachine.SEALED_STAGING_SUFFIX);
+
+    try (final RandomAccessFile leftover = new RandomAccessFile(staging, "rw")) {
+      leftover.setLength(leaderSealed.length + 8_192L);
+    }
+
+    new ArcadeStateMachine().applySealedChunks(follower, slice(leaderSealed, 4_096));
+
+    assertThat(staging).doesNotExist();
+    assertThat(Files.readAllBytes(new File(followerPath, SEALED_FILE).toPath()))
+        .as("the leftover tail must not have survived under the new image").isEqualTo(leaderSealed);
     assertThat(sealedSampleCountOf(follower)).isEqualTo(sealedSampleCountOf(leader));
   }
 

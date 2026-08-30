@@ -2042,9 +2042,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * not. It is also what keeps a multi-gigabyte sealed store from having to fit in heap on the way in.
    * <p>
    * WHAT MAKES THE SEQUENCE SAFE. Raft applies entries in index order on every node, so the slices arrive in the
-   * order the leader cut them. {@code offset == 0} TRUNCATES the staging file, which is what makes a sequence
-   * abandoned by a leader that died mid-shipment cost nothing: the next leader's first slice discards whatever it
-   * left. Any other slice must find the staging file exactly {@code offset} bytes long - anything else means the
+   * order the leader cut them. {@code offset == 0} TRUNCATES the staging file - through the write handle, so the
+   * truncation cannot be silently skipped the way a failed delete could - which is what makes a sequence abandoned
+   * by a leader that died mid-shipment cost nothing: the next leader's first slice discards whatever it left. Any
+   * other slice must find the staging file exactly {@code offset} bytes long - anything else means the
    * sequence this node holds is not the sequence the leader is sending, and the only honest answer is to stop
    * trusting local state and resync, which is what {@link ReplicationException} asks for (it is caught in
    * {@code applyWithRetry} and turned into a targeted snapshot resync rather than halting the node).
@@ -2083,9 +2084,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
           TimeSeriesSealedStore.sealedFileNameFor(tsType.getName(), chunk.shardIndex()));
       final File staging = new File(target.getPath() + SEALED_STAGING_SUFFIX);
 
-      if (chunk.offset() == 0L)
-        deleteSealedStagingFile(staging);
-      else if (!staging.exists() || staging.length() != chunk.offset())
+      if (chunk.offset() > 0L && (!staging.exists() || staging.length() != chunk.offset()))
         throw new ReplicationException(String.format(
             "TimeSeries sealed slice for '%s' shard %d (db=%s) starts at offset %d but this node has staged %s; "
                 + "the slice sequence is broken, resyncing the database from the leader",
@@ -2093,6 +2092,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
             staging.exists() ? staging.length() + " bytes" : "nothing"));
 
       try (final RandomAccessFile out = new RandomAccessFile(staging, "rw")) {
+        // The first slice truncates, and it does so through the open handle rather than by deleting the file
+        // first. Deleting was the obvious way to write this and it is the wrong one: a delete that fails - a
+        // handle another process still holds on Windows, a permissions hiccup - can only be logged and stepped
+        // over, and RandomAccessFile.write never SHRINKS a file, so the tail of a longer abandoned sequence
+        // would survive underneath the new one. The guards below still catch that (the next slice's offset
+        // check, or the final length check), but only by forcing a full resync - which is precisely the cost
+        // "an abandoned sequence costs nothing" says a restart does not pay. setLength cannot be stepped over:
+        // it truncates or it throws, and throwing here IS the resync signal.
+        if (chunk.offset() == 0L)
+          out.setLength(0);
         out.seek(chunk.offset());
         out.write(chunk.bytes());
         if (chunk.last())
