@@ -786,6 +786,16 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * Sentinel for "this payload's WAL transaction id could not be read", which makes the whole #6848
    * handshake inapplicable: an entry we cannot correlate is one we cannot prove was applied, so the
    * caller keeps the conservative pre-#6848 behaviour (mark nothing, hold the ticket, roll back).
+   * <p>
+   * It shares a value with {@link ArcadeStateMachine#NO_ABANDONED_MARK} and means something entirely
+   * unrelated - that one is a phase-2 ticket sentinel, this one a transaction id. The two are never
+   * compared, assigned to each other, or passed through the same variable; the shared value is a
+   * coincidence of both wanting the one number their domain cannot produce, not a shared protocol.
+   * <p>
+   * {@code Long.MIN_VALUE} is that number here because WAL transaction ids come from a per-database
+   * counter that starts at zero and is only ever negated to flag a compaction entry, so the smallest
+   * id reachable is {@code -Long.MAX_VALUE}. A real id can therefore never collide with this sentinel
+   * and be mistaken for an unreadable payload.
    */
   private static final long UNKNOWN_WAL_TX_ID = Long.MIN_VALUE;
 
