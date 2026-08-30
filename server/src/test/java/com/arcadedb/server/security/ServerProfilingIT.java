@@ -45,6 +45,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.util.Iterator;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -594,8 +595,14 @@ class ServerProfilingIT {
     assertThat(authJohn.getName()).isEqualTo(albert.getName());
 
     final SecurityUserFileRepository repository = new SecurityUserFileRepository("./target/config");
-    assertThat(repository.getUsers().size()).isEqualTo(2);
-    assertThat(repository.getUsers().getFirst().getString("name")).isEqualTo("albert");
+    // Assert WHICH principals were persisted, not which line each landed on: the order of
+    // server-users.jsonl is whatever order ServerSecurity happens to serialize its user store in, and
+    // that is not part of any contract. It used to come out of a ConcurrentHashMap, whose hash order put
+    // "albert" first by luck; persisting the mutation before publishing it now appends the new user, so
+    // "root" comes first. Nothing read the order either way - only this assertion did, and it turned an
+    // internal implementation detail into 11 red tests.
+    final List<String> persistedUsers = repository.getUsers().stream().map(user -> user.getString("name")).toList();
+    assertThat(persistedUsers).containsExactlyInAnyOrder("root", "albert");
   }
 
   private ServerSecurityUser setCurrentUser(final String userName, final DatabaseInternal database) {

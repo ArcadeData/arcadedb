@@ -119,6 +119,9 @@ class GrpcAuthInterceptorTest {
 
     // getUsers() returns Set<String> - need at least one user for security to be enabled
     when(mockSecurity.getUsers()).thenReturn(Collections.singleton("testuser"));
+    // The interceptor re-resolves the session's principal against the live users map on every call, so a
+    // session alone is not enough to be accepted: the principal has to still exist (see #6808).
+    when(mockSecurity.getUser("testuser")).thenReturn(mockUser);
 
     GrpcAuthInterceptor interceptorWithSession = new GrpcAuthInterceptor(mockSecurity, mockSessionManager);
 
@@ -134,6 +137,38 @@ class GrpcAuthInterceptorTest {
     // Handler's startCall should be invoked (call proceeds)
     verify(mockHandler).startCall(any(), any());
     verify(mockCall, never()).close(any(), any());
+  }
+
+  @Test
+  void validateTokenReturnsFalseWhenPrincipalNoLongerExists() {
+    // #6808: an AU- login token is minted against a principal captured at login time. Once that principal
+    // is dropped (or its password rotated), the token must stop working AT ONCE rather than lingering
+    // until the session idle-expires, so the interceptor re-checks the name against the live users map and
+    // drops the now-orphaned session.
+    final HttpAuthSession mockSession = mock(HttpAuthSession.class);
+    final ServerSecurityUser mockUser = mock(ServerSecurityUser.class);
+    when(mockSession.getUser()).thenReturn(mockUser);
+    when(mockUser.getName()).thenReturn("droppeduser");
+    when(mockSessionManager.getSessionByToken("orphan-token")).thenReturn(mockSession);
+
+    // Security is enabled and still holds other principals, but not the one this token was minted for.
+    when(mockSecurity.getUsers()).thenReturn(Collections.singleton("testuser"));
+    when(mockSecurity.getUser("droppeduser")).thenReturn(null);
+
+    final GrpcAuthInterceptor interceptorWithSession = new GrpcAuthInterceptor(mockSecurity, mockSessionManager);
+
+    final Metadata headers = new Metadata();
+    headers.put(Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER), "Bearer orphan-token");
+    headers.put(Metadata.Key.of("x-arcade-database", Metadata.ASCII_STRING_MARSHALLER), "testdb");
+
+    when(mockMethodDescriptor.getFullMethodName()).thenReturn("com.arcadedb.grpc.ArcadeDbService/Query");
+
+    interceptorWithSession.interceptCall(mockCall, headers, mockHandler);
+
+    verify(mockCall).close(any(), any());
+    verify(mockHandler, never()).startCall(any(), any());
+    // The orphaned session is evicted, so it cannot keep answering getSessionByToken() until it expires.
+    verify(mockSessionManager).removeSession("orphan-token");
   }
 
   @Test
