@@ -28,6 +28,7 @@ import java.security.KeyStore;
 import java.security.PrivateKey;
 import java.util.Base64;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Generates a throwaway certificate authority and one CA-signed node certificate for the Raft gRPC mTLS
@@ -56,6 +57,8 @@ final class RaftTestPki {
   /** Short on purpose: these certificates must never outlive the test run that created them. */
   private static final String VALIDITY_DAYS = "2";
   private static final String SUBJECT_ALT_NAMES = "san=dns:localhost,ip:127.0.0.1";
+  /** Hang detector for the keytool subprocess, not a latency bound: generous on purpose. */
+  private static final long   KEYTOOL_TIMEOUT_SECONDS = 120;
 
   private final Path caCertificate;
   private final Path nodeCertificate;
@@ -189,16 +192,38 @@ final class RaftTestPki {
 
   private static void keytool(final String... arguments) throws Exception {
     final Path executable = Path.of(System.getProperty("java.home"), "bin", "keytool");
+    final Path log = Files.createTempFile("arcadedb-keytool-", ".log");
     final ProcessBuilder builder = new ProcessBuilder();
     builder.command().add(executable.toString());
     builder.command().addAll(List.of(arguments));
+    // Output goes to a file rather than a pipe so the bounded wait below is actually reachable: draining
+    // the pipe first would block forever on a hung keytool, before any timeout could fire.
     builder.redirectErrorStream(true);
+    builder.redirectOutput(log.toFile());
 
     final Process process = builder.start();
-    final String output = new String(process.getInputStream().readAllBytes());
-    final int exitCode = process.waitFor();
-    if (exitCode != 0)
-      throw new IllegalStateException(
-          "keytool exited with " + exitCode + " for " + builder.command() + System.lineSeparator() + output);
+    try {
+      // RSA key generation can starve for entropy on a loaded CI runner. A bounded wait turns that into a
+      // named failure instead of a silent hang that only surfaces as the job's wall-clock timeout.
+      if (!process.waitFor(KEYTOOL_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+        process.destroyForcibly();
+        throw new IllegalStateException("keytool did not finish within " + KEYTOOL_TIMEOUT_SECONDS
+            + "s for " + builder.command() + System.lineSeparator() + readQuietly(log));
+      }
+      final int exitCode = process.exitValue();
+      if (exitCode != 0)
+        throw new IllegalStateException("keytool exited with " + exitCode + " for " + builder.command()
+            + System.lineSeparator() + readQuietly(log));
+    } finally {
+      Files.deleteIfExists(log);
+    }
+  }
+
+  private static String readQuietly(final Path file) {
+    try {
+      return Files.readString(file);
+    } catch (final Exception e) {
+      return "<keytool output unavailable: " + e + ">";
+    }
   }
 }

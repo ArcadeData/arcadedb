@@ -31,6 +31,7 @@ import org.apache.ratis.client.RaftClientConfigKeys;
 import org.apache.ratis.conf.Parameters;
 import org.apache.ratis.conf.RaftProperties;
 import org.apache.ratis.grpc.GrpcConfigKeys;
+import org.apache.ratis.grpc.GrpcTlsConfig;
 import org.apache.ratis.metrics.MetricRegistries;
 import org.apache.ratis.metrics.MetricRegistryInfo;
 import org.apache.ratis.metrics.RatisMetricRegistry;
@@ -217,6 +218,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // buildParameters() on each Ratis (re)start. Kept so refreshRaftClient() can rebuild the leader's
   // self-client with the SAME transport configuration: a client built with an empty Parameters would
   // dial the Raft port in plaintext and fail every handshake once TLS is on (issue #3890).
+  // Only meaningful once buildParameters() has RETURNED: it is assigned after the TLS configuration has
+  // been validated and installed, never before, so a ConfigurationException from a bad cert/key/trust path
+  // cannot leave this field pointing at a half-built, TLS-less transport configuration.
   private volatile Parameters                 raftParameters        = new Parameters();
   private final    Object                    leaderChangeNotifier  = new Object();
   private final    Object                    applyNotifier         = new Object();
@@ -3652,14 +3656,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private Parameters buildParameters(final ContextConfiguration configuration) {
     this.allowlistFilter = null;
     final Parameters parameters = new Parameters();
-    this.raftParameters = parameters;
 
     // mTLS first: it is the cryptographic peer identity the allowlist below cannot provide. Throws a
-    // ConfigurationException at startup when enabled with an unusable cert/key/trust path (issue #3890).
-    if (RaftPropertiesBuilder.applyTls(configuration, parameters) != null)
+    // ConfigurationException at startup when enabled with an unusable cert/key/trust path (issue #3890),
+    // which is why raftParameters is published only after this line rather than before it.
+    final GrpcTlsConfig tlsConfig = RaftPropertiesBuilder.applyTls(configuration, parameters);
+    this.raftParameters = parameters;
+    if (tlsConfig != null)
       LogManager.instance().log(this, Level.INFO,
-          "Raft gRPC transport secured with TLS (mutual authentication: %s)",
-          configuration.getValueAsBoolean(GlobalConfiguration.HA_TLS_MUTUAL_AUTH));
+          "Raft gRPC transport secured with TLS (mutual authentication: %s)", tlsConfig.getMtlsEnabled());
 
     if (!configuration.getValueAsBoolean(GlobalConfiguration.HA_PEER_ALLOWLIST_ENABLED))
       return parameters;
