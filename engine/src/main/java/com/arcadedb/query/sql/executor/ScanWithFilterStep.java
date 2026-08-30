@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.BucketIterator;
 import com.arcadedb.exception.TimeoutException;
@@ -32,7 +33,7 @@ import java.util.logging.Level;
  * A combined scan + filter step that evaluates the WHERE predicate immediately after loading each record,
  * avoiding the overhead of creating ResultInternal wrappers for records that don't match the filter.
  * <p>
- * A surviving record is handed downstream as a plain wrapper around the {@link com.arcadedb.database.ImmutableDocument}
+ * A surviving record is handed downstream as a plain wrapper around the {@link ImmutableDocument}
  * it was read from, so every column is still deserialized one at a time, on demand, and only if something actually asks
  * for it. This step used to carry a second "column projection push-down" phase that pre-extracted the SELECT-listed
  * columns into the row instead; it was unreachable by construction and has been removed - see issue #5756 and the note
