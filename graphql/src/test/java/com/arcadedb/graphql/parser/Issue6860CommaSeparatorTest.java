@@ -17,6 +17,9 @@ package com.arcadedb.graphql.parser;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -32,7 +35,10 @@ class Issue6860CommaSeparatorTest {
     // The exact form reported in the issue.
     final Document ast = GraphQLParser.parse("query($t: String, $d: String) { bookByName(name: $t) { id } }");
 
-    assertThat(ast.children.length > 0).isTrue();
+    final VariableDefinitions definitions = findFirst(ast, VariableDefinitions.class);
+    assertThat(definitions.getVariableDefinitions()).hasSize(2);
+    assertThat(definitions.getVariableDefinitions().get(0).getVariableLiteral().getName()).isEqualTo("t");
+    assertThat(definitions.getVariableDefinitions().get(1).getVariableLiteral().getName()).isEqualTo("d");
   }
 
   @Test
@@ -40,7 +46,7 @@ class Issue6860CommaSeparatorTest {
     // The only form accepted before the fix must keep working: the change is a widening, never a swap.
     final Document ast = GraphQLParser.parse("query($t: String $d: String) { bookByName(name: $t) { id } }");
 
-    assertThat(ast.children.length > 0).isTrue();
+    assertThat(findFirst(ast, VariableDefinitions.class).getVariableDefinitions()).hasSize(2);
   }
 
   @Test
@@ -48,7 +54,7 @@ class Issue6860CommaSeparatorTest {
     // Arguments were the one production that required the comma; it must remain accepted.
     final Document ast = GraphQLParser.parse("{ bookBy(id: \"1\", name: \"a\", pageCount: 3) { id } }");
 
-    assertThat(ast.children.length > 0).isTrue();
+    assertThat(argumentNames(ast)).containsExactly("id", "name", "pageCount");
   }
 
   @Test
@@ -57,28 +63,30 @@ class Issue6860CommaSeparatorTest {
     // form was rejected there while every other list production rejected the comma.
     final Document ast = GraphQLParser.parse("{ bookBy(id: \"1\" name: \"a\" pageCount: 3) { id } }");
 
-    assertThat(ast.children.length > 0).isTrue();
+    assertThat(argumentNames(ast)).containsExactly("id", "name", "pageCount");
   }
 
   @Test
   void selectionSetSeparatedByCommasParses() throws Exception {
     final Document ast = GraphQLParser.parse("{ hero { name, friends { name, id } } }");
 
-    assertThat(ast.children.length > 0).isTrue();
+    // The outermost selection set holds `hero` alone; the one below it must hold both selections, not one.
+    assertThat(findFirst(ast, SelectionSet.class).getSelections()).hasSize(1);
+    assertThat(findAll(ast, SelectionSet.class).get(2).getSelections()).hasSize(2);
   }
 
   @Test
   void listValueSeparatedByCommasParses() throws Exception {
     final Document ast = GraphQLParser.parse("{ books(ids: [1, 2, 3]) { id } }");
 
-    assertThat(ast.children.length > 0).isTrue();
+    assertThat((List<?>) findFirst(ast, ListValueWithVariable.class).getValue()).hasSize(3);
   }
 
   @Test
   void objectValueSeparatedByCommasParses() throws Exception {
     final Document ast = GraphQLParser.parse("{ books(filter: {name: \"a\", pageCount: 3}) { id } }");
 
-    assertThat(ast.children.length > 0).isTrue();
+    assertThat((List<?>) findFirst(ast, ObjectValueWithVariable.class).getValue()).hasSize(2);
   }
 
   @Test
@@ -86,7 +94,9 @@ class Issue6860CommaSeparatorTest {
     final Document ast = GraphQLParser.parse(
         "query($a: Int, $b: Int) { books(ids: [$a, $b], filter: {min: $a, max: $b}) { id } }");
 
-    assertThat(ast.children.length > 0).isTrue();
+    assertThat(argumentNames(ast)).containsExactly("ids", "filter");
+    assertThat((List<?>) findFirst(ast, ListValueWithVariable.class).getValue()).hasSize(2);
+    assertThat((List<?>) findFirst(ast, ObjectValueWithVariable.class).getValue()).hasSize(2);
   }
 
   @Test
@@ -98,7 +108,7 @@ class Issue6860CommaSeparatorTest {
           authors: [Author] @relationship(type: "IS_AUTHOR_OF", direction: IN)
         }""");
 
-    assertThat(ast.children.length > 0).isTrue();
+    assertThat(argumentNames(ast)).containsExactly("type", "direction");
   }
 
   @Test
@@ -127,7 +137,13 @@ class Issue6860CommaSeparatorTest {
           SCIFI
         }""");
 
-    assertThat(ast.children.length > 0).isTrue();
+    // Two field definitions on Query - the first of which carries two argument definitions - three on Book, two on
+    // the input type and two enum values: a comma quietly swallowing its neighbour would show up as a short list.
+    assertThat(ast.getDefinitions()).hasSize(4);
+    assertThat(findAll(ast, FieldDefinition.class)).hasSize(5);
+    assertThat(findFirst(ast, ArgumentsDefinition.class).getInputValueDefinitions()).hasSize(2);
+    assertThat(findAll(findFirst(ast, InputObjectTypeDefinition.class), InputValueDefinition.class)).hasSize(2);
+    assertThat(findAll(findFirst(ast, EnumTypeDefinition.class), EnumValueDefinition.class)).hasSize(2);
   }
 
   @Test
@@ -135,7 +151,9 @@ class Issue6860CommaSeparatorTest {
     // The specification treats the comma as pure whitespace, so any number of them anywhere is legal.
     final Document ast = GraphQLParser.parse("query($a: String,,) { bookBy(id: $a,) { id, } }");
 
-    assertThat(ast.children.length > 0).isTrue();
+    assertThat(findFirst(ast, VariableDefinitions.class).getVariableDefinitions()).hasSize(1);
+    assertThat(argumentNames(ast)).containsExactly("id");
+    assertThat(findAll(ast, SelectionSet.class).getLast().getSelections()).hasSize(1);
   }
 
   @Test
@@ -145,7 +163,7 @@ class Issue6860CommaSeparatorTest {
     // matched INTEGER_LITERAL and DIGIT was declared first, so "3" was a syntax error while "42" parsed.
     final Document ast = GraphQLParser.parse("{ books(pageCount: 3, rating: 4.5, offset: 0) { id } }");
 
-    assertThat(ast.children.length > 0).isTrue();
+    assertThat(argumentNames(ast)).containsExactly("pageCount", "rating", "offset");
   }
 
   @Test
@@ -154,14 +172,14 @@ class Issue6860CommaSeparatorTest {
     // the bare HASH token that was declared before it, and a comment line with nothing on it failed to lex.
     final Document ast = GraphQLParser.parse("query {\n#\n  hero { name }\n}");
 
-    assertThat(ast.children.length > 0).isTrue();
+    assertThat(findAll(ast, SelectionSet.class).getFirst().getSelections()).hasSize(1);
   }
 
   @Test
   void commentsAreStillSkipped() throws Exception {
     final Document ast = GraphQLParser.parse("query { # pick the hero\n  hero { name }\n}");
 
-    assertThat(ast.children.length > 0).isTrue();
+    assertThat(findAll(ast, SelectionSet.class).getFirst().getSelections()).hasSize(1);
   }
 
   @Test
@@ -172,7 +190,14 @@ class Issue6860CommaSeparatorTest {
     // fires between two separate directives.
     final Document ast = GraphQLParser.parse("{ bookBy(id: \"1\" name: \"a\") { id } }");
 
-    assertThat(ast.children.length > 0).isTrue();
+    // Asserting on the argument list rather than on "it parsed": if the two literals were joined again the call
+    // would still be a valid one-argument call carrying the joined string, and a non-empty-AST check would pass.
+    final Arguments arguments = findFirst(ast, Arguments.class);
+    assertThat(arguments.getList()).hasSize(2);
+    assertThat(arguments.getList().get(0).getName()).isEqualTo("id");
+    assertThat(stringValueOf(arguments.getList().get(0))).isEqualTo("1");
+    assertThat(arguments.getList().get(1).getName()).isEqualTo("name");
+    assertThat(stringValueOf(arguments.getList().get(1))).isEqualTo("a");
   }
 
   @Test
@@ -180,6 +205,33 @@ class Issue6860CommaSeparatorTest {
     // The escape alternatives are untouched: only the alternative that accepted an *unescaped* quote is gone.
     final Document ast = GraphQLParser.parse("{ noteByText(text: \"He said \\\"hi\\\" to me\") { id } }");
 
-    assertThat(ast.children.length > 0).isTrue();
+    assertThat(stringValueOf(findFirst(ast, Arguments.class).getList().getFirst())).isEqualTo("He said \"hi\" to me");
+  }
+
+  private static List<String> argumentNames(final Document ast) {
+    return findFirst(ast, Arguments.class).getList().stream().map(Argument::getName).toList();
+  }
+
+  private static String stringValueOf(final Argument argument) {
+    return ((StringValue) argument.getValueWithVariable().getValue()).getValue();
+  }
+
+  private static <T> T findFirst(final Node node, final Class<T> type) {
+    final List<T> found = findAll(node, type);
+    assertThat(found).as("no %s node in the parsed document", type.getSimpleName()).isNotEmpty();
+    return found.getFirst();
+  }
+
+  private static <T> List<T> findAll(final Node node, final Class<T> type) {
+    final List<T> found = new ArrayList<>();
+    collect(node, type, found);
+    return found;
+  }
+
+  private static <T> void collect(final Node node, final Class<T> type, final List<T> found) {
+    if (type.isInstance(node))
+      found.add(type.cast(node));
+    for (int i = 0; i < node.jjtGetNumChildren(); i++)
+      collect(node.jjtGetChild(i), type, found);
   }
 }
