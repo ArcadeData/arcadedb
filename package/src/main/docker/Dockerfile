@@ -14,7 +14,7 @@
 # limitations under the License.
 #
 
-FROM eclipse-temurin:21-alpine@sha256:1ff763083f2993d57d0bf374ab10bb3e2cb873af6c13a04458ebbd3e0337dc76
+FROM eclipse-temurin:21-alpine@sha256:6ea5548706b60ac0a602eaf48af74792cbab012d90e811ca8db6184b16b5c3d6
 
 LABEL maintainer="Arcade Data LTD (info@arcadedb.com)"
 LABEL io.modelcontextprotocol.server.name="com.arcadedb/mcp-server"
