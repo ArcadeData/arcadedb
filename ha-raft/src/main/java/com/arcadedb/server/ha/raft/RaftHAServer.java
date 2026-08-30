@@ -989,7 +989,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // as soon as a leader is visible - at that point this node is either a functioning member or a
     // cold-start election completed - or on shutdown.
     if (configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S)) {
-      final KubernetesAutoJoin autoJoin = new KubernetesAutoJoin(arcadeServer, raftGroup, localPeerId, raftProperties);
+      final KubernetesAutoJoin autoJoin = new KubernetesAutoJoin(arcadeServer, raftGroup, localPeerId, raftProperties,
+          parameters);
       final Thread joinThread = new Thread(
           () -> autoJoin.tryAutoJoinWithRetry(() -> !shutdownRequested && getLeaderId() == null),
           "arcadedb-k8s-auto-join");

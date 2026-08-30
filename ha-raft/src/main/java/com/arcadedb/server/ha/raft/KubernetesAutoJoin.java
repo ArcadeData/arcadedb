@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import org.apache.ratis.client.RaftClient;
+import org.apache.ratis.conf.Parameters;
 import org.apache.ratis.conf.RaftProperties;
 import org.apache.ratis.protocol.RaftClientReply;
 import org.apache.ratis.protocol.RaftGroup;
@@ -52,9 +53,11 @@ import java.util.logging.Level;
  * {@code Mode.ADD} is atomic, so concurrent joins from different pods are safe even without
  * additional coordination.
  * <p>
- * <b>Security note:</b> Peer discovery uses DNS resolution of the headless service hostname.
- * The Raft gRPC transport does not enforce cluster-token authentication. In production Kubernetes
- * deployments, restrict gRPC port access to only ArcadeDB StatefulSet pods via a NetworkPolicy.
+ * <b>Security note:</b> Peer discovery uses DNS resolution of the headless service hostname, and the
+ * Raft gRPC transport does not enforce cluster-token authentication. Secure the port with mTLS
+ * ({@code arcadedb.ha.tls.*}, issue #3890) and restrict access to the StatefulSet pods with a
+ * NetworkPolicy. The probe client below inherits the server's transport configuration, so it speaks TLS
+ * exactly when the cluster does.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -112,14 +115,30 @@ public class KubernetesAutoJoin {
   private final RaftGroup      raftGroup;
   private final RaftPeerId     localPeerId;
   private final RaftProperties raftProperties;
+  // Ratis transport parameters of the local server. Ratis carries the gRPC TLS configuration on
+  // Parameters, NOT on RaftProperties, so the probe client below has to be handed these to reach a peer
+  // whose Raft port requires TLS (issue #3890). Never null.
+  private final Parameters     raftParameters;
   private       Sleeper        sleeper = Thread::sleep;
 
+  /**
+   * Builds an auto-join with no transport parameters, so its probe client dials in plaintext. Only
+   * correct for a cluster with {@code arcadedb.ha.tls.enabled=false}; production wiring goes through
+   * {@link #KubernetesAutoJoin(ArcadeDBServer, RaftGroup, RaftPeerId, RaftProperties, Parameters)} with the
+   * same {@link Parameters} the local Ratis server was built from.
+   */
   public KubernetesAutoJoin(final ArcadeDBServer server, final RaftGroup raftGroup,
       final RaftPeerId localPeerId, final RaftProperties raftProperties) {
+    this(server, raftGroup, localPeerId, raftProperties, null);
+  }
+
+  public KubernetesAutoJoin(final ArcadeDBServer server, final RaftGroup raftGroup,
+      final RaftPeerId localPeerId, final RaftProperties raftProperties, final Parameters raftParameters) {
     this.server = server;
     this.raftGroup = raftGroup;
     this.localPeerId = localPeerId;
     this.raftProperties = raftProperties;
+    this.raftParameters = raftParameters != null ? raftParameters : new Parameters();
   }
 
   /** Package-private test hook: replaces the real sleeps so retry tests run instantly. */
@@ -195,6 +214,7 @@ public class KubernetesAutoJoin {
         try (final RaftClient tempClient = RaftClient.newBuilder()
             .setRaftGroup(targetGroup)
             .setProperties(tempProps)
+            .setParameters(raftParameters)
             .setRetryPolicy(PROBE_RETRY_POLICY)
             .build()) {
 
@@ -310,13 +330,16 @@ public class KubernetesAutoJoin {
     return buildProbeProperties();
   }
 
+  /** Package-private for unit testing that the probe client inherits the server's transport configuration. */
+  Parameters probeParametersForTest() {
+    return raftParameters;
+  }
+
   private RaftProperties buildProbeProperties() {
-    // Clone the main server's RaftProperties so TLS, gRPC flow-control, authentication and any
-    // other operator-set security knobs carry over into the short-lived probe client. Starting
-    // from a bare RaftProperties() would silently build a plaintext client that cannot talk to
-    // a TLS-only peer (handshake failure) and - more dangerously - could downgrade a deployment
-    // to plaintext if Ratis ever allowed an unencrypted fallback. Only the probe-specific
-    // timeouts are then overridden.
+    // Clone the main server's RaftProperties so gRPC flow-control, message sizing, authentication and
+    // any other operator-set knobs carry over into the short-lived probe client; only the probe-specific
+    // timeouts are then overridden. Note that the gRPC TLS configuration is NOT among them - Ratis keeps
+    // it on Parameters, which is why raftParameters is threaded in separately and set on the client.
     final RaftProperties props = new RaftProperties(raftProperties);
     props.set("raft.server.rpc.type", "GRPC");
     RaftServerConfigKeys.Rpc.setTimeoutMin(props,
