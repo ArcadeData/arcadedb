@@ -21,6 +21,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * Regression test for issue #6860: the comma is insignificant whitespace in GraphQL, but the grammar declared it as a
@@ -206,6 +207,23 @@ class Issue6860CommaSeparatorTest {
     final Document ast = GraphQLParser.parse("{ noteByText(text: \"He said \\\"hi\\\" to me\") { id } }");
 
     assertThat(stringValueOf(findFirst(ast, Arguments.class).getList().getFirst())).isEqualTo("He said \"hi\" to me");
+  }
+
+  @Test
+  void unescapedBackslashInsideAStringLiteralIsRejected() {
+    // The removed alternative accepted an unescaped backslash as readily as an unescaped quote, as long as
+    // whitespace followed it. GraphQL requires the backslash to be escaped, so this has to be a lexer error now
+    // rather than a literal that silently swallows whatever comes next.
+    final Throwable error = catchThrowable(() -> GraphQLParser.parse("{ noteByText(text: \"a\\ b\") { id } }"));
+
+    assertThat(error).isInstanceOfAny(ParseException.class, TokenMgrException.class);
+  }
+
+  @Test
+  void escapedBackslashInsideAStringLiteralIsKept() throws Exception {
+    final Document ast = GraphQLParser.parse("{ noteByText(text: \"C:\\\\temp\") { id } }");
+
+    assertThat(stringValueOf(findFirst(ast, Arguments.class).getList().getFirst())).isEqualTo("C:\\temp");
   }
 
   private static List<String> argumentNames(final Document ast) {

@@ -117,6 +117,16 @@ public class GraphQLParser {
 }
 PARSER_END(GraphQLParser)
 
+/*
+ * ORDERING HAZARD, applies to every TOKEN and SKIP block below. When two regular expressions match the same input
+ * to the same length, JavaCC breaks the tie by declaration order, and the earlier one wins outright - it does not
+ * matter that the later one is a SKIP entry or a longer-looking literal. So a helper that only ever appears inside
+ * another regular expression must be declared private (a leading '#'), or it silently shadows the real token
+ * wherever the two happen to match equally far. Every bug fixed under issue #6860 was one instance of this:
+ * COMMA shadowed the SKIP entry that discards it, HASH shadowed an empty SKIP_COMMENT, and DIGIT shadowed a
+ * one-character INTEGER_LITERAL. When adding a token here, ask what else matches that same text to that same
+ * length, and where it is declared relative to this one.
+ */
 TOKEN: {
       // The comma is insignificant whitespace in GraphQL (spec section 2.1.6), so it must never reach the
       // parser as a token: it is declared private here purely so <SKIP_INSIGN_COMMA> below can reference it.
