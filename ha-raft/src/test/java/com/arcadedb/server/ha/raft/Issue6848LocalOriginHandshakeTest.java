@@ -61,6 +61,9 @@ class Issue6848LocalOriginHandshakeTest {
 
   private static final String DB_NAME = "issue6848";
 
+  /** Mirrors {@code ArcadeStateMachine.ABANDONED_TX_TTL_MS}; the sweep only collects slots older than it. */
+  private static final long ABANDONED_TX_TTL_MS = 10 * 60 * 1000L;
+
   // Only ever used as the DatabaseContext key (proxied is a mock, nothing touches the filesystem).
   private final String dbPath = "issue6848-local-origin-handshake-" + UUID.randomUUID();
 
@@ -211,6 +214,71 @@ class Issue6848LocalOriginHandshakeTest {
     assertThat(stateMachine.consumeAbandonedLocalTransaction(DB_NAME, 3L))
         .as("forgetting must never drop the abandoned mark: the apply still has to release its ticket")
         .isEqualTo(ticket);
+  }
+
+  /**
+   * The backstop sweep, which no healthy handshake reaches: it must collect an origin-skip slot the
+   * committing thread never came back for, and it must leave an abandoned mark of the same age alone.
+   * Evicting one of those would drop a phase-2 ticket only the apply is allowed to release, which is
+   * the #5410 pinned-checkpoint bug with the blame moved to a background sweep.
+   */
+  @Test
+  void theStrandedSlotSweepCollectsOriginSkipsAndNeverAbandonedMarks() {
+    final long ticket = stateMachine.beginLocalPhase2();
+    stateMachine.claimLocalOriginatedEntry(DB_NAME, 100L);          // an origin-skip slot
+    stateMachine.markLocalTransactionAbandoned(DB_NAME, 101L, ticket); // an abandoned mark, same age
+
+    stateMachine.pruneStrandedLocalTxOutcomes(System.currentTimeMillis() + ABANDONED_TX_TTL_MS + 1_000L);
+
+    assertThat(stateMachine.markLocalTransactionAbandoned(DB_NAME, 100L, ticket))
+        .as("the stranded origin-skip slot must be gone, so a fresh mark finds a free key")
+        .isTrue();
+    assertThat(stateMachine.consumeAbandonedLocalTransaction(DB_NAME, 101L))
+        .as("an abandoned mark carries a ticket only the apply may release: the sweep must not touch it")
+        .isEqualTo(ticket);
+  }
+
+  /**
+   * The sweep is throttled because it runs on the leader's commit path. A stale slot that misses one
+   * window has to survive to the next one rather than being collected on every commit in between.
+   */
+  @Test
+  void theStrandedSlotSweepIsThrottled() {
+    final long farFuture = System.currentTimeMillis() + ABANDONED_TX_TTL_MS + 1_000L;
+    stateMachine.claimLocalOriginatedEntry(DB_NAME, 200L);
+    stateMachine.pruneStrandedLocalTxOutcomes(farFuture);
+
+    // Same age, so equally stale - but only 30 s of the throttle window has elapsed since that sweep.
+    stateMachine.claimLocalOriginatedEntry(DB_NAME, 201L);
+    stateMachine.pruneStrandedLocalTxOutcomes(farFuture + 30_000L);
+
+    // markLocalTransactionAbandoned is the probe that discriminates without disturbing the map:
+    // false means it found the origin-skip slot still there, true means the key was free. Probing
+    // with claimLocalOriginatedEntry instead would re-create the slot and report "still there"
+    // whether or not the sweep had collected it.
+    assertThat(stateMachine.markLocalTransactionAbandoned(DB_NAME, 201L, stateMachine.beginLocalPhase2()))
+        .as("a sweep inside the throttle window must not have run, so the slot is still standing")
+        .isFalse();
+  }
+
+  /**
+   * The uniqueness assumption the arbitration rests on, made loud rather than silent: a second mark
+   * for the same transaction id keeps the first (a held ticket is the safe direction) and reports the
+   * mark as standing, so the caller rolls back instead of double-applying.
+   */
+  @Test
+  void aSecondMarkForTheSameTransactionKeepsTheFirstTicket() {
+    final long firstTicket = stateMachine.beginLocalPhase2();
+    final long secondTicket = stateMachine.beginLocalPhase2();
+
+    assertThat(stateMachine.markLocalTransactionAbandoned(DB_NAME, 55L, firstTicket)).isTrue();
+    assertThat(stateMachine.markLocalTransactionAbandoned(DB_NAME, 55L, secondTicket))
+        .as("the mark still stands, so the caller must roll back rather than apply the entry itself")
+        .isTrue();
+
+    assertThat(stateMachine.claimLocalOriginatedEntry(DB_NAME, 55L))
+        .as("the apply releases the FIRST ticket; the second stays held, which is the safe direction")
+        .isEqualTo(firstTicket);
   }
 
   /**

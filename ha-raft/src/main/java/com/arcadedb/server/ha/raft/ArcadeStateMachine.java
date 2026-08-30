@@ -1584,13 +1584,27 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
     final String key = abandonedKey(databaseName, walTxId);
     final LocalTxOutcome existing = abandonedLocalTransactions.putIfAbsent(key, new AbandonedPhase2(phase2Ticket, now));
-    if (!(existing instanceof OriginSkipped)) {
-      // Either the slot was free (the common case: the apply thread has not reached this entry yet,
-      // or the entry will never commit) or an earlier mark for the same transaction is already there.
-      // Both mean the mark now stands and applyTxEntry is the one that will write the pages.
+    if (existing == null) {
+      // The common case: the apply thread has not reached this entry yet, or the entry will never
+      // commit. Either way the mark now stands and applyTxEntry is the one that will write the pages.
       HALog.log(this, HALog.BASIC,
           "Marked locally-originated tx %d on database '%s' for local apply on commit (replication was indeterminate, #4790)",
           walTxId, databaseName);
+      return true;
+    }
+
+    if (existing instanceof final AbandonedPhase2 firstMark) {
+      // Two commits abandoned the SAME transaction id, which the WAL counter is supposed to make
+      // impossible. putIfAbsent keeps the first mark, so THIS caller's ticket is now held by nobody's
+      // apply - the #5410 pinned-checkpoint condition, for one ticket. Keeping the first mark is the
+      // safe direction (a held ticket costs log compaction, a wrongly released one costs a write), but
+      // it must not be silent: a future change that breaks the uniqueness assumption has to be
+      // diagnosable from the log rather than from an unexplained checkpoint that stops advancing.
+      LogManager.instance().log(this, Level.WARNING,
+          "Transaction id %d on database '%s' was marked abandoned twice (phase-2 tickets %d then %d). "
+              + "WAL transaction ids are expected to be unique per commit; keeping the first mark, so ticket %d "
+              + "stays held until this node restarts (#5410 checkpoint pinning).",
+          walTxId, databaseName, firstMark.phase2Ticket(), phase2Ticket, phase2Ticket);
       return true;
     }
 
@@ -1637,7 +1651,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * charged to every transaction. See {@link #ORIGIN_SKIP_PRUNE_EVERY_MS} for why the slots it
    * collects are the exception rather than the rule, and why their TTL stays long.
    */
-  private void pruneStrandedLocalTxOutcomes(final long now) {
+  // @VisibleForTesting - a backstop nothing reaches on a healthy path is exactly the code that rots
+  // unnoticed, and the invariant that matters (it must never evict an abandoned mark, whose ticket
+  // only the apply may release) is not observable through the handshake alone.
+  void pruneStrandedLocalTxOutcomes(final long now) {
     final long last = lastOriginSkipPruneMs.get();
     if (now - last < ORIGIN_SKIP_PRUNE_EVERY_MS || !lastOriginSkipPruneMs.compareAndSet(last, now))
       return;
