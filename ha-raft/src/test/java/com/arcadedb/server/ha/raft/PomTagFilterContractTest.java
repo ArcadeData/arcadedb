@@ -210,7 +210,13 @@ class PomTagFilterContractTest {
    */
   @Test
   void theScanReachesTheBuild() {
-    assertThat(reactorPoms()).as("pom.xml files found under %s", repositoryRoot()).hasSizeGreaterThan(20);
+    final Path root = repositoryRoot();
+    final List<String> scanned = reactorPoms().stream().map(pom -> root.relativize(pom).toString()).toList();
+
+    // A count alone is a loose canary - a pruning bug that drops several real modules can still clear a floor.
+    // Naming the parent and a module makes it precise: the parent is where the two live rules find their
+    // subject, and a module pom proves the walk descends rather than stopping at the root.
+    assertThat(scanned).as("poms found under %s", root).contains("pom.xml", "ha-raft/pom.xml", "engine/pom.xml").hasSizeGreaterThan(20);
     assertThat(reactorTagParameters())
         .as("plugin-wide tag parameters in the reactor: the parent configures one for surefire and one for failsafe")
         .filteredOn(p -> p.executionId() == null)
@@ -330,6 +336,18 @@ class PomTagFilterContractTest {
   // The rules, expressed over collected parameters so the fixtures above run the same code as the reactor scan.
   // -----------------------------------------------------------------------------------------------------------
 
+  /**
+   * Treats an execution-level parameter that is absent, blank, or nothing but its own user property as equally
+   * open to the command line.
+   * <p>
+   * "Absent" leans on {@link #inheritedTagDefaultsStayOverridableFromTheCommandLine}, and the two rules are load
+   * bearing for each other: Maven merges the plugin-wide {@code <configuration>} into a named execution for
+   * every parameter the execution does not override, so an omitted parameter resolves either to the mojo's own
+   * {@code ${groups}}/{@code ${excludedGroups}} default or to whatever the plugin-wide block says - and it is
+   * the first rule that keeps the latter a property reference rather than a literal. Either way it stays
+   * narrowable from the command line, which is what this rule forbids. Relaxing the first rule would quietly
+   * remove that half of the premise, so relax neither alone.
+   */
   private static List<String> unpinnedPartitionParameters(final List<TagParameter> parameters) {
     final Set<ExecutionKey> partitions = new LinkedHashSet<>();
     for (final TagParameter p : parameters)
