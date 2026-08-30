@@ -74,18 +74,22 @@ surefire's and failsafe's `groups`/`excludedGroups` are configured, because thos
 same-named `-D` user property and getting the precedence wrong is invisible: the build runs the wrong set of
 tests and passes.
 
-It enforces two rules that point in opposite directions:
+It enforces three rules, the first and the last of which point in opposite directions:
 
 - a **plugin-wide** default must be a property reference (`${excludedGroups}`, `${failsafe.excludedGroups}`), so
   a CI lane's `-DexcludedGroups=...` still reaches it. A literal there wins over the command line and every lane
   that filters by tag quietly runs whatever the pom named instead. That is issue #5697;
-- a **named execution** that is one half of a tag *partition* must write out both parameters, so no `-Dgroups`
-  or `-DexcludedGroups` aimed at another module can narrow it. Leaving one out is the same as setting it from
-  the command line, and the result is the quiet one: measured on this tree with surefire 3.5.6,
+- **failsafe's** plugin-wide `<excludedGroups>` must not read the property surefire's reads. Failsafe's own
+  parameter default *is* `${excludedGroups}`, so sharing it applies the unit lane's exclusion to the integration
+  lane and drops e.g. `@Tag("benchmark")` ITs from every `-Pintegration` run. That is the second half of #5697;
+- a **named execution** that is one half of a tag *partition* must write out both parameters, and neither may
+  mention `${groups}` or `${excludedGroups}` anywhere in its value, so no `-Dgroups` or `-DexcludedGroups` aimed
+  at another module can reach it. Leaving one out, or interpolating one into a larger expression, is the same as
+  handing it to the command line, and the result is the quiet one: measured on this tree with surefire 3.5.6,
   `./mvnw -o -pl ha-raft test -Dgroups=bogus-tag` reports `Tests run: 0` and `BUILD SUCCESS`. That is issue
   #6794 - step 5 of the fork-split re-verification recipe, the one step that had no automated guard.
 
-The second rule is here rather than in `engine` because the only executions ever meant to be a tag partition are
+The partition rule is here rather than in `engine` because the only executions ever meant to be a tag partition are
 this module's: the `ha-heavy` split from issue #6343. That split is not on `main` - it was reverted in
 f4567f6176 because it surfaced issue #6848 - so the rule currently has nothing in the reactor to judge and is
 proven able to fail against the split's own configuration as a fixture. It needs no edit to arm itself when the

@@ -211,12 +211,17 @@ class PomTagFilterContractTest {
   @Test
   void theScanReachesTheBuild() {
     final Path root = repositoryRoot();
-    final List<String> scanned = reactorPoms().stream().map(pom -> root.relativize(pom).toString()).toList();
+    // Kept as Path rather than String: a relative path renders with backslashes on Windows, and a canary that
+    // fires on the separator instead of on the thing it watches is worse than no canary.
+    final List<Path> scanned = reactorPoms().stream().map(root::relativize).toList();
 
     // A count alone is a loose canary - a pruning bug that drops several real modules can still clear a floor.
     // Naming the parent and a module makes it precise: the parent is where the two live rules find their
     // subject, and a module pom proves the walk descends rather than stopping at the root.
-    assertThat(scanned).as("poms found under %s", root).contains("pom.xml", "ha-raft/pom.xml", "engine/pom.xml").hasSizeGreaterThan(20);
+    assertThat(scanned)
+        .as("poms found under %s", root)
+        .contains(Path.of("pom.xml"), Path.of("ha-raft", "pom.xml"), Path.of("engine", "pom.xml"))
+        .hasSizeGreaterThan(20);
     assertThat(reactorTagParameters())
         .as("plugin-wide tag parameters in the reactor: the parent configures one for surefire and one for failsafe")
         .filteredOn(p -> p.executionId() == null)
@@ -231,7 +236,7 @@ class PomTagFilterContractTest {
 
   @Test
   void theSplitAsItWasWrittenSatisfiesThePartitionRule() {
-    final List<TagParameter> split = parse(pomWithExecutions("""
+    final List<TagParameter> split = parse(pomWithExecutions("maven-failsafe-plugin", """
         <execution>
           <id>default</id>
           <configuration>
@@ -288,7 +293,49 @@ class PomTagFilterContractTest {
     assertThat(String.join("\n", violations))
         .contains("<groups>")
         .contains("<excludedGroups>")
-        .contains("the command line can still narrow it");
+        .contains("the command line can still narrow it exactly as if it were unset");
+  }
+
+  /**
+   * The same hole one step less obvious, and the reason the check is a containment rather than an equality: Maven
+   * interpolates before surefire parses, so a reference buried in a larger expression, or a reference to the
+   * OTHER parameter's property, hands the command line a term in an expression that was meant to be immune to it.
+   */
+  @Test
+  void anEmbeddedOrCrossReferencedUserPropertyIsReported() {
+    final List<String> violations = unpinnedPartitionParameters(parse(pomWithExecutions("maven-failsafe-plugin", """
+        <execution>
+          <id>default</id>
+          <configuration>
+            <groups>${excludedGroups}</groups>
+            <excludedGroups>ha-heavy | (${excludedGroups})</excludedGroups>
+          </configuration>
+        </execution>
+        """)));
+
+    assertThat(violations).hasSize(2);
+    assertThat(violations.getFirst()).contains("<groups>").contains("interpolates ${excludedGroups}");
+    assertThat(violations.get(1)).contains("<excludedGroups>").contains("interpolates ${excludedGroups}")
+        .doesNotContain("as if it were unset");
+  }
+
+  /**
+   * The namespaced property the split composes in is not the hole above and must not be reported as one: nobody
+   * sets {@code -Dfailsafe.excludedGroups} by accident, and it is the one knob this module's ITs deliberately
+   * still honour. Covered by the whole-split fixture too, isolated here so a tightening of the rule that swallows
+   * it fails with the reason rather than as one line of a larger diff.
+   */
+  @Test
+  void aNamespacedPropertyIsNotAUserPropertyReference() {
+    assertThat(unpinnedPartitionParameters(parse(pomWithExecutions("maven-failsafe-plugin", """
+        <execution>
+          <id>heavy-its-in-their-own-fork</id>
+          <configuration>
+            <groups>ha-heavy</groups>
+            <excludedGroups>${failsafe.excludedGroups}</excludedGroups>
+          </configuration>
+        </execution>
+        """)))).isEmpty();
   }
 
   @Test
@@ -361,13 +408,25 @@ class PomTagFilterContractTest {
             .filter(p -> p.execution().equals(partition) && p.name().equals(name))
             .findFirst().orElse(null);
 
-        if (declared == null)
+        if (declared == null) {
           violations.add("  " + partition + " -> <" + name + "> is not configured, so it resolves through the ${" + name + "} user property");
-        else if (declared.value().isBlank())
+          continue;
+        }
+        if (declared.value().isBlank()) {
           violations.add("  " + declared.where() + " is blank, which is not an expression; write any() & none() for \"nothing\"");
-        else if (declared.value().trim().equals("${" + name + "}"))
-          violations.add("  " + declared.where() + " is only the ${" + name
-              + "} user property, so the command line can still narrow it exactly as if it were unset");
+          continue;
+        }
+
+        // Anywhere in the value, not only as the whole of it. Maven interpolates before surefire ever parses the
+        // tag expression, so "ha-heavy | (${excludedGroups})" hands the command line a term inside an expression
+        // that was supposed to be immune to it - and a reference to the OTHER parameter's property is the same
+        // hole wearing a different name. A namespaced property (${failsafe.excludedGroups}) is not this: it is
+        // the one knob the split composes in on purpose, and it does not contain either literal below.
+        final List<String> reachable = TAG_PARAMS.stream().map(n -> "${" + n + "}").filter(declared.value()::contains).toList();
+        if (!reachable.isEmpty())
+          violations.add("  " + declared.where() + " interpolates " + String.join(" and ", reachable)
+              + ", which -D sets, so the command line can still narrow it"
+              + (declared.value().trim().equals("${" + name + "}") ? " exactly as if it were unset" : ""));
       }
     return violations;
   }
@@ -432,7 +491,15 @@ class PomTagFilterContractTest {
     throw new IllegalStateException("no directory holding both mvnw and pom.xml above " + Path.of("").toAbsolutePath());
   }
 
-  /** Every {@code <groups>}/{@code <excludedGroups>} configured for surefire or failsafe in one pom. */
+  /**
+   * Every {@code <groups>}/{@code <excludedGroups>} configured for surefire or failsafe in one pom.
+   * <p>
+   * Deliberately blind to WHERE the {@code <plugin>} block sits: {@code <build>}, {@code <pluginManagement>} and
+   * any {@code <profile>} are all scanned. A profile is exactly where somebody would put a tag filter that a lane
+   * activates, and neither rule is easier to break there. Descent below the block is the opposite - only direct
+   * children are read, so a same-named element inside an unrelated nested configuration cannot be mistaken for
+   * one of these parameters.
+   */
   private static List<TagParameter> collect(final Document doc, final String pom) {
     final List<TagParameter> parameters = new ArrayList<>();
     final NodeList plugins = doc.getElementsByTagName("plugin");
@@ -483,12 +550,24 @@ class PomTagFilterContractTest {
   }
 
   private static String pomWithExecutions(final String executions) {
-    return pomWithPluginBody("<executions>" + executions + "</executions>");
+    return pomWithExecutions("maven-surefire-plugin", executions);
   }
 
-  /** A minimal surefire declaration wrapping the fragment, so a fixture reads as the pom snippet it stands for. */
+  private static String pomWithExecutions(final String artifactId, final String executions) {
+    return pomWithPluginBody(artifactId, "<executions>" + executions + "</executions>");
+  }
+
   private static String pomWithPluginBody(final String pluginBody) {
-    return "<project><build><plugins><plugin><artifactId>maven-surefire-plugin</artifactId>" + pluginBody + "</plugin></plugins></build></project>";
+    return pomWithPluginBody("maven-surefire-plugin", pluginBody);
+  }
+
+  /**
+   * A minimal plugin declaration wrapping the fragment, so a fixture reads as the pom snippet it stands for. The
+   * artifactId is a parameter only so a fixture modelling a real block can name the plugin that block belongs to;
+   * the rules treat surefire and failsafe identically.
+   */
+  private static String pomWithPluginBody(final String artifactId, final String pluginBody) {
+    return "<project><build><plugins><plugin><artifactId>" + artifactId + "</artifactId>" + pluginBody + "</plugin></plugins></build></project>";
   }
 
   private static List<TagParameter> parse(final String xml) {
