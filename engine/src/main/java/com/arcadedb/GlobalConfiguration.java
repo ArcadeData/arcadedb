@@ -2074,6 +2074,48 @@ public enum GlobalConfiguration {
       stickiness (drop a host from the allowlist as soon as it stops resolving).""",
       Long.class, 300_000L),
 
+  HA_TLS_ENABLED("arcadedb.ha.tls.enabled", SCOPE.SERVER,
+      """
+      Negotiate TLS on the Raft gRPC transport, which carries AppendEntries, RequestVote and the Ratis \
+      admin/client calls between the nodes of a cluster. When true, arcadedb.ha.tls.certChainFile, \
+      arcadedb.ha.tls.privateKeyFile and arcadedb.ha.tls.trustCertCollectionFile must all name a readable PEM \
+      file or the node refuses to start. Default is false so a development or test cluster still starts with \
+      no configuration at all; the peer-address allowlist (arcadedb.ha.peerAllowlist.enabled) is IP-based and \
+      is defeated by a spoofed source address or a compromised peer, so it is a best-effort default rather \
+      than a substitute for TLS on an untrusted network. TLS on the gRPC port does not replace the \
+      X-ArcadeDB-Cluster-Token check on the HTTP side channels (snapshot download, database verify).""",
+      Boolean.class, false),
+
+  HA_TLS_CERT_CHAIN_FILE("arcadedb.ha.tls.certChainFile", SCOPE.SERVER,
+      """
+      PEM file holding this node's Raft gRPC certificate followed by any intermediate CA certificates. The \
+      certificate must carry a subject alternative name matching the address the other nodes use to dial this \
+      node in arcadedb.ha.serverList (on Kubernetes, the pod's stable headless-service DNS name). Required \
+      when arcadedb.ha.tls.enabled is true.""",
+      String.class, ""),
+
+  HA_TLS_PRIVATE_KEY_FILE("arcadedb.ha.tls.privateKeyFile", SCOPE.SERVER,
+      """
+      PEM file holding the PKCS#8 private key that matches arcadedb.ha.tls.certChainFile. Required when \
+      arcadedb.ha.tls.enabled is true.""",
+      String.class, ""),
+
+  HA_TLS_TRUST_CERT_COLLECTION_FILE("arcadedb.ha.tls.trustCertCollectionFile", SCOPE.SERVER,
+      """
+      PEM file holding the cluster CA certificate(s) that sign every node certificate. A peer presenting a \
+      certificate this collection does not chain to is rejected during the TLS handshake, before any Raft \
+      message is read. Required when arcadedb.ha.tls.enabled is true.""",
+      String.class, ""),
+
+  HA_TLS_MUTUAL_AUTH("arcadedb.ha.tls.mutualAuth", SCOPE.SERVER,
+      """
+      Require the dialling peer to present a client certificate signed by the CA collection in \
+      arcadedb.ha.tls.trustCertCollectionFile, binding peer identity to the certificate rather than to a \
+      source IP address. Set to false for server-only TLS, \
+      which encrypts the traffic but leaves the Raft port open to any client that trusts the cluster CA - the \
+      back door this setting exists to close. Only meaningful when arcadedb.ha.tls.enabled is true.""",
+      Boolean.class, true),
+
   // POSTGRES
   POSTGRES_PORT("arcadedb.postgres.port", SCOPE.SERVER,
       "TCP/IP port number used for incoming connections for Postgres plugin. Default is 5432", Integer.class, 5432),

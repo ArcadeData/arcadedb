@@ -213,6 +213,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // Inbound Raft gRPC peer allowlist, recreated on each Ratis (re)start. Periodically refreshed by the
   // health monitor tick so a returned peer's new pod IP is admitted proactively (issue #4696).
   private volatile PeerAddressAllowlistFilter allowlistFilter;
+  // Ratis transport parameters (gRPC TLS conf and the inbound-allowlist services customizer) built by
+  // buildParameters() on each Ratis (re)start. Kept so refreshRaftClient() can rebuild the leader's
+  // self-client with the SAME transport configuration: a client built with an empty Parameters would
+  // dial the Raft port in plaintext and fail every handshake once TLS is on (issue #3890).
+  private volatile Parameters                 raftParameters        = new Parameters();
   private final    Object                    leaderChangeNotifier  = new Object();
   private final    Object                    applyNotifier         = new Object();
   // Upper bound on a single applyNotifier.wait(...) call before the loop re-checks the apply-index
@@ -953,7 +958,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
     this.raftProperties = properties;
 
-    raftClient = buildRaftClient(raftGroup, properties);
+    raftClient = buildRaftClient(raftGroup, properties, parameters);
 
     LogManager.instance()
         .log(this, Level.INFO, "Raft cluster joined: %d nodes %s", peerDisplayNames.size(), peerDisplayNames.values());
@@ -1395,17 +1400,19 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         } else
           startupOption = RaftStorage.StartupOption.RECOVER;
 
+        final Parameters recoveryParameters = buildParameters(configuration);
+
         this.raftServer = RaftServer.newBuilder()
             .setServerId(localPeerId)
             .setGroup(raftGroup)
             .setStateMachine(stateMachine)
             .setProperties(properties)
-            .setParameters(buildParameters(configuration))
+            .setParameters(recoveryParameters)
             .setOption(startupOption)
             .build();
         this.raftServer.start();
         this.raftProperties = properties;
-        this.raftClient = buildRaftClient(raftGroup, properties);
+        this.raftClient = buildRaftClient(raftGroup, properties, recoveryParameters);
 
         final int batchSize = configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_BATCH_SIZE);
         final int queueSize = configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_QUEUE_SIZE);
@@ -1638,7 +1645,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // no broker is available to concurrent callers (the field is volatile).
     final RaftClient oldClient = raftClient;
 
-    raftClient = buildRaftClient(raftGroup, raftProperties, knownLeaderId);
+    raftClient = buildRaftClient(raftGroup, raftProperties, raftParameters, knownLeaderId);
 
     if (transactionBroker != null) {
       final int batchSize = configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_BATCH_SIZE);
@@ -2557,24 +2564,28 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * This uses a bounded retry so a single call returns within a reasonable time, allowing
    * our own retry loop in setConfigurationWithRetry to control the overall timeout.
    */
-  private static RaftClient buildRaftClient(final RaftGroup group, final RaftProperties properties) {
-    return buildRaftClient(group, properties, null);
+  private static RaftClient buildRaftClient(final RaftGroup group, final RaftProperties properties,
+      final Parameters parameters) {
+    return buildRaftClient(group, properties, parameters, null);
   }
 
   /**
-   * Like {@link #buildRaftClient(RaftGroup, RaftProperties)}, but seeds the new client with a
+   * Like {@link #buildRaftClient(RaftGroup, RaftProperties, Parameters)}, but seeds the new client with a
    * known leader peer ID so the first write request routes directly to the leader without a
    * probe round-trip.
+   *
+   * @param parameters the same transport {@link Parameters} the local Ratis server was built with, so the
+   *                   self-client speaks TLS whenever the transport does (issue #3890).
    */
   private static RaftClient buildRaftClient(final RaftGroup group, final RaftProperties properties,
-      final RaftPeerId knownLeaderId) {
+      final Parameters parameters, final RaftPeerId knownLeaderId) {
     // Set the client-side RPC timeout to match the quorum timeout so a slow leader response
     // does not trigger a premature TimeoutIOException before the commit completes.
     RaftClientConfigKeys.Rpc.setRequestTimeout(properties, TimeDuration.valueOf(10, TimeUnit.SECONDS));
     final RaftClient.Builder builder = RaftClient.newBuilder()
         .setRaftGroup(group)
         .setProperties(properties)
-        .setParameters(new Parameters())
+        .setParameters(parameters != null ? parameters : new Parameters())
         .setRetryPolicy(RetryPolicies.retryUpToMaximumCountWithFixedSleep(60, TimeDuration.valueOf(1, TimeUnit.SECONDS)));
     if (knownLeaderId != null)
       builder.setLeaderId(knownLeaderId);
@@ -3640,6 +3651,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private Parameters buildParameters(final ContextConfiguration configuration) {
     this.allowlistFilter = null;
     final Parameters parameters = new Parameters();
+    this.raftParameters = parameters;
+
+    // mTLS first: it is the cryptographic peer identity the allowlist below cannot provide. Throws a
+    // ConfigurationException at startup when enabled with an unusable cert/key/trust path (issue #3890).
+    if (RaftPropertiesBuilder.applyTls(configuration, parameters) != null)
+      LogManager.instance().log(this, Level.INFO,
+          "Raft gRPC transport secured with TLS (mutual authentication: %s)",
+          configuration.getValueAsBoolean(GlobalConfiguration.HA_TLS_MUTUAL_AUTH));
+
     if (!configuration.getValueAsBoolean(GlobalConfiguration.HA_PEER_ALLOWLIST_ENABLED))
       return parameters;
 
