@@ -792,10 +792,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * compared, assigned to each other, or passed through the same variable; the shared value is a
    * coincidence of both wanting the one number their domain cannot produce, not a shared protocol.
    * <p>
-   * {@code Long.MIN_VALUE} is that number here because WAL transaction ids come from a per-database
-   * counter that starts at zero and is only ever negated to flag a compaction entry, so the smallest
-   * id reachable is {@code -Long.MAX_VALUE}. A real id can therefore never collide with this sentinel
-   * and be mistaken for an unreadable payload.
+   * {@code Long.MIN_VALUE} is that number here because a replicated WAL transaction id is either the
+   * per-database counter ({@code TransactionManager.getNextTransactionId()}, an {@code AtomicLong}
+   * starting at zero) or the literal {@code -1} that flags a compaction/sealed-store entry for
+   * {@code forceApply} - the only negative value any writer puts in that header. Nothing negates the
+   * counter, so a real id can never collide with this sentinel and be mistaken for an unreadable
+   * payload.
    */
   private static final long UNKNOWN_WAL_TX_ID = Long.MIN_VALUE;
 

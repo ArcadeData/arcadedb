@@ -411,10 +411,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // O(1) while still bounding the map.
   //
   // It is a backstop, not the main disposal route. Ratis completes a write's client reply from the
-  // applyTransaction future, so on the leader the apply - and therefore the slot - happens BEFORE
-  // replicateTransaction returns, and the committing thread's own finally removes it. What is left
-  // for the sweep is the slots nobody came back for: a committing thread that died, and any exit
+  // applyTransaction future, so on the leader the apply - and therefore the slot - normally happens
+  // BEFORE replicateTransaction returns and the committing thread's own finally removes it. What is
+  // left for the sweep is the slots nobody came back for: a committing thread that died, and any exit
   // where the reply reached it by some other route than its own entry's apply.
+  //
+  // Nothing here is load-bearing on that Ratis ordering. If a reply ever overtook its apply, the only
+  // consequence is a slot removed before it was written and then left for this sweep - map hygiene,
+  // not correctness. The arbitration itself is settled by putIfAbsent in either order, which is the
+  // whole reason it was moved into the map in the first place.
   //
   // The TTL those slots are held for is deliberately NOT tightened to "a few seconds". A slot must
   // outlive the whole window in which its committing thread can still abandon (2 x quorumTimeout
