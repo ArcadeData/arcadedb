@@ -535,7 +535,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       final ArcadeStateMachine stateMachine, final long phase2Ticket) {
     // The correlation key between this thread and the Raft apply thread, read once (8 bytes off the
     // front of the payload) so the abandoned mark and the cleanup below name the same slot (#6848).
-    final long walTxId = localWalTxId(payload);
+    // Only the leader origin-skips its own entries, so only the leader has a slot to name: a replica
+    // pays neither the peek nor a map entry, and its abandoned mark would have been inert anyway
+    // (applyTxEntry sees originatedLocally=false there and applies without ever consulting the map).
+    final long walTxId = leader ? localWalTxId(payload) : UNKNOWN_WAL_TX_ID;
     boolean markedAbandoned = false;
 
     // --- REPLICATION (no lock held): send WAL to Raft and wait for quorum ---

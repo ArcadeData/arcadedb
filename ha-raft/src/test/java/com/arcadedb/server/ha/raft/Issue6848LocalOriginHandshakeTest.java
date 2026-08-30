@@ -160,6 +160,42 @@ class Issue6848LocalOriginHandshakeTest {
         .isEqualTo(ArcadeStateMachine.NO_ABANDONED_MARK);
   }
 
+  /**
+   * The sequence {@code applyTxEntry} actually performs, now that it claims instead of merely
+   * consuming: claim, write the pages, release the returned ticket. `Issue5410AbandonedPhase2TicketTest`
+   * pins this against {@code consumeAbandonedLocalTransaction}, which #6848 took off the apply path,
+   * so the #5410 contract is re-pinned here against the API the apply path really uses.
+   */
+  @Test
+  void claimingAnAbandonedEntryAndReleasingItsTicketUnpinsTheCheckpoint() {
+    final long ticket = stateMachine.beginLocalPhase2();
+    stateMachine.markLocalTransactionAbandoned(DB_NAME, 21L, ticket);
+    assertThat(stateMachine.pendingLocalPhase2Count()).isEqualTo(1);
+
+    stateMachine.endLocalPhase2(stateMachine.claimLocalOriginatedEntry(DB_NAME, 21L));
+
+    assertThat(stateMachine.pendingLocalPhase2Count())
+        .as("once the abandoned entry's pages are written the checkpoint must be free to advance")
+        .isZero();
+  }
+
+  /**
+   * The #5407 half of the same claim: an origin-skipped entry hands back nothing to release, because
+   * its phase 2 is still in flight and holding the replay window open on purpose. A claim that leaked
+   * a ticket here would let a snapshot checkpoint cover an entry whose pages are not on disk yet.
+   */
+  @Test
+  void claimingAnOriginSkippedEntryReleasesNothing() {
+    stateMachine.beginLocalPhase2();
+
+    assertThat(stateMachine.claimLocalOriginatedEntry(DB_NAME, 33L))
+        .as("no mark means the origin-skip branch, which must never release a ticket")
+        .isEqualTo(ArcadeStateMachine.NO_ABANDONED_MARK);
+    assertThat(stateMachine.pendingLocalPhase2Count())
+        .as("the in-flight phase 2 must be untouched")
+        .isEqualTo(1);
+  }
+
   /** The cleanup on the settled paths removes the origin-skip slot and nothing else. */
   @Test
   void forgettingAnEntryDropsTheOriginSkipSlotButNeverAnAbandonedMark() {

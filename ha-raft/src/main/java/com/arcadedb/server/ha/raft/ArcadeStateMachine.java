@@ -407,9 +407,21 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // entry can take a long time to either commit or be overwritten by a new leader.
   private static final long              ABANDONED_TX_TTL_MS           = 10 * 60 * 1000L;
   // The origin-skip slot is written on the leader's hot commit path, so it cannot afford the full
-  // TTL scan the (rare) abandon path runs. The committing thread removes its own slot on every exit,
-  // so this sweep only ever collects slots stranded by a thread that died mid-commit: throttled to
-  // once per window, it keeps the hot path O(1) while still bounding the map.
+  // TTL scan the (rare) abandon path runs; throttled to once per window, this sweep keeps that path
+  // O(1) while still bounding the map.
+  //
+  // It is a backstop, not the main disposal route. Ratis completes a write's client reply from the
+  // applyTransaction future, so on the leader the apply - and therefore the slot - happens BEFORE
+  // replicateTransaction returns, and the committing thread's own finally removes it. What is left
+  // for the sweep is the slots nobody came back for: a committing thread that died, and any exit
+  // where the reply reached it by some other route than its own entry's apply.
+  //
+  // The TTL those slots are held for is deliberately NOT tightened to "a few seconds". A slot must
+  // outlive the whole window in which its committing thread can still abandon (2 x quorumTimeout
+  // plus the grace wait, i.e. 30 s at the default arcadedb.ha.quorumTimeout of 10 s), because a slot
+  // evicted inside that window would let the abandon claim a free key, roll back, and re-open the
+  // #6848 lost write. ABANDONED_TX_TTL_MS clears that bar by an order of magnitude, which is the
+  // point of reusing it.
   private static final long              ORIGIN_SKIP_PRUNE_EVERY_MS    = 60 * 1000L;
   private final        AtomicLong        lastOriginSkipPruneMs         = new AtomicLong();
 
@@ -1619,10 +1631,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
-   * Drops origin-skip slots nothing came back for - the committing thread died mid-commit, or its
-   * outcome settled before this apply landed - at most once per {@link #ORIGIN_SKIP_PRUNE_EVERY_MS}.
-   * Throttled because this runs on the leader's commit path, where the unthrottled full scan
-   * {@link #markLocalTransactionAbandoned} can afford would be charged to every transaction.
+   * Drops origin-skip slots nothing came back for, at most once per
+   * {@link #ORIGIN_SKIP_PRUNE_EVERY_MS}. Throttled because this runs on the leader's commit path,
+   * where the unthrottled full scan {@link #markLocalTransactionAbandoned} can afford would be
+   * charged to every transaction. See {@link #ORIGIN_SKIP_PRUNE_EVERY_MS} for why the slots it
+   * collects are the exception rather than the rule, and why their TTL stays long.
    */
   private void pruneStrandedLocalTxOutcomes(final long now) {
     final long last = lastOriginSkipPruneMs.get();
@@ -1665,6 +1678,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * origin-skip case, where phase 2 already wrote the pages and released its own ticket.
    * <p>
    * Consuming is one-shot so a later replay of the same entry correctly origin-skips again.
+   * <p>
+   * <b>This is NOT the branch {@link #applyTxEntry} takes</b> - it stopped being that in #6848.
+   * Reading the mark is only half of what the apply thread has to do; the other half is publishing
+   * its own decision, and only {@link #claimLocalOriginatedEntry} does both atomically. What survives
+   * here is the read-and-clear on its own, for callers that want to inspect or drain one mark without
+   * claiming the entry: the map's own unit tests, which pin the mark/ticket correlation #5410 added,
+   * and which must keep testing exactly that and not the arbitration on top of it. Do not call this
+   * from an apply path - it would decide without publishing, which is precisely the shape of the
+   * #6848 lost write.
    */
   long consumeAbandonedLocalTransaction(final String databaseName, final long walTxId) {
     final LocalTxOutcome outcome = abandonedLocalTransactions.remove(abandonedKey(databaseName, walTxId));
