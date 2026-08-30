@@ -195,6 +195,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * shipping a store that would previously have been refused, and how much Raft traffic that costs per cycle.
    */
   private final        AtomicLong                                        sealedChunksShipped      = new AtomicLong();
+  private final        AtomicLong                                        sealedChunksMaxSequence  = new AtomicLong();
 
   /**
    * Memoized unreferenced-file count behind the (file modification count, schema version) gate (issue #6168).
@@ -2105,6 +2106,20 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   /**
+   * The most slices any ONE sealed store has been cut into since this database opened (issue #4416).
+   * <p>
+   * The cumulative {@link #getSealedStoreChunksShipped()} cannot answer the question an operator actually has,
+   * which is whether a SINGLE store is producing a burst: a thousand slices reads the same there whether it was
+   * one pathological store or a thousand healthy one-slice ones. This is the burst gauge. Anything at or above
+   * {@link GlobalConfiguration#MAX_REPLICATED_SEALED_CHUNKS} means the WARNING in {@link #sliceSealedBlob} fired
+   * and the leader is holding a FileManager recording session open across that many sequential quorum round
+   * trips, which shows up as leader commit latency (see that constant's javadoc for exactly what it blocks).
+   */
+  public long getSealedStoreMaxSliceSequence() {
+    return sealedChunksMaxSequence.get();
+  }
+
+  /**
    * Cuts a sealed-store image into the ordered slices that will carry it (issue #4416), or returns EMPTY when it
    * fits one entry and must ship inline as a {@link RaftLogEntryCodec.TsSealedBlob} exactly as before.
    * <p>
@@ -2303,6 +2318,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           broker.replicateSealedChunk(getName(), slices.get(i));
         finalSealedChunks.add(slices.getLast());
         sealedSlicesShipped += slices.size();
+        // Per-STORE, not per-session: the burst that costs latency is one store's sequence of round trips, and
+        // summing across stores would hide a single pathological shard behind a busy-but-healthy cycle.
+        sealedChunksMaxSequence.accumulateAndGet(slices.size(), Math::max);
       }
       sealedChunksShipped.addAndGet(sealedSlicesShipped);
 

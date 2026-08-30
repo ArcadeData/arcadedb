@@ -2442,9 +2442,26 @@ public enum GlobalConfiguration {
 
   /**
    * How many entries one sealed store may be sliced into. It bounds the burst a single compaction can put through
-   * the Raft pipeline - every slice is a quorum round trip taken while the compaction holds the database write
-   * lock - and, with the default 4MB per-entry ceiling, puts the per-shard sealed ceiling at ~2GB, which is also
-   * where {@code TimeSeriesSealedStore.readWholeSealedFile} stops (the leader materializes the file as one array).
+   * the Raft pipeline: every slice is its own quorum round trip, taken sequentially.
+   * <p>
+   * WHAT THAT BURST ACTUALLY BLOCKS, because it is not the database write lock and an earlier revision of this
+   * javadoc said it was. The slicing loop in {@code RaftReplicatedDatabase.runWithCompactionReplication} runs
+   * AFTER the compaction callback has returned, so neither {@code TimeSeriesShard.compactionLock} nor the
+   * per-shard lock {@code TimeSeriesEngine.runSealedMaintenanceReplicated} takes is still held - both are
+   * released inside the callback. What stays open for the whole burst is the FileManager RECORDING SESSION, and
+   * its cost falls on other commits on the LEADER: each one calls {@code waitForActiveRecordingSession()} before
+   * dispatching its TX_ENTRY (issue #4083 ordering), which polls until the session ends and then gives up after
+   * {@link #HA_QUORUM_TIMEOUT}. So a long burst degrades leader commit latency up to that timeout and then lets
+   * commits through on the racy path - it does not stall them for the burst's full duration, and it does not
+   * touch reads or follower traffic at all.
+   * <p>
+   * At the stock settings this bound is slack, not binding: the per-entry ceiling is
+   * min({@link #HA_TS_MAX_SEALED_INLINE_SIZE}, min({@link #HA_GRPC_MESSAGE_SIZE_MAX},
+   * {@link #HA_APPEND_BUFFER_SIZE})) = 32MB, so ~68 slices already reach the ~2GB ceiling and nothing can ask for
+   * 512. Reaching this constant at all takes a deliberately lowered append buffer. The ~2GB ceiling itself comes
+   * from the {@link Integer#MAX_VALUE} clamp in {@link #maxReplicatedSealedStoreSize} - where
+   * {@code TimeSeriesSealedStore.readWholeSealedFile} stops, since the leader materializes the file as one array -
+   * NOT from this constant times the cap, which at the stock 32MB would be ~16GB.
    */
   public static final int MAX_REPLICATED_SEALED_CHUNKS = 512;
 

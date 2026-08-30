@@ -292,9 +292,12 @@ class Issue4416SlicedSealedStoreTest {
   // ---- where the ceiling now sits --------------------------------------------------------------------------
 
   /**
-   * The ceiling with stock settings: the 4MB appender limit binds per ENTRY (#4743), and 512 slices of it put the
-   * per-shard sealed store far above the 48MB the inline cap used to impose. The comparison is against the
-   * configured inline cap itself, because that number IS what used to stop the shard sealing.
+   * The ceiling with stock settings: the 32MB append-buffer limit binds per ENTRY (#4743) rather than the 48MB
+   * inline cap, and slicing puts the per-shard sealed store far above the 48MB that cap used to impose. The
+   * comparison is against the configured inline cap itself, because that number IS what used to stop the shard
+   * sealing. Which of the two bounds actually SETS the ceiling is pinned separately by
+   * {@link #atStockSettingsTheCeilingComesFromTheClampNotFromTheSliceCount} - it is the Integer.MAX_VALUE clamp,
+   * not 512 times the budget.
    */
   @Test
   void theDefaultCeilingIsFarAboveTheInlineCap() {
@@ -355,6 +358,67 @@ class Issue4416SlicedSealedStoreTest {
     assertThat(GlobalConfiguration.maxReplicatedSealedEntrySize(configuration)).isEqualTo(1024L * 1024);
     assertThat(GlobalConfiguration.replicatedSealedChunkBudget(configuration))
         .isEqualTo(1024L * 1024 - GlobalConfiguration.REPLICATED_SEALED_CHUNK_FRAMING_BYTES - (1024L * 1024) / 128);
+  }
+
+  /**
+   * The branch nothing else pins: a store needing MORE than {@link GlobalConfiguration#MAX_REPLICATED_SEALED_CHUNKS}
+   * slices is still shipped, whole and intact, rather than refused.
+   * <p>
+   * Refusing here is the tempting alternative and it is WRONG: the leader has already rewritten and swapped its
+   * sealed file by the time the slicer runs, so withholding it leaves every follower on an image no node holds any
+   * more. That is divergence traded for a latency spike. This test is what stops a future "surely we should cap
+   * this" edit from making that trade silently - it fails the moment the slicer starts returning a truncated list
+   * or an empty one.
+   * <p>
+   * Only the maintenance path (retention, downsampling) can reach here: {@code TimeSeriesShard.compactInternal}
+   * has a pre-check that keeps compaction under the ceiling, and {@code runSealedMaintenanceReplicated}
+   * deliberately has none, for the same divergence reason.
+   */
+  @Test
+  void aStoreNeedingMoreSlicesThanExpectedIsShippedANYWAYRatherThanRefused() {
+    final int overTheBound = GlobalConfiguration.MAX_REPLICATED_SEALED_CHUNKS + 137;
+    final byte[] sealed = randomBytes(overTheBound);
+
+    final List<TsSealedChunk> slices = RaftReplicatedDatabase.sliceSealedBlob(
+        new TsSealedBlob(TYPE, 0, FILE, sealed), 1, DB);
+
+    assertThat(slices).as("every byte must still ship - a short list here is silent follower divergence")
+        .hasSize(overTheBound);
+    assertThat(slices.stream().filter(TsSealedChunk::last).count()).as("exactly one slice publishes").isEqualTo(1);
+    assertThat(slices.getLast().last()).isTrue();
+
+    final ByteArrayOutputStream reassembled = new ByteArrayOutputStream();
+    long nextOffset = 0;
+    for (final TsSealedChunk slice : slices) {
+      assertThat(slice.offset()).isEqualTo(nextOffset);
+      assertThat(slice.fileLength()).isEqualTo(sealed.length);
+      reassembled.writeBytes(slice.bytes());
+      nextOffset += slice.bytes().length;
+    }
+    assertThat(reassembled.toByteArray()).as("an oversized sequence still reassembles exactly").isEqualTo(sealed);
+  }
+
+  /**
+   * The regime that made the skip warning's old "%d slices of %d bytes each" sentence arithmetically FALSE: at the
+   * stock settings the {@link Integer#MAX_VALUE} clamp - not
+   * {@link GlobalConfiguration#MAX_REPLICATED_SEALED_CHUNKS} times the budget - is what sets the ceiling, and the
+   * two differ by an order of magnitude. An operator who multiplies the two numbers printed in that message and
+   * does not get the ceiling printed beside them stops believing the message.
+   */
+  @Test
+  void atStockSettingsTheCeilingComesFromTheClampNotFromTheSliceCount() {
+    final ContextConfiguration configuration = new ContextConfiguration();
+
+    final long budget = GlobalConfiguration.replicatedSealedChunkBudget(configuration);
+    final long ceiling = GlobalConfiguration.maxReplicatedSealedStoreSize(configuration);
+
+    assertThat(ceiling).as("the clamp is what binds").isEqualTo(Integer.MAX_VALUE);
+    assertThat(budget * GlobalConfiguration.MAX_REPLICATED_SEALED_CHUNKS)
+        .as("so the product is NOT the ceiling, and a message asserting it is would be wrong")
+        .isGreaterThan(ceiling);
+    assertThat(ceiling / budget).as("the stock ceiling is reached in far fewer than %d slices",
+        GlobalConfiguration.MAX_REPLICATED_SEALED_CHUNKS)
+        .isLessThan(GlobalConfiguration.MAX_REPLICATED_SEALED_CHUNKS);
   }
 
   private static byte[] randomBytes(final int length) {
