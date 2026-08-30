@@ -945,11 +945,13 @@ public class TimeSeriesShard implements AutoCloseable {
     LogManager.instance().log(this, Level.WARNING,
         """
         Skipping HA compaction of TimeSeries '%s' shard %d: projected sealed-store size %d bytes exceeds the %d bytes \
-        a sliced replication sequence can carry (%s x %d slices, never above min(arcadedb.ha.grpcMessageSizeMax, \
-        arcadedb.ha.appendBufferSize) per slice). Data remains in the replicated mutable bucket; raise the cap, raise \
-        arcadedb.ha.appendBufferSize, or reduce retention to re-enable sealing.""",
-        null, typeName, shardIndex, projectedBytes, capBytes, GlobalConfiguration.HA_TS_MAX_SEALED_INLINE_SIZE.getKey(),
-        GlobalConfiguration.MAX_REPLICATED_SEALED_CHUNKS);
+        a sliced replication sequence can carry, which is %d slices of %d bytes each. One slice is bounded by \
+        '%s' and by min(arcadedb.ha.grpcMessageSizeMax, arcadedb.ha.appendBufferSize), whichever is smaller. Data \
+        remains in the replicated mutable bucket; raise either of those settings, or reduce retention, to re-enable \
+        sealing.""",
+        null, typeName, shardIndex, projectedBytes, capBytes, GlobalConfiguration.MAX_REPLICATED_SEALED_CHUNKS,
+        GlobalConfiguration.replicatedSealedChunkBudget(database.getConfiguration()),
+        GlobalConfiguration.HA_TS_MAX_SEALED_INLINE_SIZE.getKey());
   }
 
   private void clearCompactionFlagBestEffort() {

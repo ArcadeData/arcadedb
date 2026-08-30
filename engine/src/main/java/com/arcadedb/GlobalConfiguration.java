@@ -2490,7 +2490,14 @@ public enum GlobalConfiguration {
    */
   public static long maxReplicatedSealedStoreSize(final ContextConfiguration configuration) {
     final long perEntry = maxReplicatedSealedEntrySize(configuration);
-    final long sliced = replicatedSealedChunkBudget(configuration) * MAX_REPLICATED_SEALED_CHUNKS;
+    // Saturating rather than wrapping. It cannot currently change an answer - a budget large enough to overflow
+    // this product needs a per-entry cap of ~18 petabytes, and THAT alone is already far above the
+    // Integer.MAX_VALUE clamp below, which is what the max() then returns either way - but a ceiling that is
+    // correct only because two unrelated bounds happen to cover for each other is one edit away from not being.
+    final long budget = replicatedSealedChunkBudget(configuration);
+    final long sliced = budget >= Long.MAX_VALUE / MAX_REPLICATED_SEALED_CHUNKS
+        ? Long.MAX_VALUE
+        : budget * MAX_REPLICATED_SEALED_CHUNKS;
     return Math.min(Integer.MAX_VALUE, Math.max(perEntry, sliced));
   }
 
