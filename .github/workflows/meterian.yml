@@ -50,7 +50,7 @@ jobs:
         # findings must still be visible, but a score this workflow cannot turn green must not present itself as a
         # failing check. Raising it back to blocking is a deliberate act once the transitive graph is clean.
         continue-on-error: true
-        uses: MeterianHQ/meterian-github-action@6849965b713613691cd357967671da061d968f83 # v1.0.17
+        uses: MeterianHQ/meterian-github-action@9603528ad7eb3e76e7181d8d721bba25665a403d # v1.0.18
         with:
           cli_args: >-
             --exclude-folders=**/bindings/python,**/e2e-go
@@ -71,7 +71,7 @@ jobs:
         continue-on-error: true
         if: success() || failure()
         run: .github/scripts/filter-meterian-sarif.py report.sarif
-      - uses: github/codeql-action/upload-sarif@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v3.29.5
+      - uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v3.29.5
         # continue-on-error here too, or the fix above only half works: a pull request from a FORK gets a read-only
         # token no matter what `security-events: write` says, so this upload cannot succeed there - and it, not the
         # scan, would then turn the job red on exactly the PRs external contributors and Dependabot open. Uploading
