@@ -4039,3 +4039,45 @@ tag have to agree, and neither may be a SNAPSHOT - and fails if the manifest fal
 POM, which is what noticing this in the first place required a human to do.
 
 [#6838](https://github.com/ArcadeData/arcadedb/issues/6838)
+
+## TimeSeries HA: a shard no longer stops sealing when its sealed store outgrows one Raft entry (#4416)
+
+Compaction of a replicated TimeSeries shard ships the rewritten `.ts.sealed` file to the followers inside the same
+Raft entry as the mutable-bucket clear, so the two land atomically and a query never sees a cleared bucket beside a
+stale sealed store. Because the whole file rode one entry, `arcadedb.ha.tsMaxSealedInlineSize` (clamped down to
+`min(arcadedb.ha.grpcMessageSizeMax, arcadedb.ha.appendBufferSize)`) was a ceiling on the sealed STORE and not
+merely on the entry: a shard that crossed it was skipped, and the skip was permanent. The store it refused to ship
+only grows, so the projected size never came back under the cap and that shard never sealed again - correct and
+fully replicated, since the samples stay in the mutable bucket, but never compressed, never retained, never
+downsampled, and the bucket itself unbounded.
+
+A sealed store above one entry is now SLICED. The leader cuts it into ordered slices of at most one entry's worth
+and ships every slice but the last as a delivery-only entry, which the follower stages on disk and nothing more;
+the final slice rides the publishing entry, so the install still happens in the same entry as the clear WAL and
+the atomicity that made the whole-file design safe is unchanged. This is the ordered-prefix contract #4743 built
+for oversized schema entries, applied to a file rather than to a WAL stream, so followers need no new state beyond
+the staging file.
+
+The staging file is on disk rather than in the state machine deliberately: a follower persists its applied index
+between entries, so one that restarts mid-sequence will never be sent the earlier slices again, and a file
+survives that restart. A slice at offset 0 truncates whatever is staged, which makes a sequence abandoned by a
+leader that died mid-shipment cost nothing; any other slice must find the staging file exactly that long. The
+reassembled file is checked against the length and CRC32 the leader recorded for the WHOLE image before it is
+installed - per-slice CRCs only prove each piece survived the wire - and a sequence that does not line up, or a
+reassembly that does not match, refuses to install and asks for a targeted snapshot resync instead of putting the
+node on a sealed store no other node has.
+
+`arcadedb.ha.tsMaxSealedInlineSize` keeps its name and its default (48MB) but now bounds one ENTRY rather than the
+store. The per-shard sealed ceiling becomes that value - still clamped to the transport limit - times 512 slices,
+capped at 2GB because the leader still materializes the file as a single array before slicing it. With stock
+settings that moves the ceiling from 48MB to ~2GB per shard. A shard above the new ceiling is still skipped, with a
+warning that now names what to raise; and a cap configured so small that a slice cannot even carry its own framing
+leaves the ceiling exactly where it was, so a deliberately tiny cap behaves as it always did.
+
+Rolling-upgrade note: the slices travel in a trailing section of `SCHEMA_ENTRY`, which a node running an older
+codec stops before, exactly as the sealed-blob section itself has done since #4382. Such a node installs nothing
+for a sliced store while still applying the mutable-bucket clear, and serves that shard from its previous sealed
+image until it is upgraded and resynced. A leader only produces slices once a store outgrows one entry, so a
+cluster whose stores fit inline is not exposed at all. Upgrade the followers first.
+
+[#4416](https://github.com/ArcadeData/arcadedb/issues/4416)

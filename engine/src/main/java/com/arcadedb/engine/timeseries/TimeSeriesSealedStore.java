@@ -2292,6 +2292,23 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * that forbid replacing a file while it is open.
    */
   public void installSealedFileBytes(final byte[] bytes) throws IOException {
+    final File incoming = new File(basePath + ".ts.sealed.incoming");
+    try (final FileOutputStream fos = new FileOutputStream(incoming)) {
+      fos.write(bytes);
+      fos.getFD().sync();
+    }
+    installSealedFile(incoming);
+  }
+
+  /**
+   * The same install as {@link #installSealedFileBytes(byte[])} for a replacement that is ALREADY a file
+   * (issue #4416): a sealed store too large for one Raft entry reaches a follower as an ordered sequence of
+   * slices, which it stages on disk rather than in heap, so what it has to install is a path and not an array.
+   * <p>
+   * {@code incoming} is CONSUMED - it is moved onto this store's file, so it no longer exists afterwards. On any
+   * failure it is left where it is, for the caller to remove or reuse.
+   */
+  public void installSealedFile(final File incoming) throws IOException {
     directoryLock.writeLock().lock();
     try {
       // Close current handles before replacing the file (required on Windows).
@@ -2307,11 +2324,6 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       }
 
       final File target = new File(basePath + ".ts.sealed");
-      final File incoming = new File(basePath + ".ts.sealed.incoming");
-      try (final FileOutputStream fos = new FileOutputStream(incoming)) {
-        fos.write(bytes);
-        fos.getFD().sync();
-      }
       Files.move(incoming.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
 
       indexFile = new RandomAccessFile(target, "rw");

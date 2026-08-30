@@ -1941,11 +1941,15 @@ public enum GlobalConfiguration {
 
   HA_TS_MAX_SEALED_INLINE_SIZE("arcadedb.ha.tsMaxSealedInlineSize", SCOPE.SERVER,
       """
-      Maximum size in bytes of a TimeSeries sealed-store file that may be shipped inline inside a single \
-      Raft SCHEMA_ENTRY during compaction. When the projected sealed-store size would exceed this cap, the \
-      leader skips compacting that shard (data stays in the fully replicated mutable bucket) instead of \
-      producing an entry too large for the Raft transport. Always clamped down to the real per-entry ceiling, \
-      min(arcadedb.ha.grpcMessageSizeMax, arcadedb.ha.appendBufferSize), so a value above that has no effect.""",
+      Maximum size in bytes of TimeSeries sealed-store content a SINGLE Raft entry may carry during \
+      compaction. A sealed store up to this size ships inline in one SCHEMA_ENTRY; a larger one is sliced \
+      and shipped as an ordered sequence of entries of at most this size each, which the follower stages on \
+      disk and installs atomically with the mutable-bucket clear when the last slice lands (issue #4416). \
+      Always clamped down to the real per-entry ceiling, min(arcadedb.ha.grpcMessageSizeMax, \
+      arcadedb.ha.appendBufferSize), so a value above that has no effect. It therefore no longer bounds the \
+      sealed store itself: what does is this value times MAX_REPLICATED_SEALED_CHUNKS - see \
+      GlobalConfiguration.maxReplicatedSealedStoreSize - and a shard whose projected sealed store exceeds \
+      THAT is still skipped, leaving its samples in the fully replicated mutable bucket.""",
       Long.class, 48 * 1024 * 1024L),
 
   HA_SNAPSHOT_WATCHDOG_TIMEOUT("arcadedb.ha.snapshotWatchdogTimeout", SCOPE.SERVER,
@@ -2476,6 +2480,92 @@ public enum GlobalConfiguration {
     final long grpcMessageSizeMax = configuration.getValueAsLong(HA_GRPC_MESSAGE_SIZE_MAX);
     final long appendBufferSize = FileUtils.getSizeAsNumber(configuration.getValueAsString(HA_APPEND_BUFFER_SIZE));
     return Math.min(grpcMessageSizeMax, appendBufferSize);
+  }
+
+  /**
+   * Bytes reserved, per replicated sealed-store slice, for everything that is not the slice payload: the entry
+   * header, the type and file names, the offsets, the two CRCs and the compression framing. Deliberately generous -
+   * it is subtracted from a multi-megabyte budget, so over-reserving costs a fraction of one slice, while
+   * under-reserving produces an entry above the Raft ceiling, which makes the leader step down (issue #4743).
+   */
+  public static final int REPLICATED_SEALED_CHUNK_FRAMING_BYTES = 4 * 1024;
+
+  /**
+   * How many entries one sealed store may be sliced into. It bounds the burst a single compaction can put through
+   * the Raft pipeline: every slice is its own quorum round trip, taken sequentially.
+   * <p>
+   * WHAT THAT BURST ACTUALLY BLOCKS, because it is not the database write lock and an earlier revision of this
+   * javadoc said it was. The slicing loop in {@code RaftReplicatedDatabase.runWithCompactionReplication} runs
+   * AFTER the compaction callback has returned, so neither {@code TimeSeriesShard.compactionLock} nor the
+   * per-shard lock {@code TimeSeriesEngine.runSealedMaintenanceReplicated} takes is still held - both are
+   * released inside the callback. What stays open for the whole burst is the FileManager RECORDING SESSION, and
+   * its cost falls on other commits on the LEADER: each one calls {@code waitForActiveRecordingSession()} before
+   * dispatching its TX_ENTRY (issue #4083 ordering), which polls until the session ends and then gives up after
+   * {@link #HA_QUORUM_TIMEOUT}. So a long burst degrades leader commit latency up to that timeout and then lets
+   * commits through on the racy path - it does not stall them for the burst's full duration, and it does not
+   * touch reads or follower traffic at all.
+   * <p>
+   * At the stock settings this bound is slack, not binding: the per-entry ceiling is
+   * min({@link #HA_TS_MAX_SEALED_INLINE_SIZE}, min({@link #HA_GRPC_MESSAGE_SIZE_MAX},
+   * {@link #HA_APPEND_BUFFER_SIZE})) = 32MB, so ~68 slices already reach the ~2GB ceiling and nothing can ask for
+   * 512. Reaching this constant at all takes a deliberately lowered append buffer. The ~2GB ceiling itself comes
+   * from the {@link Integer#MAX_VALUE} clamp in {@link #maxReplicatedSealedStoreSize} - where
+   * {@code TimeSeriesSealedStore.readWholeSealedFile} stops, since the leader materializes the file as one array -
+   * NOT from this constant times the cap, which at the stock 32MB would be ~16GB.
+   */
+  public static final int MAX_REPLICATED_SEALED_CHUNKS = 512;
+
+  /**
+   * How many bytes of sealed-store payload one replicated entry may carry (issue #4416): the configured
+   * {@link #HA_TS_MAX_SEALED_INLINE_SIZE}, clamped down to the real per-entry ceiling and less the framing.
+   * <p>
+   * Zero when the configured cap is so small that the framing alone does not fit - a slice cannot be built at
+   * all then, which is why {@link #maxReplicatedSealedStoreSize} falls back to the per-entry cap in that case and
+   * the shard keeps being skipped exactly as it was before slicing existed.
+   */
+  public static long replicatedSealedChunkBudget(final ContextConfiguration configuration) {
+    final long perEntry = maxReplicatedSealedEntrySize(configuration);
+    // The 1/128 is what the FRAMING constant cannot cover: a slice is LZ4-compressed for the wire, and sealed
+    // blocks are ALREADY compressed by their own columnar codecs, so the "compressed" slice can come out LARGER
+    // than the raw one - by up to n/255 + 16 bytes in the worst case. A fixed reserve is the wrong shape for that,
+    // because the overflow grows with the slice while the reserve does not: at a 4MB entry cap the expansion alone
+    // is ~16KB, four times the framing. Reserving a proportion keeps the encoded slice under the cap at every cap.
+    return Math.max(0L, perEntry - REPLICATED_SEALED_CHUNK_FRAMING_BYTES - perEntry / 128);
+  }
+
+  /**
+   * The most sealed-store content one replicated entry may carry: the configured cap, never above what the
+   * transport accepts.
+   */
+  public static long maxReplicatedSealedEntrySize(final ContextConfiguration configuration) {
+    return Math.min(configuration.getValueAsLong(HA_TS_MAX_SEALED_INLINE_SIZE),
+        maxReplicatedRaftEntrySize(configuration));
+  }
+
+  /**
+   * The largest TimeSeries sealed store a replicated shard may hold (issue #4416): what fits one entry, or - when
+   * the cap leaves room for a slice - {@link #MAX_REPLICATED_SEALED_CHUNKS} slices of
+   * {@link #replicatedSealedChunkBudget}. A shard whose projected sealed store exceeds this is not compacted, so
+   * its samples stay in the fully replicated mutable bucket: correct, but uncompressed and unbounded, which is the
+   * state issue #4416 exists to push further away rather than to remove outright.
+   * <p>
+   * The {@code max} is what keeps a deliberately tiny cap behaving as it always did: a store that FITS one entry
+   * ships in one entry whether or not anything could be sliced.
+   * <p>
+   * Clamped to {@link Integer#MAX_VALUE} because the leader reads the whole sealed file into one byte array before
+   * slicing it. Removing that clamp means streaming the file instead, which is a separate change.
+   */
+  public static long maxReplicatedSealedStoreSize(final ContextConfiguration configuration) {
+    final long perEntry = maxReplicatedSealedEntrySize(configuration);
+    // Saturating rather than wrapping. It cannot currently change an answer - a budget large enough to overflow
+    // this product needs a per-entry cap of ~18 petabytes, and THAT alone is already far above the
+    // Integer.MAX_VALUE clamp below, which is what the max() then returns either way - but a ceiling that is
+    // correct only because two unrelated bounds happen to cover for each other is one edit away from not being.
+    final long budget = replicatedSealedChunkBudget(configuration);
+    final long sliced = budget >= Long.MAX_VALUE / MAX_REPLICATED_SEALED_CHUNKS
+        ? Long.MAX_VALUE
+        : budget * MAX_REPLICATED_SEALED_CHUNKS;
+    return Math.min(Integer.MAX_VALUE, Math.max(perEntry, sliced));
   }
 
   /**

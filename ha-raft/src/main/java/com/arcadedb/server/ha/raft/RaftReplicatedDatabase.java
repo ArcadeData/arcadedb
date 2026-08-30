@@ -104,6 +104,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -123,6 +124,7 @@ import java.util.function.IntPredicate;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.logging.Level;
+import java.util.zip.CRC32;
 
 /**
  * A {@link DatabaseInternal} wrapper that intercepts commit() to submit WAL changes through Raft consensus.
@@ -186,6 +188,14 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   private final        AtomicLong                                        schemaInstalmentsShipped = new AtomicLong();
   private final        AtomicLong                                        schemaInstalmentTotalMs  = new AtomicLong();
   private final        AtomicLong                                        schemaInstalmentMaxMs    = new AtomicLong();
+
+  /**
+   * Sealed-store slices this database has shipped since it opened (issue #4416). Zero on every node whose sealed
+   * stores fit one Raft entry, which is what makes it worth reading: a non-zero value says compaction is now
+   * shipping a store that would previously have been refused, and how much Raft traffic that costs per cycle.
+   */
+  private final        AtomicLong                                        sealedChunksShipped      = new AtomicLong();
+  private final        AtomicLong                                        sealedChunksMaxSequence  = new AtomicLong();
 
   /**
    * Memoized unreferenced-file count behind the (file modification count, schema version) gate (issue #6168).
@@ -2156,6 +2166,76 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         toRetire.put(shipped.getKey(), shipped.getValue());
   }
 
+  /** Sealed-store slices this database has shipped since it opened - see {@link #sealedChunksShipped}. */
+  public long getSealedStoreChunksShipped() {
+    return sealedChunksShipped.get();
+  }
+
+  /**
+   * The most slices any ONE sealed store has been cut into since this database opened (issue #4416).
+   * <p>
+   * The cumulative {@link #getSealedStoreChunksShipped()} cannot answer the question an operator actually has,
+   * which is whether a SINGLE store is producing a burst: a thousand slices reads the same there whether it was
+   * one pathological store or a thousand healthy one-slice ones. This is the burst gauge. Anything at or above
+   * {@link GlobalConfiguration#MAX_REPLICATED_SEALED_CHUNKS} means the WARNING in {@link #sliceSealedBlob} fired
+   * and the leader is holding a FileManager recording session open across that many sequential quorum round
+   * trips, which shows up as leader commit latency (see that constant's javadoc for exactly what it blocks).
+   */
+  public long getSealedStoreMaxSliceSequence() {
+    return sealedChunksMaxSequence.get();
+  }
+
+  /**
+   * Cuts a sealed-store image into the ordered slices that will carry it (issue #4416), or returns EMPTY when it
+   * fits one entry and must ship inline as a {@link RaftLogEntryCodec.TsSealedBlob} exactly as before.
+   * <p>
+   * Static and side-effect-free so the arithmetic that a follower's reassembly depends on - contiguous offsets, a
+   * whole-file CRC every slice agrees on, exactly one slice flagged {@code last} - can be pinned without a cluster.
+   * <p>
+   * Slices are cut against {@code budget} rather than against the entry cap directly: the codec compresses each
+   * one, so a slice that fits uncompressed always fits encoded, and the framing the budget already subtracts
+   * covers the rest. A store needing more than {@code MAX_REPLICATED_SEALED_CHUNKS} slices is still shipped -
+   * refusing here would leave the follower holding a stale sealed file the leader has already replaced, which is
+   * divergence - but it is reported, because the shard guard in {@code TimeSeriesShard.compactInternal} is
+   * supposed to have kept it from ever getting this far and the maintenance path (retention, downsampling) has no
+   * such guard.
+   *
+   * @param budget how many raw bytes of sealed content one entry may carry; {@code <= 0} disables slicing
+   */
+  // @VisibleForTesting
+  static List<RaftLogEntryCodec.TsSealedChunk> sliceSealedBlob(final RaftLogEntryCodec.TsSealedBlob blob,
+      final long budget, final String databaseName) {
+    final byte[] bytes = blob.bytes() != null ? blob.bytes() : new byte[0];
+    if (budget <= 0 || bytes.length <= budget)
+      return Collections.emptyList();
+
+    final CRC32 crc = new CRC32();
+    crc.update(bytes);
+    final long fileCrc = crc.getValue();
+
+    final int sliceSize = (int) Math.min(budget, Integer.MAX_VALUE);
+    final int count = (int) (((long) bytes.length + sliceSize - 1) / sliceSize);
+
+    if (count > GlobalConfiguration.MAX_REPLICATED_SEALED_CHUNKS)
+      LogManager.instance().log(RaftReplicatedDatabase.class, Level.WARNING,
+          """
+          Sealed TimeSeries store '%s' of database '%s' is %d bytes and needs %d replicated entries of %d bytes, \
+          above the %d one compaction is expected to produce. Shipping it anyway - withholding it would leave the \
+          other nodes on a sealed store this one has already replaced - but raise arcadedb.ha.appendBufferSize, or \
+          shorten the retention on this type, before the burst starts costing write latency.""",
+          null, blob.fileName(), databaseName, bytes.length, count, sliceSize,
+          GlobalConfiguration.MAX_REPLICATED_SEALED_CHUNKS);
+
+    final List<RaftLogEntryCodec.TsSealedChunk> slices = new ArrayList<>(count);
+    for (int i = 0; i < count; i++) {
+      final int from = (int) ((long) i * sliceSize);
+      final int to = (int) Math.min(bytes.length, (long) from + sliceSize);
+      slices.add(new RaftLogEntryCodec.TsSealedChunk(blob.typeName(), blob.shardIndex(), blob.fileName(),
+          bytes.length, fileCrc, from, Arrays.copyOfRange(bytes, from, to), i == count - 1));
+    }
+    return slices;
+  }
+
   /** Schema-WAL instalments this database has shipped since it opened - see {@link #schemaInstalmentsShipped}. */
   public long getSchemaWalInstalmentsShipped() {
     return schemaInstalmentsShipped.get();
@@ -2269,17 +2349,55 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       for (final Map.Entry<Integer, Integer> grown : pagesGrownDuringSession(pageCountsBefore, addFiles).entrySet())
         appendFilePagesAsWal(grown.getKey(), walChunkBudget, walEntries, bucketDeltas, grown.getValue());
 
-      final List<RaftLogEntryCodec.TsSealedBlob> sealedBlobs = new ArrayList<>(compactionSealedBuffer.get());
+      final List<RaftLogEntryCodec.TsSealedBlob> recordedSealed = new ArrayList<>(compactionSealedBuffer.get());
 
-      if (addFiles.isEmpty() && removeFiles.isEmpty() && walEntries.isEmpty() && sealedBlobs.isEmpty())
+      if (addFiles.isEmpty() && removeFiles.isEmpty() && walEntries.isEmpty() && recordedSealed.isEmpty())
         return result;
 
+      // #4416: a sealed store bigger than one Raft entry is shipped as an ordered sequence of slices instead of
+      // being refused. Everything but the final slice of each store goes out HERE, ahead of the publishing entry,
+      // as a delivery-only entry the follower merely stages; the final slice is handed to replicateSchema below
+      // so the install lands in the same entry as the mutable-bucket clear WAL.
+      //
+      // WHAT A FAILURE PART-WAY THROUGH THIS LOOP LEAVES, since the loop makes several quorum round trips where
+      // the whole-file path made one, and nothing here retries or rolls back. The compaction has already run
+      // LOCALLY - the sealed file is swapped and the mutable-bucket clear is committed on this node, because
+      // commit() inside the session buffers the WAL for shipping AFTER applying it here - so a throw leaves this
+      // node sealed and the others still holding those samples in their (fully replicated) mutable bucket. Every
+      // node still answers the same sample count; what diverges is where the samples live, and the page versions
+      // this node advanced past theirs. The recovery is the one that already existed for a failed whole-file
+      // compaction, not a new one: the next entry touching those pages hits a version gap on the followers and
+      // escalates to a snapshot resync, and a follower's part-written staging file is truncated by the first
+      // slice of the next sequence. Deliberately not retried here - a retry would re-ship a sealed image the next
+      // compaction is about to rewrite anyway.
+      final long sealedChunkBudget = GlobalConfiguration.replicatedSealedChunkBudget(proxied.getConfiguration());
+      final List<RaftLogEntryCodec.TsSealedBlob> sealedBlobs = new ArrayList<>(recordedSealed.size());
+      final List<RaftLogEntryCodec.TsSealedChunk> finalSealedChunks = new ArrayList<>();
+      int sealedSlicesShipped = 0;
+      for (final RaftLogEntryCodec.TsSealedBlob blob : recordedSealed) {
+        final List<RaftLogEntryCodec.TsSealedChunk> slices = sliceSealedBlob(blob, sealedChunkBudget, getName());
+        if (slices.isEmpty()) {
+          sealedBlobs.add(blob);
+          continue;
+        }
+        for (int i = 0; i < slices.size() - 1; i++)
+          broker.replicateSealedChunk(getName(), slices.get(i));
+        finalSealedChunks.add(slices.getLast());
+        sealedSlicesShipped += slices.size();
+        // Per-STORE, not per-session: the burst that costs latency is one store's sequence of round trips, and
+        // summing across stores would hide a single pathological shard behind a busy-but-healthy cycle.
+        sealedChunksMaxSequence.accumulateAndGet(slices.size(), Math::max);
+      }
+      sealedChunksShipped.addAndGet(sealedSlicesShipped);
+
       final String serializedSchema = proxied.getSchema().getEmbedded().toJSON().toString();
-      broker.replicateSchema(getName(), serializedSchema, addFiles, removeFiles, walEntries, bucketDeltas, sealedBlobs);
+      broker.replicateSchema(getName(), serializedSchema, addFiles, removeFiles, walEntries, bucketDeltas,
+          sealedBlobs, finalSealedChunks);
 
       HALog.log(this, HALog.DETAILED,
-          "Compaction for database '%s' replicated via Raft: addFiles=%d, removeFiles=%d, walEntries=%d, sealedBlobs=%d",
-          getName(), addFiles.size(), removeFiles.size(), walEntries.size(), sealedBlobs.size());
+          "Compaction for database '%s' replicated via Raft: addFiles=%d, removeFiles=%d, walEntries=%d, "
+              + "sealedBlobs=%d, sealedSlices=%d",
+          getName(), addFiles.size(), removeFiles.size(), walEntries.size(), sealedBlobs.size(), sealedSlicesShipped);
 
       if (HALog.isEnabled(HALog.DETAILED))
         logSchemaPayloadDiagnostics("compaction", serializedSchema, addFiles, removeFiles);
