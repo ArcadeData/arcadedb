@@ -24,12 +24,18 @@ import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ha.raft.ratis.FixedGrpcRpcType;
 import org.apache.ratis.RaftConfigKeys;
+import org.apache.ratis.conf.Parameters;
 import org.apache.ratis.conf.RaftProperties;
 import org.apache.ratis.grpc.GrpcConfigKeys;
+import org.apache.ratis.grpc.GrpcTlsConfig;
 import org.apache.ratis.server.RaftServerConfigKeys;
 import org.apache.ratis.util.SizeInBytes;
 import org.apache.ratis.util.TimeDuration;
 
+import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.attribute.PosixFilePermission;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
@@ -66,6 +72,105 @@ class RaftPropertiesBuilder {
    */
   static long maxReplicatedEntrySize(final ContextConfiguration configuration) {
     return GlobalConfiguration.maxReplicatedRaftEntrySize(configuration);
+  }
+
+  /**
+   * Builds the TLS configuration for the Raft gRPC transport, or returns {@code null} when
+   * {@link GlobalConfiguration#HA_TLS_ENABLED} is false - in which case the transport stays plaintext,
+   * exactly as before this setting existed.
+   * <p>
+   * The three PEM paths are validated here rather than left to Netty, so a typo or an unmounted secret
+   * volume fails the node at startup with the offending setting named, instead of surfacing later as an
+   * opaque handshake failure on every peer connection.
+   *
+   * @throws ConfigurationException if TLS is enabled and any of the cert/key/trust paths is unset, missing,
+   *                                not a regular file, or unreadable
+   */
+  static GrpcTlsConfig buildTlsConfig(final ContextConfiguration configuration) {
+    if (!configuration.getValueAsBoolean(GlobalConfiguration.HA_TLS_ENABLED))
+      return null;
+
+    final File certChain = requireReadableFile(configuration, GlobalConfiguration.HA_TLS_CERT_CHAIN_FILE);
+    final File privateKey = requireReadableFile(configuration, GlobalConfiguration.HA_TLS_PRIVATE_KEY_FILE);
+    final File trustCerts = requireReadableFile(configuration, GlobalConfiguration.HA_TLS_TRUST_CERT_COLLECTION_FILE);
+    final boolean mutualAuth = configuration.getValueAsBoolean(GlobalConfiguration.HA_TLS_MUTUAL_AUTH);
+
+    warnIfPrivateKeyIsReadableByOthers(privateKey);
+
+    if (!mutualAuth)
+      LogManager.instance().log(RaftPropertiesBuilder.class, Level.WARNING,
+          "Raft gRPC TLS is enabled with %s=false: the transport is encrypted but the dialling peer is NOT "
+              + "authenticated, so any client trusting the cluster CA can still open a Raft stream",
+          GlobalConfiguration.HA_TLS_MUTUAL_AUTH.getKey());
+
+    return new GrpcTlsConfig(privateKey, certChain, trustCerts, mutualAuth);
+  }
+
+  /**
+   * Installs the TLS configuration built by {@link #buildTlsConfig(ContextConfiguration)} on the
+   * {@link Parameters} handed to both {@code RaftServer.Builder} and {@code RaftClient.Builder}.
+   * <p>
+   * A single {@code GrpcConfigKeys.TLS} entry is enough: Ratis's {@code GrpcFactory} reads it as the default
+   * for all three gRPC endpoints (admin, client and server-to-server), so AppendEntries, InstallSnapshot and
+   * RequestVote traffic are all covered by this one call. No-op when TLS is disabled, which leaves
+   * {@code Parameters} exactly as Ratis's plaintext default expects it.
+   * <p>
+   * <b>That defaulting is a Ratis implementation detail, not a documented contract</b>, verified against
+   * <b>Ratis 3.3.0</b>: {@code GrpcFactory(Parameters)} reads {@code TLS.conf} plus the three per-endpoint
+   * keys, and its {@code SslContexts} constructor builds the {@code TLS.conf} context first and passes it as
+   * the fallback for admin, client and server. If a Ratis upgrade changes that, this one entry stops reaching
+   * the endpoints that do not set their own, and the symptom is the bug this method exists to prevent - a
+   * client dialling the Raft port in plaintext against a TLS server. On any Ratis version bump, re-read
+   * {@code GrpcFactory} and run {@code Issue3890RaftMtlsIT}, which is the test that would catch it.
+   *
+   * @return the TLS configuration that was installed, or {@code null} when TLS is disabled
+   */
+  static GrpcTlsConfig applyTls(final ContextConfiguration configuration, final Parameters parameters) {
+    final GrpcTlsConfig tlsConfig = buildTlsConfig(configuration);
+    if (tlsConfig == null)
+      return null;
+    GrpcConfigKeys.TLS.setConf(parameters, tlsConfig);
+    return tlsConfig;
+  }
+
+  /**
+   * Warns when the private key is readable by the group or by everyone. Deliberately a warning and not a
+   * refusal: file ownership is the deployment's business, a container image or a mounted secret may legitimately
+   * arrive with permissions this node cannot change, and refusing to start would be a worse outcome than a
+   * noisy log. Silently accepting it would be worse still - a world-readable Raft key hands anyone on the host
+   * a cluster identity, which is precisely what this setting exists to prevent.
+   * <p>
+   * No-op on a file system with no POSIX view (Windows), where the question has no answer in these terms.
+   */
+  private static void warnIfPrivateKeyIsReadableByOthers(final File privateKey) {
+    final Set<PosixFilePermission> permissions;
+    try {
+      permissions = Files.getPosixFilePermissions(privateKey.toPath());
+    } catch (final Exception e) {
+      // UnsupportedOperationException on a non-POSIX file system, IOException on a file that vanished
+      // between the readability check and here. Neither is worth failing a startup over.
+      return;
+    }
+
+    if (permissions.contains(PosixFilePermission.GROUP_READ) || permissions.contains(PosixFilePermission.OTHERS_READ))
+      LogManager.instance().log(RaftPropertiesBuilder.class, Level.WARNING,
+          "The Raft gRPC private key %s (%s) is readable beyond its owner: any local account that can read it "
+              + "can present this node's identity to the cluster. Restrict it to owner-only (chmod 600)",
+          GlobalConfiguration.HA_TLS_PRIVATE_KEY_FILE.getKey(), privateKey.getAbsolutePath());
+  }
+
+  private static File requireReadableFile(final ContextConfiguration configuration,
+      final GlobalConfiguration setting) {
+    final String path = configuration.getValueAsString(setting);
+    if (path == null || path.isBlank())
+      throw new ConfigurationException(
+          setting.getKey() + " must be set when " + GlobalConfiguration.HA_TLS_ENABLED.getKey() + " is true");
+
+    final File file = new File(path);
+    if (!file.isFile() || !file.canRead())
+      throw new ConfigurationException(
+          setting.getKey() + " (" + path + ") is not a readable file: Raft gRPC TLS cannot be initialized");
+    return file;
   }
 
   static RaftProperties build(final ContextConfiguration configuration) {
