@@ -31,6 +31,7 @@ import org.apache.ratis.client.RaftClientConfigKeys;
 import org.apache.ratis.conf.Parameters;
 import org.apache.ratis.conf.RaftProperties;
 import org.apache.ratis.grpc.GrpcConfigKeys;
+import org.apache.ratis.grpc.GrpcTlsConfig;
 import org.apache.ratis.metrics.MetricRegistries;
 import org.apache.ratis.metrics.MetricRegistryInfo;
 import org.apache.ratis.metrics.RatisMetricRegistry;
@@ -110,10 +111,20 @@ import java.util.logging.Logger;
  * {@link #shutdownRequested} volatile flag prevents recovery during shutdown.
  * <p>
  * <b>Security note (K8s mode):</b> When {@code HA_K8S} is enabled and gRPC is bound
- * to {@code 0.0.0.0}, any pod in the Kubernetes cluster can connect to the Raft port
- * and inject Raft log entries. Authentication for inter-node traffic relies on
- * Kubernetes NetworkPolicy. Operators should restrict access to the Raft port via
- * NetworkPolicy rules in production.
+ * to {@code 0.0.0.0}, any host that can reach the Raft port can connect to it and inject Raft log
+ * entries. Three mitigations, in decreasing order of strength:
+ * <ul>
+ *   <li>{@code arcadedb.ha.tls.*} (issue #3890) - mutual TLS, the only one that binds peer identity to a
+ *       certificate rather than to a spoofable source address, and the only one that also encrypts the
+ *       traffic. Off by default; this is the supported way to secure the Raft port in production.</li>
+ *   <li>{@code arcadedb.ha.peerAllowlist.enabled} - rejects inbound connections whose address does not
+ *       resolve to a host in {@code HA_SERVER_LIST}. On by default, but IP-based: defeated by spoofing on a
+ *       flat L2 network or by a compromised peer. A best-effort default, not a substitute for mTLS.</li>
+ *   <li>A Kubernetes NetworkPolicy restricting the port to the StatefulSet pods - network-level isolation,
+ *       and worth having alongside either of the above.</li>
+ * </ul>
+ * None of these replaces the {@code X-ArcadeDB-Cluster-Token} check on the HTTP side channels (snapshot
+ * download, database verify), which is a separate control on a separate port.
  */
 public class RaftHAServer implements HealthMonitor.HealthTarget {
 
@@ -213,6 +224,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // Inbound Raft gRPC peer allowlist, recreated on each Ratis (re)start. Periodically refreshed by the
   // health monitor tick so a returned peer's new pod IP is admitted proactively (issue #4696).
   private volatile PeerAddressAllowlistFilter allowlistFilter;
+  // Ratis transport parameters (gRPC TLS conf and the inbound-allowlist services customizer) built by
+  // buildParameters() on each Ratis (re)start. Kept so refreshRaftClient() can rebuild the leader's
+  // self-client with the SAME transport configuration: a client built with an empty Parameters would
+  // dial the Raft port in plaintext and fail every handshake once TLS is on (issue #3890).
+  // Published by buildParameters() only on its LAST line, once the TLS configuration and the inbound-peer
+  // allowlist customizer are both installed. Two things depend on that: a ConfigurationException from a bad
+  // cert/key/trust path leaves the previous, working value in place rather than a TLS-less one, and a
+  // concurrent reader (refreshRaftClient() from a leader-change callback) never sees a half-built transport
+  // configuration.
+  private volatile Parameters                 raftParameters        = new Parameters();
   private final    Object                    leaderChangeNotifier  = new Object();
   private final    Object                    applyNotifier         = new Object();
   // Upper bound on a single applyNotifier.wait(...) call before the loop re-checks the apply-index
@@ -953,7 +974,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
     this.raftProperties = properties;
 
-    raftClient = buildRaftClient(raftGroup, properties);
+    raftClient = buildRaftClient(raftGroup, properties, parameters);
 
     LogManager.instance()
         .log(this, Level.INFO, "Raft cluster joined: %d nodes %s", peerDisplayNames.size(), peerDisplayNames.values());
@@ -984,7 +1005,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // as soon as a leader is visible - at that point this node is either a functioning member or a
     // cold-start election completed - or on shutdown.
     if (configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S)) {
-      final KubernetesAutoJoin autoJoin = new KubernetesAutoJoin(arcadeServer, raftGroup, localPeerId, raftProperties);
+      final KubernetesAutoJoin autoJoin = new KubernetesAutoJoin(arcadeServer, raftGroup, localPeerId, raftProperties,
+          parameters);
       final Thread joinThread = new Thread(
           () -> autoJoin.tryAutoJoinWithRetry(() -> !shutdownRequested && getLeaderId() == null),
           "arcadedb-k8s-auto-join");
@@ -1395,17 +1417,19 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         } else
           startupOption = RaftStorage.StartupOption.RECOVER;
 
+        final Parameters recoveryParameters = buildParameters(configuration);
+
         this.raftServer = RaftServer.newBuilder()
             .setServerId(localPeerId)
             .setGroup(raftGroup)
             .setStateMachine(stateMachine)
             .setProperties(properties)
-            .setParameters(buildParameters(configuration))
+            .setParameters(recoveryParameters)
             .setOption(startupOption)
             .build();
         this.raftServer.start();
         this.raftProperties = properties;
-        this.raftClient = buildRaftClient(raftGroup, properties);
+        this.raftClient = buildRaftClient(raftGroup, properties, recoveryParameters);
 
         final int batchSize = configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_BATCH_SIZE);
         final int queueSize = configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_QUEUE_SIZE);
@@ -1638,7 +1662,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // no broker is available to concurrent callers (the field is volatile).
     final RaftClient oldClient = raftClient;
 
-    raftClient = buildRaftClient(raftGroup, raftProperties, knownLeaderId);
+    raftClient = buildRaftClient(raftGroup, raftProperties, raftParameters, knownLeaderId);
 
     if (transactionBroker != null) {
       final int batchSize = configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_BATCH_SIZE);
@@ -2557,24 +2581,28 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * This uses a bounded retry so a single call returns within a reasonable time, allowing
    * our own retry loop in setConfigurationWithRetry to control the overall timeout.
    */
-  private static RaftClient buildRaftClient(final RaftGroup group, final RaftProperties properties) {
-    return buildRaftClient(group, properties, null);
+  private static RaftClient buildRaftClient(final RaftGroup group, final RaftProperties properties,
+      final Parameters parameters) {
+    return buildRaftClient(group, properties, parameters, null);
   }
 
   /**
-   * Like {@link #buildRaftClient(RaftGroup, RaftProperties)}, but seeds the new client with a
+   * Like {@link #buildRaftClient(RaftGroup, RaftProperties, Parameters)}, but seeds the new client with a
    * known leader peer ID so the first write request routes directly to the leader without a
    * probe round-trip.
+   *
+   * @param parameters the same transport {@link Parameters} the local Ratis server was built with, so the
+   *                   self-client speaks TLS whenever the transport does (issue #3890).
    */
   private static RaftClient buildRaftClient(final RaftGroup group, final RaftProperties properties,
-      final RaftPeerId knownLeaderId) {
+      final Parameters parameters, final RaftPeerId knownLeaderId) {
     // Set the client-side RPC timeout to match the quorum timeout so a slow leader response
     // does not trigger a premature TimeoutIOException before the commit completes.
     RaftClientConfigKeys.Rpc.setRequestTimeout(properties, TimeDuration.valueOf(10, TimeUnit.SECONDS));
     final RaftClient.Builder builder = RaftClient.newBuilder()
         .setRaftGroup(group)
         .setProperties(properties)
-        .setParameters(new Parameters())
+        .setParameters(parameters != null ? parameters : new Parameters())
         .setRetryPolicy(RetryPolicies.retryUpToMaximumCountWithFixedSleep(60, TimeDuration.valueOf(1, TimeUnit.SECONDS)));
     if (knownLeaderId != null)
       builder.setLeaderId(knownLeaderId);
@@ -3637,11 +3665,31 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * The customizer adds a {@link PeerAddressAllowlistFilter} that rejects inbound Raft gRPC
    * connections from IPs not listed in {@code arcadedb.ha.serverList}.
    */
-  private Parameters buildParameters(final ContextConfiguration configuration) {
+  // Package-private rather than private so Issue3890RaftParametersPublicationTest can pin when
+  // raftParameters becomes visible - the property this method exists to get right.
+  Parameters buildParameters(final ContextConfiguration configuration) {
     this.allowlistFilter = null;
     final Parameters parameters = new Parameters();
+
+    // mTLS first: it is the cryptographic peer identity the allowlist below cannot provide. Throws a
+    // ConfigurationException at startup when enabled with an unusable cert/key/trust path (issue #3890),
+    // which is one of the two reasons raftParameters is published only on the way out of this method.
+    final GrpcTlsConfig tlsConfig = RaftPropertiesBuilder.applyTls(configuration, parameters);
+    if (tlsConfig != null)
+      LogManager.instance().log(this, Level.INFO,
+          "Raft gRPC transport secured with TLS (mutual authentication: %s)", tlsConfig.getMtlsEnabled());
+
+    installPeerAllowlist(configuration, parameters);
+
+    // Last line on every path: see the field's comment. Nothing above may publish a partially-configured
+    // Parameters, and nothing below may add to it.
+    this.raftParameters = parameters;
+    return parameters;
+  }
+
+  private void installPeerAllowlist(final ContextConfiguration configuration, final Parameters parameters) {
     if (!configuration.getValueAsBoolean(GlobalConfiguration.HA_PEER_ALLOWLIST_ENABLED))
-      return parameters;
+      return;
 
     final String serverList = configuration.getValueAsString(GlobalConfiguration.HA_SERVER_LIST);
     final long refreshMs = configuration.getValueAsLong(GlobalConfiguration.HA_GRPC_ALLOWLIST_REFRESH_MS);
@@ -3651,13 +3699,17 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (peerHosts.isEmpty()) {
       LogManager.instance().log(this, Level.WARNING,
           "arcadedb.ha.peerAllowlist.enabled=true but arcadedb.ha.serverList is empty; allowlist not installed");
-      return parameters;
+      return;
     }
     final PeerAddressAllowlistFilter filter = new PeerAddressAllowlistFilter(peerHosts, refreshMs, startupGraceMs,
         stickyTtlMs);
     this.allowlistFilter = filter;
     GrpcConfigKeys.Server.setServicesCustomizer(parameters, new RaftGrpcServicesCustomizer(filter));
-    return parameters;
+  }
+
+  /** Package-private test hook: the transport configuration the Raft client builders read. */
+  Parameters raftParametersForTest() {
+    return raftParameters;
   }
 
   /**
