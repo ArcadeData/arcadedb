@@ -533,6 +533,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   // @VisibleForTesting
   void replicateAndCommitLocally(final ReplicationPayload payload, final boolean leader,
       final ArcadeStateMachine stateMachine, final long phase2Ticket) {
+    // The correlation key between this thread and the Raft apply thread, read once (8 bytes off the
+    // front of the payload) so the abandoned mark and the cleanup below name the same slot (#6848).
+    final long walTxId = localWalTxId(payload);
+    boolean markedAbandoned = false;
+
     // --- REPLICATION (no lock held): send WAL to Raft and wait for quorum ---
     long committedLogIndex = -1;
     try {
@@ -557,8 +562,22 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // The ticket travels with the mark (#5410): this branch keeps holding it so a crash before the
       // entry applies still replays it, and whoever finally applies the entry releases it from the
       // mark - without that correlation the checkpoint stayed pinned until the node restarted.
-      markTransactionAbandonedForLocalApply(payload, phase2Ticket);
-      rollback();
+      markedAbandoned = markTransactionAbandonedForLocalApply(payload, walTxId, phase2Ticket);
+      if (markedAbandoned) {
+        rollback();
+      } else {
+        // The apply thread reached this entry before the mark existed and origin-skipped it, so the
+        // entry is committed and no one else will ever write its pages here. Recover exactly as the
+        // MAJORITY-committed branch above does - that is the same situation, learned a different way
+        // (issue #6848). Rolling back instead would leave this leader permanently one write behind
+        // its followers, which is the divergence #4790 exists to prevent.
+        LogManager.instance().log(this, Level.WARNING,
+            "Replication of tx %d on database '%s' timed out after the entry had already been applied and "
+                + "origin-skipped by the state machine; applying it locally to prevent leader divergence (#6848)",
+            walTxId, getName());
+        if (applyLocallyAfterMajorityCommit(payload))
+          releasePhase2Ticket(stateMachine, phase2Ticket);
+      }
       throw e;
     } catch (final ArcadeDBException e) {
       // Replication failed outright: the entry never reached the log, so there is nothing this node
@@ -570,6 +589,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       releasePhase2Ticket(stateMachine, phase2Ticket);
       rollback();
       throw new TransactionException("Error on commit distributed transaction (replication)", e);
+    } finally {
+      // Every exit except "abandoned" has settled who writes the pages, so the origin-skip slot the
+      // apply thread may have left behind has done its job and must not linger. The abandoned mark
+      // lives in the same map and MUST survive: it is what the eventual apply consumes. Only the
+      // leader origin-skips, so only the leader (the one holding a state machine here) has a slot.
+      if (!markedAbandoned && walTxId != UNKNOWN_WAL_TX_ID && stateMachine != null)
+        stateMachine.forgetLocalOriginatedEntry(getName(), walTxId);
     }
 
     // Test-only fault injection: simulate leader crash between replication and phase-2
@@ -735,18 +761,43 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * {@code phase2Ticket} rides along so the eventual apply can release it (issue #5410). When the
    * txId cannot be extracted the ticket stays held, which is the safe direction: an entry we cannot
    * correlate is one we cannot prove was applied.
+   *
+   * @return {@code true} when the mark now stands, so the state machine's apply of this entry is what
+   * will write its pages; {@code false} when the apply thread had already origin-skipped the entry
+   * before the mark could be published, which makes the CALLER responsible for applying it locally
+   * (issue #6848). An unreadable txId reports {@code true}: it keeps the conservative pre-#6848
+   * behaviour rather than applying an entry we cannot prove committed.
    */
-  private void markTransactionAbandonedForLocalApply(final ReplicationPayload payload, final long phase2Ticket) {
+  private boolean markTransactionAbandonedForLocalApply(final ReplicationPayload payload, final long walTxId,
+      final long phase2Ticket) {
     final ArcadeStateMachine stateMachine = stateMachineOrNull();
-    if (stateMachine == null)
-      return;
+    if (stateMachine == null || walTxId == UNKNOWN_WAL_TX_ID)
+      // Nothing to correlate against (no state machine wired yet, or an unreadable payload - already
+      // logged where it was read): keep the conservative behaviour of holding the ticket and rolling
+      // back, exactly as before the #6848 handshake existed.
+      return true;
+    return stateMachine.markLocalTransactionAbandoned(getName(), walTxId, phase2Ticket);
+  }
+
+  /**
+   * Sentinel for "this payload's WAL transaction id could not be read", which makes the whole #6848
+   * handshake inapplicable: an entry we cannot correlate is one we cannot prove was applied, so the
+   * caller keeps the conservative pre-#6848 behaviour (mark nothing, hold the ticket, roll back).
+   */
+  private static final long UNKNOWN_WAL_TX_ID = Long.MIN_VALUE;
+
+  /**
+   * Reads the WAL transaction id of a captured payload - the correlation key shared with the Raft
+   * apply thread. Best-effort: a payload we cannot parse yields {@link #UNKNOWN_WAL_TX_ID} rather
+   * than masking the replication failure that is already on its way to the caller.
+   */
+  private long localWalTxId(final ReplicationPayload payload) {
     try {
-      final long walTxId = ArcadeStateMachine.deserializeWalTransaction(payload.walData()).txId;
-      stateMachine.markLocalTransactionAbandoned(getName(), walTxId, phase2Ticket);
+      return ArcadeStateMachine.peekWalTransactionId(payload.walData());
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING,
-          "Could not mark transaction for local apply after indeterminate replication (db=%s): %s",
-          getName(), e.getMessage());
+          "Could not read the WAL transaction id of a replicated entry (db=%s): %s", getName(), e.getMessage());
+      return UNKNOWN_WAL_TX_ID;
     }
   }
 
