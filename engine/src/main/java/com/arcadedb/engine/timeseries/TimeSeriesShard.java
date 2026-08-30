@@ -535,16 +535,19 @@ public class TimeSeriesShard implements AutoCloseable {
             return;
           }
 
-          // HA safety valve (issue #4382): if the rewritten sealed store would be too large to ship
-          // inline in a single Raft entry, skip compaction entirely this cycle.
+          // HA safety valve (issue #4382): if the rewritten sealed store would be too large to REPLICATE,
+          // skip compaction entirely this cycle.
+          //
+          // What "too large to replicate" means changed with issue #4416. It used to be "too large for one
+          // Raft entry", which made HA_TS_MAX_SEALED_INLINE_SIZE the ceiling on the sealed store itself: a
+          // shard that once crossed it never sealed again, because the store it would have to ship only ever
+          // grows. A sealed store above one entry is now SLICED across an ordered sequence of entries
+          // (RaftReplicatedDatabase.sliceSealedBlob), so the ceiling is what that sequence can carry - see
+          // GlobalConfiguration.maxReplicatedSealedStoreSize, which still folds in the #4743 rule that the
+          // real per-entry ceiling is min(grpcMessageSizeMax, appendBufferSize) and NOT the configured cap
+          // alone: shipping an entry above it makes Ratis reject it and the leader step down, over and over.
           if (db.isReplicated()) {
-            // #4743: never trust the configured cap on its own - it defaults to 48MB on the assumption
-            // that a Raft entry may be up to 64MB, but the real per-entry ceiling is
-            // min(grpcMessageSizeMax, appendBufferSize) and the latter defaults to 4MB. Shipping a blob
-            // above it makes Ratis reject the entry and the leader step down, over and over.
-            final long cap = Math.min(
-                database.getConfiguration().getValueAsLong(GlobalConfiguration.HA_TS_MAX_SEALED_INLINE_SIZE),
-                GlobalConfiguration.maxReplicatedRaftEntrySize(database.getConfiguration()));
+            final long cap = GlobalConfiguration.maxReplicatedSealedStoreSize(database.getConfiguration());
             final long projected = sealedStore.getFileSizeBytes() + (long) pageCount * mutableBucket.getPageSize();
             if (projected > cap) {
               db.rollback();
@@ -941,10 +944,12 @@ public class TimeSeriesShard implements AutoCloseable {
     lastOversizedWarnMs = now;
     LogManager.instance().log(this, Level.WARNING,
         """
-        Skipping HA compaction of TimeSeries '%s' shard %d: projected sealed-store size %d bytes exceeds the inline \
-        replication cap %d bytes (%s). Data remains in the replicated mutable bucket; raise the cap or reduce \
-        retention to re-enable sealing.""",
-        null, typeName, shardIndex, projectedBytes, capBytes, GlobalConfiguration.HA_TS_MAX_SEALED_INLINE_SIZE.getKey());
+        Skipping HA compaction of TimeSeries '%s' shard %d: projected sealed-store size %d bytes exceeds the %d bytes \
+        a sliced replication sequence can carry (%s x %d slices, never above min(arcadedb.ha.grpcMessageSizeMax, \
+        arcadedb.ha.appendBufferSize) per slice). Data remains in the replicated mutable bucket; raise the cap, raise \
+        arcadedb.ha.appendBufferSize, or reduce retention to re-enable sealing.""",
+        null, typeName, shardIndex, projectedBytes, capBytes, GlobalConfiguration.HA_TS_MAX_SEALED_INLINE_SIZE.getKey(),
+        GlobalConfiguration.MAX_REPLICATED_SEALED_CHUNKS);
   }
 
   private void clearCompactionFlagBestEffort() {
