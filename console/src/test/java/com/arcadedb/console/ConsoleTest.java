@@ -33,6 +33,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.FileUtils;
+import org.jline.reader.LineReader;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -997,6 +998,21 @@ class ConsoleTest {
     final Result record = console.getDatabase().query("sql", "select winPath, re from Doc").next();
     assertThat(record.<String>getProperty("winPath")).isEqualTo("C:\\Users\\bob");
     assertThat(record.<String>getProperty("re")).isEqualTo("\\d+");
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/6827: the parser is only half of the interactive path. jline
+   * unescapes the accepted line itself, before the parser sees it, so a Windows path typed at the prompt still lost a
+   * level of escaping after the parser stopped consuming one. What that costs, and why turning it off is a gain rather
+   * than a trade, is pinned in {@code org.jline.reader.impl.JLineEscapeStrippingContractTest}; this asserts the console
+   * actually asks for it.
+   */
+  @Test
+  void theLineReaderDoesNotUnescapeTheAcceptedLine() throws Exception {
+    assertThat(console.getLineReader().isSet(LineReader.Option.DISABLE_EVENT_EXPANSION))
+        .as("jline would otherwise eat one level of backslash escaping, and expand `!` inside `!=`, before the "
+            + "statement reaches the query engine")
+        .isTrue();
   }
 
   /**

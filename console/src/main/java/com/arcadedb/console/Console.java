@@ -135,14 +135,22 @@ public class Console {
    * The history it is given masks the passwords that the `connect` and `create user` syntaxes carry inline before they are
    * recorded, so they never reach the `.history` file - which is written after every command, in the working directory,
    * with the process umask, and survives the session indefinitely (issue #6829).
+   * <p>
+   * Event expansion is turned OFF, which is what makes a typed backslash reach the query engine. jline runs its own
+   * shell-style unescaping in {@code LineReaderImpl.finish()} before the accepted line is ever handed to
+   * {@link TerminalParser}, so teaching the parser to keep the escape character (issue #6827) fixed `-b` and `load` but
+   * left the interactive prompt eating one level exactly as before. The same option also disables `!`-style history
+   * expansion, which a SQL console is better off without: `!` is part of the `!=` operator, and an expansion that finds
+   * a match rewrites the statement rather than failing visibly.
    */
-  private LineReader getLineReader() {
+  LineReader getLineReader() {
     if (lineReader == null) {
       final Completer completer = new StringsCompleter("align database", "begin", "rollback", "commit", "check database", "close",
           "connect", "create database", "create user", "drop database", "drop user", "export", "import", "help", "info types",
           "list databases", "load", "exit", "quit", "set", "match", "select", "insert into", "update", "delete", "pwd");
 
       lineReader = LineReaderBuilder.builder().terminal(terminal).parser(parser)
+          .option(LineReader.Option.DISABLE_EVENT_EXPANSION, true)
           .variable(LineReader.HISTORY_FILE, HISTORY_FILE).history(new DefaultHistory() {
             @Override
             public void add(final Instant time, final String line) {
@@ -1269,22 +1277,25 @@ public class Console {
     outputLine(1, "begin                                             -> begins a new transaction");
     outputLine(1, "check database                                    -> check database integrity");
     outputLine(1, "commit                                            -> commits current transaction");
-    outputLine(1, "connect <path>|remote:<url> <user> <pw>           -> connects to a database");
+    outputLine(1, "connect <path>|remote:<url> <user> [<pw>]         -> connects to a database");
     outputLine(1, "close                                             -> disconnects a database");
-    outputLine(1, "create database <path>|remote:<url> <user> <pw>   -> creates a new database");
-    outputLine(1, "create user <user> identified by <pw> [grant connect to <db>*] -> creates a user");
-    outputLine(1, "drop database <path>|remote:<url> <user> <pw>     -> deletes a database");
+    outputLine(1, "create database <path>|remote:<url> <user> [<pw>] -> creates a new database");
+    outputLine(1, "create user <user> identified by [<pw>] [grant connect to <db>*] -> creates a user");
+    outputLine(1, "drop database <path>|remote:<url> <user> [<pw>]   -> deletes a database");
     outputLine(1, "drop user <user>                                  -> deletes a user");
     outputLine(1, "help|?                                            -> ask for this help");
     outputLine(1, "info types                                        -> prints available types");
     outputLine(1, "info transaction                                  -> prints current transaction");
-    outputLine(1, "list databases |remote:<url> <user> <pw>          -> prints list of databases");
+    outputLine(1, "list databases |remote:<url> <user> [<pw>]        -> prints list of databases");
     outputLine(1, "load <path>                                       -> runs local script");
     outputLine(1, "pwd                                               -> returns current directory");
     outputLine(1, "rollback                                          -> rolls back current transaction");
     outputLine(1, "set language = sql|sqlscript|cypher|gremlin|mongo -> sets console query language");
     outputLine(1, "-- <comment>                                      -> comment (no operation)");
     outputLine(1, "quit|exit                                         -> exits from the console");
+    outputLine(1, "");
+    outputLine(1, "Omit <pw> to be asked for the password with the echo hidden, so it is never written to");
+    outputLine(1, "the .history file nor echoed to the output in batch mode.");
   }
 
   private void checkDatabaseIsOpen() {
