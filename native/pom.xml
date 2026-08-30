@@ -72,7 +72,7 @@
             newest mainline JDK 25 Community build, so 25.0.2 is the version both sides can agree
             on. A newer pin needs the builder side proven first.
         -->
-        <native.graalvm.version>25.2.4</native.graalvm.version>
+        <native.graalvm.version>25.3.4.1</native.graalvm.version>
         <!--
             Flag plumbed through by the CI matrix (native-image.yml) for the linux/amd64 job.
             Activates the native-static profile below, which appends the fully-static musl
