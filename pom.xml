@@ -271,7 +271,9 @@
                     <!-- Skip @Tag("benchmark") classes by default (issue #5697). Sourced from the
                          ${excludedGroups} property above so -DexcludedGroups=... on the command line
                          still overrides it, e.g. benchmark-tests.yml clears it to run benchmarks and
-                         mvn-test.yml widens it to slow,benchmark,vector for the default lane. -->
+                         mvn-test.yml widens it to slow,benchmark,vector for the default lane.
+                         Turning this into a literal breaks those lanes silently, so PomTagFilterContractTest
+                         (ha-raft) fails the build if it ever stops being a property reference. -->
                     <excludedGroups>${excludedGroups}</excludedGroups>
                     <properties>
                         <!-- Work around. Surefire does not include enough
@@ -330,7 +332,9 @@
                         <exclude>**/*ReplicationServerLeaderChanges3TimesIT</exclude>
                     </excludes>
                     <!-- Explicit, namespaced override of failsafe's excludedGroups (issue #5697): keeps
-                         it independent of the surefire-only ${excludedGroups} default set above. -->
+                         it independent of the surefire-only ${excludedGroups} default set above. Dropping it,
+                         or pointing it back at ${excludedGroups}, fails PomTagFilterContractTest (ha-raft) -
+                         there is no other symptom, the ITs simply inherit the unit lane's exclusion. -->
                     <excludedGroups>${failsafe.excludedGroups}</excludedGroups>
                     <skipTests>${skipITs}</skipTests>
                     <skipITs>${skipITs}</skipITs>
