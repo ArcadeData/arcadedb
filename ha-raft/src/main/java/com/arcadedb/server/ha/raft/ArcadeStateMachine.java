@@ -2054,6 +2054,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * then CRC32. Per-slice CRCs are already checked by the decoder, but they only prove each piece survived the
    * wire, not that what this node assembled is what the leader had.
    * <p>
+   * ONLY THE LAST SLICE IS FSYNCED, and the earlier ones deliberately are not. A power loss between applying a
+   * slice and the OS flushing it can therefore leave a staging file SHORTER than this node's persisted applied
+   * index implies. That is not a hole, it is what the checks above are for: the next slice finds a staging file
+   * that is not {@code offset} bytes long, or the last one finds the wrong length or CRC, and either way the
+   * sequence is refused and the database resyncs rather than installing a truncated store. Paying an fsync per
+   * slice would buy a faster recovery from an event that already costs a restart, at the price of one flush per
+   * entry on the single Raft apply thread for every sliced compaction. The final slice IS synced because after it
+   * the file is moved into place and nothing checks it again.
+   * <p>
    * The install itself is the one {@code applySealedBlobs} performs - an atomic move onto the store's file - and
    * the target path is derived from THIS node's schema, never from the file name in the payload: a name arriving
    * over the wire has no business selecting a path here.
@@ -2165,11 +2174,18 @@ public class ArcadeStateMachine extends BaseStateMachine {
     return crc.getValue();
   }
 
+  /**
+   * Removes a staging file a refused reassembly left behind. BEST EFFORT, and unlike the first slice's truncation
+   * that is fine here: nothing downstream depends on this succeeding. The next sequence starts with an
+   * {@code offset == 0} slice, which truncates through its own write handle whether or not this delete worked, so
+   * a failure costs disk until the next compaction and never correctness. That is exactly the difference from the
+   * first-slice case, where a silently skipped delete DID leave a longer sequence's tail under a shorter one.
+   */
   private void deleteSealedStagingFile(final File staging) {
     if (staging.exists() && !staging.delete())
       LogManager.instance().log(this, Level.WARNING,
-          "Failed to delete stale TimeSeries sealed staging file '%s'; the next slice sequence overwrites it",
-          null, staging.getAbsolutePath());
+          "Failed to delete stale TimeSeries sealed staging file '%s'; it costs disk until the next slice "
+              + "sequence truncates it, and nothing else depends on it being gone", null, staging.getAbsolutePath());
   }
 
   /**
