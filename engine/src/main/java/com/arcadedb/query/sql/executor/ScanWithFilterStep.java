@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.BucketIterator;
 import com.arcadedb.exception.TimeoutException;
@@ -26,28 +25,23 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.WhereClause;
 
 import java.util.Iterator;
-import java.util.Map;
 import java.util.NoSuchElementException;
-import java.util.Set;
 import java.util.logging.Level;
 
 /**
  * A combined scan + filter step that evaluates the WHERE predicate immediately after loading each record,
  * avoiding the overhead of creating ResultInternal wrappers for records that don't match the filter.
  * <p>
- * When {@code projectedProperties} is set, matching records are returned with only the projected properties
- * deserialized, using a two-phase approach:
- * <ol>
- *   <li>Filter phase: WHERE predicate accesses only the fields it references (lazy deserialization)</li>
- *   <li>Projection phase: only the SELECT-listed properties are deserialized from the binary buffer</li>
- * </ol>
- * Fields that appear in both WHERE and SELECT are deserialized only once (the lazy cache in ImmutableDocument).
+ * A surviving record is handed downstream as a plain wrapper around the {@link com.arcadedb.database.ImmutableDocument}
+ * it was read from, so every column is still deserialized one at a time, on demand, and only if something actually asks
+ * for it. This step used to carry a second "column projection push-down" phase that pre-extracted the SELECT-listed
+ * columns into the row instead; it was unreachable by construction and has been removed - see issue #5756 and the note
+ * on {@code SelectExecutionPlanner#handleTypeAsTarget}.
  */
 public class ScanWithFilterStep extends AbstractExecutionStep {
 
   private final int         bucketId;
   private final WhereClause whereClause;
-  private final Set<String> projectedProperties;
   private       Object      order;
   private       long        totalFetched  = 0L;
   private       long        totalFiltered = 0L;
@@ -55,16 +49,10 @@ public class ScanWithFilterStep extends AbstractExecutionStep {
 
   private Iterator<Record> iterator;
 
-  public ScanWithFilterStep(final int bucketId, final WhereClause whereClause, final Set<String> projectedProperties,
-      final CommandContext context) {
+  public ScanWithFilterStep(final int bucketId, final WhereClause whereClause, final CommandContext context) {
     super(context);
     this.bucketId = bucketId;
     this.whereClause = whereClause;
-    this.projectedProperties = projectedProperties;
-  }
-
-  public ScanWithFilterStep(final int bucketId, final WhereClause whereClause, final CommandContext context) {
-    this(bucketId, whereClause, null, context);
   }
 
   public void setOrder(final Object order) {
@@ -96,7 +84,7 @@ public class ScanWithFilterStep extends AbstractExecutionStep {
             final Record record = iterator.next();
             totalFetched++;
 
-            // Phase 1: Evaluate WHERE on the full document (uses lazy per-field deserialization)
+            // Evaluate WHERE on the document itself: every field access is lazily deserialized on demand
             final ResultInternal candidate = new ResultInternal(record);
 
             // Set $current before WHERE evaluation so method calls (e.g. split()) resolve correctly
@@ -105,18 +93,7 @@ public class ScanWithFilterStep extends AbstractExecutionStep {
             final long filterBegin = context.isProfiling() ? System.nanoTime() : 0;
             try {
               if (whereClause.matchesFilters(candidate, context)) {
-                // Phase 2: If projectedProperties is set, extract only needed columns
-                if (projectedProperties != null && record instanceof ImmutableDocument immutableDoc) {
-                  final String[] fieldNames = projectedProperties.toArray(new String[0]);
-                  final Map<String, Object> props = immutableDoc.propertiesAsMap(fieldNames);
-                  final ResultInternal projected = new ResultInternal(context.getDatabase());
-                  projected.setElement(immutableDoc);
-                  for (final Map.Entry<String, Object> entry : props.entrySet())
-                    projected.setProperty(entry.getKey(), entry.getValue());
-                  nextItem = projected;
-                } else
-                  nextItem = candidate;
-
+                nextItem = candidate;
                 context.setVariable("current", nextItem);
                 return;
               }
@@ -181,8 +158,6 @@ public class ScanWithFilterStep extends AbstractExecutionStep {
   public String prettyPrint(final int depth, final int indent) {
     String result = ExecutionStepInternal.getIndent(depth, indent) + "+ SCAN WITH FILTER BUCKET " + bucketId
         + " (" + context.getDatabase().getSchema().getBucketById(bucketId).getName() + ")";
-    if (projectedProperties != null)
-      result += " [projected: " + String.join(", ", projectedProperties) + "]";
     if (context.isProfiling())
       result += " (" + getCostFormatted() + ")";
     result += "\n" + ExecutionStepInternal.getIndent(depth, indent) + "  " + whereClause;
@@ -196,8 +171,7 @@ public class ScanWithFilterStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    final ScanWithFilterStep copy = new ScanWithFilterStep(this.bucketId, this.whereClause.copy(), this.projectedProperties,
-        context);
+    final ScanWithFilterStep copy = new ScanWithFilterStep(this.bucketId, this.whereClause.copy(), context);
     copy.setOrder(this.order);
     return copy;
   }
