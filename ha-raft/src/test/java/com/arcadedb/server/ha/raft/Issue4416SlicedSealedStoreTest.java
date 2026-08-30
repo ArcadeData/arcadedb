@@ -136,7 +136,8 @@ class Issue4416SlicedSealedStoreTest {
   @Test
   void schemaEntryCarriesSlicesThroughAnEncodeDecodeRoundTrip() {
     final byte[] payload = randomBytes(2_048);
-    final TsSealedChunk slice = new TsSealedChunk(TYPE, 2, FILE, 9_999L, 1234567L, 4_096L, payload, true);
+    // Geometrically real, because the decoder now insists on it: a final slice ends exactly at the file length.
+    final TsSealedChunk slice = new TsSealedChunk(TYPE, 2, FILE, 6_144L, 1234567L, 4_096L, payload, true);
 
     final ByteString encoded = RaftLogEntryCodec.encodeSchemaEntry(DB, "{\"x\":1}", Map.of(7, "a.dat"),
         Collections.emptyMap(), List.of("wal".getBytes()), List.of(Map.of(1, 2)), Collections.emptyList(), false,
@@ -155,7 +156,7 @@ class Issue4416SlicedSealedStoreTest {
     assertThat(back.typeName()).isEqualTo(TYPE);
     assertThat(back.shardIndex()).isEqualTo(2);
     assertThat(back.fileName()).isEqualTo(FILE);
-    assertThat(back.fileLength()).isEqualTo(9_999L);
+    assertThat(back.fileLength()).isEqualTo(6_144L);
     assertThat(back.fileCrc()).isEqualTo(1234567L);
     assertThat(back.offset()).isEqualTo(4_096L);
     assertThat(back.last()).isTrue();
@@ -214,6 +215,49 @@ class Issue4416SlicedSealedStoreTest {
 
     assertThatThrownBy(() -> RaftLogEntryCodec.decode(ByteString.copyFrom(encoded)))
         .isInstanceOf(IllegalStateException.class);
+  }
+
+  /**
+   * Offsets and lengths that cannot describe a real file are refused by the DECODER, which is what keeps the
+   * applier's "a sequence that does not line up asks for a resync, it never crashes" rule true for a malformed
+   * field as well as for a missing slice: a negative offset reaches {@code RandomAccessFile.seek} and comes back
+   * as a raw IOException the apply path can only report as an unexpected error.
+   */
+  @Test
+  void aSliceWhoseGeometryCannotDescribeAFileIsRefused() {
+    final byte[] payload = randomBytes(512);
+
+    final List<TsSealedChunk> impossible = List.of(
+        new TsSealedChunk(TYPE, 0, FILE, 4_096L, 7L, -1L, payload, false),          // negative offset
+        new TsSealedChunk(TYPE, 0, FILE, -1L, 7L, 0L, payload, false),              // negative file length
+        new TsSealedChunk(TYPE, 0, FILE, 256L, 7L, 0L, payload, false),             // slice overruns the file
+        new TsSealedChunk(TYPE, 0, FILE, 4_096L, 7L, 4_000L, payload, false),       // slice overruns the end
+        new TsSealedChunk(TYPE, 0, FILE, 4_096L, 7L, 0L, payload, true));           // final slice stops short
+
+    for (final TsSealedChunk chunk : impossible) {
+      final ByteString encoded = RaftLogEntryCodec.encodeSchemaEntry(DB, "", Collections.emptyMap(),
+          Collections.emptyMap(), Collections.emptyList(), Collections.emptyList(), Collections.emptyList(), true,
+          List.of(chunk));
+
+      assertThatThrownBy(() -> RaftLogEntryCodec.decode(encoded))
+          .as("offset %d + %d bytes of a %d-byte file, last=%s", chunk.offset(), chunk.bytes().length,
+              chunk.fileLength(), chunk.last())
+          .isInstanceOf(IllegalStateException.class)
+          .hasMessageContaining("Invalid SCHEMA_ENTRY sealed slice");
+    }
+  }
+
+  /** The geometry the producer actually emits passes, so the guard above cannot be refusing everything. */
+  @Test
+  void everySliceTheSlicerProducesPassesTheGeometryCheck() {
+    for (final TsSealedChunk chunk : RaftReplicatedDatabase.sliceSealedBlob(
+        new TsSealedBlob(TYPE, 0, FILE, randomBytes(10_000)), 3_000, DB)) {
+      final ByteString encoded = RaftLogEntryCodec.encodeSchemaEntry(DB, "", Collections.emptyMap(),
+          Collections.emptyMap(), Collections.emptyList(), Collections.emptyList(), Collections.emptyList(), true,
+          List.of(chunk));
+
+      assertThat(RaftLogEntryCodec.decode(encoded).sealedFileChunks()).hasSize(1);
+    }
   }
 
   // ---- the splitter ----------------------------------------------------------------------------------------

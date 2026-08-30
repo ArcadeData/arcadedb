@@ -144,15 +144,54 @@ public final class RaftLogEntryCodec {
    * identical, equally undeliverable payload.
    */
   private static void checkProducedPayloadLength(final int length, final String databaseName, final String context) {
+    checkProducedPayloadLength(length, databaseName, context,
+        "Reduce the batch size - fewer rows per GraphBatch / SQL transaction, or smaller records.");
+  }
+
+  /**
+   * @param remediation what the operator can actually DO about it, because that differs by section and a wrong
+   *                    answer here sends them at the wrong knob. A transaction's WAL shrinks by batching less; a
+   *                    TimeSeries sealed store does not shrink by batching anything at all (issue #4416) - it
+   *                    shrinks by lowering the per-entry sealed cap so the store is sliced more finely, or by
+   *                    shortening the type's retention.
+   */
+  private static void checkProducedPayloadLength(final int length, final String databaseName, final String context,
+      final String remediation) {
     if (length > MAX_ENTRY_BYTES)
       throw new ReplicatedEntryTooLargeException(String.format(
           """
           %s for database '%s' is %d bytes uncompressed, above the %d bytes of uncompressed payload a single \
           replicated Raft entry may carry. Compression is not what bounds it: the entry is LZ4-compressed for \
           the wire but every node has to materialize it in full to apply it, so a well-compressing bulk \
-          transaction can slip under arcadedb.ha.appendBufferSize and still be too large to apply. Reduce the \
-          batch size - fewer rows per GraphBatch / SQL transaction, or smaller records.""",
-          context, databaseName, length, MAX_ENTRY_BYTES));
+          transaction can slip under arcadedb.ha.appendBufferSize and still be too large to apply. %s""",
+          context, databaseName, length, MAX_ENTRY_BYTES, remediation));
+  }
+
+  /** What an operator does about a TimeSeries sealed payload that no single entry can carry (issue #4416). */
+  private static final String SEALED_REMEDIATION =
+      "Lower arcadedb.ha.tsMaxSealedInlineSize so the store is sliced more finely, or shorten the retention on "
+          + "this TimeSeries type so it holds fewer sealed blocks.";
+
+  /**
+   * Rejects a sealed slice whose offsets and lengths cannot describe a real file (issue #4416), HERE rather than
+   * where the bytes are written.
+   * <p>
+   * The applier turns "this sequence does not line up" into a targeted snapshot resync and never into a crash,
+   * and a negative offset would have escaped that: it reaches {@code RandomAccessFile.seek} and comes back as a
+   * raw {@code IOException} the apply path can only report as an unexpected error. Decoding is where every other
+   * malformed-payload check in this class already lives, and it is the one place that sees the field before
+   * anything acts on it. The last slice must END exactly at the declared file length - every producer satisfies
+   * that by construction, so a payload that does not is not a payload this codec wrote.
+   */
+  private static void checkSealedSliceGeometry(final String fileName, final long fileLength, final long offset,
+      final int sliceLength, final boolean last) {
+    final boolean valid = fileLength >= 0 && offset >= 0 && offset + (long) sliceLength <= fileLength
+        && (!last || offset + (long) sliceLength == fileLength);
+    if (!valid)
+      throw new IllegalStateException(
+          "Invalid SCHEMA_ENTRY sealed slice for '" + fileName + "': offset " + offset + " + " + sliceLength
+              + " bytes does not fit a " + fileLength + "-byte file" + (last ? " it claims to complete" : "")
+              + " (corrupted replication payload)");
   }
 
   private static void checkCollectionSize(final int size, final String context) {
@@ -396,7 +435,8 @@ public final class RaftLogEntryCodec {
       for (int i = 0; i < blobCount; i++) {
         final TsSealedBlob blob = sealedFileBlobs.get(i);
         final byte[] raw = blob.bytes() != null ? blob.bytes() : new byte[0];
-        checkProducedPayloadLength(raw.length, databaseName, "Sealed TimeSeries store '" + blob.fileName() + "'");
+        checkProducedPayloadLength(raw.length, databaseName, "Sealed TimeSeries store '" + blob.fileName() + "'",
+            SEALED_REMEDIATION);
         final CRC32 crc = new CRC32();
         crc.update(raw);
         final byte[] compressed = CompressionFactory.getDefault().compress(raw);
@@ -425,7 +465,7 @@ public final class RaftLogEntryCodec {
           final TsSealedChunk chunk = sealedFileChunks.get(i);
           final byte[] raw = chunk.bytes() != null ? chunk.bytes() : new byte[0];
           checkProducedPayloadLength(raw.length, databaseName,
-              "Sealed TimeSeries store slice '" + chunk.fileName() + "'");
+              "Sealed TimeSeries store slice '" + chunk.fileName() + "'", SEALED_REMEDIATION);
           final CRC32 crc = new CRC32();
           crc.update(raw);
           final byte[] compressed = CompressionFactory.getDefault().compress(raw);
@@ -736,6 +776,7 @@ public final class RaftLogEntryCodec {
           if (crc.getValue() != expectedCrc)
             throw new IllegalStateException("CRC mismatch decoding SCHEMA_ENTRY sealed slice for '" + fileName
                 + "' at offset " + offset + " (corrupted replication payload)");
+          checkSealedSliceGeometry(fileName, fileLength, offset, raw.length, last);
           sealedFileChunks.add(
               new TsSealedChunk(typeName, shardIndex, fileName, fileLength, fileCrc, offset, raw, last));
         }
