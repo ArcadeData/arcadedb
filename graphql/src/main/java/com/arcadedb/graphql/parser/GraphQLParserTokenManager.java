@@ -188,7 +188,7 @@ private int jjMoveStringLiteralDfa0_0(){
 }
 private int jjMoveStringLiteralDfa1_0(long active0){
    try { curChar = input_stream.readChar(); }
-   catch(java.io.IOException e) {
+   catch(IOException e) {
       jjStopStringLiteralDfa_0(0, active0);
       return 1;
    }
@@ -225,7 +225,7 @@ private int jjMoveStringLiteralDfa2_0(long old0, long active0){
    if (((active0 &= old0)) == 0L)
       return jjStartNfa_0(0, old0);
    try { curChar = input_stream.readChar(); }
-   catch(java.io.IOException e) {
+   catch(IOException e) {
       jjStopStringLiteralDfa_0(1, active0);
       return 2;
    }
@@ -262,7 +262,7 @@ private int jjMoveStringLiteralDfa3_0(long old0, long active0){
    if (((active0 &= old0)) == 0L)
       return jjStartNfa_0(1, old0);
    try { curChar = input_stream.readChar(); }
-   catch(java.io.IOException e) {
+   catch(IOException e) {
       jjStopStringLiteralDfa_0(2, active0);
       return 3;
    }
@@ -303,7 +303,7 @@ private int jjMoveStringLiteralDfa4_0(long old0, long active0){
    if (((active0 &= old0)) == 0L)
       return jjStartNfa_0(2, old0);
    try { curChar = input_stream.readChar(); }
-   catch(java.io.IOException e) {
+   catch(IOException e) {
       jjStopStringLiteralDfa_0(3, active0);
       return 4;
    }
@@ -342,7 +342,7 @@ private int jjMoveStringLiteralDfa5_0(long old0, long active0){
    if (((active0 &= old0)) == 0L)
       return jjStartNfa_0(3, old0);
    try { curChar = input_stream.readChar(); }
-   catch(java.io.IOException e) {
+   catch(IOException e) {
       jjStopStringLiteralDfa_0(4, active0);
       return 5;
    }
@@ -379,7 +379,7 @@ private int jjMoveStringLiteralDfa6_0(long old0, long active0){
    if (((active0 &= old0)) == 0L)
       return jjStartNfa_0(4, old0);
    try { curChar = input_stream.readChar(); }
-   catch(java.io.IOException e) {
+   catch(IOException e) {
       jjStopStringLiteralDfa_0(5, active0);
       return 6;
    }
@@ -404,7 +404,7 @@ private int jjMoveStringLiteralDfa7_0(long old0, long active0){
    if (((active0 &= old0)) == 0L)
       return jjStartNfa_0(5, old0);
    try { curChar = input_stream.readChar(); }
-   catch(java.io.IOException e) {
+   catch(IOException e) {
       jjStopStringLiteralDfa_0(6, active0);
       return 7;
    }
@@ -431,7 +431,7 @@ private int jjMoveStringLiteralDfa8_0(long old0, long active0){
    if (((active0 &= old0)) == 0L)
       return jjStartNfa_0(6, old0);
    try { curChar = input_stream.readChar(); }
-   catch(java.io.IOException e) {
+   catch(IOException e) {
       jjStopStringLiteralDfa_0(7, active0);
       return 8;
    }
@@ -454,7 +454,7 @@ private int jjMoveStringLiteralDfa9_0(long old0, long active0){
    if (((active0 &= old0)) == 0L)
       return jjStartNfa_0(7, old0);
    try { curChar = input_stream.readChar(); }
-   catch(java.io.IOException e) {
+   catch(IOException e) {
       jjStopStringLiteralDfa_0(8, active0);
       return 9;
    }
@@ -474,7 +474,7 @@ private int jjStartNfaWithStates_0(int pos, int kind, int state)
    jjmatchedKind = kind;
    jjmatchedPos = pos;
    try { curChar = input_stream.readChar(); }
-   catch(java.io.IOException e) { return pos + 1; }
+   catch(IOException e) { return pos + 1; }
    return jjMoveNfa_0(state, pos + 1);
 }
 static final long[] jjbitVec0 = {
@@ -832,7 +832,7 @@ private int jjMoveNfa_0(int startState, int curPos)
       if (i == startsAt)
          return curPos;
       try { curChar = input_stream.readChar(); }
-      catch(final java.io.IOException e) { return curPos; }
+      catch(final IOException e) { return curPos; }
    }
 }
 
@@ -910,7 +910,7 @@ public Token getNextToken()
       while (curChar <= 32 && (0x100000200L & (1L << curChar)) != 0x0L)
          curChar = input_stream.beginToken();
    }
-   catch (final java.io.IOException e1) {
+   catch (final IOException e1) {
      continue EOFLoop;
    }
    jjmatchedKind = 0x7fffffff;
@@ -938,7 +938,7 @@ public Token getNextToken()
      input_stream.readChar();
      input_stream.backup(1);
    }
-   catch (final java.io.IOException e1) {
+   catch (final IOException e1) {
       EOFSeen = true;
       error_after = curPos <= 1 ? "" : input_stream.getImage();
       if (curChar == '\n' || curChar == '\r') {

@@ -42,7 +42,8 @@
 *      jj_expentries field become the imported names;
 *   3. in GraphQLParserTokenManager.java, the copied parser imports become the single `java.io.IOException`
 *      it actually uses - the generator copies the PARSER_BEGIN import list into this file too, where
-*      GlobalConfiguration is unused;
+*      GlobalConfiguration is unused - and the `catch (java.io.IOException e)` sites become the imported
+*      simple name, which is what makes that import carry its weight;
 *   4. in GraphQLParser.java, every `if (x instanceof T) { throw (T) x; }` becomes the pattern-matching
 *      `if (x instanceof T t) { throw t; }`.
 */
