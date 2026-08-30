@@ -46,16 +46,17 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *   <li>a peer holding a certificate signed by a <em>different</em> CA, and an anonymous peer holding none,
  *       are both rejected during the TLS handshake, before any Raft message is read.</li>
  * </ul>
- * The negative handshakes pin TLS 1.2 deliberately: under TLS 1.3 the client finishes the handshake before
- * the server has verified its certificate, so the rejection would surface asynchronously on a later read
- * rather than out of {@code startHandshake()}, and the assertion would be racy.
+ * The negative handshakes pin TLS 1.2 (see {@code RaftTestPki.connect}): under TLS 1.3 the client finishes
+ * the handshake before the server has verified its certificate, so the rejection would surface
+ * asynchronously on a later read rather than out of {@code startHandshake()}, and the assertion would be racy.
+ * <p>
+ * The complementary {@code arcadedb.ha.tls.mutualAuth=false} configuration - where the same anonymous client
+ * is accepted - is covered by {@link Issue3890RaftServerOnlyTlsIT}.
  */
 class Issue3890RaftMtlsIT extends BaseRaftHATest {
 
-  private static final String  VERTEX_TYPE   = "MtlsReplicated";
-  private static final int     RECORD_COUNT  = 200;
-  private static final String  TLS_1_2       = "TLSv1.2";
-  private static final int     HANDSHAKE_TIMEOUT_MS = 15_000;
+  private static final String VERTEX_TYPE  = "MtlsReplicated";
+  private static final int    RECORD_COUNT = 200;
 
   private static RaftTestPki clusterPki;
   private static RaftTestPki foreignPki;
@@ -158,10 +159,7 @@ class Issue3890RaftMtlsIT extends BaseRaftHATest {
   }
 
   private SSLSocket connect(final SSLContext context) throws IOException {
-    final SSLSocket socket = (SSLSocket) context.getSocketFactory().createSocket("localhost", raftPortOf(0));
-    socket.setEnabledProtocols(new String[] { TLS_1_2 });
-    socket.setSoTimeout(HANDSHAKE_TIMEOUT_MS);
-    return socket;
+    return RaftTestPki.connect(context, "localhost", raftPortOf(0));
   }
 
   /**

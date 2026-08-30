@@ -2090,8 +2090,13 @@ public enum GlobalConfiguration {
       """
       PEM file holding this node's Raft gRPC certificate followed by any intermediate CA certificates. The \
       certificate must carry a subject alternative name matching the address the other nodes use to dial this \
-      node in arcadedb.ha.serverList (on Kubernetes, the pod's stable headless-service DNS name). Required \
-      when arcadedb.ha.tls.enabled is true.""",
+      node in arcadedb.ha.serverList (on Kubernetes, the pod's stable headless-service DNS name). Every node \
+      both accepts and initiates Raft connections, so with arcadedb.ha.tls.mutualAuth=true this one \
+      certificate is presented as the TLS server certificate AND as the client certificate: it needs BOTH the \
+      serverAuth and clientAuth extended key usages. A CA that issues single-purpose certificates will \
+      otherwise produce a handshake failure that the startup file checks cannot catch, because the file is \
+      perfectly readable and merely the wrong kind of certificate. Required when arcadedb.ha.tls.enabled is \
+      true.""",
       String.class, ""),
 
   HA_TLS_PRIVATE_KEY_FILE("arcadedb.ha.tls.privateKeyFile", SCOPE.SERVER,

@@ -20,7 +20,9 @@ package com.arcadedb.server.ha.raft;
 
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSocket;
 import javax.net.ssl.TrustManagerFactory;
+import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -59,6 +61,14 @@ final class RaftTestPki {
   private static final String SUBJECT_ALT_NAMES = "san=dns:localhost,ip:127.0.0.1";
   /** Hang detector for the keytool subprocess, not a latency bound: generous on purpose. */
   private static final long   KEYTOOL_TIMEOUT_SECONDS = 120;
+  /**
+   * The handshake tests pin TLS 1.2 deliberately. Under TLS 1.3 the client finishes the handshake before the
+   * server has verified its certificate, so a rejection surfaces asynchronously on a later read rather than
+   * out of {@code startHandshake()} - which would make every negative assertion racy.
+   */
+  private static final String TLS_1_2                 = "TLSv1.2";
+  /** Hang detector for a handshake that neither completes nor is refused. */
+  private static final int    HANDSHAKE_TIMEOUT_MS    = 15_000;
 
   private final Path caCertificate;
   private final Path nodeCertificate;
@@ -168,6 +178,17 @@ final class RaftTestPki {
     final SSLContext context = SSLContext.getInstance("TLS");
     context.init(keyManagers != null ? keyManagers.getKeyManagers() : null, trustManagers.getTrustManagers(), null);
     return context;
+  }
+
+  /**
+   * Opens a TLS 1.2 socket to {@code host:port} using {@code context}. The caller drives the handshake, so
+   * both the accept and the reject assertions run through exactly the same connection path.
+   */
+  static SSLSocket connect(final SSLContext context, final String host, final int port) throws IOException {
+    final SSLSocket socket = (SSLSocket) context.getSocketFactory().createSocket(host, port);
+    socket.setEnabledProtocols(new String[] { TLS_1_2 });
+    socket.setSoTimeout(HANDSHAKE_TIMEOUT_MS);
+    return socket;
   }
 
   private static KeyStore load(final Path store) throws Exception {

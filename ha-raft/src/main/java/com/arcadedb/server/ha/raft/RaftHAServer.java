@@ -111,10 +111,20 @@ import java.util.logging.Logger;
  * {@link #shutdownRequested} volatile flag prevents recovery during shutdown.
  * <p>
  * <b>Security note (K8s mode):</b> When {@code HA_K8S} is enabled and gRPC is bound
- * to {@code 0.0.0.0}, any pod in the Kubernetes cluster can connect to the Raft port
- * and inject Raft log entries. Authentication for inter-node traffic relies on
- * Kubernetes NetworkPolicy. Operators should restrict access to the Raft port via
- * NetworkPolicy rules in production.
+ * to {@code 0.0.0.0}, any host that can reach the Raft port can connect to it and inject Raft log
+ * entries. Three mitigations, in decreasing order of strength:
+ * <ul>
+ *   <li>{@code arcadedb.ha.tls.*} (issue #3890) - mutual TLS, the only one that binds peer identity to a
+ *       certificate rather than to a spoofable source address, and the only one that also encrypts the
+ *       traffic. Off by default; this is the supported way to secure the Raft port in production.</li>
+ *   <li>{@code arcadedb.ha.peerAllowlist.enabled} - rejects inbound connections whose address does not
+ *       resolve to a host in {@code HA_SERVER_LIST}. On by default, but IP-based: defeated by spoofing on a
+ *       flat L2 network or by a compromised peer. A best-effort default, not a substitute for mTLS.</li>
+ *   <li>A Kubernetes NetworkPolicy restricting the port to the StatefulSet pods - network-level isolation,
+ *       and worth having alongside either of the above.</li>
+ * </ul>
+ * None of these replaces the {@code X-ArcadeDB-Cluster-Token} check on the HTTP side channels (snapshot
+ * download, database verify), which is a separate control on a separate port.
  */
 public class RaftHAServer implements HealthMonitor.HealthTarget {
 
