@@ -104,8 +104,14 @@ public class GraphQLParser {
 PARSER_END(GraphQLParser)
 
 TOKEN: {
-      < COMMA                   : "," >
-    | < HASH                    : "#" >
+      // The comma is insignificant whitespace in GraphQL (spec section 2.1.6), so it must never reach the
+      // parser as a token: it is declared private here purely so <SKIP_INSIGN_COMMA> below can reference it.
+      // Declared as a real token it won every tie against that SKIP entry, which left the comma spellable
+      // only where a production named it explicitly - required by Arguments, rejected everywhere else (#6860).
+      < #COMMA                  : "," >
+      // Private for the same reason: <SKIP_COMMENT> below is <HASH> followed by zero or more characters, so an
+      // empty comment is exactly as long as a bare HASH and the earlier declaration used to win the tie (#6860).
+    | < #HASH                   : "#" >
     | < BANG                    : "!" >
     | < DOLLAR                  : "$" >
     | < OPAR                    : "(" >
@@ -146,8 +152,12 @@ TOKEN: {
 }
 
 TOKEN: {
-      < DIGIT                   : [ "0"-"9" ] >
-    | < NON_ZERO_DIGIT          : [ "1"-"9" ] >
+      // Private: these are building blocks of INTEGER_LITERAL/FLOAT_LITERAL and of each other, never tokens in
+      // their own right. Declared as real tokens they matched a one-character integer just as far as
+      // INTEGER_LITERAL did and, being declared first, won the tie - so "3" parsed as <DIGIT> and any
+      // single-digit literal was a syntax error while "42" was fine (#6860).
+      < #DIGIT                  : [ "0"-"9" ] >
+    | < #NON_ZERO_DIGIT         : [ "1"-"9" ] >
 }
 
 SKIP: {
@@ -161,8 +171,6 @@ SKIP: {
 
 TOKEN: {
       < #LINE_TERMINATOR        : ( ["\n", "\r", "\u2028", "\u2029"] ) >
-    | < #WHITESPACE             : ["\t", "\u000b", "\f", "\u0020", "\u00a0"] >
-    | < #LETTER                 : ["\t", "\r", "\n", "\u0020"-"\uffff"] >
     | < #EXPONENT_IDENTIFIER    : "e" | "E" >
     | < #INTEGER_PART           : "0" | <NON_ZERO_DIGIT> (<DIGIT>)* >
     | < #FRACTIONAL_PART        : "." (<DIGIT>)* >
@@ -179,7 +187,14 @@ TOKEN: {
                                       ~["\"", "\\", "\u2028", "\u2029"]
                                       | "\\u" ( ["0"-"9"] | ["A"-"F"] | ["a"-"f"] ){4} // Escaped Unicode
                                       | "\\" ( "\"" | "\\" | "/" | "b" | "f" | "n" | "r" | "t" ) // Escaped Character
-                                      | (<LETTER>) (<WHITESPACE>)
+                                      // No further alternative here: the first one already accepts every character a
+                                      // GraphQL string may carry unescaped. A <LETTER><WHITESPACE> alternative used to
+                                      // follow, and since <LETTER> includes the double quote it let the closing quote
+                                      // of one literal be consumed as content whenever whitespace came after it. The
+                                      // longest-match rule then joined two literals into one - `(a: "x" b: "y")` lexed
+                                      // as a single string `"x" b: "y"` - which is why an argument list written without
+                                      // commas, the form the specification treats as identical to the comma-separated
+                                      // one, could not be lexed at all (#6860).
                                   )*
                                   "\"" >
     | < NAME_LITERAL            : ( "_" | ["A"-"Z"] | ["a"-"z"] ) ( "_" | ["0"-"9"] | ["A"-"Z"] | ["a"-"z"] )* >
@@ -376,8 +391,7 @@ Arguments Arguments(): {
 }
 {
     <OPAR>
-    lastArg = Argument() { jjtThis.arguments.add(lastArg); }
-    (<COMMA> lastArg = Argument() { jjtThis.arguments.add(lastArg); })*
+    (lastArg = Argument() { jjtThis.arguments.add(lastArg); })+
     <CPAR>
     {
         return jjtThis;
