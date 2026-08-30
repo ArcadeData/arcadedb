@@ -48,7 +48,7 @@
             org.apache.maven.shared:maven-shared-utils in the plugin declaration below, which
             injects the jar into the plugin realm.
         -->
-        <native-maven-plugin.version>1.1.10</native-maven-plugin.version>
+        <native-maven-plugin.version>1.1.11</native-maven-plugin.version>
         <imageName>arcadedb-${project.version}-${os.detected.name}-${os.detected.arch}</imageName>
         <maven.deploy.skip>true</maven.deploy.skip>
         <!--
