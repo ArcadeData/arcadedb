@@ -228,9 +228,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // buildParameters() on each Ratis (re)start. Kept so refreshRaftClient() can rebuild the leader's
   // self-client with the SAME transport configuration: a client built with an empty Parameters would
   // dial the Raft port in plaintext and fail every handshake once TLS is on (issue #3890).
-  // Only meaningful once buildParameters() has RETURNED: it is assigned after the TLS configuration has
-  // been validated and installed, never before, so a ConfigurationException from a bad cert/key/trust path
-  // cannot leave this field pointing at a half-built, TLS-less transport configuration.
+  // Published by buildParameters() only on its LAST line, once the TLS configuration and the inbound-peer
+  // allowlist customizer are both installed. Two things depend on that: a ConfigurationException from a bad
+  // cert/key/trust path leaves the previous, working value in place rather than a TLS-less one, and a
+  // concurrent reader (refreshRaftClient() from a leader-change callback) never sees a half-built transport
+  // configuration.
   private volatile Parameters                 raftParameters        = new Parameters();
   private final    Object                    leaderChangeNotifier  = new Object();
   private final    Object                    applyNotifier         = new Object();
@@ -3663,21 +3665,31 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * The customizer adds a {@link PeerAddressAllowlistFilter} that rejects inbound Raft gRPC
    * connections from IPs not listed in {@code arcadedb.ha.serverList}.
    */
-  private Parameters buildParameters(final ContextConfiguration configuration) {
+  // Package-private rather than private so Issue3890RaftParametersPublicationTest can pin when
+  // raftParameters becomes visible - the property this method exists to get right.
+  Parameters buildParameters(final ContextConfiguration configuration) {
     this.allowlistFilter = null;
     final Parameters parameters = new Parameters();
 
     // mTLS first: it is the cryptographic peer identity the allowlist below cannot provide. Throws a
     // ConfigurationException at startup when enabled with an unusable cert/key/trust path (issue #3890),
-    // which is why raftParameters is published only after this line rather than before it.
+    // which is one of the two reasons raftParameters is published only on the way out of this method.
     final GrpcTlsConfig tlsConfig = RaftPropertiesBuilder.applyTls(configuration, parameters);
-    this.raftParameters = parameters;
     if (tlsConfig != null)
       LogManager.instance().log(this, Level.INFO,
           "Raft gRPC transport secured with TLS (mutual authentication: %s)", tlsConfig.getMtlsEnabled());
 
+    installPeerAllowlist(configuration, parameters);
+
+    // Last line on every path: see the field's comment. Nothing above may publish a partially-configured
+    // Parameters, and nothing below may add to it.
+    this.raftParameters = parameters;
+    return parameters;
+  }
+
+  private void installPeerAllowlist(final ContextConfiguration configuration, final Parameters parameters) {
     if (!configuration.getValueAsBoolean(GlobalConfiguration.HA_PEER_ALLOWLIST_ENABLED))
-      return parameters;
+      return;
 
     final String serverList = configuration.getValueAsString(GlobalConfiguration.HA_SERVER_LIST);
     final long refreshMs = configuration.getValueAsLong(GlobalConfiguration.HA_GRPC_ALLOWLIST_REFRESH_MS);
@@ -3687,13 +3699,17 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (peerHosts.isEmpty()) {
       LogManager.instance().log(this, Level.WARNING,
           "arcadedb.ha.peerAllowlist.enabled=true but arcadedb.ha.serverList is empty; allowlist not installed");
-      return parameters;
+      return;
     }
     final PeerAddressAllowlistFilter filter = new PeerAddressAllowlistFilter(peerHosts, refreshMs, startupGraceMs,
         stickyTtlMs);
     this.allowlistFilter = filter;
     GrpcConfigKeys.Server.setServicesCustomizer(parameters, new RaftGrpcServicesCustomizer(filter));
-    return parameters;
+  }
+
+  /** Package-private test hook: the transport configuration the Raft client builders read. */
+  Parameters raftParametersForTest() {
+    return raftParameters;
   }
 
   /**
