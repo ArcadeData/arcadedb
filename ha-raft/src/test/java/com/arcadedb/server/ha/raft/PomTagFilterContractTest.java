@@ -95,9 +95,9 @@ class PomTagFilterContractTest {
    * @param executionId the enclosing {@code <execution>}'s id, or {@code null} for the plugin-wide configuration
    *                    that every inherited execution reads
    */
-  private record TagParameter(String pom, String plugin, String executionId, String name, String value) {
+  private record TagParameter(String pom, String plugin, int declaration, String scope, String executionId, String name, String value) {
     ExecutionKey execution() {
-      return new ExecutionKey(pom, plugin, executionId);
+      return new ExecutionKey(pom, plugin, declaration, scope, executionId);
     }
 
     String where() {
@@ -105,10 +105,19 @@ class PomTagFilterContractTest {
     }
   }
 
-  private record ExecutionKey(String pom, String plugin, String executionId) {
+  /**
+   * Identifies one execution. {@code declaration} is the position of its {@code <plugin>} block in the document,
+   * and it is what keeps two executions apart when nothing else does: an execution id is unique only within one
+   * plugin block, so two profiles - or a profile and {@code <build>} - may each declare {@code <execution>} with
+   * the same id and different halves of a tag filter. Merged, those two look like one properly pinned execution
+   * while each on its own is narrowable, which is the failure this whole class exists to catch. {@code scope} is
+   * for the message only; the index is what makes the identity correct.
+   */
+  private record ExecutionKey(String pom, String plugin, int declaration, String scope, String executionId) {
     @Override
     public String toString() {
-      return pom + " -> " + plugin + (executionId == null ? " (plugin configuration)" : " execution '" + executionId + "'");
+      return pom + " -> " + plugin + (scope.isEmpty() ? "" : " in " + scope)
+          + (executionId == null ? " (plugin configuration)" : " execution '" + executionId + "'");
     }
   }
 
@@ -338,6 +347,62 @@ class PomTagFilterContractTest {
         """)))).isEmpty();
   }
 
+  /**
+   * An execution id is unique only inside one {@code <plugin>} block, so two profiles can each declare an
+   * execution called {@code default} carrying a different half of the filter. Keyed by id alone they merge into
+   * one execution that looks properly pinned, while each on its own is narrowable from the command line.
+   */
+  @Test
+  void executionsSharingAnIdAcrossProfilesAreJudgedSeparately() {
+    final List<String> violations = unpinnedPartitionParameters(parse("""
+        <project><profiles>
+          <profile>
+            <id>fast</id>
+            <build><plugins><plugin><artifactId>maven-failsafe-plugin</artifactId><executions>
+              <execution><id>default</id><configuration><groups>any() | none()</groups></configuration></execution>
+            </executions></plugin></plugins></build>
+          </profile>
+          <profile>
+            <id>thorough</id>
+            <build><plugins><plugin><artifactId>maven-failsafe-plugin</artifactId><executions>
+              <execution><id>default</id><configuration><excludedGroups>ha-heavy</excludedGroups></configuration></execution>
+            </executions></plugin></plugins></build>
+          </profile>
+        </profiles></project>
+        """));
+
+    assertThat(violations).hasSize(2);
+    assertThat(String.join("\n", violations))
+        .contains("profile 'fast'")
+        .contains("profile 'thorough'")
+        .contains("<excludedGroups> is not configured")
+        .contains("<groups> is not configured");
+  }
+
+  /**
+   * The deliberate limit of the partition rule, pinned so it is a decision rather than an oversight. An execution
+   * that names NO tag filter is not half of a partition - it is an ordinary execution set up for something else
+   * (its own {@code <includes>}, its own {@code reuseForks}), and there is nothing in the pom that says otherwise.
+   * Demanding both parameters of every named execution would fail on those, and inventing a partition where the
+   * pom describes none is how a guard starts costing more than it catches. Declaring one parameter is the signal;
+   * that is the moment the other one has to be pinned too.
+   */
+  @Test
+  void anExecutionWithNoTagFilterIsNotAPartition() {
+    final List<TagParameter> parameters = parse(pomWithExecutions("maven-failsafe-plugin", """
+        <execution>
+          <id>slow-its-last</id>
+          <configuration>
+            <reuseForks>false</reuseForks>
+            <includes><include>**/*SlowIT.java</include></includes>
+          </configuration>
+        </execution>
+        """));
+
+    assertThat(parameters).isEmpty();
+    assertThat(unpinnedPartitionParameters(parameters)).isEmpty();
+  }
+
   @Test
   void aBlankTagParameterIsReported() {
     final List<String> violations = unpinnedPartitionParameters(parse(pomWithExecutions("""
@@ -394,6 +459,11 @@ class PomTagFilterContractTest {
    * the first rule that keeps the latter a property reference rather than a literal. Either way it stays
    * narrowable from the command line, which is what this rule forbids. Relaxing the first rule would quietly
    * remove that half of the premise, so relax neither alone.
+   * <p>
+   * The message for an omitted parameter names {@code ${groups}}/{@code ${excludedGroups}} specifically, which
+   * is exact today because that is what this repository's plugin-wide defaults are called. A plugin-wide default
+   * under some other property name would still satisfy the first rule and would still be settable from the
+   * command line, so the verdict would stay right while the property named in the message would not.
    */
   private static List<String> unpinnedPartitionParameters(final List<TagParameter> parameters) {
     final Set<ExecutionKey> partitions = new LinkedHashSet<>();
@@ -509,8 +579,9 @@ class PomTagFilterContractTest {
       if (artifactId == null || !TAG_PLUGINS.contains(artifactId))
         continue;
 
+      final String scope = scopeOf(plugin);
       for (final Element configuration : children(plugin, "configuration"))
-        add(parameters, pom, artifactId, null, configuration);
+        add(parameters, pom, artifactId, i, scope, null, configuration);
 
       for (final Element executions : children(plugin, "executions"))
         for (final Element execution : children(executions, "execution")) {
@@ -520,17 +591,31 @@ class PomTagFilterContractTest {
           if (id == null)
             continue;
           for (final Element configuration : children(execution, "configuration"))
-            add(parameters, pom, artifactId, id, configuration);
+            add(parameters, pom, artifactId, i, scope, id, configuration);
         }
     }
     return parameters;
   }
 
-  private static void add(final List<TagParameter> into, final String pom, final String plugin, final String executionId,
-      final Element configuration) {
+  private static void add(final List<TagParameter> into, final String pom, final String plugin, final int declaration,
+      final String scope, final String executionId, final Element configuration) {
     for (final String name : TAG_PARAMS)
       for (final Element parameter : children(configuration, name))
-        into.add(new TagParameter(pom, plugin, executionId, name, parameter.getTextContent()));
+        into.add(new TagParameter(pom, plugin, declaration, scope, executionId, name, parameter.getTextContent()));
+  }
+
+  /** Where a plugin block sits, for the message: the profile that holds it, and whether it is only managed. */
+  private static String scopeOf(final Element plugin) {
+    final StringBuilder scope = new StringBuilder();
+    for (Node ancestor = plugin.getParentNode(); ancestor != null; ancestor = ancestor.getParentNode()) {
+      if ("pluginManagement".equals(ancestor.getNodeName()))
+        scope.append("pluginManagement");
+      else if ("profile".equals(ancestor.getNodeName())) {
+        final String id = childText((Element) ancestor, "id");
+        scope.append(scope.isEmpty() ? "" : " of ").append("profile '").append(id == null ? "?" : id).append('\'');
+      }
+    }
+    return scope.toString();
   }
 
   private static List<Element> children(final Element parent, final String name) {
