@@ -144,15 +144,54 @@ public final class RaftLogEntryCodec {
    * identical, equally undeliverable payload.
    */
   private static void checkProducedPayloadLength(final int length, final String databaseName, final String context) {
+    checkProducedPayloadLength(length, databaseName, context,
+        "Reduce the batch size - fewer rows per GraphBatch / SQL transaction, or smaller records.");
+  }
+
+  /**
+   * @param remediation what the operator can actually DO about it, because that differs by section and a wrong
+   *                    answer here sends them at the wrong knob. A transaction's WAL shrinks by batching less; a
+   *                    TimeSeries sealed store does not shrink by batching anything at all (issue #4416) - it
+   *                    shrinks by lowering the per-entry sealed cap so the store is sliced more finely, or by
+   *                    shortening the type's retention.
+   */
+  private static void checkProducedPayloadLength(final int length, final String databaseName, final String context,
+      final String remediation) {
     if (length > MAX_ENTRY_BYTES)
       throw new ReplicatedEntryTooLargeException(String.format(
           """
           %s for database '%s' is %d bytes uncompressed, above the %d bytes of uncompressed payload a single \
           replicated Raft entry may carry. Compression is not what bounds it: the entry is LZ4-compressed for \
           the wire but every node has to materialize it in full to apply it, so a well-compressing bulk \
-          transaction can slip under arcadedb.ha.appendBufferSize and still be too large to apply. Reduce the \
-          batch size - fewer rows per GraphBatch / SQL transaction, or smaller records.""",
-          context, databaseName, length, MAX_ENTRY_BYTES));
+          transaction can slip under arcadedb.ha.appendBufferSize and still be too large to apply. %s""",
+          context, databaseName, length, MAX_ENTRY_BYTES, remediation));
+  }
+
+  /** What an operator does about a TimeSeries sealed payload that no single entry can carry (issue #4416). */
+  private static final String SEALED_REMEDIATION =
+      "Lower arcadedb.ha.tsMaxSealedInlineSize so the store is sliced more finely, or shorten the retention on "
+          + "this TimeSeries type so it holds fewer sealed blocks.";
+
+  /**
+   * Rejects a sealed slice whose offsets and lengths cannot describe a real file (issue #4416), HERE rather than
+   * where the bytes are written.
+   * <p>
+   * The applier turns "this sequence does not line up" into a targeted snapshot resync and never into a crash,
+   * and a negative offset would have escaped that: it reaches {@code RandomAccessFile.seek} and comes back as a
+   * raw {@code IOException} the apply path can only report as an unexpected error. Decoding is where every other
+   * malformed-payload check in this class already lives, and it is the one place that sees the field before
+   * anything acts on it. The last slice must END exactly at the declared file length - every producer satisfies
+   * that by construction, so a payload that does not is not a payload this codec wrote.
+   */
+  private static void checkSealedSliceGeometry(final String fileName, final long fileLength, final long offset,
+      final int sliceLength, final boolean last) {
+    final boolean valid = fileLength >= 0 && offset >= 0 && offset + (long) sliceLength <= fileLength
+        && (!last || offset + (long) sliceLength == fileLength);
+    if (!valid)
+      throw new IllegalStateException(
+          "Invalid SCHEMA_ENTRY sealed slice for '" + fileName + "': offset " + offset + " + " + sliceLength
+              + " bytes does not fit a " + fileLength + "-byte file" + (last ? " it claims to complete" : "")
+              + " (corrupted replication payload)");
   }
 
   private static void checkCollectionSize(final int size, final String context) {
@@ -188,7 +227,13 @@ public final class RaftLogEntryCodec {
        * standalone DDL that adds files without changing the schema version, and skipping the reload for
        * THAT would leave the new files unregistered.
        */
-      boolean moreChunksFollow
+      boolean moreChunksFollow,
+      /**
+       * Slices of a TimeSeries sealed store too large to ride one Raft entry (issue #4416). Empty on every entry
+       * whose sealed stores fit inline - those arrive as {@code sealedFileBlobs} - and on entries produced by a
+       * node that predates this section.
+       */
+      List<TsSealedChunk> sealedFileChunks
   ) {
   }
 
@@ -204,6 +249,39 @@ public final class RaftLogEntryCodec {
    * @param bytes      the full sealed-store file content
    */
   public record TsSealedBlob(String typeName, int shardIndex, String fileName, byte[] bytes) {
+  }
+
+  /**
+   * One slice of a TimeSeries sealed-store file that does not fit a single Raft entry (issue #4416).
+   * <p>
+   * WHY SLICES AND NOT A SMALLER BLOB. A {@link TsSealedBlob} is the whole file, which made
+   * {@code arcadedb.ha.tsMaxSealedInlineSize} a ceiling on the sealed STORE and not merely on one entry: a shard
+   * whose store crossed it stopped sealing for good, because the file it would have to ship only ever grows. A
+   * sliced store is delivered by a sequence of entries that Raft applies in order on every node, each within the
+   * transport limit, so the ceiling becomes the sequence's length rather than one entry's size.
+   * <p>
+   * The sequence follows the same ordered-prefix contract as {@code RaftTransactionBroker.splitSchemaEntry}: every
+   * slice but the last is a delivery-only entry that the follower STAGES on disk and nothing more, and the final
+   * slice rides the publishing entry, so the install still happens in the same entry as the mutable-bucket clear
+   * WAL and a query can never observe "cleared mutable + stale sealed". A leader that dies mid-sequence leaves a
+   * partial staging file, which the next sequence's {@code offset == 0} slice truncates.
+   * <p>
+   * {@code fileLength} and {@code fileCrc} describe the WHOLE reassembled file and are carried on every slice, so
+   * a follower validates what it assembled against the leader's own image before installing it - a per-slice CRC
+   * alone would only prove each piece survived the wire.
+   *
+   * @param typeName   the TimeSeries type owning the shard
+   * @param shardIndex the shard index whose sealed store changed
+   * @param fileName   the sealed-store file name relative to the database directory, for diagnostics only: the
+   *                   follower derives the path it writes from its OWN schema, never from this
+   * @param fileLength the length of the whole reassembled file
+   * @param fileCrc    CRC32 of the whole reassembled file
+   * @param offset     where this slice starts in the reassembled file
+   * @param bytes      this slice's bytes, already decompressed and CRC-verified by the decoder
+   * @param last       true on the slice that completes the file, i.e. the one the follower installs on
+   */
+  public record TsSealedChunk(String typeName, int shardIndex, String fileName, long fileLength, long fileCrc,
+                              long offset, byte[] bytes, boolean last) {
   }
 
   /**
@@ -295,6 +373,29 @@ public final class RaftLogEntryCodec {
       final Map<Integer, String> filesToAdd, final Map<Integer, String> filesToRemove,
       final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas,
       final List<TsSealedBlob> sealedFileBlobs, final boolean moreChunksFollow) {
+    return encodeSchemaEntry(databaseName, schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas,
+        sealedFileBlobs, moreChunksFollow, Collections.emptyList());
+  }
+
+  /**
+   * @param sealedFileChunks slices of a sealed store too large to ride one entry (issue #4416). Written as a
+   *                         trailing section AFTER {@code moreChunksFollow}, which this encoder always emits, so
+   *                         the flag can never be confused with the section's own first byte and a node running an
+   *                         older codec stops right after the flag and decodes the entry exactly as it did before.
+   *                         <p>
+   *                         <b>During a rolling upgrade</b> that older node therefore installs nothing for a
+   *                         SLICED sealed store while still applying the mutable-bucket clear WAL the publishing
+   *                         entry carries, and serves that shard from its sealed store's previous image until it
+   *                         is upgraded and resynced - the same exposure the sealed-blob section itself has had
+   *                         since #4382, and for the same reason: a trailing section an old decoder cannot see. A
+   *                         leader only produces slices once a sealed store outgrows one entry, so a cluster whose
+   *                         stores fit inline is not exposed at all. Upgrade the followers first.
+   */
+  public static ByteString encodeSchemaEntry(final String databaseName, final String schemaJson,
+      final Map<Integer, String> filesToAdd, final Map<Integer, String> filesToRemove,
+      final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas,
+      final List<TsSealedBlob> sealedFileBlobs, final boolean moreChunksFollow,
+      final List<TsSealedChunk> sealedFileChunks) {
     try {
       final ByteArrayOutputStream baos = new ByteArrayOutputStream();
       final DataOutputStream dos = new DataOutputStream(baos);
@@ -334,7 +435,8 @@ public final class RaftLogEntryCodec {
       for (int i = 0; i < blobCount; i++) {
         final TsSealedBlob blob = sealedFileBlobs.get(i);
         final byte[] raw = blob.bytes() != null ? blob.bytes() : new byte[0];
-        checkProducedPayloadLength(raw.length, databaseName, "Sealed TimeSeries store '" + blob.fileName() + "'");
+        checkProducedPayloadLength(raw.length, databaseName, "Sealed TimeSeries store '" + blob.fileName() + "'",
+            SEALED_REMEDIATION);
         final CRC32 crc = new CRC32();
         crc.update(raw);
         final byte[] compressed = CompressionFactory.getDefault().compress(raw);
@@ -347,10 +449,39 @@ public final class RaftLogEntryCodec {
         dos.write(compressed);
       }
 
-      // KEEP THIS LAST. The decoder detects it with available() > 0, so it can only be the final field:
-      // anything appended after it would make a false flag indistinguishable from an older entry that
-      // never wrote one. A future trailing section needs its own presence byte written BEFORE this.
+      // KEEP THIS BEFORE ANY LATER SECTION, unconditionally. The decoder detects it with available() > 0, so
+      // it must be written by every encoder that writes anything after it: an entry that OMITTED it and then
+      // wrote a section would make that section's first byte indistinguishable from the flag. It is written
+      // unconditionally here, which is precisely what lets the sealed-slice section below follow it (#4416),
+      // and an older decoder - which stops here - still reads the flag correctly.
       dos.writeBoolean(moreChunksFollow);
+
+      // TimeSeries sealed-store SLICE section (issue #4416). Trailing, self-describing, and written only when
+      // non-empty, so an entry with nothing to slice is byte-identical to what the previous codec produced.
+      final int chunkCount = sealedFileChunks != null ? sealedFileChunks.size() : 0;
+      if (chunkCount > 0) {
+        dos.writeInt(chunkCount);
+        for (int i = 0; i < chunkCount; i++) {
+          final TsSealedChunk chunk = sealedFileChunks.get(i);
+          final byte[] raw = chunk.bytes() != null ? chunk.bytes() : new byte[0];
+          checkProducedPayloadLength(raw.length, databaseName,
+              "Sealed TimeSeries store slice '" + chunk.fileName() + "'", SEALED_REMEDIATION);
+          final CRC32 crc = new CRC32();
+          crc.update(raw);
+          final byte[] compressed = CompressionFactory.getDefault().compress(raw);
+          dos.writeUTF(chunk.typeName());
+          dos.writeInt(chunk.shardIndex());
+          dos.writeUTF(chunk.fileName());
+          dos.writeLong(chunk.fileLength());
+          dos.writeLong(chunk.fileCrc());
+          dos.writeLong(chunk.offset());
+          dos.writeBoolean(chunk.last());
+          dos.writeLong(crc.getValue());     // CRC of THIS slice
+          dos.writeInt(raw.length);          // uncompressed length
+          dos.writeInt(compressed.length);   // compressed length
+          dos.write(compressed);
+        }
+      }
 
       dos.flush();
       return ByteString.copyFrom(baos.toByteArray());
@@ -485,7 +616,7 @@ public final class RaftLogEntryCodec {
       final RaftLogEntryType type = RaftLogEntryType.fromId(typeByte);
       if (type == null)
         return new DecodedEntry(null, null, null, null, null, null, null, null, null, null, false, null, -1L,
-            Collections.emptyList(), false);
+            Collections.emptyList(), false, Collections.emptyList());
       final String databaseName = dis.readUTF();
 
       final DecodedEntry result = switch (type) {
@@ -493,7 +624,8 @@ public final class RaftLogEntryCodec {
         case SCHEMA_ENTRY -> decodeSchemaEntry(dis, databaseName);
         case INSTALL_DATABASE_ENTRY -> decodeInstallDatabaseEntry(dis, databaseName);
         case DROP_DATABASE_ENTRY -> new DecodedEntry(RaftLogEntryType.DROP_DATABASE_ENTRY, databaseName,
-            null, null, null, null, null, null, null, null, false, null, -1L, Collections.emptyList(), false);
+            null, null, null, null, null, null, null, null, false, null, -1L, Collections.emptyList(), false,
+            Collections.emptyList());
         case SECURITY_USERS_ENTRY -> decodeSecurityUsersEntry(dis);
         case BOOTSTRAP_FINGERPRINT_ENTRY -> decodeBootstrapFingerprintEntry(dis, databaseName);
       };
@@ -531,7 +663,7 @@ public final class RaftLogEntryCodec {
     }
 
     return new DecodedEntry(RaftLogEntryType.TX_ENTRY, databaseName, walData, bucketRecordDelta,
-        null, null, null, null, null, null, false, null, -1L, Collections.emptyList(), false);
+        null, null, null, null, null, null, false, null, -1L, Collections.emptyList(), false, Collections.emptyList());
   }
 
   private static DecodedEntry decodeSchemaEntry(final DataInputStream dis, final String databaseName) throws IOException {
@@ -614,9 +746,46 @@ public final class RaftLogEntryCodec {
     // entries produced by an older codec, which decode as false.
     final boolean moreChunksFollow = dis.available() > 0 && dis.readBoolean();
 
+    // TimeSeries sealed-store SLICE section (issue #4416). It can only be read once the flag above has been
+    // consumed, which is why that flag is written unconditionally by the encoder; the same presence rule applies
+    // here, and a truncated slice makes the reads below hit EOF and propagate rather than being silently dropped.
+    List<TsSealedChunk> sealedFileChunks = Collections.emptyList();
+    if (dis.available() > 0) {
+      final int chunkCount = dis.readInt();
+      checkCollectionSize(chunkCount, "SCHEMA_ENTRY sealed slices");
+      if (chunkCount > 0) {
+        sealedFileChunks = new ArrayList<>(chunkCount);
+        for (int i = 0; i < chunkCount; i++) {
+          final String typeName = dis.readUTF();
+          final int shardIndex = dis.readInt();
+          final String fileName = dis.readUTF();
+          final long fileLength = dis.readLong();
+          final long fileCrc = dis.readLong();
+          final long offset = dis.readLong();
+          final boolean last = dis.readBoolean();
+          final long expectedCrc = dis.readLong();
+          final int uncompressedLen = dis.readInt();
+          final int compressedLen = dis.readInt();
+          checkByteLength(compressedLen, dis.available(), "SCHEMA_ENTRY sealed slice compressed");
+          checkDecompressedLength(uncompressedLen, compressedLen, "SCHEMA_ENTRY sealed slice uncompressed");
+          final byte[] compressed = new byte[compressedLen];
+          dis.readFully(compressed);
+          final byte[] raw = CompressionFactory.getDefault().decompress(compressed, uncompressedLen);
+          final CRC32 crc = new CRC32();
+          crc.update(raw);
+          if (crc.getValue() != expectedCrc)
+            throw new IllegalStateException("CRC mismatch decoding SCHEMA_ENTRY sealed slice for '" + fileName
+                + "' at offset " + offset + " (corrupted replication payload)");
+          checkSealedSliceGeometry(fileName, fileLength, offset, raw.length, last);
+          sealedFileChunks.add(
+              new TsSealedChunk(typeName, shardIndex, fileName, fileLength, fileCrc, offset, raw, last));
+        }
+      }
+    }
+
     return new DecodedEntry(RaftLogEntryType.SCHEMA_ENTRY, databaseName, null, null,
         schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas, null, false, null, -1L, sealedFileBlobs,
-        moreChunksFollow);
+        moreChunksFollow, sealedFileChunks);
   }
 
   private static DecodedEntry decodeInstallDatabaseEntry(final DataInputStream dis, final String databaseName) throws IOException {
@@ -627,7 +796,8 @@ public final class RaftLogEntryCodec {
       forceSnapshot = dis.readBoolean();
     }
     return new DecodedEntry(RaftLogEntryType.INSTALL_DATABASE_ENTRY, databaseName,
-        null, null, null, null, null, null, null, null, forceSnapshot, null, -1L, Collections.emptyList(), false);
+        null, null, null, null, null, null, null, null, forceSnapshot, null, -1L, Collections.emptyList(), false,
+        Collections.emptyList());
   }
 
   private static DecodedEntry decodeBootstrapFingerprintEntry(final DataInputStream dis, final String databaseName)
@@ -639,7 +809,8 @@ public final class RaftLogEntryCodec {
     final String fingerprint = new String(fpBytes, StandardCharsets.UTF_8);
     final long lastTxId = dis.readLong();
     return new DecodedEntry(RaftLogEntryType.BOOTSTRAP_FINGERPRINT_ENTRY, databaseName,
-        null, null, null, null, null, null, null, null, false, fingerprint, lastTxId, Collections.emptyList(), false);
+        null, null, null, null, null, null, null, null, false, fingerprint, lastTxId, Collections.emptyList(), false,
+        Collections.emptyList());
   }
 
   private static DecodedEntry decodeSecurityUsersEntry(final DataInputStream dis) throws IOException {
@@ -649,7 +820,8 @@ public final class RaftLogEntryCodec {
     dis.readFully(bytes);
     final String usersJson = new String(bytes, StandardCharsets.UTF_8);
     return new DecodedEntry(RaftLogEntryType.SECURITY_USERS_ENTRY, "",
-        null, null, null, null, null, null, null, usersJson, false, null, -1L, Collections.emptyList(), false);
+        null, null, null, null, null, null, null, usersJson, false, null, -1L, Collections.emptyList(), false,
+        Collections.emptyList());
   }
 
   private static void writeFileMap(final DataOutputStream dos, final Map<Integer, String> fileMap) throws IOException {

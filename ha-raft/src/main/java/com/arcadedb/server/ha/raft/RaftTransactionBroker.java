@@ -111,8 +111,24 @@ public class RaftTransactionBroker {
       final Map<Integer, String> filesToAdd, final Map<Integer, String> filesToRemove,
       final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas,
       final List<RaftLogEntryCodec.TsSealedBlob> sealedFileBlobs) {
+    replicateSchema(dbName, schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas, sealedFileBlobs,
+        Collections.emptyList());
+  }
+
+  /**
+   * @param sealedFileChunks the FINAL slice of every sealed store shipped sliced (issue #4416). The earlier slices
+   *                         went out ahead of this call through {@link #replicateSealedChunk}; the last one rides
+   *                         the publishing entry so that installing the sealed file and applying the
+   *                         mutable-bucket clear WAL stay in the same entry, which is what keeps a follower from
+   *                         ever observing a cleared mutable bucket beside a stale sealed store.
+   */
+  public void replicateSchema(final String dbName, final String schemaJson,
+      final Map<Integer, String> filesToAdd, final Map<Integer, String> filesToRemove,
+      final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas,
+      final List<RaftLogEntryCodec.TsSealedBlob> sealedFileBlobs,
+      final List<RaftLogEntryCodec.TsSealedChunk> sealedFileChunks) {
     final ByteString entry = RaftLogEntryCodec.encodeSchemaEntry(dbName, schemaJson,
-        filesToAdd, filesToRemove, walEntries, bucketDeltas, sealedFileBlobs);
+        filesToAdd, filesToRemove, walEntries, bucketDeltas, sealedFileBlobs, false, sealedFileChunks);
 
     final long cap = groupCommitter.maxEntrySize();
     if (entry.size() <= cap) {
@@ -121,8 +137,38 @@ public class RaftTransactionBroker {
     }
 
     for (final ByteString chunk : splitSchemaEntry(dbName, schemaJson, filesToAdd, filesToRemove, walEntries,
-        bucketDeltas, sealedFileBlobs, cap, entry.size()))
+        bucketDeltas, sealedFileBlobs, sealedFileChunks, cap, entry.size(), false))
       groupCommitter.submitAndWait(chunk.toByteArray());
+  }
+
+  /**
+   * Ships ONE delivery-only slice of a sealed store that does not fit a single Raft entry (issue #4416).
+   * <p>
+   * Marked {@code moreChunksFollow} and carrying nothing else - no schema JSON, no file maps, no WAL - so the
+   * follower stages the bytes and does nothing that publishes: same ordered-prefix contract as
+   * {@link #replicateSchemaInstalment}, applied to a payload that is a file rather than a WAL stream. The slice is
+   * sized by the producer against {@code GlobalConfiguration.replicatedSealedChunkBudget}, so it fits by
+   * construction; the check below is the guard that says so out loud rather than toppling the leader when the
+   * arithmetic and the transport ever disagree (#4743).
+   *
+   * @throws ReplicatedEntryTooLargeException when the encoded slice still exceeds the entry cap
+   */
+  public void replicateSealedChunk(final String dbName, final RaftLogEntryCodec.TsSealedChunk chunk) {
+    final ByteString entry = RaftLogEntryCodec.encodeSchemaEntry(dbName, "", Collections.emptyMap(),
+        Collections.emptyMap(), Collections.emptyList(), Collections.emptyList(), Collections.emptyList(), true,
+        List.of(chunk));
+
+    final long cap = groupCommitter.maxEntrySize();
+    if (entry.size() > cap)
+      throw new ReplicatedEntryTooLargeException(String.format(
+          """
+          Sealed TimeSeries store slice for '%s' of database '%s' at offset %d is %d bytes encoded, above the \
+          maximum replicated entry size of %d bytes. Lower arcadedb.ha.tsMaxSealedInlineSize, or raise \
+          arcadedb.ha.appendBufferSize - and with it arcadedb.ha.writeBufferSize, which must stay >= \
+          appendBufferSize + 8 bytes.""",
+          chunk.fileName(), dbName, chunk.offset(), entry.size(), cap));
+
+    groupCommitter.submitAndWait(entry.toByteArray());
   }
 
   /**
@@ -206,13 +252,31 @@ public class RaftTransactionBroker {
       final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas,
       final List<RaftLogEntryCodec.TsSealedBlob> sealedFileBlobs, final long cap, final int singleEntrySize,
       final boolean moreAfterLast) {
+    return splitSchemaEntry(dbName, schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas,
+        sealedFileBlobs, Collections.emptyList(), cap, singleEntrySize, moreAfterLast);
+  }
+
+  /**
+   * @param sealedFileChunks the final sealed-store slices (issue #4416). They publish, exactly like the sealed
+   *                         blobs and {@code filesToRemove} beside them, so they ride the LAST chunk and are
+   *                         measured into its header budget.
+   */
+  // @VisibleForTesting
+  static List<ByteString> splitSchemaEntry(final String dbName, final String schemaJson,
+      final Map<Integer, String> filesToAdd, final Map<Integer, String> filesToRemove,
+      final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas,
+      final List<RaftLogEntryCodec.TsSealedBlob> sealedFileBlobs,
+      final List<RaftLogEntryCodec.TsSealedChunk> sealedFileChunks, final long cap, final int singleEntrySize,
+      final boolean moreAfterLast) {
 
     // Worst-case non-WAL payload: the first entry carries filesToAdd, the last one the schema JSON,
-    // filesToRemove and the sealed blobs. Measured by encoding both headers with no WAL at all.
+    // filesToRemove, the sealed blobs and the final sealed slices. Measured by encoding both headers with no
+    // WAL at all.
     final int firstHeaderSize = RaftLogEntryCodec.encodeSchemaEntry(dbName, "", filesToAdd,
         Collections.emptyMap(), Collections.emptyList(), Collections.emptyList(), Collections.emptyList()).size();
     final int lastHeaderSize = RaftLogEntryCodec.encodeSchemaEntry(dbName, schemaJson, Collections.emptyMap(),
-        filesToRemove, Collections.emptyList(), Collections.emptyList(), sealedFileBlobs).size();
+        filesToRemove, Collections.emptyList(), Collections.emptyList(), sealedFileBlobs, moreAfterLast,
+        sealedFileChunks).size();
     final long walBudget = cap - Math.max(firstHeaderSize, lastHeaderSize);
 
     if (walEntries == null || walEntries.isEmpty() || walBudget <= 0)
@@ -226,7 +290,8 @@ public class RaftTransactionBroker {
           dbName, singleEntrySize, cap, schemaJson != null ? schemaJson.length() : 0,
           filesToAdd != null ? filesToAdd.size() : 0, filesToRemove != null ? filesToRemove.size() : 0,
           walEntries != null ? walEntries.size() : 0,
-          sealedFileBlobs != null ? sealedFileBlobs.size() : 0));
+          (sealedFileBlobs != null ? sealedFileBlobs.size() : 0)
+              + (sealedFileChunks != null ? sealedFileChunks.size() : 0)));
 
     // Group the WAL entries by their RAW size: the codec compresses them, so a group that fits the
     // budget uncompressed always fits it encoded. Each group keeps its index-aligned bucket delta.
@@ -273,7 +338,8 @@ public class RaftTransactionBroker {
           last ? filesToRemove : Collections.emptyMap(),
           walGroups.get(g), deltaGroups.get(g),
           last ? sealedFileBlobs : Collections.emptyList(),
-          !last || moreAfterLast);
+          !last || moreAfterLast,
+          last ? sealedFileChunks : Collections.emptyList());
 
       if (chunk.size() > cap)
         // A single WAL entry (or the header plus one WAL entry) still does not fit. Fail loudly rather

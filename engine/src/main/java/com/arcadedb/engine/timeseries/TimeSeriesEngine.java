@@ -658,6 +658,15 @@ public class TimeSeriesEngine implements AutoCloseable {
    * rewritten sealed bytes of any shard whose store actually changed. On a standalone database the
    * default {@link DatabaseInternal#runWithCompactionReplication} simply runs the work; on a Raft
    * follower it is skipped entirely (the leader ships the result).
+   * <p>
+   * NO SIZE PRE-CHECK HERE, unlike {@code TimeSeriesShard.compactInternal}, and the asymmetry is deliberate
+   * (issue #4416). That guard exists because compaction GROWS the sealed store, so it can decide not to create a
+   * store it cannot replicate. Retention and downsampling only ever shrink or hold one: they cannot push a shard
+   * over a ceiling it was not already over, so a pre-check could only refuse to ship a store the leader has
+   * ALREADY rewritten, which would leave the followers on an image no node has any more - divergence, in place of
+   * a burst of entries. A store that is over the ceiling when it gets here arrived that way (a database that was
+   * standalone when it sealed, then joined a cluster), and the honest handling is the one
+   * {@code RaftReplicatedDatabase.sliceSealedBlob} applies: ship it, and report the oversized slice count.
    */
   private void runSealedMaintenanceReplicated(final SealedMaintenance work) throws IOException {
     final DatabaseInternal db = database.getWrappedDatabaseInstance();

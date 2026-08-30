@@ -61,6 +61,7 @@ import org.apache.ratis.util.LifeCycle;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -85,6 +86,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Level;
+import java.util.zip.CRC32;
 
 /**
  * Ratis state machine that bridges the Raft log and ArcadeDB storage.
@@ -1969,7 +1971,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // installSealedFileBytes already reopened the sealed store and the clear WAL applies to the live
     // mutable-bucket pages, so neither the schema update nor the reload is needed.
     final boolean sealedOnlyEntry = isEmptyMap(decoded.filesToAdd()) && isEmptyMap(decoded.filesToRemove())
-        && decoded.sealedFileBlobs() != null && !decoded.sealedFileBlobs().isEmpty();
+        && (isNotEmpty(decoded.sealedFileBlobs()) || isNotEmpty(decoded.sealedFileChunks()));
 
     // A non-final chunk of a schema change split across several entries (see
     // RaftTransactionBroker.splitSchemaEntry) only DELIVERS pages: the change is published by the last
@@ -1994,7 +1996,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // Same reasoning as sealedOnlyEntry above.
     final boolean walOnlyEntry = isEmptyMap(decoded.filesToAdd()) && isEmptyMap(decoded.filesToRemove())
         && (decoded.schemaJson() == null || decoded.schemaJson().isEmpty())
-        && (decoded.sealedFileBlobs() == null || decoded.sealedFileBlobs().isEmpty())
+        && !isNotEmpty(decoded.sealedFileBlobs()) && !isNotEmpty(decoded.sealedFileChunks())
         && decoded.walEntries() != null && !decoded.walEntries().isEmpty();
 
     try {
@@ -2005,6 +2007,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // below carries the mutable-bucket clear; installing the sealed file first guarantees a query
       // never observes "cleared mutable + stale sealed" (the data-loss window).
       applySealedBlobs(db, decoded.sealedFileBlobs());
+
+      // A sealed store too large for one entry arrives as an ordered sequence of slices (issue #4416). Every
+      // slice but the last only stages bytes; the last one installs the reassembled file, and it rides THIS
+      // entry - the publishing one - so the install still happens before the clear WAL below, closing the same
+      // data-loss window applySealedBlobs closes for a store that fits inline.
+      applySealedChunks(db, decoded.sealedFileChunks());
 
       if (!sealedOnlyEntry && decoded.schemaJson() != null && !decoded.schemaJson().isEmpty())
         db.getSchema().getEmbedded().update(new JSONObject(decoded.schemaJson()));
@@ -2196,6 +2204,162 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
+   * Reassembles and installs a sealed store the leader shipped SLICED because it does not fit one Raft entry
+   * (issue #4416), the counterpart of {@link #applySealedBlobs}.
+   * <p>
+   * WHY THE STAGING FILE IS ON DISK and not a buffer in this state machine. The slices arrive as separate Raft
+   * entries, and this node persists its applied index between them, so a follower that restarts mid-sequence must
+   * not need the earlier slices again - it will never be sent them. A file survives that restart; a field does
+   * not. It is also what keeps a multi-gigabyte sealed store from having to fit in heap on the way in.
+   * <p>
+   * WHAT MAKES THE SEQUENCE SAFE. Raft applies entries in index order on every node, so the slices arrive in the
+   * order the leader cut them. {@code offset == 0} TRUNCATES the staging file - through the write handle, so the
+   * truncation cannot be silently skipped the way a failed delete could - which is what makes a sequence abandoned
+   * by a leader that died mid-shipment cost nothing: the next leader's first slice discards whatever it left. Any
+   * other slice must find the staging file exactly {@code offset} bytes long - anything else means the
+   * sequence this node holds is not the sequence the leader is sending, and the only honest answer is to stop
+   * trusting local state and resync, which is what {@link ReplicationException} asks for (it is caught in
+   * {@code applyWithRetry} and turned into a targeted snapshot resync rather than halting the node).
+   * <p>
+   * The last slice is verified against the WHOLE file the leader hashed before it is installed: length first,
+   * then CRC32. Per-slice CRCs are already checked by the decoder, but they only prove each piece survived the
+   * wire, not that what this node assembled is what the leader had.
+   * <p>
+   * ONLY THE LAST SLICE IS FSYNCED, and the earlier ones deliberately are not. A power loss between applying a
+   * slice and the OS flushing it can therefore leave a staging file SHORTER than this node's persisted applied
+   * index implies. That is not a hole, it is what the checks above are for: the next slice finds a staging file
+   * that is not {@code offset} bytes long, or the last one finds the wrong length or CRC, and either way the
+   * sequence is refused and the database resyncs rather than installing a truncated store. Paying an fsync per
+   * slice would buy a faster recovery from an event that already costs a restart, at the price of one flush per
+   * entry on the single Raft apply thread for every sliced compaction. The final slice IS synced because after it
+   * the file is moved into place and nothing checks it again.
+   * <p>
+   * The install itself is the one {@code applySealedBlobs} performs - an atomic move onto the store's file - and
+   * the target path is derived from THIS node's schema, never from the file name in the payload: a name arriving
+   * over the wire has no business selecting a path here.
+   */
+  // Package-private for the same reason as applySealedBlobs: the whole mechanism lives in this method, and a
+  // 3-node IT can prove it end to end but cannot pin the broken-sequence arms without contriving a failure.
+  void applySealedChunks(final DatabaseInternal db, final List<RaftLogEntryCodec.TsSealedChunk> chunks)
+      throws IOException {
+    if (chunks == null || chunks.isEmpty())
+      return;
+    for (final RaftLogEntryCodec.TsSealedChunk chunk : chunks) {
+      final LocalSchema schema = db.getSchema().getEmbedded();
+      if (!schema.existsType(chunk.typeName())) {
+        // Should not happen: the type-creation entry has a lower Raft index and is applied first.
+        LogManager.instance().log(this, Level.SEVERE,
+            "Received TimeSeries sealed slice for unknown type '%s' (db=%s); skipping", null, chunk.typeName(),
+            decodedDbName(db));
+        continue;
+      }
+      if (!(schema.getType(chunk.typeName()) instanceof LocalTimeSeriesType tsType)) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Received TimeSeries sealed slice for non-timeseries type '%s' (db=%s); skipping", null,
+            chunk.typeName(), decodedDbName(db));
+        continue;
+      }
+
+      final File target = new File(db.getDatabasePath(),
+          TimeSeriesSealedStore.sealedFileNameFor(tsType.getName(), chunk.shardIndex()));
+      final File staging = new File(target.getPath() + SEALED_STAGING_SUFFIX);
+
+      if (chunk.offset() > 0L && (!staging.exists() || staging.length() != chunk.offset()))
+        throw new ReplicationException(String.format(
+            "TimeSeries sealed slice for '%s' shard %d (db=%s) starts at offset %d but this node has staged %s; "
+                + "the slice sequence is broken, resyncing the database from the leader",
+            chunk.typeName(), chunk.shardIndex(), decodedDbName(db), chunk.offset(),
+            staging.exists() ? staging.length() + " bytes" : "nothing"));
+
+      try (final RandomAccessFile out = new RandomAccessFile(staging, "rw")) {
+        // The first slice truncates, and it does so through the open handle rather than by deleting the file
+        // first. Deleting was the obvious way to write this and it is the wrong one: a delete that fails - a
+        // handle another process still holds on Windows, a permissions hiccup - can only be logged and stepped
+        // over, and RandomAccessFile.write never SHRINKS a file, so the tail of a longer abandoned sequence
+        // would survive underneath the new one. The guards below still catch that (the next slice's offset
+        // check, or the final length check), but only by forcing a full resync - which is precisely the cost
+        // "an abandoned sequence costs nothing" says a restart does not pay. setLength cannot be stepped over:
+        // it truncates or it throws, and throwing here IS the resync signal.
+        if (chunk.offset() == 0L)
+          out.setLength(0);
+        out.seek(chunk.offset());
+        out.write(chunk.bytes());
+        if (chunk.last())
+          out.getFD().sync();
+      }
+
+      if (!chunk.last()) {
+        HALog.log(this, HALog.DETAILED,
+            "Staged TimeSeries sealed slice for %s shard %d at offset %d (%d bytes of %d) on db '%s'",
+            chunk.typeName(), chunk.shardIndex(), chunk.offset(), chunk.bytes().length, chunk.fileLength(),
+            decodedDbName(db));
+        continue;
+      }
+
+      final long stagedLength = staging.length();
+      if (stagedLength != chunk.fileLength()) {
+        deleteSealedStagingFile(staging);
+        throw new ReplicationException(String.format(
+            "TimeSeries sealed store for '%s' shard %d (db=%s) reassembled to %d bytes but the leader shipped %d; "
+                + "resyncing the database from the leader",
+            chunk.typeName(), chunk.shardIndex(), decodedDbName(db), stagedLength, chunk.fileLength()));
+      }
+
+      final long assembledCrc = crc32Of(staging);
+      if (assembledCrc != chunk.fileCrc()) {
+        deleteSealedStagingFile(staging);
+        throw new ReplicationException(String.format(
+            "TimeSeries sealed store for '%s' shard %d (db=%s) reassembled with CRC %d, the leader shipped %d; "
+                + "resyncing the database from the leader",
+            chunk.typeName(), chunk.shardIndex(), decodedDbName(db), assembledCrc, chunk.fileCrc()));
+      }
+
+      if (tsType.getEngine() == null) {
+        // Same repair as a whole-file blob performs (issue #6839): the slices ARE the authoritative copy of the
+        // file whose failure to open left this type without an engine, so they go down first and initEngine()
+        // opens the store over them.
+        if (repairEngineWithSealedFile(db, tsType, chunk.shardIndex(), staging))
+          HALog.log(this, HALog.DETAILED,
+              "Repaired TimeSeries type %s shard %d from a %d-byte replicated sealed store shipped in slices on db '%s'",
+              chunk.typeName(), chunk.shardIndex(), stagedLength, decodedDbName(db));
+        continue;
+      }
+
+      tsType.getEngine().getShard(chunk.shardIndex()).getSealedStore().installSealedFile(staging);
+      HALog.log(this, HALog.DETAILED,
+          "Installed TimeSeries sealed store for %s shard %d (%d bytes, shipped in slices) on db '%s'",
+          chunk.typeName(), chunk.shardIndex(), stagedLength, decodedDbName(db));
+    }
+  }
+
+  /** Where a sealed store shipped in slices is reassembled, beside the file it will replace. */
+  static final String SEALED_STAGING_SUFFIX = ".parts";
+
+  private static long crc32Of(final File file) throws IOException {
+    final CRC32 crc = new CRC32();
+    final byte[] buffer = new byte[64 * 1024];
+    try (final RandomAccessFile in = new RandomAccessFile(file, "r")) {
+      for (int read = in.read(buffer); read > 0; read = in.read(buffer))
+        crc.update(buffer, 0, read);
+    }
+    return crc.getValue();
+  }
+
+  /**
+   * Removes a staging file a refused reassembly left behind. BEST EFFORT, and unlike the first slice's truncation
+   * that is fine here: nothing downstream depends on this succeeding. The next sequence starts with an
+   * {@code offset == 0} slice, which truncates through its own write handle whether or not this delete worked, so
+   * a failure costs disk until the next compaction and never correctness. That is exactly the difference from the
+   * first-slice case, where a silently skipped delete DID leave a longer sequence's tail under a shorter one.
+   */
+  private void deleteSealedStagingFile(final File staging) {
+    if (staging.exists() && !staging.delete())
+      LogManager.instance().log(this, Level.WARNING,
+          "Failed to delete stale TimeSeries sealed staging file '%s'; it costs disk until the next slice "
+              + "sequence truncates it, and nothing else depends on it being gone", null, staging.getAbsolutePath());
+  }
+
+  /**
    * Puts the leader's sealed bytes in place for a type registered with no engine and re-runs {@code initEngine()}.
    * Returns whether the type now has one.
    * <p>
@@ -2222,13 +2386,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final File target = new File(db.getDatabasePath(),
         TimeSeriesSealedStore.sealedFileNameFor(tsType.getName(), blob.shardIndex()));
     final File incoming = new File(target.getPath() + ".incoming");
-    try {
-      try (final FileOutputStream out = new FileOutputStream(incoming)) {
-        out.write(blob.bytes());
-        out.getFD().sync();
-      }
-      Files.move(incoming.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
-      tsType.initEngine();
+    try (final FileOutputStream out = new FileOutputStream(incoming)) {
+      out.write(blob.bytes());
+      out.getFD().sync();
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE,
           "Received TimeSeries sealed blob for type '%s' shard %d (db=%s) whose storage engine is unavailable, and "
@@ -2236,11 +2396,35 @@ public class ArcadeStateMachine extends BaseStateMachine {
           decodedDbName(db), e.getMessage());
       return false;
     }
+    return repairEngineWithSealedFile(db, tsType, blob.shardIndex(), incoming);
+  }
+
+  /**
+   * The half of {@link #repairEngineWithSealedBlob} that runs once the leader's copy of the sealed file is a file
+   * on this node: move it into place and re-run {@code initEngine()} over it.
+   * <p>
+   * Shared with the sliced path (issue #4416), which reassembles the leader's copy on disk rather than in heap and
+   * so arrives here with a path instead of an array. {@code source} is CONSUMED on success.
+   */
+  private boolean repairEngineWithSealedFile(final DatabaseInternal db, final LocalTimeSeriesType tsType,
+      final int shardIndex, final File source) {
+    final File target = new File(db.getDatabasePath(),
+        TimeSeriesSealedStore.sealedFileNameFor(tsType.getName(), shardIndex));
+    try {
+      Files.move(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
+      tsType.initEngine();
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.SEVERE,
+          "Received TimeSeries sealed store for type '%s' shard %d (db=%s) whose storage engine is unavailable, and "
+              + "the engine could not be initialised over it: %s", e, tsType.getName(), shardIndex,
+          decodedDbName(db), e.getMessage());
+      return false;
+    }
 
     if (!tsType.isEngineAvailable()) {
       LogManager.instance().log(this, Level.SEVERE,
-          "TimeSeries type '%s' (db=%s) still has no storage engine after installing the replicated sealed blob "
-              + "for shard %d; skipping", null, blob.typeName(), decodedDbName(db), blob.shardIndex());
+          "TimeSeries type '%s' (db=%s) still has no storage engine after installing the replicated sealed store "
+              + "for shard %d; skipping", null, tsType.getName(), decodedDbName(db), shardIndex);
       return false;
     }
     return true;
@@ -2252,6 +2436,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   private static boolean isEmptyMap(final Map<?, ?> map) {
     return map == null || map.isEmpty();
+  }
+
+  private static boolean isNotEmpty(final List<?> list) {
+    return list != null && !list.isEmpty();
   }
 
   private void applyInstallDatabaseEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
