@@ -24,12 +24,17 @@ import com.arcadedb.exception.ConfigurationException;
 import org.apache.ratis.conf.Parameters;
 import org.apache.ratis.grpc.GrpcConfigKeys;
 import org.apache.ratis.grpc.GrpcTlsConfig;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.DisabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -52,11 +57,20 @@ class RaftGrpcTlsConfigTest {
   private Path   privateKey;
   private Path   trustCerts;
 
+  private CapturingTestLogger logger;
+
   @BeforeEach
   void createFiles() throws Exception {
     certChain = Files.writeString(tempDir.resolve("node-cert.pem"), "cert");
     privateKey = Files.writeString(tempDir.resolve("node-key.pem"), "key");
     trustCerts = Files.writeString(tempDir.resolve("ca.pem"), "ca");
+    logger = CapturingTestLogger.install();
+  }
+
+  @AfterEach
+  void restoreLogger() {
+    if (logger != null)
+      logger.uninstall();
   }
 
   @Test
@@ -164,6 +178,32 @@ class RaftGrpcTlsConfigTest {
         .isInstanceOf(ConfigurationException.class)
         .hasMessageContaining("arcadedb.ha.tls.trustCertCollectionFile")
         .hasMessageContaining("is not a readable file");
+  }
+
+  /**
+   * A world-readable Raft private key hands a cluster identity to any local account that can read it, which is
+   * exactly what mTLS exists to prevent - but the permissions belong to the deployment, and a mounted secret
+   * may arrive with permissions this node cannot change. So the node warns and starts, rather than refusing.
+   */
+  @Test
+  @DisabledOnOs(value = OS.WINDOWS, disabledReason = "POSIX file permissions have no meaning on Windows")
+  void aPrivateKeyReadableByOthersIsWarnedAboutButStillAccepted() throws Exception {
+    Files.setPosixFilePermissions(privateKey, PosixFilePermissions.fromString("rw-r--r--"));
+
+    assertThat(RaftPropertiesBuilder.buildTlsConfig(enabledConfiguration())).isNotNull();
+    assertThat(logger.formattedAt(Level.WARNING))
+        .as("a key readable beyond its owner must be reported, at WARNING")
+        .anyMatch(message -> message.contains("readable beyond its owner")
+            && message.contains(privateKey.toFile().getAbsolutePath()));
+  }
+
+  @Test
+  @DisabledOnOs(value = OS.WINDOWS, disabledReason = "POSIX file permissions have no meaning on Windows")
+  void anOwnerOnlyPrivateKeyIsNotWarnedAbout() throws Exception {
+    Files.setPosixFilePermissions(privateKey, PosixFilePermissions.fromString("rw-------"));
+
+    assertThat(RaftPropertiesBuilder.buildTlsConfig(enabledConfiguration())).isNotNull();
+    assertThat(logger.countContaining("readable beyond its owner")).isZero();
   }
 
   private ContextConfiguration enabledConfiguration() {

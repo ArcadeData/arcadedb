@@ -2118,7 +2118,10 @@ public enum GlobalConfiguration {
       arcadedb.ha.tls.trustCertCollectionFile, binding peer identity to the certificate rather than to a \
       source IP address. Set to false for server-only TLS, \
       which encrypts the traffic but leaves the Raft port open to any client that trusts the cluster CA - the \
-      back door this setting exists to close. Only meaningful when arcadedb.ha.tls.enabled is true.""",
+      back door this setting exists to close. Turning it off does NOT make \
+      arcadedb.ha.tls.trustCertCollectionFile optional: the dialling node still needs the cluster CA to \
+      validate the certificate presented by the node it dials. Only meaningful when arcadedb.ha.tls.enabled \
+      is true.""",
       Boolean.class, true),
 
   // POSTGRES

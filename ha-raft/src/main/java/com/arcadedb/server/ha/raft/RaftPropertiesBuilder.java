@@ -33,6 +33,9 @@ import org.apache.ratis.util.SizeInBytes;
 import org.apache.ratis.util.TimeDuration;
 
 import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.attribute.PosixFilePermission;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
@@ -92,6 +95,8 @@ class RaftPropertiesBuilder {
     final File trustCerts = requireReadableFile(configuration, GlobalConfiguration.HA_TLS_TRUST_CERT_COLLECTION_FILE);
     final boolean mutualAuth = configuration.getValueAsBoolean(GlobalConfiguration.HA_TLS_MUTUAL_AUTH);
 
+    warnIfPrivateKeyIsReadableByOthers(privateKey);
+
     if (!mutualAuth)
       LogManager.instance().log(RaftPropertiesBuilder.class, Level.WARNING,
           "Raft gRPC TLS is enabled with %s=false: the transport is encrypted but the dialling peer is NOT "
@@ -109,6 +114,14 @@ class RaftPropertiesBuilder {
    * for all three gRPC endpoints (admin, client and server-to-server), so AppendEntries, InstallSnapshot and
    * RequestVote traffic are all covered by this one call. No-op when TLS is disabled, which leaves
    * {@code Parameters} exactly as Ratis's plaintext default expects it.
+   * <p>
+   * <b>That defaulting is a Ratis implementation detail, not a documented contract</b>, verified against
+   * <b>Ratis 3.3.0</b>: {@code GrpcFactory(Parameters)} reads {@code TLS.conf} plus the three per-endpoint
+   * keys, and its {@code SslContexts} constructor builds the {@code TLS.conf} context first and passes it as
+   * the fallback for admin, client and server. If a Ratis upgrade changes that, this one entry stops reaching
+   * the endpoints that do not set their own, and the symptom is the bug this method exists to prevent - a
+   * client dialling the Raft port in plaintext against a TLS server. On any Ratis version bump, re-read
+   * {@code GrpcFactory} and run {@code Issue3890RaftMtlsIT}, which is the test that would catch it.
    *
    * @return the TLS configuration that was installed, or {@code null} when TLS is disabled
    */
@@ -118,6 +131,32 @@ class RaftPropertiesBuilder {
       return null;
     GrpcConfigKeys.TLS.setConf(parameters, tlsConfig);
     return tlsConfig;
+  }
+
+  /**
+   * Warns when the private key is readable by the group or by everyone. Deliberately a warning and not a
+   * refusal: file ownership is the deployment's business, a container image or a mounted secret may legitimately
+   * arrive with permissions this node cannot change, and refusing to start would be a worse outcome than a
+   * noisy log. Silently accepting it would be worse still - a world-readable Raft key hands anyone on the host
+   * a cluster identity, which is precisely what this setting exists to prevent.
+   * <p>
+   * No-op on a file system with no POSIX view (Windows), where the question has no answer in these terms.
+   */
+  private static void warnIfPrivateKeyIsReadableByOthers(final File privateKey) {
+    final Set<PosixFilePermission> permissions;
+    try {
+      permissions = Files.getPosixFilePermissions(privateKey.toPath());
+    } catch (final Exception e) {
+      // UnsupportedOperationException on a non-POSIX file system, IOException on a file that vanished
+      // between the readability check and here. Neither is worth failing a startup over.
+      return;
+    }
+
+    if (permissions.contains(PosixFilePermission.GROUP_READ) || permissions.contains(PosixFilePermission.OTHERS_READ))
+      LogManager.instance().log(RaftPropertiesBuilder.class, Level.WARNING,
+          "The Raft gRPC private key %s (%s) is readable beyond its owner: any local account that can read it "
+              + "can present this node's identity to the cluster. Restrict it to owner-only (chmod 600)",
+          GlobalConfiguration.HA_TLS_PRIVATE_KEY_FILE.getKey(), privateKey.getAbsolutePath());
   }
 
   private static File requireReadableFile(final ContextConfiguration configuration,
