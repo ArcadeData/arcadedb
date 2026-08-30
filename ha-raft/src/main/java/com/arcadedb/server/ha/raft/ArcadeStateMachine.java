@@ -380,19 +380,55 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private final        Map<String, Long> lastDivergedResyncLogByDb        = new ConcurrentHashMap<>();
   private static final long              DIVERGED_RESYNC_LOG_THROTTLE_MS   = 5_000L;
 
-  // Locally-originated transactions whose leader-side phase 2 was abandoned because replication
-  // returned an INDETERMINATE result (the entry was dispatched to Ratis but submitAndWait timed out
-  // before quorum was confirmed - see ReplicationDispatchedTimeoutException). Keyed by
-  // "<databaseName>/<walTxId>". If such an entry later reaches quorum and is applied here,
-  // applyTxEntry MUST apply it locally instead of origin-skipping it, otherwise the write lands on
-  // every follower but never on this leader: a silent, permanent divergence (issue #4790). Marking
-  // is always safe: it only changes behaviour IF the entry actually commits on this node's state
-  // machine (applying is then correct because the followers have it); if the entry never commits,
-  // the mark is inert and is pruned by TTL. Bounded by time-based pruning on insert.
-  private final        Map<String, AbandonedPhase2> abandonedLocalTransactions = new ConcurrentHashMap<>();
+  // Outcome slots for locally-originated transactions, keyed by "<databaseName>/<walTxId>". Two
+  // threads race to claim the same slot and the winner decides who writes the entry's pages:
+  //
+  //   - the committing thread writes an AbandonedPhase2 when replication returned an INDETERMINATE
+  //     result (the entry was dispatched to Ratis but submitAndWait timed out before quorum was
+  //     confirmed - see ReplicationDispatchedTimeoutException). If such an entry later reaches
+  //     quorum and is applied here, applyTxEntry MUST apply it locally instead of origin-skipping
+  //     it, otherwise the write lands on every follower but never on this leader: a silent,
+  //     permanent divergence (issue #4790);
+  //   - the Raft apply thread writes an OriginSkipped when it passes a locally-originated entry and
+  //     leaves the pages to phase 2.
+  //
+  // Whoever finds the other's slot already there knows the other side got in first, and the loser
+  // takes over the work. That handshake is the whole point of routing BOTH sides through this one
+  // map: before issue #6848 the abandoned mark was published only after the entry had already been
+  // dispatched, so on a cold JVM the apply thread reached applyTxEntry first, found no mark and
+  // origin-skipped an entry whose phase 2 never ran - the leader stayed one transaction behind its
+  // followers for the rest of its uptime.
+  //
+  // Marking is always safe: it only changes behaviour IF the entry actually commits on this node's
+  // state machine (applying is then correct because the followers have it); if the entry never
+  // commits, the slot is inert and is pruned by TTL. Bounded by time-based pruning on insert.
+  private final        Map<String, LocalTxOutcome> abandonedLocalTransactions = new ConcurrentHashMap<>();
   // Entries older than this are pruned on the next mark. Generous because a dispatched-but-stuck
   // entry can take a long time to either commit or be overwritten by a new leader.
   private static final long              ABANDONED_TX_TTL_MS           = 10 * 60 * 1000L;
+  // The origin-skip slot is written on the leader's hot commit path, so it cannot afford the full
+  // TTL scan the (rare) abandon path runs; throttled to once per window, this sweep keeps that path
+  // O(1) while still bounding the map.
+  //
+  // It is a backstop, not the main disposal route. Ratis completes a write's client reply from the
+  // applyTransaction future, so on the leader the apply - and therefore the slot - normally happens
+  // BEFORE replicateTransaction returns and the committing thread's own finally removes it. What is
+  // left for the sweep is the slots nobody came back for: a committing thread that died, and any exit
+  // where the reply reached it by some other route than its own entry's apply.
+  //
+  // Nothing here is load-bearing on that Ratis ordering. If a reply ever overtook its apply, the only
+  // consequence is a slot removed before it was written and then left for this sweep - map hygiene,
+  // not correctness. The arbitration itself is settled by putIfAbsent in either order, which is the
+  // whole reason it was moved into the map in the first place.
+  //
+  // The TTL those slots are held for is deliberately NOT tightened to "a few seconds". A slot must
+  // outlive the whole window in which its committing thread can still abandon (2 x quorumTimeout
+  // plus the grace wait, i.e. 30 s at the default arcadedb.ha.quorumTimeout of 10 s), because a slot
+  // evicted inside that window would let the abandon claim a free key, roll back, and re-open the
+  // #6848 lost write. ABANDONED_TX_TTL_MS clears that bar by an order of magnitude, which is the
+  // point of reusing it.
+  private static final long              ORIGIN_SKIP_PRUNE_EVERY_MS    = 60 * 1000L;
+  private final        AtomicLong        lastOriginSkipPruneMs         = new AtomicLong();
 
   // In-flight leader-side phase 2 applies, ticket -> the applied index observed when the commit
   // started (its "replay floor"). A locally-originated entry is origin-skipped by applyTxEntry
@@ -418,12 +454,30 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
+   * One claim on a locally-originated transaction, written by whichever of the committing thread and
+   * the Raft apply thread reaches {@link #abandonedLocalTransactions} first. {@code insertedAt} backs
+   * the TTL pruning that bounds the map.
+   */
+  private sealed interface LocalTxOutcome permits AbandonedPhase2, OriginSkipped {
+    long insertedAt();
+  }
+
+  /**
    * One abandoned locally-originated transaction: the phase-2 ticket its commit is still holding,
    * and when the mark was inserted (for TTL pruning). Carrying the ticket is what lets
    * {@link #applyTxEntry} release it once the entry finally applies here, instead of leaving the
    * snapshot checkpoint - and therefore Raft log purging - pinned until the node restarts (#5410).
    */
-  private record AbandonedPhase2(long phase2Ticket, long insertedAt) {
+  private record AbandonedPhase2(long phase2Ticket, long insertedAt) implements LocalTxOutcome {
+  }
+
+  /**
+   * The Raft apply thread passed this locally-originated entry and left its pages to phase 2. Its
+   * only purpose is to be visible to a committing thread that abandons afterwards: finding it there
+   * proves the entry committed AND that nothing else will ever write its pages on this node, so the
+   * committer has to apply it itself (issue #6848).
+   */
+  private record OriginSkipped(long insertedAt) implements LocalTxOutcome {
   }
 
   /**
@@ -1518,8 +1572,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * {@link #NO_PHASE2_TICKET} when it took none. Recording it here is the correlation the ticket
    * lacks at {@link #beginLocalPhase2()} time (the WAL txId does not exist yet), and it is what lets
    * the eventual apply release the ticket instead of pinning the checkpoint until restart (#5410).
+   *
+   * @return {@code true} when the mark now stands, so {@link #applyTxEntry} will write this entry's
+   * pages; {@code false} when the Raft apply thread had already passed the entry and origin-skipped
+   * it, which leaves the caller holding a committed entry nothing else will ever apply here - it must
+   * apply the transaction itself (issue #6848).
    */
-  void markLocalTransactionAbandoned(final String databaseName, final long walTxId, final long phase2Ticket) {
+  boolean markLocalTransactionAbandoned(final String databaseName, final long walTxId, final long phase2Ticket) {
     final long now = System.currentTimeMillis();
     // Prune stale marks (entries that were dispatched but never committed, e.g. the slot was
     // overwritten by a new leader) so the map cannot grow unbounded. A pruned mark deliberately does
@@ -1527,10 +1586,111 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // later it will now be origin-skipped (unapplied here), so it must stay inside the replay window.
     if (!abandonedLocalTransactions.isEmpty())
       abandonedLocalTransactions.values().removeIf(abandoned -> now - abandoned.insertedAt() > ABANDONED_TX_TTL_MS);
-    abandonedLocalTransactions.put(abandonedKey(databaseName, walTxId), new AbandonedPhase2(phase2Ticket, now));
+
+    final String key = abandonedKey(databaseName, walTxId);
+    final LocalTxOutcome existing = abandonedLocalTransactions.putIfAbsent(key, new AbandonedPhase2(phase2Ticket, now));
+    if (existing == null) {
+      // The common case: the apply thread has not reached this entry yet, or the entry will never
+      // commit. Either way the mark now stands and applyTxEntry is the one that will write the pages.
+      HALog.log(this, HALog.BASIC,
+          "Marked locally-originated tx %d on database '%s' for local apply on commit (replication was indeterminate, #4790)",
+          walTxId, databaseName);
+      return true;
+    }
+
+    if (existing instanceof final AbandonedPhase2 firstMark) {
+      // Two commits abandoned the SAME transaction id, which the WAL counter is supposed to make
+      // impossible. putIfAbsent keeps the first mark, so THIS caller's ticket is now held by nobody's
+      // apply - the #5410 pinned-checkpoint condition, for one ticket. Keeping the first mark is the
+      // safe direction (a held ticket costs log compaction, a wrongly released one costs a write), but
+      // it must not be silent: a future change that breaks the uniqueness assumption has to be
+      // diagnosable from the log rather than from an unexplained checkpoint that stops advancing.
+      LogManager.instance().log(this, Level.WARNING,
+          "Transaction id %d on database '%s' was marked abandoned twice (phase-2 tickets %d then %d). "
+              + "WAL transaction ids are expected to be unique per commit; keeping the first mark, so ticket %d "
+              + "stays held until this node restarts (#5410 checkpoint pinning).",
+          walTxId, databaseName, firstMark.phase2Ticket(), phase2Ticket, phase2Ticket);
+      return true;
+    }
+
+    // The apply thread got here first: it already passed this entry and origin-skipped it, so the
+    // entry IS committed and nothing else is ever going to write its pages on this node. Clear the
+    // slot and tell the caller it owns the apply (issue #6848).
+    abandonedLocalTransactions.remove(key, existing);
     HALog.log(this, HALog.BASIC,
-        "Marked locally-originated tx %d on database '%s' for local apply on commit (replication was indeterminate, #4790)",
+        "Locally-originated tx %d on database '%s' was origin-skipped before its abandoned mark was published; "
+            + "the committing thread must apply it locally (#6848)",
         walTxId, databaseName);
+    return false;
+  }
+
+  /**
+   * Claims a committed, locally-originated entry on the Raft apply thread and reports what to do with
+   * it: {@link #NO_ABANDONED_MARK} to origin-skip (phase 2 owns the pages), or the phase-2 ticket to
+   * release after applying when the committing thread already abandoned this transaction.
+   * <p>
+   * The origin-skip answer is not merely returned, it is <b>published</b>: the slot left behind is how
+   * a committing thread that abandons later discovers that the apply already happened without it and
+   * that it must write the pages itself. Without that publication the two threads raced with no
+   * arbiter and the leader silently dropped the write (issue #6848).
+   */
+  // @VisibleForTesting - the handshake with markLocalTransactionAbandoned is the load-bearing part
+  // of #6848, and driving it through applyTransaction would need a whole Ratis division stubbed out.
+  long claimLocalOriginatedEntry(final String databaseName, final long walTxId) {
+    final long now = System.currentTimeMillis();
+    final String key = abandonedKey(databaseName, walTxId);
+    final LocalTxOutcome existing = abandonedLocalTransactions.putIfAbsent(key, new OriginSkipped(now));
+    if (existing instanceof final AbandonedPhase2 abandoned) {
+      abandonedLocalTransactions.remove(key, abandoned);
+      return abandoned.phase2Ticket();
+    }
+    if (existing == null)
+      pruneStrandedLocalTxOutcomes(now);
+    return NO_ABANDONED_MARK;
+  }
+
+  /**
+   * Drops origin-skip slots nothing came back for, at most once per
+   * {@link #ORIGIN_SKIP_PRUNE_EVERY_MS}. Throttled because this runs on the leader's commit path,
+   * where the unthrottled full scan {@link #markLocalTransactionAbandoned} can afford would be
+   * charged to every transaction. See {@link #ORIGIN_SKIP_PRUNE_EVERY_MS} for why the slots it
+   * collects are the exception rather than the rule, and why their TTL stays long.
+   */
+  // @VisibleForTesting - a backstop nothing reaches on a healthy path is exactly the code that rots
+  // unnoticed, and the invariant that matters (it must never evict an abandoned mark, whose ticket
+  // only the apply may release) is not observable through the handshake alone.
+  void pruneStrandedLocalTxOutcomes(final long now) {
+    final long last = lastOriginSkipPruneMs.get();
+    if (now - last < ORIGIN_SKIP_PRUNE_EVERY_MS || !lastOriginSkipPruneMs.compareAndSet(last, now))
+      return;
+    abandonedLocalTransactions.values()
+        .removeIf(outcome -> outcome instanceof OriginSkipped && now - outcome.insertedAt() > ABANDONED_TX_TTL_MS);
+  }
+
+  /**
+   * Drops the slot a locally-originated transaction may hold once its outcome is settled by any exit
+   * other than "abandoned". A no-op when no slot exists, which is the common case: the slot only
+   * materializes when the Raft apply thread reached the entry before this method ran.
+   */
+  void forgetLocalOriginatedEntry(final String databaseName, final long walTxId) {
+    if (abandonedLocalTransactions.isEmpty())
+      return;
+    final String key = abandonedKey(databaseName, walTxId);
+    final LocalTxOutcome existing = abandonedLocalTransactions.get(key);
+    if (existing instanceof OriginSkipped)
+      abandonedLocalTransactions.remove(key, existing);
+  }
+
+  /**
+   * Reads a replicated WAL transaction's id without deserializing the pages behind it: the id is the
+   * first field {@link #deserializeWalTransaction(byte[])} writes, so it is the leading 8 bytes of the
+   * payload. Used on the leader's commit path, where the full deserialization would be pure waste for
+   * an entry that is about to be origin-skipped.
+   */
+  static long peekWalTransactionId(final byte[] walData) {
+    if (walData == null || walData.length < Long.BYTES)
+      throw new ReplicationException("Corrupted WAL transaction entry: truncated before the transaction id");
+    return ByteBuffer.wrap(walData, 0, Long.BYTES).getLong();
   }
 
   /**
@@ -1540,10 +1700,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * origin-skip case, where phase 2 already wrote the pages and released its own ticket.
    * <p>
    * Consuming is one-shot so a later replay of the same entry correctly origin-skips again.
+   * <p>
+   * <b>This is NOT the branch {@link #applyTxEntry} takes</b> - it stopped being that in #6848.
+   * Reading the mark is only half of what the apply thread has to do; the other half is publishing
+   * its own decision, and only {@link #claimLocalOriginatedEntry} does both atomically. What survives
+   * here is the read-and-clear on its own, for callers that want to inspect or drain one mark without
+   * claiming the entry: the map's own unit tests, which pin the mark/ticket correlation #5410 added,
+   * and which must keep testing exactly that and not the arbitration on top of it. Do not call this
+   * from an apply path - it would decide without publishing, which is precisely the shape of the
+   * #6848 lost write.
    */
   long consumeAbandonedLocalTransaction(final String databaseName, final long walTxId) {
-    final AbandonedPhase2 abandoned = abandonedLocalTransactions.remove(abandonedKey(databaseName, walTxId));
-    return abandoned != null ? abandoned.phase2Ticket() : NO_ABANDONED_MARK;
+    final LocalTxOutcome outcome = abandonedLocalTransactions.remove(abandonedKey(databaseName, walTxId));
+    return outcome instanceof final AbandonedPhase2 abandoned ? abandoned.phase2Ticket() : NO_ABANDONED_MARK;
   }
 
   private static String abandonedKey(final String databaseName, final long walTxId) {
@@ -1658,42 +1827,44 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   private void applyTxEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long entryIndex,
       final boolean originatedLocally) {
-    // Fast path (the leader's hot path): a locally-originated entry was already applied via
-    // commit2ndPhase() in RaftReplicatedDatabase, so skip to avoid double-apply. Using
+    // Origin skip (the leader's hot path): a locally-originated entry is normally applied via
+    // commit2ndPhase() in RaftReplicatedDatabase, so skip it here to avoid a double-apply. Using
     // originatedLocally (set by startTransaction) instead of isLeader() avoids TOCTOU races when
     // leadership changes between entry submission and state machine apply. After a crash and
     // restart, originatedLocally is always false (startTransaction was not called in this lifecycle),
     // so replayed entries are correctly re-applied with page-version guards providing idempotency.
-    // We short-circuit BEFORE deserializing the WAL when no abandoned transactions are pending (the
-    // common case), so the skip costs nothing extra on the hot path.
-    if (originatedLocally && abandonedLocalTransactions.isEmpty()) {
-      HALog.log(this, HALog.TRACE, "Skipping tx apply on originator for database '%s'", decoded.databaseName());
-      return;
-    }
-
-    final DatabaseInternal db = (DatabaseInternal) server.getDatabase(decoded.databaseName());
-    final WALFile.WALTransaction walTx = deserializeWalTransaction(decoded.walData());
-
+    //
     // EXCEPTION (issue #4790): commit() may have abandoned its phase 2 because replication returned
     // an indeterminate result (entry dispatched to Ratis but the quorum wait timed out before quorum
     // was confirmed). For such an entry phase 2 never ran, so it must be applied HERE instead of
     // origin-skipped, otherwise this leader silently loses a write the followers already have. The
     // mark is consumed (removed) so a later replay of the same entry correctly skips again.
+    //
+    // The claim below is a handshake, not a lookup (issue #6848): skipping also PUBLISHES the skip,
+    // so a committing thread that abandons after this point can see that the apply already happened
+    // without it and take over the write itself. Only the 8-byte transaction id is read here - the
+    // WAL is deserialized further down, on the branch that actually applies it, so the skip stays as
+    // cheap as the pre-#6848 short-circuit it replaces.
     // The ticket that commit() is still holding for this entry, when it was abandoned. Released
-    // below once applyChanges has written the pages - never on the origin-skip branch above, where
+    // below once applyChanges has written the pages - never on the origin-skip branch, where
     // releasing would reintroduce #5407.
     long abandonedPhase2Ticket = NO_PHASE2_TICKET;
     if (originatedLocally) {
-      final long abandoned = consumeAbandonedLocalTransaction(decoded.databaseName(), walTx.txId);
+      final long abandoned = claimLocalOriginatedEntry(decoded.databaseName(), peekWalTransactionId(decoded.walData()));
       if (abandoned == NO_ABANDONED_MARK) {
         HALog.log(this, HALog.TRACE, "Skipping tx apply on originator for database '%s'", decoded.databaseName());
         return;
       }
       abandonedPhase2Ticket = abandoned;
+    }
+
+    final DatabaseInternal db = (DatabaseInternal) server.getDatabase(decoded.databaseName());
+    final WALFile.WALTransaction walTx = deserializeWalTransaction(decoded.walData());
+
+    if (originatedLocally)
       HALog.log(this, HALog.BASIC,
           "Applying locally-originated tx %d on database '%s' whose phase 2 was abandoned (replication indeterminate, #4790)",
           walTx.txId, decoded.databaseName());
-    }
 
     HALog.log(this, HALog.DETAILED, "Applying tx %d to database '%s' (pages=%d)",
         walTx.txId, decoded.databaseName(), walTx.pages.length);
