@@ -995,12 +995,12 @@ class PostgresTypeTest {
 
   @Test
   void deserializeBinaryJson() {
+    // issue #6929: PostgreSQL's json_send emits the raw UTF-8 text with no inner length prefix,
+    // so the wire payload is just the text bytes (the Bind message carries the length separately).
     String jsonStr = "{\"key\":\"value\"}";
-    ByteBuffer buffer = ByteBuffer.allocate(4 + jsonStr.length()).order(ByteOrder.BIG_ENDIAN);
-    buffer.putInt(jsonStr.length());
-    buffer.put(jsonStr.getBytes());
-    Object result = PostgresType.deserialize(PostgresType.JSON.code, 1, buffer.array());
+    Object result = PostgresType.deserialize(PostgresType.JSON.code, 1, jsonStr.getBytes());
     assertThat(result).isInstanceOf(JSONObject.class);
+    assertThat(((JSONObject) result).getString("key")).isEqualTo("value");
   }
 
   @Test
@@ -1605,7 +1605,6 @@ class PostgresTypeTest {
 
   @Test
   void serializeAsTextCollectionAllNonNull() {
-    // Test with non-null values only (null handling in arrays has a known limitation)
     Binary buffer = new Binary();
     List<Object> list = new ArrayList<>();
     list.add(1);
@@ -1617,6 +1616,35 @@ class PostgresTypeTest {
     byte[] data = new byte[length];
     buffer.getByteBuffer().get(data);
     assertThat(new String(data)).isEqualTo("{1,2,3}");
+  }
+
+  @Test
+  void serializeAsTextCollectionWithNullElement() {
+    // issue #6928: a null element must not throw NPE, it must render as the Postgres NULL literal
+    Binary buffer = new Binary();
+    List<Object> list = new ArrayList<>();
+    list.add("a");
+    list.add(null);
+    PostgresType.ARRAY_TEXT.serializeAsText(PostgresType.ARRAY_TEXT, buffer, list);
+    buffer.flip();
+    int length = buffer.getInt();
+    byte[] data = new byte[length];
+    buffer.getByteBuffer().get(data);
+    assertThat(new String(data)).isEqualTo("{\"a\",NULL}");
+  }
+
+  @Test
+  void serializeAsTextCollectionAllNullElements() {
+    // issue #6928: a list with only null elements falls back to ARRAY_TEXT and must not throw
+    Binary buffer = new Binary();
+    List<Object> list = new ArrayList<>();
+    list.add(null);
+    PostgresType.ARRAY_TEXT.serializeAsText(PostgresType.ARRAY_TEXT, buffer, list);
+    buffer.flip();
+    int length = buffer.getInt();
+    byte[] data = new byte[length];
+    buffer.getByteBuffer().get(data);
+    assertThat(new String(data)).isEqualTo("{NULL}");
   }
 
   @Test
