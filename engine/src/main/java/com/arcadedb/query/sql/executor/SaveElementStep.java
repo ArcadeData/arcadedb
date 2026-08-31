@@ -19,17 +19,22 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.ContinuousAggregate;
 import com.arcadedb.schema.ContinuousAggregateImpl;
 import com.arcadedb.schema.ContinuousAggregateRefresher;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Type;
@@ -39,6 +44,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
 import java.util.logging.Level;
@@ -49,11 +55,30 @@ import java.util.logging.Level;
 public class SaveElementStep extends AbstractExecutionStep {
   private final Identifier bucket;
   private final boolean    createAlways;
+  private final boolean    skipDuplicateKey;
 
   public SaveElementStep(final CommandContext context, final Identifier bucket, final boolean createAlways) {
+    this(context, bucket, createAlways, false);
+  }
+
+  /**
+   * @param skipDuplicateKey when true (issue #4918's {@code INSERT ... ON DUPLICATE KEY SKIP}), a record that
+   *                         would violate a unique index already carried by a previously committed record OR
+   *                         an earlier record in this same batch is never persisted at all, and is reported as
+   *                         a skipped row instead of aborting the whole statement. The conflict is detected by
+   *                         probing the unique indexes directly (see {@link #findDuplicateKeyConflict}) rather
+   *                         than by catching the save failure: {@code Index.put()} only throws synchronously
+   *                         for a conflict against another key staged earlier in the SAME open transaction -
+   *                         a conflict against already-committed data is detected at commit time, by which
+   *                         point the record's bucket write already happened and cannot be undone record-by-
+   *                         record without a full compensating delete.
+   */
+  public SaveElementStep(final CommandContext context, final Identifier bucket, final boolean createAlways,
+      final boolean skipDuplicateKey) {
     super(context);
     this.bucket = bucket;
     this.createAlways = createAlways;
+    this.skipDuplicateKey = skipDuplicateKey;
   }
 
   @Override
@@ -94,6 +119,12 @@ public class SaveElementStep extends AbstractExecutionStep {
           if (!createAlways && modifiableDoc.getIdentity() != null && !modifiableDoc.isDirty())
             return result;
 
+          if (skipDuplicateKey) {
+            final DuplicateKeyConflict conflict = findDuplicateKeyConflict(modifiableDoc, context);
+            if (conflict != null)
+              return skippedResult(modifiableDoc, conflict);
+          }
+
           if (bucket == null)
             modifiableDoc.save();
           else
@@ -107,6 +138,63 @@ public class SaveElementStep extends AbstractExecutionStep {
         upstream.close();
       }
     };
+  }
+
+  /**
+   * Probes every unique index on the document's type (issue #4918) for a key already claimed by another record -
+   * either a previously committed one or an earlier record in this same batch, since {@link TypeIndex#get} reads
+   * through to this transaction's own staged-but-uncommitted index entries. A composite key with any null
+   * component is skipped, matching SQL's own unique-index semantics: {@code NULL} never equals {@code NULL}, so
+   * it can never be "the same key" as an existing entry.
+   *
+   * @return the conflicting index/RID, or {@code null} if no unique index on this type is violated
+   */
+  private static DuplicateKeyConflict findDuplicateKeyConflict(final MutableDocument doc, final CommandContext context) {
+    final DocumentType type = context.getDatabase().getSchema().getType(doc.getTypeName());
+    for (final TypeIndex index : type.getAllIndexes(true)) {
+      if (!index.isUnique())
+        continue;
+
+      final List<String> keyProperties = index.getPropertyNames();
+      final Object[] keyValues = new Object[keyProperties.size()];
+      boolean hasNullComponent = false;
+      for (int i = 0; i < keyProperties.size(); i++) {
+        final Object value = doc.get(keyProperties.get(i));
+        if (value == null) {
+          hasNullComponent = true;
+          break;
+        }
+        keyValues[i] = value;
+      }
+      if (hasNullComponent)
+        continue;
+
+      try (final IndexCursor existing = index.get(keyValues, 1)) {
+        if (existing.hasNext()) {
+          final Identifiable conflictingRecord = existing.next();
+          return new DuplicateKeyConflict(index.getName(), keyValues, conflictingRecord.getIdentity());
+        }
+      }
+    }
+    return null;
+  }
+
+  private record DuplicateKeyConflict(String indexName, Object[] keys, RID existingRID) {
+  }
+
+  /**
+   * Builds the row reported for a record skipped by {@code ON DUPLICATE KEY SKIP} (issue #4918): the attempted
+   * properties are kept so a {@code RETURN} projection can still report on them, plus {@code @skipped} and the
+   * conflict details so the caller can tell a skipped row from an inserted one and knows why it was skipped.
+   */
+  private static Result skippedResult(final MutableDocument attemptedDoc, final DuplicateKeyConflict conflict) {
+    final ResultInternal result = new ResultInternal(attemptedDoc.toMap(false));
+    result.setProperty("@skipped", true);
+    result.setProperty("@type", attemptedDoc.getTypeName());
+    result.setProperty("@duplicateIndex", conflict.indexName());
+    result.setProperty("@duplicateKeys", Arrays.toString(conflict.keys()));
+    result.setProperty("@existingRID", conflict.existingRID());
+    return result;
   }
 
   private void saveToTimeSeries(final LocalTimeSeriesType tsType, final TimeSeriesEngine engine, final Document doc,
@@ -222,6 +310,6 @@ public class SaveElementStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new SaveElementStep(context, bucket == null ? null : bucket.copy(), createAlways);
+    return new SaveElementStep(context, bucket == null ? null : bucket.copy(), createAlways, skipDuplicateKey);
   }
 }

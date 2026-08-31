@@ -431,7 +431,12 @@ public class PostgresNetworkExecutor extends Thread {
         if (portal.columns != null) {
           writeRowDescription(portal.columns, portal.resultFormats);
           portal.rowDescriptionSent = true;
-        }
+        } else if (portal.ignoreExecution)
+          // SAVEPOINT/RELEASE/ROLLBACK TO/SET: no statement AND no result ever coming, so Describe still owes
+          // exactly one reply (issue #6930). A non-"sql" language (e.g. cypher) also has no statement here, but
+          // unlike these it DOES expect a result once executed - its columns just are not known yet at Describe
+          // time, so it is deliberately left out of this branch rather than answered with a premature NoData.
+          writeNoData();
       }
     } else if (type == 'S') {
       // Describe Statement: send ParameterDescription followed by RowDescription/NoData
@@ -491,7 +496,9 @@ public class PostgresNetworkExecutor extends Thread {
                 Thread.currentThread().getId());
 
       if (portal.ignoreExecution)
-        writeNoData();
+        // SAVEPOINT/RELEASE/ROLLBACK TO/SET never produce rows: Execute must answer CommandComplete, not
+        // NoData - NoData ('n') is a Describe-only reply and is never a legal answer to Execute (issue #6930).
+        writeCommandComplete(portal.query, 0);
       else {
         if (!portal.executed) {
           final long engineStart = System.nanoTime();
@@ -2672,6 +2679,14 @@ public class PostgresNetworkExecutor extends Thread {
       return "COMMIT";
     } else if (isRollbackStatement(upperCaseText)) {
       return "ROLLBACK";
+    } else if (upperCaseText.startsWith("ROLLBACK TO ")) {
+      return "ROLLBACK";
+    } else if (upperCaseText.startsWith("SAVEPOINT ")) {
+      return "SAVEPOINT";
+    } else if (upperCaseText.startsWith("RELEASE ")) {
+      return "RELEASE";
+    } else if (upperCaseText.startsWith("SET ") || "SET".equals(upperCaseText)) {
+      return "SET";
     } else {
       return "";
     }

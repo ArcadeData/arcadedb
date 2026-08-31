@@ -42,6 +42,7 @@ public class InsertExecutionPlanner {
   protected InsertBody      insertBody;
   protected Projection      returnStatement;
   protected SelectStatement selectStatement;
+  protected boolean         onDuplicateKeySkip;
 
   public InsertExecutionPlanner() {
   }
@@ -53,6 +54,7 @@ public class InsertExecutionPlanner {
     this.insertBody = statement.getInsertBody() == null ? null : statement.getInsertBody().copy();
     this.returnStatement = statement.getReturnStatement() == null ? null : statement.getReturnStatement().copy();
     this.selectStatement = statement.getSelectStatement() == null ? null : statement.getSelectStatement().copy();
+    this.onDuplicateKeySkip = statement.isOnDuplicateKeySkip();
   }
 
   public InsertExecutionPlan createExecutionPlan(final CommandContext context) {
@@ -86,7 +88,7 @@ public class InsertExecutionPlanner {
   }
 
   private void handleSave(final InsertExecutionPlan result, final Identifier targetClusterName, final CommandContext context) {
-    result.chain(new SaveElementStep(context, targetClusterName, true));
+    result.chain(new SaveElementStep(context, targetClusterName, true, onDuplicateKeySkip));
   }
 
   private void handleReturn(final InsertExecutionPlan result, final Projection returnStatement, final CommandContext context) {

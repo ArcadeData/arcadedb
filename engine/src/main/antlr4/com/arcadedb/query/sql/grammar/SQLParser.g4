@@ -336,11 +336,17 @@ nestedProjectionItem
 /**
  * INSERT statement
  * INSERT INTO target [(fields)] VALUES (values) | SET field=value | CONTENT {...} | FROM query
- * [RETURN projection] [UNSAFE]
+ * [ON DUPLICATE KEY SKIP] [RETURN projection] [UNSAFE]
+ *
+ * ON DUPLICATE KEY SKIP (issue #4918): a record whose unique-index key already exists is silently skipped
+ * instead of aborting the whole batch - useful for bulk-inserting a CONTENT array where some rows may already
+ * exist. Only unique-key conflicts are swallowed; every other error (a missing mandatory field, a type
+ * mismatch, ...) still aborts the command, since silently hiding those would mask real data problems.
  */
 insertStatement
     : INSERT INTO (identifier (BUCKET identifier)? | bucketIdentifier)
       insertBody?
+      (ON DUPLICATE KEY SKIP_KW)?
       (RETURN projection)?
       (FROM? (selectStatement | LPAREN selectStatement RPAREN))?
       UNSAFE?
@@ -1605,6 +1611,7 @@ identifier
     | TIMESTAMP
     | DEFAULT
     | KEY
+    | DUPLICATE
     | FORMAT
     | CUSTOM
     | SKIP_KW

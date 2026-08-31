@@ -886,9 +886,13 @@ public enum PostgresType {
         sb.append(",");
       }
       first = false;
-      if (element instanceof Float || element.getClass() == float.class) {
+      if (element == null) {
+        sb.append("NULL");
+        continue;
+      }
+      if (element instanceof Float) {
         sb.append(((Number) element).floatValue());
-      } else if (element instanceof Double || element.getClass() == double.class) {
+      } else if (element instanceof Double) {
         sb.append(((Number) element).doubleValue());
       } else if (element instanceof Number || element instanceof Boolean) {
         sb.append(element);
@@ -923,7 +927,7 @@ public enum PostgresType {
       } else if (element instanceof String str) {
         appendQuoted(sb, str);
       } else {
-        sb.append(element == null ? "NULL" : element.toString());
+        sb.append(element.toString());
       }
     }
     sb.append("}");
@@ -1168,10 +1172,9 @@ public enum PostgresType {
       case CHAR -> (char) buffer.get();
       case BOOLEAN -> buffer.get() == 1;
       case JSON -> {
-        int length = buffer.getInt();
-        byte[] bytes = new byte[length];
-        buffer.get(bytes);
-        yield parseJsonText(new String(bytes));
+        // In PostgreSQL binary format, json is the raw UTF-8 text with no inner length prefix
+        // (json_send emits it verbatim); the length is already provided by the Bind message.
+        yield parseJsonText(new String(valueAsBytes, DatabaseFactory.getDefaultCharset()));
       }
       case ARRAY_INT, ARRAY_LONG, ARRAY_DOUBLE, ARRAY_REAL, ARRAY_TEXT, ARRAY_BOOLEAN, ARRAY_CHAR, ARRAY_JSON ->
           deserializeBinaryArray(buffer);

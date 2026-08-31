@@ -4791,6 +4791,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // UNSAFE flag
     stmt.unsafe = insertCtx.UNSAFE() != null;
 
+    // ON DUPLICATE KEY SKIP (issue #4918)
+    stmt.onDuplicateKeySkip = insertCtx.DUPLICATE() != null;
+
     return stmt;
   }
 
