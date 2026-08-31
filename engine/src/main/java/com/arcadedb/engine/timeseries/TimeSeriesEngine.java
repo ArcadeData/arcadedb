@@ -666,7 +666,7 @@ public class TimeSeriesEngine implements AutoCloseable {
    * ALREADY rewritten, which would leave the followers on an image no node has any more - divergence, in place of
    * a burst of entries. A store that is over the ceiling when it gets here arrived that way (a database that was
    * standalone when it sealed, then joined a cluster), and the honest handling is the one
-   * {@code RaftReplicatedDatabase.sliceSealedBlob} applies: ship it, and report the oversized slice count.
+   * {@code RaftReplicatedDatabase.planSealedSlices} applies: ship it, and report the oversized slice count.
    */
   private void runSealedMaintenanceReplicated(final SealedMaintenance work) throws IOException {
     final DatabaseInternal db = database.getWrappedDatabaseInstance();

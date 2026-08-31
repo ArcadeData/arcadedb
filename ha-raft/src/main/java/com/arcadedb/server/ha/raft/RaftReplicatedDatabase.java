@@ -2178,7 +2178,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * The cumulative {@link #getSealedStoreChunksShipped()} cannot answer the question an operator actually has,
    * which is whether a SINGLE store is producing a burst: a thousand slices reads the same there whether it was
    * one pathological store or a thousand healthy one-slice ones. This is the burst gauge. Anything at or above
-   * {@link GlobalConfiguration#MAX_REPLICATED_SEALED_CHUNKS} means the WARNING in {@link #sliceSealedBlob} fired
+   * {@link GlobalConfiguration#MAX_REPLICATED_SEALED_CHUNKS} means the WARNING in {@link #planSealedSlices} fired
    * and the leader is holding a FileManager recording session open across that many sequential quorum round
    * trips, which shows up as leader commit latency (see that constant's javadoc for exactly what it blocks).
    */
@@ -2362,7 +2362,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           entry are left for them once the schema JSON and the file maps are on it, %d each after their framing. \
           Raise arcadedb.ha.appendBufferSize - and with it arcadedb.ha.writeBufferSize, which must stay >= \
           appendBufferSize + 8 bytes.""",
-          databaseName, blobs.size(), Math.max(0L, publishingCapacity), share));
+          databaseName, blobs.size(), Math.max(0L, publishingCapacity), Math.max(0L, share)));
 
     for (final RaftLogEntryCodec.TsSealedBlob blob : blobs)
       plans.add(planSealedSlices(blob, sealedEntryBudget, share, databaseName));
