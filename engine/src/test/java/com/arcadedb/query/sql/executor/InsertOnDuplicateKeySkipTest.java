@@ -66,6 +66,13 @@ public class InsertOnDuplicateKeySkipTest extends TestHelper {
     createProductTypeWithUniqueSku();
     database.command("sql", "INSERT INTO Product SET sku = 'A1', name = 'original'");
 
+    // Actually commit and start a new transaction here: TestHelper's autoStartTx keeps everything in one open
+    // transaction otherwise, which would only exercise the same-batch path (already covered by
+    // skipsARecordClashingWithAnEarlierRecordInTheSameBatch), not the cross-transaction/committed-data scenario
+    // that is the actual reason a naive catch-the-save-failure implementation doesn't work.
+    database.commit();
+    database.begin();
+
     final ResultSet result = database.command("sql",
         "INSERT INTO Product CONTENT [ {\"sku\":\"A2\",\"name\":\"second\"}, {\"sku\":\"A1\",\"name\":\"clashes\"} ] ON DUPLICATE KEY SKIP");
 
