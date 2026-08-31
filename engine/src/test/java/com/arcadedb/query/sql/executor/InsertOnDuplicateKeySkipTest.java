@@ -128,6 +128,30 @@ public class InsertOnDuplicateKeySkipTest extends TestHelper {
   }
 
   @Test
+  void skipsARecordClashingOnANumericUniqueKey() {
+    // findDuplicateKeyConflict() reads the key straight off the document with doc.get(); this confirms the
+    // probe agrees with the real index write for a non-STRING key too (all other cases here use STRING skus).
+    database.getSchema().createDocumentType("Order").createProperty("orderNumber", Type.INTEGER);
+    database.command("sql", "CREATE INDEX IF NOT EXISTS ON Order (orderNumber) UNIQUE");
+    database.command("sql", "INSERT INTO Order SET orderNumber = 1001, status = 'original'");
+    database.commit();
+    database.begin();
+
+    final ResultSet result = database.command("sql",
+        "INSERT INTO Order CONTENT [ {\"orderNumber\":1002,\"status\":\"second\"}, {\"orderNumber\":1001,\"status\":\"clashes\"} ] ON DUPLICATE KEY SKIP");
+
+    final Result first = result.next();
+    assertThat(first.<Boolean>getProperty("@skipped")).isNull();
+
+    final Result second = result.next();
+    assertThat(second.<Boolean>getProperty("@skipped")).isTrue();
+    result.close();
+
+    assertThat(database.countType("Order", true)).isEqualTo(2);
+    assertThat(database.query("sql", "SELECT FROM Order WHERE orderNumber = 1001").next().<String>getProperty("status")).isEqualTo("original");
+  }
+
+  @Test
   void allRecordsInsertedWhenThereIsNoConflict() {
     createProductTypeWithUniqueSku();
 
