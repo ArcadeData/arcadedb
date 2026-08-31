@@ -82,8 +82,13 @@ class Issue6718BetweennessPrimitiveArraysTest {
    * shortest path of length 2 through C, while every same-triangle pair is a direct edge. Hand-computable exactly:
    * C sits on 4 unordered pairs' unique shortest path; running Brandes from every node as source over a
    * bidirectionally-represented (undirected) graph counts each such pair twice (once per direction), so the raw,
-   * non-normalized score for C is 8 and 0 for every other node. Normalizing by {@code 2/((n-1)(n-2))} with n = 5
-   * gives {@code 8 * 2/(4*3) = 4/3}.
+   * non-normalized score for C is 8 and 0 for every other node.
+   * <p>
+   * Normalizing: {@link AlgoBetweenness} always runs a full, undeduped source iteration (every node as source,
+   * directed adjacency) with no built-in undirected halving, so - reciprocal edges or not - the raw maximum a node
+   * can reach is the ordered-pair count {@code (n-1)(n-2)}, and the matching normalization is
+   * {@code 1/((n-1)(n-2))} (#6943) - not the {@code 2/((n-1)(n-2))} factor, which presumes a raw computation that
+   * counts each unordered pair once. With n = 5 that gives {@code 8 * 1/(4*3) = 2/3}.
    */
   @Test
   void bowtieGraphMatchesHandComputedScores() {
@@ -108,7 +113,7 @@ class Issue6718BetweennessPrimitiveArraysTest {
 
     final Map<String, Double> normalized = scoresByName("CALL algo.betweenness({normalized: true}) YIELD node, score "
         + "RETURN node.name AS name, score");
-    assertThat(normalized.get("C")).isCloseTo(4.0 / 3.0, offset(1e-9));
+    assertThat(normalized.get("C")).isCloseTo(2.0 / 3.0, offset(1e-9));
     for (final String leaf : List.of("A", "B", "D", "E"))
       assertThat(normalized.get(leaf)).isCloseTo(0.0, offset(1e-9));
   }

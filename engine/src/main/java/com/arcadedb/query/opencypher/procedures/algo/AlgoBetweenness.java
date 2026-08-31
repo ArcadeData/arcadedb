@@ -41,7 +41,10 @@ import java.util.stream.Stream;
  * <p>
  * Config map parameters (all optional):
  * <ul>
- *   <li>normalized (boolean, default true): whether to normalize scores by 2/((n-1)(n-2))</li>
+ *   <li>normalized (boolean, default true): whether to normalize scores by 1/((n-1)(n-2)), the DIRECTED
+ *       normalization factor - this procedure walks {@link Vertex.DIRECTION#OUT} only, so every shortest
+ *       path counted is one ordered pair, never the two-ways-of-counting-the-same-pair an undirected
+ *       traversal would produce (which is what the 2/((n-1)(n-2)) factor is for)</li>
  * </ul>
  * </p>
  * <p>
@@ -181,9 +184,15 @@ public class AlgoBetweenness extends AbstractAlgoProcedure {
       }
     }
 
-    // Normalize
+    // Normalize. #6943: this traversal is DIRECTED (adjacency built with DIRECTION.OUT above), so Brandes
+    // accumulates exactly one contribution per ORDERED pair, raw maximum (n-1)(n-2) - the 2/((n-1)(n-2))
+    // factor belongs to an UNDIRECTED traversal, where every unordered pair is reached from both ends and
+    // must be halved back down. Applying it here doubled every score (NetworkX and GDS both use
+    // 1/((n-1)(n-2)) for a directed betweenness), which a hub-and-spokes fixture makes visible: a 4-node
+    // graph with every pair routed through one hub yields raw=6, and 2/((n-1)(n-2)) normalizes that to 2.0 -
+    // outside the documented [0,1] range.
     if (normalized && n > 2) {
-      final double normFactor = 2.0 / ((double) (n - 1) * (n - 2));
+      final double normFactor = 1.0 / ((double) (n - 1) * (n - 2));
       for (int i = 0; i < n; i++)
         betweenness[i] *= normFactor;
     }

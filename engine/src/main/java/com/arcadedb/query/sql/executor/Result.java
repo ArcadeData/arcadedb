@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.graph.Edge;
@@ -120,6 +121,8 @@ public interface Result {
     if (val != null) {
       if (val instanceof Result result) {
         return result.toJSON();
+      } else if (val instanceof EmbeddedDocument embedded) {
+        return embedded.toJSON();
       } else if (val instanceof Record record) {
         return record.getIdentity() != null ? record.getIdentity().toString() : null;
       } else if (val instanceof Iterable<?> iterable) {
