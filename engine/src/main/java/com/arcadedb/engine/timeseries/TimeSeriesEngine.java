@@ -422,7 +422,14 @@ public class TimeSeriesEngine implements AutoCloseable {
       final TagFilter tagFilter, final AggregationMetrics metrics) throws IOException {
     final int reqCount = requests.size();
 
-    // Determine actual data range to size flat arrays correctly
+    // Determine actual data range to size flat arrays correctly.
+    //
+    // This scan runs WITHOUT the per-shard compaction read locks on purpose - they are acquired further
+    // down, around the reads that actually produce the numbers. A compaction, or a fresh append, can
+    // therefore slip in between the estimate and the reads. That is deliberate and safe: the estimate
+    // only decides how wide the flat window is, and MultiColumnAggregationResult parks anything landing
+    // outside it in its overflow map rather than dropping it (issue #6937). Taking the locks here would
+    // hold them across the whole aggregation for no correctness gain, just contention with the writers.
     long actualMin = Long.MAX_VALUE;
     long actualMax = Long.MIN_VALUE;
     final boolean useFlatMode = bucketIntervalMs > 0;
