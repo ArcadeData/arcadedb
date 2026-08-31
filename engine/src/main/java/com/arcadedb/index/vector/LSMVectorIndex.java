@@ -1836,12 +1836,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
         LogManager.instance().log(this, Level.INFO,
             "Persisted graph is not usable for index %s: %s - rebuilding from scratch (issues #3722, #6106)",
             indexName, staleReason);
-        // Don't use the stale graph as IMMUTABLE — fall through to buildGraphFromScratch() below unless the
+        // Don't use the stale graph as IMMUTABLE - fall through to buildGraphFromScratch() below unless the
         // prefix reuse above already queued a deferred reuse
         return PersistedGraphCheck.UNUSABLE;
       }
 
-      // Graph is up to date — publish it under a brief write lock (issue #6713), then finish PQ
+      // Graph is up to date - publish it under a brief write lock (issue #6713), then finish PQ
       // (if needed) unlocked, mirroring buildGraphFromScratchExclusively's own publish step.
       lock.writeLock().lock();
       try {
