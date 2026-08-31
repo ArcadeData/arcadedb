@@ -84,6 +84,23 @@ test("a missing name yields an empty segment rather than the string 'null'", () 
   assert.equal(encodeDatabaseName(undefined), "");
 });
 
+// Every endpoint registered in HttpServer.setupRoutes() whose path template carries a `{database}`
+// segment, plus the two the Raft plugin adds under `cluster/`. The alternation is the whole point of
+// this file's invariant: #6830 fixed the `command`/`query` sites and #6947 found that `ts` - a segment
+// nobody had listed here - was still concatenating the name raw in studio-timeseries.js. Add an entry
+// here whenever a route gains a `{database}` segment, or the next class of call sites is invisible too.
+const DATABASE_SEGMENT_ENDPOINTS = ["batch", "begin", "command", "commit", "exists", "progress", "query", "rollback", "ts"];
+const DATABASE_SEGMENT_RE = new RegExp(
+  "api/v1/(?:(?:" + DATABASE_SEGMENT_ENDPOINTS.join("|") + ")|cluster/(?:resync|verify))/"
+);
+
+// A line that only talks about an endpoint - a comment naming `POST /api/v1/cluster/verify/{db}` - builds
+// no URL, so it cannot carry the defect and must not be reported as one.
+function isComment(line) {
+  const t = line.trim();
+  return t.startsWith("//") || t.startsWith("*") || t.startsWith("/*");
+}
+
 test("every api/v1 URL in the Studio builds its database segment with encodeDatabaseName", () => {
   // Match the endpoint prefix in ANY form - string concatenation, a template literal, a parenthesized
   // expression - and require the helper on the same line, rather than matching only the `"..." + identifier`
@@ -92,11 +109,23 @@ test("every api/v1 URL in the Studio builds its database segment with encodeData
   for (const file of fs.readdirSync(JS_DIR).filter((f) => f.endsWith(".js"))) {
     const src = fs.readFileSync(path.join(JS_DIR, file), "utf8");
     src.split("\n").forEach((line, i) => {
-      if (/api\/v1\/(?:command|query|progress)\//.test(line) && !line.includes("encodeDatabaseName"))
+      if (DATABASE_SEGMENT_RE.test(line) && !isComment(line) && !line.includes("encodeDatabaseName"))
         offenders.push(file + ":" + (i + 1) + " -> " + line.trim());
     });
   }
   assert.deepEqual(offenders, [], "these call sites build the URL path segment without encodeDatabaseName");
+});
+
+test("the time series URLs keep a metacharacter-carrying name inside one path segment", () => {
+  // #6947: `"api/v1/ts/" + db + "/query"` sent `api/v1/ts/a#b/query` for a database named `a#b`, which the
+  // browser truncates at the fragment, and `a/b` invented a path segment the route cannot match. The server
+  // reads `{database}` as a single decoded segment, so the name has to be percent-encoded going in.
+  assert.equal("api/v1/ts/" + encodeDatabaseName("a#b") + "/query", "api/v1/ts/a%23b/query");
+  assert.equal("api/v1/ts/" + encodeDatabaseName("a b") + "/latest", "api/v1/ts/a%20b/latest");
+  assert.equal("api/v1/ts/" + encodeDatabaseName("a/b") + "/prom/api/v1/query_range", "api/v1/ts/a%2Fb/prom/api/v1/query_range");
+
+  // The raw concatenation the fix replaced produced a different resource for each of those names.
+  assert.notEqual("api/v1/ts/" + "a#b" + "/query", "api/v1/ts/" + encodeDatabaseName("a#b") + "/query");
 });
 
 test("no admin command is sent as a hand-built JSON string", () => {
