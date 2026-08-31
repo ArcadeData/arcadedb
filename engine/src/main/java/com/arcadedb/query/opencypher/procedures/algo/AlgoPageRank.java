@@ -52,7 +52,7 @@ import java.util.stream.Stream;
  *   <li>maxIterations (int, default 20): maximum number of iterations</li>
  *   <li>tolerance (double, default 0.0001): convergence threshold</li>
  *   <li>weightProperty (string, default null): edge property to use as weight</li>
- *   <li>direction (string, default "OUT"): edge direction for push — "OUT" for directed graphs, "BOTH" for undirected</li>
+ *   <li>direction (string, default "OUT"): edge direction for push - "OUT", "IN", or "BOTH"</li>
  * </ul>
  * </p>
  * <p>
@@ -168,24 +168,26 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
       final List<int[]> nbrs = new ArrayList<>();
       final List<Double> wts = weightProperty != null ? new ArrayList<>() : null;
 
-      // Always traverse OUT edges
-      for (final Edge edge : v.getEdges(Vertex.DIRECTION.OUT)) {
-        try {
-          final Integer neighborIdx = ridToIdx.get(edge.getInVertex().getIdentity());
-          if (neighborIdx == null)
-            continue;
-          nbrs.add(new int[]{ neighborIdx });
-          if (wts != null) {
-            final Object w = edge.get(weightProperty);
-            wts.add(w instanceof Number num ? num.doubleValue() : 1.0);
+      // OUT and BOTH traverse edges in their stored direction.
+      if (direction != Vertex.DIRECTION.IN) {
+        for (final Edge edge : v.getEdges(Vertex.DIRECTION.OUT)) {
+          try {
+            final Integer neighborIdx = ridToIdx.get(edge.getInVertex().getIdentity());
+            if (neighborIdx == null)
+              continue;
+            nbrs.add(new int[]{ neighborIdx });
+            if (wts != null) {
+              final Object w = edge.get(weightProperty);
+              wts.add(w instanceof Number num ? num.doubleValue() : 1.0);
+            }
+          } catch (final RecordNotFoundException e) {
+            GhostEdgeReporter.reportSkipped(e);
           }
-        } catch (final RecordNotFoundException e) {
-          GhostEdgeReporter.reportSkipped(e);
         }
       }
 
-      // For BOTH direction, also traverse IN edges (treat undirected edges as bidirectional)
-      if (direction == Vertex.DIRECTION.BOTH) {
+      // IN reverses every edge; BOTH also traverses the reverse direction to treat the graph as undirected.
+      if (direction != Vertex.DIRECTION.OUT) {
         for (final Edge edge : v.getEdges(Vertex.DIRECTION.IN)) {
           try {
             final Integer neighborIdx = ridToIdx.get(edge.getOutVertex().getIdentity());
