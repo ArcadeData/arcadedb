@@ -2642,12 +2642,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * IN-neighbours" - the same split the original code and {@link #isConnectedForType}/{@link #countBetweenForType}
    * use - rather than crediting a pair where nodeA reaches C via OUT and nodeB reaches C via IN as a match.
    * <p>
-   * Review round 2: {@link #getNeighborsFromCSR} allocates a {@code copyOfRange} per direction per node even on
-   * the overwhelmingly common no-overlay case, where the original code intersected the raw CSR arrays in place
-   * with zero allocation. Restored that zero-copy path, gated on {@code snap.overlay == null} - the same "fast
-   * path when no overlay" split {@link #getNeighborsFromCSR} itself already uses - and fall back to the
-   * overlay-aware accessor only when an overlay is active or a node id falls outside the base CSR, which is
-   * exactly the condition #6943 needed fixed.
+   * {@link #getNeighborsFromCSR} allocates a {@code copyOfRange} per direction per node even on the overwhelmingly
+   * common no-overlay case, where a direct CSR intersection needs zero allocation. {@link #countCommonForTypeNoOverlay}
+   * keeps that zero-copy path, gated on {@code snap.overlay == null} - the same "fast path when no overlay" split
+   * {@link #getNeighborsFromCSR} itself already uses - falling back to the overlay-aware accessor only when an
+   * overlay is active or a node id falls outside the base CSR.
    */
   private int countCommonForType(final Snapshot snap, final int nodeA, final int nodeB,
       final Vertex.DIRECTION direction, final String edgeType) {
