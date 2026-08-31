@@ -28,6 +28,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.ContinuousAggregate;
@@ -71,6 +72,13 @@ public class SaveElementStep extends AbstractExecutionStep {
    *                         a conflict against already-committed data is detected at commit time, by which
    *                         point the record's bucket write already happened and cannot be undone record-by-
    *                         record without a full compensating delete.
+   *                         <p>
+   *                         Known limitation: the probe only sees keys staged by THIS transaction plus already
+   *                         -committed data, so two concurrent transactions each inserting the same new key can
+   *                         both pass the probe: one of them still hits an uncaught {@code DuplicatedKeyException}
+   *                         at its own commit, aborting that whole batch rather than skipping just that row. This
+   *                         mirrors ArcadeDB's commit-time conflict model for every other write, not a gap
+   *                         specific to this clause.
    */
   public SaveElementStep(final CommandContext context, final Identifier bucket, final boolean createAlways,
       final boolean skipDuplicateKey) {
@@ -142,9 +150,14 @@ public class SaveElementStep extends AbstractExecutionStep {
   /**
    * Probes every unique index on the document's type (issue #4918) for a key already claimed by another record -
    * either a previously committed one or an earlier record in this same batch, since {@link TypeIndex#get} reads
-   * through to this transaction's own staged-but-uncommitted index entries. A composite key with any null
-   * component is skipped, matching SQL's own unique-index semantics: {@code NULL} never equals {@code NULL}, so
-   * it can never be "the same key" as an existing entry.
+   * through to this transaction's own staged-but-uncommitted index entries.
+   * <p>
+   * A key is exempted from the check only when the index's own uniqueness enforcement would exempt it: that is
+   * {@link LSMTreeIndexAbstract#isKeyNull} (every component null, not just one) AND the index's
+   * {@code NULL_STRATEGY} is {@code SKIP} - the same two conditions {@code TransactionIndexContext} gates its own
+   * commit-time duplicate check on. A composite key with only SOME null components, or an all-null key on an
+   * index built with {@code NULL_STRATEGY.INDEX} (where nulls are indexed and compared like any other value), is
+   * still a real key that must be probed.
    *
    * @return the conflicting index/RID, or {@code null} if no unique index on this type is violated
    */
@@ -156,16 +169,10 @@ public class SaveElementStep extends AbstractExecutionStep {
 
       final List<String> keyProperties = index.getPropertyNames();
       final Object[] keyValues = new Object[keyProperties.size()];
-      boolean hasNullComponent = false;
-      for (int i = 0; i < keyProperties.size(); i++) {
-        final Object value = doc.get(keyProperties.get(i));
-        if (value == null) {
-          hasNullComponent = true;
-          break;
-        }
-        keyValues[i] = value;
-      }
-      if (hasNullComponent)
+      for (int i = 0; i < keyProperties.size(); i++)
+        keyValues[i] = doc.get(keyProperties.get(i));
+
+      if (index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.SKIP && LSMTreeIndexAbstract.isKeyNull(keyValues))
         continue;
 
       try (final IndexCursor existing = index.get(keyValues, 1)) {
@@ -189,7 +196,7 @@ public class SaveElementStep extends AbstractExecutionStep {
     result.setProperty("@skipped", true);
     result.setProperty("@type", attemptedDoc.getTypeName());
     result.setProperty("@duplicateIndex", conflict.indexName());
-    result.setProperty("@duplicateKeys", Arrays.toString(conflict.keys()));
+    result.setProperty("@duplicateKeys", Arrays.asList(conflict.keys()));
     result.setProperty("@existingRID", conflict.existingRID());
     return result;
   }

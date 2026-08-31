@@ -25,6 +25,8 @@ import com.arcadedb.schema.Type;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 
@@ -76,6 +78,7 @@ public class InsertOnDuplicateKeySkipTest extends TestHelper {
     assertThat(second.<String>getProperty("sku")).isEqualTo("A1");
     assertThat(second.<String>getProperty("@duplicateIndex")).isEqualTo("Product[sku]");
     assertThat(second.<Object>getProperty("@existingRID")).isNotNull();
+    assertThat(second.<List<Object>>getProperty("@duplicateKeys")).containsExactly("A1");
     assertThat(result.hasNext()).isFalse();
     result.close();
 
@@ -131,6 +134,46 @@ public class InsertOnDuplicateKeySkipTest extends TestHelper {
     }
     result.close();
     assertThat(count).isEqualTo(3);
+  }
+
+  @Test
+  void skipsAPartiallyNullCompositeKeyClashingWithAnExistingRecord() {
+    // A composite unique index only exempts a key from the uniqueness check when EVERY component is null
+    // (LSMTreeIndexAbstract.isKeyNull); a key with just ONE null component, like (John, null) here, is still a
+    // real key the engine enforces uniqueness on - findDuplicateKeyConflict() must agree, or the clashing record
+    // slips past the probe and aborts the batch with an uncaught DuplicatedKeyException instead of being skipped.
+    database.getSchema().createDocumentType("Person").createProperty("firstName", Type.STRING);
+    database.getSchema().getType("Person").createProperty("lastName", Type.STRING);
+    database.command("sql", "CREATE INDEX IF NOT EXISTS ON Person (firstName, lastName) UNIQUE");
+    database.command("sql", "INSERT INTO Person SET firstName = 'John', lastName = null");
+
+    final ResultSet result = database.command("sql",
+        "INSERT INTO Person CONTENT [ {\"firstName\":\"John\",\"lastName\":null} ] ON DUPLICATE KEY SKIP");
+
+    final Result item = result.next();
+    assertThat(item.<Boolean>getProperty("@skipped")).isTrue();
+    assertThat(item.<String>getProperty("@duplicateIndex")).isEqualTo("Person[firstName,lastName]");
+    result.close();
+
+    assertThat(database.countType("Person", true)).isEqualTo(1);
+  }
+
+  @Test
+  void aFullyNullKeyIsStillCheckedUnderNullStrategyIndex() {
+    // NULL_STRATEGY.INDEX (as opposed to the default SKIP) indexes and compares null like any other value, so
+    // an all-null key is no longer exempt from the uniqueness check the way it is under SKIP.
+    database.getSchema().createDocumentType("Ticket").createProperty("code", Type.STRING);
+    database.command("sql", "CREATE INDEX IF NOT EXISTS ON Ticket (code) UNIQUE NULL_STRATEGY INDEX");
+    database.command("sql", "INSERT INTO Ticket SET code = null");
+
+    final ResultSet result = database.command("sql",
+        "INSERT INTO Ticket CONTENT [ {\"code\":null} ] ON DUPLICATE KEY SKIP");
+
+    final Result item = result.next();
+    assertThat(item.<Boolean>getProperty("@skipped")).isTrue();
+    result.close();
+
+    assertThat(database.countType("Ticket", true)).isEqualTo(1);
   }
 
   @Test
