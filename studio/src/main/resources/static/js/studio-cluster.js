@@ -250,7 +250,7 @@ function resyncDatabase(databaseName) {
       globalNotify("Resync", "Resyncing '" + databaseName + "' from leader, this may take a while...", "info");
       jQuery.ajax({
         type: "POST",
-        url: "api/v1/cluster/resync/" + encodeURIComponent(databaseName),
+        url: "api/v1/cluster/resync/" + encodeDatabaseName(databaseName),
         beforeSend: function(xhr) { xhr.setRequestHeader("Authorization", globalCredentials); }
       })
       .done(function() {
@@ -373,7 +373,7 @@ function verifyDatabase(databaseName) {
   globalNotify("Verify", "Verifying '" + databaseName + "' across the cluster...", "info");
   jQuery.ajax({
     type: "POST",
-    url: "api/v1/cluster/verify/" + encodeURIComponent(databaseName),
+    url: "api/v1/cluster/verify/" + encodeDatabaseName(databaseName),
     beforeSend: function(xhr) { xhr.setRequestHeader("Authorization", globalCredentials); }
   })
   .done(function(data) {
