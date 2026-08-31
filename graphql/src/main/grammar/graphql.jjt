@@ -31,6 +31,21 @@
 * pre-Java-16 instanceof-and-cast instead of the checked-in pattern-matching form), so keep this file and the
 * generated sources in sync by hand: edit both, or apply the equivalent hand-patch directly to the generated
 * file as done for the checkNestingDepth() guard (issue #5853).
+*
+* When a regeneration IS unavoidable - a token or a production changed, as in issue #6860 - these are the
+* hand-patches to re-apply afterwards, because the generator undoes all of them every time:
+*   1. the 18-line Apache header at the top of each of the four generated files. Do NOT use license:format to
+*      put it back: the configured APACHE-2.txt template has no SPDX lines, so it strips the two SPDX lines
+*      from every other file in the module as well. Copy the block from a file that still has it;
+*   2. in GraphQLParser.java, `import java.io.*;` becomes the explicit `java.io.StringReader`,
+*      `java.util.ArrayList` and `java.util.List`, and the two fully-qualified `java.util.` uses in the
+*      jj_expentries field become the imported names;
+*   3. in GraphQLParserTokenManager.java, the copied parser imports become the single `java.io.IOException`
+*      it actually uses - the generator copies the PARSER_BEGIN import list into this file too, where
+*      GlobalConfiguration is unused - and the `catch (java.io.IOException e)` sites become the imported
+*      simple name, which is what makes that import carry its weight;
+*   4. in GraphQLParser.java, every `if (x instanceof T) { throw (T) x; }` becomes the pattern-matching
+*      `if (x instanceof T t) { throw t; }`.
 */
 
 options {
@@ -103,9 +118,25 @@ public class GraphQLParser {
 }
 PARSER_END(GraphQLParser)
 
+/*
+ * ORDERING HAZARD, applies to every TOKEN and SKIP block below. When two regular expressions match the same input
+ * to the same length, JavaCC breaks the tie by declaration order, and the earlier one wins outright - it does not
+ * matter that the later one is a SKIP entry or a longer-looking literal. So a helper that only ever appears inside
+ * another regular expression must be declared private (a leading '#'), or it silently shadows the real token
+ * wherever the two happen to match equally far. Every bug fixed under issue #6860 was one instance of this:
+ * COMMA shadowed the SKIP entry that discards it, HASH shadowed an empty SKIP_COMMENT, and DIGIT shadowed a
+ * one-character INTEGER_LITERAL. When adding a token here, ask what else matches that same text to that same
+ * length, and where it is declared relative to this one.
+ */
 TOKEN: {
-      < COMMA                   : "," >
-    | < HASH                    : "#" >
+      // The comma is insignificant whitespace in GraphQL (spec section 2.1.6), so it must never reach the
+      // parser as a token: it is declared private here purely so <SKIP_INSIGN_COMMA> below can reference it.
+      // Declared as a real token it won every tie against that SKIP entry, which left the comma spellable
+      // only where a production named it explicitly - required by Arguments, rejected everywhere else (#6860).
+      < #COMMA                  : "," >
+      // Private for the same reason: <SKIP_COMMENT> below is <HASH> followed by zero or more characters, so an
+      // empty comment is exactly as long as a bare HASH and the earlier declaration used to win the tie (#6860).
+    | < #HASH                   : "#" >
     | < BANG                    : "!" >
     | < DOLLAR                  : "$" >
     | < OPAR                    : "(" >
@@ -146,8 +177,12 @@ TOKEN: {
 }
 
 TOKEN: {
-      < DIGIT                   : [ "0"-"9" ] >
-    | < NON_ZERO_DIGIT          : [ "1"-"9" ] >
+      // Private: these are building blocks of INTEGER_LITERAL/FLOAT_LITERAL and of each other, never tokens in
+      // their own right. Declared as real tokens they matched a one-character integer just as far as
+      // INTEGER_LITERAL did and, being declared first, won the tie - so "3" parsed as <DIGIT> and any
+      // single-digit literal was a syntax error while "42" was fine (#6860).
+      < #DIGIT                  : [ "0"-"9" ] >
+    | < #NON_ZERO_DIGIT         : [ "1"-"9" ] >
 }
 
 SKIP: {
@@ -161,8 +196,6 @@ SKIP: {
 
 TOKEN: {
       < #LINE_TERMINATOR        : ( ["\n", "\r", "\u2028", "\u2029"] ) >
-    | < #WHITESPACE             : ["\t", "\u000b", "\f", "\u0020", "\u00a0"] >
-    | < #LETTER                 : ["\t", "\r", "\n", "\u0020"-"\uffff"] >
     | < #EXPONENT_IDENTIFIER    : "e" | "E" >
     | < #INTEGER_PART           : "0" | <NON_ZERO_DIGIT> (<DIGIT>)* >
     | < #FRACTIONAL_PART        : "." (<DIGIT>)* >
@@ -179,7 +212,14 @@ TOKEN: {
                                       ~["\"", "\\", "\u2028", "\u2029"]
                                       | "\\u" ( ["0"-"9"] | ["A"-"F"] | ["a"-"f"] ){4} // Escaped Unicode
                                       | "\\" ( "\"" | "\\" | "/" | "b" | "f" | "n" | "r" | "t" ) // Escaped Character
-                                      | (<LETTER>) (<WHITESPACE>)
+                                      // No further alternative here: the first one already accepts every character a
+                                      // GraphQL string may carry unescaped. A <LETTER><WHITESPACE> alternative used to
+                                      // follow, and since <LETTER> includes the double quote it let the closing quote
+                                      // of one literal be consumed as content whenever whitespace came after it. The
+                                      // longest-match rule then joined two literals into one - `(a: "x" b: "y")` lexed
+                                      // as a single string `"x" b: "y"` - which is why an argument list written without
+                                      // commas, the form the specification treats as identical to the comma-separated
+                                      // one, could not be lexed at all (#6860).
                                   )*
                                   "\"" >
     | < NAME_LITERAL            : ( "_" | ["A"-"Z"] | ["a"-"z"] ) ( "_" | ["0"-"9"] | ["A"-"Z"] | ["a"-"z"] )* >
@@ -376,8 +416,7 @@ Arguments Arguments(): {
 }
 {
     <OPAR>
-    lastArg = Argument() { jjtThis.arguments.add(lastArg); }
-    (<COMMA> lastArg = Argument() { jjtThis.arguments.add(lastArg); })*
+    (lastArg = Argument() { jjtThis.arguments.add(lastArg); })+
     <CPAR>
     {
         return jjtThis;

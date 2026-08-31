@@ -111,25 +111,21 @@ public interface GraphQLParserConstants {
   /** RegularExpression Id. */
   int LINE_TERMINATOR = 44;
   /** RegularExpression Id. */
-  int WHITESPACE = 45;
+  int EXPONENT_IDENTIFIER = 45;
   /** RegularExpression Id. */
-  int LETTER = 46;
+  int INTEGER_PART = 46;
   /** RegularExpression Id. */
-  int EXPONENT_IDENTIFIER = 47;
+  int FRACTIONAL_PART = 47;
   /** RegularExpression Id. */
-  int INTEGER_PART = 48;
+  int EXPONENT_PART = 48;
   /** RegularExpression Id. */
-  int FRACTIONAL_PART = 49;
+  int INTEGER_LITERAL = 49;
   /** RegularExpression Id. */
-  int EXPONENT_PART = 50;
+  int FLOAT_LITERAL = 50;
   /** RegularExpression Id. */
-  int INTEGER_LITERAL = 51;
+  int STRING_LITERAL = 51;
   /** RegularExpression Id. */
-  int FLOAT_LITERAL = 52;
-  /** RegularExpression Id. */
-  int STRING_LITERAL = 53;
-  /** RegularExpression Id. */
-  int NAME_LITERAL = 54;
+  int NAME_LITERAL = 52;
 
   /** Lexical state. */
   int DEFAULT = 0;
@@ -181,8 +177,6 @@ public interface GraphQLParserConstants {
     "<SKIP_INSIGN_COMMA>",
     "<SKIP_COMMENT>",
     "<LINE_TERMINATOR>",
-    "<WHITESPACE>",
-    "<LETTER>",
     "<EXPONENT_IDENTIFIER>",
     "<INTEGER_PART>",
     "<FRACTIONAL_PART>",
