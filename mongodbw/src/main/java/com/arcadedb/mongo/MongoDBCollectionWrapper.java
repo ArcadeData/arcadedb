@@ -314,9 +314,9 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
         MongoDBToSqlTranslator.buildExpression(sql, params, document);
       }
       if (skip > 0)
-        sql.append(" skip ").append(skip);
+        sql.append(" SKIP ").append(skip);
       if (limit > 0)
-        sql.append(" limit ").append(limit);
+        sql.append(" LIMIT ").append(limit);
 
       counted = 0;
       try (final ResultSet rs = database.query("SQL", sql.toString(), params)) {
