@@ -413,4 +413,25 @@ public class MongoDBUpdateDeleteTest extends BaseGraphServerTest {
     assertThat(found).isNotNull();
     assertThat(found.get("v")).isEqualTo(1);
   }
+
+  /**
+   * Follow-up to #6953, flagged by review: the same last-write-wins tracking above is exercised through the
+   * replacement branch, not just {@code $set} - a {@code replaceOne} upsert whose filter seeds an ObjectId
+   * {@code _id} but whose replacement document supplies a plain string must report the string back too.
+   */
+  @Test
+  void replaceOneUpsertOverridingAFilterSeededObjectIdWithAPlainStringReportsTheStringNotTheObjectId() {
+    final ObjectId filterId = new ObjectId();
+
+    final UpdateResult result = collection.replaceOne(eq("_id", filterId),
+        new Document("_id", "plain-string-id-2").append("replaced", true), new UpdateOptions().upsert(true));
+
+    assertThat(result.getUpsertedId()).isNotNull();
+    assertThat(result.getUpsertedId().isString()).isTrue();
+    assertThat(result.getUpsertedId().asString().getValue()).isEqualTo("plain-string-id-2");
+
+    final Document found = collection.find(eq("_id", "plain-string-id-2")).first();
+    assertThat(found).isNotNull();
+    assertThat(found.get("replaced")).isEqualTo(true);
+  }
 }
