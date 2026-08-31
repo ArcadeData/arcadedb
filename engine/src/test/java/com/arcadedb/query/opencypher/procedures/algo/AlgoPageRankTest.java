@@ -21,6 +21,8 @@ package com.arcadedb.query.opencypher.procedures.algo;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
@@ -143,6 +145,43 @@ class AlgoPageRankTest {
   }
 
   @Test
+  void weightedPageRankHonoursInDirection() {
+    // Weighted PageRank never takes the CSR path, so the OLTP fallback's weight arrays are only exercised here,
+    // and only through Cypher - which also covers the 'IN' and 'OUT' config strings end to end.
+    final Map<String, Double> unweightedIn = pageRankByName("IN", null);
+
+    // Weights are set through the graph API on purpose. `UPDATE LINKS SET weight = 9 WHERE out.name = 'A'` looks
+    // like it would work and matches zero rows: `out`/`in` do not dereference to the endpoint vertex on an edge
+    // type, so the whole fixture silently no-ops and every weight stays 1 - which is indistinguishable from an
+    // algorithm that ignores weights entirely.
+    database.transaction(() -> {
+      for (final Iterator<Vertex> vertices = database.select().fromType("Page").vertices(); vertices.hasNext(); ) {
+        final Vertex v = vertices.next();
+        for (final Edge edge : v.getEdges(Vertex.DIRECTION.OUT)) {
+          final MutableEdge weighted = edge.modify();
+          weighted.set("weight", "A".equals(v.getString("name")) && "C".equals(edge.getInVertex().getString("name"))
+              ? 9.0 : 1.0);
+          weighted.save();
+        }
+      }
+    });
+    assertThat(edgeWeights()).as("the 9:1 split must actually reach the edges").containsExactlyInAnyOrder(
+        1.0, 1.0, 1.0, 9.0);
+
+    // A -> B, A -> C (weight 9), B -> C, C -> A. Following the stored direction concentrates rank on C;
+    // reversing it concentrates rank on A, where both B's rank and 90% of C's now flows.
+    assertThat(topRanked(pageRankByName("OUT", "weight"))).isEqualTo("C");
+    final Map<String, Double> weightedIn = pageRankByName("IN", "weight");
+    assertThat(topRanked(weightedIn)).isEqualTo("A");
+
+    // The split has to reach the SCORES too, or this test would pass identically with the weight arrays ignored:
+    // unweighted IN splits C's rank evenly between A and B, weighted IN sends 90% of it to A.
+    assertThat(weightedIn.get("B"))
+        .as("weighted IN must leave B less of C's rank than an even split would")
+        .isLessThan(unweightedIn.get("B") - 1e-6);
+  }
+
+  @Test
   void pageRankCSRAndOLTPProduceIdenticalResults() {
     final Map<RID, Double> oltpScores = pageRankScores(newContext(), null, 0.0001);
     assertThat(oltpScores).hasSize(3);
@@ -180,6 +219,59 @@ class AlgoPageRankTest {
       gav.shutdown();
     }
   }
+
+  @Test
+  void pageRankBothDirectionCSRAndOLTPProduceIdenticalResults() {
+    final Map<RID, Double> oltpScores = pageRankScores(newContext(), Vertex.DIRECTION.BOTH, 0.0);
+    assertThat(oltpScores).hasSize(3);
+
+    final GraphAnalyticalView gav = readyView("pagerank-both-csr");
+    try {
+      final BasicCommandContext csrContext = newContext();
+      final Map<RID, Double> csrScores = pageRankScores(csrContext, Vertex.DIRECTION.BOTH, 0.0);
+      assertCSRAccelerated(csrContext);
+      assertScoresMatch(oltpScores, csrScores);
+
+      // Treating the graph as undirected redistributes rank but must not create or destroy any of it.
+      double sum = 0;
+      for (final double score : csrScores.values())
+        sum += score;
+      assertThat(sum).isBetween(0.9, 1.1);
+    } finally {
+      gav.shutdown();
+    }
+  }
+
+  private List<Double> edgeWeights() {
+    final List<Double> weights = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", "SELECT weight FROM LINKS")) {
+      while (rs.hasNext())
+        weights.add(((Number) rs.next().getProperty("weight")).doubleValue());
+    }
+    return weights;
+  }
+
+  /** Runs algo.pagerank through Cypher, so the config-map literal and the direction string are covered too. */
+  private Map<String, Double> pageRankByName(final String direction, final String weightProperty) {
+    final Map<String, Double> scores = new HashMap<>();
+    try (final ResultSet rs = database.query("opencypher",
+        "CALL algo.pagerank({dampingFactor: 0.85, maxIterations: 40, tolerance: 0.0, direction: '" + direction + "'"
+            + (weightProperty != null ? ", weightProperty: '" + weightProperty + "'" : "")
+            + "}) YIELD node, score RETURN node.name AS name, score")) {
+      while (rs.hasNext()) {
+        final Result r = rs.next();
+        scores.put((String) r.getProperty("name"), ((Number) r.getProperty("score")).doubleValue());
+      }
+    }
+    assertThat(scores).hasSize(3);
+    return scores;
+  }
+
+  private static String topRanked(final Map<String, Double> scores) {
+    return scores.entrySet().stream().max(Map.Entry.comparingByValue()).orElseThrow().getKey();
+  }
+
+  // ── CSR/OLTP parity fixtures ────────────────────────────────────────
 
   private BasicCommandContext newContext() {
     final BasicCommandContext context = new BasicCommandContext();
@@ -240,28 +332,6 @@ class AlgoPageRankTest {
         .build();
     assertThat(gav.awaitReady(10, TimeUnit.SECONDS)).isTrue();
     return gav;
-  }
-
-  @Test
-  void pageRankBothDirectionCSRAndOLTPProduceIdenticalResults() {
-    final Map<RID, Double> oltpScores = pageRankScores(newContext(), Vertex.DIRECTION.BOTH, 0.0);
-    assertThat(oltpScores).hasSize(3);
-
-    final GraphAnalyticalView gav = readyView("pagerank-both-csr");
-    try {
-      final BasicCommandContext csrContext = newContext();
-      final Map<RID, Double> csrScores = pageRankScores(csrContext, Vertex.DIRECTION.BOTH, 0.0);
-      assertCSRAccelerated(csrContext);
-      assertScoresMatch(oltpScores, csrScores);
-
-      // Treating the graph as undirected redistributes rank but must not create or destroy any of it.
-      double sum = 0;
-      for (final double score : csrScores.values())
-        sum += score;
-      assertThat(sum).isBetween(0.9, 1.1);
-    } finally {
-      gav.shutdown();
-    }
   }
 
   /**
