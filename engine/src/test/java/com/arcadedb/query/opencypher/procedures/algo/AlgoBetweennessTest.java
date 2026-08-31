@@ -128,6 +128,57 @@ class AlgoBetweennessTest {
     }
   }
 
+  /**
+   * Regression for #6943: the normalization factor was {@code 2/((n-1)(n-2))}, the UNDIRECTED constant, even
+   * though this procedure's adjacency is built {@code DIRECTION.OUT}-only (a directed traversal). On a
+   * hub-and-spokes graph where a=b=d all route through hub c in both directions (a->c, b->c, d->c, c->a, c->b,
+   * c->d), every one of the 6 ordered leaf pairs is routed through c, so c's raw betweenness is 6 - the maximum
+   * possible for n=4, i.e. {@code (n-1)(n-2) = 6}. The correct DIRECTED normalization
+   * ({@code 1/((n-1)(n-2))}) must therefore bring c's score to exactly 1.0; the old undirected factor doubled
+   * it to 2.0, outside the documented [0,1] range.
+   */
+  @Test
+  void betweennessDirectedNormalizationStaysInRange() {
+    final DatabaseFactory factory = new DatabaseFactory("./target/databases/test-algo-betweenness-hub");
+    if (factory.exists())
+      factory.open().drop();
+    final Database hubDatabase = factory.create();
+    try {
+      hubDatabase.getSchema().createVertexType("Node");
+      hubDatabase.getSchema().createEdgeType("EDGE");
+
+      hubDatabase.transaction(() -> {
+        final MutableVertex a = hubDatabase.newVertex("Node").set("name", "A").save();
+        final MutableVertex b = hubDatabase.newVertex("Node").set("name", "B").save();
+        final MutableVertex c = hubDatabase.newVertex("Node").set("name", "C").save();
+        final MutableVertex d = hubDatabase.newVertex("Node").set("name", "D").save();
+        a.newEdge("EDGE", c, true, (Object[]) null).save();
+        b.newEdge("EDGE", c, true, (Object[]) null).save();
+        d.newEdge("EDGE", c, true, (Object[]) null).save();
+        c.newEdge("EDGE", a, true, (Object[]) null).save();
+        c.newEdge("EDGE", b, true, (Object[]) null).save();
+        c.newEdge("EDGE", d, true, (Object[]) null).save();
+      });
+
+      final ResultSet rs = hubDatabase.query("opencypher",
+          "CALL algo.betweenness({normalized: true}) YIELD node, score RETURN node.name AS name, score");
+
+      double scoreC = Double.NaN;
+      while (rs.hasNext()) {
+        final Result result = rs.next();
+        final double score = ((Number) result.getProperty("score")).doubleValue();
+        assertThat(score).as("every normalized score must stay within the documented [0,1] range (#6943)")
+            .isBetween(0.0, 1.0);
+        if ("C".equals(result.getProperty("name")))
+          scoreC = score;
+      }
+
+      assertThat(scoreC).as("the hub must reach the maximum possible directed-normalized score").isEqualTo(1.0);
+    } finally {
+      hubDatabase.drop();
+    }
+  }
+
   @Test
   void betweennessNonNormalized() {
     final ResultSet rs = database.query("opencypher",

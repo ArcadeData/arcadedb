@@ -181,12 +181,41 @@ public final class PartitionedTriangleOp implements CountOp {
 
     final int chainLength = partitionEdgeTypes.length;
     final NeighborView[] views = new NeighborView[chainLength];
-    for (int h = 0; h < chainLength; h++)
+    boolean allViewsAvailable = true;
+    for (int h = 0; h < chainLength; h++) {
       views[h] = provider.getNeighborView(partitionDirections[h], partitionEdgeTypes[h]);
+      if (views[h] == null)
+        allViewsAvailable = false;
+    }
 
-    for (final NeighborView v : views)
-      if (v == null)
-        return partition;
+    // #6943: a NeighborView is unavailable while a delta overlay is active (GraphAnalyticalView.getNeighborView
+    // returns null unconditionally in that state) - the normal condition of a view between commits, not an
+    // exotic one. Falling straight through to an all-(-1) mapping made every consumer read "no vertex is in any
+    // partition" instead of "the fast path is unavailable", so the whole query silently answered 0.
+    //
+    // Rather than bailing out of the CSR path entirely (the OLTP fallback below still exercises it), walk the
+    // chain with the per-node accessor: it is specified to work regardless of overlay state (see
+    // GraphTraversalProvider#getNeighborIds javadoc) and is the same fallback #countTrianglesPerNode already
+    // relies on when the triangle-edge view itself is missing. This keeps the mapping on the CSR node-id path -
+    // no RID/Vertex materialization - even when the fast array-offset scan below cannot be used.
+    if (!allViewsAvailable) {
+      for (int p = 0; p < nodeCount; p++) {
+        guard.checkPeriodically(p);
+        int current = p;
+        boolean valid = true;
+        for (int h = 0; h < chainLength; h++) {
+          final int[] hNbrs = provider.getNeighborIds(current, partitionDirections[h], partitionEdgeTypes[h]);
+          if (hNbrs.length == 0) {
+            valid = false;
+            break;
+          }
+          current = hNbrs[0];
+        }
+        if (valid)
+          partition[p] = current;
+      }
+      return partition;
+    }
 
     final NeighborView firstView = views[0];
     final int[] firstNbrs = firstView.neighbors();
