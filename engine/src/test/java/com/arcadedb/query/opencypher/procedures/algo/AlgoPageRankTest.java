@@ -20,7 +20,11 @@ package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
@@ -34,6 +38,7 @@ import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -214,50 +219,64 @@ class AlgoPageRankTest {
 
   @Test
   void pageRankInDirectionCSRAndOLTPProduceIdenticalResults() {
-    // Step 1: Run PageRank with direction=IN without GAV -> OLTP path
-    final Map<String, Double> oltpScores = new HashMap<>();
-    try (final ResultSet rs = database.query("opencypher",
-        """
-        CALL algo.pagerank({dampingFactor: 0.85, maxIterations: 20, tolerance: 0.0, direction: 'IN'}) \
-        YIELD node, score RETURN node.name AS name, score""")) {
-      while (rs.hasNext()) {
-        final Result r = rs.next();
-        oltpScores.put((String) r.getProperty("name"), ((Number) r.getProperty("score")).doubleValue());
-      }
-    }
+    // Invoked through the procedure rather than the query engine so the call's CommandContext is observable:
+    // awaitReady() returning true would not be enough on its own, because AlgoPageRank also drops to OLTP when
+    // the view reports pending changes and when findProvider() does not reach it at all - and a parity test
+    // served by OLTP twice pins the OLTP path against itself and can never fail. CSR_ACCELERATED_VAR is the
+    // only signal that says which path actually ran. The 'IN' config string itself is covered end-to-end by
+    // weightedPageRankHonoursInDirection.
+    final Map<RID, Double> oltpScores = pageRankScores(newContext(), Vertex.DIRECTION.IN);
     assertThat(oltpScores).hasSize(3);
 
-    // Step 2: Build a GAV so the CSR path is used
     final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
         .withName("pagerank-in-csr")
         .withVertexTypes("Page")
         .withEdgeTypes("LINKS")
         .build();
-    gav.awaitReady(10, TimeUnit.SECONDS);
+    try {
+      assertThat(gav.awaitReady(10, TimeUnit.SECONDS)).isTrue();
 
-    // Step 3: Run PageRank with direction=IN with GAV -> CSR path
-    final Map<String, Double> csrScores = new HashMap<>();
-    try (final ResultSet rs = database.query("opencypher",
-        """
-        CALL algo.pagerank({dampingFactor: 0.85, maxIterations: 20, tolerance: 0.0, direction: 'IN'}) \
-        YIELD node, score RETURN node.name AS name, score""")) {
-      while (rs.hasNext()) {
-        final Result r = rs.next();
-        csrScores.put((String) r.getProperty("name"), ((Number) r.getProperty("score")).doubleValue());
-      }
+      final BasicCommandContext csrContext = newContext();
+      final Map<RID, Double> csrScores = pageRankScores(csrContext, Vertex.DIRECTION.IN);
+      assertThat(csrContext.getVariable(CommandContext.CSR_ACCELERATED_VAR))
+          .as("the view must actually back the call, or this comparison pins the OLTP path against itself")
+          .isEqualTo(true);
+
+      assertThat(csrScores.keySet()).isEqualTo(oltpScores.keySet());
+      for (final Map.Entry<RID, Double> entry : oltpScores.entrySet())
+        assertThat(csrScores.get(entry.getKey())).as("score for " + entry.getKey())
+            .isCloseTo(entry.getValue(), Offset.offset(1e-4));
+
+      // A -> B, A -> C, B -> C, C -> A. Reversed, A is where both B's and C's rank flows, so A must top both.
+      final Map<String, Double> byName = new HashMap<>();
+      csrScores.forEach((rid, score) -> byName.put(rid.asVertex().getString("name"), score));
+      assertThat(byName.get("A")).isGreaterThan(byName.get("B"));
+      assertThat(byName.get("A")).isGreaterThan(byName.get("C"));
+    } finally {
+      gav.shutdown();
     }
-    assertThat(csrScores).hasSize(3);
+  }
 
-    for (final Map.Entry<String, Double> entry : oltpScores.entrySet()) {
-      assertThat(csrScores).containsKey(entry.getKey());
-      assertThat(csrScores.get(entry.getKey())).isCloseTo(entry.getValue(), Offset.offset(1e-4));
+  private BasicCommandContext newContext() {
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+    return context;
+  }
+
+  private Map<RID, Double> pageRankScores(final CommandContext context, final Vertex.DIRECTION direction) {
+    final Map<String, Object> config = new HashMap<>();
+    config.put("dampingFactor", 0.85);
+    config.put("maxIterations", 20);
+    config.put("tolerance", 0.0);
+    config.put("direction", direction.name());
+
+    final Map<RID, Double> scores = new HashMap<>();
+    for (final Iterator<Result> it = new AlgoPageRank().execute(new Object[] { config }, null, context).iterator();
+        it.hasNext(); ) {
+      final Result row = it.next();
+      scores.put(row.getProperty("node"), ((Number) row.getProperty("score")).doubleValue());
     }
-
-    // A -> B, A -> C, B -> C, C -> A. Reversed, A is the only sink of two edges, so A must top the ranking.
-    assertThat(csrScores.get("A")).isGreaterThan(csrScores.get("B"));
-    assertThat(csrScores.get("A")).isGreaterThan(csrScores.get("C"));
-
-    gav.shutdown();
+    return scores;
   }
 
   @Test
@@ -281,7 +300,8 @@ class AlgoPageRankTest {
         .withVertexTypes("Page")
         .withEdgeTypes("LINKS")
         .build();
-    gav.awaitReady(10, TimeUnit.SECONDS);
+    // Without this the CSR half can silently fall back to OLTP and the comparison pins OLTP against itself.
+    assertThat(gav.awaitReady(10, TimeUnit.SECONDS)).isTrue();
 
     // Step 3: Run PageRank with direction=BOTH with GAV → CSR path
     final Map<String, Double> csrScores = new HashMap<>();
