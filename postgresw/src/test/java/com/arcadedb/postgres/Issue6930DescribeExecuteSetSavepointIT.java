@@ -70,6 +70,13 @@ class Issue6930DescribeExecuteSetSavepointIT extends PostgresWireProtocolTestBas
     assertReplySequenceForIgnoredExecutionStatement("RELEASE test_savepoint2", "RELEASE");
   }
 
+  @Test
+  @DisplayName("[#6930] Describe(P)+Execute on a ROLLBACK TO portal answers NoData then CommandComplete 'ROLLBACK'")
+  void rollbackToPortalDescribeAndExecute() throws Exception {
+    assertReplySequenceForIgnoredExecutionStatement("SAVEPOINT test_savepoint3", "SAVEPOINT");
+    assertReplySequenceForIgnoredExecutionStatement("ROLLBACK TO test_savepoint3", "ROLLBACK");
+  }
+
   private void assertReplySequenceForIgnoredExecutionStatement(final String query, final String expectedTag) throws Exception {
     try (final Socket socket = new Socket()) {
       socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);

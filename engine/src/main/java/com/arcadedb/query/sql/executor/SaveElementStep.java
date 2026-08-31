@@ -19,7 +19,6 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Document;
-import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
@@ -170,10 +169,8 @@ public class SaveElementStep extends AbstractExecutionStep {
         continue;
 
       try (final IndexCursor existing = index.get(keyValues, 1)) {
-        if (existing.hasNext()) {
-          final Identifiable conflictingRecord = existing.next();
-          return new DuplicateKeyConflict(index.getName(), keyValues, conflictingRecord.getIdentity());
-        }
+        if (existing.hasNext())
+          return new DuplicateKeyConflict(index.getName(), keyValues, existing.next().getIdentity());
       }
     }
     return null;
