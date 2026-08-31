@@ -283,7 +283,7 @@ class Issue6927RangeScanTxRemovesTest extends TestHelper {
       assertThat(drain(index.get(new Object[] { 20 }))).hasSize(2);
 
       // no RID: the whole key goes, both RIDs with it
-      ((com.arcadedb.index.IndexInternal) index).remove(new Object[] { 20 });
+      ((IndexInternal) index).remove(new Object[] { 20 });
 
       assertThat(index.get(new Object[] { 20 }).hasNext()).isFalse();
       assertThat(collectRange("age", 0, 30, true)).hasSize(1);
