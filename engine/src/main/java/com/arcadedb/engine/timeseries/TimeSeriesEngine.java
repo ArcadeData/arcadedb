@@ -435,6 +435,22 @@ public class TimeSeriesEngine implements AutoCloseable {
           if (ss.getGlobalMaxTimestamp() > actualMax)
             actualMax = ss.getGlobalMaxTimestamp();
         }
+
+        // The mutable bucket carries everything appended since the last compaction and is NOT bounded
+        // by the sealed range - compaction is driven by the maintenance scheduler, not by sample
+        // timestamps, so the un-sealed tail can span an arbitrary number of buckets. Sizing the flat
+        // array from the sealed stores alone made every sample past that range resolve to an
+        // out-of-range index and vanish without an error (issue #6937).
+        final TimeSeriesBucket mutable = shard.getMutableBucket();
+        final long mutableMin = mutable.getMinTimestamp();
+        final long mutableMax = mutable.getMaxTimestamp();
+        // Empty markers are Long.MAX_VALUE / Long.MIN_VALUE, so an empty bucket never widens anything.
+        if (mutableMin <= mutableMax) {
+          if (mutableMin < actualMin)
+            actualMin = mutableMin;
+          if (mutableMax > actualMax)
+            actualMax = mutableMax;
+        }
       }
       // Clamp to query range
       if (fromTs != Long.MIN_VALUE && fromTs > actualMin)
