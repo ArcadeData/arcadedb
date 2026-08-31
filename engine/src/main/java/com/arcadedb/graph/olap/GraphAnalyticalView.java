@@ -2641,12 +2641,22 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * merged into one BOTH-direction set first) so a BOTH request still means "common OUT-neighbours plus common
    * IN-neighbours" - the same split the original code and {@link #isConnectedForType}/{@link #countBetweenForType}
    * use - rather than crediting a pair where nodeA reaches C via OUT and nodeB reaches C via IN as a match.
+   * <p>
+   * Review round 2: {@link #getNeighborsFromCSR} allocates a {@code copyOfRange} per direction per node even on
+   * the overwhelmingly common no-overlay case, where the original code intersected the raw CSR arrays in place
+   * with zero allocation. Restored that zero-copy path, gated on {@code snap.overlay == null} - the same "fast
+   * path when no overlay" split {@link #getNeighborsFromCSR} itself already uses - and fall back to the
+   * overlay-aware accessor only when an overlay is active or a node id falls outside the base CSR, which is
+   * exactly the condition #6943 needed fixed.
    */
   private int countCommonForType(final Snapshot snap, final int nodeA, final int nodeB,
       final Vertex.DIRECTION direction, final String edgeType) {
     final CSRAdjacencyIndex csr = snap.csrPerType.get(edgeType);
     if (csr == null && snap.overlay == null)
       return 0;
+
+    if (snap.overlay == null && csr != null && nodeA < snap.nodeMapping.size() && nodeB < snap.nodeMapping.size())
+      return countCommonForTypeNoOverlay(csr, nodeA, nodeB, direction);
 
     int count = 0;
     if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
@@ -2658,6 +2668,25 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       final int[] aIn = getNeighborsFromCSR(snap, csr, nodeA, Vertex.DIRECTION.IN, edgeType);
       final int[] bIn = getNeighborsFromCSR(snap, csr, nodeB, Vertex.DIRECTION.IN, edgeType);
       count += sortedIntersectionCount(aIn, 0, aIn.length, bIn, 0, bIn.length);
+    }
+    return count;
+  }
+
+  /** Zero-copy fast path for {@link #countCommonForType}: no overlay, both nodes in the base CSR. */
+  private static int countCommonForTypeNoOverlay(final CSRAdjacencyIndex csr, final int nodeA, final int nodeB,
+      final Vertex.DIRECTION direction) {
+    int count = 0;
+    if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
+      final int[] neighbors = csr.getForwardNeighbors();
+      final int[] offsets = csr.getForwardOffsets();
+      count += sortedIntersectionCount(neighbors, offsets[nodeA], offsets[nodeA + 1],
+          neighbors, offsets[nodeB], offsets[nodeB + 1]);
+    }
+    if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH) {
+      final int[] neighbors = csr.getBackwardNeighbors();
+      final int[] offsets = csr.getBackwardOffsets();
+      count += sortedIntersectionCount(neighbors, offsets[nodeA], offsets[nodeA + 1],
+          neighbors, offsets[nodeB], offsets[nodeB + 1]);
     }
     return count;
   }
