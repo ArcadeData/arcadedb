@@ -2457,15 +2457,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * open and says so. This one runs inside the Raft apply path, whose whole contract here is that one type must not
    * abort the apply of an entry that may carry blobs for others - the same reason
    * {@link #repairEngineWithSealedBlob} reports failure rather than throwing. So nothing may escape, including a
-   * programming error. It is logged WITH its stack trace and names the consequence precisely, so it does not
-   * disappear: it reads as the bug it is rather than as a benign mid-shutdown rejection.
+   * programming error. It is logged at SEVERE, WITH its stack trace and its exception class, and names the
+   * consequence precisely, so it does not disappear: swallowing it here must not also hide it, and what it leaves
+   * behind - a type maintained by nothing - is the very defect this method exists to prevent.
    */
   private void scheduleMaintenanceAfterRepair(final DatabaseInternal db, final LocalTimeSeriesType tsType) {
     try {
       final LocalSchema schema = db.getSchema().getEmbedded();
       schema.getTimeSeriesMaintenanceScheduler().schedule(schema.getDatabase(), tsType);
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING,
+      LogManager.instance().log(this, Level.SEVERE,
           "Repaired TimeSeries type '%s' (db=%s) but could not re-schedule its automatic maintenance; compaction, "
               + "retention and downsampling stay off for it until the database is reopened: %s: %s", e,
           tsType.getName(), decodedDbName(db), e.getClass().getSimpleName(), e.getMessage());

@@ -149,12 +149,49 @@ class Issue6948MaintenanceAfterRepairTest {
   }
 
   /**
-   * A Raft entry can be applied more than once across a restart, and a type can be repaired again after a second
-   * corruption. {@code schedule()} cancels and replaces the task for the type name, so the type ends up maintained
-   * by exactly one task either way - the repair path must not need to know whether it is the first.
+   * Recovery is not one-shot: a type that is corrupted, repaired, and then corrupted AGAIN comes back maintained
+   * the second time too.
+   * <p>
+   * The second corruption and reopen are what make this a genuine second repair rather than a repeat of the first.
+   * {@code applySealedBlobs} only takes the repair branch when {@code tsType.getEngine() == null}; once the first
+   * repair has succeeded the type has an engine, and a further blob for it is simply installed through the live
+   * sealed store - see {@link #aRedundantBlobAfterARepairLeavesTheTaskInPlace()}, which pins that other branch. So
+   * driving the type back to engine-unavailable is the only way to reach {@code scheduleMaintenanceAfterRepair}
+   * twice, and the reopen is the only way to do it without reaching into the type's internals: {@code initEngine()}
+   * returns immediately once the engine is non-null.
    */
   @Test
-  void aRepeatedRepairLeavesTheTypeMaintained() throws Exception {
+  void aSecondCorruptionIsRepairedAndScheduledAgain() throws Exception {
+    final byte[] leaderSealedBytes = buildTypeAndCaptureItsSealedFile();
+
+    breakTheSealedFileAndReopen();
+    new ArcadeStateMachine().applySealedBlobs(database,
+        List.of(new TsSealedBlob(TYPE_NAME, 0, SEALED_FILE, leaderSealedBytes)));
+    assertThat(scheduler().isScheduled(TYPE_NAME)).as("the first repair schedules").isTrue();
+
+    // Corrupt the file the first repair put in place, and come back up on it.
+    breakTheSealedFileAndReopen();
+    final LocalTimeSeriesType brokenAgain = (LocalTimeSeriesType) database.getSchema().getType(TYPE_NAME);
+    assertThat(brokenAgain.isEngineAvailable()).isFalse();
+    assertThat(scheduler().isScheduled(TYPE_NAME))
+        .as("the reopened schema skips the gate again, so nothing is maintaining it").isFalse();
+
+    new ArcadeStateMachine().applySealedBlobs(database,
+        List.of(new TsSealedBlob(TYPE_NAME, 0, SEALED_FILE, leaderSealedBytes)));
+
+    assertThat(brokenAgain.isEngineAvailable()).isTrue();
+    assertThat(scheduler().isScheduled(TYPE_NAME)).as("and so does the second").isTrue();
+  }
+
+  /**
+   * The other branch. A blob that arrives for a type whose engine is already healthy - a Raft entry replayed after
+   * a restart, the leader re-shipping a store - never reaches {@code repairEngineWithSealedFile} at all: it is
+   * installed through the live sealed store. What this pins is that the maintenance task the earlier repair
+   * installed survives it, since a type losing its task on a routine install would be the same defect by another
+   * route.
+   */
+  @Test
+  void aRedundantBlobAfterARepairLeavesTheTaskInPlace() throws Exception {
     final byte[] leaderSealedBytes = buildTypeAndCaptureItsSealedFile();
 
     breakTheSealedFileAndReopen();
@@ -162,12 +199,16 @@ class Issue6948MaintenanceAfterRepairTest {
     final ArcadeStateMachine stateMachine = new ArcadeStateMachine();
     stateMachine.applySealedBlobs(database,
         List.of(new TsSealedBlob(TYPE_NAME, 0, SEALED_FILE, leaderSealedBytes)));
-    stateMachine.applySealedBlobs(database,
-        List.of(new TsSealedBlob(TYPE_NAME, 0, SEALED_FILE, leaderSealedBytes)));
 
     final LocalTimeSeriesType repaired = (LocalTimeSeriesType) database.getSchema().getType(TYPE_NAME);
     assertThat(repaired.isEngineAvailable()).isTrue();
     assertThat(scheduler().isScheduled(TYPE_NAME)).isTrue();
+
+    stateMachine.applySealedBlobs(database,
+        List.of(new TsSealedBlob(TYPE_NAME, 0, SEALED_FILE, leaderSealedBytes)));
+
+    assertThat(repaired.isEngineAvailable()).isTrue();
+    assertThat(scheduler().isScheduled(TYPE_NAME)).as("a routine install must not unschedule the type").isTrue();
   }
 
   // ---- Helpers ----
