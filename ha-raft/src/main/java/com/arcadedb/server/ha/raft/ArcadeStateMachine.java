@@ -2446,6 +2446,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
   /**
    * Re-arms automatic compaction, retention and downsampling for a type that has just been repaired (issue #6948).
    * <p>
+   * Scheduled with {@code schema.getDatabase()} rather than the {@code db} parameter, so this task holds the same
+   * instance the two pre-existing {@code schedule()} call sites hold: the one {@code LocalSchema} was built with,
+   * which lives exactly as long as the schema does. {@code db} here is the server's wrapper, and wrappers are
+   * replaceable - a task holding a superseded one through the scheduler's {@code WeakReference} would cancel
+   * itself the moment that wrapper became garbage, which is this very bug again by another route. The replication
+   * flags the recurring task needs are NOT taken from this reference: {@code runMaintenance} resolves
+   * {@code getWrappedDatabaseInstance()} on every tick, for the same reason the compaction path underneath it
+   * does.
+   * <p>
    * Kept off the success path's error handling on purpose: the repair itself has already succeeded and the type is
    * usable again, so failing to ALSO schedule it must be logged and swallowed rather than turned into "the repair
    * failed" - the data is in place either way, and the state a thrown exception would leave is strictly worse than
