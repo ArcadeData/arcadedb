@@ -45,9 +45,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 public class MongoDBInsertCountCommandTest extends BaseGraphServerTest {
 
-  private static final int          DEF_PORT = 27017;
-  private              MongoClient  client;
-  private              MongoDatabase        mongoDatabase;
+  private static final int                       DEF_PORT = 27017;
+  private              MongoClient               client;
+  private              MongoDatabase             mongoDatabase;
   private              MongoCollection<Document> collection;
 
   @Override
