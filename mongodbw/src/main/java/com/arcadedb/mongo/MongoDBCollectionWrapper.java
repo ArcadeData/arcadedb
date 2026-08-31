@@ -306,6 +306,16 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
         if (limit > 0 && counted >= limit)
           break;
       }
+    } else if (skip <= 0 && limit <= 0) {
+      // No pagination to apply row-by-row: let the engine aggregate instead of materializing every matching row.
+      final Map<String, Object> params = new HashMap<>();
+      final StringBuilder sql = new StringBuilder("select count(*) as count from ").append(Identifier.quote(collectionName))
+          .append(" where ");
+      MongoDBToSqlTranslator.buildExpression(sql, params, document);
+
+      try (final ResultSet rs = database.query("SQL", sql.toString(), params)) {
+        counted = rs.hasNext() ? ((Number) rs.next().getProperty("count")).intValue() : 0;
+      }
     } else {
       final Map<String, Object> params = new HashMap<>();
       final StringBuilder sql = new StringBuilder("select from ").append(Identifier.quote(collectionName)).append(" where ");
