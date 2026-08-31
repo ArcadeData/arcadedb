@@ -206,10 +206,19 @@ class Issue6932CorruptWALPageCountTest extends TestHelper {
     // Recovery completed rather than unwinding: the corrupt WAL was walked over and dropped with the rest.
     assertThat(corruptWal).as("a WAL rejected as 'not a transaction' is dropped, not preserved as a gap").doesNotExist();
 
-    // The committed record survived and the database is still writable.
-    assertThat(database.countType("CorruptWALType", true)).isEqualTo(1L);
+    // The committed record survived and the database is still writable. Counted by scan, never by
+    // countType/count(*): those sum LocalBucket.count(), a cached counter that recovery resets to -1
+    // and recomputes, so it can read correct while the records it claims to describe did not survive.
+    assertThat(liveRecordCount()).as("the record committed before the kill must have been recovered").isEqualTo(1L);
     database.transaction(() -> database.newDocument("CorruptWALType").set("k", 2).save());
-    assertThat(database.countType("CorruptWALType", true)).isEqualTo(2L);
+    assertThat(liveRecordCount()).as("the database must still be writable after recovery walked the corrupt WAL")
+        .isEqualTo(2L);
+  }
+
+  /** Ground truth: {@code count(@rid)} full-scans instead of reading the cached per-bucket counter. */
+  private long liveRecordCount() {
+    return ((Number) database.query("sql", "SELECT count(@rid) AS n FROM CorruptWALType").next().getProperty("n"))
+        .longValue();
   }
 
   private void assertRejected(final String name, final byte[] content, final String reason) throws Exception {

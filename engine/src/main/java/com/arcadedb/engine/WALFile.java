@@ -179,15 +179,13 @@ public class WALFile extends LockContext {
         // TRUNCATED FILE
         return null;
 
-      // #6932: `pages` comes straight off disk and this array is allocated before a single byte of the
-      // segment is read, so a corrupt count sizes the allocation. At Integer.MAX_VALUE the references
-      // alone are ~17GB and the resulting OutOfMemoryError is an Error, which the catch(Exception)
-      // recovery guard below cannot catch: it unwinds out of TransactionManager.checkIntegrity (a
-      // try/finally with no catch) before the WAL can be dropped or renamed '.corrupt', leaving the
-      // database permanently unopenable on the same bytes. The count is derivable from the already
-      // file-bounded segment size: every segment costs at least its fixed header plus a one-byte delta
-      // (writeTransactionToBuffer rejects deltaSize < 1), so any legal count fits the budget below.
-      // Same guard the Raft entry parser got in #4420 and the per-page deltaSize got in #4958.
+      // #6932: `pages` comes straight off disk and sizes this array before a byte of the segment is read.
+      // The OutOfMemoryError it can raise is an Error, so neither the catch(Exception) below nor
+      // TransactionManager.checkIntegrity (try/finally, no catch) can contain it: it unwinds out of
+      // LocalDatabase.open before the WAL is dropped or renamed '.corrupt', and every later open reads
+      // the same bytes. The bound is exact, not a heuristic: writeTransactionToBuffer charges every
+      // segment PAGE_HEADER_SIZE + deltaSize and rejects deltaSize < 1. Same guard as #4420 (Raft entry
+      // parser) and #4958 (per-page deltaSize).
       if (pages < 0 || (long) pages * (PAGE_HEADER_SIZE + 1) > segmentSize)
         // INVALID
         return null;
