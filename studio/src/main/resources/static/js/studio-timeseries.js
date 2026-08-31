@@ -257,7 +257,7 @@ function tsExecuteQuery() {
 
   jQuery.ajax({
     type: "POST",
-    url: "api/v1/ts/" + db + "/query",
+    url: "api/v1/ts/" + encodeDatabaseName(db) + "/query",
     data: JSON.stringify(request),
     contentType: "application/json",
     beforeSend: function (xhr) {
@@ -298,7 +298,7 @@ function tsExecutePromQLQuery() {
   var endSec   = timeRange.to   != null ? timeRange.to   / 1000 : now / 1000;
   var stepSec  = parseInt($("#tsBucketInterval").val()) / 1000;
 
-  var url = "api/v1/ts/" + db + "/prom/api/v1/query_range" +
+  var url = "api/v1/ts/" + encodeDatabaseName(db) + "/prom/api/v1/query_range" +
     "?query=" + encodeURIComponent(expr) +
     "&start=" + startSec +
     "&end="   + endSec +
@@ -524,7 +524,7 @@ function tsGetLatest() {
     return;
   }
 
-  var url = "api/v1/ts/" + db + "/latest?type=" + encodeURIComponent(typeName);
+  var url = "api/v1/ts/" + encodeDatabaseName(db) + "/latest?type=" + encodeURIComponent(typeName);
 
   // Add first non-empty tag filter as query param (API supports single tag via query string)
   $(".ts-tag-input").each(function () {
