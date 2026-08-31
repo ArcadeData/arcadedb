@@ -183,4 +183,27 @@ public class MongoDBUpdateDeleteTest extends BaseGraphServerTest {
     assertThat(found).isNotNull();
     assertThat(found.get("v")).isEqualTo(2);
   }
+
+  /**
+   * Follow-up to #6941 flagged by review: an explicit {@code _id: null} filter is a legal, if unusual, BSON _id.
+   * {@code executeUpsert} must tell that apart from a genuinely absent {@code _id} and preserve it, rather than
+   * discarding it for a freshly generated one the way the original #6941 bug discarded a seeded ObjectId.
+   * <p>
+   * This does not assert that a second {@code eq("_id", null)} upsert is idempotent: matching a stored {@code null}
+   * by equality is a separate, pre-existing gap in the filter-to-SQL translation (an "=" comparison against a bound
+   * null parameter, rather than "IS NULL") that affects every {@code null}-valued filter, not just this upsert path
+   * - tracked separately rather than fixed here.
+   */
+  @Test
+  void upsertFilteredOnNullIdPreservesTheNullId() {
+    final UpdateResult result = collection.updateOne(eq("_id", null), new Document("$set", new Document("v", 1)),
+        new UpdateOptions().upsert(true));
+
+    assertThat(result.getUpsertedId()).isNotNull();
+    assertThat(result.getUpsertedId().isNull()).isTrue();
+
+    final Document inserted = collection.find(eq("v", 1)).first();
+    assertThat(inserted).isNotNull();
+    assertThat(inserted.get("_id")).isNull();
+  }
 }
