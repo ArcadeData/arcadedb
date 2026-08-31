@@ -123,6 +123,41 @@ class Issue6283BucketHeaderAccessorsTest extends TestHelper {
   }
 
   /**
+   * Issue #6937 added {@code getMinMaxTimestamps()}, which answers both bounds from ONE header read so the pair
+   * is a consistent snapshot. It has to agree with the two single-value readers in every state, empty included.
+   */
+  @Test
+  void combinedMinMaxReaderAgreesWithTheSingleValueReaders() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+
+    database.begin();
+    final TimeSeriesBucket bucket = new TimeSeriesBucket(db, "issue6937_minmax",
+        db.getDatabasePath() + "/issue6937_minmax", columns());
+    ((LocalSchema) db.getSchema()).registerFile(bucket);
+
+    // No header page yet.
+    assertThat(bucket.getMinMaxTimestamps()).containsExactly(Long.MAX_VALUE, Long.MIN_VALUE);
+
+    // Header page written, still no samples.
+    bucket.initHeaderPage();
+    assertThat(bucket.getMinMaxTimestamps()).containsExactly(Long.MAX_VALUE, Long.MIN_VALUE);
+    assertThat(bucket.getMinMaxTimestamps()).containsExactly(bucket.getMinTimestamp(), bucket.getMaxTimestamp());
+
+    bucket.appendSamples(new long[] { -5_000L, 1000L, 3000L }, new Object[] { 19.0, 20.0, 22.0 });
+    assertThat(bucket.getMinMaxTimestamps()).containsExactly(-5_000L, 3000L);
+    assertThat(bucket.getMinMaxTimestamps()).containsExactly(bucket.getMinTimestamp(), bucket.getMaxTimestamp());
+    database.commit();
+
+    // ...and once committed, when the reader resolves the page through the page manager instead.
+    database.begin();
+    assertThat(bucket.getMinMaxTimestamps()).containsExactly(bucket.getMinTimestamp(), bucket.getMaxTimestamp());
+    assertThat(bucket.getMinMaxTimestamps()).containsExactly(-5_000L, 3000L);
+    database.commit();
+
+    dropBucket(db, bucket);
+  }
+
+  /**
    * The buckets built here are registered by hand and belong to no TimeSeries type, so they have to be removed
    * before the integrity check that closes the test, which reports any file the schema does not claim.
    */

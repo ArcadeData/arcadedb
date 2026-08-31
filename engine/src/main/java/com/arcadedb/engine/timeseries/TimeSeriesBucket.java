@@ -792,6 +792,20 @@ public class TimeSeriesBucket extends PaginatedComponent {
   }
 
   /**
+   * Returns {@code {min, max}} timestamps from a SINGLE header-page read, so the pair is a consistent
+   * snapshot rather than two independently-timed reads, and callers that need both - the flat-window
+   * sizing scan in {@code TimeSeriesEngine.aggregateMulti} - pay one page lookup instead of two.
+   * An empty bucket answers with the same markers {@link #getMinTimestamp()} and {@link #getMaxTimestamp()}
+   * return on their own, i.e. {@code {Long.MAX_VALUE, Long.MIN_VALUE}}.
+   */
+  public long[] getMinMaxTimestamps() throws IOException {
+    final BasePage headerPage = readHeaderPage();
+    if (headerPage == null)
+      return new long[] { Long.MAX_VALUE, Long.MIN_VALUE };
+    return new long[] { headerPage.readLong(HEADER_MIN_TS_OFFSET), headerPage.readLong(HEADER_MAX_TS_OFFSET) };
+  }
+
+  /**
    * Returns the number of data pages (excluding header page), or 0 when the file carries no header page.
    */
   public int getDataPageCount() throws IOException {

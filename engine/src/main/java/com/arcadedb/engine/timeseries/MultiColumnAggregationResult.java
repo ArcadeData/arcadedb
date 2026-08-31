@@ -19,6 +19,7 @@
 package com.arcadedb.engine.timeseries;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -31,6 +32,9 @@ import java.util.Map;
  *       Zero HashMap overhead per sample. Used when bucket interval and data range are known.</li>
  *   <li><b>Map mode</b>: HashMap-based fallback for unknown ranges or zero-interval queries.</li>
  * </ul>
+ * In flat mode the pre-allocated window is only as good as the caller's range estimate, so a bucket
+ * that falls outside it is parked in a lazily created overflow map rather than discarded: an
+ * under-sized window then costs a little speed, never a sample (issue #6937).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -56,6 +60,14 @@ public final class MultiColumnAggregationResult {
   private       long[][]   flatCounts;   // [bucketIdx][requestIdx]
   private       boolean[]  bucketUsed;   // whether this bucket has been touched
   private       List<Long> cachedBucketTimestamps; // cached result for flat mode
+
+  // --- Flat-mode overflow (issue #6937) ---
+  // Sizing the flat array is a caller-side estimate of the data range. When it comes up short - the
+  // mutable bucket growing past the sealed maximum while the aggregation runs, for instance - the
+  // samples that fall outside the pre-allocated window land here instead of being silently dropped.
+  // Lazily allocated, so a correctly sized flat result pays nothing.
+  private Map<Long, double[]> overflowValues;
+  private Map<Long, long[]>   overflowCounts;
 
   /**
    * Map-mode constructor (original behavior).
@@ -129,8 +141,10 @@ public final class MultiColumnAggregationResult {
   public void accumulate(final long bucketTs, final int requestIndex, final double value) {
     if (flatMode) {
       final int idx = flatIndex(bucketTs);
-      if (!ensureFlatBucket(idx))
+      if (!ensureFlatBucket(idx)) {
+        accumulateInPlace(overflowValuesFor(bucketTs), overflowCounts.get(bucketTs), requestIndex, value);
         return;
+      }
       accumulateInPlace(flatValues[idx], flatCounts[idx], requestIndex, value);
     } else {
       double[] vals = valuesByBucket.get(bucketTs);
@@ -151,10 +165,15 @@ public final class MultiColumnAggregationResult {
   public void accumulateRow(final long bucketTs, final double[] values) {
     if (flatMode) {
       final int idx = flatIndex(bucketTs);
-      if (!ensureFlatBucket(idx))
-        return;
-      final double[] vals = flatValues[idx];
-      final long[] counts = flatCounts[idx];
+      final double[] vals;
+      final long[] counts;
+      if (ensureFlatBucket(idx)) {
+        vals = flatValues[idx];
+        counts = flatCounts[idx];
+      } else {
+        vals = overflowValuesFor(bucketTs);
+        counts = overflowCounts.get(bucketTs);
+      }
       for (int i = 0; i < requestCount; i++)
         accumulateInPlace(vals, counts, i, values[i]);
     } else {
@@ -180,8 +199,10 @@ public final class MultiColumnAggregationResult {
   public void accumulateBlockStats(final long bucketTs, final double[] values, final int sampleCount) {
     if (flatMode) {
       final int idx = flatIndex(bucketTs);
-      if (!ensureFlatBucket(idx))
+      if (!ensureFlatBucket(idx)) {
+        accumulateBlockStatsInPlace(overflowValuesFor(bucketTs), overflowCounts.get(bucketTs), values, sampleCount);
         return;
+      }
       accumulateBlockStatsInPlace(flatValues[idx], flatCounts[idx], values, sampleCount);
     } else {
       double[] vals = valuesByBucket.get(bucketTs);
@@ -213,8 +234,10 @@ public final class MultiColumnAggregationResult {
       final double value, final long count) {
     if (flatMode) {
       final int idx = flatIndex(bucketTs);
-      if (!ensureFlatBucket(idx))
+      if (!ensureFlatBucket(idx)) {
+        accumulateStatInPlace(overflowValuesFor(bucketTs), overflowCounts.get(bucketTs), requestIndex, value, count);
         return;
+      }
       accumulateStatInPlace(flatValues[idx], flatCounts[idx], requestIndex, value, count);
     } else {
       double[] vals = valuesByBucket.get(bucketTs);
@@ -245,6 +268,12 @@ public final class MultiColumnAggregationResult {
             if (bucketUsed[b] && flatCounts[b][i] > 0)
               flatValues[b][i] = flatValues[b][i] / flatCounts[b][i];
           }
+          if (overflowValues != null)
+            for (final Map.Entry<Long, double[]> entry : overflowValues.entrySet()) {
+              final long[] counts = overflowCounts.get(entry.getKey());
+              if (counts[i] > 0)
+                entry.getValue()[i] = entry.getValue()[i] / counts[i];
+            }
         }
       }
     } else {
@@ -270,6 +299,12 @@ public final class MultiColumnAggregationResult {
         for (int b = 0; b < maxBuckets; b++)
           if (bucketUsed[b])
             result.add(firstBucketTs + (long) b * bucketIntervalMs);
+        if (overflowValues != null && !overflowValues.isEmpty()) {
+          // Overflow buckets sit outside the pre-allocated window on either side, so the merged list
+          // has to be re-sorted to keep the ascending-timestamp contract callers rely on.
+          result.addAll(overflowValues.keySet());
+          Collections.sort(result);
+        }
         cachedBucketTimestamps = result;
       }
       return cachedBucketTimestamps;
@@ -284,6 +319,12 @@ public final class MultiColumnAggregationResult {
         if (isUnusedMinMax(flatCounts[idx], requestIndex))
           return Double.NaN;
         return flatValues[idx][requestIndex];
+      }
+      final double[] overflow = overflowValues != null ? overflowValues.get(bucketTs) : null;
+      if (overflow != null) {
+        if (isUnusedMinMax(overflowCounts.get(bucketTs), requestIndex))
+          return Double.NaN;
+        return overflow[requestIndex];
       }
       return 0.0;
     }
@@ -310,7 +351,8 @@ public final class MultiColumnAggregationResult {
       final int idx = flatIndex(bucketTs);
       if (idx >= 0 && idx < maxBuckets && bucketUsed[idx])
         return flatCounts[idx][requestIndex];
-      return 0;
+      final long[] overflow = overflowCounts != null ? overflowCounts.get(bucketTs) : null;
+      return overflow != null ? overflow[requestIndex] : 0;
     }
     final long[] counts = countsByBucket.get(bucketTs);
     return counts != null ? counts[requestIndex] : 0;
@@ -318,7 +360,7 @@ public final class MultiColumnAggregationResult {
 
   public int size() {
     if (flatMode) {
-      int count = 0;
+      int count = overflowValues != null ? overflowValues.size() : 0;
       for (int b = 0; b < maxBuckets; b++)
         if (bucketUsed[b])
           count++;
@@ -365,6 +407,18 @@ public final class MultiColumnAggregationResult {
           tCounts[i] += oCounts[i];
         }
       }
+      // Buckets the other result had to park in its overflow map (issue #6937) still belong in the
+      // merged total. Both sides share firstBucketTs/bucketIntervalMs/maxBuckets (asserted above), so
+      // flatIndex() gives the same answer here and they necessarily re-overflow into this result's own
+      // map; going through the by-timestamp accumulator is what puts them there and merges duplicates.
+      if (other.overflowValues != null)
+        for (final Map.Entry<Long, double[]> entry : other.overflowValues.entrySet()) {
+          final long bucketTs = entry.getKey();
+          final double[] oVals = entry.getValue();
+          final long[] oCounts = other.overflowCounts.get(bucketTs);
+          for (int i = 0; i < requestCount; i++)
+            accumulateStatInPlaceByTs(bucketTs, i, oVals[i], oCounts[i]);
+        }
     } else {
       // Fallback: merge map-mode results
       for (final long bucketTs : other.getBucketTimestamps()) {
@@ -377,6 +431,19 @@ public final class MultiColumnAggregationResult {
     }
   }
 
+  /**
+   * Number of buckets that had to be parked in the flat-mode overflow map because they fell outside
+   * the pre-allocated window (issue #6937). The results are correct either way; a non-zero value means
+   * the caller's range estimate came up short, which is what used to lose samples silently. Read by
+   * {@code TimeSeriesEngine.aggregateMulti()} into {@link AggregationMetrics#addOverflowBuckets(int)},
+   * and by the tests that assert the sizing itself is right rather than merely rescued.
+   *
+   * @return the overflow bucket count, always 0 in map mode
+   */
+  int getOverflowBucketCount() {
+    return overflowValues != null ? overflowValues.size() : 0;
+  }
+
   // ---- Internal helpers ----
 
   int getRequestCount() {
@@ -385,6 +452,26 @@ public final class MultiColumnAggregationResult {
 
   AggregationType[] getTypes() {
     return types;
+  }
+
+  /**
+   * Returns (creating on first use) the overflow value array for a bucket that falls outside the
+   * pre-allocated flat window. The matching {@link #overflowCounts} entry is created alongside it,
+   * so callers can read it straight after this call.
+   */
+  private double[] overflowValuesFor(final long bucketTs) {
+    if (overflowValues == null) {
+      overflowValues = new HashMap<>();
+      overflowCounts = new HashMap<>();
+    }
+    double[] vals = overflowValues.get(bucketTs);
+    if (vals == null) {
+      vals = newInitializedValues();
+      overflowValues.put(bucketTs, vals);
+      overflowCounts.put(bucketTs, new long[requestCount]);
+      cachedBucketTimestamps = null; // invalidate cache
+    }
+    return vals;
   }
 
   private int flatIndex(final long bucketTs) {
@@ -495,8 +582,10 @@ public final class MultiColumnAggregationResult {
       final double value, final long count) {
     if (flatMode) {
       final int idx = flatIndex(bucketTs);
-      if (!ensureFlatBucket(idx))
+      if (!ensureFlatBucket(idx)) {
+        accumulateStatInPlace(overflowValuesFor(bucketTs), overflowCounts.get(bucketTs), requestIndex, value, count);
         return;
+      }
       accumulateStatInPlace(flatValues[idx], flatCounts[idx], requestIndex, value, count);
     } else {
       double[] vals = valuesByBucket.get(bucketTs);
