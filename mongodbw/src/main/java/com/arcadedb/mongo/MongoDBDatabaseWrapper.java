@@ -614,6 +614,11 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   private Object executeUpsert(final String collectionName, final Document q, final Document u) {
     final MutableDocument record = database.newDocument(database.getSchema().getOrCreateDocumentType(collectionName).getName());
 
+    // Tracks the _id's own BSON type as seeded, independently of the hex string it ends up stored as: a client
+    // that filtered on an ObjectId gets an ObjectId back, but a client that filtered on a plain 24-hex-char String
+    // (indistinguishable from an ObjectId's hex once stored) must get that String type back, not a promoted one.
+    boolean idIsObjectId = false;
+
     // Seed the new document with the filter's top-level equalities, mirroring MongoDB upsert.
     if (q != null)
       for (final Map.Entry<String, Object> entry : q.entrySet()) {
@@ -622,10 +627,17 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
           continue;
         final Object value = entry.getValue();
         if (value instanceof Document opDoc) {
-          if (opDoc.containsKey("$eq"))
-            record.set(field, normalizeIdValue(opDoc.get("$eq")));
-        } else
+          if (opDoc.containsKey("$eq")) {
+            final Object eqValue = opDoc.get("$eq");
+            if ("_id".equals(field) && eqValue instanceof ObjectId)
+              idIsObjectId = true;
+            record.set(field, normalizeIdValue(eqValue));
+          }
+        } else {
+          if ("_id".equals(field) && value instanceof ObjectId)
+            idIsObjectId = true;
           record.set(field, normalizeIdValue(value));
+        }
       }
 
     if (isReplacement(u)) {
@@ -637,15 +649,15 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
     // has(), not get() == null: an explicit "_id": null in the filter/update is a legal (if unusual) BSON _id and
     // must be preserved, whereas a genuinely absent _id needs one generated.
-    if (!record.has("_id"))
+    if (!record.has("_id")) {
       record.set("_id", new ObjectId().getHexData());
+      idIsObjectId = true;
+    }
 
     record.save();
 
-    // Mirror the on-wire ObjectId type when the id is one, so the driver reports it (and can round-trip it) the
-    // same way it does for a normally-generated id; any other BSON scalar seeded from the filter is kept as-is.
     final Object id = record.get("_id");
-    return id instanceof String hex && MongoDBToSqlTranslator.isObjectIdHex(hex) ? new ObjectId(hex) : id;
+    return idIsObjectId && id instanceof String hex ? new ObjectId(hex) : id;
   }
 
   /**
