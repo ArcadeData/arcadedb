@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test;
 import java.lang.reflect.Field;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -74,7 +75,7 @@ class Issue6944CursorScratchSpaceReuseTest extends TestHelper {
         seen.add((Integer) rs.next().getProperty("a"));
 
       assertThat(seen).as("both the committed disk entries and the uncommitted tx-only tail must be visible")
-          .containsExactlyInAnyOrderElementsOf(java.util.stream.IntStream.range(0, 30).boxed().toList());
+          .containsExactlyInAnyOrderElementsOf(IntStream.range(0, 30).boxed().toList());
     } finally {
       database.rollback();
     }
@@ -105,7 +106,7 @@ class Issue6944CursorScratchSpaceReuseTest extends TestHelper {
         seen.add((Integer) rs.next().getProperty("a"));
 
       assertThat(seen).as("both the committed disk entries and the uncommitted tx-only tail must be visible")
-          .containsExactlyInAnyOrderElementsOf(java.util.stream.IntStream.range(0, 40).boxed().toList());
+          .containsExactlyInAnyOrderElementsOf(IntStream.range(0, 40).boxed().toList());
     } finally {
       database.rollback();
     }
