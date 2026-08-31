@@ -178,12 +178,19 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
     // two allocations per EDGE on a path that walks the whole graph.
     int[] nbrBuf = new int[INITIAL_ADJACENCY_CAPACITY];
     double[] wtBuf = weightProperty != null ? new double[INITIAL_ADJACENCY_CAPACITY] : null;
+    int edgeStep = 0;
     for (int i = 0; i < n; i++) {
       final Vertex v = vertices.get(i);
       int count = 0;
 
       for (final Vertex.DIRECTION walk : walks) {
         for (final Edge edge : v.getEdges(walk)) {
+          // This build walks and deserialises every edge in the graph and had no checkpoint at all: the first
+          // one a call reached was the iteration loop below, so a deadline could not be seen until the whole
+          // adjacency was already materialised. Throttled by EDGE rather than by vertex for the reason
+          // AbstractAlgoProcedure.RecordRowReader gives for the same walk - one supernode can hold millions of
+          // them, and a per-vertex checkpoint would leave that whole node unabortable.
+          guard.checkPeriodically(edgeStep++);
           try {
             final Integer neighborIdx = ridToIdx.get(
                 walk == Vertex.DIRECTION.OUT ? edge.getInVertex().getIdentity() : edge.getOutVertex().getIdentity());
