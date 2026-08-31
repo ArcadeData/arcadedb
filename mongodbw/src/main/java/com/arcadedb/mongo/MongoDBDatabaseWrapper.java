@@ -478,8 +478,6 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         this.putLastError(channel, var7);
         throw var7;
       }
-
-      ++n;
     } catch (final MongoServerError e) {
       final Document error = new Document();
       error.put("index", n);
@@ -578,7 +576,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
           nModified += updated;
 
           if (updated == 0 && upsert) {
-            final ObjectId id = executeUpsert(collectionName, q, u);
+            final Object id = executeUpsert(collectionName, q, u);
             final Document upDoc = new Document("index", index);
             upDoc.put("_id", id);
             upserted.add(upDoc);
@@ -615,7 +613,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return executeCount(sql.toString(), params);
   }
 
-  private ObjectId executeUpsert(final String collectionName, final Document q, final Document u) {
+  private Object executeUpsert(final String collectionName, final Document q, final Document u) {
     final MutableDocument record = database.newDocument(database.getSchema().getOrCreateDocumentType(collectionName).getName());
 
     // Seed the new document with the filter's top-level equalities, mirroring MongoDB upsert.
@@ -627,9 +625,9 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         final Object value = entry.getValue();
         if (value instanceof Document opDoc) {
           if (opDoc.containsKey("$eq"))
-            record.set(field, opDoc.get("$eq"));
+            record.set(field, normalizeIdValue(opDoc.get("$eq")));
         } else
-          record.set(field, value);
+          record.set(field, normalizeIdValue(value));
       }
 
     if (isReplacement(u)) {
@@ -639,10 +637,23 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       applyOperatorsToDocument(record, u);
     }
 
-    final ObjectId id = new ObjectId();
-    record.set("_id", id.getHexData());
+    if (record.get("_id") == null)
+      record.set("_id", new ObjectId().getHexData());
+
     record.save();
-    return id;
+
+    // Mirror the on-wire ObjectId type when the id is one, so the driver reports it (and can round-trip it) the
+    // same way it does for a normally-generated id; any other BSON scalar seeded from the filter is kept as-is.
+    final Object id = record.get("_id");
+    return id instanceof String hex && MongoDBToSqlTranslator.isObjectIdHex(hex) ? new ObjectId(hex) : id;
+  }
+
+  /**
+   * The filter seeding loop copies values verbatim; an {@code ObjectId}-typed filter value (e.g. {@code eq("_id", objectId)})
+   * must be normalized to its hex string, matching how {@code insertDocuments} and {@code buildValue} store an ObjectId.
+   */
+  private static Object normalizeIdValue(final Object value) {
+    return value instanceof ObjectId oid ? oid.getHexData() : value;
   }
 
   private void applyOperatorsToDocument(final MutableDocument record, final Document u) {

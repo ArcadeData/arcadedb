@@ -29,6 +29,7 @@ import com.mongodb.client.model.UpdateOptions;
 import com.mongodb.client.result.DeleteResult;
 import com.mongodb.client.result.UpdateResult;
 import org.bson.Document;
+import org.bson.types.ObjectId;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -156,5 +157,30 @@ public class MongoDBUpdateDeleteTest extends BaseGraphServerTest {
     final Document inserted = collection.find(eq("test", "missing")).first();
     assertThat(inserted).isNotNull();
     assertThat(inserted.get("counter")).isEqualTo(999);
+  }
+
+  /**
+   * Regression test for issue #6941: {@code executeUpsert} seeded the new record's {@code _id} from the filter
+   * but then unconditionally overwrote it with a freshly generated one, so repeating an upsert filtered on
+   * {@code _id} (the idiomatic "upsert by primary key" pattern) never matched its own previous insert and kept
+   * creating duplicates instead of updating in place.
+   */
+  @Test
+  void upsertFilteredOnIdIsIdempotent() {
+    final ObjectId id = new ObjectId();
+
+    final UpdateResult first = collection.updateOne(eq("_id", id), new Document("$set", new Document("v", 1)),
+        new UpdateOptions().upsert(true));
+    assertThat(first.getUpsertedId()).isNotNull();
+    assertThat(first.getUpsertedId().asObjectId().getValue()).isEqualTo(id);
+
+    final UpdateResult second = collection.updateOne(eq("_id", id), new Document("$set", new Document("v", 2)),
+        new UpdateOptions().upsert(true));
+    assertThat(second.getUpsertedId()).isNull();
+    assertThat(second.getModifiedCount()).isEqualTo(1);
+
+    final Document found = collection.find(eq("_id", id)).first();
+    assertThat(found).isNotNull();
+    assertThat(found.get("v")).isEqualTo(2);
   }
 }

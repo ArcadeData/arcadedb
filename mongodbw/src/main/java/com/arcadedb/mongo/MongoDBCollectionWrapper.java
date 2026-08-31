@@ -34,6 +34,7 @@ import de.bwaldvogel.mongo.oplog.Oplog;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -284,8 +285,46 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   }
 
   @Override
-  public int count(final Document document, final int i, final int i1) {
-    return (int) database.countType(collectionName, false);
+  public int count(final Document document, final int skip, final int limit) {
+    final boolean hasFilter = document != null && !document.isEmpty();
+    if (!hasFilter && skip <= 0 && limit <= 0)
+      return (int) database.countType(collectionName, false);
+
+    int counted = 0;
+    int skipped = 0;
+
+    if (!hasFilter) {
+      final Iterator<com.arcadedb.database.Record> it = database.iterateType(collectionName, false);
+      while (it.hasNext()) {
+        it.next();
+        if (skipped < skip) {
+          skipped++;
+          continue;
+        }
+        counted++;
+        if (limit > 0 && counted >= limit)
+          break;
+      }
+    } else {
+      final Map<String, Object> params = new HashMap<>();
+      final StringBuilder sql = new StringBuilder("select from ").append(Identifier.quote(collectionName)).append(" where ");
+      MongoDBToSqlTranslator.buildExpression(sql, params, document);
+
+      try (final ResultSet rs = database.query("SQL", sql.toString(), params)) {
+        while (rs.hasNext()) {
+          rs.next();
+          if (skipped < skip) {
+            skipped++;
+            continue;
+          }
+          counted++;
+          if (limit > 0 && counted >= limit)
+            break;
+        }
+      }
+    }
+
+    return counted;
   }
 
   @Override
