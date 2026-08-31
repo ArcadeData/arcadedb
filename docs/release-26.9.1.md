@@ -4081,3 +4081,48 @@ image until it is upgraded and resynced. A leader only produces slices once a st
 cluster whose stores fit inline is not exposed at all. Upgrade the followers first.
 
 [#4416](https://github.com/ArcadeData/arcadedb/issues/4416)
+
+## A country-partitioned triangle count no longer silently answers 0 while a Graph Analytical View has an active delta overlay (#6943, #6944, #6945)
+
+`PartitionedTriangleOp` (the CSR-accelerated operator behind country-partitioned triangle-counting Cypher queries)
+built its partition mapping from `NeighborView`s and, the moment any hop's view came back null, returned the mapping
+it had already filled with the "no partition" sentinel `-1` for every node - unchanged. `GraphAnalyticalView
+#getNeighborView` returns null unconditionally while an active delta overlay is being served, which is the normal
+state of a view between commits, not an exotic one. Every downstream consumer reads `-1` as "this node belongs to
+no partition", so the operator answered 0 for the whole query instead of falling back, with nothing to indicate the
+fast path had bailed out. The fix walks the partition chain with the provider's per-node `getNeighborIds` accessor
+instead - the same fallback the triangle-edge side of this operator already used when its own view was missing -
+so an active overlay degrades to a slower but correct answer rather than a wrong one.
+
+Two related findings surfaced while auditing the surrounding code. `GraphAnalyticalView#countCommonNeighbors` was
+the one pair accessor on the class that never consulted the overlay at all - unlike `isConnectedTo` and
+`countEdgesBetween`, it read only the base CSR, so an overlay-deleted common neighbour stayed counted and an
+overlay-added one never was - and it also skipped the bounds guard its siblings carry, so a node ID the overlay had
+handed out for a newly added vertex threw `ArrayIndexOutOfBoundsException`. It now delegates to the same
+overlay-aware per-node accessor, with the original zero-copy CSR intersection kept as a fast path for the common
+no-overlay case. Separately, `algo.betweenness` normalized every score by the UNDIRECTED constant
+`2/((n-1)(n-2))` even though its traversal is directed (`DIRECTION.OUT` only); every existing shortest-path
+contribution is per ordered pair under that traversal, so the correct factor is `1/((n-1)(n-2))`, matching
+NetworkX's and Neo4j GDS's directed betweenness. **This is a behavioral change**: every `algo.betweenness({normalized:
+true})` score is now exactly half what it was, since the old value was not off by an edge case but by a constant
+2x factor. A hub-and-spokes fixture (four nodes, one hub reached by every shortest path) makes the old bug visible
+directly - the normalized score for the hub came out as 2.0, outside the procedure's own documented `[0,1]` range.
+
+Unrelated to the overlay work but found in the same pass: `Result.valueToJSON` classified an `EmbeddedDocument`
+under its generic `Record` branch, which serializes a record as its RID string - an embedded document has no RID
+by construction, so the branch returned `null` and every embedded document in a SQL projection (bare, aliased, or
+inside a list) rendered as `null` in `Result.toJSON()`, including in the AI chat tool's row serialization. It now
+has its own arm ahead of the `Record` check, serializing inline via `Document#toJSON()`. And `LSMTreeIndexCursor
+#fetchNext()` allocated a fresh `ArrayList`, `HashMap` and `HashSet` for every key group it emitted - one full set
+of collections per row on a unique-index scan. The three are now instance fields, `clear()`-ed at the start of
+each group instead of reallocated; the cursor is single-threaded and every group's contents are fully consumed
+before the next one starts, so nothing outlives the reuse.
+
+A follow-up, [#6967](https://github.com/ArcadeData/arcadedb/issues/6967), tracks a related but separate finding:
+`PartitionedTriangleOp` and its sibling `CountOp` operators (`DegreeProductOp`, `PairHashJoinOp`,
+`AntiJoinChainOp`, `PropagateChainOp`) all size arrays and loop bounds from `getNodeCount()` (the live node count)
+rather than `getNodeIdUpperBound()` (the ID space's exclusive bound), which can differ once a delta overlay has
+added or deleted nodes without renumbering - the same shape #6792 fixed in other kernels. That gap predates this
+fix and spans five files with a shared root cause, so it is being tracked and fixed separately.
+
+[#6943](https://github.com/ArcadeData/arcadedb/issues/6943), [#6944](https://github.com/ArcadeData/arcadedb/issues/6944), [#6945](https://github.com/ArcadeData/arcadedb/issues/6945)
