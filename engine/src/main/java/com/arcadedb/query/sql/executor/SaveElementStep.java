@@ -20,11 +20,15 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.ContinuousAggregate;
@@ -39,6 +43,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
 import java.util.logging.Level;
@@ -49,17 +54,48 @@ import java.util.logging.Level;
 public class SaveElementStep extends AbstractExecutionStep {
   private final Identifier bucket;
   private final boolean    createAlways;
+  private final boolean    skipDuplicateKey;
 
   public SaveElementStep(final CommandContext context, final Identifier bucket, final boolean createAlways) {
+    this(context, bucket, createAlways, false);
+  }
+
+  /**
+   * @param skipDuplicateKey when true (issue #4918's {@code INSERT ... ON DUPLICATE KEY SKIP}), a record that
+   *                         would violate a unique index already carried by a previously committed record OR
+   *                         an earlier record in this same batch is never persisted at all, and is reported as
+   *                         a skipped row instead of aborting the whole statement. The conflict is detected by
+   *                         probing the unique indexes directly (see {@link #findDuplicateKeyConflict}) rather
+   *                         than by catching the save failure: {@code Index.put()} only throws synchronously
+   *                         for a conflict against another key staged earlier in the SAME open transaction -
+   *                         a conflict against already-committed data is detected at commit time, by which
+   *                         point the record's bucket write already happened and cannot be undone record-by-
+   *                         record without a full compensating delete.
+   *                         <p>
+   *                         Known limitation: the probe only sees keys staged by THIS transaction plus already
+   *                         -committed data, so two concurrent transactions each inserting the same new key can
+   *                         both pass the probe: one of them still hits an uncaught {@code DuplicatedKeyException}
+   *                         at its own commit, aborting that whole batch rather than skipping just that row. This
+   *                         mirrors ArcadeDB's commit-time conflict model for every other write, not a gap
+   *                         specific to this clause.
+   */
+  public SaveElementStep(final CommandContext context, final Identifier bucket, final boolean createAlways,
+      final boolean skipDuplicateKey) {
     super(context);
     this.bucket = bucket;
     this.createAlways = createAlways;
+    this.skipDuplicateKey = skipDuplicateKey;
   }
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     final ResultSet upstream = getPrev().syncPull(context, nRecords);
     return new ResultSet() {
+      // Every record pulled through one INSERT statement targets the same type, so the unique-index list is
+      // resolved once per distinct type name seen rather than on every single row of a CONTENT [...] batch.
+      private String          cachedTypeName;
+      private List<TypeIndex> cachedUniqueIndexes;
+
       @Override
       public boolean hasNext() {
         return upstream.hasNext();
@@ -94,6 +130,16 @@ public class SaveElementStep extends AbstractExecutionStep {
           if (!createAlways && modifiableDoc.getIdentity() != null && !modifiableDoc.isDirty())
             return result;
 
+          if (skipDuplicateKey) {
+            if (!docType.getName().equals(cachedTypeName)) {
+              cachedTypeName = docType.getName();
+              cachedUniqueIndexes = docType.getAllIndexes(true).stream().filter(TypeIndex::isUnique).toList();
+            }
+            final DuplicateKeyConflict conflict = findDuplicateKeyConflict(modifiableDoc, cachedUniqueIndexes);
+            if (conflict != null)
+              return skippedResult(modifiableDoc, conflict);
+          }
+
           if (bucket == null)
             modifiableDoc.save();
           else
@@ -107,6 +153,58 @@ public class SaveElementStep extends AbstractExecutionStep {
         upstream.close();
       }
     };
+  }
+
+  /**
+   * Probes the document type's unique indexes (issue #4918, already filtered to the unique ones and cached by
+   * the caller - see {@link #syncPull}) for a key already claimed by another record - either a previously
+   * committed one or an earlier record in this same batch, since {@link TypeIndex#get} reads through to this
+   * transaction's own staged-but-uncommitted index entries.
+   * <p>
+   * A key is exempted from the check exactly when {@link LSMTreeIndexAbstract#isKeyNull} says so (every
+   * component null, not just one) - unconditionally, regardless of the index's {@code NULL_STRATEGY}, matching
+   * both call sites of the engine's own commit-time duplicate check ({@code TransactionIndexContext}'s
+   * {@code checkUniqueIndexKeys()} and {@code addIndexKeyLock()}). "Multiple NULLs allowed in a unique index" is
+   * deliberate SQL-standard behavior that holds under {@code NULL_STRATEGY.INDEX} too - that setting affects
+   * whether a null key gets a physical index entry, not whether an all-null key is exempt from uniqueness. A
+   * composite key with only SOME null components is not exempt: it is still a real key that must be probed.
+   *
+   * @return the conflicting index/RID, or {@code null} if no unique index on this type is violated
+   */
+  private static DuplicateKeyConflict findDuplicateKeyConflict(final MutableDocument doc, final List<TypeIndex> uniqueIndexes) {
+    for (final TypeIndex index : uniqueIndexes) {
+      final List<String> keyProperties = index.getPropertyNames();
+      final Object[] keyValues = new Object[keyProperties.size()];
+      for (int i = 0; i < keyProperties.size(); i++)
+        keyValues[i] = doc.get(keyProperties.get(i));
+
+      if (LSMTreeIndexAbstract.isKeyNull(keyValues))
+        continue;
+
+      try (final IndexCursor existing = index.get(keyValues, 1)) {
+        if (existing.hasNext())
+          return new DuplicateKeyConflict(index.getName(), keyValues, existing.next().getIdentity());
+      }
+    }
+    return null;
+  }
+
+  private record DuplicateKeyConflict(String indexName, Object[] keys, RID existingRID) {
+  }
+
+  /**
+   * Builds the row reported for a record skipped by {@code ON DUPLICATE KEY SKIP} (issue #4918): the attempted
+   * properties are kept so a {@code RETURN} projection can still report on them, plus {@code @skipped} and the
+   * conflict details so the caller can tell a skipped row from an inserted one and knows why it was skipped.
+   */
+  private static Result skippedResult(final MutableDocument attemptedDoc, final DuplicateKeyConflict conflict) {
+    final ResultInternal result = new ResultInternal(attemptedDoc.toMap(false));
+    result.setProperty("@skipped", true);
+    result.setProperty("@type", attemptedDoc.getTypeName());
+    result.setProperty("@duplicateIndex", conflict.indexName());
+    result.setProperty("@duplicateKeys", Arrays.asList(conflict.keys()));
+    result.setProperty("@existingRID", conflict.existingRID());
+    return result;
   }
 
   private void saveToTimeSeries(final LocalTimeSeriesType tsType, final TimeSeriesEngine engine, final Document doc,
@@ -222,6 +320,6 @@ public class SaveElementStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new SaveElementStep(context, bucket == null ? null : bucket.copy(), createAlways);
+    return new SaveElementStep(context, bucket == null ? null : bucket.copy(), createAlways, skipDuplicateKey);
   }
 }

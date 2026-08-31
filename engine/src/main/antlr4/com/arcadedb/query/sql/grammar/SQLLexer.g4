@@ -293,6 +293,9 @@ MATCHES: M A T C H E S;
 INSTANCEOF: I N S T A N C E O F;
 KEY: K E Y;
 ITEM: I T E M;
+// Issue #4918: INSERT ... ON DUPLICATE KEY SKIP. Also listed among the keywords usable as an identifier, so a
+// schema that already has a type or property called "duplicate" keeps parsing.
+DUPLICATE: D U P L I C A T E;
 
 // ============================================================================
 // SPECIAL ATTRIBUTE TOKENS
