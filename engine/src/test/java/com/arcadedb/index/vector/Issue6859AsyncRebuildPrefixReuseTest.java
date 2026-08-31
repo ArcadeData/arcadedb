@@ -63,7 +63,9 @@ class Issue6859AsyncRebuildPrefixReuseTest {
   private static final int THRESHOLD  = 100;
   /** {@code inactivityRebuildIsWorthIt()}'s {@code Math.max(threshold / 10, 1)}. */
   private static final int FLOOR      = THRESHOLD / 10;
-  private static final int TIMEOUT_MS = 500;
+  // Wide enough that a stop-the-world pause between the last insert and the preconditions below cannot let the
+  // timer fire first and drain the counters those assertions read (a full-suite run shares one JVM).
+  private static final int TIMEOUT_MS = 5_000;
 
   private static final Duration REBUILD_SETTLE_TIMEOUT =
       Duration.ofMillis(GlobalConfiguration.VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS.getValueAsLong() + 60_000L);
