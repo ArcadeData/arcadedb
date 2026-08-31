@@ -2405,6 +2405,17 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * <p>
    * Shared with the sliced path (issue #4416), which reassembles the leader's copy on disk rather than in heap and
    * so arrives here with a path instead of an array. {@code source} is CONSUMED on success.
+   * <p>
+   * A repaired type is also re-scheduled for maintenance (issue #6948). The only other place that schedules an
+   * existing type is {@code LocalSchema.readConfiguration()}, and it skips precisely the types this method
+   * repairs: at schema load their engine was unavailable, so the gate there never fired for them. Without this
+   * call the type comes back readable and writable yet permanently unmaintained for the life of the process -
+   * {@code compactAll()}, {@code applyRetention()} and {@code applyDownsampling()} have no other caller, so the
+   * mutable bucket grows unbounded and configured retention and downsampling silently stop being applied. The
+   * leader-only skip that makes this harmless on a follower lives INSIDE the recurring task, not in
+   * {@code schedule()}, so a healthy follower keeps a ticking task ready for the moment it is elected; a repaired
+   * one would have none. {@code schedule()} replaces any existing task for the type name, so a repeated repair is
+   * safe.
    */
   private boolean repairEngineWithSealedFile(final DatabaseInternal db, final LocalTimeSeriesType tsType,
       final int shardIndex, final File source) {
@@ -2427,7 +2438,29 @@ public class ArcadeStateMachine extends BaseStateMachine {
               + "for shard %d; skipping", null, tsType.getName(), decodedDbName(db), shardIndex);
       return false;
     }
+
+    scheduleMaintenanceAfterRepair(db, tsType);
     return true;
+  }
+
+  /**
+   * Re-arms automatic compaction, retention and downsampling for a type that has just been repaired (issue #6948).
+   * <p>
+   * Kept off the success path's error handling on purpose: the repair itself has already succeeded and the type is
+   * usable again, so a scheduler that refuses the task - the executor rejecting it mid-shutdown - must be logged
+   * and swallowed rather than turned into "the repair failed". That is the same split
+   * {@code LocalSchema.readConfiguration()} makes at its own {@code schedule()} call site.
+   */
+  private void scheduleMaintenanceAfterRepair(final DatabaseInternal db, final LocalTimeSeriesType tsType) {
+    try {
+      final LocalSchema schema = db.getSchema().getEmbedded();
+      schema.getTimeSeriesMaintenanceScheduler().schedule(schema.getDatabase(), tsType);
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Repaired TimeSeries type '%s' (db=%s) but could not re-schedule its automatic maintenance; compaction, "
+              + "retention and downsampling stay off for it until the database is reopened: %s", e, tsType.getName(),
+          decodedDbName(db), e.getMessage());
+    }
   }
 
   private static String decodedDbName(final DatabaseInternal db) {

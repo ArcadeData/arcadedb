@@ -145,6 +145,20 @@ public class TimeSeriesMaintenanceScheduler {
   }
 
   /**
+   * Whether a maintenance task is currently registered and live for the given type name.
+   * <p>
+   * Exists because "this type is maintained" has no other observable: the recurring task logs nothing when it
+   * finds nothing to do, and its three effects - {@code compactAll()}, {@code applyRetention()} and
+   * {@code applyDownsampling()} - are invisible until enough data has accumulated for one of them to change
+   * something. A caller that has just made a type usable again (issue #6948: the HA sealed-store repair) needs to
+   * be able to assert that it also made it maintained.
+   */
+  public boolean isScheduled(final String typeName) {
+    final ScheduledFuture<?> future = tasks.get(typeName);
+    return future != null && !future.isCancelled() && !future.isDone();
+  }
+
+  /**
    * Cancels the maintenance task for a specific type.
    */
   public void cancel(final String typeName) {
