@@ -571,6 +571,14 @@ public class PromQLEvaluator {
 
   /**
    * Applies a matcher to a label that no series carries, which Prometheus treats as the empty string.
+   * <p>
+   * Deliberate change of error behaviour for {@code =~}/{@code !~} on an unknown column: the pattern is now
+   * compiled - and therefore validated by {@link #compilePattern}, syntax and ReDoS guard alike - where
+   * {@link #matchesPostFilters} used to bail out on {@code rowIdx < 0} before ever reaching the switch, so a
+   * malformed or ReDoS-shaped regex against a nonexistent label silently produced an empty vector instead of
+   * the {@code IllegalArgumentException} the same pattern raises against a label that does exist. Prometheus
+   * validates the regex regardless of whether any series carries the label, and a typo'd label name is exactly
+   * the case where the query author most needs to be told rather than handed a plausible empty result.
    */
   private boolean matchesAbsentLabel(final LabelMatcher m, final long regexDeadline) {
     return switch (m.op()) {

@@ -33,6 +33,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression tests for issue #6938 - three PromQL semantics/presentation defects in {@link PromQLEvaluator}:
@@ -165,6 +166,23 @@ class Issue6938PromQLSemanticsTest extends TestHelper {
     // Same rule on the matrix-selector path (rate() over a range vector), not just the instant one.
     assertThat(evaluateInstant("count_over_time(promql6938_absent_matrix{jobb=\"api\"}[5m])").samples()).isEmpty();
     assertThat(evaluateInstant("count_over_time(promql6938_absent_matrix{jobb!=\"api\"}[5m])").samples()).hasSize(2);
+  }
+
+  @Test
+  void aRegexMatcherOnAnAbsentColumnIsStillValidatedRatherThanSilentlySkipped() {
+    // Deliberate change of error behaviour, called out in review: the absent-column path now compiles the
+    // pattern, so a malformed or ReDoS-shaped regex is rejected exactly as it is against a label the type does
+    // declare. It used to be dropped before compilePattern() was ever reached, handing the author a plausible
+    // empty result for a query that is simply invalid - and a typo'd label name is the case where being told
+    // matters most.
+    createTaggedType("promql6938_absent_badre", 10.0, 20.0);
+
+    assertThatThrownBy(() -> evaluateInstant("promql6938_absent_badre{jobb=~\"(a+)+\"}"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("ReDoS");
+    assertThatThrownBy(() -> evaluateInstant("promql6938_absent_badre{jobb!~\"[\"}"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Invalid regex pattern");
   }
 
   // --- 3. step-aligned matrix points --------------------------------------------------------------------
