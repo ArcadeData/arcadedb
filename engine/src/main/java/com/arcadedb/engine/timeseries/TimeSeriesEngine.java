@@ -422,7 +422,14 @@ public class TimeSeriesEngine implements AutoCloseable {
       final TagFilter tagFilter, final AggregationMetrics metrics) throws IOException {
     final int reqCount = requests.size();
 
-    // Determine actual data range to size flat arrays correctly
+    // Determine actual data range to size flat arrays correctly.
+    //
+    // This scan runs WITHOUT the per-shard compaction read locks on purpose - they are acquired further
+    // down, around the reads that actually produce the numbers. A compaction, or a fresh append, can
+    // therefore slip in between the estimate and the reads. That is deliberate and safe: the estimate
+    // only decides how wide the flat window is, and MultiColumnAggregationResult parks anything landing
+    // outside it in its overflow map rather than dropping it (issue #6937). Taking the locks here would
+    // hold them across the whole aggregation for no correctness gain, just contention with the writers.
     long actualMin = Long.MAX_VALUE;
     long actualMax = Long.MIN_VALUE;
     final boolean useFlatMode = bucketIntervalMs > 0;
@@ -434,6 +441,21 @@ public class TimeSeriesEngine implements AutoCloseable {
             actualMin = ss.getGlobalMinTimestamp();
           if (ss.getGlobalMaxTimestamp() > actualMax)
             actualMax = ss.getGlobalMaxTimestamp();
+        }
+
+        // The mutable bucket carries everything appended since the last compaction and is NOT bounded
+        // by the sealed range - compaction is driven by the maintenance scheduler, not by sample
+        // timestamps, so the un-sealed tail can span an arbitrary number of buckets. Sizing the flat
+        // array from the sealed stores alone made every sample past that range resolve to an
+        // out-of-range index and vanish without an error (issue #6937).
+        // One header-page read for the pair, so the two bounds are a consistent snapshot.
+        final long[] mutableRange = shard.getMutableBucket().getMinMaxTimestamps();
+        // Empty markers are Long.MAX_VALUE / Long.MIN_VALUE, so an empty bucket never widens anything.
+        if (mutableRange[0] <= mutableRange[1]) {
+          if (mutableRange[0] < actualMin)
+            actualMin = mutableRange[0];
+          if (mutableRange[1] > actualMax)
+            actualMax = mutableRange[1];
         }
       }
       // Clamp to query range
@@ -541,6 +563,8 @@ public class TimeSeriesEngine implements AutoCloseable {
         }
 
         result.finalizeAvg();
+        if (metrics != null)
+          metrics.addOverflowBuckets(result.getOverflowBucketCount());
         return result;
       } finally {
         for (int s = 0; s < shardCount; s++)
@@ -589,6 +613,8 @@ public class TimeSeriesEngine implements AutoCloseable {
       }
 
       result.finalizeAvg();
+      if (metrics != null)
+        metrics.addOverflowBuckets(result.getOverflowBucketCount());
       return result;
     }
   }
