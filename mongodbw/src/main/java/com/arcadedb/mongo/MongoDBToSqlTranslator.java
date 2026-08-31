@@ -215,9 +215,13 @@ public class MongoDBToSqlTranslator {
   /**
    * Emits an (in)equality comparison, special-casing a {@code null} operand as {@code IS [NOT] NULL} rather than a
    * bound {@code = null} / {@code <> null} parameter. SQL equality against a bound {@code null} never matches a
-   * stored {@code null} (or absent) property, whereas MongoDB's {@code {field: null}} / {@code {field: {$ne: null}}}
-   * do - both match a missing field as well as a stored {@code null} - so binding it as an ordinary parameter would
-   * silently match nothing.
+   * stored {@code null} (or absent) property, whereas MongoDB's {@code {field: null}} does - it matches a missing
+   * field as well as a stored {@code null} - so binding it as an ordinary parameter would silently match nothing.
+   * <p>
+   * {@code {field: {$ne: null}}} is not the exact negation of that: per MongoDB's own semantics it matches only a
+   * field that exists and is not null, excluding a missing field too (rather than including it, the way negating
+   * {@code {field: null}} might suggest). {@code IS NOT NULL} matches that: ArcadeDB also evaluates a missing
+   * property as {@code null}, so it is excluded here exactly as MongoDB excludes it.
    */
   protected static void buildEquality(final StringBuilder buffer, final Map<String, Object> params, final boolean positive,
       final Object value) {

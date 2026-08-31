@@ -257,12 +257,36 @@ public class MongoDBUpdateDeleteTest extends BaseGraphServerTest {
   }
 
   /**
-   * Follow-up to #6952: {@code $ne} shares the same root cause as plain equality and {@code $eq}, so a filter of
-   * {@code {field: {$ne: null}}} must exclude a document whose field is stored as {@code null}.
+   * Follow-up to #6952, flagged by review: MongoDB's {@code {field: null}} matches both a stored {@code null} and a
+   * document where the field is simply absent - {@code findByNullValuedFieldMatchesTheStoredNull} only pins the
+   * first half of that claim (routing around the second half by using a dedicated collection). This closes the loop
+   * by asserting the second half directly: a document that never set {@code tag} at all is still matched.
    */
   @Test
-  void neNullExcludesTheStoredNullButMatchesEverythingElse() {
+  void findByNullValuedFieldAlsoMatchesADocumentWhereTheFieldIsAbsent() {
+    client.getDatabase(getDatabaseName()).createCollection("nullFilterAbsent");
+    final MongoCollection<Document> nullDocs = client.getDatabase(getDatabaseName()).getCollection("nullFilterAbsent");
+    nullDocs.insertOne(new Document("test", "absent-field"));
+
+    final Document found = nullDocs.find(eq("tag", null)).first();
+
+    assertThat(found).isNotNull();
+    assertThat(found.getString("test")).isEqualTo("absent-field");
+  }
+
+  /**
+   * Follow-up to #6952: {@code $ne} shares the same root cause as plain equality and {@code $eq}, so a filter of
+   * {@code {field: {$ne: null}}} must exclude a document whose field is stored as {@code null}.
+   * <p>
+   * Unlike plain {@code {field: null}} equality, {@code {field: {$ne: null}}} is not its exact negation: per
+   * MongoDB's own documentation it matches only a field that exists and is not null, excluding a document where the
+   * field is missing too (rather than including it). A document with no {@code tag} field at all is included here
+   * to pin that half of the contract as well.
+   */
+  @Test
+  void neNullExcludesTheStoredNullAndAnAbsentFieldButMatchesEverythingElse() {
     collection.insertOne(new Document("test", "null-field").append("tag", null));
+    collection.insertOne(new Document("test", "absent-field"));
     collection.insertOne(new Document("test", "set-field").append("tag", "x"));
 
     final Document found = collection.find(new Document("tag", new Document("$ne", null))).first();
@@ -277,18 +301,22 @@ public class MongoDBUpdateDeleteTest extends BaseGraphServerTest {
    * <p>
    * A dedicated collection is used for the same reason as {@link #findByNullValuedFieldMatchesTheStoredNull}: the
    * null filter also matches a document where the field is absent, so the shared {@code collection}'s ten unrelated
-   * documents (no {@code tag} field) would be swept up by {@code deleteMany} too.
+   * documents (no {@code tag} field) would be swept up by {@code deleteMany} too. This is exercised directly by
+   * inserting an absent-field document alongside the explicit-null one and asserting {@code deleteMany} removes
+   * both, closing the same missing-field half of the contract for the delete path.
    */
   @Test
-  void deleteManyByNullValuedFieldRemovesTheStoredNull() {
+  void deleteManyByNullValuedFieldRemovesBothTheStoredNullAndAnAbsentField() {
     client.getDatabase(getDatabaseName()).createCollection("nullFilterDelete");
     final MongoCollection<Document> nullDocs = client.getDatabase(getDatabaseName()).getCollection("nullFilterDelete");
     nullDocs.insertOne(new Document("test", "null-field").append("tag", null));
+    nullDocs.insertOne(new Document("test", "absent-field"));
 
     final DeleteResult result = nullDocs.deleteMany(new Document("tag", null));
 
-    assertThat(result.getDeletedCount()).isEqualTo(1);
+    assertThat(result.getDeletedCount()).isEqualTo(2);
     assertThat(nullDocs.find(eq("test", "null-field")).first()).isNull();
+    assertThat(nullDocs.find(eq("test", "absent-field")).first()).isNull();
   }
 
   /**
@@ -333,5 +361,25 @@ public class MongoDBUpdateDeleteTest extends BaseGraphServerTest {
     final Document found = collection.find(eq("_id", id)).first();
     assertThat(found).isNotNull();
     assertThat(found.get("v")).isEqualTo(42);
+  }
+
+  /**
+   * Follow-up to #6953, flagged by review: the replacement branch's fix normalizes every field's value the same way
+   * the pre-existing filter-seeding loop already does, not just {@code _id} - ArcadeDB has no native ObjectId type,
+   * so an ObjectId-valued non-{@code _id} field would otherwise be stored as the raw driver object too, and later
+   * fail to match a filter on that field the same way an un-normalized {@code _id} did.
+   */
+  @Test
+  void replaceOneUpsertNormalizesANonIdObjectIdFieldToo() {
+    final ObjectId ref = new ObjectId();
+
+    final UpdateResult result = collection.replaceOne(eq("test", "no-such-value-3"),
+        new Document("ref", ref).append("replaced", true), new UpdateOptions().upsert(true));
+
+    assertThat(result.getUpsertedId()).isNotNull();
+
+    final Document found = collection.find(eq("ref", ref)).first();
+    assertThat(found).isNotNull();
+    assertThat(found.get("replaced")).isEqualTo(true);
   }
 }
