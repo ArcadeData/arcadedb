@@ -555,6 +555,11 @@ public class PromQLEvaluator {
    * {@code =} matcher (so a typo like {@code up{jobb="api"}} widened the query to every series instead of
    * narrowing it to none) and {@link #matchesPostFilters} rejected every row for an unknown {@code !=}/{@code !~}.
    * Deciding it here, before the scan, also means the query never runs when the answer is already known.
+   * <p>
+   * Deliberately outside the {@code try/catch} that turns an {@code iterateQuery()} failure into an empty
+   * result: the {@code IllegalArgumentException}/{@code TimeoutException} a bad or ReDoS-shaped {@code =~} can
+   * raise from here propagates to the caller, exactly as the same pattern already does from
+   * {@link #matchesPostFilters}, which runs outside that {@code try} too. A rejected query is not an empty one.
    */
   private boolean excludesEverySeries(final List<LabelMatcher> matchers, final List<ColumnDefinition> columns,
       final long regexDeadline) {
