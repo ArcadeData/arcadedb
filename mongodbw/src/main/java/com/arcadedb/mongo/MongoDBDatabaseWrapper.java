@@ -469,8 +469,6 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
           collection.insertDocuments(documents);
           n = documents.size();
 
-          assert n == documents.size();
-
           final Document result = new Document("n", n);
           this.putLastResult(channel, result);
         }
