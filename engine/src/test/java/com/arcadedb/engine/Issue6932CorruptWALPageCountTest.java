@@ -27,6 +27,7 @@ import java.io.File;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -64,6 +65,13 @@ class Issue6932CorruptWALPageCountTest extends TestHelper {
 
   /** Offset of the segment-size field inside the transaction header. */
   private static final int SEGMENT_SIZE_OFFSET = 20;
+
+  /**
+   * A file id that does not exist in the database, so {@code TransactionManager.applyChanges} would treat a
+   * crafted record as a no-op ("skipping missing file") rather than writing to a real component. Same
+   * convention as {@code Issue4508TornWALRecoveryTest}.
+   */
+  private static final int MISSING_FILE_ID = 990_000;
 
   @TempDir
   Path walDir;
@@ -166,19 +174,42 @@ class Issue6932CorruptWALPageCountTest extends TestHelper {
 
   @Test
   void recoveryOfAWalWithACorruptPageCountDoesNotKillTheOpen() throws Exception {
-    // The whole point of the guard: checkIntegrity has a try/finally with no catch, so an Error thrown
-    // by the allocation escapes LocalDatabase.open before the WAL can be dropped or renamed - a
-    // permanent open-failure loop, since the next attempt reads the same bytes.
-    final File wal = new File(database.getDatabasePath(), "txlog_6932.wal");
-    Files.write(wal.toPath(), buildTransaction(Integer.MAX_VALUE, MIN_SEGMENT_SIZE, 1));
-
-    assertThatCode(() -> ((DatabaseInternal) database).getTransactionManager().checkIntegrity())
-        .as("a corrupt page count must not throw an Error out of recovery")
-        .doesNotThrowAnyException();
-
-    // The database must remain usable after the corrupt WAL was walked over.
+    // The whole point of the guard, driven through the real path from the issue rather than through a
+    // bare checkIntegrity() on a live database: kill the database so the next open runs
+    // LocalDatabase.performRecovery, and plant the corrupt WAL beside the real one it left behind.
+    // checkIntegrity wraps its body in a try/finally with NO catch, so the Error thrown by the
+    // allocation escapes LocalDatabase.open before either the WAL drop or the '.corrupt' rename can
+    // run - a permanent open-failure loop, since every later attempt reads the same bytes.
+    final String dbPath = database.getDatabasePath();
     database.transaction(() -> database.newDocument("CorruptWALType").set("k", 1).save());
+    ((DatabaseInternal) database).kill();
+
+    // MISSING_FILE_ID keeps the crafted record a no-op even if a future change made it parseable:
+    // applyChanges logs "skipping missing file" instead of writing to a real component.
+    final File corruptWal = new File(dbPath, "txlog_6932.wal");
+    Files.write(corruptWal.toPath(), buildTransaction(Integer.MAX_VALUE, MIN_SEGMENT_SIZE, 1, MISSING_FILE_ID));
+
+    // kill() leaves the instance registered; close() deregisters it without flushing what the kill dropped.
+    database.close();
+
+    final AtomicBoolean recoveryRan = new AtomicBoolean(false);
+    factory.registerCallback(DatabaseInternal.CALLBACK_EVENT.DB_NOT_CLOSED, () -> {
+      recoveryRan.set(true);
+      return null;
+    });
+
+    assertThatCode(() -> database = factory.open())
+        .as("a corrupt page count must not throw an Error out of LocalDatabase.open")
+        .doesNotThrowAnyException();
+    assertThat(recoveryRan.get()).as("recovery must actually have run - otherwise the WAL was never read").isTrue();
+
+    // Recovery completed rather than unwinding: the corrupt WAL was walked over and dropped with the rest.
+    assertThat(corruptWal).as("a WAL rejected as 'not a transaction' is dropped, not preserved as a gap").doesNotExist();
+
+    // The committed record survived and the database is still writable.
     assertThat(database.countType("CorruptWALType", true)).isEqualTo(1L);
+    database.transaction(() -> database.newDocument("CorruptWALType").set("k", 2).save());
+    assertThat(database.countType("CorruptWALType", true)).isEqualTo(2L);
   }
 
   private void assertRejected(final String name, final byte[] content, final String reason) throws Exception {
@@ -201,6 +232,11 @@ class Issue6932CorruptWALPageCountTest extends TestHelper {
    * while the body actually carries {@code actualPages} minimum-size segments.
    */
   private static byte[] buildTransaction(final int declaredPages, final int declaredSegmentSize, final int actualPages) {
+    return buildTransaction(declaredPages, declaredSegmentSize, actualPages, 3);
+  }
+
+  private static byte[] buildTransaction(final int declaredPages, final int declaredSegmentSize, final int actualPages,
+      final int fileId) {
     final int bodySize = actualPages * MIN_SEGMENT_SIZE;
     final ByteBuffer buf = ByteBuffer.allocate(TX_HEADER_SIZE + bodySize + TX_FOOTER_SIZE);
     buf.putLong(42L);                 // txId
@@ -208,7 +244,7 @@ class Issue6932CorruptWALPageCountTest extends TestHelper {
     buf.putInt(declaredPages);        // page/segment count
     buf.putInt(declaredSegmentSize);
     for (int i = 0; i < actualPages; i++) {
-      buf.putInt(3);        // fileId
+      buf.putInt(fileId);   // fileId
       buf.putInt(i);        // pageNumber
       buf.putInt(0);        // changesFrom
       buf.putInt(0);        // changesTo -> one-byte delta
