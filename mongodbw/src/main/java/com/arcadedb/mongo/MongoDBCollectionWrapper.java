@@ -287,6 +287,8 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
 
   @Override
   public int count(final Document document, final int skip, final int limit) {
+    // The count command's own default for an unspecified limit is -1 (MongoDBDatabaseWrapper#countCollection), so
+    // limit <= 0 here means "no limit" - deliberately, not incidentally lining up with an explicit limit: 0.
     final boolean hasFilter = document != null && !document.isEmpty();
     if (!hasFilter && skip <= 0 && limit <= 0)
       return (int) database.countType(collectionName, false);
