@@ -2447,9 +2447,18 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * Re-arms automatic compaction, retention and downsampling for a type that has just been repaired (issue #6948).
    * <p>
    * Kept off the success path's error handling on purpose: the repair itself has already succeeded and the type is
-   * usable again, so a scheduler that refuses the task - the executor rejecting it mid-shutdown - must be logged
-   * and swallowed rather than turned into "the repair failed". That is the same split
-   * {@code LocalSchema.readConfiguration()} makes at its own {@code schedule()} call site.
+   * usable again, so failing to ALSO schedule it must be logged and swallowed rather than turned into "the repair
+   * failed" - the data is in place either way, and the state a thrown exception would leave is strictly worse than
+   * the one it would be reporting.
+   * <p>
+   * The catch is deliberately wider than the {@code RejectedExecutionException} that
+   * {@code LocalSchema.readConfiguration()} catches at its own {@code schedule()} call site, and the difference is
+   * the caller, not the callee. That one runs during a database open, where an escaping runtime exception fails the
+   * open and says so. This one runs inside the Raft apply path, whose whole contract here is that one type must not
+   * abort the apply of an entry that may carry blobs for others - the same reason
+   * {@link #repairEngineWithSealedBlob} reports failure rather than throwing. So nothing may escape, including a
+   * programming error. It is logged WITH its stack trace and names the consequence precisely, so it does not
+   * disappear: it reads as the bug it is rather than as a benign mid-shutdown rejection.
    */
   private void scheduleMaintenanceAfterRepair(final DatabaseInternal db, final LocalTimeSeriesType tsType) {
     try {
@@ -2458,8 +2467,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING,
           "Repaired TimeSeries type '%s' (db=%s) but could not re-schedule its automatic maintenance; compaction, "
-              + "retention and downsampling stay off for it until the database is reopened: %s", e, tsType.getName(),
-          decodedDbName(db), e.getMessage());
+              + "retention and downsampling stay off for it until the database is reopened: %s: %s", e,
+          tsType.getName(), decodedDbName(db), e.getClass().getSimpleName(), e.getMessage());
     }
   }
 
