@@ -637,7 +637,9 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       applyOperatorsToDocument(record, u);
     }
 
-    if (record.get("_id") == null)
+    // has(), not get() == null: an explicit "_id": null in the filter/update is a legal (if unusual) BSON _id and
+    // must be preserved, whereas a genuinely absent _id needs one generated.
+    if (!record.has("_id"))
       record.set("_id", new ObjectId().getHexData());
 
     record.save();

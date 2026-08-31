@@ -20,6 +20,7 @@ package com.arcadedb.mongo;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.Record;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.Identifier;
 import de.bwaldvogel.mongo.MongoCollection;
@@ -294,7 +295,7 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     int skipped = 0;
 
     if (!hasFilter) {
-      final Iterator<com.arcadedb.database.Record> it = database.iterateType(collectionName, false);
+      final Iterator<Record> it = database.iterateType(collectionName, false);
       while (it.hasNext()) {
         it.next();
         if (skipped < skip) {
