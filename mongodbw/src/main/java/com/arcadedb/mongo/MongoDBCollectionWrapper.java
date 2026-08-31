@@ -284,8 +284,50 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   }
 
   @Override
-  public int count(final Document document, final int i, final int i1) {
-    return (int) database.countType(collectionName, false);
+  public int count(final Document document, final int skip, final int limit) {
+    // The count command's own default for an unspecified limit is -1 (MongoDBDatabaseWrapper#countCollection), so
+    // limit <= 0 here means "no limit" - deliberately, not incidentally lining up with an explicit limit: 0.
+    final boolean hasFilter = document != null && !document.isEmpty();
+    if (!hasFilter && skip <= 0 && limit <= 0)
+      return (int) database.countType(collectionName, false);
+
+    int counted;
+
+    if (skip <= 0 && limit <= 0) {
+      // No pagination to apply: let the engine aggregate instead of materializing every matching row.
+      final Map<String, Object> params = new HashMap<>();
+      final StringBuilder sql = new StringBuilder("select count(*) as count from ").append(Identifier.quote(collectionName));
+      if (hasFilter) {
+        sql.append(" where ");
+        MongoDBToSqlTranslator.buildExpression(sql, params, document);
+      }
+
+      try (final ResultSet rs = database.query("SQL", sql.toString(), params)) {
+        counted = rs.hasNext() ? ((Number) rs.next().getProperty("count")).intValue() : 0;
+      }
+    } else {
+      // Push skip/limit into the query itself - @rid is enough to count a row, no need to materialize the record.
+      final Map<String, Object> params = new HashMap<>();
+      final StringBuilder sql = new StringBuilder("select @rid from ").append(Identifier.quote(collectionName));
+      if (hasFilter) {
+        sql.append(" where ");
+        MongoDBToSqlTranslator.buildExpression(sql, params, document);
+      }
+      if (skip > 0)
+        sql.append(" SKIP ").append(skip);
+      if (limit > 0)
+        sql.append(" LIMIT ").append(limit);
+
+      counted = 0;
+      try (final ResultSet rs = database.query("SQL", sql.toString(), params)) {
+        while (rs.hasNext()) {
+          rs.next();
+          counted++;
+        }
+      }
+    }
+
+    return counted;
   }
 
   @Override

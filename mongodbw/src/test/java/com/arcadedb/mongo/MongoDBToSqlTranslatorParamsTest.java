@@ -376,4 +376,18 @@ class MongoDBToSqlTranslatorParamsTest {
     assertThatThrownBy(() -> MongoDBToSqlTranslator.buildExpression(sql, params, new Document("field", new Document("$not", new Document()))))
         .isInstanceOf(IllegalArgumentException.class);
   }
+
+  /**
+   * Regression test for issue #6939: {@code getObjectId} used to index straight past the end of an odd-length
+   * input (or, for an even-length non-hex string, silently fabricate a wrong id) instead of rejecting it. Its
+   * only caller already filters with {@code isObjectIdHex} first, so this guard is unreachable in practice today,
+   * but it is exercised directly here since the method is {@code protected} and its contract should hold on its
+   * own regardless of how careful the current caller happens to be.
+   */
+  @Test
+  void getObjectIdRejectsMalformedInputInsteadOfIndexingPastTheEndOrFabricatingAnId() {
+    assertThatThrownBy(() -> MongoDBToSqlTranslator.getObjectId("abc")).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> MongoDBToSqlTranslator.getObjectId("g".repeat(24))).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> MongoDBToSqlTranslator.getObjectId("short")).isInstanceOf(IllegalArgumentException.class);
+  }
 }

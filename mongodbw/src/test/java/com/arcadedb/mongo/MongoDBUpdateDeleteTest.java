@@ -29,6 +29,7 @@ import com.mongodb.client.model.UpdateOptions;
 import com.mongodb.client.result.DeleteResult;
 import com.mongodb.client.result.UpdateResult;
 import org.bson.Document;
+import org.bson.types.ObjectId;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -156,5 +157,74 @@ public class MongoDBUpdateDeleteTest extends BaseGraphServerTest {
     final Document inserted = collection.find(eq("test", "missing")).first();
     assertThat(inserted).isNotNull();
     assertThat(inserted.get("counter")).isEqualTo(999);
+  }
+
+  /**
+   * Regression test for issue #6941: {@code executeUpsert} seeded the new record's {@code _id} from the filter
+   * but then unconditionally overwrote it with a freshly generated one, so repeating an upsert filtered on
+   * {@code _id} (the idiomatic "upsert by primary key" pattern) never matched its own previous insert and kept
+   * creating duplicates instead of updating in place.
+   */
+  @Test
+  void upsertFilteredOnIdIsIdempotent() {
+    final ObjectId id = new ObjectId();
+
+    final UpdateResult first = collection.updateOne(eq("_id", id), new Document("$set", new Document("v", 1)),
+        new UpdateOptions().upsert(true));
+    assertThat(first.getUpsertedId()).isNotNull();
+    assertThat(first.getUpsertedId().asObjectId().getValue()).isEqualTo(id);
+
+    final UpdateResult second = collection.updateOne(eq("_id", id), new Document("$set", new Document("v", 2)),
+        new UpdateOptions().upsert(true));
+    assertThat(second.getUpsertedId()).isNull();
+    assertThat(second.getModifiedCount()).isEqualTo(1);
+
+    final Document found = collection.find(eq("_id", id)).first();
+    assertThat(found).isNotNull();
+    assertThat(found.get("v")).isEqualTo(2);
+  }
+
+  /**
+   * Follow-up to #6941 flagged by review: a client-supplied {@code String _id} that happens to be exactly 24 hex
+   * characters is indistinguishable, once stored, from a real ObjectId's hex encoding. {@code executeUpsert} used
+   * to promote every such stored hex string back to an ObjectId in the response regardless of what the client
+   * actually sent, silently changing the wire type of an id the client chose as a plain string.
+   */
+  @Test
+  void upsertFilteredOnHexLookingStringIdReportsItAsAStringNotAnObjectId() {
+    final String hexLookingId = "abcdef0123456789abcdef01";
+
+    final UpdateResult result = collection.updateOne(eq("_id", hexLookingId), new Document("$set", new Document("v", 1)),
+        new UpdateOptions().upsert(true));
+
+    assertThat(result.getUpsertedId()).isNotNull();
+    assertThat(result.getUpsertedId().isString()).isTrue();
+    assertThat(result.getUpsertedId().asString().getValue()).isEqualTo(hexLookingId);
+  }
+
+  /**
+   * Follow-up to #6941 flagged by review: an explicit {@code _id: null} filter is a legal, if unusual, BSON _id.
+   * {@code executeUpsert} must tell that apart from a genuinely absent {@code _id} and preserve it, rather than
+   * discarding it for a freshly generated one the way the original #6941 bug discarded a seeded ObjectId.
+   * <p>
+   * This does not assert that a second {@code eq("_id", null)} upsert is idempotent: matching a stored {@code null}
+   * by equality is a separate, pre-existing gap in the filter-to-SQL translation (an "=" comparison against a bound
+   * null parameter, rather than "IS NULL") that affects every {@code null}-valued filter, not just this upsert path
+   * - tracked separately rather than fixed here.
+   */
+  @Test
+  void upsertFilteredOnNullIdPreservesTheNullId() {
+    final UpdateResult result = collection.updateOne(eq("_id", null), new Document("$set", new Document("v", 1)),
+        new UpdateOptions().upsert(true));
+
+    assertThat(result.getUpsertedId()).isNotNull();
+    assertThat(result.getUpsertedId().isNull()).isTrue();
+
+    final Document inserted = collection.find(eq("v", 1)).first();
+    assertThat(inserted).isNotNull();
+    // containsKey, not just get() == null: a Map.get returns null for a missing key too, so this confirms the
+    // wire response actually carries an "_id" field rather than having dropped it.
+    assertThat(inserted.containsKey("_id")).isTrue();
+    assertThat(inserted.get("_id")).isNull();
   }
 }

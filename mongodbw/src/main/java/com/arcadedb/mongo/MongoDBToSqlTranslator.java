@@ -289,9 +289,29 @@ public class MongoDBToSqlTranslator {
     for (final Map.Entry<String, Object> entry : map.entrySet()) {
       final String p = entry.getKey();
       final Object value = entry.getValue();
-      result.put(p, "_id".equals(p) ? getObjectId((String) value) : toBsonValue(value));
+      result.put(p, "_id".equals(p) ? convertIdToMongoDB(value) : toBsonValue(value));
     }
     return result;
+  }
+
+  /**
+   * MongoDB allows any BSON scalar as {@code _id}, not just an ObjectId. Only a value that actually looks like a
+   * 24-char hex ObjectId string is decoded as one; anything else (an integer, an odd-length or non-hex string, ...)
+   * is passed through unchanged instead of corrupting or throwing.
+   */
+  private static Object convertIdToMongoDB(final Object value) {
+    if (value instanceof String s && isObjectIdHex(s))
+      return getObjectId(s);
+    return toBsonValue(value);
+  }
+
+  static boolean isObjectIdHex(final String s) {
+    if (s.length() != 24)
+      return false;
+    for (int i = 0; i < s.length(); i++)
+      if (Character.digit(s.charAt(i), 16) < 0)
+        return false;
+    return true;
   }
 
   /**
@@ -324,6 +344,9 @@ public class MongoDBToSqlTranslator {
   }
 
   protected static ObjectId getObjectId(final String s) {
+    if (!isObjectIdHex(s))
+      throw new IllegalArgumentException("'" + s + "' is not a 24-char hex ObjectId");
+
     final byte[] buffer = new byte[s.length() / 2];
     for (int i = 0; i < s.length(); i += 2) {
       buffer[i / 2] = (byte) ((Character.digit(s.charAt(i), 16) << 4) + Character.digit(s.charAt(i + 1), 16));
