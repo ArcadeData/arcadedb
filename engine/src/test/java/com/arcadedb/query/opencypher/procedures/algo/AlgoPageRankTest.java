@@ -185,6 +185,82 @@ class AlgoPageRankTest {
   }
 
   @Test
+  void weightedPageRankHonoursInDirection() {
+    // Weighted PageRank never takes the CSR path, so the OLTP fallback's weight arrays are only exercised here.
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("sql", "UPDATE LINKS SET weight = 1")) {
+        rs.close();
+      }
+      try (final ResultSet rs = database.command("sql",
+          "UPDATE LINKS SET weight = 9 WHERE out.name = 'A' AND in.name = 'C'")) {
+        rs.close();
+      }
+    });
+
+    // A -> B, A -> C (weight 9), B -> C, C -> A. Following the stored direction concentrates rank on C.
+    assertThat(topRankedName("OUT", "weight")).isEqualTo("C");
+    // Reversing it concentrates rank on A instead: A is where both B's and 90% of C's rank now flows.
+    assertThat(topRankedName("IN", "weight")).isEqualTo("A");
+  }
+
+  private String topRankedName(final String direction, final String weightProperty) {
+    try (final ResultSet rs = database.query("opencypher",
+        "CALL algo.pagerank({dampingFactor: 0.85, maxIterations: 40, tolerance: 0.0, direction: '" + direction
+            + "', weightProperty: '" + weightProperty + "'}) YIELD node, score RETURN node.name AS name, score "
+            + "ORDER BY score DESC")) {
+      return (String) rs.next().getProperty("name");
+    }
+  }
+
+  @Test
+  void pageRankInDirectionCSRAndOLTPProduceIdenticalResults() {
+    // Step 1: Run PageRank with direction=IN without GAV -> OLTP path
+    final Map<String, Double> oltpScores = new HashMap<>();
+    try (final ResultSet rs = database.query("opencypher",
+        """
+        CALL algo.pagerank({dampingFactor: 0.85, maxIterations: 20, tolerance: 0.0, direction: 'IN'}) \
+        YIELD node, score RETURN node.name AS name, score""")) {
+      while (rs.hasNext()) {
+        final Result r = rs.next();
+        oltpScores.put((String) r.getProperty("name"), ((Number) r.getProperty("score")).doubleValue());
+      }
+    }
+    assertThat(oltpScores).hasSize(3);
+
+    // Step 2: Build a GAV so the CSR path is used
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("pagerank-in-csr")
+        .withVertexTypes("Page")
+        .withEdgeTypes("LINKS")
+        .build();
+    gav.awaitReady(10, TimeUnit.SECONDS);
+
+    // Step 3: Run PageRank with direction=IN with GAV -> CSR path
+    final Map<String, Double> csrScores = new HashMap<>();
+    try (final ResultSet rs = database.query("opencypher",
+        """
+        CALL algo.pagerank({dampingFactor: 0.85, maxIterations: 20, tolerance: 0.0, direction: 'IN'}) \
+        YIELD node, score RETURN node.name AS name, score""")) {
+      while (rs.hasNext()) {
+        final Result r = rs.next();
+        csrScores.put((String) r.getProperty("name"), ((Number) r.getProperty("score")).doubleValue());
+      }
+    }
+    assertThat(csrScores).hasSize(3);
+
+    for (final Map.Entry<String, Double> entry : oltpScores.entrySet()) {
+      assertThat(csrScores).containsKey(entry.getKey());
+      assertThat(csrScores.get(entry.getKey())).isCloseTo(entry.getValue(), Offset.offset(1e-4));
+    }
+
+    // A -> B, A -> C, B -> C, C -> A. Reversed, A is the only sink of two edges, so A must top the ranking.
+    assertThat(csrScores.get("A")).isGreaterThan(csrScores.get("B"));
+    assertThat(csrScores.get("A")).isGreaterThan(csrScores.get("C"));
+
+    gav.shutdown();
+  }
+
+  @Test
   void pageRankBothDirectionCSRAndOLTPProduceIdenticalResults() {
     // Step 1: Run PageRank with direction=BOTH without GAV → OLTP path
     final Map<String, Double> oltpScores = new HashMap<>();

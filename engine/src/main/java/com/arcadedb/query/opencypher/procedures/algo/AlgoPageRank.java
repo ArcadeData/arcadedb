@@ -32,7 +32,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.WorkGuard;
 
-import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.IntStream;
@@ -68,6 +68,9 @@ import java.util.stream.Stream;
  */
 public class AlgoPageRank extends AbstractAlgoProcedure {
   public static final String NAME = "algo.pagerank";
+
+  /** Starting size of the per-node adjacency buffer the OLTP fallback reuses; it doubles on demand. */
+  private static final int INITIAL_ADJACENCY_CAPACITY = 16;
 
   @Override
   public String getName() {
@@ -159,59 +162,53 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
     final int n = vertices.size();
     final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
 
-    // Build adjacency once: for each node, store (neighborIdx, weight) pairs.
-    // When direction is BOTH, edges are treated as bidirectional (undirected graphs).
+    // Build adjacency once: for each node, the dense ids it pushes rank to, and the matching weights.
+    //
+    // `direction` names the edges rank travels ALONG, so it selects which stored directions to walk rather than
+    // which to report: OUT pushes along stored edges, IN pushes along their reverse, and BOTH pushes both ways,
+    // which is what makes it undirected. Before PR #6956 the OUT walk was unconditional and only BOTH added
+    // the reverse one, so an IN request was answered with OUT's adjacency.
     final int[][] outNeighbors = new int[n][];
     final double[][] outWeights = weightProperty != null ? new double[n][] : null;
+    final Vertex.DIRECTION[] walks = direction == Vertex.DIRECTION.BOTH ?
+        new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN } :
+        new Vertex.DIRECTION[] { direction };
+    // One growable primitive buffer, reused across every node and copied out at its exact size, rather than a
+    // List<int[]> whose every entry was a one-element array and a List<Double> that boxed every weight: that is
+    // two allocations per EDGE on a path that walks the whole graph.
+    int[] nbrBuf = new int[INITIAL_ADJACENCY_CAPACITY];
+    double[] wtBuf = weightProperty != null ? new double[INITIAL_ADJACENCY_CAPACITY] : null;
     for (int i = 0; i < n; i++) {
       final Vertex v = vertices.get(i);
-      final List<int[]> nbrs = new ArrayList<>();
-      final List<Double> wts = weightProperty != null ? new ArrayList<>() : null;
+      int count = 0;
 
-      // OUT and BOTH traverse edges in their stored direction.
-      if (direction != Vertex.DIRECTION.IN) {
-        for (final Edge edge : v.getEdges(Vertex.DIRECTION.OUT)) {
+      for (final Vertex.DIRECTION walk : walks) {
+        for (final Edge edge : v.getEdges(walk)) {
           try {
-            final Integer neighborIdx = ridToIdx.get(edge.getInVertex().getIdentity());
+            final Integer neighborIdx = ridToIdx.get(
+                walk == Vertex.DIRECTION.OUT ? edge.getInVertex().getIdentity() : edge.getOutVertex().getIdentity());
             if (neighborIdx == null)
               continue;
-            nbrs.add(new int[]{ neighborIdx });
-            if (wts != null) {
-              final Object w = edge.get(weightProperty);
-              wts.add(w instanceof Number num ? num.doubleValue() : 1.0);
+            if (count == nbrBuf.length) {
+              nbrBuf = Arrays.copyOf(nbrBuf, count << 1);
+              if (wtBuf != null)
+                wtBuf = Arrays.copyOf(wtBuf, count << 1);
             }
+            nbrBuf[count] = neighborIdx;
+            if (wtBuf != null) {
+              final Object w = edge.get(weightProperty);
+              wtBuf[count] = w instanceof Number num ? num.doubleValue() : 1.0;
+            }
+            count++;
           } catch (final RecordNotFoundException e) {
             GhostEdgeReporter.reportSkipped(e);
           }
         }
       }
 
-      // IN reverses every edge; BOTH also traverses the reverse direction to treat the graph as undirected.
-      if (direction != Vertex.DIRECTION.OUT) {
-        for (final Edge edge : v.getEdges(Vertex.DIRECTION.IN)) {
-          try {
-            final Integer neighborIdx = ridToIdx.get(edge.getOutVertex().getIdentity());
-            if (neighborIdx == null)
-              continue;
-            nbrs.add(new int[]{ neighborIdx });
-            if (wts != null) {
-              final Object w = edge.get(weightProperty);
-              wts.add(w instanceof Number num ? num.doubleValue() : 1.0);
-            }
-          } catch (final RecordNotFoundException e) {
-            GhostEdgeReporter.reportSkipped(e);
-          }
-        }
-      }
-
-      outNeighbors[i] = new int[nbrs.size()];
-      for (int j = 0; j < nbrs.size(); j++)
-        outNeighbors[i][j] = nbrs.get(j)[0];
-      if (outWeights != null) {
-        outWeights[i] = new double[wts.size()];
-        for (int j = 0; j < wts.size(); j++)
-          outWeights[i][j] = wts.get(j);
-      }
+      outNeighbors[i] = Arrays.copyOf(nbrBuf, count);
+      if (outWeights != null)
+        outWeights[i] = Arrays.copyOf(wtBuf, count);
     }
 
     // Iterate purely in-memory
