@@ -408,8 +408,9 @@ public final class MultiColumnAggregationResult {
         }
       }
       // Buckets the other result had to park in its overflow map (issue #6937) still belong in the
-      // merged total; route them through the by-timestamp accumulator so they land in this result's
-      // flat window when it happens to be wide enough, and in its own overflow map otherwise.
+      // merged total. Both sides share firstBucketTs/bucketIntervalMs/maxBuckets (asserted above), so
+      // flatIndex() gives the same answer here and they necessarily re-overflow into this result's own
+      // map; going through the by-timestamp accumulator is what puts them there and merges duplicates.
       if (other.overflowValues != null)
         for (final Map.Entry<Long, double[]> entry : other.overflowValues.entrySet()) {
           final long bucketTs = entry.getKey();

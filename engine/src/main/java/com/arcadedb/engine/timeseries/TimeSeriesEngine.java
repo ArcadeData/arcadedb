@@ -448,15 +448,14 @@ public class TimeSeriesEngine implements AutoCloseable {
         // timestamps, so the un-sealed tail can span an arbitrary number of buckets. Sizing the flat
         // array from the sealed stores alone made every sample past that range resolve to an
         // out-of-range index and vanish without an error (issue #6937).
-        final TimeSeriesBucket mutable = shard.getMutableBucket();
-        final long mutableMin = mutable.getMinTimestamp();
-        final long mutableMax = mutable.getMaxTimestamp();
+        // One header-page read for the pair, so the two bounds are a consistent snapshot.
+        final long[] mutableRange = shard.getMutableBucket().getMinMaxTimestamps();
         // Empty markers are Long.MAX_VALUE / Long.MIN_VALUE, so an empty bucket never widens anything.
-        if (mutableMin <= mutableMax) {
-          if (mutableMin < actualMin)
-            actualMin = mutableMin;
-          if (mutableMax > actualMax)
-            actualMax = mutableMax;
+        if (mutableRange[0] <= mutableRange[1]) {
+          if (mutableRange[0] < actualMin)
+            actualMin = mutableRange[0];
+          if (mutableRange[1] > actualMax)
+            actualMax = mutableRange[1];
         }
       }
       // Clamp to query range
