@@ -152,12 +152,13 @@ public class SaveElementStep extends AbstractExecutionStep {
    * either a previously committed one or an earlier record in this same batch, since {@link TypeIndex#get} reads
    * through to this transaction's own staged-but-uncommitted index entries.
    * <p>
-   * A key is exempted from the check only when the index's own uniqueness enforcement would exempt it: that is
-   * {@link LSMTreeIndexAbstract#isKeyNull} (every component null, not just one) AND the index's
-   * {@code NULL_STRATEGY} is {@code SKIP} - the same two conditions {@code TransactionIndexContext} gates its own
-   * commit-time duplicate check on. A composite key with only SOME null components, or an all-null key on an
-   * index built with {@code NULL_STRATEGY.INDEX} (where nulls are indexed and compared like any other value), is
-   * still a real key that must be probed.
+   * A key is exempted from the check exactly when {@link LSMTreeIndexAbstract#isKeyNull} says so (every
+   * component null, not just one) - unconditionally, regardless of the index's {@code NULL_STRATEGY}, matching
+   * both call sites of the engine's own commit-time duplicate check ({@code TransactionIndexContext}'s
+   * {@code checkUniqueIndexKeys()} and {@code addIndexKeyLock()}). "Multiple NULLs allowed in a unique index" is
+   * deliberate SQL-standard behavior that holds under {@code NULL_STRATEGY.INDEX} too - that setting affects
+   * whether a null key gets a physical index entry, not whether an all-null key is exempt from uniqueness. A
+   * composite key with only SOME null components is not exempt: it is still a real key that must be probed.
    *
    * @return the conflicting index/RID, or {@code null} if no unique index on this type is violated
    */
@@ -172,7 +173,7 @@ public class SaveElementStep extends AbstractExecutionStep {
       for (int i = 0; i < keyProperties.size(); i++)
         keyValues[i] = doc.get(keyProperties.get(i));
 
-      if (index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.SKIP && LSMTreeIndexAbstract.isKeyNull(keyValues))
+      if (LSMTreeIndexAbstract.isKeyNull(keyValues))
         continue;
 
       try (final IndexCursor existing = index.get(keyValues, 1)) {

@@ -159,9 +159,11 @@ public class InsertOnDuplicateKeySkipTest extends TestHelper {
   }
 
   @Test
-  void aFullyNullKeyIsStillCheckedUnderNullStrategyIndex() {
-    // NULL_STRATEGY.INDEX (as opposed to the default SKIP) indexes and compares null like any other value, so
-    // an all-null key is no longer exempt from the uniqueness check the way it is under SKIP.
+  void anAllNullKeyIsNeverADuplicateEvenUnderNullStrategyIndex() {
+    // SQL standard: NULL != NULL, so multiple all-null keys are allowed in a unique index regardless of
+    // NULL_STRATEGY (engine/src/test/java/com/arcadedb/index/NullValuesIndexTest#nullStrategyIndex_uniqueAllowsMultipleNulls
+    // proves this holds for a plain INSERT even under NULL_STRATEGY.INDEX). ON DUPLICATE KEY SKIP must not
+    // report a "duplicate" - and so must not silently drop the row - for something a plain INSERT would accept.
     database.getSchema().createDocumentType("Ticket").createProperty("code", Type.STRING);
     database.command("sql", "CREATE INDEX IF NOT EXISTS ON Ticket (code) UNIQUE NULL_STRATEGY INDEX");
     database.command("sql", "INSERT INTO Ticket SET code = null");
@@ -170,10 +172,10 @@ public class InsertOnDuplicateKeySkipTest extends TestHelper {
         "INSERT INTO Ticket CONTENT [ {\"code\":null} ] ON DUPLICATE KEY SKIP");
 
     final Result item = result.next();
-    assertThat(item.<Boolean>getProperty("@skipped")).isTrue();
+    assertThat(item.<Boolean>getProperty("@skipped")).isNull();
     result.close();
 
-    assertThat(database.countType("Ticket", true)).isEqualTo(1);
+    assertThat(database.countType("Ticket", true)).isEqualTo(2);
   }
 
   @Test
