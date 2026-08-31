@@ -39,7 +39,6 @@ public class FetchFromTypeWithFilterStep extends AbstractExecutionStep {
 
   private       String      typeName;
   private       WhereClause whereClause;
-  private       Set<String> projectedProperties;
   private       boolean     orderByRidAsc  = false;
   private       boolean     orderByRidDesc = false;
   private       List<ExecutionStep> subSteps = new ArrayList<>();
@@ -51,13 +50,11 @@ public class FetchFromTypeWithFilterStep extends AbstractExecutionStep {
     super(context);
   }
 
-  public FetchFromTypeWithFilterStep(final String typeName, final Set<String> clusters,
-      final WhereClause whereClause, final Set<String> projectedProperties,
+  public FetchFromTypeWithFilterStep(final String typeName, final Set<String> clusters, final WhereClause whereClause,
       final CommandContext context, final Boolean ridOrder) {
     super(context);
     this.typeName = typeName;
     this.whereClause = whereClause;
-    this.projectedProperties = projectedProperties;
 
     if (Boolean.TRUE.equals(ridOrder))
       orderByRidAsc = true;
@@ -92,7 +89,7 @@ public class FetchFromTypeWithFilterStep extends AbstractExecutionStep {
 
     for (final int bucketId : bucketIds) {
       if (bucketId > 0) {
-        final ScanWithFilterStep step = new ScanWithFilterStep(bucketId, whereClause, projectedProperties, context);
+        final ScanWithFilterStep step = new ScanWithFilterStep(bucketId, whereClause, context);
         if (orderByRidAsc)
           step.setOrder(FetchFromClusterExecutionStep.ORDER_ASC);
         else if (orderByRidDesc)
@@ -180,8 +177,6 @@ public class FetchFromTypeWithFilterStep extends AbstractExecutionStep {
     final String ind = ExecutionStepInternal.getIndent(depth, indent);
     builder.append(ind);
     builder.append("+ FETCH FROM TYPE ").append(typeName).append(" WITH FILTER");
-    if (projectedProperties != null)
-      builder.append(" [projected: ").append(String.join(", ", projectedProperties)).append("]");
     if (context.isProfiling())
       builder.append(" (").append(getCostFormatted()).append(")");
     builder.append("\n");
@@ -217,7 +212,6 @@ public class FetchFromTypeWithFilterStep extends AbstractExecutionStep {
     result.whereClause = this.whereClause;
     result.orderByRidAsc = this.orderByRidAsc;
     result.orderByRidDesc = this.orderByRidDesc;
-    result.projectedProperties = this.projectedProperties;
     result.subSteps = this.subSteps.stream().map(x -> ((ExecutionStepInternal) x).copy(context)).collect(Collectors.toList());
     return result;
   }
