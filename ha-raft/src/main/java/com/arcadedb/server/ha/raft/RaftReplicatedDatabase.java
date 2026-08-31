@@ -2336,8 +2336,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       return plans;
     }
 
-    // Every store beyond the first also pays for its own slice framing - the budget reserves for exactly one.
-    long extraFraming = 0;
+    // Every store beyond the first pays for its own slice framing outright; the FIRST one pays only for whatever
+    // it costs ABOVE the flat reserve already held back inside publishingSealedCapacity. Charging it in full would
+    // reserve twice for the same slice and shrink the tail of every single-shard cluster for nothing, and not
+    // charging it at all would leave the flat reserve as the last unmeasured assumption here - a type name of a
+    // few thousand characters really does outgrow it, and nothing caps type-name length.
+    long extraFraming = Math.max(0L,
+        sealedSliceFraming(blobs.getFirst()) - GlobalConfiguration.REPLICATED_SEALED_CHUNK_FRAMING_BYTES);
     for (int i = 1; i < blobs.size(); i++)
       extraFraming += sealedSliceFraming(blobs.get(i));
 

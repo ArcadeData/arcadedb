@@ -171,6 +171,21 @@ class Issue6933MultiStoreSealedShippingTest {
     assertThat(encodedPublishingEntrySize(stores)).isLessThanOrEqualTo(ENTRY_CAP);
   }
 
+  /**
+   * The last unmeasured assumption, on the store the flat reserve is supposed to cover: a LONE store whose names
+   * cost more per slice than {@link GlobalConfiguration#REPLICATED_SEALED_CHUNK_FRAMING_BYTES} still has to build
+   * an entry that fits, so the first store is charged for whatever it costs above that reserve rather than
+   * exempted from measurement.
+   */
+  @Test
+  void aLoneStoreWhoseNamesOutgrowTheFlatReserveStillFitsOnePublishingEntry() {
+    final String hugeType = "t".repeat(6_000);
+    final TsSealedBlob store = new TsSealedBlob(hugeType, 0, hugeType + "_shard_0.ts.sealed",
+        randomBytes((int) (SEALED_BUDGET * 2)));
+
+    assertThat(encodedPublishingEntrySize(List.of(store))).isLessThanOrEqualTo(ENTRY_CAP);
+  }
+
   // ---- the geometry a follower reassembles from ------------------------------------------------------------
 
   /**
