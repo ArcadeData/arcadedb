@@ -4086,8 +4086,8 @@ cluster whose stores fit inline is not exposed at all. Upgrade the followers fir
 
 `PartitionedTriangleOp` (the CSR-accelerated operator behind country-partitioned triangle-counting Cypher queries)
 built its partition mapping from `NeighborView`s and, the moment any hop's view came back null, returned the mapping
-it had already filled with the "no partition" sentinel `-1` for every node - unchanged. `GraphAnalyticalView
-#getNeighborView` returns null unconditionally while an active delta overlay is being served, which is the normal
+it had already filled with the "no partition" sentinel `-1` for every node - unchanged.
+`GraphAnalyticalView#getNeighborView` returns null unconditionally while an active delta overlay is being served, which is the normal
 state of a view between commits, not an exotic one. Every downstream consumer reads `-1` as "this node belongs to
 no partition", so the operator answered 0 for the whole query instead of falling back, with nothing to indicate the
 fast path had bailed out. The fix walks the partition chain with the provider's per-node `getNeighborIds` accessor
@@ -4112,8 +4112,8 @@ Unrelated to the overlay work but found in the same pass: `Result.valueToJSON` c
 under its generic `Record` branch, which serializes a record as its RID string - an embedded document has no RID
 by construction, so the branch returned `null` and every embedded document in a SQL projection (bare, aliased, or
 inside a list) rendered as `null` in `Result.toJSON()`, including in the AI chat tool's row serialization. It now
-has its own arm ahead of the `Record` check, serializing inline via `Document#toJSON()`. And `LSMTreeIndexCursor
-#fetchNext()` allocated a fresh `ArrayList`, `HashMap` and `HashSet` for every key group it emitted - one full set
+has its own arm ahead of the `Record` check, serializing inline via `Document#toJSON()`. And
+`LSMTreeIndexCursor#fetchNext()` allocated a fresh `ArrayList`, `HashMap` and `HashSet` for every key group it emitted - one full set
 of collections per row on a unique-index scan. The three are now instance fields, `clear()`-ed at the start of
 each group instead of reallocated; the cursor is single-threaded and every group's contents are fully consumed
 before the next one starts, so nothing outlives the reuse.
