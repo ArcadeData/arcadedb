@@ -216,6 +216,114 @@ class Issue6927RangeScanTxRemovesTest extends TestHelper {
     }
   }
 
+  /**
+   * The {@code REPLACE} shape, which only a UNIQUE index can produce: within one transaction the record holding key
+   * {@code K} is deleted and a DIFFERENT record is inserted at the same {@code K}. Because a unique index's overlay
+   * map is keyed by key value alone (not by RID), {@code TransactionIndexContext.addIndexKeyLock} collapses the pair
+   * into a single {@code REPLACE(rid=new, oldRid=old)} entry - so the pending removal of the old RID survives ONLY
+   * as {@code oldRid}, which commit does replay ({@code index.removeReplay(keyValues, oldRid)}). A scan that reads
+   * only {@code rid} therefore re-emits the old RID straight off the page.
+   * <p>
+   * The type is created with a single bucket on purpose: each bucket owns its own sub-index and therefore its own
+   * transaction lane, so a delete and an insert landing in different buckets stay two independent entries and never
+   * merge into a REPLACE.
+   */
+  @Test
+  void rangeScanAndLookupAgreeOnAUniqueKeyReplacedInTheSameTransaction() {
+    database.transaction(() -> {
+      final var type = database.getSchema().createDocumentType("Registration", 1);
+      type.createProperty("code", Type.INTEGER);
+      database.getSchema().buildTypeIndex("Registration", new String[] { "code" })
+          .withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true).create();
+    });
+    database.transaction(() -> database.newDocument("Registration").set("code", 7).save());
+
+    database.begin();
+    try {
+      final IndexCursor before = database.lookupByKey("Registration", "code", 7);
+      assertThat(before.hasNext()).isTrue();
+      final RID replaced = before.next().getIdentity();
+
+      database.lookupByRID(replaced, true).asDocument().delete();
+      final RID replacement = database.newDocument("Registration").set("code", 7).save().getIdentity();
+
+      final RangeIndex index = (RangeIndex) database.getSchema().getType("Registration")
+          .getPolymorphicIndexByProperties("code");
+
+      final List<RID> ranged = drain(index.range(true, new Object[] { 0 }, true, new Object[] { 10 }, true));
+      assertThat(ranged).containsExactly(replacement);
+      assertThat(drain(index.range(false, new Object[] { 10 }, true, new Object[] { 0 }, true)))
+          .containsExactly(replacement);
+
+      // the point lookup on a UNIQUE key must agree: exactly one RID, the replacement. Asserted on the RAW
+      // sub-index too: TypeIndex.get() asks a unique index for limit=1 and returns whichever entry comes out
+      // first, so it would MASK a two-RID answer behind HashSet iteration order rather than fail on it.
+      for (final IndexInternal sub : ((TypeIndex) database.getSchema().getType("Registration")
+          .getPolymorphicIndexByProperties("code")).getSubIndexes())
+        assertThat(drain(sub.get(new Object[] { 7 }))).containsExactly(replacement);
+
+      assertThat(drain(database.lookupByKey("Registration", "code", 7))).containsExactly(replacement);
+    } finally {
+      database.rollback();
+    }
+  }
+
+  /**
+   * A key-wide {@code remove(keys)} - the manual-index API form that carries no RID - on a NON-unique index. Both the
+   * range scan and the point lookup have to drop every disk RID at that key. {@code get()} used to allocate an EMPTY
+   * {@code removedRids} set for this shape and then filter nothing with it, so the removal was silently a no-op.
+   */
+  @Test
+  void bothPathsHonourAKeyWideRemoveOnANonUniqueIndex() {
+    database.transaction(() -> database.newDocument(TYPE_NAME).set("name", "c").set("age", 20).set("code", 3).save());
+
+    database.begin();
+    try {
+      final RangeIndex index = rangeIndex("age");
+      assertThat(drain(index.get(new Object[] { 20 }))).hasSize(2);
+
+      // no RID: the whole key goes, both RIDs with it
+      ((com.arcadedb.index.IndexInternal) index).remove(new Object[] { 20 });
+
+      assertThat(index.get(new Object[] { 20 }).hasNext()).isFalse();
+      assertThat(collectRange("age", 0, 30, true)).hasSize(1);
+      assertThat(collectRange("age", 0, 30, false)).hasSize(1);
+    } finally {
+      database.rollback();
+    }
+  }
+
+  /**
+   * The same REPLACE shape as {@link #rangeScanAndLookupAgreeOnAUniqueKeyReplacedInTheSameTransaction} on a HASH
+   * index, whose {@code get()} carries a copy of the very same overlay-merge code. A hash index has no range scan,
+   * so the point lookup is the only path there - and it has to answer with one RID, not two.
+   */
+  @Test
+  void hashIndexLookupHonoursAUniqueKeyReplacedInTheSameTransaction() {
+    database.transaction(() -> {
+      final var type = database.getSchema().createDocumentType("Badge", 1);
+      type.createProperty("serial", Type.INTEGER);
+      database.getSchema().buildTypeIndex("Badge", new String[] { "serial" })
+          .withType(Schema.INDEX_TYPE.HASH).withUnique(true).create();
+    });
+    database.transaction(() -> database.newDocument("Badge").set("serial", 11).save());
+
+    database.begin();
+    try {
+      final RID replaced = database.lookupByKey("Badge", "serial", 11).next().getIdentity();
+      database.lookupByRID(replaced, true).asDocument().delete();
+      final RID replacement = database.newDocument("Badge").set("serial", 11).save().getIdentity();
+
+      for (final IndexInternal sub : ((TypeIndex) database.getSchema().getType("Badge")
+          .getPolymorphicIndexByProperties("serial")).getSubIndexes())
+        assertThat(drain(sub.get(new Object[] { 11 }))).containsExactly(replacement);
+
+      assertThat(drain(database.lookupByKey("Badge", "serial", 11))).containsExactly(replacement);
+    } finally {
+      database.rollback();
+    }
+  }
+
   private RID lookupRid(final String property, final Object key) {
     final IndexCursor cursor = database.lookupByKey(TYPE_NAME, property, key);
     assertThat(cursor.hasNext()).isTrue();
