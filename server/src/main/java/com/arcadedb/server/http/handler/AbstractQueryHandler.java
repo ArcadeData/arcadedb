@@ -280,6 +280,9 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
 
       final Set<RID> includedVertices = new HashSet<>();
       final Set<RID> includedEdges = new HashSet<>();
+      // The graph branch runs no edge-completion pass, so it does not distinguish query-result vertices from
+      // edge endpoints: an unused set keeps the shared expansion helpers' signature uniform with the studio branch.
+      final Set<RID> resultVertices = new HashSet<>();
       final JSONArray vertices = new JSONArray();
       final JSONArray edges = new JSONArray();
 
@@ -299,8 +302,8 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
           final Edge e = row.getEdge().get();
           if (includedEdges.add(e.getIdentity()))
             edges.put(serializerImpl.serializeGraphElement(e));
-        } else if (analyzeResultContent(database, serializerImpl, includedVertices, includedEdges, vertices, edges, row,
-            limit))
+        } else if (analyzeResultContent(database, serializerImpl, includedVertices, resultVertices, includedEdges, vertices,
+            edges, row, limit))
           expansionCut = true;
 
         if (limit > 0 && vertices.length() + edges.length() >= limit)
@@ -323,6 +326,11 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
 
       final Set<RID> includedVertices = new HashSet<>();
       final Set<RID> includedEdges = new HashSet<>();
+      // Vertices the query returned in their own right (a vertex row, or a vertex reached through a non-element
+      // row's property). The edge-completion pass below auto-connects only these - NOT the endpoints pulled in
+      // just because a returned row was an edge - so an edge-only result set surfaces exactly the queried edges
+      // and their endpoints, never the sibling edges that also run between those endpoints (ops #738).
+      final Set<RID> resultVertices = new HashSet<>();
       final JSONArray vertices = new JSONArray();
       final JSONArray edges = new JSONArray();
       final JSONArray records = new JSONArray();
@@ -339,6 +347,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
 
           if (row.isVertex()) {
             final Vertex v = row.getVertex().get();
+            resultVertices.add(v.getIdentity());
             if (includedVertices.add(v.getIdentity()))
               vertices.put(serializerImpl.serializeGraphElement(v));
           } else if (row.isEdge()) {
@@ -356,8 +365,8 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
                 LogManager.instance().log(this, Level.SEVERE, "Record %s not found during serialization", ex.getRID());
               }
             }
-          } else if (analyzeResultContent(database, serializerImpl, includedVertices, includedEdges, vertices, edges, row,
-              limit))
+          } else if (analyzeResultContent(database, serializerImpl, includedVertices, resultVertices, includedEdges, vertices,
+              edges, row, limit))
             expansionCut = true;
         } catch (Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on serializing element (error=%s)", e.getMessage());
@@ -371,8 +380,11 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       // allowed to hide whether rows were left behind.
       final boolean truncated = expansionCut || isTruncated(qResult, limit, records.length());
 
-      // FILTER OUT NOT CONNECTED EDGES
-      for (final Identifiable entry : includedVertices) {
+      // SURFACE EDGES THAT CONNECT TWO QUERY-RESULT VERTICES
+      // Only vertices the query returned in their own right take part: an endpoint that entered the graph
+      // solely because a returned row was an edge is not walked here, so a query that returns a single edge
+      // does not drag in every sibling edge between its endpoints (ops #738).
+      for (final Identifiable entry : resultVertices) {
         if (limit > 0 && vertices.length() + edges.length() >= limit)
           break;
 
@@ -381,7 +393,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
 
           final Iterable<Edge> vEdgesOut = vertex.getEdges(Vertex.DIRECTION.OUT);
           for (final Edge e : vEdgesOut) {
-            if (includedVertices.contains(e.getIn()) && !includedEdges.contains(e.getIdentity())) {
+            if (resultVertices.contains(e.getIn()) && !includedEdges.contains(e.getIdentity())) {
               edges.put(serializerImpl.serializeGraphElement(e));
               includedEdges.add(e.getIdentity());
             }
@@ -389,7 +401,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
 
           final Iterable<Edge> vEdgesIn = vertex.getEdges(Vertex.DIRECTION.IN);
           for (final Edge e : vEdgesIn) {
-            if (includedVertices.contains(e.getOut()) && !includedEdges.contains(e.getIdentity())) {
+            if (resultVertices.contains(e.getOut()) && !includedEdges.contains(e.getIdentity())) {
               edges.put(serializerImpl.serializeGraphElement(e));
               includedEdges.add(e.getIdentity());
             }
@@ -465,8 +477,8 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
    * nothing is left behind in the result set for {@link #isTruncated} to find.
    */
   protected boolean analyzeResultContent(final Database database, final JsonGraphSerializer serializerImpl,
-      final Set<RID> includedVertices, final Set<RID> includedEdges, final JSONArray vertices, final JSONArray edges,
-      final Result row, final int limit) {
+      final Set<RID> includedVertices, final Set<RID> resultVertices, final Set<RID> includedEdges,
+      final JSONArray vertices, final JSONArray edges, final Result row, final int limit) {
     for (final String prop : row.getPropertyNames()) {
       try {
         final Object value = row.getProperty(prop);
@@ -477,11 +489,11 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
           return true;
 
         if (RID_PROPERTY.equals(prop) && RID.is(value)) {
-          if (analyzePropertyValue(database, serializerImpl, includedVertices, includedEdges, vertices, edges,
+          if (analyzePropertyValue(database, serializerImpl, includedVertices, resultVertices, includedEdges, vertices, edges,
               database.newRID(value.toString()), limit))
             return true;
-        } else if (analyzePropertyValue(database, serializerImpl, includedVertices, includedEdges, vertices, edges, value,
-            limit))
+        } else if (analyzePropertyValue(database, serializerImpl, includedVertices, resultVertices, includedEdges, vertices,
+            edges, value, limit))
           return true;
       } catch (Exception e) {
         LogManager.instance().log(this, Level.SEVERE, "Error on serializing collection element (error=%s)", e.getMessage());
@@ -495,8 +507,8 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
    * {@link #analyzeResultContent}.
    */
   protected boolean analyzePropertyValue(final Database database, final JsonGraphSerializer serializerImpl,
-      final Set<RID> includedVertices, final Set<RID> includedEdges, final JSONArray vertices, final JSONArray edges,
-      final Object value, final int limit) {
+      final Set<RID> includedVertices, final Set<RID> resultVertices, final Set<RID> includedEdges,
+      final JSONArray vertices, final JSONArray edges, final Object value, final int limit) {
     if (value instanceof Identifiable identifiable) {
 
       final DocumentType type;
@@ -508,6 +520,9 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       }
 
       if (type instanceof LocalVertexType) {
+        // A vertex the query surfaced through a property is a result vertex, so the studio edge-completion
+        // pass may connect it to the other result vertices (ops #738).
+        resultVertices.add(((Identifiable) value).getIdentity());
         if (includedVertices.add(((Identifiable) value).getIdentity()))
           vertices.put(serializerImpl.serializeGraphElement(((Identifiable) value).asVertex(true)));
       } else if (type instanceof LocalEdgeType) {
@@ -530,7 +545,8 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
         }
       }
     } else if (value instanceof Result result) {
-      return analyzeResultContent(database, serializerImpl, includedVertices, includedEdges, vertices, edges, result, limit);
+      return analyzeResultContent(database, serializerImpl, includedVertices, resultVertices, includedEdges, vertices, edges,
+          result, limit);
     } else if (value instanceof Collection<?> collection) {
       for (final Iterator<?> it = collection.iterator(); it.hasNext(); ) {
         // The cap is tested INSIDE the collection, not only between rows and between properties. One row can
@@ -541,8 +557,8 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
         if (limit > 0 && vertices.length() + edges.length() >= limit)
           return true;
         try {
-          if (analyzePropertyValue(database, serializerImpl, includedVertices, includedEdges, vertices, edges, it.next(),
-              limit))
+          if (analyzePropertyValue(database, serializerImpl, includedVertices, resultVertices, includedEdges, vertices, edges,
+              it.next(), limit))
             return true;
         } catch (Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on serializing collection element (error=%s)", e.getMessage());
